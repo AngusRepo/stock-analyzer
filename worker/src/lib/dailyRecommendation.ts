@@ -132,15 +132,19 @@ async function calcIndustryFlowLocal(env: Bindings): Promise<SectorSummary[]> {
 async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[]; stockDetails: ThemeStockDetail[] }> {
   try {
     const { results: tagRows } = await env.DB.prepare(
-      'SELECT symbol, tag FROM stock_tags'
-    ).all<{ symbol: string; tag: string }>()
+      'SELECT symbol, tag, weight FROM stock_tags ORDER BY symbol, weight DESC'
+    ).all<{ symbol: string; tag: string; weight: number }>()
     if (!tagRows?.length) return { sectors: [], stockDetails: [] }
 
-    const symbolTags = new Map<string, string[]>()
+    // 每股限 top 3 概念（weight 最高的 3 個），避免跨足太多概念導致重複計算
+    const MAX_TAGS_PER_STOCK = 3
+    const symbolTags = new Map<string, { tag: string; weight: number }[]>()
     const tagSymbols = new Map<string, Set<string>>()
     for (const r of tagRows) {
       if (!symbolTags.has(r.symbol)) symbolTags.set(r.symbol, [])
-      symbolTags.get(r.symbol)!.push(r.tag)
+      const tags = symbolTags.get(r.symbol)!
+      if (tags.length >= MAX_TAGS_PER_STOCK) continue // 超過 3 個就跳過
+      tags.push({ tag: r.tag, weight: r.weight ?? 1 })
       if (!tagSymbols.has(r.tag)) tagSymbols.set(r.tag, new Set())
       tagSymbols.get(r.tag)!.add(r.symbol)
     }
@@ -163,18 +167,18 @@ async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[];
       stockChips.set(row.symbol, { fNet, tNet, total: fNet + tNet })
     }
 
-    // 主題加總
+    // 主題加總（乘以 weight，避免多概念股全額重複計入）
     const agg = new Map<string, SectorSummary>()
     for (const row of chipRows) {
       const tags = symbolTags.get(row.symbol)
       if (!tags) continue
       const sc = stockChips.get(row.symbol)!
-      for (const tag of tags) {
+      for (const { tag, weight } of tags) {
         if (!agg.has(tag)) agg.set(tag, { sector: tag, foreign_net: 0, trust_net: 0, total_net: 0, avg_rsi: null, avg_momentum_5d: 0, stock_count: 0, up_count: 0, classification: 'theme' })
         const s = agg.get(tag)!
         s.stock_count++
-        s.foreign_net += sc.fNet
-        s.trust_net   += sc.tNet
+        s.foreign_net += sc.fNet * weight
+        s.trust_net   += sc.tNet * weight
         s.total_net    = s.foreign_net + s.trust_net
       }
     }

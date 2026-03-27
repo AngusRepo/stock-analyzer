@@ -53,6 +53,129 @@ export interface BulkMarginRow {
   short_sell: number
 }
 
+// ─── TWSE 處置股 + 注意股 ────────────────────────────────────────────────────
+
+export async function fetchPunishedStocks(): Promise<string[]> {
+  const res = await fetch('https://www.twse.com.tw/rwd/zh/announcement/punish?response=json', {
+    headers: { 'User-Agent': 'StockVision/12.3' },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) return []
+  const body = await res.json() as any
+  if (body.stat !== 'OK' || !body.data) return []
+  // data: [序號, 日期, 代號, 名稱, ...]
+  return body.data
+    .map((r: any[]) => String(r[2]).trim())
+    .filter((s: string) => /^\d{4,6}$/.test(s))
+}
+
+// ─── TWSE PER/PBR/殖利率（全市場）────────────────────────────────────────────
+
+export interface BulkValuationRow {
+  symbol: string
+  dividend_yield: number | null
+  pe: number | null
+  pb: number | null
+}
+
+export async function fetchTwseValuation(date: string): Promise<BulkValuationRow[]> {
+  const url = `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_ALL?date=${twseDate(date)}&response=json`
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'StockVision/12.3' },
+    signal: AbortSignal.timeout(30000),
+  })
+  if (!res.ok) return []
+  const body = await res.json() as any
+  if (body.stat !== 'OK' || !body.data) return []
+  // [代號, 名稱, 殖利率, PER, PBR]
+  return body.data
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      dividend_yield: r[2] && r[2] !== '-' ? parseFloat(r[2]) : null,
+      pe: r[3] && r[3] !== '-' ? parseFloat(r[3]) : null,
+      pb: r[4] && r[4] !== '-' ? parseFloat(r[4]) : null,
+    }))
+}
+
+// ─── TWSE 月營收（opendata）──────────────────────────────────────────────────
+
+export interface MonthlyRevenueRow {
+  symbol: string
+  year_month: string     // "2026-02"
+  revenue: number        // 千元
+  revenue_yoy: number | null  // %
+  revenue_mom: number | null  // %
+}
+
+export async function fetchTwseMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
+  const res = await fetch('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {
+    headers: { 'User-Agent': 'StockVision/12.3' },
+    signal: AbortSignal.timeout(30000),
+  })
+  if (!res.ok) return []
+  const body = await res.json() as any[]
+  if (!Array.isArray(body)) return []
+
+  return body
+    .filter(r => isStockCode(r['公司代號'] ?? ''))
+    .map(r => {
+      const ym = r['資料年月'] ?? ''  // "11502" (民國年月)
+      const rocYear = parseInt(ym.slice(0, -2)) || 0
+      const month = parseInt(ym.slice(-2)) || 0
+      const isoYM = rocYear > 0 ? `${rocYear + 1911}-${String(month).padStart(2, '0')}` : ''
+      const rev = parseInt((r['營業收入-當月營收'] ?? '0').replace(/,/g, '')) || 0
+      const prevRev = parseInt((r['營業收入-上月營收'] ?? '0').replace(/,/g, '')) || 0
+      const lastYearRev = parseInt((r['營業收入-去年當月營收'] ?? '0').replace(/,/g, '')) || 0
+      return {
+        symbol: (r['公司代號'] ?? '').trim(),
+        year_month: isoYM,
+        revenue: rev,
+        revenue_yoy: lastYearRev > 0 ? (rev - lastYearRev) / lastYearRev * 100 : null,
+        revenue_mom: prevRev > 0 ? (rev - prevRev) / prevRev * 100 : null,
+      }
+    })
+    .filter(r => r.year_month)
+}
+
+// ─── TWSE 大盤廣度（漲跌家數）───────────────────────────────────────────────
+
+export interface MarketBreadthData {
+  date: string
+  advance_count: number
+  decline_count: number
+  unchanged_count: number
+  advance_ratio: number
+}
+
+export async function fetchMarketBreadth(): Promise<MarketBreadthData | null> {
+  const res = await fetch('https://openapi.twse.com.tw/v1/opendata/twtazu_od', {
+    headers: { 'User-Agent': 'StockVision/12.3' },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) return null
+  const body = await res.json() as any[]
+  if (!Array.isArray(body) || !body.length) return null
+
+  // 找上市(非興櫃)那筆
+  const row = body.find((r: any) => (r['市場'] ?? '').includes('上市')) ?? body[0]
+  const adv = parseInt(row['上漲'] ?? '0') || 0
+  const dec = parseInt(row['下跌'] ?? '0') || 0
+  const unc = parseInt(row['持平'] ?? '0') || 0
+  const total = adv + dec + unc
+  const rocDate = (row['出表日期'] ?? '').trim()  // "1150324"
+  const y = parseInt(rocDate.slice(0, 3)) + 1911
+  const m = rocDate.slice(3, 5)
+  const d = rocDate.slice(5, 7)
+  return {
+    date: `${y}-${m}-${d}`,
+    advance_count: adv,
+    decline_count: dec,
+    unchanged_count: unc,
+    advance_ratio: total > 0 ? adv / total : 0.5,
+  }
+}
+
 // ─── TWSE T86: 上市三大法人 ──────────────────────────────────────────────────
 
 export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {

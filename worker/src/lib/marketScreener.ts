@@ -839,7 +839,21 @@ export async function runMarketScreener(env: Bindings): Promise<{
     return { hotSectors: [], candidates: [] }
   }
 
-  // ── Step 1.5: 資料清洗 — reclassify 超過 3 tags 的股票（在讀 tags 之前）───
+  // ── Step 1.5a: 抓處置股清單 → 排除（處置股需圈存，Bot 無法交易）─────────
+  let punishedSet = new Set<string>()
+  try {
+    const { fetchPunishedStocks } = await import('./twseApi')
+    const punished = await fetchPunishedStocks()
+    punishedSet = new Set(punished)
+    if (punished.length) {
+      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
+      console.log(`[Screener] 處置股 ${punished.length} 支: ${punished.join(', ')}`)
+    }
+  } catch (e) {
+    console.warn('[Screener] 處置股抓取失敗 (non-blocking):', e)
+  }
+
+  // ── Step 1.5b: 資料清洗 — reclassify 超過 3 tags 的股票（在讀 tags 之前）───
   try {
     const { reclassifyTags } = await import('./tagReclassifier')
     const result = await reclassifyTags(env)
@@ -1057,6 +1071,18 @@ export async function runMarketScreener(env: Bindings): Promise<{
   console.log(`[Screener] Momentum scan: total=${momTotal} skipExist=${momSkipExist} skipLen=${momSkipLen} skipPrice=${momSkipPrice} skipReturn=${momSkipReturn} skipVol=${momSkipVol} passed=${momentumPicks.length} picked=${topMomentum.length}`)
   if (topMomentum.length > 0) {
     console.log(`[Screener] Momentum top: ${topMomentum.slice(0, 5).map(c => `${c.symbol}${c.name}(${c.reason})`).join(', ')}`)
+  }
+
+  // ── Step 4.5: 排除處置股 ────────────────────────────────────────────────
+  if (punishedSet.size > 0) {
+    const before = candidates.length
+    const removed = candidates.filter(c => punishedSet.has(c.symbol))
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      if (punishedSet.has(candidates[i].symbol)) candidates.splice(i, 1)
+    }
+    if (removed.length) {
+      console.log(`[Screener] 排除處置股: ${removed.map(c => `${c.symbol}${c.name}`).join(', ')}`)
+    }
   }
 
   console.log(`[Screener] Final candidates: ${candidates.length}`)

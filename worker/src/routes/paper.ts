@@ -825,9 +825,20 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
   }
 
+  // 處置股排除（KV 每日由 screener 更新）
+  let punishedSet = new Set<string>()
+  try {
+    const raw = await env.KV.get('market:punished_stocks', 'json') as string[] | null
+    if (raw) punishedSet = new Set(raw)
+  } catch { /* ignore */ }
+
   // Debate 篩選
   const pendingBuys: PendingBuy[] = []
   for (const rec of buyRecs) {
+    if (punishedSet.has(rec.symbol)) {
+      console.log(`[MorningSetup] ${rec.symbol} 處置股，跳過`)
+      continue
+    }
     let debateVerdict = 'APPROVE'
     let riskPct = calcRiskPct(rec.signal, rec.confidence)
 

@@ -15,8 +15,8 @@ import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { withCache, TTL } from '../lib/cache'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import {
-  fetchTWPrice, fetchTWChips, fetchTWMargin, fetchTWFinancials,
-  fetchTWDividend, fetchTWPER, aggregateChips, parseFinancials,
+  fetchTWPrice, fetchTWFinancials,
+  fetchTWDividend, parseFinancials,
   type FMStockPrice,
 } from '../lib/finmind'
 
@@ -276,32 +276,18 @@ async function fetchAndStoreFinMind(db: D1Database, stock: any, token: string) {
     ])
     const parsed = parseFinancials(finRows, divRows)
 
-    // 從 TaiwanStockPER 取最新 PE/PB/殖利率（比自算更精確）
-    let pe: number | null = null, pb: number | null = null, latestDivYield: number | null = null
-    try {
-      const perStart = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-      const perRows = await fetchTWPER(token, stockId, perStart)
-      if (perRows.length) {
-        const latest = perRows[perRows.length - 1]
-        pe = latest.PER > 0 ? latest.PER : null
-        pb = latest.PBR > 0 ? latest.PBR : null
-        latestDivYield = latest.dividend_yield > 0 ? latest.dividend_yield : null
-      }
-    } catch (e) {
-      console.error(`[FinMind] PER/PBR failed ${stockId}:`, e)
-    }
+    // PE/PB/殖利率 → 已由 Wave2 bulkFetchTwseValuation 每日更新（不再逐股 FinMind）
 
     if (parsed) {
       await db.prepare(
         `INSERT OR REPLACE INTO financials
            (stock_id, period, period_type, eps, revenue, revenue_growth_yoy,
-            dividend_yield, dividend_per_share, roe, pe, pb)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+            dividend_yield, dividend_per_share, roe)
+         VALUES (?,?,?,?,?,?,?,?,?)`
       ).bind(
         stock.id, parsed.period, 'quarterly',
         parsed.eps, parsed.revenue, parsed.revenueGrowthYoy,
-        latestDivYield ?? parsed.dividendYield, parsed.dividendPerShare, parsed.roe,
-        pe, pb,
+        parsed.dividendYield, parsed.dividendPerShare, parsed.roe,
       ).run()
     }
   } catch (e) {

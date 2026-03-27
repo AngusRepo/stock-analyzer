@@ -365,60 +365,64 @@ async function runDailyUpdate(env: Bindings) {
   console.log('[Cron] First batch queued + Wave2 data fetched.')
 }
 
-// ─── Wave 2 數據：月營收 + 大盤廣度 ────────────────────────────────────────
+// ─── Wave 2 數據：PER/PBR + 月營收 + 大盤廣度（全部改用 TWSE/TPEX 官方 API）──
 async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
-  const { fetchBulkMonthlyRevenue, fetchTWMarketBreadth } = await import('./lib/finmind')
-  const token = env.FINMIND_TOKEN
+  const { fetchTwseValuation, fetchTwseMonthlyRevenue, fetchMarketBreadth } = await import('./lib/twseApi')
 
-  // ── 大盤廣度（每日）──────────────────────────────────────────────────
+  // ── 大盤廣度（TWSE opendata，不需 FinMind）──────────────────────────
   try {
-    const breadthData = await fetchTWMarketBreadth(token, today)
-    if (breadthData.length > 0) {
-      const b = breadthData[breadthData.length - 1]
-      const total = (b.AdvanceCount ?? 0) + (b.DeclineCount ?? 0) + (b.UnchangedCount ?? 0)
-      const advRatio = total > 0 ? b.AdvanceCount / total : 0.5
+    const breadth = await fetchMarketBreadth()
+    if (breadth) {
       await env.DB.prepare(`
         INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
           advance_count=excluded.advance_count, decline_count=excluded.decline_count,
           unchanged_count=excluded.unchanged_count, advance_ratio=excluded.advance_ratio
-      `).bind(b.date, b.AdvanceCount, b.DeclineCount, b.UnchangedCount, advRatio).run()
-      console.log(`[Wave2] Market breadth: ${b.AdvanceCount}↑ ${b.DeclineCount}↓ ${b.UnchangedCount}→ (${(advRatio*100).toFixed(0)}%)`)
+      `).bind(breadth.date, breadth.advance_count, breadth.decline_count, breadth.unchanged_count, breadth.advance_ratio).run()
+      console.log(`[Wave2] Market breadth: ${breadth.advance_count}↑ ${breadth.decline_count}↓ ${breadth.unchanged_count}→ (${(breadth.advance_ratio*100).toFixed(0)}%)`)
     }
   } catch (e) { console.warn('[Wave2] Market breadth failed:', e) }
 
-  // ── 月營收（每月 1-10 日抓上月數據）─────────────────────────────────
-  const day = parseInt(today.slice(8, 10))
-  if (day <= 12) {  // 每月前 12 天嘗試抓（營收陸續公佈）
-    try {
-      // 上月日期
-      const d = new Date(today)
-      d.setMonth(d.getMonth() - 1)
-      const prevMonth = d.toISOString().slice(0, 7)  // "2026-02"
-      const startDate = `${prevMonth}-01`
+  // ── PER/PBR/殖利率（TWSE BWIBBU_ALL，全市場 ~1069 股）─────────────
+  try {
+    const valRows = await fetchTwseValuation(today)
+    if (valRows.length) {
+      const stmts = valRows
+        .filter(v => v.pe !== null || v.pb !== null || v.dividend_yield !== null)
+        .map(v =>
+          env.DB.prepare(`
+            UPDATE financials SET pe=?, pb=?, dividend_yield=?
+            WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
+            AND period = (SELECT MAX(period) FROM financials WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?))
+          `).bind(v.pe, v.pb, v.dividend_yield, v.symbol, v.symbol)
+        )
+      for (let i = 0; i < stmts.length; i += 50) {
+        await env.DB.batch(stmts.slice(i, i + 50))
+      }
+      console.log(`[Wave2] PER/PBR: ${valRows.length} stocks updated (TWSE BWIBBU_ALL)`)
+    }
+  } catch (e) { console.warn('[Wave2] PER/PBR failed:', e) }
 
-      const revData = await fetchBulkMonthlyRevenue(token, startDate)
-      if (revData.length > 0) {
-        // 批次寫入（每支股票一筆）
-        const stmts = []
-        for (const r of revData) {
-          const yearMonth = `${r.revenue_year}-${String(r.revenue_month).padStart(2, '0')}`
-          // 查 stock_id
-          stmts.push(
-            env.DB.prepare(`
-              INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
-              SELECT s.id, ?, ?, NULL, NULL
-              FROM stocks s WHERE s.symbol = ?
-              ON CONFLICT(stock_id, date) DO UPDATE SET revenue=excluded.revenue
-            `).bind(yearMonth, r.revenue, r.stock_id)
-          )
+  // ── 月營收（TWSE opendata，每月前 12 天抓）─────────────────────────
+  const day = parseInt(today.slice(8, 10))
+  if (day <= 12) {
+    try {
+      const revData = await fetchTwseMonthlyRevenue()
+      if (revData.length) {
+        const stmts = revData.map(r =>
+          env.DB.prepare(`
+            INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
+            SELECT s.id, ?, ?, ?, ?
+            FROM stocks s WHERE s.symbol = ?
+            ON CONFLICT(stock_id, date) DO UPDATE SET
+              revenue=excluded.revenue, revenue_yoy=excluded.revenue_yoy, revenue_mom=excluded.revenue_mom
+          `).bind(r.year_month, r.revenue, r.revenue_yoy, r.revenue_mom, r.symbol)
+        )
+        for (let i = 0; i < stmts.length; i += 50) {
+          await env.DB.batch(stmts.slice(i, i + 50))
         }
-        // D1 batch 限制 100 筆
-        for (let i = 0; i < stmts.length; i += 100) {
-          await env.DB.batch(stmts.slice(i, i + 100))
-        }
-        console.log(`[Wave2] Monthly revenue: ${revData.length} entries for ${prevMonth}`)
+        console.log(`[Wave2] Monthly revenue: ${revData.length} entries (TWSE opendata)`)
       }
     } catch (e) { console.warn('[Wave2] Monthly revenue failed:', e) }
   }

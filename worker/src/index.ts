@@ -344,6 +344,17 @@ async function runDailyUpdate(env: Bindings) {
     return
   }
   await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+
+  // ── Bulk: 全市場三大法人+融資融券（TWSE/TPEX 官方 API，不消耗 FinMind 配額）───
+  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  try {
+    const { bulkFetchAndStoreChipData } = await import('./lib/twseApi')
+    const { chipCount, marginCount } = await bulkFetchAndStoreChipData(env.DB, twToday)
+    console.log(`[Cron] Bulk chip: ${chipCount} chips + ${marginCount} margins written (TWSE/TPEX)`)
+  } catch (e) {
+    console.warn('[Cron] Bulk chip fetch failed, FinMind fallback still in Queue:', e)
+  }
+
   console.log('[Cron] Kicking off daily update via Queue...')
   await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
 

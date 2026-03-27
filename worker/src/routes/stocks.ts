@@ -264,57 +264,8 @@ async function fetchAndStoreFinMind(db: D1Database, stock: any, token: string) {
     console.error(`[FinMind] Price failed ${stockId}:`, e)
   }
 
-  try {
-    // ── 2. 三大法人籌碼 ────────────────────────────────────────────────────────
-    const chipStart = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
-    const chipRows  = await fetchTWChips(token, stockId, chipStart)
-    const chipMap   = aggregateChips(chipRows)
-
-    // 融資融券
-    const marginRows = await fetchTWMargin(token, stockId, chipStart)
-    const marginMap  = Object.fromEntries(
-      marginRows.map(r => [r.date, {
-        margin: r.MarginPurchaseTodayBalance,
-        short:  r.ShortSaleTodayBalance,
-      }])
-    )
-
-    const chipBatch = Object.entries(chipMap).map(([date, c]) => {
-      const m = marginMap[date]
-      return db.prepare(
-        `INSERT OR REPLACE INTO chip_data
-           (stock_id, date, foreign_net, trust_net, dealer_net, margin_balance, short_balance)
-         VALUES (?,?,?,?,?,?,?)`
-      ).bind(
-        stock.id, date,
-        c.foreign_net, c.trust_net, c.dealer_net,
-        m?.margin ?? null, m?.short ?? null,
-      )
-    })
-    if (chipBatch.length) await db.batch(chipBatch)
-
-    // Wave 3：融資融券細部數據寫入 margin_data
-    const marginBatch = marginRows.map(r => {
-      const shortRatio = r.MarginPurchaseTodayBalance > 0
-        ? r.ShortSaleTodayBalance / r.MarginPurchaseTodayBalance
-        : null
-      return db.prepare(
-        `INSERT INTO margin_data (stock_id, date, margin_buy, margin_sell, margin_balance, short_buy, short_sell, short_balance, short_ratio)
-         VALUES (?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(stock_id, date) DO UPDATE SET
-           margin_buy=excluded.margin_buy, margin_sell=excluded.margin_sell, margin_balance=excluded.margin_balance,
-           short_buy=excluded.short_buy, short_sell=excluded.short_sell, short_balance=excluded.short_balance,
-           short_ratio=excluded.short_ratio`
-      ).bind(stock.id, r.date, r.MarginPurchaseBuy, r.MarginPurchaseSell, r.MarginPurchaseTodayBalance,
-             r.ShortSaleBuy, r.ShortSaleSell, r.ShortSaleTodayBalance, shortRatio)
-    })
-    // D1 batch 限制 100
-    for (let i = 0; i < marginBatch.length; i += 100) {
-      await db.batch(marginBatch.slice(i, i + 100))
-    }
-  } catch (e) {
-    console.error(`[FinMind] Chips failed ${stockId}:`, e)
-  }
+  // ── 2. 三大法人+融資融券 → 已由 bulkFetchAndStoreChipData (TWSE/TPEX) 處理 ──
+  // 不再逐股呼叫 FinMind，省 ~326 API calls/day
 
   try {
     // ── 3. 財報（每季更新即可，避免浪費額度）────────────────────────────────

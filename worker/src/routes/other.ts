@@ -991,7 +991,6 @@ recommendations.get('/sector-flow', async (c) => {
     FROM sector_flow
     WHERE date = ? ${typeFilter}
     ORDER BY total_net DESC
-    LIMIT 20
   `).bind(...binds).all<any>()
 
   // 若今天沒資料，取最近一筆
@@ -1003,7 +1002,6 @@ recommendations.get('/sector-flow', async (c) => {
       WHERE date = (SELECT MAX(date) FROM sector_flow WHERE 1=1 ${typeFilter})
       ${typeFilter}
       ORDER BY total_net DESC
-      LIMIT 20
     `).bind(...(type ? [type, type] : [])).all<any>()
     return c.json({ date: 'latest', flows: latest ?? [] })
   }

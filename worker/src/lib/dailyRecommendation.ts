@@ -336,7 +336,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
 
   // 5. 寫入 sector_flow（industry + theme 分別清除再寫入）
   for (const cls of ['industry', 'theme'] as const) {
-    const batch = (cls === 'industry' ? industrySectors : themeSectors).slice(0, 20)
+    const batch = (cls === 'industry' ? industrySectors : themeSectors).slice(0, 50)
     if (!batch.length) continue
     await env.DB.prepare('DELETE FROM sector_flow WHERE date = ? AND classification = ?').bind(today, cls).run()
     const stmts = batch.map(s =>

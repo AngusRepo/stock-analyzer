@@ -253,26 +253,45 @@ export function ThemeFlowPanel() {
     staleTime: 30 * 60 * 1000,
   })
 
-  const themeFlows = themeData?.flows ?? []
-  const themeMax   = themeFlows.length ? Math.max(...themeFlows.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
+  const allFlows = themeData?.flows ?? []
+  // 買超 top 10（正值，由大到小）+ 賣超 top 10（負值，由小到大）
+  const topBuy  = allFlows.filter((f: any) => (f.total_net ?? 0) > 0).slice(0, 10)
+  const topSell = allFlows.filter((f: any) => (f.total_net ?? 0) < 0).sort((a: any, b: any) => (a.total_net ?? 0) - (b.total_net ?? 0)).slice(0, 10)
+  const allShown = [...topBuy, ...topSell]
+  const maxAbs = allShown.length ? Math.max(...allShown.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
 
   return (
     <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
       <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
         <BarChart3 className="w-4 h-4 text-blue-400" />
-        主題輪動（概念股資金流向）
+        主題輪動（三大法人近5日買賣超）
       </h3>
       {themeLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
         </div>
-      ) : themeFlows.length === 0 ? (
+      ) : allFlows.length === 0 ? (
         <p className="text-xs text-muted-foreground">尚無主題資料</p>
       ) : (
-        <div className="space-y-2">
-          {themeFlows.slice(0, 10).map((f: any) => (
-            <SectorFlowBar key={f.sector} flow={f} maxAbs={themeMax} />
-          ))}
+        <div className="space-y-4">
+          {/* 買超 Top 10 */}
+          <div>
+            <p className="text-xs text-emerald-400 font-medium mb-2">買超前 10 大</p>
+            <div className="space-y-1.5">
+              {topBuy.length ? topBuy.map((f: any) => (
+                <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
+              )) : <p className="text-xs text-muted-foreground">無買超主題</p>}
+            </div>
+          </div>
+          {/* 賣超 Top 10 */}
+          <div>
+            <p className="text-xs text-red-400 font-medium mb-2">賣超前 10 大</p>
+            <div className="space-y-1.5">
+              {topSell.length ? topSell.map((f: any) => (
+                <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
+              )) : <p className="text-xs text-muted-foreground">無賣超主題</p>}
+            </div>
+          </div>
         </div>
       )}
     </div>

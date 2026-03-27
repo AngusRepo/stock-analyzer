@@ -39,7 +39,7 @@ import NewsPanel from '@/components/NewsPanel'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
-import { DailyRecommendationPanel } from '@/components/DailyRecommendationPanel'
+import { DailyRecommendationPanel, SectorFlowPanel } from '@/components/DailyRecommendationPanel'
 import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -396,7 +396,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
             </div>
           </div>
 
-          {/* 中欄（admin）/ 右欄（一般）：ML 推薦 + 族群流向 */}
+          {/* 中欄（admin）/ 右欄（一般）：ML 推薦 */}
           <div className={isAdmin ? '' : 'lg:col-span-2'}>
             <DailyRecommendationPanel />
           </div>
@@ -409,6 +409,9 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           )}
 
         </div>
+
+        {/* ═══ 產業輪動 + 主題輪動（全寬，雙欄並排）═══ */}
+        <SectorFlowPanel />
       </div>
     </div>
   )

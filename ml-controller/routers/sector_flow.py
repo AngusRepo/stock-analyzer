@@ -1,14 +1,16 @@
 """
-routers/sector_flow.py — 全市場族群資金流向（FinMind bulk API）
+routers/sector_flow.py — 全市場族群資金流向（TWSE/TPEX 官方 API）
 
-Worker 傳入 finmind_token + date，Controller 直接呼叫 FinMind：
-  1. TaiwanStockInstitutionalInvestorsBuySell（全市場三大法人）
-  2. TaiwanStockPrice（全市場股價）
-  3. TaiwanStockInfo（產業分類 metadata）
+資料來源（免費、無配額限制）：
+  1. TWSE T86 — 上市三大法人買賣超日報（全市場，單位：股）
+  2. TPEX 3itrade — 上櫃三大法人買賣超（全市場，單位：股）
+  3. FinMind TaiwanStockInfo — 產業分類 mapping（fallback: TWSE t187ap03_L）
 
-計算每個 TWSE/OTC 官方產業的外資+投信淨買賣金額（億元），回傳排序結果。
+計算：per-stock 外資+投信淨買賣 × 收盤價 / 1e8 = 億元，按產業加總。
 """
 
+import asyncio
+import re
 import httpx
 from datetime import datetime, timedelta
 from fastapi import APIRouter
@@ -16,11 +18,24 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
+# TWSE 產業代碼 → 名稱（t187ap03_L 的 產業別 欄位是數字代碼）
+TWSE_INDUSTRY_MAP = {
+    "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維",
+    "05": "電機機械", "06": "電器電纜", "21": "化學工業", "22": "生技醫療業",
+    "07": "化學生技醫療", "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業",
+    "11": "橡膠工業", "12": "汽車工業", "13": "電子工業", "24": "半導體業",
+    "25": "電腦及週邊設備業", "26": "光電業", "27": "通信網路業",
+    "28": "電子零組件業", "29": "電子通路業", "30": "資訊服務業",
+    "31": "其他電子類", "14": "建材營造業", "15": "航運業", "16": "觀光餐旅",
+    "17": "金融保險", "18": "貿易百貨", "23": "油電燃氣業", "19": "綜合",
+    "20": "其他", "32": "文化創意業", "33": "農業科技", "34": "電子商務",
+    "35": "綠能環保類", "36": "數位雲端類", "37": "運動休閒類",
+    "38": "居家生活類",
+}
 
 
 class SectorFlowRequest(BaseModel):
-    finmind_token: str
+    finmind_token: str | None = None  # optional, for sector mapping fallback
     date: str | None = None  # YYYY-MM-DD, default today TW
 
 
@@ -35,113 +50,232 @@ class SectorSummary(BaseModel):
 class SectorFlowResponse(BaseModel):
     date: str
     sectors: list[SectorSummary]
-    stock_count: int  # 涵蓋總股數
+    stock_count: int
     sector_count: int
 
 
-async def _fm_fetch(client: httpx.AsyncClient, token: str, dataset: str, params: dict) -> list[dict]:
-    """呼叫 FinMind API，回傳 data array。"""
-    resp = await client.get(FINMIND_BASE, params={
-        "dataset": dataset,
-        "token": token,
-        **params,
-    }, timeout=60.0)
+def _parse_tw_number(s: str) -> int:
+    """解析台灣格式數字 '15,610,628' → 15610628，處理負號。"""
+    if not s or s.strip() in ("", "-", "--"):
+        return 0
+    cleaned = s.replace(",", "").strip()
+    try:
+        return int(cleaned)
+    except ValueError:
+        return 0
+
+
+def _twse_date(iso_date: str) -> str:
+    """YYYY-MM-DD → YYYYMMDD"""
+    return iso_date.replace("-", "")
+
+
+def _roc_date(iso_date: str) -> str:
+    """YYYY-MM-DD → 民國 YYY/MM/DD"""
+    dt = datetime.strptime(iso_date, "%Y-%m-%d")
+    roc_year = dt.year - 1911
+    return f"{roc_year}/{dt.month:02d}/{dt.day:02d}"
+
+
+async def _fetch_twse_t86(client: httpx.AsyncClient, date: str) -> list[dict]:
+    """TWSE T86 三大法人買賣超日報。回傳 [{stock_id, foreign_net, trust_net, dealer_net}]"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={_twse_date(date)}&selectType=ALL&response=json"
+    resp = await client.get(url, timeout=30.0)
     resp.raise_for_status()
     body = resp.json()
-    if body.get("status") != 200:
-        raise ValueError(f"FinMind {dataset} error: {body.get('msg', 'unknown')}")
-    return body.get("data", [])
+    if body.get("stat") != "OK" or not body.get("data"):
+        return []
+
+    results = []
+    for row in body["data"]:
+        # T86 fields: [0]代號 [1]名稱 [2-4]外資買/賣/淨 [5-7]外資自營 [8-10]投信買/賣/淨 [11]自營商淨
+        sid = row[0].strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        results.append({
+            "stock_id": sid,
+            "foreign_net": _parse_tw_number(row[4]),  # 外陸資買賣超（股）
+            "trust_net": _parse_tw_number(row[10]),    # 投信買賣超（股）
+        })
+    return results
+
+
+async def _fetch_tpex_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
+    """TPEX 三大法人買賣超。回傳 [{stock_id, foreign_net, trust_net}]"""
+    url = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+    params = {"l": "zh-tw", "d": _roc_date(date), "t": "D", "o": "json"}
+    resp = await client.get(url, params=params, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("stat") != "ok" or not body.get("tables"):
+        return []
+
+    results = []
+    table = body["tables"][0] if body["tables"] else {}
+    for row in table.get("data", []):
+        sid = row[0].strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        # TPEX fields: [0]代號 [1]名稱 [2]外資買 [3]外資賣 [4]外資淨 [5]外資自營買 ...
+        # [8]投信買 [9]投信賣 [10]投信淨
+        results.append({
+            "stock_id": sid,
+            "foreign_net": _parse_tw_number(row[4]),
+            "trust_net": _parse_tw_number(row[10]),
+        })
+    return results
+
+
+async def _fetch_twse_prices(client: httpx.AsyncClient, date: str) -> dict[str, float]:
+    """TWSE 上市個股日收盤價。回傳 {stock_id: close_price}"""
+    url = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={_twse_date(date)}&response=json"
+    resp = await client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    prices = {}
+    # STOCK_DAY_ALL fields: [0]代號 [1]名稱 [2]成交股數 [3]成交金額 [4]開盤 [5]最高 [6]最低 [7]收盤
+    for row in body.get("data", []):
+        sid = row[0].strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        try:
+            close = float(str(row[7]).replace(",", ""))
+            prices[sid] = close
+        except (ValueError, IndexError):
+            continue
+    return prices
+
+
+async def _fetch_tpex_prices(client: httpx.AsyncClient, date: str) -> dict[str, float]:
+    """TPEX 上櫃股票收盤價（OpenAPI）。"""
+    url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+    resp = await client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    prices = {}
+    for row in body:
+        sid = row.get("SecuritiesCompanyCode", "").strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        try:
+            close = float(str(row.get("Close", "0")).replace(",", ""))
+            if close > 0:
+                prices[sid] = close
+        except (ValueError, TypeError):
+            continue
+    return prices
+
+
+async def _fetch_sector_mapping(client: httpx.AsyncClient, finmind_token: str | None) -> dict[str, str]:
+    """取得 stock_id → 產業名稱 mapping。優先 FinMind，fallback TWSE opendata。"""
+    sector_of: dict[str, str] = {}
+
+    # 1. Try FinMind（回傳中文產業名稱，最方便）
+    if finmind_token:
+        try:
+            resp = await client.get("https://api.finmindtrade.com/api/v4/data", params={
+                "dataset": "TaiwanStockInfo", "token": finmind_token,
+            }, timeout=30.0)
+            if resp.status_code == 200:
+                body = resp.json()
+                for s in body.get("data", []):
+                    cat = s.get("industry_category")
+                    if cat:
+                        sector_of[s["stock_id"]] = cat
+                if sector_of:
+                    print(f"[SectorFlow] FinMind sector mapping: {len(sector_of)} stocks")
+                    return sector_of
+        except Exception as e:
+            print(f"[SectorFlow] FinMind mapping failed: {e}")
+
+    # 2. Fallback: TWSE + TPEX opendata
+    twse_task = client.get("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", timeout=30.0)
+    tpex_task = client.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", timeout=30.0)
+    results = await asyncio.gather(twse_task, tpex_task, return_exceptions=True)
+
+    # TWSE 上市
+    if not isinstance(results[0], Exception) and results[0].status_code == 200:
+        for r in results[0].json():
+            sid = r.get("公司代號", "").strip()
+            code = r.get("產業別", "").strip()
+            if sid and code:
+                sector_of[sid] = TWSE_INDUSTRY_MAP.get(code, f"產業{code}")
+
+    # TPEX 上櫃（SecuritiesIndustryCode 也是數字代碼）
+    if not isinstance(results[1], Exception) and results[1].status_code == 200:
+        for r in results[1].json():
+            sid = r.get("SecuritiesCompanyCode", "").strip()
+            code = r.get("SecuritiesIndustryCode", "").strip()
+            if sid and code and sid not in sector_of:
+                sector_of[sid] = TWSE_INDUSTRY_MAP.get(code, f"產業{code}")
+
+    if sector_of:
+        print(f"[SectorFlow] TWSE+TPEX opendata sector mapping: {len(sector_of)} stocks")
+
+    return sector_of
 
 
 @router.post("/sector-flow", response_model=SectorFlowResponse)
 async def compute_sector_flow(req: SectorFlowRequest):
-    """全市場族群資金流向（industry 級別）。"""
-    # 日期：預設 TW 今天
+    """全市場族群資金流向（industry 級別）— TWSE/TPEX 官方 API。"""
     if req.date:
         target_date = req.date
     else:
         now_tw = datetime.utcnow() + timedelta(hours=8)
         target_date = now_tw.strftime("%Y-%m-%d")
 
-    # 抓近 5 個交易日（往前推 7 天涵蓋週末）
-    end_dt = datetime.strptime(target_date, "%Y-%m-%d")
-    start_date = (end_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    async with httpx.AsyncClient() as client:
-        # 並行呼叫 3 個 API
-        import asyncio
-        chips_task = _fm_fetch(client, req.finmind_token,
-                               "TaiwanStockInstitutionalInvestorsBuySell",
-                               {"start_date": start_date, "end_date": target_date})
-        prices_task = _fm_fetch(client, req.finmind_token,
-                                "TaiwanStockPrice",
-                                {"start_date": target_date, "end_date": target_date})
-        info_task = _fm_fetch(client, req.finmind_token,
-                              "TaiwanStockInfo", {})
-
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "StockVision/12.3 (sector-flow)"},
+        follow_redirects=True,
+    ) as client:
+        # 並行呼叫：TWSE chips + TPEX chips + TWSE prices + TPEX prices + sector mapping
         results = await asyncio.gather(
-            chips_task, prices_task, info_task,
+            _fetch_twse_t86(client, target_date),
+            _fetch_tpex_chips(client, target_date),
+            _fetch_twse_prices(client, target_date),
+            _fetch_tpex_prices(client, target_date),
+            _fetch_sector_mapping(client, req.finmind_token),
             return_exceptions=True,
         )
-        # 處理個別 API 失敗（FinMind bulk chips 可能 400）
-        chips_raw = results[0] if not isinstance(results[0], Exception) else []
-        prices_raw = results[1] if not isinstance(results[1], Exception) else []
-        info_raw = results[2] if not isinstance(results[2], Exception) else []
 
-        if isinstance(results[0], Exception):
-            print(f"[SectorFlow] chips API failed: {results[0]}")
-        if isinstance(results[1], Exception):
-            print(f"[SectorFlow] prices API failed: {results[1]}")
-        if isinstance(results[2], Exception):
-            print(f"[SectorFlow] info API failed: {results[2]}")
+        twse_chips = results[0] if not isinstance(results[0], Exception) else []
+        tpex_chips = results[1] if not isinstance(results[1], Exception) else []
+        twse_prices = results[2] if not isinstance(results[2], Exception) else {}
+        tpex_prices = results[3] if not isinstance(results[3], Exception) else {}
+        sector_of = results[4] if not isinstance(results[4], Exception) else {}
 
-        if not chips_raw or not info_raw:
-            return SectorFlowResponse(date=target_date, sectors=[], stock_count=0, sector_count=0)
+        for i, name in enumerate(["TWSE chips", "TPEX chips", "TWSE prices", "TPEX prices", "sector mapping"]):
+            if isinstance(results[i], Exception):
+                print(f"[SectorFlow] {name} failed: {results[i]}")
 
-    # 1. 產業分類 mapping
-    sector_of: dict[str, str] = {}
-    for s in info_raw:
-        cat = s.get("industry_category")
-        if cat:
-            sector_of[s["stock_id"]] = cat
+    all_chips = twse_chips + tpex_chips
+    all_prices = {**twse_prices, **tpex_prices}
 
-    # 2. 最新收盤價
-    price_of: dict[str, float] = {}
-    for p in prices_raw:
-        price_of[p["stock_id"]] = p.get("close", 0)
+    if not all_chips:
+        print(f"[SectorFlow] No chip data for {target_date}")
+        return SectorFlowResponse(date=target_date, sectors=[], stock_count=0, sector_count=0)
 
-    # 3. 法人淨買賣（張）per stock — aggregate 5 日
-    # name: Foreign_Investor, Investment_Trust, Dealer_self
-    stock_chips: dict[str, dict[str, float]] = {}
-    for r in chips_raw:
-        sid = r["stock_id"]
-        if sid not in stock_chips:
-            stock_chips[sid] = {"foreign": 0.0, "trust": 0.0}
-        net = r.get("buy", 0) - r.get("sell", 0)
-        name = r.get("name", "")
-        if "Foreign" in name:
-            stock_chips[sid]["foreign"] += net
-        elif "Investment_Trust" in name:
-            stock_chips[sid]["trust"] += net
+    print(f"[SectorFlow] Data: {len(twse_chips)} TWSE + {len(tpex_chips)} TPEX chips, "
+          f"{len(all_prices)} prices, {len(sector_of)} sectors")
 
-    # 4. 按產業加總（張 × 股價 × 1000 / 1e8 = 億元）
+    # 按產業加總（淨買賣股數 × 收盤價 / 1e8 = 億元）
     sector_agg: dict[str, dict] = {}
-    for sid, chips in stock_chips.items():
+    matched = 0
+    for chip in all_chips:
+        sid = chip["stock_id"]
         sector = sector_of.get(sid)
-        if not sector:
+        price = all_prices.get(sid, 0)
+        if not sector or price <= 0:
             continue
-        price = price_of.get(sid, 0)
-        if price <= 0:
-            continue
+        matched += 1
 
         if sector not in sector_agg:
             sector_agg[sector] = {"foreign_net": 0.0, "trust_net": 0.0, "stock_count": 0}
         agg = sector_agg[sector]
         agg["stock_count"] += 1
-        agg["foreign_net"] += chips["foreign"] * price / 1e8
-        agg["trust_net"] += chips["trust"] * price / 1e8
+        agg["foreign_net"] += chip["foreign_net"] * price / 1e8
+        agg["trust_net"] += chip["trust_net"] * price / 1e8
 
-    # 5. 排序
     sectors = []
     for name, agg in sector_agg.items():
         total = agg["foreign_net"] + agg["trust_net"]
@@ -154,9 +288,11 @@ async def compute_sector_flow(req: SectorFlowRequest):
         ))
     sectors.sort(key=lambda s: s.total_net, reverse=True)
 
+    print(f"[SectorFlow] Result: {matched} matched stocks → {len(sectors)} sectors")
+
     return SectorFlowResponse(
         date=target_date,
-        sectors=sectors[:30],  # Top 30 產業
-        stock_count=len(stock_chips),
+        sectors=sectors[:30],
+        stock_count=matched,
         sector_count=len(sectors),
     )

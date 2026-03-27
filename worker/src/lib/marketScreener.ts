@@ -1089,6 +1089,17 @@ export async function runMarketScreener(env: Bindings): Promise<{
     console.warn('[Screener] Discord notification failed:', e)
   }
 
+  // ── Step: 自動 reclassify 超過 3 個 tags 的新股票 ────────────────────────
+  try {
+    const { reclassifyTags } = await import('./tagReclassifier')
+    const result = await reclassifyTags(env)
+    if (result.updated > 0) {
+      console.log(`[Screener] Tag reclassify: ${result.updated} stocks updated`)
+    }
+  } catch (e) {
+    console.warn('[Screener] Tag reclassify failed (non-blocking):', e)
+  }
+
   console.log(`[Screener] Done: ${hotSectors.length} hot concepts, ${candidates.length} candidates`)
   return { hotSectors, candidates }
 }

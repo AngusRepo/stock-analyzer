@@ -101,7 +101,7 @@ async def _fetch_twse_t86(client: httpx.AsyncClient, date: str) -> list[dict]:
 
 
 async def _fetch_tpex_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
-    """TPEX 三大法人買賣超。回傳 [{stock_id, foreign_net, trust_net}]"""
+    """TPEX 三大法人買賣超（完整欄位）。"""
     url = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
     params = {"l": "zh-tw", "d": _roc_date(date), "t": "D", "o": "json"}
     resp = await client.get(url, params=params, timeout=30.0)
@@ -116,12 +116,42 @@ async def _fetch_tpex_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
         sid = row[0].strip()
         if not re.match(r"^\d{4,6}$", sid):
             continue
-        # TPEX fields: [0]代號 [1]名稱 [2]外資買 [3]外資賣 [4]外資淨 [5]外資自營買 ...
-        # [8]投信買 [9]投信賣 [10]投信淨
         results.append({
-            "stock_id": sid,
-            "foreign_net": _parse_tw_number(row[4]),
-            "trust_net": _parse_tw_number(row[10]),
+            "symbol": sid,
+            "foreign_buy":  _parse_tw_number(row[2]),
+            "foreign_sell": _parse_tw_number(row[3]),
+            "foreign_net":  _parse_tw_number(row[4]),
+            "trust_buy":    _parse_tw_number(row[8]),
+            "trust_sell":   _parse_tw_number(row[9]),
+            "trust_net":    _parse_tw_number(row[10]),
+            "dealer_buy":   _parse_tw_number(row[12]) if len(row) > 12 else 0,
+            "dealer_sell":  _parse_tw_number(row[13]) if len(row) > 13 else 0,
+            "dealer_net":   _parse_tw_number(row[11]),
+        })
+    return results
+
+
+async def _fetch_tpex_margin(client: httpx.AsyncClient) -> list[dict]:
+    """TPEX 融資融券。"""
+    url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"
+    resp = await client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    if not isinstance(body, list):
+        return []
+    results = []
+    for r in body:
+        sid = (r.get("SecuritiesCompanyCode") or "").strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        results.append({
+            "symbol": sid,
+            "margin_buy":     int(r.get("MarginPurchase", "0").replace(",", "") or 0),
+            "margin_sell":    int(r.get("MarginSales", "0").replace(",", "") or 0),
+            "margin_balance": int(r.get("MarginPurchaseBalance", "0").replace(",", "") or 0),
+            "short_buy":      int(r.get("ShortCovering", r.get("ShortBuy", "0")).replace(",", "") or 0),
+            "short_sell":     int(r.get("ShortSale", "0").replace(",", "") or 0),
+            "short_balance":  int(r.get("ShortSaleBalance", "0").replace(",", "") or 0),
         })
     return results
 
@@ -296,3 +326,29 @@ async def compute_sector_flow(req: SectorFlowRequest):
         stock_count=matched,
         sector_count=len(sectors),
     )
+
+
+# ─── TPEX Proxy: Worker 無法直接呼叫 TPEX（被擋），透過 Controller 代理 ────────
+
+class TpexProxyRequest(BaseModel):
+    date: str | None = None
+
+
+@router.post("/tpex-chips")
+async def proxy_tpex_chips(req: TpexProxyRequest):
+    """TPEX 三大法人買賣超 proxy（Worker → Controller → TPEX）。"""
+    if req.date:
+        target_date = req.date
+    else:
+        now_tw = datetime.utcnow() + timedelta(hours=8)
+        target_date = now_tw.strftime("%Y-%m-%d")
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "StockVision/12.3"},
+        follow_redirects=True,
+    ) as client:
+        chips = await _fetch_tpex_chips(client, target_date)
+        margin = await _fetch_tpex_margin(client)
+
+    print(f"[TpexProxy] {len(chips)} chips + {len(margin)} margins for {target_date}")
+    return {"date": target_date, "chips": chips, "margins": margin}

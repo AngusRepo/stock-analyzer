@@ -349,7 +349,9 @@ async function runDailyUpdate(env: Bindings) {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   try {
     const { bulkFetchAndStoreChipData } = await import('./lib/twseApi')
-    const { chipCount, marginCount } = await bulkFetchAndStoreChipData(env.DB, twToday)
+    const { chipCount, marginCount } = await bulkFetchAndStoreChipData(
+      env.DB, twToday, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET
+    )
     console.log(`[Cron] Bulk chip: ${chipCount} chips + ${marginCount} margins written (TWSE/TPEX)`)
   } catch (e) {
     console.warn('[Cron] Bulk chip fetch failed, FinMind fallback still in Queue:', e)

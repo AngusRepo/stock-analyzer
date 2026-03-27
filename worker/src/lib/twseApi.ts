@@ -90,7 +90,11 @@ export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) throw new Error(`TPEX 3itrade HTTP ${res.status}`)
-  const body = await res.json() as any
+  const text = await res.text()
+  if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+    throw new Error('TPEX returned HTML instead of JSON (data not ready)')
+  }
+  const body = JSON.parse(text) as any
   if (body.stat !== 'ok' || !body.tables?.[0]?.data) return []
 
   return body.tables[0].data
@@ -140,14 +144,17 @@ export async function fetchTwseMargin(date: string): Promise<BulkMarginRow[]> {
 // ─── TPEX Margin: 上櫃融資融券 ──────────────────────────────────────────────
 
 export async function fetchTpexMargin(_date: string): Promise<BulkMarginRow[]> {
-  // TPEX openapi 只回傳最新一天（不需 date 參數）
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance'
   const res = await fetch(url, {
     headers: { 'User-Agent': 'StockVision/12.3' },
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) throw new Error(`TPEX margin HTTP ${res.status}`)
-  const body = await res.json() as any[]
+  const text = await res.text()
+  if (text.startsWith('<!DOCTYPE') || text.startsWith('<html') || !text.startsWith('[')) {
+    throw new Error('TPEX margin returned non-JSON')
+  }
+  const body = JSON.parse(text) as any[]
   if (!Array.isArray(body)) return []
 
   return body
@@ -168,31 +175,58 @@ export async function fetchTpexMargin(_date: string): Promise<BulkMarginRow[]> {
 export async function bulkFetchAndStoreChipData(
   db: D1Database,
   date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
 ): Promise<{ chipCount: number; marginCount: number }> {
   console.log(`[BulkChip] Fetching TWSE/TPEX chips + margins for ${date}...`)
 
-  // 並行呼叫 4 個 API
-  const [twseChips, tpexChips, twseMargin, tpexMargin] = await Promise.allSettled([
+  // TWSE 直接呼叫（OK）；TPEX 擋 CF Workers IP → 透過 Controller proxy
+  const tpexViaController = async (): Promise<{ chips: BulkChipRow[]; margins: BulkMarginRow[] }> => {
+    if (!controllerUrl) return { chips: [], margins: [] }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+    const res = await fetch(`${controllerUrl}/tpex-chips`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ date }),
+      signal: AbortSignal.timeout(60000),
+    })
+    if (!res.ok) throw new Error(`Controller /tpex-chips HTTP ${res.status}`)
+    const data = await res.json() as any
+    const chips: BulkChipRow[] = (data.chips ?? []).map((c: any) => ({
+      symbol: c.symbol, foreign_buy: c.foreign_buy, foreign_sell: c.foreign_sell,
+      foreign_net: c.foreign_net, trust_buy: c.trust_buy, trust_sell: c.trust_sell,
+      trust_net: c.trust_net, dealer_buy: c.dealer_buy, dealer_sell: c.dealer_sell,
+      dealer_net: c.dealer_net,
+    }))
+    const margins: BulkMarginRow[] = (data.margins ?? []).map((m: any) => ({
+      symbol: m.symbol, margin_buy: m.margin_buy, margin_sell: m.margin_sell,
+      margin_balance: m.margin_balance, short_buy: m.short_buy,
+      short_sell: m.short_sell, short_balance: m.short_balance,
+    }))
+    return { chips, margins }
+  }
+
+  const [twseChips, tpexResult, twseMargin] = await Promise.allSettled([
     fetchTwseChips(date),
-    fetchTpexChips(date),
+    tpexViaController(),
     fetchTwseMargin(date),
-    fetchTpexMargin(date),
   ])
+
+  const tpexChips = tpexResult.status === 'fulfilled' ? tpexResult.value.chips : []
+  const tpexMargin = tpexResult.status === 'fulfilled' ? tpexResult.value.margins : []
 
   const allChips = [
     ...(twseChips.status === 'fulfilled' ? twseChips.value : []),
-    ...(tpexChips.status === 'fulfilled' ? tpexChips.value : []),
+    ...tpexChips,
   ]
   const allMargin = [
     ...(twseMargin.status === 'fulfilled' ? twseMargin.value : []),
-    ...(tpexMargin.status === 'fulfilled' ? tpexMargin.value : []),
+    ...tpexMargin,
   ]
 
-  // Log failures
   if (twseChips.status === 'rejected') console.warn('[BulkChip] TWSE chips failed:', twseChips.reason)
-  if (tpexChips.status === 'rejected') console.warn('[BulkChip] TPEX chips failed:', tpexChips.reason)
+  if (tpexResult.status === 'rejected') console.warn('[BulkChip] TPEX proxy failed:', tpexResult.reason)
   if (twseMargin.status === 'rejected') console.warn('[BulkChip] TWSE margin failed:', twseMargin.reason)
-  if (tpexMargin.status === 'rejected') console.warn('[BulkChip] TPEX margin failed:', tpexMargin.reason)
 
   console.log(`[BulkChip] Fetched: ${allChips.length} chips, ${allMargin.length} margins`)
 
@@ -201,23 +235,15 @@ export async function bulkFetchAndStoreChipData(
   // Build margin lookup
   const marginMap = new Map(allMargin.map(m => [m.symbol, m]))
 
-  // symbol → stocks.id mapping
-  const symbols = allChips.map(c => c.symbol)
-  const uniqueSymbols = [...new Set(symbols)]
+  // symbol → stocks.id mapping（查 D1 全部 stocks，不只 active）
   const idMap = new Map<string, number>()
-
-  // 分批查 stocks.id（D1 bind 限制）
-  const QUERY_BATCH = 50
-  for (let i = 0; i < uniqueSymbols.length; i += QUERY_BATCH) {
-    const batch = uniqueSymbols.slice(i, i + QUERY_BATCH)
-    const placeholders = batch.map(() => '?').join(',')
-    const { results } = await db.prepare(
-      `SELECT id, symbol FROM stocks WHERE symbol IN (${placeholders})`
-    ).bind(...batch).all<{ id: number; symbol: string }>()
-    for (const r of results ?? []) {
-      idMap.set(r.symbol, r.id)
-    }
+  const { results: allStocksRows } = await db.prepare(
+    'SELECT id, symbol FROM stocks'
+  ).all<{ id: number; symbol: string }>()
+  for (const r of allStocksRows ?? []) {
+    idMap.set(r.symbol, r.id)
   }
+  console.log(`[BulkChip] idMap: ${idMap.size} stocks in D1`)
 
   // 批次寫入 chip_data
   const WRITE_BATCH = 50

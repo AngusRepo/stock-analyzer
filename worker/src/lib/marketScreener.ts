@@ -839,7 +839,18 @@ export async function runMarketScreener(env: Bindings): Promise<{
     return { hotSectors: [], candidates: [] }
   }
 
-  // ── Step 2: 從 D1 讀概念股標籤 ────────────────────────────────────────────
+  // ── Step 1.5: 資料清洗 — reclassify 超過 3 tags 的股票（在讀 tags 之前）───
+  try {
+    const { reclassifyTags } = await import('./tagReclassifier')
+    const result = await reclassifyTags(env)
+    if (result.updated > 0) {
+      console.log(`[Screener] Tag reclassify: ${result.updated} stocks cleaned before concept heat calc`)
+    }
+  } catch (e) {
+    console.warn('[Screener] Tag reclassify failed (non-blocking):', e)
+  }
+
+  // ── Step 2: 從 D1 讀概念股標籤（已清洗）──────────────────────────────────
   const { results: tagRows } = await env.DB.prepare(
     'SELECT symbol, tag, weight FROM stock_tags'
   ).all<{ symbol: string; tag: string; weight: number }>()
@@ -1087,17 +1098,6 @@ export async function runMarketScreener(env: Bindings): Promise<{
       `> 🚀 動量突破：${topMom || '無'}`)
   } catch (e) {
     console.warn('[Screener] Discord notification failed:', e)
-  }
-
-  // ── Step: 自動 reclassify 超過 3 個 tags 的新股票 ────────────────────────
-  try {
-    const { reclassifyTags } = await import('./tagReclassifier')
-    const result = await reclassifyTags(env)
-    if (result.updated > 0) {
-      console.log(`[Screener] Tag reclassify: ${result.updated} stocks updated`)
-    }
-  } catch (e) {
-    console.warn('[Screener] Tag reclassify failed (non-blocking):', e)
   }
 
   console.log(`[Screener] Done: ${hotSectors.length} hot concepts, ${candidates.length} candidates`)

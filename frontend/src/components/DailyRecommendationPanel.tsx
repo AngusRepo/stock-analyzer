@@ -290,16 +290,21 @@ export function ThemeFlowPanel() {
             <p className="text-xs text-emerald-400 font-medium mb-2">買超前 10 大</p>
             <div className="space-y-2">
               {topBuy.length ? topBuy.map((f: any) => (
-                <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs} stocks={stocksByTheme.get(f.sector)?.slice(0, 3)} />
+                <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs}
+                  stocks={stocksByTheme.get(f.sector)?.slice(0, 3)} />
               )) : <p className="text-xs text-muted-foreground">無買超主題</p>}
             </div>
           </div>
           <div>
             <p className="text-xs text-red-400 font-medium mb-2">賣超前 10 大</p>
             <div className="space-y-2">
-              {topSell.length ? topSell.map((f: any) => (
-                <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs} stocks={stocksByTheme.get(f.sector)?.slice(0, 3)} />
-              )) : <p className="text-xs text-muted-foreground">無賣超主題</p>}
+              {topSell.length ? topSell.map((f: any) => {
+                // 賣超主題：取賣超最多的前 3（net_amount 最小 = 負值最大）
+                const sellStocks = stocksByTheme.get(f.sector)
+                  ?.sort((a: any, b: any) => (a.net_amount ?? 0) - (b.net_amount ?? 0))
+                  .slice(0, 3)
+                return <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs} stocks={sellStocks} />
+              }) : <p className="text-xs text-muted-foreground">無賣超主題</p>}
             </div>
           </div>
         </div>
@@ -370,9 +375,13 @@ export function BotThemeFlowPanel() {
             <div className="space-y-2">
               {topSell.map((f: any) => {
                 const group = stocksByTheme.get(f.sector)
+                // 賣超主題：取賣超最多的前 3（按 net_amount ASC）
+                const sellStocks = group?.top
+                  ?.sort((a: any, b: any) => (a.net_amount ?? 0) - (b.net_amount ?? 0))
+                  .slice(0, 3)
                 return (
                   <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs}
-                    stocks={group?.top.slice(0, 3)} darkHorses={group?.darkHorse} />
+                    stocks={sellStocks} darkHorses={group?.darkHorse} />
                 )
               })}
             </div>

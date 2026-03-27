@@ -339,7 +339,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
+      <div className="w-full px-4 py-4 space-y-4">
 
         {/* 搜尋區塊 */}
         <div className="text-center">

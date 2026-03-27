@@ -1,0 +1,43 @@
+{
+    "max_open_trades": 5,
+    "stake_currency": "TWD",
+    "stake_amount": 200000,
+    "tradable_balance_ratio": 0.99,
+    "fiat_display_currency": "TWD",
+    "dry_run": true,
+    "cancel_open_orders_on_exit": false,
+    "trading_mode": "spot",
+    "margin_mode": "",
+    "unfilledtimeout": {
+        "entry": 10,
+        "exit": 10,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": false,
+        "order_book_top": 1
+    },
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": false,
+        "order_book_top": 1
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "pair_whitelist": [],
+        "pair_blacklist": []
+    },
+    "pairlists": [
+        {"method": "StaticPairList"}
+    ],
+    "fee": {
+        "buy": 0.001425,
+        "sell": 0.004425
+    },
+    "dataformat_ohlcv": "json",
+    "dataformat_trades": "json"
+}

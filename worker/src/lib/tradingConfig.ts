@@ -1,0 +1,159 @@
+/**
+ * tradingConfig.ts — 統一交易參數管理
+ *
+ * 28 個可 runtime 調整的交易參數，存於 KV `trading:config`。
+ * 讀取一次、快取 300s、fallback default。
+ */
+
+// ─── Type ────────────────────────────────────────────────────────────────────
+
+export interface TradingConfig {
+  fees: {
+    commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
+    tax: number            // 賣出交易稅率（預設 0.003 = 0.3%）
+    minCommission: number  // 最低手續費 NT$（預設 20）
+  }
+  circuit: {
+    maxPositionPct: number       // 正常最大單一部位佔比（預設 0.08）
+    buyConfThreshold: number     // 正常買入信心門檻（預設 0.60）
+    sellConfThreshold: number    // 正常賣出信心門檻（預設 0.65）
+    drawdownHalt: number         // 30 日回撤暫停閾值（預設 0.15）
+    drawdownReducedPosPct: number // 回撤時縮減部位（預設 0.04）
+    drawdownRaisedConf: number   // 回撤/低準確率時提高的信心門檻（預設 0.70）
+    lowAccuracyThreshold: number // 模型準確率警戒線（預設 0.45）
+    highVolReducedPosPct: number // 大盤高波動時縮減部位（預設 0.04）
+  }
+  exit: {
+    hardStopPct: number          // 硬上限止損（預設 -0.12）
+    fallbackInitStopMult: number // 無 ATR 時初始止損倍數（預設 0.93 = -7%）
+    fallbackTp1Mult: number      // 無 ML 目標時 TP1 倍數（預設 1.03 = +3%）
+    fallbackTp2Mult: number      // 無 ML 目標時 TP2 倍數（預設 1.06 = +6%）
+    tp1SellRatio: number         // TP1 賣出比例（預設 0.5 = 50%）
+    timeStopDays: number         // 時間止損天數（預設 20）
+    timeStopMinProfit: number    // 時間止損最低獲利（預設 0.005）
+    trailMultDefault: number     // Trailing stop 預設倍數（預設 3.0）
+    trailMultAt3pct: number      // 獲利 >3% 時 trail 倍數（預設 2.5）
+    trailMultAt8pct: number      // 獲利 >8% 時 trail 倍數（預設 2.0）
+    fallbackAtrPct: number       // ATR 不可用時的替代 %（預設 0.02）
+  }
+  position: {
+    dailyBuyLimit: number        // 每日自動買入上限 NT$（預設 200000）
+    manualDailyLimit: number     // 每日手動買入上限 NT$（預設 200000）
+    maxPctOfPortfolio: number    // 單筆最大佔 portfolio %（預設 0.25）
+    maxPctOfCash: number         // 單筆最大佔現金 %（預設 0.30）
+    minCashToTrade: number       // 最低可交易現金（預設 10000）
+    minStopPct: number           // 最低停損 %（預設 0.03）
+  }
+  screener: {
+    minPrice: number             // 最低股價（預設 15）
+    maxPrice: number             // 最高股價（預設 2000）
+    minAvgVolume: number         // 最低日均量（預設 300000 shares）
+    max5dDrop: number            // 最大 5 日跌幅（預設 -0.10）
+    minVolRatio: number          // 動量掃描最低量比（預設 1.2）
+    strongVolRatio: number       // 量能放大標記門檻（預設 1.5）
+    minMomReturn: number         // 動量最低 5 日漲幅（預設 0.005）
+    minMomAvgVol: number         // 動量最低均量（預設 50000）
+    topNPerSector: number        // 每族群取 top N（預設 8）
+    topNMomentum: number         // 動量 top N（預設 15）
+  }
+}
+
+// ─── Defaults ────────────────────────────────────────────────────────────────
+
+export const DEFAULT_TRADING_CONFIG: TradingConfig = {
+  fees: {
+    commission: 0.001425,
+    tax: 0.003,
+    minCommission: 20,
+  },
+  circuit: {
+    maxPositionPct: 0.08,
+    buyConfThreshold: 0.60,
+    sellConfThreshold: 0.65,
+    drawdownHalt: 0.15,
+    drawdownReducedPosPct: 0.04,
+    drawdownRaisedConf: 0.70,
+    lowAccuracyThreshold: 0.45,
+    highVolReducedPosPct: 0.04,
+  },
+  exit: {
+    hardStopPct: -0.12,
+    fallbackInitStopMult: 0.93,
+    fallbackTp1Mult: 1.03,
+    fallbackTp2Mult: 1.06,
+    tp1SellRatio: 0.5,
+    timeStopDays: 20,
+    timeStopMinProfit: 0.005,
+    trailMultDefault: 3.0,
+    trailMultAt3pct: 2.5,
+    trailMultAt8pct: 2.0,
+    fallbackAtrPct: 0.02,
+  },
+  position: {
+    dailyBuyLimit: 200_000,
+    manualDailyLimit: 200_000,
+    maxPctOfPortfolio: 0.25,
+    maxPctOfCash: 0.30,
+    minCashToTrade: 10_000,
+    minStopPct: 0.03,
+  },
+  screener: {
+    minPrice: 15,
+    maxPrice: 2000,
+    minAvgVolume: 300_000,
+    max5dDrop: -0.10,
+    minVolRatio: 1.2,
+    strongVolRatio: 1.5,
+    minMomReturn: 0.005,
+    minMomAvgVol: 50_000,
+    topNPerSector: 8,
+    topNMomentum: 15,
+  },
+}
+
+// ─── KV 讀取（300s cache）──────────────────────────────────────────────────
+
+const KV_KEY = 'trading:config'
+const CACHE_TTL_MS = 300_000  // 5 min in-memory cache
+
+let _cached: TradingConfig | null = null
+let _cachedAt = 0
+
+/** Deep merge: KV 值覆蓋 defaults，缺失欄位自動 fallback */
+function mergeConfig(partial: Partial<any>): TradingConfig {
+  const d = DEFAULT_TRADING_CONFIG
+  return {
+    fees: { ...d.fees, ...partial.fees },
+    circuit: { ...d.circuit, ...partial.circuit },
+    exit: { ...d.exit, ...partial.exit },
+    position: { ...d.position, ...partial.position },
+    screener: { ...d.screener, ...partial.screener },
+  }
+}
+
+export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> {
+  // In-memory cache（同一個 Worker isolate 內有效）
+  if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
+
+  try {
+    const raw = await kv.get(KV_KEY, 'json') as Partial<TradingConfig> | null
+    _cached = raw ? mergeConfig(raw) : DEFAULT_TRADING_CONFIG
+  } catch {
+    _cached = DEFAULT_TRADING_CONFIG
+  }
+  _cachedAt = Date.now()
+  return _cached
+}
+
+/** 寫入 KV（admin API 用）+ 清除 cache */
+export async function setTradingConfig(kv: KVNamespace, config: TradingConfig): Promise<void> {
+  await kv.put(KV_KEY, JSON.stringify(config))
+  _cached = config
+  _cachedAt = Date.now()
+}
+
+/** 強制清除 in-memory cache（deploy 後或手動 reset） */
+export function invalidateConfigCache(): void {
+  _cached = null
+  _cachedAt = 0
+}

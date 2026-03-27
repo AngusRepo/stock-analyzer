@@ -1,0 +1,705 @@
+"""
+main.py — FastAPI ML 服務（v14）
+
+10 模型 Ensemble 架構（5v5 平衡）：
+  純價格族（5）：KalmanFilter / DLinear / MarkovSwitching / PatchTST / Chronos
+  特徵族  （5）：XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
+"""
+import os
+import numpy as np
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+from .features import (
+    build_feature_matrix, get_features,
+    get_catboost_features, get_lgbm_features,  # #6 feature input diversity
+)
+from .models import (
+    run_kalman_filter, run_dlinear, run_markov_switching, run_patchtst, run_chronos,
+    run_xgboost, run_catboost, run_extra_trees, run_lightgbm, run_ft_transformer,
+    run_garch_volatility,
+)
+from .ensemble import weighted_vote
+from .linucb_bandit import linucb_select, load_bandit, build_context
+from .arf_aggregator import (
+    build_arf_features, load_arf, save_arf, apply_arf_correction, ARF_STATE_DIR,
+)
+
+app = FastAPI(title="StockVision ML Service", version="2.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    # #21 CORS 限制：只允許 StockVision Worker 呼叫
+    allow_origins=["https://stockvision-worker.angus-solo-dev.workers.dev"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─── 服務間驗證（從環境變數讀取，部署時設定）────────────────────────────────
+_SERVICE_TOKEN = os.environ.get("ML_SERVICE_SECRET", "")
+
+async def verify_service_token(request: Request) -> None:
+    """若有設定 ML_SERVICE_SECRET，驗證 X-Service-Token header"""
+    if not _SERVICE_TOKEN:
+        return  # 未設定 → 不驗證（開發環境相容）
+    token = request.headers.get("X-Service-Token", "")
+    if token != _SERVICE_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid service token")
+
+
+class PredictRequest(BaseModel):
+    stock_id: int
+    symbol: str
+    prices: list[dict]
+    indicators: list[dict] = []
+    chips: list[dict] = []
+    sentiment_scores: list[dict] = []
+    horizon: int = 14
+    real_accuracies: dict[str, float] = {}
+    market: str = "TW"
+    market_env: dict | None = None
+    model_stats: dict[str, dict] = {}
+    adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "stockvision-ml", "version": "2.0.0"}
+
+
+@app.get("/warmup")
+async def warmup(request: Request):
+    """
+    喚醒 Cloud Run 並強制 import 所有 ML 模組。
+    Worker 在 Queue 開始前呼叫此端點（取代 /health），
+    確保第一支 /predict 不會因 cold import 而 timeout。
+    """
+    await verify_service_token(request)
+    import time
+    t0 = time.time()
+    # 觸發所有 model/feature 模組的 import（它們在 module 頂層已 import，這裡只是確認）
+    dummy_prices = np.random.randn(100).cumsum() + 100
+    dummy_prices = np.maximum(dummy_prices, 1.0)
+    # 跑最輕量的 model：KalmanFilter（純數值，無 DB，< 1s）
+    try:
+        from .models import run_kalman_filter
+        run_kalman_filter(dummy_prices, horizon=5, stock_id=0)
+    except Exception as e:
+        print(f"[Warmup] KalmanFilter skipped: {e}")
+    elapsed = round(time.time() - t0, 3)
+    print(f"[Warmup] done in {elapsed}s")
+    return {"status": "warm", "elapsed_s": elapsed}
+
+
+class FactorAuditRequest(BaseModel):
+    prices: list[dict]
+    indicators: list[dict] = []
+    chips: list[dict] = []
+    sentiment_scores: list[dict] = []
+    market_env: dict | None = None
+
+
+@app.post("/factor-ic-audit")
+async def factor_ic_audit(req: FactorAuditRequest, request: Request):
+    """
+    Weekly IC audit：對所有 FEATURE_COLS 計算 Spearman IC。
+    Worker weekly cron 用一支代表性股票（資料多的）呼叫此 endpoint。
+    回傳各 feature 的 IC/ICIR/trend/effective 狀態。
+    """
+    await verify_service_token(request)
+    from .features import build_feature_matrix, get_features, FEATURE_COLS
+    from .factor_monitor import compute_factor_ic
+
+    df = build_feature_matrix(req.prices, req.indicators, req.chips,
+                              req.sentiment_scores, req.market_env)
+    X, y, feature_names = get_features(df)
+
+    if len(X) < 60:
+        return {"error": "需要至少 60 天資料", "features": []}
+
+    # 把 X/y 組回 DataFrame 做 IC
+    df_ic = pd.DataFrame(X, columns=feature_names)
+    df_ic["target_5d"] = y  # target_dir 的值（0/1）
+
+    ic_results = compute_factor_ic(df_ic, feature_names, target_col="target_5d")
+    results = ic_results.to_dict(orient="records") if not ic_results.empty else []
+
+    weak = [r["feature"] for r in results if not r.get("effective", True)]
+    strong = [r["feature"] for r in results if r.get("effective", False)]
+
+    print(f"[IC Audit] {len(strong)} effective / {len(weak)} weak out of {len(results)} features")
+    return {
+        "total": len(results),
+        "effective_count": len(strong),
+        "weak_count": len(weak),
+        "weak_features": weak,
+        "details": results,
+    }
+
+
+def _extract_feature_importance(predictions, feature_names: list[str]) -> dict:
+    importance_agg: dict[str, float] = {}
+    count = 0
+    for pred in predictions:
+        model_obj = getattr(pred, "_model", None)
+        if model_obj is None:
+            continue
+        try:
+            if hasattr(model_obj, "feature_importances_"):
+                imp = model_obj.feature_importances_
+                for i, name in enumerate(feature_names):
+                    importance_agg[name] = importance_agg.get(name, 0) + float(imp[i])
+                count += 1
+        except Exception:
+            pass
+    if count > 0:
+        return {k: round(v / count, 4) for k, v in
+                sorted(importance_agg.items(), key=lambda x: -x[1])[:15]}
+    return {}
+
+
+def _check_anomaly(X: np.ndarray, X_latest: np.ndarray,
+                   contamination: float = 0.05) -> tuple[bool, float]:
+    """Isolation Forest 異常偵測，回傳 (is_anomaly, score)"""
+    if len(X) < 30:
+        return False, 0.0
+    try:
+        from sklearn.ensemble import IsolationForest
+        iso = IsolationForest(n_estimators=100, contamination=contamination,
+                              random_state=42, n_jobs=-1)
+        iso.fit(X)
+        score    = float(iso.score_samples(X_latest.reshape(1, -1))[0])
+        decision = int(iso.predict(X_latest.reshape(1, -1))[0])
+        return decision == -1, score
+    except Exception as e:
+        print(f"[IsolationForest] failed: {e}")
+        return False, 0.0
+
+
+def predict_stock(req: PredictRequest) -> dict:
+    """Core prediction logic — no auth check, callable by Modal @function or HTTP endpoint."""
+    if len(req.prices) < 60:
+        raise ValueError("需要至少 60 天的股價數據")
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df           = build_feature_matrix(req.prices, req.indicators, chips_input,
+                                         req.sentiment_scores, req.market_env)
+    prices_arr   = np.array([float(p["close"]) for p in req.prices])
+    current_price = float(prices_arr[-1])
+    atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else 0.0
+
+    # #5 Price model input diversity：準備 adj_close 和 log(adj_close) 序列
+    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
+    log_adj_prices_arr = np.log(np.maximum(adj_prices_arr, 1e-8))
+
+    X, y, feature_names = get_features(df)
+    X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
+
+    # #6 Feature model input diversity：CatBoost 滯後特徵 + LightGBM rank transform
+    X_cb, y_cb, cb_names = get_catboost_features(df)
+    X_cb_latest = X_cb[-1] if len(X_cb) > 0 else np.zeros(max(len(cb_names), 1))
+    X_lgbm = get_lgbm_features(X) if len(X) > 0 else X
+    X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
+    stock_id = req.stock_id
+
+    # ── Isolation Forest 異常偵測閘 ───────────────────────────────────────────
+    is_anomaly, anomaly_score = _check_anomaly(X, X_latest) if len(X) >= 30 else (False, 0.0)
+    if is_anomaly:
+        print(f"[Anomaly] {req.symbol} 特徵組合異常（score={anomaly_score:.3f}）")
+        return {
+            "stock_id": stock_id, "symbol": req.symbol,
+            "current_price": current_price,
+            "signal": "NO_SIGNAL", "direction": "neutral",
+            "confidence": 0.0, "consensus": 0.0,
+            "forecast_pct": 0.0, "signal_strength": 0,
+            "reasoning": f"特徵組合異常（Isolation Forest score={anomaly_score:.3f}），建議觀望",
+            "entry_price": current_price,
+            "stop_loss": round(current_price * 0.97, 2),
+            "target1":   round(current_price * 1.03, 2),
+            "target2":   round(current_price * 1.05, 2),
+            "forecast_range": {"low": round(current_price * 0.95, 2),
+                               "high": round(current_price * 1.05, 2)},
+            "models": [], "forecasts": [], "features_used": feature_names,
+            "feature_importance": {}, "feature_version": "v4_9models",
+            "anomaly_score": round(anomaly_score, 4),
+            "regime": "N/A", "garch_vol": None, "meta_learner_used": False,
+        }
+
+    # ── GARCH 波動率 ──────────────────────────────────────────────────────────
+    garch_vol = run_garch_volatility(prices_arr, horizon=5)
+
+    # ── HMM Regime 偵測 ───────────────────────────────────────────────────────
+    regime_info = None
+    regime_label = "N/A"
+    try:
+        from .regime import RegimeDetector, build_market_feature_matrix, get_current_market_features
+        detector = RegimeDetector.load_from_gcs()
+        if detector is None:
+            feat_mat = build_market_feature_matrix(req.market_env)
+            if feat_mat is not None and len(feat_mat) >= 20:
+                detector = RegimeDetector().fit(feat_mat)
+                detector.save_to_gcs()
+        if detector is not None:
+            cur_feat = get_current_market_features(req.market_env)
+            if cur_feat is not None:
+                regime_info  = detector.predict_regime(cur_feat)
+                regime_label = regime_info.get("label", "N/A")
+    except Exception as e:
+        print(f"[Regime] failed: {e}")
+
+    # ── Stacking Meta-Learner 載入 ────────────────────────────────────────────
+    meta_bundle = None
+    try:
+        from .stacking import load_meta_learner
+        meta_bundle = load_meta_learner(stock_id)
+    except Exception as e:
+        print(f"[Stacking] load failed: {e}")
+
+    # ── LinUCB Bandit（第11模型 Layer 1：市場情境路由）────────────────────────
+    bandit_multipliers = None
+    _market_risk  = float((req.market_env or {}).get("risk_score") or 50) / 100.0
+    _regime_label = regime_label if regime_label != "N/A" else None
+    _bandit       = None
+    try:
+        _bandit = load_bandit("/tmp/linucb_bandit")
+        bandit_multipliers = linucb_select(
+            hmm_regime=_regime_label,
+            garch_vol=garch_vol,
+            current_price=current_price,
+            market_risk_score=_market_risk,
+            bandit=_bandit,
+            adaptive_params=req.adaptive_params,   # T+1 bandit protection
+        )
+    except Exception as e:
+        print(f"[LinUCB] failed: {e}")
+
+    # ── ARF Aggregator（第11模型 Layer 2：在線增量聚合）────────────────────────
+    # 注意：ARF 特徵需要在 10 個模型跑完後建立，這裡先載入 ARF 實例
+    _arf = load_arf(ARF_STATE_DIR)
+
+    # ── 10 個模型預測（#17 並行化 + #5/#6 input diversity）──────────────────
+    predictions = []
+
+    # 純價格族（5 個）— #5 各吃不同 input，#17 並行執行
+    price_model_fns = [
+        ("KalmanFilter",    lambda: run_kalman_filter(prices_arr, req.horizon, stock_id)),      # raw close（需真實跳動）
+        ("DLinear",         lambda: run_dlinear(adj_prices_arr, req.horizon)),                   # #5 adj_close（趨勢分解）
+        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, stock_id)),# #5/#13 adj_close + regime switch
+        ("PatchTST",        lambda: run_patchtst(prices_arr, req.horizon, stock_id)),            # raw close（內部已正規化）
+        ("Chronos",         lambda: run_chronos(adj_prices_arr, req.horizon, stock_id)),         # #5 adj_close（foundation model 需乾淨序列）
+    ]
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fn): name for name, fn in price_model_fns}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                predictions.append(future.result())
+            except Exception as e:
+                print(f"[{name}] failed: {e}")
+
+    # 特徵族（5 個）— #6 CatBoost/LightGBM 各用不同 input，#17 並行執行
+    if len(X) >= 30:
+        feat_model_fns = [
+            ("XGBoost",        lambda: run_xgboost(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names)),
+            ("CatBoost",       lambda: run_catboost(X_cb, y_cb, X_cb_latest, prices_arr, req.horizon, stock_id, cb_names)),  # #6 滯後特徵
+            ("ExtraTrees",     lambda: run_extra_trees(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names)),
+            ("LightGBM",       lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names)),  # #6 rank transform
+            ("FT-Transformer", lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names)),
+        ]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(fn): name for name, fn in feat_model_fns}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    predictions.append(future.result())
+                except Exception as e:
+                    print(f"[{name}] failed: {e}")
+
+    if not predictions:
+        raise RuntimeError("所有模型均失敗")
+
+    # ── ARF 特徵建構（10 個模型跑完後）────────────────────────────────────────
+    _ctx = build_context(_regime_label, garch_vol, current_price, _market_risk)
+    _arf_features = build_arf_features(
+        predictions,
+        hmm_regime_norm=float(_ctx[0]),
+        garch_vol_norm=float(_ctx[1]),
+        market_risk_score=_market_risk,
+    )
+
+    # ── Ensemble（Layer 1 LinUCB 加權投票）────────────────────────────────────
+    result = weighted_vote(
+        predictions, current_price, atr,
+        req.real_accuracies, req.model_stats,
+        regime_info=regime_info,
+        meta_bundle=meta_bundle,
+        garch_vol=garch_vol,
+        bandit_multipliers=bandit_multipliers,
+        adaptive_params=req.adaptive_params,   # T+1 自適應（信心門檻/PF/SL_TP）
+    )
+
+    # ── ARF 修正（Layer 2 增量聚合）───────────────────────────────────────────
+    # warm-up 前 apply_arf_correction 完全透明（回傳原始值）
+    arf_is_up, arf_conf, arf_signal, arf_prob = apply_arf_correction(
+        _arf,
+        _arf_features,
+        ensemble_is_up=(result.direction == "up"),
+        ensemble_confidence=result.confidence,
+        ensemble_signal=result.signal,
+    )
+    arf_changed = arf_signal != result.signal
+
+    # 若 ARF 有修正訊號，更新 result 欄位（保守：只修改 signal / confidence）
+    if arf_changed and _arf.is_warmed_up():
+        result.signal     = arf_signal
+        result.confidence = round(arf_conf, 3)
+        result.reasoning  = (
+            f"[ARF修正: {result.signal}→{arf_signal}, P(up)={arf_prob:.2f}] "
+            + result.reasoning
+        )
+
+    best_model = max(predictions, key=lambda p: p.confidence * p.direction_accuracy)
+
+    return {
+        "stock_id": stock_id, "symbol": req.symbol,
+        "current_price": current_price,
+        "signal": result.signal, "direction": result.direction,
+        "confidence": result.confidence, "consensus": result.consensus,
+        "forecast_pct": result.forecast_pct, "forecast_range": result.forecast_range,
+        "signal_strength": result.signal_strength, "reasoning": result.reasoning,
+        "entry_price": result.entry_price, "stop_loss": result.stop_loss,
+        "target1": result.target1, "target2": result.target2,
+        "models": result.models,
+        "best_model": best_model.model_name, "forecasts": best_model.forecasts,
+        "features_used": feature_names,
+        "feature_importance": _extract_feature_importance(predictions, feature_names),
+        "feature_version": "v4_9models",
+        "regime": regime_label,
+        "garch_vol": round(garch_vol, 4) if garch_vol else None,
+        "anomaly_score": round(anomaly_score, 4),
+        "meta_learner_used": meta_bundle is not None,
+        # ── 第11模型狀態（供前端 / Discord 顯示診斷資訊）──────────────────────
+        "linucb_best_arm":   _bandit.best_arm(_ctx) if _bandit and _bandit.is_warmed_up() else None,
+        "linucb_warmed_up":  _bandit.is_warmed_up() if _bandit else False,
+        "arf_prob":          round(arf_prob, 4),
+        "arf_warmed_up":     _arf.is_warmed_up(),
+        "arf_n_trained":     _arf.n_trained,
+        # arf_features 序列化供驗證 cron 回填 reward 使用
+        "arf_features":      _arf_features.tolist(),
+    }
+
+
+@app.post("/predict")
+async def predict_endpoint(req: PredictRequest, request: Request):
+    """HTTP endpoint wrapper — adds auth then delegates to predict_stock()."""
+    await verify_service_token(request)
+    return predict_stock(req)
+
+
+def retrain_stock(req: PredictRequest) -> dict:
+    """Core retrain logic — no auth, callable by Modal @function or HTTP endpoint."""
+    if len(req.prices) < 60:
+        raise ValueError("需要至少 60 天的股價數據")
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df          = build_feature_matrix(req.prices, req.indicators, chips_input,
+                                        req.sentiment_scores, req.market_env)
+    prices_arr  = np.array([float(p["close"]) for p in req.prices])
+    X, y, feature_names = get_features(df)
+
+    if len(X) < 30:
+        raise ValueError("特徵樣本不足 30 筆")
+
+    results = {}
+    split   = int(len(X) * 0.8)
+    from .model_store import save_model
+
+    _specs = [
+        ("XGBoost",    lambda: __import__("xgboost", fromlist=["XGBClassifier"]).XGBClassifier(
+                           n_estimators=150, max_depth=4, learning_rate=0.05,
+                           use_label_encoder=False, eval_metric="logloss",
+                           random_state=42, verbosity=0)),
+        ("CatBoost",   lambda: __import__("catboost", fromlist=["CatBoostClassifier"]).CatBoostClassifier(
+                           iterations=200, depth=5, learning_rate=0.05,
+                           loss_function="Logloss", random_seed=42, verbose=0)),
+        ("ExtraTrees", lambda: __import__("sklearn.ensemble", fromlist=["ExtraTreesClassifier"]).ExtraTreesClassifier(
+                           n_estimators=200, max_depth=6, min_samples_split=5, min_samples_leaf=3,
+                           max_features="sqrt", class_weight="balanced", bootstrap=True,
+                           random_state=42, n_jobs=-1)),
+        ("LightGBM",   lambda: None),         # 特殊處理（直接呼叫 run_lightgbm）
+        ("FT-Transformer", lambda: None),     # 特殊處理（PyTorch + scaler bundle）
+    ]
+
+    X_latest_rt = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
+
+    for name, factory in _specs:
+        try:
+            if name == "LightGBM":
+                result = run_lightgbm(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)
+                acc = float(result.direction_accuracy)
+            elif name == "FT-Transformer":
+                result = run_ft_transformer(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)
+                acc = float(result.direction_accuracy)
+            else:
+                m = factory()
+                m.fit(X[:split], y[:split])
+                acc = float(m.score(X[split:], y[split:])) if len(X[split:]) > 0 else 0.5
+                save_model(req.stock_id, name, m, feature_names, len(X))
+            results[name] = {"accuracy": round(acc, 3), "samples": len(X), "saved": True}
+        except Exception as e:
+            results[name] = {"error": str(e)}
+
+    # Stacking
+    try:
+        from .stacking import train_meta_learner_oof, save_meta_learner
+        bundle = train_meta_learner_oof(X, y, prices_arr, feature_names, req.stock_id)
+        if bundle:
+            save_meta_learner(bundle, req.stock_id)
+            results["Stacking"] = {"trained": True, "saved": True}
+        else:
+            results["Stacking"] = {"trained": False, "reason": "insufficient OOF samples"}
+    except Exception as e:
+        results["Stacking"] = {"error": str(e)}
+
+    # HMM Regime
+    try:
+        from .regime import RegimeDetector, build_market_feature_matrix
+        feat_mat = build_market_feature_matrix(req.market_env)
+        if feat_mat is not None and len(feat_mat) >= 20:
+            det = RegimeDetector().fit(feat_mat)
+            det.save_to_gcs()
+            results["HMM_Regime"] = {"n_components": det.n_components, "trained": True, "saved": True}
+        else:
+            results["HMM_Regime"] = {"trained": False, "reason": "insufficient market history"}
+    except Exception as e:
+        results["HMM_Regime"] = {"error": str(e)}
+
+    return {
+        "stock_id": req.stock_id, "symbol": req.symbol,
+        "retrained_at": datetime.utcnow().isoformat() + "Z",
+        "feature_count": len(feature_names),
+        "feature_version": "v4_9models",
+        "results": results,
+    }
+
+
+@app.post("/retrain")
+async def retrain_endpoint(req: PredictRequest, request: Request):
+    """HTTP endpoint wrapper — adds auth then delegates to retrain_stock()."""
+    await verify_service_token(request)
+    return retrain_stock(req)
+
+
+# ── ARF Reward Update（驗證後由 Cron 呼叫）────────────────────────────────────
+
+class ARFUpdateRequest(BaseModel):
+    arf_features: list[float]     # /predict 回傳的 arf_features 原值
+    actual_up: bool               # 5 日後實際方向（True=上漲, False=下跌）
+    # LinUCB reward 同步更新
+    model_name: Optional[str] = None   # 若提供，一併更新 LinUCB 對應 arm
+    hmm_regime: Optional[str] = None
+    garch_vol: Optional[float] = None
+    current_price: float = 1.0
+    market_risk_score: float = 0.5
+    # #14 LinUCB reward enrichment
+    actual_return: float = 0.0    # 實際 5 日漲跌幅（小數）
+    forecast_pct: float = 0.0     # 模型預測漲跌幅（小數）
+
+
+def update_arf(req: ARFUpdateRequest) -> dict:
+    """Core ARF/LinUCB update logic — no auth, callable by Modal or HTTP."""
+    if len(req.arf_features) == 0:
+        raise ValueError("arf_features 不可為空")
+
+    features = np.array(req.arf_features, dtype=np.float64)
+    results: dict = {}
+
+    # ── Layer 2：ARF 線上更新 ──────────────────────────────────────────────────
+    try:
+        _arf = load_arf(ARF_STATE_DIR)
+        _arf.update(features, req.actual_up)
+        save_arf(_arf, ARF_STATE_DIR)
+        results["arf"] = {
+            "updated": True,
+            "n_trained": _arf.n_trained,
+            "is_warmed_up": _arf.is_warmed_up(),
+        }
+    except Exception as e:
+        results["arf"] = {"updated": False, "error": str(e)}
+
+    # ── Layer 1：LinUCB Bandit 更新（若有提供 model_name）────────────────────
+    if req.model_name:
+        try:
+            from .linucb_bandit import linucb_update, load_bandit, save_bandit
+            _bandit = load_bandit("/tmp/linucb_bandit")
+            linucb_update(
+                hmm_regime=req.hmm_regime,
+                garch_vol=req.garch_vol,
+                current_price=req.current_price,
+                market_risk_score=req.market_risk_score,
+                model_name=req.model_name,
+                # #14 reward 豐富化：考慮漲幅大小而非 0/1 二元
+                reward=float(np.clip(
+                    req.actual_return / max(abs(req.forecast_pct), 0.005), 0.0, 1.0
+                )) if req.actual_up else 0.0,
+                bandit=_bandit,
+            )
+            save_bandit(_bandit, "/tmp/linucb_bandit")
+            results["linucb"] = {
+                "updated": True,
+                "model_name": req.model_name,
+                "total_observations": _bandit.total_observations(),
+                "is_warmed_up": _bandit.is_warmed_up(),
+            }
+        except Exception as e:
+            results["linucb"] = {"updated": False, "error": str(e)}
+
+    return {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "actual_up": req.actual_up,
+        "results": results,
+    }
+
+
+@app.post("/arf/update")
+async def arf_update_endpoint(req: ARFUpdateRequest, request: Request):
+    """HTTP endpoint wrapper — adds auth then delegates to update_arf()."""
+    await verify_service_token(request)
+    return update_arf(req)
+
+
+@app.get("/bandit/stats")
+async def bandit_stats(request: Request):
+    """診斷用：回傳 LinUCB + ARF 當前學習狀態"""
+    await verify_service_token(request)
+    out: dict = {}
+    try:
+        _bandit = load_bandit("/tmp/linucb_bandit")
+        out["linucb"] = _bandit.stats_summary()
+    except Exception as e:
+        out["linucb"] = {"error": str(e)}
+    try:
+        _arf = load_arf(ARF_STATE_DIR)
+        out["arf"] = _arf.stats_summary()
+    except Exception as e:
+        out["arf"] = {"error": str(e)}
+    return out
+
+
+@app.post("/predict/models")
+def predict_all_models(req: PredictRequest):
+    prices_arr  = np.array([float(p["close"]) for p in req.prices])
+    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df          = build_feature_matrix(req.prices, req.indicators, chips_input,
+                                        req.sentiment_scores, req.market_env)
+    X, y, feature_names = get_features(df)
+    X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
+    X_cb, y_cb, cb_names = get_catboost_features(df)
+    X_cb_latest = X_cb[-1] if len(X_cb) > 0 else np.zeros(max(len(cb_names), 1))
+    X_lgbm = get_lgbm_features(X) if len(X) > 0 else X
+    X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
+    stock_id = req.stock_id
+
+    results = {}
+    specs = [
+        # 價格族 — 與 /predict 完全對齊（input diversity + stock_id）
+        ("KalmanFilter",    lambda: run_kalman_filter(prices_arr, req.horizon, stock_id),           False),
+        ("DLinear",         lambda: run_dlinear(adj_prices_arr, req.horizon),                        False),
+        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, stock_id),     False),
+        ("PatchTST",        lambda: run_patchtst(prices_arr, req.horizon, stock_id),                False),
+        ("Chronos",         lambda: run_chronos(adj_prices_arr, req.horizon, stock_id),             False),
+        # 特徵族 — input diversity: CatBoost 滯後特徵, LightGBM rank transform
+        ("XGBoost",         lambda: run_xgboost(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),              True),
+        ("CatBoost",        lambda: run_catboost(X_cb, y_cb, X_cb_latest, prices_arr, req.horizon, stock_id, cb_names),         True),
+        ("ExtraTrees",      lambda: run_extra_trees(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),          True),
+        ("LightGBM",        lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names),  True),
+        ("FT-Transformer",  lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),       True),
+    ]
+    for name, fn, needs_feat in specs:
+        if needs_feat and len(X) < 30:
+            results[name] = {"error": "insufficient feature samples"}
+            continue
+        try:
+            p = fn()
+            results[name] = {
+                "direction": p.direction, "confidence": p.confidence,
+                "forecast_pct": p.forecast_pct, "direction_accuracy": p.direction_accuracy,
+                "forecasts": p.forecasts,
+            }
+        except Exception as e:
+            results[name] = {"error": str(e)}
+
+    garch_vol = run_garch_volatility(prices_arr, horizon=5)
+    return {"stock_id": req.stock_id, "symbol": req.symbol,
+            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None}
+
+
+# ── Phase 3: Factor IC 監控 endpoint ────────────────────────────────────────
+@app.post("/factor-ic")
+async def factor_ic(req: PredictRequest, request: Request):
+    """
+    計算所有特徵的 Rank IC，回傳 IC 表 + 有效特徵列表。
+    供 weekly retrain 時呼叫，結果可存入 D1 或 GCS。
+    """
+    await verify_service_token(request)
+    from .factor_monitor import compute_factor_ic, filter_effective_features, compute_feature_weights_from_ic
+    from .features import FEATURE_COLS
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(req.prices, req.indicators, chips_input,
+                               req.sentiment_scores, req.market_env)
+
+    ic_df = compute_factor_ic(df, FEATURE_COLS, target_col="target_5d")
+    effective = filter_effective_features(ic_df, FEATURE_COLS)
+    weights = compute_feature_weights_from_ic(ic_df, FEATURE_COLS)
+
+    return {
+        "stock_id": req.stock_id,
+        "symbol": req.symbol,
+        "ic_table": ic_df.to_dict(orient="records") if not ic_df.empty else [],
+        "effective_features": effective,
+        "feature_weights": weights,
+        "total_features": len(FEATURE_COLS),
+        "effective_count": len(effective),
+        "dropped_count": len(FEATURE_COLS) - len(effective),
+    }
+
+
+# ── Phase 4: MAE/MFE 分群 endpoint ──────────────────────────────────────────
+class TradeClusterRequest(BaseModel):
+    trades: list[dict]
+    feature_cols: list[str] = []
+
+@app.post("/trade-cluster")
+async def trade_cluster(req: TradeClusterRequest, request: Request):
+    """
+    對歷史交易做 MAE/MFE KMeans 分群 + DecisionTree 規則學習。
+    供 weekly retrain 或 screener 呼叫。
+    """
+    await verify_service_token(request)
+    from .trade_clustering import cluster_trades, learn_trade_quality_rules
+    from .features import FEATURE_COLS
+
+    cluster_result = cluster_trades(req.trades, n_clusters=3)
+    if "error" in cluster_result:
+        return cluster_result
+
+    feat_cols = req.feature_cols if req.feature_cols else FEATURE_COLS
+    tree_result = learn_trade_quality_rules(req.trades, feat_cols, cluster_result)
+
+    return {
+        "clusters": cluster_result["cluster_stats"],
+        "good_cluster_id": cluster_result["good_cluster_id"],
+        "bad_cluster_id": cluster_result["bad_cluster_id"],
+        "quality_rules": tree_result.get("rules", []),
+        "feature_importance": tree_result.get("feature_importance", {}),
+        "tree_accuracy": tree_result.get("tree_accuracy"),
+    }

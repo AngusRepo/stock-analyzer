@@ -1,0 +1,79 @@
+name = "stockvision-worker"
+main = "src/index.ts"
+compatibility_date = "2024-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stockvision-db"
+database_id = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "39dcebcf5b6848c98f269ef9a48dc3f8"
+preview_id = "9d648bfede1246be8cdbfdafa6b7e6f4"
+
+# ── Cloudflare Queues（斷點續傳用）──────────────────────────────────────────
+# 建立指令（deploy.sh 已自動執行）：
+#   wrangler queues create stockvision-update-queue
+#   wrangler queues create stockvision-ml-queue
+
+[[queues.producers]]
+binding  = "UPDATE_QUEUE"
+queue    = "stockvision-update-queue"
+
+[[queues.consumers]]
+queue              = "stockvision-update-queue"
+max_batch_size     = 1   # 每次取 1 則訊息（1 批股票）
+max_batch_timeout  = 5   # 最多等 5 秒湊批
+max_retries        = 2   # 失敗重試 2 次
+dead_letter_queue  = "stockvision-update-queue-dlq"
+# ML_QUEUE removed in Phase 3 — ML batch predict now goes through Controller
+
+[ai]
+binding = "AI"
+
+[vars]
+ENVIRONMENT = "production"
+ML_SERVICE_URL = "https://wayne60619--stockvision-ml-fastapi-app.modal.run"
+# Phase 3 MVC: Cloud Run ML Controller（部署後填入）
+# ML_CONTROLLER_URL = "https://ml-controller-xxx.a.run.app"
+# 前端 Pages 精確 URL（部署完成後填入，用於 CORS 白名單）
+PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
+
+# 以下 secrets 請用 wrangler secret put 設定：
+# wrangler secret put JWT_SECRET
+# wrangler secret put GOOGLE_CLIENT_ID
+# wrangler secret put GOOGLE_CLIENT_SECRET
+# wrangler secret put ANTHROPIC_API_KEY
+# wrangler secret put FINMIND_TOKEN
+# wrangler secret put RESEND_API_KEY       ← Resend.com 免費帳號，100封/天
+# wrangler secret put ADMIN_EMAIL          ← Bootstrap admin email（第一次登入自動成為 admin）
+# wrangler secret put ML_SERVICE_SECRET    ← 與 Cloud Run 共享密鑰
+# wrangler secret put STOCKVISION_AUTH_TOKEN ← 與 AI Team Worker 共享（Paper Trading auth）
+# （PAGES_ORIGIN 填在上方 [vars]，不需要 secret）
+
+[triggers]
+crons = [
+  "0 6 * * 1-5",    # 14:00 TW → 全市場篩選（Market Screener）
+  "5 7 * * 1-5",    # 15:05 TW → 收盤後抓股價/籌碼/新聞
+  "15 23 * * 1-5",  # 07:15 TW (次日) → Morning Setup（預熱 + 掛單準備 + Debate）
+  "25 7 * * 1-5",   # 15:25 TW → ML 預熱（喚醒 Cloud Run）
+  "30 7 * * 1-5",   # 15:30 TW → ML預測 + 大盤風險計算
+  "35 7 * * 1-5",   # 15:35 TW → 每日選股推薦（ML跑完後）
+  "0 20 * * 6",     # 週六 04:00 TW → D1 舊資料清理
+  "0 8 * * 1-5",    # 16:00 TW → 預測驗證 + 準確率更新
+  "5 8 * * 1-5",    # 16:05 TW → 自適應參數計算（verify 完後立即執行）
+  "* 1-5 * * 1-5",   # 盤中每分鐘：限價買入 + 止損停利巡檢（TW 09:00-13:55）
+  "10 6 * * 1-5",   # 14:10 TW → EOD 賣出檢查（ML SELL + 時間止損）
+  "20 6 * * 1-5",   # 14:20 TW → Daily Snapshot（PnL + Sharpe + Drawdown）
+  "30 22 * * 1-5",  # 06:30 TW (次日) → 美股先行指標（美股 04:00 收盤後 2.5hr）
+  "50 23 * * 1-5",  # 07:50 TW (次日) → 盤前攻略推送 Discord
+  "10 8 * * 1-5",   # 16:10 TW → 收盤完整報告推送 Discord
+]
+
+# ── 選配：Cron 失敗 Telegram 通知 ─────────────────────────────────────────────
+# 設定後，Cron 失敗會自動推播到你的 Telegram
+# 在 Cloudflare Dashboard > Workers > Settings > Variables 設定（不要放在這裡）
+# TELEGRAM_BOT_TOKEN = "你的 Bot Token"
+# TELEGRAM_CHAT_ID   = "你的 Chat ID"

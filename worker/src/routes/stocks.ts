@@ -15,8 +15,7 @@ import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { withCache, TTL } from '../lib/cache'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import {
-  fetchTWPrice, fetchTWFinancials,
-  fetchTWDividend, parseFinancials,
+  fetchTWPrice,
   type FMStockPrice,
 } from '../lib/finmind'
 
@@ -267,32 +266,8 @@ async function fetchAndStoreFinMind(db: D1Database, stock: any, token: string) {
   // ── 2. 三大法人+融資融券 → 已由 bulkFetchAndStoreChipData (TWSE/TPEX) 處理 ──
   // 不再逐股呼叫 FinMind，省 ~326 API calls/day
 
-  try {
-    // ── 3. 財報（每季更新即可，避免浪費額度）────────────────────────────────
-    const finStart = new Date(Date.now() - 2 * 365 * 86400000).toISOString().split('T')[0]
-    const [finRows, divRows] = await Promise.all([
-      fetchTWFinancials(token, stockId, finStart),
-      fetchTWDividend(token, stockId),
-    ])
-    const parsed = parseFinancials(finRows, divRows)
-
-    // PE/PB/殖利率 → 已由 Wave2 bulkFetchTwseValuation 每日更新（不再逐股 FinMind）
-
-    if (parsed) {
-      await db.prepare(
-        `INSERT OR REPLACE INTO financials
-           (stock_id, period, period_type, eps, revenue, revenue_growth_yoy,
-            dividend_yield, dividend_per_share, roe)
-         VALUES (?,?,?,?,?,?,?,?,?)`
-      ).bind(
-        stock.id, parsed.period, 'quarterly',
-        parsed.eps, parsed.revenue, parsed.revenueGrowthYoy,
-        parsed.dividendYield, parsed.dividendPerShare, parsed.roe,
-      ).run()
-    }
-  } catch (e) {
-    console.error(`[FinMind] Financials failed ${stockId}:`, e)
-  }
+  // ── 3. 財報 → 已由 Wave2 bulk TWSE opendata 處理（EPS/ROE/PER/PBR）──────
+  // 不再逐股呼叫 FinMind 財報 API
 }
 
 // ─── Yahoo Finance：美股（或 token 未設定時的 fallback）─────────────────────

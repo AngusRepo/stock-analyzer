@@ -176,6 +176,93 @@ export async function fetchMarketBreadth(): Promise<MarketBreadthData | null> {
   }
 }
 
+// ─── TWSE 財報（EPS + ROE，替代 FinMind）─────────────────────────────────────
+
+export interface BulkFinancialRow {
+  symbol: string
+  year: string          // 西元年
+  quarter: string       // "1"~"4"
+  eps: number | null
+  revenue: number | null     // 千元
+  net_income: number | null  // 千元（算 ROE 用）
+  equity: number | null      // 千元（算 ROE 用）
+  roe: number | null         // %
+}
+
+export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
+  // 並行抓損益表 + 資產負債表（一般業 + 金融業 + 保險業）
+  const incomeUrls = [
+    'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ci',   // 一般業
+    'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_basi', // 金融業
+    'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ins',  // 保險業
+    'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_fh',   // 金控業
+  ]
+  const bsUrls = [
+    'https://openapi.twse.com.tw/v1/opendata/t187ap07_L_ci',
+    'https://openapi.twse.com.tw/v1/opendata/t187ap07_L_basi',
+    'https://openapi.twse.com.tw/v1/opendata/t187ap07_L_ins',
+    'https://openapi.twse.com.tw/v1/opendata/t187ap07_L_fh',
+  ]
+
+  const fetchJson = async (url: string) => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'StockVision/12.3' },
+        signal: AbortSignal.timeout(30000),
+      })
+      if (!res.ok) return []
+      return await res.json() as any[]
+    } catch { return [] }
+  }
+
+  const [incomeResults, bsResults] = await Promise.all([
+    Promise.all(incomeUrls.map(fetchJson)),
+    Promise.all(bsUrls.map(fetchJson)),
+  ])
+
+  const incomeRows = incomeResults.flat()
+  const bsRows = bsResults.flat()
+
+  // 資產負債表 → symbol → equity
+  const equityMap = new Map<string, number>()
+  for (const r of bsRows) {
+    const sym = (r['公司代號'] ?? '').trim()
+    if (!isStockCode(sym)) continue
+    const equity = parseInt((r['權益總額'] ?? '0').toString().replace(/,/g, '')) || 0
+    if (equity > 0) equityMap.set(sym, equity)
+  }
+
+  // 損益表 → EPS + revenue + net_income
+  const results: BulkFinancialRow[] = []
+  for (const r of incomeRows) {
+    const sym = (r['公司代號'] ?? '').trim()
+    if (!isStockCode(sym)) continue
+
+    const rocYear = parseInt(r['年度'] ?? '0') || 0
+    const quarter = (r['季別'] ?? '').trim()
+    const year = rocYear > 0 ? String(rocYear + 1911) : ''
+    if (!year || !quarter) continue
+
+    // 最後一個 key 通常是 EPS（基本每股盈餘）
+    const keys = Object.keys(r)
+    const epsKey = keys.find(k => k.includes('每股') && k.includes('盈餘')) ?? keys[keys.length - 1]
+    const eps = parseFloat(r[epsKey] ?? '0') || null
+
+    const revenueKey = keys.find(k => k === '營業收入' || (k.includes('營業') && k.includes('收入')))
+    const revenue = revenueKey ? (parseFloat((r[revenueKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
+    const netIncomeKey = keys.find(k => k.includes('本期') && k.includes('淨利') || k.includes('稅後') && k.includes('淨利'))
+    const netIncome = netIncomeKey ? (parseFloat((r[netIncomeKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
+    const equity = equityMap.get(sym) ?? null
+    const roe = netIncome && equity && equity > 0 ? (netIncome / equity * 100) : null
+
+    results.push({ symbol: sym, year, quarter, eps, revenue, net_income: netIncome, equity, roe: roe ? Math.round(roe * 100) / 100 : null })
+  }
+
+  return results
+}
+
 // ─── TWSE T86: 上市三大法人 ──────────────────────────────────────────────────
 
 export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {

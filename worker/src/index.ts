@@ -367,7 +367,7 @@ async function runDailyUpdate(env: Bindings) {
 
 // ─── Wave 2 數據：PER/PBR + 月營收 + 大盤廣度（全部改用 TWSE/TPEX 官方 API）──
 async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
-  const { fetchTwseValuation, fetchTwseMonthlyRevenue, fetchMarketBreadth } = await import('./lib/twseApi')
+  const { fetchTwseValuation, fetchTwseMonthlyRevenue, fetchMarketBreadth, fetchTwseFinancials } = await import('./lib/twseApi')
 
   // ── 大盤廣度（TWSE opendata，不需 FinMind）──────────────────────────
   try {
@@ -426,6 +426,31 @@ async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
       }
     } catch (e) { console.warn('[Wave2] Monthly revenue failed:', e) }
   }
+
+  // ── 財報 EPS/ROE（TWSE opendata，季報更新時才有新資料）─────────────
+  try {
+    const finRows = await fetchTwseFinancials()
+    if (finRows.length) {
+      const stmts = finRows
+        .filter(f => f.eps !== null)
+        .map(f => {
+          const period = `${f.year}Q${f.quarter}`
+          return env.DB.prepare(`
+            INSERT INTO financials (stock_id, period, period_type, eps, revenue, roe)
+            SELECT s.id, ?, 'quarterly', ?, ?, ?
+            FROM stocks s WHERE s.symbol = ?
+            ON CONFLICT(stock_id, period) DO UPDATE SET
+              eps=COALESCE(excluded.eps, financials.eps),
+              revenue=COALESCE(excluded.revenue, financials.revenue),
+              roe=COALESCE(excluded.roe, financials.roe)
+          `).bind(period, f.eps, f.revenue, f.roe, f.symbol)
+        })
+      for (let i = 0; i < stmts.length; i += 50) {
+        await env.DB.batch(stmts.slice(i, i + 50))
+      }
+      console.log(`[Wave2] Financials: ${finRows.length} entries (TWSE opendata EPS+ROE)`)
+    }
+  } catch (e) { console.warn('[Wave2] Financials failed:', e) }
 }
 
 // ─── Queue Consumer：處理一批股票資料更新，完成後自動推下一批 ────────────────

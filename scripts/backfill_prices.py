@@ -33,8 +33,8 @@ PERIOD = "1y"         # 1 year history
 
 def run_d1(sql: str) -> list:
     """Execute D1 SQL via wrangler and return results."""
-    cmd = ["npx", "wrangler", "d1", "execute", DB_NAME, "--remote", "--json", "--command", sql]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd="worker")
+    cmd = f'npx wrangler d1 execute {DB_NAME} --remote --json --command "{sql}"'
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd="worker", shell=True)
     if result.returncode != 0:
         print(f"D1 error: {result.stderr[:200]}")
         return []
@@ -46,8 +46,8 @@ def run_d1(sql: str) -> list:
 
 def run_d1_file(filepath: str):
     """Execute D1 SQL file."""
-    cmd = ["npx", "wrangler", "d1", "execute", DB_NAME, "--remote", "--file", filepath]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd="worker")
+    cmd = f'npx wrangler d1 execute {DB_NAME} --remote --file={filepath}'
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd="worker", shell=True)
     if result.returncode != 0:
         print(f"D1 file error: {result.stderr[:200]}")
 

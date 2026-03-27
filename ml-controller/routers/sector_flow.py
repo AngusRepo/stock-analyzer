@@ -138,8 +138,8 @@ async def compute_sector_flow(req: SectorFlowRequest):
             sector_agg[sector] = {"foreign_net": 0.0, "trust_net": 0.0, "stock_count": 0}
         agg = sector_agg[sector]
         agg["stock_count"] += 1
-        agg["foreign_net"] += chips["foreign"] * price * 1000 / 1e8
-        agg["trust_net"] += chips["trust"] * price * 1000 / 1e8
+        agg["foreign_net"] += chips["foreign"] * price / 1e8
+        agg["trust_net"] += chips["trust"] * price / 1e8
 
     # 5. 排序
     sectors = []

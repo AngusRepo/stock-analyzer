@@ -104,8 +104,8 @@ async function calcIndustryFlowLocal(env: Bindings): Promise<SectorSummary[]> {
       const s = agg.get(sector)!
       s.stock_count++
       const price = priceMap.get(row.symbol) ?? 0
-      s.foreign_net += (row.foreign_net ?? 0) * price * 1000 / 1e8
-      s.trust_net   += (row.trust_net ?? 0) * price * 1000 / 1e8
+      s.foreign_net += (row.foreign_net ?? 0) * price / 1e8
+      s.trust_net   += (row.trust_net ?? 0) * price / 1e8
       s.total_net    = s.foreign_net + s.trust_net
     }
     const result = Array.from(agg.values()).sort((a, b) => b.total_net - a.total_net)
@@ -139,8 +139,8 @@ async function calcThemeFlow(env: Bindings): Promise<SectorSummary[]> {
       const tags = symbolTags.get(row.symbol)
       if (!tags) continue
       const price = priceMap.get(row.symbol) ?? 0
-      const fNet = (row.foreign_net ?? 0) * price * 1000 / 1e8
-      const tNet = (row.trust_net ?? 0) * price * 1000 / 1e8
+      const fNet = (row.foreign_net ?? 0) * price / 1e8
+      const tNet = (row.trust_net ?? 0) * price / 1e8
       for (const tag of tags) {
         if (!agg.has(tag)) agg.set(tag, { sector: tag, foreign_net: 0, trust_net: 0, total_net: 0, avg_rsi: null, avg_momentum_5d: 0, stock_count: 0, up_count: 0, classification: 'theme' })
         const s = agg.get(tag)!

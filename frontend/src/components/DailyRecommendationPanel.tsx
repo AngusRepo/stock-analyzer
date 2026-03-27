@@ -243,7 +243,7 @@ export function DailyRecommendationPanel() {
   )
 }
 
-// ─── Theme Flow Panel（獨立 export，供 Dashboard 插入）────────────────────────
+// ─── Theme Flow with Top Stocks（Dashboard 用，不含黑馬）─────────────────────
 export function ThemeFlowPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
@@ -252,9 +252,21 @@ export function ThemeFlowPanel() {
     queryFn:  () => recommendationsApi.sectorFlow(undefined, 'theme'),
     staleTime: 30 * 60 * 1000,
   })
+  const { data: stocksData } = useQuery({
+    queryKey: ['recommendations', 'sector-flow-stocks', 'top', today],
+    queryFn:  () => recommendationsApi.sectorFlowStocks(undefined, 'top'),
+    staleTime: 30 * 60 * 1000,
+  })
 
   const allFlows = themeData?.flows ?? []
-  // 買超 top 10（正值，由大到小）+ 賣超 top 10（負值，由小到大）
+  const allStocks = stocksData?.stocks ?? []
+  // group stocks by theme
+  const stocksByTheme = new Map<string, any[]>()
+  for (const s of allStocks) {
+    if (!stocksByTheme.has(s.theme)) stocksByTheme.set(s.theme, [])
+    stocksByTheme.get(s.theme)!.push(s)
+  }
+
   const topBuy  = allFlows.filter((f: any) => (f.total_net ?? 0) > 0).slice(0, 10)
   const topSell = allFlows.filter((f: any) => (f.total_net ?? 0) < 0).sort((a: any, b: any) => (a.total_net ?? 0) - (b.total_net ?? 0)).slice(0, 10)
   const allShown = [...topBuy, ...topSell]
@@ -274,26 +286,128 @@ export function ThemeFlowPanel() {
         <p className="text-xs text-muted-foreground">尚無主題資料</p>
       ) : (
         <div className="space-y-4">
-          {/* 買超 Top 10 */}
           <div>
             <p className="text-xs text-emerald-400 font-medium mb-2">買超前 10 大</p>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {topBuy.length ? topBuy.map((f: any) => (
-                <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
+                <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs} stocks={stocksByTheme.get(f.sector)?.slice(0, 3)} />
               )) : <p className="text-xs text-muted-foreground">無買超主題</p>}
             </div>
           </div>
-          {/* 賣超 Top 10 */}
           <div>
             <p className="text-xs text-red-400 font-medium mb-2">賣超前 10 大</p>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {topSell.length ? topSell.map((f: any) => (
-                <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
+                <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs} stocks={stocksByTheme.get(f.sector)?.slice(0, 3)} />
               )) : <p className="text-xs text-muted-foreground">無賣超主題</p>}
             </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Bot Theme Flow Panel（含黑馬股，admin only）─────────────────────────────
+export function BotThemeFlowPanel() {
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+
+  const { data: themeData, isLoading } = useQuery({
+    queryKey: ['recommendations', 'sector-flow', 'theme', today],
+    queryFn:  () => recommendationsApi.sectorFlow(undefined, 'theme'),
+    staleTime: 30 * 60 * 1000,
+  })
+  const { data: stocksData } = useQuery({
+    queryKey: ['recommendations', 'sector-flow-stocks', 'all', today],
+    queryFn:  () => recommendationsApi.sectorFlowStocks(),
+    staleTime: 30 * 60 * 1000,
+  })
+
+  const allFlows = themeData?.flows ?? []
+  const allStocks = stocksData?.stocks ?? []
+
+  const stocksByTheme = new Map<string, { top: any[]; darkHorse: any[] }>()
+  for (const s of allStocks) {
+    if (!stocksByTheme.has(s.theme)) stocksByTheme.set(s.theme, { top: [], darkHorse: [] })
+    const group = stocksByTheme.get(s.theme)!
+    if (s.classification === 'dark_horse') group.darkHorse.push(s)
+    else group.top.push(s)
+  }
+
+  const topBuy  = allFlows.filter((f: any) => (f.total_net ?? 0) > 0).slice(0, 10)
+  const topSell = allFlows.filter((f: any) => (f.total_net ?? 0) < 0).sort((a: any, b: any) => (a.total_net ?? 0) - (b.total_net ?? 0)).slice(0, 10)
+  const allShown = [...topBuy, ...topSell]
+  const maxAbs = allShown.length ? Math.max(...allShown.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
+
+  return (
+    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+        <BarChart3 className="w-4 h-4 text-blue-400" />
+        主題輪動（三大法人近5日 · 含黑馬偵測）
+      </h3>
+      {isLoading ? (
+        <div className="space-y-2">
+          {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
+        </div>
+      ) : allFlows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">尚無主題資料</p>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <p className="text-xs text-emerald-400 font-medium mb-2">買超前 10 大</p>
+            <div className="space-y-2">
+              {topBuy.map((f: any) => {
+                const group = stocksByTheme.get(f.sector)
+                return (
+                  <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs}
+                    stocks={group?.top.slice(0, 3)} darkHorses={group?.darkHorse} />
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-red-400 font-medium mb-2">賣超前 10 大</p>
+            <div className="space-y-2">
+              {topSell.map((f: any) => {
+                const group = stocksByTheme.get(f.sector)
+                return (
+                  <ThemeFlowItem key={f.sector} flow={f} maxAbs={maxAbs}
+                    stocks={group?.top.slice(0, 3)} darkHorses={group?.darkHorse} />
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Theme Flow Item（bar + top stocks + optional dark horses）───────────────
+function ThemeFlowItem({ flow, maxAbs, stocks, darkHorses }: {
+  flow: any; maxAbs: number; stocks?: any[]; darkHorses?: any[]
+}) {
+  return (
+    <div>
+      <SectorFlowBar flow={flow} maxAbs={maxAbs} />
+      {stocks?.length ? (
+        <div className="ml-[5.5rem] mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+          {stocks.map((s: any) => (
+            <span key={s.symbol} className="text-[10px] text-muted-foreground">
+              {s.symbol} {s.name} <span className={s.net_amount >= 0 ? 'text-emerald-500' : 'text-red-400'}>{s.net_amount >= 0 ? '+' : ''}{s.net_amount}億</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {darkHorses?.length ? (
+        <div className="ml-[5.5rem] mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+          {darkHorses.map((s: any) => (
+            <span key={s.symbol} className="text-[10px] text-amber-400">
+              {s.symbol} {s.name} <span className="text-amber-300">vol {s.volume_ratio?.toFixed(1)}x</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -130,6 +130,13 @@ export const recommendationsApi = {
     const qs = params.toString()
     return get<any>(`/recommendations/sector-flow${qs ? `?${qs}` : ''}`)
   },
+  sectorFlowStocks: (date?: string, classification?: 'top' | 'dark_horse') => {
+    const params = new URLSearchParams()
+    if (date) params.set('date', date)
+    if (classification) params.set('classification', classification)
+    const qs = params.toString()
+    return get<any>(`/recommendations/sector-flow-stocks${qs ? `?${qs}` : ''}`)
+  },
   sectorTrend: (sector: string, days = 14, type?: 'industry' | 'theme') => {
     const params = new URLSearchParams({ sector, days: String(days) })
     if (type) params.set('type', type)

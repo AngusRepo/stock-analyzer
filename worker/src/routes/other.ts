@@ -1028,3 +1028,33 @@ recommendations.get('/sector-trend', async (c) => {
   `).bind(...binds).all<any>()
   return c.json({ sector, days, trend: results ?? [] })
 })
+
+// GET /api/recommendations/sector-flow-stocks?date=&theme=&classification=top|dark_horse
+// 主題內個股法人買賣超明細
+recommendations.get('/sector-flow-stocks', async (c) => {
+  const date  = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const theme = c.req.query('theme')
+  const cls   = c.req.query('classification')
+
+  let sql = 'SELECT * FROM sector_flow_stocks WHERE date = ?'
+  const binds: any[] = [date]
+
+  if (theme) { sql += ' AND theme = ?'; binds.push(theme) }
+  if (cls)   { sql += ' AND classification = ?'; binds.push(cls) }
+  sql += ' ORDER BY theme, classification, net_amount DESC'
+
+  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<any>()
+
+  // 若今天沒資料，fallback 最近一天
+  if (!results?.length) {
+    let fbSql = 'SELECT * FROM sector_flow_stocks WHERE date = (SELECT MAX(date) FROM sector_flow_stocks)'
+    const fbBinds: any[] = []
+    if (theme) { fbSql += ' AND theme = ?'; fbBinds.push(theme) }
+    if (cls)   { fbSql += ' AND classification = ?'; fbBinds.push(cls) }
+    fbSql += ' ORDER BY theme, classification, net_amount DESC'
+    const { results: fb } = await c.env.DB.prepare(fbSql).bind(...fbBinds).all<any>()
+    return c.json({ date: 'latest', stocks: fb ?? [] })
+  }
+
+  return c.json({ date, stocks: results })
+})

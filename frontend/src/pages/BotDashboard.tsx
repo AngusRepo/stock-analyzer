@@ -17,6 +17,7 @@ import {
   Minus, RefreshCw, Percent, Shield, Award, Scale, Cpu,
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -947,6 +948,9 @@ export default function BotDashboard() {
             <PerformanceChart />
           </CardContent>
         </Card>
+
+        {/* 主題輪動（含黑馬偵測）*/}
+        <BotThemeFlowPanel />
 
         {/* Backtest Results */}
         <BacktestCard />

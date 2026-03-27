@@ -24,6 +24,17 @@ interface SectorSummary {
   classification: 'industry' | 'theme'
 }
 
+interface ThemeStockDetail {
+  theme: string
+  symbol: string
+  name: string
+  net_amount: number    // 億元（外資+投信）
+  foreign_net: number
+  trust_net: number
+  volume_ratio: number | null
+  classification: 'top' | 'dark_horse'
+}
+
 // ─── D1 chip_data 共用查詢（industry local fallback + theme 都用）─────────────
 // chip_data.stock_id 是 stocks.id（數字 FK），需 JOIN 取 symbol
 async function queryChipAndPrice(db: D1Database) {
@@ -118,44 +129,118 @@ async function calcIndustryFlowLocal(env: Bindings): Promise<SectorSummary[]> {
 }
 
 // ─── Theme 級別：D1 chip_data + stock_tags 概念標籤 ──────────────────────────
-async function calcThemeFlow(env: Bindings): Promise<SectorSummary[]> {
+async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[]; stockDetails: ThemeStockDetail[] }> {
   try {
     const { results: tagRows } = await env.DB.prepare(
       'SELECT symbol, tag FROM stock_tags'
     ).all<{ symbol: string; tag: string }>()
-    if (!tagRows?.length) return []
+    if (!tagRows?.length) return { sectors: [], stockDetails: [] }
 
     const symbolTags = new Map<string, string[]>()
+    const tagSymbols = new Map<string, Set<string>>()
     for (const r of tagRows) {
       if (!symbolTags.has(r.symbol)) symbolTags.set(r.symbol, [])
       symbolTags.get(r.symbol)!.push(r.tag)
+      if (!tagSymbols.has(r.tag)) tagSymbols.set(r.tag, new Set())
+      tagSymbols.get(r.tag)!.add(r.symbol)
     }
 
     const { chipRows, priceMap } = await queryChipAndPrice(env.DB)
-    if (!chipRows.length) return []
+    if (!chipRows.length) return { sectors: [], stockDetails: [] }
 
+    // 取股票名稱
+    const { results: nameRows } = await env.DB.prepare(
+      'SELECT symbol, name FROM stocks'
+    ).all<{ symbol: string; name: string }>()
+    const nameMap = new Map((nameRows ?? []).map(r => [r.symbol, r.name]))
+
+    // per-stock chip amounts（用於 top stocks 排名）
+    const stockChips = new Map<string, { fNet: number; tNet: number; total: number }>()
+    for (const row of chipRows) {
+      const price = priceMap.get(row.symbol) ?? 0
+      const fNet = (row.foreign_net ?? 0) * price / 1e8
+      const tNet = (row.trust_net ?? 0) * price / 1e8
+      stockChips.set(row.symbol, { fNet, tNet, total: fNet + tNet })
+    }
+
+    // 主題加總
     const agg = new Map<string, SectorSummary>()
     for (const row of chipRows) {
       const tags = symbolTags.get(row.symbol)
       if (!tags) continue
-      const price = priceMap.get(row.symbol) ?? 0
-      const fNet = (row.foreign_net ?? 0) * price / 1e8
-      const tNet = (row.trust_net ?? 0) * price / 1e8
+      const sc = stockChips.get(row.symbol)!
       for (const tag of tags) {
         if (!agg.has(tag)) agg.set(tag, { sector: tag, foreign_net: 0, trust_net: 0, total_net: 0, avg_rsi: null, avg_momentum_5d: 0, stock_count: 0, up_count: 0, classification: 'theme' })
         const s = agg.get(tag)!
         s.stock_count++
-        s.foreign_net += fNet
-        s.trust_net   += tNet
+        s.foreign_net += sc.fNet
+        s.trust_net   += sc.tNet
         s.total_net    = s.foreign_net + s.trust_net
       }
     }
+
+    // 量能資料（黑馬偵測用）: 近5日均量 / 前20日均量
+    const { results: volRows } = await env.DB.prepare(`
+      SELECT s.symbol,
+        AVG(CASE WHEN sp.date >= date('now', '-7 days') THEN sp.volume END) as vol_5d,
+        AVG(CASE WHEN sp.date < date('now', '-7 days') AND sp.date >= date('now', '-30 days') THEN sp.volume END) as vol_20d
+      FROM stock_prices sp
+      JOIN stocks s ON sp.stock_id = s.id
+      WHERE sp.date >= date('now', '-30 days')
+      GROUP BY s.symbol
+    `).all<any>()
+    const volMap = new Map<string, number>()
+    for (const r of volRows ?? []) {
+      if (r.vol_5d && r.vol_20d && r.vol_20d > 0) {
+        volMap.set(r.symbol, r.vol_5d / r.vol_20d)
+      }
+    }
+
+    // per-theme top 5 + dark_horse
+    const stockDetails: ThemeStockDetail[] = []
+    for (const [tag, members] of tagSymbols) {
+      const ranked = [...members]
+        .filter(sym => stockChips.has(sym))
+        .map(sym => ({ sym, ...stockChips.get(sym)! }))
+        .sort((a, b) => b.total - a.total)
+
+      const top3Set = new Set(ranked.slice(0, 3).map(r => r.sym))
+
+      // Top 5
+      for (const r of ranked.slice(0, 5)) {
+        stockDetails.push({
+          theme: tag, symbol: r.sym, name: nameMap.get(r.sym) ?? r.sym,
+          net_amount: Math.round(r.total * 100) / 100,
+          foreign_net: Math.round(r.fNet * 100) / 100,
+          trust_net: Math.round(r.tNet * 100) / 100,
+          volume_ratio: volMap.get(r.sym) ?? null,
+          classification: 'top',
+        })
+      }
+
+      // Dark horse: 量能暴增 >2x 但不在 top 3
+      for (const r of ranked) {
+        if (top3Set.has(r.sym)) continue
+        const vr = volMap.get(r.sym)
+        if (vr && vr >= 2.0) {
+          stockDetails.push({
+            theme: tag, symbol: r.sym, name: nameMap.get(r.sym) ?? r.sym,
+            net_amount: Math.round(r.total * 100) / 100,
+            foreign_net: Math.round(r.fNet * 100) / 100,
+            trust_net: Math.round(r.tNet * 100) / 100,
+            volume_ratio: Math.round(vr * 100) / 100,
+            classification: 'dark_horse',
+          })
+        }
+      }
+    }
+
     const result = Array.from(agg.values()).sort((a, b) => b.total_net - a.total_net)
-    console.log(`[SectorFlow:Theme] ${agg.size} 概念主題, chipRows=${chipRows.length}, tagRows=${tagRows.length}, top3=${result.slice(0, 3).map(s => s.sector).join(',')}`)
-    return result
+    console.log(`[SectorFlow:Theme] ${agg.size} 概念, ${stockDetails.filter(d => d.classification === 'top').length} top stocks, ${stockDetails.filter(d => d.classification === 'dark_horse').length} dark horses`)
+    return { sectors: result, stockDetails }
   } catch (e) {
     console.error('[SectorFlow:Theme] failed:', e)
-    return []
+    return { sectors: [], stockDetails: [] }
   }
 }
 
@@ -237,10 +322,12 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
   // 1. 雙層族群資金流向（industry + theme）
-  const [industrySectors, themeSectors] = await Promise.all([
+  const [industrySectors, themeResult] = await Promise.all([
     calcIndustryFlow(env, today),
     calcThemeFlow(env),
   ])
+  const themeSectors = themeResult.sectors
+  const themeStockDetails = themeResult.stockDetails
   const sectors = [...industrySectors, ...themeSectors]
 
   // 2. Pre-query 個股資料
@@ -350,6 +437,25 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
     )
     await env.DB.batch(stmts)
     console.log(`[SectorFlow:${cls}] 寫入 ${batch.length} 筆`)
+  }
+
+  // 6. 寫入 sector_flow_stocks（per-theme top stocks + dark_horse）
+  if (themeStockDetails.length) {
+    await env.DB.prepare('DELETE FROM sector_flow_stocks WHERE date = ?').bind(today).run()
+    const BATCH = 50
+    for (let i = 0; i < themeStockDetails.length; i += BATCH) {
+      const chunk = themeStockDetails.slice(i, i + BATCH)
+      const stmts = chunk.map(d =>
+        env.DB.prepare(`
+          INSERT INTO sector_flow_stocks (date, theme, symbol, name, net_amount, foreign_net, trust_net, volume_ratio, classification)
+          VALUES (?,?,?,?,?,?,?,?,?)
+        `).bind(today, d.theme, d.symbol, d.name, d.net_amount, d.foreign_net, d.trust_net, d.volume_ratio, d.classification)
+      )
+      await env.DB.batch(stmts)
+    }
+    const topCount = themeStockDetails.filter(d => d.classification === 'top').length
+    const dhCount = themeStockDetails.filter(d => d.classification === 'dark_horse').length
+    console.log(`[SectorFlow:Stocks] 寫入 ${topCount} top + ${dhCount} dark_horse`)
   }
 
   const topIndustry = industrySectors.slice(0, 3).map(s => s.sector).join(' ')

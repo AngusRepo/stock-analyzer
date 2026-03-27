@@ -243,67 +243,38 @@ export function DailyRecommendationPanel() {
   )
 }
 
-// ─── Sector Flow Panel（獨立 export，供 Dashboard 插入）───────────────────────
-export function SectorFlowPanel() {
+// ─── Theme Flow Panel（獨立 export，供 Dashboard 插入）────────────────────────
+export function ThemeFlowPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  const { data: industryData, isLoading: industryLoading } = useQuery({
-    queryKey: ['recommendations', 'sector-flow', 'industry', today],
-    queryFn:  () => recommendationsApi.sectorFlow(undefined, 'industry'),
-    staleTime: 30 * 60 * 1000,
-  })
   const { data: themeData, isLoading: themeLoading } = useQuery({
     queryKey: ['recommendations', 'sector-flow', 'theme', today],
     queryFn:  () => recommendationsApi.sectorFlow(undefined, 'theme'),
     staleTime: 30 * 60 * 1000,
   })
 
-  const industryFlows = industryData?.flows ?? []
-  const themeFlows    = themeData?.flows    ?? []
-  const industryMax = industryFlows.length ? Math.max(...industryFlows.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
-  const themeMax    = themeFlows.length    ? Math.max(...themeFlows.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
+  const themeFlows = themeData?.flows ?? []
+  const themeMax   = themeFlows.length ? Math.max(...themeFlows.map((f: any) => Math.abs(f.total_net ?? 0)), 1) : 1
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
-        <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-muted-foreground" />
-          產業輪動（外資+投信5日合計）
-        </h3>
-        {industryLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
-          </div>
-        ) : industryFlows.length === 0 ? (
-          <p className="text-xs text-muted-foreground">尚無產業資料</p>
-        ) : (
-          <div className="space-y-2">
-            {industryFlows.slice(0, 10).map((f: any) => (
-              <SectorFlowBar key={f.sector} flow={f} maxAbs={industryMax} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
-        <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-blue-400" />
-          主題輪動（概念股資金流向）
-        </h3>
-        {themeLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
-          </div>
-        ) : themeFlows.length === 0 ? (
-          <p className="text-xs text-muted-foreground">尚無主題資料</p>
-        ) : (
-          <div className="space-y-2">
-            {themeFlows.slice(0, 10).map((f: any) => (
-              <SectorFlowBar key={f.sector} flow={f} maxAbs={themeMax} />
-            ))}
-          </div>
-        )}
-      </div>
+    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+        <BarChart3 className="w-4 h-4 text-blue-400" />
+        主題輪動（概念股資金流向）
+      </h3>
+      {themeLoading ? (
+        <div className="space-y-2">
+          {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
+        </div>
+      ) : themeFlows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">尚無主題資料</p>
+      ) : (
+        <div className="space-y-2">
+          {themeFlows.slice(0, 10).map((f: any) => (
+            <SectorFlowBar key={f.sector} flow={f} maxAbs={themeMax} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

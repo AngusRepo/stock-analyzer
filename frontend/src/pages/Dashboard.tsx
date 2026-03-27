@@ -39,7 +39,7 @@ import NewsPanel from '@/components/NewsPanel'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
-import { DailyRecommendationPanel, SectorFlowPanel } from '@/components/DailyRecommendationPanel'
+import { DailyRecommendationPanel, ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
 import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -370,14 +370,14 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         {/* 大盤行情 */}
         <MarketOverviewRow />
 
-        {/* ═══ 多欄佈局：一般用戶 2 欄 / admin 3 欄 ═══ */}
-        <div className={`grid grid-cols-1 gap-4 ${isAdmin ? 'lg:grid-cols-3' : 'lg:grid-cols-5'}`}>
+        {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
+        <div className={`grid grid-cols-1 gap-4 ${isAdmin ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
 
           {/* 左欄：自選股 + 大盤風險 + Bot */}
-          <div className={`${isAdmin ? '' : 'lg:col-span-3'} space-y-4`}>
+          <div className="space-y-4">
             <WatchlistCards onSelect={onSelect} />
 
-            <div className={`grid grid-cols-1 ${isAdmin ? '' : 'sm:grid-cols-2'} gap-3`}>
+            <div className="space-y-3">
               <MarketRiskPanel />
               {isAdmin && (
                 <a href="/bot" className="block rounded-xl border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-teal-500/30 backdrop-blur-sm transition-all p-4">
@@ -396,9 +396,14 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
             </div>
           </div>
 
-          {/* 中欄（admin）/ 右欄（一般）：ML 推薦 */}
-          <div className={isAdmin ? '' : 'lg:col-span-2'}>
+          {/* 中左欄：每日選股推薦 */}
+          <div>
             <DailyRecommendationPanel />
+          </div>
+
+          {/* 中右欄：主題輪動 */}
+          <div>
+            <ThemeFlowPanel />
           </div>
 
           {/* 右欄：使用者管理（admin only） */}
@@ -409,9 +414,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           )}
 
         </div>
-
-        {/* ═══ 產業輪動 + 主題輪動（全寬，雙欄並排）═══ */}
-        <SectorFlowPanel />
       </div>
     </div>
   )

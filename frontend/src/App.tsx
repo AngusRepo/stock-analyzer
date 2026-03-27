@@ -1,6 +1,7 @@
 import { Route, Switch } from 'wouter'
 import { lazy, Suspense } from 'react'
 import Dashboard from './pages/Dashboard'
+import Unauthorized from './pages/Unauthorized'
 import ErrorBoundary from './components/ErrorBoundary'
 
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
@@ -11,6 +12,7 @@ export default function App() {
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/stock/:id" component={Dashboard} />
+        <Route path="/unauthorized" component={Unauthorized} />
         <Route path="/bot">
           <Suspense fallback={<div className="flex items-center justify-center h-screen bg-zinc-950 text-zinc-500">Loading Bot Dashboard...</div>}>
             <BotDashboard />

@@ -177,3 +177,68 @@ Worker (CF) → Controller (Cloud Run) → Modal .map() × 20 containers (max)
 
 **效能：** 77 stocks 12-15min → 150s（~5x 提升）
 **成本：** ~$17/mo（Modal $30 免費額度涵蓋）+ Cloud Run $0.05/mo
+
+---
+
+## Session: 2026-03-27 下午 — UI + Sector Flow 修復
+
+### ✅ 已完成
+
+1. **非 admin 登入 "頁面不存在" 修復**
+   - `frontend/src/App.tsx` 加入 `<Route path="/unauthorized" component={Unauthorized} />`
+
+2. **AdminUsersPanel 加到 Dashboard 首頁**
+   - `Dashboard.tsx` EmptyState 改為 3 欄（admin）/ 原佈局（一般）
+   - AdminUsersPanel 在右側第三欄，緊湊卡片式（avatar + name + approve/reject icon）
+   - `frontend/src/components/AdminUsersPanel.tsx` 重寫為窄欄版
+
+3. **D1 手動修復 6 支 sector null 股票**
+   - 2330 台積電→半導體業, 2317 鴻海→其他電子業, 7879/6682→半導體業, 6980→光電業, 7707→半導體業
+
+### 🏗️ 進行中（代碼已寫，未 deploy）
+
+4. **sector_flow 改用 FinMind sector mapping**
+   - **問題根因**:
+     - 舊版 calcSectorFlow 用 D1 `stocks.sector`（screener 自訂分類 AI_Server, IC設計）
+     - 台積電 sector=null → 半導體顯示 0 億
+     - 嘗試 FinMind full-market bulk API → Worker 30s CPU limit 超時失敗
+   - **最終方案**: D1 chip_data + FinMind `fetchTWStockInfo`（metadata only）
+     - `fetchTWStockInfo` 回傳 ~2500 筆 stock metadata（含 `industry_category`）
+     - FinMind 失敗 → fallback D1 stocks.sector
+     - chip_data 日期範圍: `-5 days`（涵蓋 ~3 交易日）
+     - 寫入前 `DELETE FROM sector_flow WHERE date = today`（清除舊分類）
+     - 寫入上限 20 族群
+   - **檔案**: `worker/src/lib/dailyRecommendation.ts` calcSectorFlow 函數
+   - **⚠️ 待確認**: chip_data.foreign_net 單位是「張」還是「股」
+     - 目前假設是「張」: `foreign_net * price * 1000 / 1e8`（= 億元）
+     - 若是「股」: 改成 `foreign_net * price / 1e8`
+   - **下一步**:
+     ```bash
+     cd worker && npx wrangler deploy
+     curl -s -X POST ".../api/admin/trigger/recommendation" -H "Authorization: Bearer sv-stockvision-2026-prod"
+     npx wrangler d1 execute stockvision-db --remote --command "SELECT sector, total_net, stock_count FROM sector_flow WHERE date='2026-03-27' ORDER BY total_net DESC"
+     ```
+
+### 待做
+
+5. **TimeVerse + Debate Trader 整合**
+   - TimeVerse 同步已完成: `worker/src/lib/timeverse.ts`
+     - 從 GitHub `Timeverse/My-TW-Coverage` → D1 `stock_profiles`
+     - 欄位: supply_chain, key_customers, key_suppliers, business_desc, wikilinks
+     - 每週日 cron + 手動 `timeverse-sync` trigger
+     - Migration: `worker/migration_timeverse.sql`
+   - **待做**: Debate Trader prompt 注入 `stock_profiles` 資料
+   - **Debate 相關檔案位置待找** (可能在 `worker/src/lib/debateTrader.ts` 或 Controller)
+
+6. **Git commit + push** — 所有近期改動未提交
+   - GitHub repo: `https://github.com/AngusRepo/stock-analyzer.git`
+
+### 重要參考
+- Auth token: `sv-stockvision-2026-prod`
+- Worker URL: `https://stockvision-worker.angus-solo-dev.workers.dev`
+- D1: `stockvision-db` (6401a5f6-5767-4fa8-a1a7-ec8d4739ac79)
+- Controller: `https://ml-controller-530028717113.asia-east1.run.app`
+- Controller token: `sv-controller-2026-prod`
+- FinMind sector: `fetchTWStockInfo` → `industry_category`（~30 TWSE/OTC 官方分類）
+- Screener 分類: AI_Server, HBM記憶體, IC設計（細粒度，獨立於 FinMind）
+- **兩套分類共存**: FinMind → Dashboard 族群流向; Screener → ML 選股

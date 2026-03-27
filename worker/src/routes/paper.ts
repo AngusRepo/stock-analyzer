@@ -11,7 +11,7 @@
 
 import { Hono }       from 'hono'
 import { verifyJWT }  from '../lib/auth'
-import { runBuyDebate, type DebateResult } from '../lib/debateTrader'
+import { runBuyDebate, type DebateResult, type StockProfile } from '../lib/debateTrader'
 import { sendDiscordNotification, formatTradeNotification, formatDailySummary } from '../lib/notify'
 import { getTradingConfig, type TradingConfig } from '../lib/tradingConfig'
 import type { Bindings, Variables } from '../types'
@@ -804,6 +804,27 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       ].filter(Boolean).join(' | ')
     : undefined
 
+  // 預先批次查詢 stock_profiles（供 Debate Trader 注入 TimeVerse 資料）
+  const buySymbols = buyRecs.map(r => r.symbol)
+  const profileMap = new Map<string, StockProfile>()
+  if (buySymbols.length > 0) {
+    try {
+      const placeholders = buySymbols.map(() => '?').join(',')
+      const { results: profileRows } = await env.DB.prepare(
+        `SELECT symbol, business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol IN (${placeholders})`
+      ).bind(...buySymbols).all<any>()
+      for (const row of profileRows ?? []) {
+        profileMap.set(row.symbol, {
+          business_desc: row.business_desc,
+          key_customers: row.key_customers,
+          key_suppliers: row.key_suppliers,
+        })
+      }
+    } catch (e) {
+      console.warn('[MorningSetup] stock_profiles query failed:', e)
+    }
+  }
+
   // Debate 篩選
   const pendingBuys: PendingBuy[] = []
   for (const rec of buyRecs) {
@@ -818,6 +839,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           rec.reason ?? 'ML ensemble signal',
           { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
           usContextStr,
+          profileMap.get(rec.symbol),
         )
         debateVerdict = debate.verdict
         if (debate.verdict === 'REJECT') {

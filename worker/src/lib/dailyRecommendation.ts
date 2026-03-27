@@ -10,6 +10,7 @@
  */
 
 import type { Bindings } from '../types'
+import { fetchBulkTWChips, fetchBulkTWPrice, fetchTWStockInfo } from './finmind'
 
 interface SectorSummary {
   sector: string
@@ -22,73 +23,86 @@ interface SectorSummary {
   up_count: number
 }
 
-// ─── 計算族群資金流向（D1 查詢，保留在 Worker）────────────────────────────────
-async function calcSectorFlow(db: D1Database): Promise<SectorSummary[]> {
-  const { results: stocks } = await db.prepare(
-    `SELECT s.id, s.sector, s.name,
-            c5.foreign_net_5d, c5.trust_net_5d,
-            ti.rsi14,
-            sp1.close as close_today,
-            sp5.close as close_5d_ago
-     FROM stocks s
-     LEFT JOIN (
-       SELECT stock_id,
-              SUM(foreign_net) as foreign_net_5d,
-              SUM(trust_net)   as trust_net_5d
-       FROM chip_data
-       WHERE date >= date('now', '-7 days')
-       GROUP BY stock_id
-     ) c5 ON c5.stock_id = s.id
-     LEFT JOIN (
-       SELECT stock_id, rsi14
-       FROM technical_indicators
-       WHERE date = (SELECT MAX(date) FROM technical_indicators ti2 WHERE ti2.stock_id = technical_indicators.stock_id)
-     ) ti ON ti.stock_id = s.id
-     LEFT JOIN (
-       SELECT stock_id, close
-       FROM stock_prices
-       WHERE date = (SELECT MAX(date) FROM stock_prices sp2 WHERE sp2.stock_id = stock_prices.stock_id)
-     ) sp1 ON sp1.stock_id = s.id
-     LEFT JOIN (
-       SELECT stock_id, close
-       FROM stock_prices
-       WHERE date <= date('now', '-5 days')
-       AND date = (SELECT MAX(date) FROM stock_prices sp3 WHERE sp3.stock_id = stock_prices.stock_id AND sp3.date <= date('now', '-5 days'))
-     ) sp5 ON sp5.stock_id = s.id
-     WHERE s.is_active = 1`
-  ).all<any>()
+// ─── 計算族群資金流向（FinMind 全市場 API）─────────────────────────────────────
+// 直接用 FinMind bulk API 拉全市場三大法人 + 股價 + 產業分類
+// 不依賴 D1 is_active 股票，覆蓋整個 TWSE/OTC 市場
+async function calcSectorFlow(env: Bindings): Promise<SectorSummary[]> {
+  // 策略：D1 chip_data（已快取）+ FinMind sector mapping（小量 metadata）
+  // 全市場 bulk API 資料量太大，Worker 30s CPU limit 會超時
+  // 未來可搬到 Controller (Cloud Run) 做全市場版本
+  try {
+    // 1. D1: 取近 5 日法人淨買賣（張）+ 最新收盤價
+    const { results: chipRows } = await env.DB.prepare(`
+      SELECT c.stock_id, SUM(c.foreign_net) as foreign_net, SUM(c.trust_net) as trust_net
+      FROM chip_data c
+      WHERE c.date >= date('now', '-5 days')
+      GROUP BY c.stock_id
+    `).all<any>()
 
-  if (!stocks?.length) return []
+    const { results: priceRows } = await env.DB.prepare(`
+      SELECT stock_id, close FROM stock_prices
+      WHERE date = (SELECT MAX(date) FROM stock_prices sp2 WHERE sp2.stock_id = stock_prices.stock_id)
+    `).all<any>()
 
-  const sectorMap = new Map<string, SectorSummary>()
-  for (const r of stocks) {
-    const sector = r.sector ?? '其他'
-    if (!sectorMap.has(sector)) {
-      sectorMap.set(sector, {
-        sector, foreign_net: 0, trust_net: 0, total_net: 0,
-        avg_rsi: null, avg_momentum_5d: 0, stock_count: 0, up_count: 0,
-      })
+    if (!chipRows?.length) {
+      console.warn('[SectorFlow] D1 無 chip_data')
+      return []
     }
-    const s = sectorMap.get(sector)!
-    s.stock_count++
-    // 股數 × 股價 ÷ 1e8 = 億元（D1 chip_data 存的是股數，需乘以股價才是金額）
-    const price = r.close_today ?? 0
-    s.foreign_net += (r.foreign_net_5d ?? 0) * price / 1e8
-    s.trust_net   += (r.trust_net_5d   ?? 0) * price / 1e8
-    s.total_net    = s.foreign_net + s.trust_net
-    if (r.rsi14 != null) {
-      s.avg_rsi = s.avg_rsi == null
-        ? r.rsi14
-        : s.avg_rsi + (r.rsi14 - s.avg_rsi) / s.stock_count
+
+    const priceMap = new Map((priceRows ?? []).map((r: any) => [r.stock_id, r.close as number]))
+
+    // 2. FinMind: 取 TWSE/OTC 產業分類（metadata only，~2500 筆，很快）
+    let sectorOf = new Map<string, string>()
+    const token = env.FINMIND_TOKEN
+    if (token) {
+      try {
+        const stockInfo = await fetchTWStockInfo(token)
+        for (const s of stockInfo) {
+          if (s.industry_category) sectorOf.set(s.stock_id, s.industry_category)
+        }
+        console.log(`[SectorFlow] FinMind sector mapping: ${sectorOf.size} 支`)
+      } catch (e) {
+        console.warn('[SectorFlow] FinMind sector mapping failed, fallback to D1:', e)
+      }
     }
-    if (r.close_today != null && r.close_5d_ago != null && r.close_5d_ago > 0) {
-      const mom5d = (r.close_today - r.close_5d_ago) / r.close_5d_ago
-      s.avg_momentum_5d = (s.avg_momentum_5d * (s.stock_count - 1) + mom5d) / s.stock_count
-      if (r.close_today >= r.close_5d_ago) s.up_count++
+
+    // Fallback: 若 FinMind 失敗，用 D1 stocks.sector
+    if (!sectorOf.size) {
+      const { results: stocks } = await env.DB.prepare(
+        'SELECT id, sector FROM stocks WHERE is_active=1 AND sector IS NOT NULL'
+      ).all<any>()
+      sectorOf = new Map((stocks ?? []).map((s: any) => [s.id, s.sector]))
     }
+
+    // 3. 按族群加總（淨買賣張 × 股價 ÷ 1e8 = 億元）
+    const sectorMap = new Map<string, SectorSummary>()
+    for (const row of chipRows) {
+      const sector = sectorOf.get(row.stock_id)
+      if (!sector) continue
+
+      if (!sectorMap.has(sector)) {
+        sectorMap.set(sector, {
+          sector, foreign_net: 0, trust_net: 0, total_net: 0,
+          avg_rsi: null, avg_momentum_5d: 0, stock_count: 0, up_count: 0,
+        })
+      }
+      const s = sectorMap.get(sector)!
+      s.stock_count++
+
+      const price = priceMap.get(row.stock_id) ?? 0
+      // chip_data foreign_net/trust_net 單位是「張」(1000股)
+      s.foreign_net += (row.foreign_net ?? 0) * price * 1000 / 1e8
+      s.trust_net   += (row.trust_net ?? 0) * price * 1000 / 1e8
+      s.total_net    = s.foreign_net + s.trust_net
+    }
+
+    const result = Array.from(sectorMap.values()).sort((a, b) => b.total_net - a.total_net)
+    console.log(`[SectorFlow] ${chipRows.length} 支 active 股票 → ${result.length} 個族群`)
+    return result
+  } catch (e) {
+    console.error('[SectorFlow] failed:', e)
+    return []
   }
-
-  return Array.from(sectorMap.values()).sort((a, b) => b.total_net - a.total_net)
 }
 
 // ─── Pre-query 個股多因子資料（Controller 格式）──────────────────────────────
@@ -169,7 +183,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
   // 1. 族群資金流向
-  const sectors = await calcSectorFlow(env.DB)
+  const sectors = await calcSectorFlow(env)
 
   // 2. Pre-query 個股資料
   const stockPayloads = await buildStockPayloads(env.DB)
@@ -262,11 +276,13 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
   )
   await env.DB.batch(recBatch)
 
-  // 5. 寫入 sector_flow（前 10 族群）
+  // 5. 寫入 sector_flow（先清除當天舊資料，避免 screener 舊分類殘留）
   if (sectors.length) {
-    const sectorBatch = sectors.slice(0, 10).map(s =>
+    await env.DB.prepare('DELETE FROM sector_flow WHERE date = ?').bind(today).run()
+    const top = sectors.slice(0, 20)
+    const sectorBatch = top.map(s =>
       env.DB.prepare(`
-        INSERT OR REPLACE INTO sector_flow
+        INSERT INTO sector_flow
           (date, sector, foreign_net, trust_net, total_net,
            avg_rsi, avg_momentum_5d, stock_count, up_count)
         VALUES (?,?,?,?,?,?,?,?,?)
@@ -274,6 +290,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
               s.avg_rsi, s.avg_momentum_5d, s.stock_count, s.up_count)
     )
     await env.DB.batch(sectorBatch)
+    console.log(`[SectorFlow] 寫入 ${top.length} 個族群（已清除舊資料）`)
   }
 
   console.log(`[Recommendation] 完成：推薦 ${recommendations.map((r: any) => r.symbol).join(' ')}，族群前3：${sectors.slice(0, 3).map(s => s.sector).join(' ')}`)

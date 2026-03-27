@@ -339,13 +339,10 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-4 py-4 space-y-4">
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
 
         {/* 搜尋區塊 */}
         <div className="text-center">
-          <div className="w-10 h-10 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-2 mx-auto">
-            <Activity className="w-5 h-5 text-primary opacity-70" />
-          </div>
           <h2 className="text-lg font-bold mb-1">StockVision</h2>
           <p className="text-muted-foreground text-xs max-w-xs mx-auto mb-3">
             搜尋台股或美股，即可查看技術分析、籌碼、基本面與 AI 預測
@@ -353,7 +350,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           <div className="max-w-sm mx-auto mb-3">
             <StockSearchCombobox onSelect={onSelect} />
           </div>
-          <div className="max-w-md mx-auto">
+          <div className="max-w-lg mx-auto">
             <p className="text-xs text-muted-foreground mb-2">熱門股票</p>
             <div className="grid grid-cols-5 gap-1.5">
               {QUICK_STOCKS.map(s => (
@@ -373,31 +370,45 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         {/* 大盤行情 */}
         <MarketOverviewRow />
 
-        {/* 自選股牌卡（登入後） */}
-        <WatchlistCards onSelect={onSelect} />
+        {/* ═══ 多欄佈局：一般用戶 2 欄 / admin 3 欄 ═══ */}
+        <div className={`grid grid-cols-1 gap-4 ${isAdmin ? 'lg:grid-cols-3' : 'lg:grid-cols-5'}`}>
 
-        {/* 大盤風險 + Bot 入口 (admin only) */}
-        <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-2' : ''} gap-3`}>
-          <MarketRiskPanel />
+          {/* 左欄：自選股 + 大盤風險 + Bot */}
+          <div className={`${isAdmin ? '' : 'lg:col-span-3'} space-y-4`}>
+            <WatchlistCards onSelect={onSelect} />
+
+            <div className={`grid grid-cols-1 ${isAdmin ? '' : 'sm:grid-cols-2'} gap-3`}>
+              <MarketRiskPanel />
+              {isAdmin && (
+                <a href="/bot" className="block rounded-xl border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-teal-500/30 backdrop-blur-sm transition-all p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                      <Activity className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold">Auto Trade Bot</p>
+                      <p className="text-xs text-muted-foreground">持倉 · 交易紀錄 · Bot 狀態</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 ml-auto text-muted-foreground shrink-0" />
+                  </div>
+                </a>
+              )}
+            </div>
+          </div>
+
+          {/* 中欄（admin）/ 右欄（一般）：ML 推薦 + 族群流向 */}
+          <div className={isAdmin ? '' : 'lg:col-span-2'}>
+            <DailyRecommendationPanel />
+          </div>
+
+          {/* 右欄：使用者管理（admin only） */}
           {isAdmin && (
-            <a href="/bot" className="block rounded-xl border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-teal-500/30 backdrop-blur-sm transition-all p-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
-                  <Activity className="w-4 h-4 text-emerald-400" />
-                </div>
-                <div>
-                  <p className="text-sm font-bold">Auto Trade Bot</p>
-                  <p className="text-xs text-muted-foreground">持倉 · 交易紀錄 · Bot 狀態</p>
-                </div>
-                <ChevronRight className="w-4 h-4 ml-auto text-muted-foreground shrink-0" />
-              </div>
-            </a>
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+              <AdminUsersPanel />
+            </div>
           )}
+
         </div>
-
-        {/* ML 推薦（完整版，可展開看理由 + 族群流向） */}
-        <DailyRecommendationPanel />
-
       </div>
     </div>
   )

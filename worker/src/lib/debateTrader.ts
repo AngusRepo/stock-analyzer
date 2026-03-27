@@ -21,6 +21,12 @@ export interface DebateResult {
   llmSource: string // 'tunnel' | 'workers_ai' | 'anthropic_api'
 }
 
+export interface StockProfile {
+  business_desc?: string | null
+  key_customers?: string | null
+  key_suppliers?: string | null
+}
+
 interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
@@ -141,6 +147,17 @@ async function callLLM(
 
 // ─── Main Debate Function ─────────────────────────────────────────────────────
 
+// ─── Helper: 從 JSON 字串解析陣列並取前 N 項合併為字串 ─────────────────────
+function parseJsonArray(raw: string | null | undefined, maxItems = 3): string {
+  if (!raw) return ''
+  try {
+    const arr = JSON.parse(raw) as string[]
+    return arr.slice(0, maxItems).join('；')
+  } catch {
+    return raw.slice(0, 200)
+  }
+}
+
 export async function runBuyDebate(
   symbol: string,
   stockName: string,
@@ -149,12 +166,27 @@ export async function runBuyDebate(
   reasoning: string,
   env: LLMEnv,
   usContext?: string,
+  stockProfile?: StockProfile,
 ): Promise<DebateResult> {
   // ── Round 1 (Bull): Format ML ensemble reasoning as the bull case ─────────
+  const profileLines: string[] = []
+  if (stockProfile) {
+    if (stockProfile.business_desc) {
+      // 取前 250 字，去除 markdown 加粗符號
+      const desc = stockProfile.business_desc.replace(/\*\*/g, '').slice(0, 250)
+      profileLines.push(`【公司概況】${desc}`)
+    }
+    const customers = parseJsonArray(stockProfile.key_customers, 3)
+    if (customers) profileLines.push(`【主要客戶】${customers.replace(/\*\*/g, '').slice(0, 150)}`)
+    const suppliers = parseJsonArray(stockProfile.key_suppliers, 3)
+    if (suppliers) profileLines.push(`【主要供應商】${suppliers.replace(/\*\*/g, '').slice(0, 150)}`)
+  }
+
   const bullCase = [
     `Stock: ${symbol} (${stockName})`,
     `Signal: ${signal} | Confidence: ${(confidence * 100).toFixed(1)}%`,
     ...(usContext ? [`【美股前夜】${usContext}`] : []),
+    ...profileLines,
     `ML Ensemble Reasoning:`,
     reasoning,
   ].join('\n')

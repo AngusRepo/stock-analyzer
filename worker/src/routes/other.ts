@@ -977,45 +977,56 @@ recommendations.get('/history', async (c) => {
   return c.json(results ?? [])
 })
 
-// GET /api/recommendations/sector-flow?date=YYYY-MM-DD
-// 族群資金流向（可指定日期，預設今日）
+// GET /api/recommendations/sector-flow?date=YYYY-MM-DD&type=industry|theme
+// 族群資金流向（可指定日期，預設今日；可指定分類，預設全部）
 recommendations.get('/sector-flow', async (c) => {
   const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
+  const type = c.req.query('type') // 'industry' | 'theme' | undefined(all)
+
+  const typeFilter = type ? 'AND classification = ?' : ''
+  const binds = type ? [date, type] : [date]
+
   const { results } = await c.env.DB.prepare(`
     SELECT *
     FROM sector_flow
-    WHERE date = ?
+    WHERE date = ? ${typeFilter}
     ORDER BY total_net DESC
     LIMIT 20
-  `).bind(date).all<any>()
+  `).bind(...binds).all<any>()
 
   // 若今天沒資料，取最近一筆
   if (!results?.length) {
+    const fallbackBinds = type ? [type] : []
     const { results: latest } = await c.env.DB.prepare(`
       SELECT *
       FROM sector_flow
-      WHERE date = (SELECT MAX(date) FROM sector_flow)
+      WHERE date = (SELECT MAX(date) FROM sector_flow WHERE 1=1 ${typeFilter})
+      ${typeFilter}
       ORDER BY total_net DESC
       LIMIT 20
-    `).all<any>()
+    `).bind(...(type ? [type, type] : [])).all<any>()
     return c.json({ date: 'latest', flows: latest ?? [] })
   }
 
   return c.json({ date, flows: results })
 })
 
-// GET /api/recommendations/sector-trend?sector=半導體&days=14
+// GET /api/recommendations/sector-trend?sector=半導體&days=14&type=industry|theme
 // 單一族群的資金流向趨勢
 recommendations.get('/sector-trend', async (c) => {
   const sector = c.req.query('sector')
   const days   = Math.min(parsePosInt(c.req.query('days'), 14), 60)
+  const type   = c.req.query('type')
   if (!sector) return c.json({ error: '請提供 sector 參數' }, 400)
 
+  const typeFilter = type ? 'AND classification = ?' : ''
+  const binds = type ? [sector, days, type] : [sector, days]
+
   const { results } = await c.env.DB.prepare(`
-    SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count
+    SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count, classification
     FROM sector_flow
-    WHERE sector = ? AND date >= date('now', '-' || ? || ' days')
+    WHERE sector = ? AND date >= date('now', '-' || ? || ' days') ${typeFilter}
     ORDER BY date ASC
-  `).bind(sector, days).all<any>()
+  `).bind(...binds).all<any>()
   return c.json({ sector, days, trend: results ?? [] })
 })

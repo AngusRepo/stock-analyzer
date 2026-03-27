@@ -123,10 +123,18 @@ export const recommendationsApi = {
     get<any>(`/recommendations/daily${date ? `?date=${date}` : ''}`),
   history:     (days = 7) =>
     get<any[]>(`/recommendations/history?days=${days}`),
-  sectorFlow:  (date?: string) =>
-    get<any>(`/recommendations/sector-flow${date ? `?date=${date}` : ''}`),
-  sectorTrend: (sector: string, days = 14) =>
-    get<any>(`/recommendations/sector-trend?sector=${encodeURIComponent(sector)}&days=${days}`),
+  sectorFlow:  (date?: string, type?: 'industry' | 'theme') => {
+    const params = new URLSearchParams()
+    if (date) params.set('date', date)
+    if (type) params.set('type', type)
+    const qs = params.toString()
+    return get<any>(`/recommendations/sector-flow${qs ? `?${qs}` : ''}`)
+  },
+  sectorTrend: (sector: string, days = 14, type?: 'industry' | 'theme') => {
+    const params = new URLSearchParams({ sector, days: String(days) })
+    if (type) params.set('type', type)
+    return get<any>(`/recommendations/sector-trend?${params}`)
+  },
 }
 
 export const backtestApi = {

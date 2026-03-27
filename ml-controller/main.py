@@ -17,9 +17,9 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import predict, retrain, verify, recommend, risk, status
+from routers import predict, retrain, verify, recommend, risk, status, sector_flow
 
-VERSION = "12.2.0"
+VERSION = "12.3.0"
 
 app = FastAPI(title="StockVision ML Controller", version=VERSION)
 
@@ -48,7 +48,8 @@ app.include_router(retrain.router,  dependencies=[Depends(verify_token)])
 app.include_router(verify.router,   dependencies=[Depends(verify_token)])
 app.include_router(recommend.router, dependencies=[Depends(verify_token)])
 app.include_router(risk.router,     dependencies=[Depends(verify_token)])
-app.include_router(status.router,   dependencies=[Depends(verify_token)])
+app.include_router(status.router,      dependencies=[Depends(verify_token)])
+app.include_router(sector_flow.router, dependencies=[Depends(verify_token)])
 
 
 @app.get("/health")

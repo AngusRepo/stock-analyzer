@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-01（v3 — 融合 Everything Claude Code 操作層優化）
+> 更新：2026-04-01（v4 — 融合 v12 營運藍圖：基礎設施分級、AutoML、5 層熔斷）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v4 | 2026-04-01 | 融合 StockVision v12 營運藍圖，新增：模式 13（數據冷熱分級）、模式 14（5 層 Circuit Breaker）、模式 15（Optuna 自動調參 Skill）、模式 16（週報 AI 審計 Graph）、模式 17（Multi-Agent 對抗訓練），更新架構圖、安全防護、導入路徑 |
 | v3 | 2026-04-01 | 融合 [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) 分析，新增：模式 10（Skill 工作流模板）、模式 11（Session 記憶持久化）、模式 12（Agent 安全防護），更新辯論 agent prompt 結構、更新導入路徑 |
 | v2 | 2026-04-01 | 融合 [instructkr/claw-code](https://github.com/instructkr/claw-code) 分析，新增：模式 7（Tool 權限分級）、模式 8（Tool Schema JSON 規格化）、模式 9（Parity 追蹤）、更新目錄結構、更新導入路徑 |
 | v1 | 2026-04-01 | 初版，基於 claude-code-sourcemap 萃取 6 個設計模式 |
@@ -18,7 +19,7 @@
 
 ## 一、背景
 
-透過分析兩個 Claude Code 逆向工程專案，萃取設計模式，結合 LangGraph 框架，融入 StockVision 現有 MVC 架構。
+透過分析 Claude Code 逆向工程專案與 StockVision v12 營運藍圖，萃取設計模式，結合 LangGraph 框架，融入現有 MVC 架構。 `[v4 更新]`
 
 ### 參考來源
 
@@ -27,51 +28,68 @@
 | [ChinaSiro/claude-code-sourcemap](https://github.com/ChinaSiro/claude-code-sourcemap) | 原始碼直接提取（TypeScript） | 原廠設計圖：看內部實作細節、prompt 組裝、tool schema |
 | [instructkr/claw-code](https://github.com/instructkr/claw-code) | 逆向後用 Python/Rust 重寫 | 仿造經驗：tool 權限模型、JSON schema 規格化、parity 追蹤方法論 |
 | [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | 生產級 agent 配置套件（129K stars） | 操作層最佳實踐：skill 模板、session 記憶、安全防護、agent prompt 結構 `[v3 新增]` |
+| StockVision v12 營運藍圖 | 業務策略與風控規劃 | 數據分級、AutoML、Circuit Breaker、Multi-Agent 對抗、參數高平原方法論 `[v4 新增]` |
 
 ### 核心原則
 
 - **claude-code-sourcemap** → 提供設計模式（tool 抽象、coordinator、compaction、task 管理）
 - **claw-code** → 補強實作細節（權限分級、JSON schema 驅動、進度追蹤） `[v2 新增]`
 - **Everything Claude Code** → 操作層優化（skill 工作流、session 記憶、安全防護、agent prompt 結構） `[v3 新增]`
+- **v12 營運藍圖** → 業務層約束（冷熱數據、5 層熔斷、AutoML、Human-in-the-Loop） `[v4 新增]`
 - **LangGraph** → 實作框架（state graph、checkpointer、conditional edges）
 - **StockVision** → 落地場景
 
 ---
 
-## 二、現有架構（不變）
+## 二、系統架構 `[v4 更新]`
 
 ```
-┌─────────────────────────────────────────────────┐
-│  View     │  Frontend (Vite + React)             │  ← 不動
-├───────────┼──────────────────────────────────────┤
-│  Router   │  Worker (Cloudflare)                 │  ← 不動
-│           │  • API 路由、排程觸發                  │
-│           │  • D1/KV 資料存取、Queue               │
-├───────────┼──────────────────────────────────────┤
-│Controller │  GCP Cloud Run                       │  ← LangGraph 放這裡
-│           │  • ml-controller (現有 FastAPI)        │
-│           │  • LangGraph Orchestrator (新增)      │
-├───────────┼──────────────────────────────────────┤
-│  Model    │  Modal (ML Service)                  │  ← 不動
-│           │  Shioaji Proxy (Cloud Run)           │  ← 不動
-└───────────┴──────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  View     │  Frontend (Vite + React)                         │
+├───────────┼──────────────────────────────────────────────────┤
+│  Router   │  Worker (Cloudflare)                             │
+│           │  • API 路由、Cron 排程觸發                         │
+│           │  • D1/KV 資料存取（熱數據）、Queue                  │
+├───────────┼──────────────────────────────────────────────────┤
+│Controller │  GCP Cloud Run（<200MB 輕量容器）                  │
+│           │  • ml-controller (FastAPI + LangGraph)            │
+│           │  • 風控攔截、5 層 Circuit Breaker                  │
+│           │  • GCS 權重讀取 + 參數載入                          │
+│           │  ⚠ 嚴禁執行任何 ML 訓練任務                         │
+├───────────┼──────────────────────────────────────────────────┤
+│  Model    │  Modal (重型算力)                                  │
+│           │  • ML 推論 (10 模型 Ensemble)                      │
+│           │  • 模型訓練 + Optuna 自動調參                       │
+│           │  • 回測引擎                                        │
+├───────────┼──────────────────────────────────────────────────┤
+│  Data     │  Shioaji Proxy (即時報價)                          │
+│  Layer    │  GCS (冷數據：模型權重、參數配置、歷史歸檔)           │
+└───────────┴──────────────────────────────────────────────────┘
 ```
 
 ### 各層職責切割
 
 | 層 | 負責 | 不該做的 |
 |---|---|---|
-| **Worker (CF)** | 路由、排程觸發、D1/KV 存取、Queue | 不做 ML 推論、不做 LLM 呼叫 |
-| **Controller (GCP)** | 編排邏輯、LangGraph 流程、LLM 呼叫、評分 | 不存資料、不直接面對前端 |
-| **Model (Modal)** | 純 ML 推論、模型訓練 | 不做業務邏輯、不做編排 |
+| **Worker (CF)** | 路由、排程觸發、D1/KV 存取（熱數據）、Queue | 不做 ML 推論、不做 LLM 呼叫 |
+| **Controller (GCP)** | 編排邏輯、LangGraph 流程、LLM 呼叫、風控攔截、GCS 讀取 | 不存交易數據、不做 ML 訓練、不直接面對前端 |
+| **Model (Modal)** | ML 推論、模型訓練、Optuna 調參、回測 | 不做業務邏輯、不做編排 |
 | **Shioaji Proxy** | 即時報價轉發 | 只做 quote，不做分析 |
 | **Frontend** | UI 渲染 | 不直接 call Modal/GCP |
 
+### 數據冷熱分級 `[v4 新增]`
+
+| 類型 | 存儲 | 內容 | 存取頻率 |
+|------|------|------|---------|
+| **熱數據** | Cloudflare D1 / KV | 盤中即時訊號、當前持倉、近 60 天特徵（38 張表） | 每秒~每分鐘 |
+| **溫數據** | GCS (active) | 模型權重 (.npz/.pkl)、active_config.json、當週 Debate Logs | 每日 |
+| **冷數據** | GCS (archive) | 每月 D1 備份 (Parquet/CSV)、歷史回測結果、舊版模型權重 | 每週~每月 |
+
 ---
 
-## 三、12 個設計模式 × LangGraph 實作
+## 三、17 個設計模式 × LangGraph 實作
 
-> 模式 1-6 源自 sourcemap，模式 7-9 源自 claw-code，模式 10-12 源自 Everything Claude Code `[v3 更新]`
+> 模式 1-6 源自 sourcemap，模式 7-9 源自 claw-code，模式 10-12 源自 ECC，模式 13-17 源自 v12 藍圖 `[v4 更新]`
 
 ### 模式 1：Tool System — 把現有服務包成 LangGraph Tools
 
@@ -517,6 +535,11 @@ claw-code 維護 `PARITY.md` 追蹤與原版的實作差距。StockVision 導入
 | 10 | Skill 工作流模板 | ⬚ | 待 Phase 3，配合任務鏈一起做 [v3] |
 | 11 | Session 記憶持久化 | ⬚ | 待 Phase 4，配合 Chat compaction [v3] |
 | 12 | Agent 安全防護 | ⬚ | 待 Phase 2，交易功能上線前必須完成 [v3] |
+| 13 | 數據冷熱分級路由 | ⬚ | 待 Phase 1，配合 Tool Schema 加 data_tier [v4] |
+| 14 | 5 層 Circuit Breaker | ⬚ | 待 Phase 2，硬編碼安全紅線 [v4] |
+| 15 | Optuna 自動調參 Skill | ⬚ | 待 Phase 5，需 Modal Optuna 先部署 [v4] |
+| 16 | 週報 AI 審計 Graph | ⬚ | 待 Phase 5，每週五盤後自動觸發 [v4] |
+| 17 | Multi-Agent 對抗訓練 | ⬚ | 待 Phase 6，最後導入 [v4] |
 
 ## API 介面相容性
 
@@ -750,9 +773,322 @@ async def trade_guard(state: dict) -> dict:
     return {"approved": True}
 ```
 
-這和模式 7（權限分級）的差異：
+安全防護三層架構：
 - **模式 7** = 「這個工具誰能用」（身份/角色層）
 - **模式 12** = 「這筆操作合不合規」（業務規則層 + 攻擊偵測）
+- **模式 14** = 「整個系統是否該停止」（硬編碼熔斷層，不可覆寫） `[v4 新增]`
+
+---
+
+### 模式 13：數據冷熱分級路由 `[v4 新增]`
+
+Tool Schema（模式 8）加入 `data_tier` 欄位，讓 agent 自動選擇正確的數據源：
+
+```python
+# tools/schemas/market_data.json 加入 data_tier
+TOOL_DATA_TIERS = {
+    "get_realtime_quote":    {"tier": "hot",  "source": "shioaji_proxy"},
+    "get_chip_analysis":     {"tier": "hot",  "source": "worker_d1"},
+    "get_stock_prediction":  {"tier": "hot",  "source": "worker_kv"},
+    "get_model_weights":     {"tier": "warm", "source": "gcs_active"},
+    "get_active_config":     {"tier": "warm", "source": "gcs_active"},
+    "get_debate_logs":       {"tier": "warm", "source": "gcs_active"},
+    "get_backtest_history":  {"tier": "cold", "source": "gcs_archive"},
+    "get_monthly_backup":    {"tier": "cold", "source": "gcs_archive"},
+}
+
+# LangGraph tool 自動根據 tier 選擇 timeout 和 retry 策略
+TIER_CONFIG = {
+    "hot":  {"timeout_ms": 5_000,  "retry": 1},  # 即時，快速失敗
+    "warm": {"timeout_ms": 30_000, "retry": 2},  # 容許較慢
+    "cold": {"timeout_ms": 60_000, "retry": 3},  # 歸檔查詢，可以等
+}
+```
+
+---
+
+### 模式 14：5 層 Circuit Breaker `[v4 新增]`
+
+v12 藍圖的硬編碼安全紅線，融入 LangGraph 的 guard node。任何 AI 或優化器皆無權覆寫：
+
+```python
+# security/circuit_breaker.py
+
+class CircuitBreaker:
+    """5 層熔斷機制 — 硬編碼於 GCP Controller，不可被 agent 覆寫"""
+
+    async def check_all(self, state: dict) -> tuple[bool, str]:
+        """依序檢查 5 層熔斷器，任一觸發即進入 SafeMode"""
+
+        # Layer 1: 每日下單金額上限
+        daily_total = await self.get_today_order_total()
+        if daily_total >= 200_000:
+            return False, "L1 熔斷：每日 20 萬下單上限已達"
+
+        # Layer 2: 日內虧損上限
+        daily_pnl = await self.get_today_realized_pnl()
+        if daily_pnl <= -50_000:
+            return False, "L2 熔斷：日內虧損超過 5 萬"
+
+        # Layer 3: 大盤系統性風險
+        market_risk = await self.get_market_risk_score()
+        if market_risk > 80:
+            return False, f"L3 熔斷：大盤風險分數 {market_risk} > 80"
+
+        # Layer 4: VIX 飆升（全球恐慌）
+        vix = await self.get_vix()
+        if vix > 30:
+            return False, f"L4 熔斷：VIX {vix} > 30，全球恐慌模式"
+
+        # Layer 5: 連續停損觸發（策略失靈）
+        consecutive_stops = await self.get_consecutive_stop_losses()
+        if consecutive_stops >= 3:
+            return False, f"L5 熔斷：連續 {consecutive_stops} 檔停損，策略可能失靈"
+
+        return True, "OK"
+
+    async def enter_safe_mode(self, reason: str):
+        """觸發 SafeMode：停止所有自動交易 + 發 Discord 警報"""
+        await self.disable_auto_trading()
+        await self.send_discord_alert(f"🚨 SafeMode 啟動：{reason}")
+        await self.log_circuit_break(reason)
+
+# LangGraph 整合：每個交易 graph 的入口都必須過 circuit breaker
+async def circuit_breaker_node(state: dict) -> dict:
+    cb = CircuitBreaker()
+    ok, reason = await cb.check_all(state)
+    if not ok:
+        await cb.enter_safe_mode(reason)
+        return {"approved": False, "reason": reason, "safe_mode": True}
+    return {"approved": True}
+
+# 在所有交易相關 graph 中，circuit_breaker 是第一個 node
+graph.add_edge(START, "circuit_breaker")
+graph.add_conditional_edges("circuit_breaker", lambda s:
+    "proceed" if s["approved"] else END
+)
+```
+
+---
+
+### 模式 15：Optuna 自動調參 Skill `[v4 新增]`
+
+將 v12 的雙層優化迴路包成 LangGraph skill，在 Modal 執行：
+
+```python
+# skills/weekly_optimization.py
+
+WEEKLY_OPTIMIZATION_SKILL = {
+    "name": "weekly_optimization",
+    "description": "週報後自動調參：Optuna 在 Modal 跑參數搜尋 → 人工確認 → 寫入 GCS",
+    "schedule": "Friday 16:30 Asia/Taipei",
+    "steps": [
+        {
+            "node": "export_weekly_data",
+            "description": "從 D1/GCS 匯出本週交易數據、模型權重變化、Debate 紀錄",
+            "tools": ["get_backtest_history", "get_debate_logs", "get_portfolio"],
+        },
+        {
+            "node": "run_optuna",
+            "description": "在 Modal 啟動 Optuna，搜尋高平原參數組合",
+            "tools": ["trigger_modal_optuna"],
+            "config": {
+                "n_trials": 200,
+                # 目標函數包含穩定度懲罰，尋找高平原而非孤峰
+                "objective": "mean_returns - 1.5 * std_returns",
+                "param_space": {
+                    "learning_rate": [0.001, 0.1],
+                    "linucb_alpha": [0.1, 2.0],
+                    "garch_threshold": [0.01, 0.05],
+                    "stop_loss_pct": [0.03, 0.08],
+                    "take_profit_pct": [0.05, 0.15],
+                }
+            }
+        },
+        {
+            "node": "ai_audit",
+            "description": "LLM 審計 Optuna 結果，檢查是否為孤峰而非高平原",
+            "tools": [],  # 純 LLM 分析
+        },
+        {
+            "node": "human_approval",
+            "description": "Discord 通知，等待人工確認",
+            "require_human_confirm": True,
+        },
+        {
+            "node": "apply_config",
+            "description": "寫入 GCS active_config.json 生效",
+            "tools": ["write_gcs_config"],
+        },
+    ],
+}
+
+# 雙層優化迴路對照：
+# 內層 (Daily) = 現有 LinUCB + ARF，每日自動跑，不需 LangGraph 介入
+# 外層 (Weekly) = 這個 skill，每週五跑，需要人工確認
+```
+
+---
+
+### 模式 16：週報 AI 審計 Graph `[v4 新增]`
+
+v12 的「每週人工呼叫本地 AI Team」結構化為 LangGraph：
+
+```python
+# graphs/weekly_audit_graph.py
+
+class WeeklyAuditState(TypedDict):
+    week_data: dict              # 本週交易數據包
+    logic_audit: str             # 邏輯審計結果
+    param_suggestions: dict      # 超參數建議
+    debate_review: str           # Debate 品質檢討
+    final_report: str            # 週報
+
+graph = StateGraph(WeeklyAuditState)
+
+async def export_week_data(state):
+    """匯出本週數據包"""
+    data = {
+        "trades": await get_weekly_trades(),
+        "model_accuracy": await get_weekly_accuracy(),
+        "debate_logs": await get_weekly_debates(),
+        "portfolio_snapshot": await get_portfolio(),
+        "market_context": await get_weekly_market_summary(),
+    }
+    return {"week_data": data}
+
+async def logic_auditor(state):
+    """邏輯審計：檢查 ML 高分但停損的個股，是否有辯論幻覺"""
+    response = await llm.ainvoke([
+        SystemMessage(
+            "你是投資邏輯審計師。分析以下本週交易中「ML 高分但最終停損」的個股。\n"
+            "檢查多空辯論（Debate）紀錄中是否存在：\n"
+            "1. 邏輯幻覺（看似合理但前提錯誤的推論）\n"
+            "2. 資訊遺漏（忽略了關鍵的利空/利多）\n"
+            "3. 過度自信（信心度與實際表現嚴重脫節）\n"
+            "給出具體案例和改善建議。"),
+        HumanMessage(json.dumps(state["week_data"], ensure_ascii=False))
+    ])
+    return {"logic_audit": response.content}
+
+async def param_advisor(state):
+    """超參數建議：根據本週市場環境建議調整"""
+    response = await llm.ainvoke([
+        SystemMessage(
+            "你是量化策略顧問。根據本週市場環境和交易表現，\n"
+            "建議下週的超參數調整方向：\n"
+            "- LinUCB 探索率 α（目前的探索/利用平衡是否恰當？）\n"
+            "- GARCH 門檻（波動率估計是否過敏或過鈍？）\n"
+            "- 停損/停利比例（是否需要收緊或放寬？）\n"
+            "注意：追求參數高平原，避免孤峰。"),
+        HumanMessage(json.dumps(state["week_data"], ensure_ascii=False))
+    ])
+    return {"param_suggestions": json.loads(response.content)}
+
+async def generate_weekly_report(state):
+    """生成最終週報"""
+    response = await llm.ainvoke([
+        SystemMessage("綜合所有審計結果，生成一份簡潔的週報摘要。"),
+        HumanMessage(json.dumps({
+            "logic_audit": state["logic_audit"],
+            "param_suggestions": state["param_suggestions"],
+        }, ensure_ascii=False))
+    ])
+    return {"final_report": response.content}
+
+graph.add_node("export", export_week_data)
+graph.add_node("logic_audit", logic_auditor)
+graph.add_node("param_advisor", param_advisor)
+graph.add_node("report", generate_weekly_report)
+
+graph.add_edge(START, "export")
+graph.add_edge("export", "logic_audit")   # 平行
+graph.add_edge("export", "param_advisor") # 平行
+graph.add_edge("logic_audit", "report")
+graph.add_edge("param_advisor", "report")
+graph.add_edge("report", END)
+
+weekly_audit = graph.compile()
+```
+
+---
+
+### 模式 17：Multi-Agent 對抗訓練 `[v4 新增]`
+
+v12 的「紅藍軍 AI Team」，用 LangGraph 實作對抗式策略驗證：
+
+```python
+# graphs/adversarial_graph.py — 未來 Phase，先定義架構
+
+class AdversarialState(TypedDict):
+    strategy: dict                 # 待驗證的策略
+    blue_team_result: dict         # 藍軍（優化做多）結果
+    red_team_result: dict          # 紅軍（模擬極端做空）結果
+    stress_test_passed: bool       # 壓力測試是否通過
+    robustness_score: float        # 抗脆弱性評分
+
+async def blue_team(state):
+    """藍軍：在正常市場環境下優化策略表現"""
+    response = await llm.ainvoke([
+        SystemMessage(
+            "你是藍軍策略優化師。\n"
+            "目標：在正常市場環境下，優化以下策略的 Sharpe Ratio。\n"
+            "給出具體的參數微調建議和預期改善。"),
+        HumanMessage(json.dumps(state["strategy"]))
+    ])
+    return {"blue_team_result": json.loads(response.content)}
+
+async def red_team(state):
+    """紅軍：模擬極端市場環境，壓力測試策略"""
+    response = await llm.ainvoke([
+        SystemMessage(
+            "你是紅軍壓力測試師。\n"
+            "目標：模擬以下極端情境，檢驗策略是否會崩潰：\n"
+            "1. 大盤連續 5 日跌停（2020/03 等級）\n"
+            "2. 單一持股突發利空（財報造假、下市）\n"
+            "3. 流動性枯竭（掛單簿極薄）\n"
+            "4. 外資連續大幅賣超（匯率危機）\n"
+            "5. 系統性風險（央行升息超預期）\n"
+            "每個情境給出策略的預估最大虧損和存活率。"),
+        HumanMessage(json.dumps(state["strategy"]))
+    ])
+    return {"red_team_result": json.loads(response.content)}
+
+async def judge(state):
+    """裁判：綜合紅藍軍結果，評估策略抗脆弱性"""
+    response = await llm.ainvoke([
+        SystemMessage(
+            "你是策略審核官。綜合藍軍的優化建議和紅軍的壓力測試結果，\n"
+            "評估此策略的抗脆弱性。回傳 JSON：\n"
+            "- robustness_score: 0-100 分\n"
+            "- stress_test_passed: bool（score > 60 才算通過）\n"
+            "- recommendations: 改善建議列表\n"
+            "- kill_switch_conditions: 建議新增的熔斷條件"),
+        HumanMessage(json.dumps({
+            "blue": state["blue_team_result"],
+            "red": state["red_team_result"],
+        }))
+    ])
+    result = json.loads(response.content)
+    return {
+        "robustness_score": result["robustness_score"],
+        "stress_test_passed": result["stress_test_passed"],
+    }
+
+# Graph 結構：藍紅平行 → 裁判
+graph = StateGraph(AdversarialState)
+graph.add_node("blue_team", blue_team)
+graph.add_node("red_team", red_team)
+graph.add_node("judge", judge)
+
+graph.add_edge(START, "blue_team")
+graph.add_edge(START, "red_team")
+graph.add_edge("blue_team", "judge")
+graph.add_edge("red_team", "judge")
+graph.add_edge("judge", END)
+```
+
+未來進階：紅軍不只用 LLM 模擬，而是接入真實回測引擎（Modal），用歷史極端行情數據跑策略。
 
 ---
 
@@ -837,7 +1173,9 @@ ml-controller/
 ├── graphs/              # 新增：LangGraph 流程定義
 │   ├── predict_graph.py # ML 預測流程 graph
 │   ├── recommend_graph.py # 推薦辯論 graph
-│   └── daily_pipeline.py  # 每日完整流程 graph
+│   ├── daily_pipeline.py  # 每日完整流程 graph
+│   ├── weekly_audit_graph.py  # [v4] 週報 AI 審計
+│   └── adversarial_graph.py   # [v4] 紅藍軍對抗驗證
 ├── tools/               # 新增：把 services 包成 LangGraph tools
 │   ├── ml_tools.py      # 包裝 modal_client
 │   ├── data_tools.py    # 包裝 Worker API 呼叫
@@ -851,12 +1189,14 @@ ml-controller/
 ├── skills/              # [v3] Skill 工作流模板定義
 │   ├── stock_analysis.py
 │   ├── morning_check.py
+│   ├── weekly_optimization.py # [v4] Optuna 自動調參 skill
 │   └── loader.py        # skill → subgraph 轉換器
 ├── memory/              # [v3] Session 記憶持久化
 │   ├── store.py         # 記憶存取層
 │   └── hooks.py         # session start/end hooks
 ├── security/            # [v3] Agent 安全防護
 │   ├── guard.py         # 交易安全閘門
+│   ├── circuit_breaker.py # [v4] 5 層熔斷機制（硬編碼，不可覆寫）
 │   ├── injection.py     # prompt injection 偵測
 │   └── audit.py         # 審計日誌
 ├── PARITY.md            # [v2] 導入進度追蹤
@@ -921,26 +1261,42 @@ checkpointer = SqliteSaver.from_conn_string("/tmp/checkpoints.db")
 
 ---
 
-## 六、導入路徑 `[v3 更新]`
+## 六、導入路徑 `[v4 更新]`
 
 | Phase | 項目 | 涵蓋模式 | 說明 |
 |-------|------|---------|------|
-| **Phase 1** | 基礎建設 | 模式 1, 6, 8, 9 | Tool System + Feature Flags + JSON Schema + PARITY.md。先把工具層搭好 |
-| **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12 | Coordinator 辯論 graph + 權限分級 + 安全防護。交易工具上線前必須完成 `[v3 更新]` |
-| **Phase 3** | 任務鏈 + Skill | 模式 5, 10 | 每日 Cron pipeline + checkpointer + Skill 工作流模板化 `[v3 更新]` |
-| **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶持久化 `[v3 更新]` |
+| **Phase 1** | 基礎建設 | 模式 1, 6, 8, 9, 13 | Tool System + Feature Flags + JSON Schema + PARITY.md + 數據分級路由 `[v4 更新]` |
+| **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12, 14 | Coordinator 辯論 + 權限分級 + 安全防護 + 5 層 Circuit Breaker `[v4 更新]` |
+| **Phase 3** | 任務鏈 + Skill | 模式 5, 10 | 每日 Cron pipeline + checkpointer + Skill 工作流模板化 |
+| **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶持久化 |
+| **Phase 5** | 自我演化 | 模式 15, 16 | Optuna 自動調參 + 週報 AI 審計。需 Modal Optuna 先部署 `[v4 新增]` |
+| **Phase 6** | 對抗訓練 | 模式 17 | 紅藍軍 Multi-Agent 對抗。需 Phase 5 穩定後再導入 `[v4 新增]` |
 
 ### Phase 間的依賴關係
 
 ```
-Phase 1（基礎建設）
+Phase 1（基礎建設 + 數據分級）
   │
-  ├──→ Phase 2（辯論 + 權限 + 安全）
+  ├──→ Phase 2（辯論 + 權限 + 5 層熔斷）
   │       │
-  │       └──→ Phase 3（任務鏈 + Skill）
+  │       ├──→ Phase 3（任務鏈 + Skill）
+  │       │       │
+  │       │       └──→ Phase 5（Optuna + 週報審計）
+  │       │               │
+  │       │               └──→ Phase 6（紅藍軍對抗）
+  │       │
+  │       └──→ Phase 5（可與 Phase 3 平行，但需 Phase 2 的安全層）
   │
-  └──→ Phase 4（智能互動 + 記憶）← 可與 Phase 2/3 平行
+  └──→ Phase 4（智能互動 + 記憶）← 可與 Phase 2-6 獨立平行
 ```
 
-Phase 4 不依賴 Phase 2/3，可以提前或平行開發。
+### 時程對應 v12 藍圖
+
+| v12 藍圖章節 | 對應 Phase | 狀態 |
+|-------------|-----------|------|
+| 一、基礎設施：極簡化與數據分級 | Phase 1 (數據分級) + 既有架構 | 架構已完成，分級路由待導入 |
+| 二、決策維度：AI 代理與高平原審計 | Phase 2 (辯論) + Phase 5 (週報審計) | 待導入 |
+| 三、進化維度：神經網路自動調參 | Phase 5 (Optuna skill) | 待導入 |
+| 四、未來優化路徑 | Phase 6 (對抗訓練) | 規劃中 |
+| 五、風控底線 | Phase 2 (Circuit Breaker) | 待導入，最高優先 |
 

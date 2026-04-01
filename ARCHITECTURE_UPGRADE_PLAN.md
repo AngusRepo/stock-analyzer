@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-01（v2 — 融合 claw-code 補強）
+> 更新：2026-04-01（v3 — 融合 Everything Claude Code 操作層優化）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v3 | 2026-04-01 | 融合 [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) 分析，新增：模式 10（Skill 工作流模板）、模式 11（Session 記憶持久化）、模式 12（Agent 安全防護），更新辯論 agent prompt 結構、更新導入路徑 |
 | v2 | 2026-04-01 | 融合 [instructkr/claw-code](https://github.com/instructkr/claw-code) 分析，新增：模式 7（Tool 權限分級）、模式 8（Tool Schema JSON 規格化）、模式 9（Parity 追蹤）、更新目錄結構、更新導入路徑 |
 | v1 | 2026-04-01 | 初版，基於 claude-code-sourcemap 萃取 6 個設計模式 |
 
@@ -25,11 +26,13 @@
 |------|------|------|
 | [ChinaSiro/claude-code-sourcemap](https://github.com/ChinaSiro/claude-code-sourcemap) | 原始碼直接提取（TypeScript） | 原廠設計圖：看內部實作細節、prompt 組裝、tool schema |
 | [instructkr/claw-code](https://github.com/instructkr/claw-code) | 逆向後用 Python/Rust 重寫 | 仿造經驗：tool 權限模型、JSON schema 規格化、parity 追蹤方法論 |
+| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | 生產級 agent 配置套件（129K stars） | 操作層最佳實踐：skill 模板、session 記憶、安全防護、agent prompt 結構 `[v3 新增]` |
 
 ### 核心原則
 
 - **claude-code-sourcemap** → 提供設計模式（tool 抽象、coordinator、compaction、task 管理）
 - **claw-code** → 補強實作細節（權限分級、JSON schema 驅動、進度追蹤） `[v2 新增]`
+- **Everything Claude Code** → 操作層優化（skill 工作流、session 記憶、安全防護、agent prompt 結構） `[v3 新增]`
 - **LangGraph** → 實作框架（state graph、checkpointer、conditional edges）
 - **StockVision** → 落地場景
 
@@ -66,9 +69,9 @@
 
 ---
 
-## 三、9 個 Claude Code 設計模式 × LangGraph 實作
+## 三、12 個設計模式 × LangGraph 實作
 
-> 模式 1-6 源自 sourcemap 分析，模式 7-9 源自 claw-code 補強 `[v2 更新]`
+> 模式 1-6 源自 sourcemap，模式 7-9 源自 claw-code，模式 10-12 源自 Everything Claude Code `[v3 更新]`
 
 ### 模式 1：Tool System — 把現有服務包成 LangGraph Tools
 
@@ -484,7 +487,7 @@ all_tools = load_tools_from_schemas("tools/schemas/")
 
 ---
 
-### 模式 9：Parity 追蹤 `[v2 新增]`
+### 模式 9：Parity 追蹤 `[v2 新增]`  
 
 claw-code 維護 `PARITY.md` 追蹤與原版的實作差距。StockVision 導入 LangGraph 是分階段的，需要追蹤每個模式的導入進度：
 
@@ -511,6 +514,9 @@ claw-code 維護 `PARITY.md` 追蹤與原版的實作差距。StockVision 導入
 | 7 | Tool 權限分級 | ⬚ | 待 Phase 2，交易工具上線前必須完成 |
 | 8 | Tool Schema JSON | ⬚ | 待 Phase 1，配合 Tool System 一起做 |
 | 9 | Parity 追蹤 | ✅ | 就是本文件 |
+| 10 | Skill 工作流模板 | ⬚ | 待 Phase 3，配合任務鏈一起做 [v3] |
+| 11 | Session 記憶持久化 | ⬚ | 待 Phase 4，配合 Chat compaction [v3] |
+| 12 | Agent 安全防護 | ⬚ | 待 Phase 2，交易功能上線前必須完成 [v3] |
 
 ## API 介面相容性
 
@@ -529,6 +535,291 @@ claw-code 維護 `PARITY.md` 追蹤與原版的實作差距。StockVision 導入
 ```
 
 ---
+
+### 模式 10：Skill 工作流模板 `[v3 新增]`
+
+ECC 將常見工作流封裝為可複用的 skill 定義。對應到 StockVision，把重複的分析/交易流程模板化：
+
+```python
+# graphs/skills/ 目錄存放可複用的子 graph 模板
+
+# 範例：個股完整分析 skill
+STOCK_ANALYSIS_SKILL = {
+    "name": "full_stock_analysis",
+    "description": "個股完整分析：技術面 + 籌碼面 + ML預測 + 新聞情緒",
+    "steps": [
+        {"node": "collect_data", "tools": ["get_chip_analysis", "get_realtime_quote"]},
+        {"node": "ml_predict", "tools": ["get_stock_prediction"]},
+        {"node": "sentiment", "tools": ["get_news_sentiment"]},
+        {"node": "synthesize", "output_format": "analysis_report"},
+    ],
+    "trigger": ["分析 {stock_id}", "看一下 {stock_id}"],  # 自然語言觸發
+    "confidence_threshold": 0.8,  # ECC 的信心評分機制
+}
+
+# 範例：每日開盤前檢查 skill
+MORNING_CHECK_SKILL = {
+    "name": "morning_check",
+    "description": "開盤前持倉健檢：停損停利檢查 + 市場風險 + 隔夜美股影響",
+    "steps": [
+        {"node": "check_portfolio", "tools": ["get_portfolio"]},
+        {"node": "check_risk", "tools": ["get_market_risk"]},
+        {"node": "check_us_market", "tools": ["get_us_leading_indicators"]},
+        {"node": "generate_briefing", "output_format": "morning_briefing"},
+    ],
+    "schedule": "07:15 Asia/Taipei",  # 可掛到 cron
+}
+
+# Skill 載入器：把 skill 定義轉成 LangGraph subgraph
+def load_skill_as_subgraph(skill_def: dict) -> StateGraph:
+    """將 skill 定義動態轉成 LangGraph 子圖"""
+    graph = StateGraph(SkillState)
+    prev_node = START
+    for step in skill_def["steps"]:
+        node_name = step["node"]
+        tools = [TOOL_REGISTRY[t] for t in step.get("tools", [])]
+        graph.add_node(node_name, create_skill_node(tools, step))
+        graph.add_edge(prev_node, node_name)
+        prev_node = node_name
+    graph.add_edge(prev_node, END)
+    return graph.compile()
+
+# 所有 skill 註冊表
+SKILL_REGISTRY = {
+    s["name"]: load_skill_as_subgraph(s)
+    for s in [STOCK_ANALYSIS_SKILL, MORNING_CHECK_SKILL]
+}
+```
+
+好處：
+- 新增分析流程只需定義 JSON/dict，不用寫新的 graph code
+- 可以從 session 中自動萃取高頻操作模式轉成 skill（ECC 的持續學習）
+- 前端可以列出所有 skill 供使用者一鍵觸發
+- Discord bot 可以用自然語言 trigger 匹配 skill
+
+---
+
+### 模式 11：Session 記憶持久化 `[v3 新增]`
+
+ECC 的 hooks 在 session 結束時自動萃取重要資訊存成記憶。對應到 StockVision，讓 AI 分析具有跨 session 連續性：
+
+```python
+from langgraph.store.memory import InMemoryStore
+# 生產環境可換成 PostgresStore 或 GCS
+
+memory_store = InMemoryStore()
+
+class SessionMemory(TypedDict):
+    """跨 session 持久化的記憶"""
+    # 使用者偏好
+    user_preferences: dict        # 如：偏好科技股、風險承受度中等
+    # 歷史決策記錄
+    past_decisions: list          # 過去的 BUY/SELL 決策及結果
+    # 學到的模式
+    learned_patterns: list        # 如：「該使用者問 XX 股時通常想做短線」
+    # 持倉快照
+    last_portfolio_snapshot: dict # 上次 session 結束時的持倉
+
+# Session 結束時的記憶萃取 hook
+async def on_session_end(state: dict, config: dict):
+    """從本次對話中萃取值得記住的資訊"""
+    user_id = config["configurable"]["user_id"]
+
+    # 用 LLM 萃取本次 session 的關鍵資訊
+    extraction = await llm.ainvoke([
+        SystemMessage(
+            "從以下對話中萃取值得記住的資訊，回傳 JSON：\n"
+            "- new_preferences: 使用者表達的新偏好\n"
+            "- decisions_made: 本次做的投資決策\n"
+            "- patterns_observed: 觀察到的行為模式\n"
+            "如果沒有值得記住的就回傳空物件"),
+        HumanMessage(str(state["messages"][-20:]))  # 最近 20 則
+    ])
+
+    memory = json.loads(extraction.content)
+    if memory:
+        memory_store.put(
+            namespace=("user", user_id),
+            key=f"session-{datetime.now().isoformat()}",
+            value=memory
+        )
+
+# Session 開始時注入歷史記憶
+async def on_session_start(state: dict, config: dict):
+    """載入使用者的歷史記憶作為 context"""
+    user_id = config["configurable"]["user_id"]
+    memories = memory_store.search(namespace=("user", user_id), limit=10)
+
+    if memories:
+        memory_summary = "\n".join(
+            f"- [{m.key}] {json.dumps(m.value, ensure_ascii=False)}"
+            for m in memories
+        )
+        return {"context": f"使用者歷史記憶：\n{memory_summary}"}
+    return {}
+```
+
+應用場景：
+- 使用者上次說「2330 太貴了不想買」→ 這次推薦不會再推 2330
+- 追蹤過去推薦的準確率 → 動態調整信心閾值
+- 記住使用者偏好的分析深度和風格
+
+---
+
+### 模式 12：Agent 安全防護 `[v3 新增]`
+
+ECC 的 AgentShield 概念：掃描 agent 配置是否有安全漏洞。對 StockVision 尤其重要，因為涉及交易操作：
+
+```python
+# tools/security.py
+
+class AgentSecurityGuard:
+    """防止 agent 被 prompt injection 或異常行為影響交易"""
+
+    # 交易類操作的安全規則
+    TRADE_RULES = {
+        "max_single_trade_amount": 100_000,     # 單筆上限 10 萬
+        "max_daily_trades": 10,                  # 每日最多 10 筆
+        "max_daily_loss": 50_000,                # 日虧損上限 5 萬
+        "blocked_hours": [(0, 8), (14, 24)],     # 非交易時段禁止下單
+        "require_human_confirm_above": 50_000,   # 5 萬以上需人工確認
+    }
+
+    def validate_trade(self, trade: dict) -> tuple[bool, str]:
+        """在工具執行前驗證交易是否合規"""
+        # 金額檢查
+        amount = trade["price"] * trade["shares"]
+        if amount > self.TRADE_RULES["max_single_trade_amount"]:
+            return False, f"單筆金額 {amount} 超過上限"
+
+        # 時段檢查
+        hour = datetime.now(tz=ZoneInfo("Asia/Taipei")).hour
+        for start, end in self.TRADE_RULES["blocked_hours"]:
+            if start <= hour < end:
+                return False, f"非交易時段 ({hour}:00)，禁止下單"
+
+        # 日損檢查
+        daily_loss = self.get_today_realized_loss()
+        if daily_loss > self.TRADE_RULES["max_daily_loss"]:
+            return False, f"今日已虧損 {daily_loss}，觸發日損上限熔斷"
+
+        return True, "OK"
+
+    def detect_prompt_injection(self, user_input: str) -> bool:
+        """偵測可疑的 prompt injection 企圖"""
+        suspicious_patterns = [
+            r"ignore previous instructions",
+            r"you are now",
+            r"system:\s*",
+            r"買入所有",
+            r"全部賣出",
+            r"清倉",
+        ]
+        return any(re.search(p, user_input, re.IGNORECASE) for p in suspicious_patterns)
+
+    def audit_log(self, action: str, details: dict):
+        """所有交易相關操作留下審計軌跡"""
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "details": details,
+            "source": "agent",  # 標記是 agent 觸發的
+        }
+        # 寫入 D1 audit table，供後續追溯
+        requests.post(f"{WORKER_API}/api/system/audit", json=log_entry)
+
+# 在 LangGraph 中作為 guard node
+security = AgentSecurityGuard()
+
+async def trade_guard(state: dict) -> dict:
+    """交易前的安全閘門"""
+    trade = state["pending_trade"]
+
+    # 1. Prompt injection 檢查
+    if security.detect_prompt_injection(state.get("original_input", "")):
+        security.audit_log("blocked_injection", {"input": state["original_input"]})
+        return {"approved": False, "reason": "偵測到可疑指令，已攔截"}
+
+    # 2. 交易規則檢查
+    ok, reason = security.validate_trade(trade)
+    if not ok:
+        security.audit_log("blocked_trade", {"trade": trade, "reason": reason})
+        return {"approved": False, "reason": reason}
+
+    security.audit_log("approved_trade", {"trade": trade})
+    return {"approved": True}
+```
+
+這和模式 7（權限分級）的差異：
+- **模式 7** = 「這個工具誰能用」（身份/角色層）
+- **模式 12** = 「這筆操作合不合規」（業務規則層 + 攻擊偵測）
+
+---
+
+## 三.一、辯論 Agent Prompt 結構優化 `[v3 新增]`
+
+參考 ECC 的 36 個 subagent 定義方式，為辯論 agent 設計更結構化的 system prompt：
+
+```python
+# ECC 風格的 agent 定義：角色 + 能力邊界 + 輸出格式 + 限制
+
+BULL_AGENT_PROMPT = """## 角色
+你是 StockVision 的積極型投資分析師。
+
+## 能力範圍
+- 技術分析：均線、KD、MACD、布林通道突破信號
+- 籌碼分析：外資/投信連續買超、融資減少
+- ML 信號：模型集成做多信號、信心度
+
+## 分析框架
+1. 先看 ML 預測方向和信心度
+2. 再看技術面是否有突破/支撐
+3. 最後看籌碼面是否有主力進場跡象
+4. 綜合給出做多理由的強度（1-10 分）
+
+## 輸出格式
+{
+  "stance": "bullish",
+  "score": 1-10,
+  "key_reasons": ["理由1", "理由2", "理由3"],
+  "risk_acknowledged": "即使看多，最大的風險是...",
+  "entry_suggestion": {"price": ..., "stop_loss": ...}
+}
+
+## 限制
+- 不能忽略明顯的利空訊號，必須在 risk_acknowledged 中提及
+- 沒有做多理由時 score 必須 < 3
+- 不能建議超過持倉 20% 的單一個股配置
+"""
+
+BEAR_AGENT_PROMPT = """## 角色
+你是 StockVision 的風控分析師。
+
+## 能力範圍
+- 估值分析：本益比位置、股價淨值比、歷史估值區間
+- 風險信號：主力出貨、融資暴增、負面新聞密集
+- 市場風險：大盤風險分數、類股輪動離場
+
+## 分析框架
+1. 先看市場整體風險環境
+2. 再看個股估值是否偏高
+3. 最後看是否有出貨或利空跡象
+4. 綜合給出風險等級（1-10 分）
+
+## 輸出格式
+{
+  "stance": "bearish",
+  "risk_score": 1-10,
+  "key_risks": ["風險1", "風險2", "風險3"],
+  "upside_acknowledged": "即使看空，可能的做多理由是...",
+  "exit_suggestion": {"stop_loss": ..., "take_profit": ...}
+}
+
+## 限制
+- 不能為了看空而忽略明顯的利多，必須在 upside_acknowledged 中提及
+- 純粹因為「漲太多」不算有效看空理由，必須有具體數據支撐
+"""
+```
 
 ## 四、ml-controller 目錄結構變更
 
@@ -557,6 +848,17 @@ ml-controller/
 │       ├── trading.json
 │       ├── sentiment.json
 │       └── risk.json
+├── skills/              # [v3] Skill 工作流模板定義
+│   ├── stock_analysis.py
+│   ├── morning_check.py
+│   └── loader.py        # skill → subgraph 轉換器
+├── memory/              # [v3] Session 記憶持久化
+│   ├── store.py         # 記憶存取層
+│   └── hooks.py         # session start/end hooks
+├── security/            # [v3] Agent 安全防護
+│   ├── guard.py         # 交易安全閘門
+│   ├── injection.py     # prompt injection 偵測
+│   └── audit.py         # 審計日誌
 ├── PARITY.md            # [v2] 導入進度追蹤
 └── requirements.txt     # 加 langgraph
 ```
@@ -619,25 +921,25 @@ checkpointer = SqliteSaver.from_conn_string("/tmp/checkpoints.db")
 
 ---
 
-## 六、導入路徑 `[v2 更新]`
+## 六、導入路徑 `[v3 更新]`
 
 | Phase | 項目 | 涵蓋模式 | 說明 |
 |-------|------|---------|------|
 | **Phase 1** | 基礎建設 | 模式 1, 6, 8, 9 | Tool System + Feature Flags + JSON Schema + PARITY.md。先把工具層搭好 |
-| **Phase 2** | 辯論 + 權限 | 模式 3, 7 | Coordinator 辯論 graph + 工具權限分級。交易工具上線前必須有權限管控 |
-| **Phase 3** | 任務鏈 | 模式 5 | 每日 Cron pipeline + checkpointer 斷點恢復 |
-| **Phase 4** | 智能互動 | 模式 2, 4 | ToolSearch 動態載入 + Chat compaction。提升 chat 互動體驗 |
+| **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12 | Coordinator 辯論 graph + 權限分級 + 安全防護。交易工具上線前必須完成 `[v3 更新]` |
+| **Phase 3** | 任務鏈 + Skill | 模式 5, 10 | 每日 Cron pipeline + checkpointer + Skill 工作流模板化 `[v3 更新]` |
+| **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶持久化 `[v3 更新]` |
 
 ### Phase 間的依賴關係
 
 ```
 Phase 1（基礎建設）
   │
-  ├──→ Phase 2（辯論 + 權限）
+  ├──→ Phase 2（辯論 + 權限 + 安全）
   │       │
-  │       └──→ Phase 3（任務鏈）
+  │       └──→ Phase 3（任務鏈 + Skill）
   │
-  └──→ Phase 4（智能互動）← 可與 Phase 2/3 平行
+  └──→ Phase 4（智能互動 + 記憶）← 可與 Phase 2/3 平行
 ```
 
 Phase 4 不依賴 Phase 2/3，可以提前或平行開發。

@@ -1,359 +1,284 @@
-# Screener 資料清洗與候選篩選升級計畫
+# Screener 重構計畫：Bottom-up 多因子 + RRG 產業輪動
 
 > 日期：2026-04-02
-> 問題：screener 篩出 ~45 檔喂 ML，資料清洗度不夠，導致 ML timeout 和雜訊
+> 狀態：規劃中
+> 核心變更：從 top-down（先選概念族群）翻轉為 bottom-up（先評個股）
 
 ---
 
-## 一、現況分析
+## 一、現況問題
 
-### 現有 screener 流程
+### 現有流程（top-down）
 
 ```
-全市場 OHLCV + Chips
-     │
-     ▼
-Step 1: Concept Heat Score → top 8 概念族群
-     │
-     ▼
-Step 2: filterCandidates() → per-stock 評分 0~108
-        排除：股價 < 15、日均量 < 30 萬、5日跌 > 10%
-        評分：相對強度 + 法人連買 + RSI + 量能 + MA20 + 肯特納
-     │
-     ▼
-Step 3: 放寬加入 hot concept 所有成員（只過濾股價 < 10）
-     │
-     ▼
-Step 4: 動量突破掃描（量能爆發 + 價格突破，不靠概念標籤）
-     │
-     ▼
-Step 5: 排除處置股
-     │
-     ▼
-~45 檔 → D1 → ML pipeline
+概念族群熱度 top 8 → 從族群內挑個股 → 放寬加入族群所有成員 → ~45 檔
 ```
 
 ### 問題
 
-1. **Step 3 太鬆**：hot concept 成員幾乎全加入，只檢查股價 > 10
-2. **無異常值處理**：OHLCV 的極端值（如某天量能異常放大 10 倍）直接進入評分
-3. **同族群同質股多**：同一概念內走勢幾乎一樣的股票佔用 ML 額度
-4. **ML timeout**：45 檔 × 10 模型 ensemble → Modal 偶爾 timeout
+1. **概念族群是入口門檻**：不在 hot concept 裡的好股票直接被排除
+2. **Step 3 放寬太鬆**：hot concept 成員幾乎全加入（只過濾股價 < 10）→ 膨脹主因
+3. **概念標籤是手動維護的**（`seed_concept_tags.py` 28 個概念）→ 不準、不即時
+4. **新聞情緒沒用到**：`news.ts` 有鉅亨網 + Yahoo 爬蟲但 screener 沒接
+5. **RRG 沒接入**：前端有 RRG 四象限圖但 screener 沒用
+
+### 業界共識
+
+- 板塊配置只貢獻 9% 報酬（vs 個股選擇 12%）
+- 量化系統主流是 bottom-up 多因子為主，top-down 為輔
+- 報酬率聚類比 GICS/概念標籤更準（RMSE 低 15.9%）
+- 台股概念股分類全部是人工維護（CMoney、Goodinfo、鉅亨網皆是）
 
 ---
 
-## 二、清洗方案
+## 二、重構後完整流程
 
-### Phase 1：基礎清洗（最優先）
-
-#### 1.1 缺值規則（Missing Value Rules）
-
-**目標**：過濾資料不完整的候選
-
-**規則**：
-- 至少 3 天有效 price data（close > 0 且 volume > 0）
-- 缺值比例 > 40% 直接排除
-- 最新一天的 close 和 volume 必須有值
-
-**實作位置**：`worker/src/lib/dataCleanser.ts`（新檔案）
-
-**我的看法**：這是最基本的，現在 filterCandidates 有 `prices.length < 3` 檢查但 Step 3 放寬加入的候選沒有，應該統一到清洗層。
-
----
-
-#### 1.2 Hampel Filter（時序異常偵測）
-
-**目標**：偵測 OHLCV 中的離群值（如某天價格/量能異常跳動）
-
-**原理**：
-- 用 rolling median 取代 rolling mean（不受極端值影響）
-- MAD (Median Absolute Deviation) 取代標準差
-- 異常判定：`|x_i - median| > k × 1.4826 × MAD`（k=3）
-
-**適用資料**：
-| 資料類型 | 應用方式 |
-|---------|---------|
-| OHLCV close | 偵測異常收盤價（如除權息日未調整） |
-| Trading_Volume | 偵測異常量能（如大宗交易造成的假量） |
-
-**處理方式**：
-- 偵測到異常 → 用 median 替代（不刪除整筆資料）
-- 超過一半天數是異常 → 排除該候選
-
-**實作位置**：`worker/src/lib/dataCleanser.ts`
-
-**我的看法**：Hampel 對金融時序是最穩的異常偵測方式。z-score 用 mean+std，一個極端值就會拉偏全部；Hampel 用 median+MAD，天生抗極端值。window_size=2（5 天窗口）對你的 5 日資料剛好。
-
-**程式碼參考**：
-
-```typescript
-function hampelFilter(
-  values: number[],
-  windowSize: number = 2,
-  k: number = 3,
-): { cleaned: number[]; outlierIndices: number[] } {
-  const n = values.length
-  const cleaned = [...values]
-  const outlierIndices: number[] = []
-
-  if (n < 2 * windowSize + 1) return { cleaned, outlierIndices }
-
-  for (let i = windowSize; i < n - windowSize; i++) {
-    const window = values.slice(i - windowSize, i + windowSize + 1)
-    const sorted = [...window].sort((a, b) => a - b)
-    const median = sorted[Math.floor(sorted.length / 2)]
-
-    const deviations = window.map(v => Math.abs(v - median)).sort((a, b) => a - b)
-    const mad = deviations[Math.floor(deviations.length / 2)]
-
-    const threshold = k * 1.4826 * mad
-
-    if (threshold > 0 && Math.abs(values[i] - median) > threshold) {
-      cleaned[i] = median
-      outlierIndices.push(i)
-    }
-  }
-  return { cleaned, outlierIndices }
-}
+```
+Step 1: Universe 定義（全市場流動性門檻）
+│
+│   資料來源：
+│   ├── TWSE/TPEx 全市場 20 日 OHLCV
+│   ├── 三大法人籌碼
+│   ├── 鉅亨網 + Yahoo 新聞
+│   └── PTT 熱門概念
+│
+│   產業分類：FMStockInfo.industry_category
+│   ├── TWSE 上市：33 類
+│   ├── TPEx 上櫃：30 類
+│   └── 合計約 38 個不重複產業別（OpenAPI 直接取得，不需維護）
+│
+│   Hard filter：
+│   ├── close >= 15
+│   ├── close <= 2000
+│   ├── 20 日均量 >= 300,000
+│   ├── 最新日 volume > 0
+│   └── 排除處置股（punishedSet）
+│
+│   → ~800-1000 檔通過，每檔自帶官方產業別
+│
+      ▼
+Step 2: 多因子評分（Bottom-up 主篩選，每檔獨立評分）
+│
+│   籌碼面 (0-40)：
+│   ├── 外資+投信 5 日淨買超量 → 分級給分
+│   │   > 10 億 = 36, > 5 億 = 28, > 2 億 = 20, > 0 = 12, > -2 億 = 5, else 0
+│   └── 法人連續買超天數
+│       >= 5 天 +4, >= 3 天 +2
+│
+│   技術面 (0-30)：
+│   ├── RSI 14：55-70 = 12, 50-55 = 8, 45-50 = 4, >70 = 5
+│   ├── MACD histogram：> 0 = +8, > -0.5 = +3
+│   ├── 均線排列：MA5 +3, MA20 +4, MA60 +3
+│   └── 肯特納通道突破：close > MA20 + 1.5×ATR = +6
+│
+│   動能面 (0-20)：
+│   ├── 5 日報酬率 vs 大盤 (0-10)
+│   ├── 量能比：近 3 日 vs 20 日均量 (0-7)
+│   └── RSI 鈍化：RSI > 80 連 3+ 天 = +3
+│
+│   → 每檔得到 base_score (0-90)
+│
+      ▼
+Step 3: RRG 產業輪動定位（官方 38 產業別）
+│
+│   RS-Ratio 計算：
+│   ├── 每個產業的成員市值加權平均報酬（20 日窗口）
+│   ├── ÷ 大盤（TWII/TPEx）同期報酬
+│   └── EMA(10) 平滑 × 100（100 = 與大盤同步）
+│
+│   RS-Momentum 計算：
+│   └── RS-Ratio(today) - RS-Ratio(10 days ago)
+│
+│   四象限分類 + 加分：
+│   ├── Leading   (Ratio > 100, Momentum > 0) → +10 分
+│   ├── Improving (Ratio < 100, Momentum > 0) → +7 分
+│   ├── Weakening (Ratio > 100, Momentum < 0) → +0 分
+│   └── Lagging   (Ratio < 100, Momentum < 0) → -5 分
+│
+│   每檔股票依其官方產業別獲得 RRG bonus/penalty
+│
+│   注意：38 類粒度足夠。RRG 看的是「產業層級的順逆風」，
+│   個股層級的精細度由 Step 2 多因子 + Step 5 報酬率聚類補足。
+│
+      ▼
+Step 4: 情緒面加分（多源彙整）
+│
+│   新聞情緒 bonus (0-10)：← 現有 news.ts，目前 screener 沒接
+│   ├── 鉅亨網 RSS → analyzeSentiment()
+│   ├── Yahoo Finance → analyzeSentiment()
+│   └── positive = +5~10, neutral = 0, negative = -5
+│
+│   PTT buzz bonus (0-5)：← 從主角降為配角
+│   └── mentionCount + sentimentAvg → 加分
+│
+│   概念標籤 bonus (0-5)：← 降為最低權重，不影響選股
+│   └── 屬於 hot concept → +3~5（僅前端展示用）
+│
+│   → total_score = base_score + rrg_bonus + 情緒 bonus (0-120)
+│
+      ▼
+Step 5: 排序 + 去重 + 截斷
+│
+│   5a. 全部候選按 total_score 排序
+│
+│   5b. 同產業上限 5 檔
+│       用官方產業別（38 類），避免「半導體佔 15 檔」
+│
+│   5c. 報酬率相關性去重
+│       60 日報酬相關性 > 0.8 的只留最高分
+│       用 scipy 層次聚類（或 JS 版簡易相關性計算）
+│       不需概念標籤，數據驅動
+│       → 自動發現「不同產業但走勢一樣」的同質股
+│
+│   5d. 取 top 25（硬上限）
+│
+      ▼
+Step 6: 資料品質檢查（輕量清洗）
+│
+│   ├── 缺值：close / volume = 0 或 null → 排除
+│   ├── 異常值：單日漲跌 > 10%（非漲跌停日）→ 標記
+│   └── 資料時效：超過 1 天 → 排除
+│
+      ▼
+~20-25 檔 → 寫 D1 → ML pipeline（10 模型 Ensemble）
 ```
 
 ---
 
-#### 1.3 Winsorization（極端值截斷）
+## 三、分類體系角色對照
 
-**目標**：壓平跨候選的極端分數，避免一檔超高分壟斷
+| 分類來源 | 數量 | 在流程中的角色 | 維護方式 |
+|---------|------|--------------|---------|
+| **官方產業別** | TWSE 33 + TPEx 30 ≈ 38 不重複 | Step 3 RRG 計算 + Step 5 同產業上限 | 不需維護，OpenAPI 直接取 |
+| **報酬率相關性分群** | 動態（每週變） | Step 5 去重 | 每週自動計算 |
+| **概念標籤** | 現有 28 個 | Step 4 輕量加分 + 前端展示 | 偶爾手動更新 |
 
-**原理**：
-- 不刪除資料，只把超出 [5th, 95th] percentile 的值截斷到邊界
-- 比簡單 clamp 更統計學正確
+**選股邏輯不再依賴概念標籤的準確度。**
+標籤分錯最多影響 ±5 分（滿分 120），不會決定一檔股票進不進候選。
 
-**適用資料（分資料類型）**：
+---
 
-| 資料類型 | Winsorize 方式 |
-|---------|---------------|
-| OHLCV / 技術特徵 | Hampel 先清 → Winsorize percentile clip |
-| Sentiment / PTT buzz | log transform → robust z-score → source-wise normalization |
-| Chips 籌碼 | rolling median + MAD → percentile clip (2nd/98th，金融數據本來偏態) |
-| Candidate scores | Winsorize 0.05/0.95 |
+## 四、跟現有流程的差異
 
-**實作位置**：`worker/src/lib/dataCleanser.ts`
+| | 現在 | 重構後 |
+|---|---|---|
+| **架構** | Top-down（概念族群 → 個股） | Bottom-up（個股評分 → 產業加分） |
+| **入口** | 先選 8 個 hot concept | 全市場每檔都評分 |
+| **概念族群** | 第一道門檻（決定 universe） | 降為 Step 4 加分項（+0~5） |
+| **RRG** | 沒有 | Step 3 用官方 38 產業計算四象限 |
+| **新聞情緒** | `news.ts` 沒接入 screener | Step 4 鉅亨+Yahoo 情感加分 |
+| **PTT** | 概念熱度主來源 (0-30) | 降為輔助 (0-5) |
+| **候選膨脹** | 放寬 concept 成員 + 動量 15 檔 → ~45 | top 25 硬截斷，不會膨脹 |
+| **動量突破** | 獨立掃描加 15 檔 | 併入 Step 2 動能面，不另外加 |
+| **去重** | 沒有 | Step 5 報酬率相關性去重 |
+| **資料品質** | 沒有 | Step 6 缺值/異常/時效檢查 |
+| **產業分類** | 手動 28 概念標籤 | 官方 38 產業（自動）+ 報酬率聚類（自動） |
+| **控制數量** | 靠 topNPerSector × 族群數（不穩定） | top 25 硬截斷（穩定） |
 
-**我的看法**：Winsorize 要分資料類型處理。OHLCV 用標準 percentile clip；籌碼資料本來就偏態分布（外資某天大買 50 億是正常的），所以要用更寬的 percentile（2%/98%）；PTT buzz 是 count data，先 log transform 再 normalize 才合理。
+---
 
-**程式碼參考**：
+## 五、RRG 計算細節
 
-```typescript
-function winsorize(
-  values: number[],
-  lowerPct: number = 0.05,
-  upperPct: number = 0.95,
-): { winsorized: number[]; clippedCount: number } {
-  const sorted = [...values].sort((a, b) => a - b)
-  const lowerBound = sorted[Math.floor(sorted.length * lowerPct)]
-  const upperBound = sorted[Math.ceil(sorted.length * upperPct) - 1]
+### 資料需求
 
-  let clippedCount = 0
-  const winsorized = values.map(v => {
-    if (v < lowerBound) { clippedCount++; return lowerBound }
-    if (v > upperBound) { clippedCount++; return upperBound }
-    return v
-  })
-  return { winsorized, clippedCount }
-}
+| 資料 | 來源 | 現有？ |
+|------|------|--------|
+| 每檔股票的官方產業別 | `FMStockInfo.industry_category` | ✅ 已有 |
+| 每檔股票的 20 日 OHLCV | TWSE/TPEx API | ✅ 已有（目前抓 5 日，需擴到 20 日） |
+| 大盤指數日報酬 | TWII / TPEx 指數 | ✅ 已有（`usLeading.ts` 有抓） |
+| 每檔股票的市值 | TWSE BWIBBU API | ✅ 已有（`twseApi.ts`） |
+
+### 計算步驟
+
+```
+1. 每日：計算每個產業的市值加權平均報酬
+   industry_return[i] = Σ(stock_return × market_cap) / Σ(market_cap)
+
+2. 每日：計算相對強度
+   relative_strength[i] = industry_cumulative_return(20d) / market_cumulative_return(20d)
+
+3. RS-Ratio = EMA(relative_strength, 10) × 100
+   → > 100 表示該產業強於大盤
+
+4. RS-Momentum = RS-Ratio[today] - RS-Ratio[10d ago]
+   → > 0 表示動能正在增加
+
+5. 四象限 = f(RS-Ratio, RS-Momentum)
+```
+
+### DB 變更
+
+`sector_heat` 表新增欄位：
+
+```sql
+ALTER TABLE sector_heat ADD COLUMN rs_ratio REAL;
+ALTER TABLE sector_heat ADD COLUMN rs_momentum REAL;
+ALTER TABLE sector_heat ADD COLUMN quadrant TEXT;  -- 'Leading'|'Improving'|'Weakening'|'Lagging'
 ```
 
 ---
 
-#### 1.4 Sector/Group 去重（同質候選剔除）
+## 六、報酬率相關性去重細節
 
-**目標**：同一概念族群內，走勢幾乎一樣的股票只留最高分
+### 原理
 
-**規則**：
-- 同 sector 內，5 日報酬率差距 < 1% 且分數差 < 5 → 視為同質，只留最高分
-- 每個 sector 最多保留 6 檔
+不靠概念標籤判斷「同質股」，直接看價格行為：
+- 60 日報酬率相關性 > 0.8 → 視為同質
+- 同質群中只留 total_score 最高的
 
-**實作位置**：`worker/src/lib/dataCleanser.ts`
-
-**我的看法**：這是最直接解決「45 檔太多」的方法。同一個概念族群（如 AI 伺服器）裡面可能有 10 檔走勢幾乎一模一樣的股票，全送 ML 是浪費。Phase 2 可以用 DBSCAN/HDBSCAN 做更精準的分群去重。
-
----
-
-#### 1.5 Rule-based Pre-ML Score（門檻篩選）
-
-**目標**：在送 ML 之前做一次粗篩，直接解 timeout
-
-**評分維度（0-100 快速粗分）**：
-
-| 維度 | 分數範圍 | 邏輯 |
-|------|---------|------|
-| 基本趨勢方向 | 0-30 | 5 日跌幅 > 15% = 0 分；不跌 = 20+漲幅加分 |
-| 量能活絡 | 0-20 | 均量 < 10 萬 = fail；> 30 萬 = 20 分 |
-| 收盤合理性 | 0-10 | 日內振幅 > 9.5%（漲跌停）= 扣分 |
-| 籌碼方向 | 0-20 | 近 3 日法人淨買超 > 0 = 20 分 |
-| Screener 分數 | 0-20 | screenScore / 5 |
-
-**通過條件**：score >= 25 且無致命 failReason
-
-**實作位置**：`worker/src/lib/dataCleanser.ts`
-
-**我的看法**：這不是要取代 ML，而是用簡單規則先砍掉「明顯不該送 ML 的」候選。例如：5 日跌 20% 且法人大賣的股票，不管 concept heat 多高都不該浪費 ML 算力。
-
----
-
-### Phase 2：智慧分流（第二優先）
-
-#### 2.1 DBSCAN/HDBSCAN 候選分群
-
-**目標**：取代 Phase 1 的簡易去重，做更精準的同質候選識別
-
-**特徵向量**：
-- 5 日報酬率
-- 量能比
-- RSI
-- 法人買超天數
-- sector one-hot
-
-**做法**：
-- 用 HDBSCAN 分群（不需指定 k）
-- 每個 cluster 只取代表股（分數最高）
-- noise points（不屬於任何 cluster）= 獨特標的，保留
-
-**實作位置**：`ml-controller/services/` 或 `worker/src/lib/`
-
-**我的看法**：DBSCAN 比簡單 dedup 好在它能自動發現「非顯而易見的同質股」。例如兩檔不在同一 sector 但走勢完全一樣（如同一供應鏈的上下游），簡易 dedup 抓不到但 DBSCAN 可以。缺點是要在 Worker 裡跑或丟給 Controller 做，Worker CPU 有限。
-
-**建議放在 ml-controller**（Python，HDBSCAN 套件現成）。
-
----
-
-#### 2.2 Isolation Forest anomaly_score
-
-**目標**：補一個不依賴 domain knowledge 的異常偵測
-
-**用途**：
-- 幫每個候選算一個 anomaly_score (0~1)
-- 不直接排除，而是作為 ML 的額外特徵
-- 或作為 pre-ranker 的降分依據
-
-**實作位置**：`ml-controller/services/`（Python，sklearn 現成）
-
-**我的看法**：Isolation Forest 跟 Hampel 的差異：Hampel 是「同一個變數的時序異常」，IF 是「多維度空間中的離群點」。兩者互補。IF 的 anomaly_score 可以直接塞進 scorer.py 當作一個 penalty factor。
-
----
-
-#### 2.3 LightGBM Pre-ranker
-
-**目標**：用簡單 ML 模型做 pre-ranking，取代 rule-based score
-
-**訓練資料**：
-- 特徵：screener score、chip 指標、技術指標、anomaly_score
-- Label：後續 ML ensemble 的預測方向是否正確（回測可得）
-
-**做法**：
-- 訓練一個輕量 LightGBM binary classifier
-- 輸出 probability → 作為 pre-rank score
-- 取 top 25 送 ML ensemble
-
-**實作位置**：`ml-controller/services/`
-
-**我的看法**：這要等有足夠回測資料才能訓練（至少 2-3 個月的 screener 結果 + ML 預測對錯）。Phase 1 先跑，累積資料後再做 Phase 2。
-
----
-
-## 三、清洗 Pipeline 插入位置
+### 實作方式
 
 ```
-全市場 OHLCV + Chips
-     │
-     ▼
-Step 1: Concept Heat → top 8 概念
-     │
-     ▼
-Step 2: filterCandidates() → 評分篩選
-     │
-     ▼
-Step 3: 放寬加入 concept 成員
-     │
-     ▼
-Step 4: 動量突破掃描
-     │
-     ▼
-Step 4.5: 排除處置股
-     │
-     ▼
-★ Step 4.6: 資料清洗 pipeline（新增）★
-│   ├ 缺值規則
-│   ├ Hampel Filter（price + volume）
-│   ├ Winsorization（分資料類型）
-│   ├ Sector 去重
-│   └ Pre-ML Score（門檻 ≥ 25）
-│   → 目標：45 → 25 檔
-     │
-     ▼
-Step 5: 寫入 D1 → ML pipeline
+簡易版（Worker TypeScript 可做）：
+1. 取每檔候選的 20 日收盤價序列
+2. 計算兩兩 Pearson 相關性
+3. 相關性 > 0.8 的配對 → 只留分數高的
+
+進階版（Controller Python）：
+1. scipy.cluster.hierarchy 層次聚類
+2. 自動分群，每群取代表
 ```
 
-### 新增檔案
-
-```
-worker/src/lib/
-  └── dataCleanser.ts    # Phase 1 清洗模組
-
-ml-controller/services/
-  ├── candidate_filter.py   # Phase 2 HDBSCAN + IF（未來）
-  └── pre_ranker.py         # Phase 2 LightGBM（未來）
-```
-
-### 對 marketScreener.ts 的改動
-
-在 Step 4.5（處置股排除）後、Step 5（DB 寫入）前，插入一行：
-
-```typescript
-// Step 4.6: 資料清洗
-const { cleanseAndFilter } = await import('./dataCleanser')
-const cleansed = cleanseAndFilter(candidates, data.prices, data.chips, 25)
-candidates.length = 0
-candidates.push(...cleansed.candidates)
-```
+候選 ~50 檔時，兩兩配對 = 50×49/2 = 1,225 次計算，Worker 跑得動。
 
 ---
 
-## 四、預期效果
+## 七、改動範圍
 
-| 指標 | 現在 | Phase 1 後 | Phase 2 後 |
-|------|------|-----------|-----------|
-| ML 候選數量 | ~45 | ~25 | ~20 |
-| ML timeout 頻率 | 偶發 | 應消除 | — |
-| 同質候選 | 多 | 減少（簡易 dedup） | 消除（HDBSCAN） |
-| 極端值污染 | 有 | Hampel + Winsorize 處理 | + IF anomaly_score |
-| 缺值候選 | 會進入 ML | 被過濾 | — |
-
----
-
-## 五、清洗報告 Log 格式
-
-每次執行後輸出：
-
-```
-[Screener] Data cleansing: 45 → 23 candidates
-  ├ Missing data: -3 (1234, 5678, 9012)
-  ├ Hampel outlier: -1 (3456)
-  ├ Sector dedup: -8 (2345, 6789, ...)
-  ├ Pre-ML filter: -10 (7890, ...)
-  └ Winsorized: 4 scores clipped
-```
+| 檔案 | 改動 | 大小 |
+|------|------|------|
+| `marketScreener.ts` | 重構主流程 | 大（核心） |
+| `news.ts` | 新增 `batchSentiment(symbols)` | 小 |
+| `tradingConfig.ts` | 新增 `maxCandidates: 25`、`maxPerSector: 5` | 小 |
+| `finmind.ts` 或 `twseApi.ts` | 擴展抓 20 日資料（目前 5 日） | 小 |
+| `schema.sql` + migration | `sector_heat` 加 `rs_ratio`、`rs_momentum`、`quadrant` | 小 |
+| `dailyRecommendation.ts` | `sector_flow` 寫入時一併算 RRG 座標 | 中 |
+| `scorer.py` | 不動（ML 階段評分邏輯不變） | 無 |
 
 ---
 
-## 六、導入順序
+## 八、預期效果
 
-| 順序 | 項目 | 前置條件 | 預估工時 |
-|------|------|---------|---------|
-| 1 | Hampel Filter | 無 | 1h |
-| 2 | Winsorization | 無 | 0.5h |
-| 3 | Pre-ML Score | 無 | 1h |
-| 4 | 缺值規則 | 無 | 0.5h |
-| 5 | Sector 去重 | 無 | 1h |
-| 6 | DBSCAN/HDBSCAN | Phase 1 完成 + Controller Python 環境 | 2h |
-| 7 | Isolation Forest | Phase 1 完成 | 1h |
-| 8 | LightGBM Pre-ranker | 2-3 個月 screener 回測資料 | 3h |
+| 指標 | 現在 | 重構後 |
+|------|------|--------|
+| 候選數量 | ~45（不穩定） | ~25（穩定，硬上限） |
+| ML timeout | 偶發 | 應消除 |
+| 漏選好股票 | 不在 hot concept = 被排除 | 全市場都評分，不會漏 |
+| 同質重複 | 多（同概念走勢一樣） | 報酬率去重消除 |
+| 新聞情緒 | 沒用到 | 接入加分 |
+| RRG 輪動 | 前端有但 screener 沒用 | 接入 Step 3 |
+| 分類維護成本 | 手動維護 28 概念 | 官方產業別自動取得 |
+
+---
+
+## 九、實作順序
+
+| 順序 | 項目 | 前置條件 | 說明 |
+|------|------|---------|------|
+| 1 | 擴展資料抓取到 20 日 | 無 | 改 `fetchMultiDayMarketData(5)` → `(20)` |
+| 2 | Step 2 多因子評分 | 順序 1 | 從現有 `filterCandidates` + `scorer.py` 整合 |
+| 3 | Step 3 RRG 計算 | 順序 1 | 新增 RRG 計算函式 + DB migration |
+| 4 | Step 4 接入 `news.ts` | 無 | 呼叫現有 `analyzeSentiment` |
+| 5 | Step 5 去重 + 截斷 | 順序 2 | 報酬率相關性計算 + top 25 |
+| 6 | Step 6 資料品質檢查 | 無 | 缺值/異常/時效 |
+| 7 | 移除舊流程 | 順序 2-6 全完成 | 刪除 concept heat 選股邏輯（保留前端展示） |

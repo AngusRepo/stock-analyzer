@@ -1549,12 +1549,15 @@ async function calcIndustryRRG(
   const weakeningBonus = rrg.weakeningBonus ?? 0
   const laggingPenalty = rrg.laggingPenalty ?? -5
 
+  const isColdStart = prevRsMap.size === 0
+
   for (const [industry, returns] of industryReturns) {
     if (returns.length < 3) continue  // 太少成員的產業不計
 
     const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length
-    // RS-Ratio = 相對強度 × 100（EMA 簡化為當前值，冷啟動沒有歷史）
-    const rawRs = marketReturn !== 0 ? (avgReturn / Math.abs(marketReturn)) * 100 : 100
+    // RS-Ratio = (1 + industry_return) / (1 + market_return) × 100
+    // > 100 = 強於大盤, < 100 = 弱於大盤
+    const rawRs = ((1 + avgReturn) / (1 + marketReturn)) * 100
     // EMA 平滑：如果有前值就做 EMA，沒有就用 raw
     const prevRs = prevRsMap.get(industry)
     const k = 2 / (emaSpan + 1)
@@ -1565,15 +1568,24 @@ async function calcIndustryRRG(
 
     const quadrant = classifyQuadrant(rsRatio, rsMomentum)
     let bonus = 0
-    if (quadrant === 'Leading') bonus = leadingBonus
-    else if (quadrant === 'Improving') bonus = improvingBonus
-    else if (quadrant === 'Weakening') bonus = weakeningBonus
-    else bonus = laggingPenalty
+    if (!isColdStart) {
+      // 正常模式：四象限加分
+      if (quadrant === 'Leading') bonus = leadingBonus
+      else if (quadrant === 'Improving') bonus = improvingBonus
+      else if (quadrant === 'Weakening') bonus = weakeningBonus
+      else bonus = laggingPenalty
+    } else {
+      // 冷啟動：沒有 momentum，用 rawRs 強弱排名給分
+      if (rsRatio > 105) bonus = 7       // 明顯強於大盤 → 等同 Improving
+      else if (rsRatio > 100) bonus = 3  // 略強
+      else if (rsRatio >= 95) bonus = 0  // 與大盤同步
+      else bonus = -3                    // 明顯弱於大盤
+    }
 
     result.set(industry, { rsRatio, rsMomentum, quadrant, bonus })
   }
 
-  console.log(`[RRG] ${result.size} industries: ${[...result.entries()].filter(([, v]) => v.quadrant === 'Leading').map(([k]) => k).join(', ') || 'none'} Leading`)
+  console.log(`[RRG] ${isColdStart ? 'COLD START — ' : ''}${result.size} industries: Leading=[${[...result.entries()].filter(([, v]) => v.quadrant === 'Leading').map(([k]) => k).join(', ') || 'none'}]`)
   return result
 }
 

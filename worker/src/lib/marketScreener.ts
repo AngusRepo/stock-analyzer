@@ -1085,6 +1085,22 @@ export async function runMarketScreener(env: Bindings): Promise<{
     }
   }
 
+  // ── Step 4.6: 資料清洗 + 候選去重 + Pre-ML 篩選 ─────────────────────────
+  const { cleanseAndFilter } = await import('./dataCleanser')
+  const cleansed = cleanseAndFilter(candidates, data.prices, data.chips, 25)
+  const cleanReport = cleansed.report
+
+  // 用清洗後的 candidates 替換原本的
+  candidates.length = 0
+  candidates.push(...cleansed.candidates)
+
+  console.log(`[Screener] Data cleansing: ${cleanReport.inputCount} → ${cleanReport.outputCount} candidates`)
+  if (cleanReport.removed.missingData.length) console.log(`  ├ Missing data: -${cleanReport.removed.missingData.length} (${cleanReport.removed.missingData.slice(0, 5).join(', ')})`)
+  if (cleanReport.removed.hampelOutlier.length) console.log(`  ├ Hampel outlier: -${cleanReport.removed.hampelOutlier.length} (${cleanReport.removed.hampelOutlier.join(', ')})`)
+  if (cleanReport.removed.sectorDedup.length) console.log(`  ├ Sector dedup: -${cleanReport.removed.sectorDedup.length} (${cleanReport.removed.sectorDedup.slice(0, 5).join(', ')})`)
+  if (cleanReport.removed.preMlFilter.length) console.log(`  ├ Pre-ML filter: -${cleanReport.removed.preMlFilter.length} (${cleanReport.removed.preMlFilter.slice(0, 5).join(', ')})`)
+  if (cleanReport.winsorized.length) console.log(`  └ Winsorized: ${cleanReport.winsorized.length} scores clipped`)
+
   console.log(`[Screener] Final candidates: ${candidates.length}`)
 
   // ── Step 5: 寫入 DB ──────────────────────────────────────────────────────

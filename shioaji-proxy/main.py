@@ -249,6 +249,278 @@ def snapshot_endpoint(symbol: str, authorization: str | None = None):
     raise HTTPException(404, f"No snapshot for {symbol}")
 
 
+# ── Market Risk：盤中即時大盤風險 ──────────────────────────────────────────
+# 用加權指數 snapshot 計算即時風險等級
+# Worker intraday-check 觸價前讀此 endpoint
+_market_risk_cache: dict = {}
+_market_risk_ts: float = 0
+
+@app.get("/market-risk")
+def market_risk(authorization: str | None = None):
+    """
+    即時大盤風險評估（快取 60 秒）
+    基於加權指數即時跌幅 + 量比 判斷 risk_level: low / medium / high
+    """
+    verify_token(authorization)
+    global _market_risk_cache, _market_risk_ts
+
+    # 60 秒快取
+    if time.time() - _market_risk_ts < 60 and _market_risk_cache:
+        return _market_risk_cache
+
+    if not api or not connected:
+        return {"status": "error", "message": "Shioaji not connected", "risk_level": "unknown"}
+
+    try:
+        # 取加權指數 snapshot（001 = TAIEX）
+        tse_contract = api.Contracts.Indexs.TSE.get("001")
+        if not tse_contract:
+            return {"status": "error", "message": "Cannot find TAIEX contract", "risk_level": "unknown"}
+
+        snapshots = api.snapshots([tse_contract])
+        if not snapshots or len(snapshots) == 0:
+            return {"status": "error", "message": "No TAIEX snapshot", "risk_level": "unknown"}
+
+        s = snapshots[0]
+        close = s.close
+        change_rate = s.change_rate  # 漲跌幅 %
+        total_volume = s.total_volume  # 成交量（張）
+
+        # 計算 risk_level
+        # 規則引擎（Phase 1，後續可升級為 LightGBM）
+        risk_level = "low"
+        risk_reasons = []
+
+        # 1. 跌幅判斷（絕對值 + 相對值）
+        if change_rate <= -2.0:
+            risk_level = "high"
+            risk_reasons.append(f"大盤跌 {change_rate:.1f}%（急跌）")
+        elif change_rate <= -1.0:
+            risk_level = "medium" if risk_level == "low" else risk_level
+            risk_reasons.append(f"大盤跌 {change_rate:.1f}%")
+
+        # 2. 量能判斷（相對於時間比例的預期量）
+        now = get_tw_now()
+        market_minutes = (now.hour * 60 + now.minute) - 9 * 60  # 09:00 開始
+        if market_minutes > 0:
+            # 台股日均量約 3000~5000 億，用 total_volume 相對時間比例判斷
+            expected_pct = min(market_minutes / 270, 1.0)  # 270 分鐘 = 4.5 小時
+            # 量能過低 = 空頭信號（市場觀望或恐慌性低量）
+            # 這裡用簡化判斷，後續可改為 vs 20 日均量
+            if expected_pct > 0.2 and total_volume < 100_000:  # 粗估：<10 萬張 = 極低量
+                risk_level = "medium" if risk_level == "low" else risk_level
+                risk_reasons.append("量能偏低")
+
+        result = {
+            "status": "ok",
+            "risk_level": risk_level,
+            "index_price": close,
+            "change_rate": round(change_rate, 2),
+            "total_volume": total_volume,
+            "risk_reasons": risk_reasons,
+            "updated_at": datetime.now(TW_TZ).isoformat(),
+        }
+        _market_risk_cache = result
+        _market_risk_ts = time.time()
+        return result
+
+    except Exception as e:
+        print(f"[MarketRisk] Failed: {e}")
+        return {"status": "error", "message": str(e), "risk_level": "unknown"}
+
+
+# ── 五檔報價 + Orderbook Features ─────────────────────────────────────────
+@app.get("/orderbook/{symbol}")
+def orderbook(symbol: str, authorization: str | None = None):
+    """
+    取個股 L5 五檔報價 + 計算 orderbook features：
+    - bid_ask_imbalance: (bid_vol - ask_vol) / (bid_vol + ask_vol)，-1~+1
+    - spread_pct: (ask_1 - bid_1) / mid_price * 100，越大流動性越差
+    - bid_concentration: bid_1_vol / total_bid_vol，大單集中度
+    """
+    verify_token(authorization)
+    symbol = symbol.upper().strip()
+
+    if not api or not connected:
+        raise HTTPException(503, "Shioaji not connected")
+
+    try:
+        contract = api.Contracts.Stocks.get(symbol)
+        if not contract:
+            raise HTTPException(404, f"Contract not found: {symbol}")
+
+        snapshots = api.snapshots([contract])
+        if not snapshots or len(snapshots) == 0:
+            raise HTTPException(404, f"No snapshot for {symbol}")
+
+        s = snapshots[0]
+
+        # L5 五檔（Shioaji snapshot 回傳 list[5]）
+        bid_prices = list(s.bid_price) if hasattr(s, 'bid_price') else []
+        bid_volumes = list(s.bid_volume) if hasattr(s, 'bid_volume') else []
+        ask_prices = list(s.ask_price) if hasattr(s, 'ask_price') else []
+        ask_volumes = list(s.ask_volume) if hasattr(s, 'ask_volume') else []
+
+        total_bid_vol = sum(bid_volumes) if bid_volumes else 0
+        total_ask_vol = sum(ask_volumes) if ask_volumes else 0
+        total_vol = total_bid_vol + total_ask_vol
+
+        # Bid-Ask Imbalance: 正值 = 買方強，負值 = 賣方強
+        imbalance = (total_bid_vol - total_ask_vol) / total_vol if total_vol > 0 else 0
+
+        # Spread: 內外盤價差比例
+        bid1 = bid_prices[0] if bid_prices else 0
+        ask1 = ask_prices[0] if ask_prices else 0
+        mid = (bid1 + ask1) / 2 if bid1 and ask1 else s.close
+        spread_pct = ((ask1 - bid1) / mid * 100) if mid > 0 and bid1 and ask1 else 0
+
+        # Bid Concentration: 內盤第一檔集中度（大單守護）
+        bid_concentration = (bid_volumes[0] / total_bid_vol) if total_bid_vol > 0 and bid_volumes else 0
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "price": s.close,
+            "bid_prices": bid_prices,
+            "bid_volumes": bid_volumes,
+            "ask_prices": ask_prices,
+            "ask_volumes": ask_volumes,
+            "features": {
+                "bid_ask_imbalance": round(imbalance, 4),
+                "spread_pct": round(spread_pct, 4),
+                "bid_concentration": round(bid_concentration, 4),
+            },
+            "updated_at": datetime.now(TW_TZ).isoformat(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Orderbook] {symbol} failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ── TWSE/TPEX Chips Proxy（CF Workers IP 被擋，透過 GCP proxy）────────────────
+
+class ChipsRequest(BaseModel):
+    date: str  # YYYY-MM-DD
+
+@app.post("/twse-chips")
+async def twse_chips(req: ChipsRequest):
+    """Proxy TWSE institutional trading data (T86) for CF Workers"""
+    import httpx, re
+    d = req.date.replace("-", "")
+    chips = []
+    margins = []
+
+    # 三大法人買賣超 (T86)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={d}&selectType=ALL&response=json"
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            if data.get("stat") == "OK" and data.get("data"):
+                parse = lambda s: int(re.sub(r"[,\s]", "", str(s)) or "0") if s else 0
+                for row in data["data"]:
+                    sym = str(row[0]).strip()
+                    if not re.match(r"^\d{4,6}$", sym):
+                        continue
+                    chips.append({
+                        "symbol": sym,
+                        "foreign_buy": parse(row[2]), "foreign_sell": parse(row[3]), "foreign_net": parse(row[4]),
+                        "trust_buy": parse(row[8]), "trust_sell": parse(row[9]), "trust_net": parse(row[10]),
+                        "dealer_buy": parse(row[12]), "dealer_sell": parse(row[13]), "dealer_net": parse(row[11]),
+                    })
+    except Exception as e:
+        print(f"[TWSE-Chips] T86 failed: {e}")
+
+    # 融資融券 (MI_MARGN)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            url = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={d}&selectType=ALL&response=json"
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            tables = data.get("tables", [])
+            if data.get("stat") == "OK" and len(tables) > 1 and tables[1].get("data"):
+                parse = lambda s: int(re.sub(r"[,\s]", "", str(s)) or "0") if s else 0
+                for row in tables[1]["data"]:
+                    sym = str(row[0]).strip()
+                    if not re.match(r"^\d{4,6}$", sym):
+                        continue
+                    margins.append({
+                        "symbol": sym,
+                        "margin_buy": parse(row[2]), "margin_sell": parse(row[3]),
+                        "margin_balance": parse(row[6]),
+                        "short_buy": parse(row[8]), "short_sell": parse(row[9]),
+                        "short_balance": parse(row[12]),
+                    })
+    except Exception as e:
+        print(f"[TWSE-Chips] MI_MARGN failed: {e}")
+
+    return {"chips": chips, "margins": margins, "date": req.date}
+
+
+@app.post("/tpex-chips")
+async def tpex_chips(req: ChipsRequest):
+    """Proxy TPEX institutional trading data for CF Workers (TPEX blocks CF IPs)"""
+    import httpx
+    parts = req.date.split("-")
+    roc_year = int(parts[0]) - 1911
+    roc_date = f"{roc_year}/{parts[1]}/{parts[2]}"
+
+    chips = []
+    margins = []
+
+    # 1. 三大法人買賣超
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            url = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&d={roc_date}&se=EW&t=D&o=json"
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            rows = data.get("tables", [{}])[0].get("data", [])
+            import re
+            parse = lambda s: int(re.sub(r"[,\s]", "", str(s)) or "0") if s else 0
+            for row in rows:
+                sym = str(row[0]).strip()
+                if not re.match(r"^\d{4}$", sym):
+                    continue
+                chips.append({
+                    "symbol": sym,
+                    "foreign_buy": parse(row[2]), "foreign_sell": parse(row[3]), "foreign_net": parse(row[4]),
+                    "trust_buy": parse(row[11]), "trust_sell": parse(row[12]), "trust_net": parse(row[13]),
+                    "dealer_buy": parse(row[14]) + parse(row[17]),
+                    "dealer_sell": parse(row[15]) + parse(row[18]),
+                    "dealer_net": parse(row[20]),
+                })
+    except Exception as e:
+        print(f"[TPEX-Chips] 3insti failed: {e}")
+
+    # 2. 融資融券
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&d={roc_date}&o=json"
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            rows = data.get("tables", [{}])[0].get("data", [])
+            import re
+            parse = lambda s: int(re.sub(r"[,\s]", "", str(s)) or "0") if s else 0
+            for row in rows:
+                sym = str(row[0]).strip()
+                if not re.match(r"^\d{4}$", sym):
+                    continue
+                margins.append({
+                    "symbol": sym,
+                    "margin_buy": parse(row[2]), "margin_sell": parse(row[3]),
+                    "margin_balance": parse(row[4]),
+                    "short_buy": parse(row[8]), "short_sell": parse(row[9]),
+                    "short_balance": parse(row[10]),
+                })
+    except Exception as e:
+        print(f"[TPEX-Chips] margin failed: {e}")
+
+    return {"chips": chips, "margins": margins, "date": req.date}
+
+
 # ── Entry Point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn

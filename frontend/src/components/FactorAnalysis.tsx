@@ -26,7 +26,11 @@ export default function FactorAnalysis({ stockId }: { stockId: number }) {
   })
 
   if (isLoading) return <Skeleton className="h-48 w-full" />
-  if (!factor) return <div className="text-sm text-muted-foreground text-center py-8">暫無因子分析（請先執行計算）</div>
+  if (!factor || (factor as any).empty) return (
+    <div className="text-sm text-muted-foreground text-center py-8">
+      {(factor as any)?.reason ?? '暫無因子分析'}
+    </div>
+  )
 
   const f = factor as any
   return (

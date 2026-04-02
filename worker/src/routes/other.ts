@@ -115,36 +115,57 @@ async function buildSnapshot(db: D1Database, stockId: number) {
   }
 }
 
+// ── LLM KV 快取：同一天同一支股票不重複打 Anthropic API ──────────────────────
+const llmCacheKey = (type: string, stockId: number) => {
+  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  return `llm:${type}:${stockId}:${twDate}`
+}
+
 llm.post('/technical-analysis', authMiddleware, async (c) => {
   const { stockId } = await c.req.json()
+  const cacheKey = llmCacheKey('tech', stockId)
+  const cached = await c.env.KV.get(cacheKey)
+  if (cached) return c.json({ analysis: cached, cached: true })
+
   const result = await buildSnapshot(c.env.DB, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
   const analysis = await generateTechnicalAnalysis(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
+  await c.env.KV.put(cacheKey, analysis, { expirationTtl: 86400 })
   return c.json({ analysis })
 })
 
 llm.post('/trading-advice', authMiddleware, async (c) => {
   const { stockId } = await c.req.json()
+  const cacheKey = llmCacheKey('trade', stockId)
+  const cached = await c.env.KV.get(cacheKey)
+  if (cached) return c.json({ advice: cached, cached: true })
+
   const result = await buildSnapshot(c.env.DB, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
   const advice = await generateTradingAdvice(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
+  await c.env.KV.put(cacheKey, advice, { expirationTtl: 86400 })
   return c.json({ advice })
 })
 
 llm.post('/analyst-summary', authMiddleware, async (c) => {
   const { stockId } = await c.req.json()
+  const cacheKey = llmCacheKey('summary', stockId)
+  const cached = await c.env.KV.get(cacheKey)
+  if (cached) return c.json({ summary: cached, cached: true })
+
   const result = await buildSnapshot(c.env.DB, stockId)
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
+    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
   const financials = latestFin ? { eps: latestFin.eps, pe: latestFin.pe, pb: latestFin.pb, roe: latestFin.roe, dividendYield: latestFin.dividend_yield, revenueGrowth: latestFin.revenue_growth_yoy ? latestFin.revenue_growth_yoy / 100 : null } : null
   const chipData   = latestChip ? { foreignNetBuy: latestChip.foreign_net, investmentTrustNetBuy: latestChip.trust_net, dealerNetBuy: latestChip.dealer_net, marginBalance: latestChip.margin_balance } : null
 
   const summary = await generateAnalystSummary(c.env.ANTHROPIC_API_KEY, { snapshot: result.snapshot, financials, chipData, rich: result.rich })
+  await c.env.KV.put(cacheKey, summary, { expirationTtl: 86400 })
   return c.json({ summary })
 })
 
@@ -157,7 +178,7 @@ llm.post('/ask', authMiddleware, async (c) => {
 
   const [latestFin, latestChip] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
+    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
   const answer = await answerStockQuestion(c.env.ANTHROPIC_API_KEY, {
@@ -182,14 +203,15 @@ watchlist.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(`
     SELECT w.stock_id, w.cost_price, w.shares, w.note,
            s.symbol, s.name, s.market, s.sector,
-           p.close, p.open, p.high, p.low, p.volume,
-           ROUND((p.close - p2.close) / p2.close * 100, 2) as change_pct
+           COALESCE(p.avg_price, p.close) as close, p.open, p.high, p.low, p.volume,
+           ROUND((COALESCE(p.avg_price, p.close) - COALESCE(p2.avg_price, p2.close)) / COALESCE(p2.avg_price, p2.close) * 100, 2) as change_pct,
+           (SELECT GROUP_CONCAT(tag, ',') FROM (SELECT tag FROM stock_tags WHERE symbol = s.symbol ORDER BY weight DESC LIMIT 3)) as tags
     FROM watchlist w
     JOIN stocks s ON s.id = w.stock_id
     LEFT JOIN (SELECT stock_id, close, open, high, low, volume FROM stock_prices
                WHERE (stock_id, date) IN (SELECT stock_id, MAX(date) FROM stock_prices GROUP BY stock_id)) p
       ON p.stock_id = w.stock_id
-    LEFT JOIN (SELECT stock_id, close, date FROM stock_prices
+    LEFT JOIN (SELECT stock_id, close, avg_price, date FROM stock_prices
                WHERE (stock_id, date) IN (
                  SELECT stock_id, MAX(date) FROM stock_prices
                  WHERE date < (SELECT MAX(date) FROM stock_prices sp2 WHERE sp2.stock_id = stock_prices.stock_id)
@@ -370,19 +392,19 @@ ml.post('/predict/:stockId', async (c) => {
   if (!mlUrl) return c.json({ error: 'ML service not configured' }, 503)
 
   // ── Step 1：基礎資料查詢 ──────────────────────────────────────────────────
-  const [stock, prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>(),
+  const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>()
+  if (!stock) return c.json({ error: 'Stock not found' }, 404)
+
+  const [prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
     c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
     c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 200').bind(stockId).all<any>(),
+    c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
     c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
     c.env.DB.prepare("SELECT model_name, accuracy FROM model_accuracy WHERE stock_id=? AND period='30d'").bind(stockId).all<any>(),
     // 當前市場風險環境（供 HMM Regime / LinUCB bandit context）
     c.env.DB.prepare('SELECT risk_level, risk_score, twii_bias AS twii_bias_20d, twii_close FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
   ])
-
-  if (!stock) return c.json({ error: 'Stock not found' }, 404)
 
   // ── Step 2：新股票自動初始化（資料不足 60 筆時）───────────────────────────
   let priceRows = prices.results ?? []
@@ -581,8 +603,19 @@ market.get('/risk/history', async (c) => {
   return c.json(results ?? [])
 })
 
+// GET /api/market/ex-dividend — 除權除息預告（KV 快取，Wave2 每日更新）
+market.get('/ex-dividend', async (c) => {
+  const raw = await c.env.KV.get('market:ex_dividend_forecast')
+  if (!raw) return c.json([])
+  return c.json(JSON.parse(raw))
+})
 
-
+// GET /api/market/attention-stocks — 注意股清單（KV 快取，Wave2 每日更新）
+market.get('/attention-stocks', async (c) => {
+  const raw = await c.env.KV.get('market:attention_stocks')
+  if (!raw) return c.json([])
+  return c.json(JSON.parse(raw))
+})
 
 // ─── 聊天對話持久化 ────────────────────────────────────────────────────────────
 export const chat = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -931,16 +964,32 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 recommendations.use('/*', authMiddleware)
 
 // GET /api/recommendations/daily?date=YYYY-MM-DD
-// 取當日（或指定日期）的選股推薦
+// 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
-  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
+  let date = c.req.query('date')
+  if (!date) {
+    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    // 先看今天有沒有
+    const todayCount = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ?'
+    ).bind(twToday).first<{ cnt: number }>()
+    if ((todayCount?.cnt ?? 0) > 0) {
+      date = twToday
+    } else {
+      // 沒有 → 查上一個交易日（最新有推薦資料的日期）
+      const prev = await c.env.DB.prepare(
+        'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1'
+      ).bind(twToday).first<{ date: string }>()
+      date = prev?.date ?? twToday
+    }
+  }
   const { results } = await c.env.DB.prepare(`
     SELECT r.*, s.market
     FROM daily_recommendations r
     LEFT JOIN stocks s ON s.id = r.stock_id
     WHERE r.date = ?
     ORDER BY r.rank ASC
-    LIMIT 10
+    LIMIT 20
   `).bind(date).all<any>()
 
   // 解析 watch_points JSON
@@ -1058,3 +1107,42 @@ recommendations.get('/sector-flow-stocks', async (c) => {
 
   return c.json({ date, stocks: results })
 })
+
+// GET /api/recommendations/daily-report?date=YYYY-MM-DD
+// AI 整合報告（持久化版，含大盤/ML/推薦/績效/主題輪動）
+recommendations.get('/daily-report', async (c) => {
+  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+
+  let report = await c.env.DB.prepare(
+    'SELECT * FROM stock_analysis_reports WHERE date=? AND report_type=?'
+  ).bind(date, 'daily').first<any>().catch(() => null)
+
+  // fallback 最近一筆
+  if (!report) {
+    report = await c.env.DB.prepare(
+      'SELECT * FROM stock_analysis_reports WHERE report_type=? ORDER BY date DESC LIMIT 1'
+    ).bind('daily').first<any>().catch(() => null)
+  }
+
+  if (!report) return c.json({ report: null, date })
+
+  // parse JSON fields
+  const parsed = {
+    date: report.date,
+    report_type: report.report_type,
+    market_summary: safeJSON(report.market_summary),
+    ml_overview: safeJSON(report.ml_overview),
+    buy_details: safeJSON(report.buy_details),
+    sell_alerts: safeJSON(report.sell_alerts),
+    recommendations: safeJSON(report.recommendations),
+    performance: safeJSON(report.performance),
+    theme_flow: safeJSON(report.theme_flow),
+    created_at: report.created_at,
+  }
+  return c.json({ report: parsed, date: report.date })
+})
+
+function safeJSON(str: string | null): any {
+  if (!str) return null
+  try { return JSON.parse(str) } catch { return null }
+}

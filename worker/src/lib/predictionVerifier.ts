@@ -14,7 +14,7 @@
  */
 
 interface D1DB {
-  prepare(sql: string): any
+  prepare(sql: string): D1PreparedStatement
 }
 
 interface VerifyEnv {

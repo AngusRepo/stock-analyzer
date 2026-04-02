@@ -17,7 +17,9 @@ import {
   Minus, RefreshCw, Percent, Shield, Award, Scale, Cpu,
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { BotThemeFlowPanel, RecommendationCard } from '@/components/DailyRecommendationPanel'
+import CandlestickChart from '@/components/CandlestickChart'
+import { stocksApi } from '@/lib/api'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -40,16 +42,59 @@ function pctClass(pct: number): string {
 
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
-  if (s.includes('STRONG_BUY')) return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">STRONG BUY</Badge>
-  if (s.includes('BUY'))        return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">BUY</Badge>
-  if (s.includes('STRONG_SELL'))return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">STRONG SELL</Badge>
-  if (s.includes('SELL'))       return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">SELL</Badge>
-  if (s.includes('NO_SIGNAL'))  return <Badge className="bg-zinc-500/20 text-zinc-400 border-zinc-500/30">NO SIGNAL</Badge>
-  return <Badge className="bg-zinc-500/20 text-zinc-400 border-zinc-500/30">HOLD</Badge>
+  // 暗綠 #228B22, 暗紅 #B22222 — Gemini 建議的沉穩配色
+  if (s.includes('STRONG_BUY')) return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>STRONG BUY</Badge>
+  if (s.includes('BUY'))        return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>BUY</Badge>
+  if (s.includes('STRONG_SELL'))return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>STRONG SELL</Badge>
+  if (s.includes('SELL'))       return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>SELL</Badge>
+  if (s.includes('NO_SIGNAL'))  return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">—</Badge>
+  return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">HOLD</Badge>
 }
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
+}
+
+// ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────
+function ConvictionGauge({ value, size = 48 }: { value: number; size?: number }) {
+  const pct = Math.max(0, Math.min(100, value * 100))
+  const r = size * 0.4
+  const cx = size / 2
+  const cy = size * 0.55
+  const circumHalf = Math.PI * r
+  const filled = (pct / 100) * circumHalf
+  const color = pct >= 75 ? '#22c55e' : pct >= 55 ? '#eab308' : '#ef4444'
+  return (
+    <svg width={size} height={size * 0.6} viewBox={`0 0 ${size} ${size * 0.65}`}>
+      <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+        fill="none" stroke="#27272a" strokeWidth={4} strokeLinecap="round" />
+      <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+        fill="none" stroke={color} strokeWidth={4} strokeLinecap="round"
+        strokeDasharray={`${filled} ${circumHalf}`} />
+      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="monospace" fontWeight="bold">
+        {pct.toFixed(0)}
+      </text>
+    </svg>
+  )
+}
+
+// ─── Micro RRG 2×2 方格 ──────────────────────────────────────────────────────
+function MicroRRG({ quadrant }: { quadrant?: string }) {
+  const cells = [
+    { q: 'Improving', x: 0, y: 0, color: '#3b82f6' },
+    { q: 'Leading',   x: 1, y: 0, color: '#22c55e' },
+    { q: 'Lagging',   x: 0, y: 1, color: '#ef4444' },
+    { q: 'Weakening', x: 1, y: 1, color: '#eab308' },
+  ]
+  return (
+    <svg width={24} height={24} viewBox="0 0 24 24">
+      {cells.map(c => (
+        <rect key={c.q} x={c.x * 12} y={c.y * 12} width={11} height={11} rx={2}
+          fill={c.q === quadrant ? c.color : '#27272a'}
+          opacity={c.q === quadrant ? 0.9 : 0.3} />
+      ))}
+    </svg>
+  )
 }
 
 // ─── Portfolio Summary（FinLab 風格 6 卡）───────────────────────────────────
@@ -65,6 +110,22 @@ function PortfolioSummary() {
   const { data: account } = useQuery({ queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: 60_000 })
   const { data: positions } = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 30_000, refetchInterval: isTWMarketOpen() ? 60_000 : false })
   const { data: pnlData } = useQuery({ queryKey: ['paper', 'pnl'], queryFn: paperApi.pnl, staleTime: 5 * 60_000 })
+  // 歷史已實現損益（從 sell orders 計算）
+  const { data: ordersData } = useQuery({ queryKey: ['paper', 'orders', 'all'], queryFn: () => paperApi.orders(999), staleTime: 5 * 60_000 })
+  const sellOrders = (Array.isArray(ordersData) ? ordersData : (ordersData as any)?.orders ?? []).filter((o: any) => o.side === 'sell')
+  const totalRealizedPnl = sellOrders.reduce((sum: number, o: any) => {
+    try {
+      const note = typeof o.note === 'string' ? JSON.parse(o.note) : o.note
+      const entry = note?.entry_price ?? o.price
+      return sum + (o.price - entry) * o.shares
+    } catch {
+      // note 是純文字（舊格式），用 buy order 的 entry_price 回推
+      const buyOrder = (Array.isArray(ordersData) ? ordersData : (ordersData as any)?.orders ?? [])
+        .find((b: any) => b.side === 'buy' && b.symbol === o.symbol)
+      const entryFromBuy = buyOrder?.price ?? o.price
+      return sum + (o.price - entryFromBuy) * o.shares
+    }
+  }, 0)
 
   const acc = account?.account ?? account ?? {}
   const cash = acc?.cash ?? 0
@@ -129,207 +190,124 @@ function PortfolioSummary() {
   }
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-      {/* 1. 總資產 + Total Return */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">總資產</span>
-            <DollarSign className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className="text-xl font-light text-zinc-100 font-mono">${fmt(totalAssets)}</div>
-          <span className={`text-sm font-mono ${pctClass(totalReturn)}`}>
-            {totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%
-          </span>
-        </CardContent>
-      </Card>
-
-      {/* 2. 年化報酬 */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">年化報酬</span>
-            <TrendingUp className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className={`text-xl font-light font-mono ${pctClass(annualizedReturn)}`}>
-            {annualizedReturn >= 0 ? '+' : ''}{(annualizedReturn * 100).toFixed(1)}%
-          </div>
-          <span className="text-xs text-zinc-500">{Math.round(daysSinceStart)} 天</span>
-        </CardContent>
-      </Card>
-
-      {/* 3. 最大回撤 */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">最大回撤</span>
-            <Shield className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className={`text-xl font-light font-mono ${maxDrawdown > 0.1 ? 'text-red-400' : maxDrawdown > 0.05 ? 'text-amber-400' : 'text-emerald-400'}`}>
-            -{(maxDrawdown * 100).toFixed(1)}%
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* 4. 夏普值 (30d) */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">夏普值</span>
-            <Award className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className={`text-xl font-light font-mono ${sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-zinc-200' : 'text-red-400') : 'text-zinc-500'}`}>
-            {sharpe30d != null ? sharpe30d.toFixed(2) : '-'}
-          </div>
-          <span className="text-xs text-zinc-500">30 日</span>
-        </CardContent>
-      </Card>
-
-      {/* 5. 大盤比較（勝/負） */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">大盤比較</span>
-            <Scale className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className="flex items-center gap-3 mt-1">
-            <div className="text-center">
-              <div className="text-[10px] text-zinc-500">週</div>
-              <WinLossBadge win={beatsBenchmark(retWeek, bmWeek)} />
+    <div className="grid grid-cols-[auto_repeat(4,minmax(0,1fr))_auto_auto] items-baseline gap-x-5 gap-y-0 mb-2 overflow-x-auto whitespace-nowrap">
+      {/* 總資產 */}
+      <div className="shrink-0">
+        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">總資產</div>
+        <div className="text-2xl font-mono text-zinc-100 leading-tight">${fmt(totalAssets)}</div>
+        <span className={`text-sm font-mono ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+      </div>
+      {/* 指標列 */}
+      {[
+        { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrders.length}筆`, cls: pctClass(totalRealizedPnl) },
+        { label: '年化', val: `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
+        { label: 'MDD', val: `-${(maxDrawdown * 100).toFixed(1)}%`, sub: '', cls: maxDrawdown > 0.1 ? 'text-red-400' : maxDrawdown > 0.05 ? 'text-amber-400' : 'text-emerald-400' },
+        { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-zinc-200' : 'text-red-400') : 'text-zinc-500' },
+      ].map(m => (
+        <div key={m.label} className="shrink-0 min-w-[3.5rem]">
+          <div className="text-[11px] text-zinc-500 uppercase tracking-wide">{m.label}</div>
+          <div className={`text-base font-mono leading-tight ${m.cls}`}>{m.val}</div>
+          <span className="text-[10px] text-zinc-600">{m.sub || '\u00A0'}</span>
+        </div>
+      ))}
+      {/* vs 0050 */}
+      <div className="shrink-0">
+        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">vs 0050</div>
+        <div className="flex gap-2 mt-0.5">
+          {[{ l: '週', w: beatsBenchmark(retWeek, bmWeek) }, { l: '月', w: beatsBenchmark(retMonth, bmMonth) }, { l: '季', w: beatsBenchmark(retQuarter, bmQuarter) }].map(b => (
+            <div key={b.l} className="text-center"><div className="text-[9px] text-zinc-500">{b.l}</div><WinLossBadge win={b.w} /></div>
+          ))}
+        </div>
+        <span className="text-[10px] text-zinc-600">{'\u00A0'}</span>
+      </div>
+      {/* 近期 */}
+      <div className="shrink-0">
+        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">近期</div>
+        <div className="flex gap-3 mt-0.5">
+          {[{ l: '週', v: retWeek }, { l: '月', v: retMonth }, { l: '季', v: retQuarter }].map(({ l, v }) => (
+            <div key={l} className="text-center">
+              <div className="text-[9px] text-zinc-500">{l}</div>
+              <div className={`text-xs font-mono ${v != null ? pctClass(v) : 'text-zinc-600'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
             </div>
-            <div className="text-center">
-              <div className="text-[10px] text-zinc-500">月</div>
-              <WinLossBadge win={beatsBenchmark(retMonth, bmMonth)} />
-            </div>
-            <div className="text-center">
-              <div className="text-[10px] text-zinc-500">季</div>
-              <WinLossBadge win={beatsBenchmark(retQuarter, bmQuarter)} />
-            </div>
-          </div>
-          <span className="text-[10px] text-zinc-600 mt-1 block">vs 0050</span>
-        </CardContent>
-      </Card>
-
-      {/* 6. 近期報酬 */}
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">近期報酬</span>
-            <Percent className="w-4 h-4 text-zinc-600" />
-          </div>
-          <div className="space-y-0.5 mt-1">
-            {[
-              { label: '週', val: retWeek },
-              { label: '月', val: retMonth },
-              { label: '季', val: retQuarter },
-            ].map(({ label, val }) => (
-              <div key={label} className="flex items-center justify-between">
-                <span className="text-[10px] text-zinc-500">{label}</span>
-                <span className={`text-xs font-mono ${val != null ? pctClass(val) : 'text-zinc-600'}`}>
-                  {val != null ? `${val >= 0 ? '+' : ''}${(val * 100).toFixed(1)}%` : '-'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+          ))}
+        </div>
+        <span className="text-[10px] text-zinc-600">{'\u00A0'}</span>
+      </div>
     </div>
   )
 }
 
 // ─── Today's ML Signals ─────────────────────────────────────────────────────
 
-function SignalTable() {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
-  const yesterday = (() => { const d = new Date(Date.now() + 8 * 3600_000 - 86400_000); return d.toISOString().slice(0, 10) })()
-
-  const [expanded, setExpanded] = useState<string | null>(null)
-
-  // 先查今天
-  const { data: todayData, isLoading } = useQuery({
-    queryKey: ['recommendations', 'daily', today],
-    queryFn: () => recommendationsApi.daily(today),
+function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+  // T2 過濾後的掛單（非 raw recommendations）
+  const { data: pbData, isLoading } = useQuery({
+    queryKey: ['paper', 'pending-buys'],
+    queryFn: () => paperApi.pendingBuys(),
     staleTime: 5 * 60_000,
   })
-  const todayRecs = todayData?.recommendations ?? todayData?.data ?? []
+  const buys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
+  const showingDate = pbData?.date ?? ''
 
-  // 今天沒資料 → fallback 昨天
-  const { data: yesterdayData } = useQuery({
-    queryKey: ['recommendations', 'daily', yesterday],
-    queryFn: () => recommendationsApi.daily(yesterday),
+  // Quadrant filter
+  const { data: qfData } = useQuery({
+    queryKey: ['paper', 'quadrant-filter'],
+    queryFn: () => paperApi.quadrantFilter(),
     staleTime: 5 * 60_000,
-    enabled: !isLoading && todayRecs.length === 0,
   })
-  const yesterdayRecs = yesterdayData?.recommendations ?? yesterdayData?.data ?? []
+  const qfList: any[] = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
+  const qfMap = new Map<string, { quadrant: string; action: string }>(
+    qfList.map((q: any) => [q.symbol, { quadrant: q.quadrant, action: q.action }])
+  )
 
-  const recs = todayRecs.length > 0 ? todayRecs : yesterdayRecs
-  const showingDate = todayRecs.length > 0 ? today : yesterday
+  if (isLoading) return <div className="text-zinc-500 text-sm p-4 font-mono">Loading...</div>
 
-  if (isLoading) return <div className="text-zinc-500 text-sm p-4">Loading signals...</div>
-  if (!recs.length) return <div className="text-zinc-500 text-sm p-4">No signals available</div>
+  // 如果沒有 pending buys，fallback 到 daily recommendations
+  if (!buys.length) {
+    return <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+  }
 
   return (
-    <div className="overflow-x-auto">
-      <div className="px-2 py-1 text-[10px] text-zinc-500">
-        {showingDate === today ? `${today} 推薦` : `${showingDate} 推薦 → 今日執行`}
-      </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-zinc-500 text-xs uppercase border-b border-zinc-800">
-            <th className="text-left p-2">Symbol</th>
-            <th className="text-left p-2">Signal</th>
-            <th className="text-right p-2">Conf</th>
-            <th className="text-right p-2 hidden sm:table-cell">Price</th>
-            <th className="text-right p-2 hidden md:table-cell">Score</th>
-          </tr>
-        </thead>
-        <tbody>
-          {recs.slice(0, 20).map((r: any) => {
-            const isOpen = expanded === r.symbol
-            const watchPoints = Array.isArray(r.watch_points) ? r.watch_points : []
-            return (
-              <Fragment key={r.symbol}>
-                <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/30 cursor-pointer"
-                  onClick={() => setExpanded(isOpen ? null : r.symbol)}>
-                  <td className="p-2">
-                    <div className="font-mono text-zinc-200">{r.symbol}</div>
-                    <div className="text-xs text-zinc-500">{r.name}</div>
-                  </td>
-                  <td className="p-2">{signalBadge(r.signal)}</td>
-                  <td className="p-2 text-right font-mono text-zinc-300">{(r.confidence * 100).toFixed(0)}%</td>
-                  <td className="p-2 text-right font-mono text-zinc-300 hidden sm:table-cell">${fmt(r.current_price, 1)}</td>
-                  <td className="p-2 text-right font-mono text-zinc-400 hidden md:table-cell">{r.score?.toFixed(1) ?? '-'}</td>
-                </tr>
-                {isOpen && (
-                  <tr className="bg-zinc-900/50">
-                    <td colSpan={5} className="p-3 space-y-2">
-                      {/* Score breakdown */}
-                      <div className="flex gap-3 text-xs">
-                        <span className="text-zinc-400">籌碼 <span className="text-zinc-200 font-mono">{r.chip_score ?? 0}</span>/40</span>
-                        <span className="text-zinc-400">技術 <span className="text-zinc-200 font-mono">{r.tech_score ?? 0}</span>/30</span>
-                        <span className="text-zinc-400">ML <span className="text-zinc-200 font-mono">{r.ml_score ?? 0}</span>/30</span>
-                        <span className="text-zinc-500">{r.sector}</span>
-                      </div>
-                      {/* Reason */}
-                      {r.reason && (
-                        <p className="text-xs text-zinc-300 leading-relaxed">{r.reason}</p>
-                      )}
-                      {/* Watch points */}
-                      {watchPoints.length > 0 && (
-                        <ul className="text-xs text-amber-400/80 space-y-0.5">
-                          {watchPoints.map((w: string, i: number) => (
-                            <li key={i}>- {w}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-2">
+      <div className="px-1 text-[10px] text-zinc-600 font-mono">{showingDate} · T2 篩選後掛單</div>
+      {buys.map((b: any, idx: number) => {
+        const qf = qfMap.get(b.symbol)
+        const rec = {
+          symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
+          current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
+          reason: `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`,
+          chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
+        }
+        return (
+          <div key={b.symbol} onClick={() => onSelectSymbol?.(b.symbol)}
+            className={selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}>
+            <RecommendationCard rec={rec} rank={idx + 1} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// Fallback: 無掛單時顯示最新 daily recommendations
+function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+  const { data: recData, isLoading } = useQuery({
+    queryKey: ['recommendations', 'daily', 'latest'],
+    queryFn: () => recommendationsApi.daily(),
+    staleTime: 5 * 60_000,
+  })
+  const recs = recData?.recommendations ?? recData?.data ?? []
+  if (isLoading) return <div className="text-zinc-500 text-sm p-4 font-mono">Loading...</div>
+  if (!recs.length) return <div className="text-center py-6 text-zinc-600 text-xs">尚無推薦</div>
+  return (
+    <div className="space-y-2">
+      <div className="px-1 text-[10px] text-zinc-600 font-mono">{recData?.date} · 推薦（未經 T2 篩選）</div>
+      {recs.slice(0, 12).map((r: any, idx: number) => (
+        <div key={r.symbol} onClick={() => onSelectSymbol?.(r.symbol)}
+          className={selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}>
+          <RecommendationCard rec={r} rank={idx + 1} />
+        </div>
+      ))}
     </div>
   )
 }
@@ -392,7 +370,8 @@ function PositionsTable() {
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
               <th className="text-right p-2">現價</th>
-              <th className="text-right p-2">市值</th>
+              <th className="text-right p-2">止損</th>
+              <th className="text-right p-2">停利</th>
               <th className="text-right p-2">未實現</th>
             </tr>
           </thead>
@@ -426,7 +405,24 @@ function PositionsTable() {
                   <td className="p-2 text-right font-mono text-zinc-300">{lots}</td>
                   <td className="p-2 text-right font-mono text-zinc-300">${fmt(entry, 1)}</td>
                   <td className="p-2 text-right font-mono text-zinc-300">${fmt(current, 1)}</td>
-                  <td className="p-2 text-right font-mono text-zinc-400">${fmt(marketValue)}</td>
+                  <td className="p-2 text-right">
+                    {p.trailing_stop ? (
+                      <div className="font-mono text-red-400 text-xs">${fmt(p.trailing_stop, 1)}</div>
+                    ) : p.initial_stop ? (
+                      <div className="font-mono text-red-400/60 text-xs">${fmt(p.initial_stop, 1)}</div>
+                    ) : <span className="text-zinc-600">—</span>}
+                  </td>
+                  <td className="p-2 text-right">
+                    {p.tp1_price && (
+                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-zinc-500 line-through' : 'text-emerald-400'}`}>
+                        T1 ${fmt(p.tp1_price, 1)}
+                      </div>
+                    )}
+                    {p.tp2_price && (
+                      <div className="font-mono text-xs text-emerald-300">T2 ${fmt(p.tp2_price, 1)}</div>
+                    )}
+                    {!p.tp1_price && !p.tp2_price && <span className="text-zinc-600">—</span>}
+                  </td>
                   <td className="p-2 text-right">
                     <div className={`font-mono ${pctClass(pnlPct)}`}>
                       {pnlPct >= 0 ? '+' : ''}{(pnlPct * 100).toFixed(2)}%
@@ -503,7 +499,7 @@ function TradeHistory() {
             return (
               <tr key={o.id ?? i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
                 <td className="p-2 text-xs text-zinc-500 font-mono whitespace-nowrap">
-                  {o.created_at?.slice(5, 16)?.replace('T', ' ') ?? '-'}
+                  {o.created_at ? new Date(new Date(o.created_at).getTime() + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ') : '-'}
                 </td>
                 <td className="p-2">
                   <span className="font-mono text-zinc-200">{o.symbol}</span>
@@ -611,7 +607,7 @@ function BotStatusPanel() {
                   <div className={isError ? 'text-red-400' : 'text-zinc-400'}>{log.summary}</div>
                   {log.timestamp && (
                     <div className="text-zinc-600 mt-1">
-                      {log.timestamp.slice(11, 19)} UTC
+                      {new Date(new Date(log.timestamp).getTime() + 8 * 3600_000).toISOString().slice(11, 19)} TW
                     </div>
                   )}
                   {log.error && <div className="text-red-500/70 mt-1 font-mono text-[10px] break-all">{log.error.slice(0, 200)}</div>}
@@ -648,7 +644,10 @@ function PerformanceChart() {
     staleTime: 5 * 60_000,
   })
 
-  const allSnapshots: any[] = data?.snapshots ?? data?.daily ?? []
+  const rawSnapshots: any[] = data?.snapshots ?? data?.daily ?? []
+  // 確保按日期升序排列（左→右 = 舊→新）
+  const allSnapshots = [...rawSnapshots].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
+
   if (!Array.isArray(allSnapshots) || allSnapshots.length === 0) {
     return (
       <div className="text-center py-12 text-zinc-500">
@@ -666,20 +665,26 @@ function PerformanceChart() {
 
   if (snapshots.length === 0) return null
 
-  // Base values for % calc
+  // Base values for % calc（第一天 = 0%）
   const baseVal = snapshots[0]?.total_value ?? snapshots[0]?.portfolio_value ?? 1_000_000
   const baseBm = snapshots[0]?.benchmark_value
+  const baseTwii = snapshots[0]?.twii_value
   const hasBenchmark = baseBm != null && baseBm > 0
+  const hasTwii = baseTwii != null && baseTwii > 0
 
   const chartData = snapshots.map((s: any) => {
     const val = s.total_value ?? s.portfolio_value ?? baseVal
     const bm = s.benchmark_value
+    const twii = s.twii_value
     return {
       date: s.date?.slice(5) ?? '',
       bot: ((val / baseVal) - 1) * 100,
       ...(hasBenchmark && bm != null ? { benchmark: ((bm / baseBm) - 1) * 100 } : {}),
+      ...(hasTwii && twii != null ? { twii: ((twii / baseTwii) - 1) * 100 } : {}),
     }
   })
+
+  const nameMap: Record<string, string> = { bot: 'Bot', benchmark: '0050', twii: '加權' }
 
   return (
     <div>
@@ -700,27 +705,30 @@ function PerformanceChart() {
         ))}
       </div>
 
-      <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={chartData}>
-          <XAxis dataKey="date" tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v.toFixed(1)}%`} />
+      <ResponsiveContainer width="100%" height={180}>
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id="botGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#228B22" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#228B22" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="date" tick={{ fill: '#52525b', fontSize: 10 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fill: '#52525b', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v.toFixed(1)}%`} width={45} />
           <Tooltip
-            contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 8 }}
-            labelStyle={{ color: '#a1a1aa' }}
-            formatter={(v: number, name: string) => [
-              `${v.toFixed(2)}%`,
-              name === 'bot' ? 'Bot' : '0050',
-            ]}
+            contentStyle={{ background: '#1a1d21', border: '1px solid #333', borderRadius: 8, fontSize: 12 }}
+            labelStyle={{ color: '#71717a' }}
+            formatter={(v: number, name: string) => [`${v.toFixed(2)}%`, nameMap[name] ?? name]}
           />
-          <Line type="monotone" dataKey="bot" stroke="#10b981" strokeWidth={2} dot={false} name="bot" />
+          <Area type="monotone" dataKey="bot" stroke="#228B22" strokeWidth={2} fill="url(#botGrad)" dot={false} name="bot" />
           {hasBenchmark && (
-            <Line type="monotone" dataKey="benchmark" stroke="#6366f1" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="benchmark" />
+            <Area type="monotone" dataKey="benchmark" stroke="#6366f1" strokeWidth={1} fill="none" dot={false} strokeDasharray="4 2" name="benchmark" />
           )}
-          <Legend
-            formatter={(value) => <span className="text-xs text-zinc-400">{value === 'bot' ? 'Bot' : '0050'}</span>}
-            iconSize={10}
-          />
-        </LineChart>
+          {hasTwii && (
+            <Area type="monotone" dataKey="twii" stroke="#a78bfa" strokeWidth={1} fill="none" dot={false} strokeDasharray="2 2" name="twii" />
+          )}
+          <Legend formatter={(value) => <span className="text-[10px] text-zinc-500">{nameMap[value] ?? value}</span>} iconSize={8} />
+        </AreaChart>
       </ResponsiveContainer>
     </div>
   )
@@ -889,20 +897,25 @@ function AdaptiveParamsCard() {
 // ─── Main Dashboard ─────────────────────────────────────────────────────────
 
 export default function BotDashboard() {
-  const [tab, setTab] = useState('signals')
   const { isAuthenticated, login } = useAuth()
+
+  // ⚠ All hooks BEFORE conditional return（React rules of hooks — M15 教訓）
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+  const { data: searchResult } = useQuery({
+    queryKey: ['stock-search', selectedSymbol],
+    queryFn: () => stocksApi.search(selectedSymbol!, 1),
+    enabled: !!selectedSymbol && isAuthenticated,
+    staleTime: 60_000,
+  })
+  const selectedStockId = searchResult?.[0]?.id ?? null
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center relative overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 z-0">
-          <div className="absolute" style={{ left: '-15%', top: '10%', width: '55vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.20) 0%, transparent 70%)' }} />
-          <div className="absolute" style={{ right: '-10%', top: '0%', width: '45vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.08) 0%, transparent 70%)' }} />
-        </div>
-        <div className="relative z-10 text-center space-y-4">
+      <div className="min-h-screen text-zinc-100 flex items-center justify-center" style={{ background: '#1A1D21' }}>
+        <div className="text-center space-y-4">
           <Bot className="w-12 h-12 mx-auto text-emerald-400/60" />
           <p className="text-zinc-400">請先登入以查看 Bot Dashboard</p>
-          <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 backdrop-blur-sm rounded-lg text-sm">
+          <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
             Google 登入
           </button>
         </div>
@@ -911,79 +924,98 @@ export default function BotDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 relative overflow-x-hidden">
+    <div className="min-h-screen text-zinc-100 relative overflow-x-hidden" style={{ background: '#1A1D21' }}>
       {/* Background Glow Blobs */}
-      <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute" style={{ left: '-15%', top: '10%', width: '55vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.20) 0%, transparent 70%)' }} />
-        <div className="absolute" style={{ right: '-10%', top: '0%', width: '45vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.08) 0%, transparent 70%)' }} />
-        <div className="absolute" style={{ left: '20%', bottom: '5%', width: '35vw', height: '35vh', background: 'radial-gradient(ellipse at center, rgba(16,185,129,0.12) 0%, transparent 70%)' }} />
+      <div className="pointer-events-none fixed inset-0 z-[1]" style={{ mixBlendMode: 'screen' }}>
+        <div className="absolute" style={{ left: '-10%', top: '5%', width: '60vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(34,139,34,0.30) 0%, transparent 65%)', animation: 'blob-drift-1 18s ease-in-out infinite', willChange: 'transform' }} />
+        <div className="absolute" style={{ right: '-5%', top: '-5%', width: '50vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.06) 0%, transparent 65%)', animation: 'blob-drift-2 22s ease-in-out infinite', willChange: 'transform' }} />
+        <div className="absolute" style={{ left: '20%', bottom: '-5%', width: '50vw', height: '45vh', background: 'radial-gradient(ellipse at center, rgba(34,139,34,0.20) 0%, transparent 65%)', animation: 'blob-drift-3 15s ease-in-out infinite', willChange: 'transform' }} />
       </div>
+
       {/* Header */}
-      <header className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between sticky top-0 bg-zinc-950/80 backdrop-blur-xl z-10">
+      <header className="border-b border-white/[0.06] px-4 py-2 flex items-center justify-between sticky top-0 z-10" style={{ background: 'rgba(26,29,33,0.85)', backdropFilter: 'blur(12px)' }}>
         <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5 text-emerald-400" />
-          <h1 className="text-lg font-light tracking-tight">StockVision Bot</h1>
+          <Bot className="w-4 h-4 text-emerald-500" />
+          <h1 className="text-sm font-medium tracking-tight font-mono">StockVision Bot</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-xs">
-            <StatusDot ok={true} />
-            <span className="ml-1">Online</span>
-          </Badge>
-          <a href="/" className="text-xs text-zinc-500 hover:text-zinc-300 ml-2">Dashboard</a>
+        <div className="flex items-center gap-3">
+          <details className="relative">
+            <summary className="flex items-center gap-1.5 cursor-pointer list-none text-xs text-zinc-500 hover:text-zinc-300">
+              <StatusDot ok={true} />
+              <span className="hidden sm:inline font-mono">Online</span>
+            </summary>
+            <div className="absolute right-0 top-full mt-2 w-80 border border-white/[0.08] rounded-xl shadow-2xl p-3 z-50" style={{ background: 'rgba(26,29,33,0.97)', backdropFilter: 'blur(16px)' }}>
+              <BotStatusPanel />
+            </div>
+          </details>
+          <a href="/" className="text-xs text-zinc-600 hover:text-zinc-400 font-mono">Dashboard</a>
         </div>
       </header>
 
-      <main className="relative z-10 max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* Portfolio Summary */}
-        <PortfolioSummary />
+      <main className="relative z-10 w-full px-2 sm:px-3 lg:px-4 py-2 sm:py-3 space-y-2 sm:space-y-3 text-sm">
 
-        {/* Performance Chart */}
-        <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
-              <Activity className="w-4 h-4" /> Performance
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <PerformanceChart />
-          </CardContent>
-        </Card>
-
-        {/* 主題輪動（含黑馬偵測）*/}
-        <BotThemeFlowPanel />
-
-        {/* Backtest Results */}
-        <BacktestCard />
-
-        {/* Adaptive Params */}
-        <AdaptiveParamsCard />
-
-        {/* Tabbed Content */}
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="bg-white/[0.04] border border-white/[0.08] backdrop-blur-sm p-1">
-            <TabsTrigger value="signals" className="data-[state=active]:bg-white/[0.1] text-xs">
-              <TrendingUp className="w-3.5 h-3.5 mr-1" /> Signals
-            </TabsTrigger>
-            <TabsTrigger value="positions" className="data-[state=active]:bg-white/[0.1] text-xs">
-              <BarChart3 className="w-3.5 h-3.5 mr-1" /> Positions
-            </TabsTrigger>
-            <TabsTrigger value="history" className="data-[state=active]:bg-white/[0.1] text-xs">
-              <Clock className="w-3.5 h-3.5 mr-1" /> History
-            </TabsTrigger>
-            <TabsTrigger value="status" className="data-[state=active]:bg-white/[0.1] text-xs">
-              <Bot className="w-3.5 h-3.5 mr-1" /> Status
-            </TabsTrigger>
-          </TabsList>
-
-          <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm mt-3">
-            <CardContent className="p-0">
-              <TabsContent value="signals" className="mt-0"><SignalTable /></TabsContent>
-              <TabsContent value="positions" className="mt-0"><PositionsTable /></TabsContent>
-              <TabsContent value="history" className="mt-0"><TradeHistory /></TabsContent>
-              <TabsContent value="status" className="mt-0 p-4"><BotStatusPanel /></TabsContent>
+        {/* ═══ Top Banner：Portfolio+Chart(40) | Positions(30) | History(30) ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1.5fr_1.5fr] gap-3">
+          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+            <CardContent className="pt-3 pb-2 px-4">
+              <PortfolioSummary />
+              <PerformanceChart />
             </CardContent>
           </Card>
-        </Tabs>
+          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+            <CardHeader className="pb-0 pt-2 px-3">
+              <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">Positions</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0"><PositionsTable /></CardContent>
+          </Card>
+          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+            <CardHeader className="pb-0 pt-2 px-3">
+              <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">History</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0"><TradeHistory /></CardContent>
+          </Card>
+        </div>
+
+        {/* ═══ 三欄主體：族群(40) | AI Picks(30) | Backtest+Adaptive+K線(30) ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1.5fr_1.5fr] gap-3">
+
+          {/* ── 左欄：族群資金流 ── */}
+          <BotThemeFlowPanel />
+
+          {/* ── 中欄：AI 推薦 ── */}
+          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+            <CardHeader className="pb-1 pt-3 px-4">
+              <CardTitle className="text-xs font-medium text-zinc-500 flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-2">
+              <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
+            </CardContent>
+          </Card>
+
+          {/* ── 右欄：Backtest + Adaptive + K線 ── */}
+          <div className="space-y-3">
+            <BacktestCard />
+            <AdaptiveParamsCard />
+            {selectedStockId ? (
+              <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <CardHeader className="pb-1 pt-2 px-3">
+                  <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">
+                    {selectedSymbol} Chart
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-1">
+                  <CandlestickChart stockId={selectedStockId} />
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="rounded-xl border border-dashed border-white/[0.06] p-8 text-center text-zinc-600 text-xs">
+                點擊推薦股票載入 K 線
+              </div>
+            )}
+          </div>
+        </div>
       </main>
     </div>
   )

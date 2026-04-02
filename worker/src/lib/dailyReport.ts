@@ -178,12 +178,85 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     })
   }
 
+  // ── 7.5 無標籤股票偵測 ─────────────────────────────────────────────────
+  const { results: untaggedStocks } = await env.DB.prepare(`
+    SELECT s.symbol, s.name FROM stocks s
+    WHERE s.is_active = 1
+      AND NOT EXISTS (SELECT 1 FROM stock_tags t WHERE t.symbol = s.symbol)
+    ORDER BY s.symbol LIMIT 20
+  `).all<any>().catch(() => ({ results: [] as any[] }))
+
+  if (untaggedStocks && untaggedStocks.length > 0) {
+    const list = untaggedStocks.map((s: any) => `${s.symbol} ${s.name}`).join('\n')
+    embeds.push({
+      title: `⚠️ ${untaggedStocks.length} 支股票無概念標籤`,
+      color: 0xe67e22,
+      description: `以下活躍股票尚未分類，可執行 \`reclassify-tags\` 補標：\n${list}`,
+    })
+  }
+
   // ── Footer ──
   embeds.push({
     description: '_投資有風險，本報告由 StockVision ML Pipeline 自動產出，僅供參考。_',
     color: 0x95a5a6,
     footer: { text: `StockVision v12 | ${totalStocks} stocks × 10 models × 44 features` },
   })
+
+  // ── 7. 主題輪動 ─────────────────────────────────────────────────────────
+  const { results: themeFlows } = await env.DB.prepare(`
+    SELECT sector, total_net, stock_count, quadrant, rs_ratio, rs_momentum
+    FROM sector_flow WHERE date=? AND classification='theme'
+    ORDER BY total_net DESC
+  `).bind(twToday).all<any>().catch(() => ({ results: [] as any[] }))
+
+  // ── 持久化到 D1 ──────────────────────────────────────────────────────────
+  try {
+    const reportData = {
+      market_summary: JSON.stringify({
+        risk_level: riskLevel, risk_score: risk?.risk_score,
+        us_context: us ? { sox: us.sox_return, sp500: us.gspc_return, vix: us.vix_close, sentiment: us.sentiment } : null,
+      }),
+      ml_overview: JSON.stringify({
+        total: totalStocks,
+        buy_count: buyCount?.cnt ?? 0, hold_count: holdCount?.cnt ?? 0, sell_count: sellCount?.cnt ?? 0,
+        buy_avg_conf: buyCount?.avg_conf, sell_avg_conf: sellCount?.avg_conf,
+      }),
+      buy_details: JSON.stringify((buyStocks ?? []).map((s: any) => ({
+        symbol: s.symbol, name: s.name, confidence: s.confidence,
+        entry: s.entry_price, stop: s.stop_loss, target1: s.target1, target2: s.target2,
+      }))),
+      sell_alerts: JSON.stringify((sellStocks ?? []).map((s: any) => {
+        const fd = safeParseJSON(s.forecast_data)
+        const models = fd?.models ?? []
+        return { symbol: s.symbol, name: s.name, confidence: s.confidence, down_count: models.filter((m: any) => m.direction === 'down').length, total_models: models.length }
+      })),
+      recommendations: JSON.stringify((recs ?? []).map((r: any) => ({
+        symbol: r.symbol, name: r.name, sector: r.sector, score: r.score, confidence: r.confidence, reason: r.reason,
+      }))),
+      performance: snapshot ? JSON.stringify({
+        total_value: snapshot.total_value, cumulative_return: snapshot.cumulative_return,
+        daily_return: snapshot.daily_return, max_drawdown: snapshot.max_drawdown,
+        sharpe_30d: snapshot.sharpe_30d, trade_count: snapshot.trade_count,
+      }) : null,
+      theme_flow: JSON.stringify((themeFlows ?? []).slice(0, 20).map((f: any) => ({
+        sector: f.sector, total_net: f.total_net, stock_count: f.stock_count,
+        quadrant: f.quadrant, rs_ratio: f.rs_ratio, rs_momentum: f.rs_momentum,
+      }))),
+    }
+    await env.DB.prepare(`
+      INSERT INTO stock_analysis_reports (date, report_type, market_summary, ml_overview, buy_details, sell_alerts, recommendations, performance, theme_flow)
+      VALUES (?, 'daily', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date, report_type) DO UPDATE SET
+        market_summary=excluded.market_summary, ml_overview=excluded.ml_overview,
+        buy_details=excluded.buy_details, sell_alerts=excluded.sell_alerts,
+        recommendations=excluded.recommendations, performance=excluded.performance,
+        theme_flow=excluded.theme_flow, created_at=datetime('now')
+    `).bind(twToday, reportData.market_summary, reportData.ml_overview, reportData.buy_details,
+            reportData.sell_alerts, reportData.recommendations, reportData.performance, reportData.theme_flow).run()
+    console.log(`[DailyReport] Persisted to D1 for ${twToday}`)
+  } catch (e) {
+    console.warn(`[DailyReport] D1 persist failed: ${e}`)
+  }
 
   // 推送（Discord 優先，無 webhook 則 fallback 到 email）
   const channel = await sendReportToChannels(env as any, embeds, `📊 StockVision 收盤報告 — ${twToday}`)

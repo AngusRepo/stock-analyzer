@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono'
 import type { Bindings, Variables } from '../types'
 
 // ─── JWT (using Web Crypto API, no external deps) ────────────────────────────
-function base64url(data: ArrayBuffer): string {
+function base64url(data: ArrayBuffer | Uint8Array): string {
   return btoa(String.fromCharCode(...new Uint8Array(data)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
@@ -12,7 +12,7 @@ function b64urlDecode(s: string): Uint8Array {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
 }
 
-async function getHmacKey(secret: string): Promise<CryptoKey> {
+async function getHmacKey(secret: string) {
   return crypto.subtle.importKey(
     'raw', new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']

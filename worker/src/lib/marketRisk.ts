@@ -4,8 +4,10 @@
  * 指標來源：
  *   VIX          → Yahoo Finance ^VIX（免費）
  *   TWII 歷史    → Yahoo Finance ^TWII（免費）
- *   外資籌碼     → FinMind TaiwanStockInstitutionalInvestorsBuySell
- *   融資使用率   → FinMind TaiwanStockTotalMarginPurchaseShortSale
+ *   外資籌碼     → D1 chip_data SUM（TWSE T86 每日寫入）
+ *   融資使用率   → TWSE MI_MARGN selectType=MS（市場整體）
+ *   ADL 騰落線  → D1 market_breadth（Wave2 每日寫入）
+ *   多空排列    → D1 stock_prices MA5/MA20/MA60 計算
  *
  * 風險等級邏輯：
  *   green  0-25  → 市場正常，可正常操作
@@ -64,38 +66,28 @@ async function fetchTWIIHistory(): Promise<number[]> {
   } catch { return [] }
 }
 
-// ── 3. 抓外資整體買賣超（FinMind 整體市場，非個股）─────────────────────────────
-async function fetchMarketForeignChip(token: string): Promise<{
+// ── 3. 外資整體買賣超（D1 chip_data SUM，TWSE T86 已每日寫入）──────────────────
+async function fetchMarketForeignChip(db: D1Database): Promise<{
   net5d: number | null
   consecutiveSell: number
 }> {
-  if (!token) return { net5d: null, consecutiveSell: 0 }
   try {
-    const startDate = new Date(Date.now() - 20 * 86400000).toISOString().split('T')[0]
-    const qs = new URLSearchParams({
-      dataset: 'TaiwanStockTotalInstitutionalInvestors',
-      start_date: startDate,
-    })
-    const res = await fetch(`https://api.finmindtrade.com/api/v4/data?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const json = await res.json() as any
-    if (json.status !== 200) return { net5d: null, consecutiveSell: 0 }
+    const { results } = await db.prepare(`
+      SELECT date, SUM(foreign_net) as daily_net
+      FROM chip_data
+      WHERE date >= date('now', '-25 days')
+      GROUP BY date
+      ORDER BY date
+    `).all<{ date: string; daily_net: number }>()
 
-    // 篩選外資
-    const rows: any[] = (json.data ?? []).filter((r: any) => r.name === '外陸資買賣超股數(不含外資自營商)')
-    rows.sort((a, b) => a.date.localeCompare(b.date))
+    if (!results?.length) return { net5d: null, consecutiveSell: 0 }
 
-    if (!rows.length) return { net5d: null, consecutiveSell: 0 }
+    const last5 = results.slice(-5)
+    const net5d = last5.reduce((s, r) => s + (r.daily_net ?? 0), 0) / 1e8  // 億股
 
-    // 近5日淨買超（億股）
-    const last5 = rows.slice(-5)
-    const net5d = last5.reduce((s: number, r: any) => s + (r.buy - r.sell), 0) / 1e8
-
-    // 連續賣超天數
     let consecutive = 0
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const net = rows[i].buy - rows[i].sell
+    for (let i = results.length - 1; i >= 0; i--) {
+      const net = results[i].daily_net ?? 0
       if (net < 0) consecutive--
       else if (net > 0) { if (consecutive === 0) consecutive = 1; break }
       else break
@@ -105,79 +97,63 @@ async function fetchMarketForeignChip(token: string): Promise<{
   } catch { return { net5d: null, consecutiveSell: 0 } }
 }
 
-// ── 4. 融資使用率 ─────────────────────────────────────────────────────────────
-async function fetchMarginRatio(token: string): Promise<number | null> {
-  if (!token) return null
+// ── 4/6. 融資統計（透過 Controller proxy 取 TWSE MI_MARGN）──────────────────
+let _marginCache: { balance: number; limit: number } | null = null
+
+async function fetchTwseMarginSummary(controllerUrl?: string, controllerSecret?: string): Promise<{ balance: number; limit: number } | null> {
+  if (_marginCache) return _marginCache
+  if (!controllerUrl) return null
   try {
-    const startDate = new Date(Date.now() - 5 * 86400000).toISOString().split('T')[0]
-    const qs = new URLSearchParams({
-      dataset: 'TaiwanStockTotalMarginPurchaseShortSale',
-      start_date: startDate,
+    const headers: Record<string, string> = {}
+    if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+    const res = await fetch(`${controllerUrl}/twse/margin-summary`, {
+      headers, signal: AbortSignal.timeout(15000),
     })
-    const res = await fetch(`https://api.finmindtrade.com/api/v4/data?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const json = await res.json() as any
-    if (json.status !== 200) return null
-
-    const rows: any[] = (json.data ?? []).filter((r: any) => r.name === '融資(千元)')
-    if (!rows.length) return null
-
-    // 取最新一筆（今日餘額/信用額度）
-    const latest = rows[rows.length - 1]
-    if (!latest?.TodayBalance || !latest?.quota) return null
-    return Math.round((latest.TodayBalance / latest.quota) * 10000) / 100
+    if (!res.ok) return null
+    const data = await res.json() as any
+    if (data.balance && data.limit) {
+      _marginCache = { balance: data.balance, limit: data.limit }
+      return _marginCache
+    }
+    return null
   } catch { return null }
 }
 
-// ── 5. ADL 騰落線（Advance-Decline Line）────────────────────────────────────
-// 全市場上漲家數 - 下跌家數的累積線，衡量市場廣度
-async function fetchADL(token: string): Promise<{
+// ── 4. 融資使用率 ─────────────────────────────────────────────────────────────
+async function fetchMarginRatio(controllerUrl?: string, controllerSecret?: string): Promise<number | null> {
+  const data = await fetchTwseMarginSummary(controllerUrl, controllerSecret)
+  if (!data) return null
+  return Math.round((data.balance / data.limit) * 10000) / 100
+}
+
+// ── 5. ADL 騰落線（D1 market_breadth table，Wave2 每日寫入）─────────────────
+async function fetchADL(db: D1Database): Promise<{
   adlValue: number | null
   adlTrend: 'up' | 'down' | 'flat' | null
 }> {
-  if (!token) return { adlValue: null, adlTrend: null }
   try {
-    // 取近 10 天全市場股價 → 計算每日上漲/下跌家數
-    const endDate = new Date().toISOString().split('T')[0]
-    const startDate = new Date(Date.now() - 15 * 86400000).toISOString().split('T')[0]
-    const qs = new URLSearchParams({
-      dataset: 'TaiwanStockPrice',
-      start_date: startDate,
-      end_date: endDate,
-    })
-    const res = await fetch(`https://api.finmindtrade.com/api/v4/data?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const json = await res.json() as any
-    if (json.status !== 200 || !json.data?.length) return { adlValue: null, adlTrend: null }
+    const { results } = await db.prepare(`
+      SELECT date, advance_count, decline_count
+      FROM market_breadth
+      ORDER BY date DESC
+      LIMIT 15
+    `).all<{ date: string; advance_count: number; decline_count: number }>()
 
-    // 按日期分組，計算 spread > 0 (上漲) vs < 0 (下跌)
-    const byDate: Record<string, { up: number; down: number }> = {}
-    for (const row of json.data) {
-      if (!byDate[row.date]) byDate[row.date] = { up: 0, down: 0 }
-      if (row.spread > 0) byDate[row.date].up++
-      else if (row.spread < 0) byDate[row.date].down++
-    }
+    if (!results?.length || results.length < 2) return { adlValue: null, adlTrend: null }
 
-    const dates = Object.keys(byDate).sort()
-    if (dates.length < 2) return { adlValue: null, adlTrend: null }
+    const sorted = [...results].sort((a, b) => a.date.localeCompare(b.date))
 
-    // 累積 ADL
     let adl = 0
     const adlSeries: number[] = []
-    for (const d of dates) {
-      adl += byDate[d].up - byDate[d].down
+    for (const r of sorted) {
+      adl += r.advance_count - r.decline_count
       adlSeries.push(adl)
     }
 
     const adlValue = adlSeries[adlSeries.length - 1]
-
-    // 5 日趨勢
     let adlTrend: 'up' | 'down' | 'flat' = 'flat'
     if (adlSeries.length >= 5) {
-      const recent5 = adlSeries.slice(-5)
-      const diff = recent5[recent5.length - 1] - recent5[0]
+      const diff = adlSeries[adlSeries.length - 1] - adlSeries[adlSeries.length - 5]
       if (diff > 50) adlTrend = 'up'
       else if (diff < -50) adlTrend = 'down'
     }
@@ -186,71 +162,44 @@ async function fetchADL(token: string): Promise<{
   } catch { return { adlValue: null, adlTrend: null } }
 }
 
-// ── 6. 融資維持率（Margin Maintenance Rate）──────────────────────────────────
-// 整體市場融資維持率，低於 130% 代表追繳壓力大
-async function fetchMarginMaintenanceRate(token: string): Promise<number | null> {
-  if (!token) return null
-  try {
-    const startDate = new Date(Date.now() - 5 * 86400000).toISOString().split('T')[0]
-    const qs = new URLSearchParams({
-      dataset: 'TaiwanStockTotalMarginPurchaseShortSale',
-      start_date: startDate,
-    })
-    const res = await fetch(`https://api.finmindtrade.com/api/v4/data?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const json = await res.json() as any
-    if (json.status !== 200) return null
-
-    // 融資維持率 = 擔保維持率（市值/融資金額 × 100%）
-    // FinMind 欄位：MarginPurchaseTodayBalance（餘額千元） + 股價估算
-    // 簡化版：用 TodayBalance / limit * 100 作為使用率的反向指標
-    const rows: any[] = (json.data ?? []).filter((r: any) => r.name === '融資(千元)')
-    if (!rows.length) return null
-    const latest = rows[rows.length - 1]
-    if (!latest?.TodayBalance || !latest?.limit) return null
-    // 維持率概念：越低代表槓桿越高（limit/balance 反映可用空間）
-    return Math.round((latest.limit / latest.TodayBalance) * 10000) / 100
-  } catch { return null }
+// ── 6. 融資維持率（同一 Controller proxy API）──────────────────────────────
+async function fetchMarginMaintenanceRate(controllerUrl?: string, controllerSecret?: string): Promise<number | null> {
+  const data = await fetchTwseMarginSummary(controllerUrl, controllerSecret)
+  if (!data) return null
+  return Math.round((data.limit / data.balance) * 10000) / 100
 }
 
-// ── 7. 多空排列家數（MA5 > MA20 > MA60 的股票數）─────────────────────────────
-// 衡量全市場趨勢一致性，低值代表空頭擴散
-async function fetchBullAlignmentCount(token: string): Promise<{
+// ── 7. 多空排列家數（D1 stock_prices 計算 MA5/MA20/MA60）───────────────────
+async function fetchBullAlignmentCount(db: D1Database): Promise<{
   count: number | null
   pct: number | null
 }> {
-  if (!token) return { count: null, pct: null }
   try {
-    // 取近 1 天全市場均線資料
-    const endDate = new Date().toISOString().split('T')[0]
-    const startDate = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0]
-    const qs = new URLSearchParams({
-      dataset: 'TaiwanStockPrice',
-      start_date: startDate,
-      end_date: endDate,
-    })
-    const res = await fetch(`https://api.finmindtrade.com/api/v4/data?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const json = await res.json() as any
-    if (json.status !== 200 || !json.data?.length) return { count: null, pct: null }
+    const { results } = await db.prepare(`
+      SELECT stock_id, date, close
+      FROM stock_prices
+      WHERE date >= date('now', '-70 days') AND close IS NOT NULL
+      ORDER BY stock_id, date
+    `).all<{ stock_id: number; date: string; close: number }>()
 
-    // 取最新日期的所有股票
-    const allDates = [...new Set((json.data as any[]).map((r: any) => r.date))].sort()
-    const latestDate = allDates[allDates.length - 1]
-    const latestRows = (json.data as any[]).filter((r: any) => r.date === latestDate)
+    if (!results?.length) return { count: null, pct: null }
 
-    // 用簡化判斷：close > 前5日均 > 前20日均 → 多頭排列
-    // 因為單日 API 沒有 MA，用 spread（漲跌）正值 + close > open 近似多頭
-    // 完整版需抓 60 天資料算 MA，但 API 額度有限
-    // 這裡用 FinMind TaiwanStockMovingAverage（如果可用）
-    // fallback: 用漲跌家數比例近似
+    // group by stock_id
+    const byStock = new Map<number, number[]>()
+    for (const r of results) {
+      if (!byStock.has(r.stock_id)) byStock.set(r.stock_id, [])
+      byStock.get(r.stock_id)!.push(r.close)
+    }
+
     let bullCount = 0
-    const total = latestRows.length
-    for (const row of latestRows) {
-      // 多頭近似：收盤 > 開盤 且 漲幅 > 0
-      if (row.close > row.open && row.spread > 0) bullCount++
+    let total = 0
+    for (const closes of byStock.values()) {
+      if (closes.length < 60) continue
+      total++
+      const ma5  = closes.slice(-5).reduce((a, b) => a + b, 0) / 5
+      const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20
+      const ma60 = closes.slice(-60).reduce((a, b) => a + b, 0) / 60
+      if (ma5 > ma20 && ma20 > ma60) bullCount++
     }
 
     return {
@@ -369,20 +318,23 @@ function scoreToLevel(score: number): 'green' | 'yellow' | 'orange' | 'red' | 'b
 
 // ── 主函式：計算今日大盤風險 ──────────────────────────────────────────────────
 export async function calcMarketRisk(
-  finmindToken: string,
+  db: D1Database,
   anthropicKey?: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
 ): Promise<MarketRiskResult> {
-  const today = new Date().toISOString().split('T')[0]
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  _marginCache = null  // 清除快取
 
   // 平行抓所有資料（Phase 2: 加入 ADL + 融資維持率 + 多空排列）
   const [vix, twiiHistory, foreignChip, marginRatio, adlData, marginMaintenance, bullAlignment] = await Promise.all([
     fetchVIX(),
     fetchTWIIHistory(),
-    fetchMarketForeignChip(finmindToken),
-    fetchMarginRatio(finmindToken),
-    fetchADL(finmindToken),
-    fetchMarginMaintenanceRate(finmindToken),
-    fetchBullAlignmentCount(finmindToken),
+    fetchMarketForeignChip(db),
+    fetchMarginRatio(controllerUrl, controllerSecret),
+    fetchADL(db),
+    fetchMarginMaintenanceRate(controllerUrl, controllerSecret),
+    fetchBullAlignmentCount(db),
   ])
 
   const twiiClose  = twiiHistory.length ? twiiHistory[twiiHistory.length - 1] : null

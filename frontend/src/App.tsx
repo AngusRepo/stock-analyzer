@@ -5,6 +5,7 @@ import Unauthorized from './pages/Unauthorized'
 import ErrorBoundary from './components/ErrorBoundary'
 
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
+const StockReportPage = lazy(() => import('./pages/StockReportPage'))
 
 export default function App() {
   return (
@@ -13,6 +14,11 @@ export default function App() {
         <Route path="/" component={Dashboard} />
         <Route path="/stock/:id" component={Dashboard} />
         <Route path="/unauthorized" component={Unauthorized} />
+        <Route path="/report/:symbol">
+          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-zinc-950 text-zinc-500">Loading Report...</div>}>
+            <StockReportPage />
+          </Suspense>
+        </Route>
         <Route path="/bot">
           <Suspense fallback={<div className="flex items-center justify-center h-screen bg-zinc-950 text-zinc-500">Loading Bot Dashboard...</div>}>
             <BotDashboard />

@@ -460,3 +460,31 @@ def get_lgbm_features(X: np.ndarray) -> np.ndarray:
     """LightGBM 專用：rank transform（每欄轉為百分位排名）"""
     from scipy.stats import rankdata
     return np.apply_along_axis(lambda col: rankdata(col) / len(col), axis=0, arr=X)
+
+
+# ── RobustScaler（DLinear/PatchTST/FT-Transformer 需要）──────────────────────
+_robust_scaler_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def fit_robust_scaler(X: np.ndarray, stock_id: str = "default") -> tuple[np.ndarray, np.ndarray]:
+    """RobustScaler：用 median 和 IQR 做標準化，比 StandardScaler 抗離群值。"""
+    median = np.median(X, axis=0)
+    q75 = np.percentile(X, 75, axis=0)
+    q25 = np.percentile(X, 25, axis=0)
+    iqr = q75 - q25
+    iqr[iqr < 1e-8] = 1.0
+    _robust_scaler_cache[stock_id] = (median, iqr)
+    return median, iqr
+
+
+def apply_robust_scaler(X: np.ndarray, stock_id: str = "default",
+                        median: Optional[np.ndarray] = None,
+                        iqr: Optional[np.ndarray] = None) -> np.ndarray:
+    """對 X 做 RobustScaler 轉換。若未提供 median/iqr，從 cache 取。"""
+    if median is None or iqr is None:
+        cached = _robust_scaler_cache.get(stock_id)
+        if cached is None:
+            median, iqr = fit_robust_scaler(X, stock_id)
+        else:
+            median, iqr = cached
+    return (X - median) / iqr

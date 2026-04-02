@@ -20,7 +20,11 @@ export default function RiskMetricsPanel({ stockId }: { stockId: number }) {
   })
 
   if (isLoading) return <div className="grid grid-cols-2 gap-3">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-20" />)}</div>
-  if (!risk) return <div className="text-sm text-muted-foreground text-center py-8">暫無風險指標（請先執行計算）</div>
+  if (!risk || (risk as any).empty) return (
+    <div className="text-sm text-muted-foreground text-center py-8">
+      {(risk as any)?.reason ?? '暫無風險指標'}
+    </div>
+  )
 
   const r = risk as any
   return (

@@ -115,6 +115,44 @@
 }
 
 @layer base {
+  /* ─── Background Glow Blob 漂移動畫（大幅度，15-20s 循環）────────────── */
+  @keyframes blob-drift-1 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25% { transform: translate(8vw, -5vh) scale(1.1); }
+    50% { transform: translate(-5vw, 8vh) scale(0.9); }
+    75% { transform: translate(10vw, 3vh) scale(1.05); }
+  }
+  @keyframes blob-drift-2 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(-8vw, 6vh) scale(1.15); }
+    66% { transform: translate(6vw, -8vh) scale(0.92); }
+  }
+  @keyframes blob-drift-3 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    20% { transform: translate(6vw, 6vh) scale(1.08); }
+    50% { transform: translate(-8vw, -3vh) scale(0.93); }
+    80% { transform: translate(3vw, -6vh) scale(1.12); }
+  }
+
+  /* ─── Word Cloud 漂浮動畫 ────────────────────────────────────────────── */
+  @keyframes wc-float-1 {
+    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
+    25% { transform: translate(calc(var(--wc-dx) * 1px), calc(var(--wc-dy) * -1px)) rotate(calc(var(--wc-rot) + 1.5deg)); }
+    50% { transform: translate(calc(var(--wc-dx) * -0.5px), calc(var(--wc-dy) * 1px)) rotate(var(--wc-rot)); }
+    75% { transform: translate(calc(var(--wc-dx) * 0.8px), calc(var(--wc-dy) * 0.5px)) rotate(calc(var(--wc-rot) - 1deg)); }
+  }
+  @keyframes wc-float-2 {
+    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
+    33% { transform: translate(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * 0.7px)) rotate(calc(var(--wc-rot) - 2deg)); }
+    66% { transform: translate(calc(var(--wc-dx) * 0.6px), calc(var(--wc-dy) * -0.8px)) rotate(calc(var(--wc-rot) + 1deg)); }
+  }
+  @keyframes wc-float-3 {
+    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
+    20% { transform: translate(calc(var(--wc-dx) * 0.7px), calc(var(--wc-dy) * 1px)) rotate(calc(var(--wc-rot) + 2deg)); }
+    50% { transform: translate(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * -0.5px)) rotate(var(--wc-rot)); }
+    80% { transform: translate(calc(var(--wc-dx) * 0.3px), calc(var(--wc-dy) * -1px)) rotate(calc(var(--wc-rot) - 1.5deg)); }
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
@@ -177,3 +215,5 @@
     }
   }
 }
+
+/* keyframes 已移至 @layer base 內 */

@@ -2,8 +2,9 @@
  * tagReclassifier.ts — LLM 概念標籤重新分類
  *
  * 讀取 stock_profiles（TimeVerse）+ 現有 stock_tags，
- * 用 LLM 判斷每支股票的 top 3 核心概念 + 權重（0.1~1.0）。
+ * 用 LLM 判斷每支股票的核心概念（1~3 個，不強制湊滿）+ 權重（0.1~1.0）。
  *
+ * LLM 優先級：Local Tunnel Opus → Workers AI Llama → 規則 fallback
  * 觸發方式：POST /api/admin/trigger/reclassify-tags
  */
 
@@ -15,19 +16,19 @@ interface TagWeight {
 }
 
 export async function reclassifyTags(env: Bindings): Promise<{ processed: number; updated: number; errors: string[] }> {
-  // 1. 取所有 stock_tags 中有多於 3 個概念的股票
+  // 1. 取所有有 stock_tags 的股票（重新分類全部，清除錯誤 tags）
   const { results: multiTagStocks } = await env.DB.prepare(`
     SELECT symbol, COUNT(*) as cnt
-    FROM stock_tags GROUP BY symbol HAVING cnt > 3
+    FROM stock_tags GROUP BY symbol
     ORDER BY cnt DESC
   `).all<{ symbol: string; cnt: number }>()
 
   if (!multiTagStocks?.length) {
-    console.log('[Reclassify] 無超過 3 個概念的股票')
+    console.log('[Reclassify] 無 stock_tags 資料')
     return { processed: 0, updated: 0, errors: [] }
   }
 
-  console.log(`[Reclassify] ${multiTagStocks.length} 支股票需要重新分類`)
+  console.log(`[Reclassify] ${multiTagStocks.length} 支股票待分類`)
 
   // 2. 取 stock_profiles（TimeVerse 公司描述）
   const { results: profileRows } = await env.DB.prepare(
@@ -75,17 +76,52 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
         businessDesc ? `公司概況：${businessDesc}` : '',
         `現有概念標籤（${currentTags?.length} 個）：${currentTagList}`,
         '',
-        '請從以上標籤中選出該公司最核心的 3 個概念，並賦予權重。',
-        '權重規則：主業 = 1.0，重要副業 = 0.6，次要關聯 = 0.3',
+        `可用概念清單（只能從這裡選）：${availableTags.join('、')}`,
         '',
-        '回覆格式（JSON array，不要其他文字）：',
-        '[{"tag":"概念名","weight":1.0},{"tag":"概念名","weight":0.6},{"tag":"概念名","weight":0.3}]',
+        '請從「可用概念清單」中選出該公司真正相關的核心概念（1~3 個，不用湊滿 3 個）。',
+        '只選與公司主業或產品直接相關的概念，不相關的不要選。',
+        '權重規則：主業 = 1.0，重要副業 = 0.6，次要但確實相關 = 0.3',
+        '',
+        '回覆格式（JSON array，1~3 個元素，不要其他文字）：',
+        '[{"tag":"概念名","weight":1.0}]',
       ].filter(Boolean).join('\n')
 
-      // 呼叫 LLM（Workers AI Llama，免費）
+      // 呼叫 LLM：優先 Anthropic API（Opus），fallback Workers AI Llama
       let result: TagWeight[] | null = null
 
-      if ((env as any).AI) {
+      // 1. Anthropic API (Opus) — on-demand 用途，品質最高
+      const apiKey = (env as any).ANTHROPIC_API_KEY as string | undefined
+      if (apiKey && !result) {
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-20250514',
+              max_tokens: 200,
+              messages: [
+                { role: 'user', content: `你是台股概念股分類專家。只回覆 JSON array，不要其他文字。\n\n${prompt}` },
+              ],
+            }),
+            signal: AbortSignal.timeout(30000),
+          })
+          if (res.ok) {
+            const json = await res.json() as any
+            const text = json.content?.[0]?.text ?? ''
+            const match = text.match(/\[[\s\S]*\]/)
+            if (match) result = JSON.parse(match[0]) as TagWeight[]
+          }
+        } catch (e) {
+          console.warn(`[Reclassify] Anthropic API failed for ${stock.symbol}: ${e}`)
+        }
+      }
+
+      // 2. Fallback: Workers AI Llama
+      if (!result && (env as any).AI) {
         try {
           const aiResult = await ((env as any).AI as any).run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
             messages: [
@@ -95,30 +131,24 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
             max_tokens: 200,
           }) as any
           const text = aiResult?.response ?? ''
-          // 解析 JSON
           const match = text.match(/\[[\s\S]*\]/)
-          if (match) {
-            result = JSON.parse(match[0]) as TagWeight[]
-          }
+          if (match) result = JSON.parse(match[0]) as TagWeight[]
         } catch (e) {
           console.warn(`[Reclassify] Workers AI failed for ${stock.symbol}: ${e}`)
         }
       }
 
-      // Fallback: 用規則判斷（如果 LLM 失敗）
+      // 3. Fallback: 規則判斷（LLM 全失敗時）
       if (!result || result.length === 0) {
-        // 簡單規則：取 sector 相關的概念權重最高，其他按出現頻率
         const sectorRelated = (currentTags ?? []).filter(t =>
           sector && (t.tag.includes(sector) || sector.includes(t.tag))
         )
-        const others = (currentTags ?? []).filter(t => !sectorRelated.includes(t))
-        result = [
-          ...(sectorRelated.length ? [{ tag: sectorRelated[0].tag, weight: 1.0 }] : []),
-          ...others.slice(0, sectorRelated.length ? 2 : 3).map((t, i) => ({
-            tag: t.tag,
-            weight: i === 0 ? (sectorRelated.length ? 0.6 : 1.0) : 0.3,
-          })),
-        ].slice(0, 3)
+        // 只給確實相關的，不硬湊
+        if (sectorRelated.length) {
+          result = [{ tag: sectorRelated[0].tag, weight: 1.0 }]
+        } else if ((currentTags ?? []).length) {
+          result = [{ tag: currentTags![0].tag, weight: 1.0 }]
+        }
       }
 
       if (!result?.length) continue
@@ -127,7 +157,7 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
       const validTags = result.filter(r => availableTags.includes(r.tag))
       if (!validTags.length) continue
 
-      // 5. 更新 D1：先刪除所有 tags，再插入 top 3 with weights
+      // 5. 更新 D1：先刪除所有 tags，再插入 1~3 with weights（不強制湊滿）
       await env.DB.prepare('DELETE FROM stock_tags WHERE symbol = ?').bind(stock.symbol).run()
       const stmts = validTags.slice(0, 3).map(tw =>
         env.DB.prepare('INSERT INTO stock_tags (symbol, tag, weight) VALUES (?, ?, ?)')

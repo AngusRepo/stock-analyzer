@@ -44,11 +44,15 @@ export const stocksApi = {
   factors:     (id: number) => get<any>(`/stocks/${id}/factors`),
   risk:        (id: number, period = '1y') => get<any>(`/stocks/${id}/risk?period=${period}`),
   valuations:  (id: number) => get<any>(`/stocks/${id}/valuations`),
+  monthlyRevenue: (id: number, months = 12) => get<any[]>(`/stocks/${id}/monthly-revenue?months=${months}`),
+  aiSummary:      (id: number) => get<any>(`/stocks/${id}/ai-summary`),
 }
 export const marketApi = {
   indices: () => get<any>('/market/indices'),
   risk:    () => get<any>('/market/risk'),
   riskHistory: (days = 30) => get<any>(`/market/risk/history?days=${days}`),
+  exDividend: () => get<any[]>('/market/ex-dividend'),
+  attentionStocks: () => get<any[]>('/market/attention-stocks'),
 }
 export const llmApi = {
   technicalAnalysis: (stockId: number) => post<any>('/llm/technical-analysis', { stockId }),
@@ -142,6 +146,8 @@ export const recommendationsApi = {
     if (type) params.set('type', type)
     return get<any>(`/recommendations/sector-trend?${params}`)
   },
+  dailyReport: (date?: string) =>
+    get<any>(`/recommendations/daily-report${date ? `?date=${date}` : ''}`),
 }
 
 export const backtestApi = {
@@ -153,11 +159,13 @@ export const cronApi = {
 }
 
 export const paperApi = {
-  account:   () => get<any>('/paper/account'),
-  positions: () => get<any>('/paper/positions'),
-  orders:    (limit = 50) => get<any[]>(`/paper/orders?limit=${limit}`),
-  pnl:       () => get<any>('/paper/pnl'),
-  cronLogs:  (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
+  account:         () => get<any>('/paper/account'),
+  positions:       () => get<any>('/paper/positions'),
+  orders:          (limit = 50) => get<any[]>(`/paper/orders?limit=${limit}`),
+  pnl:             () => get<any>('/paper/pnl'),
+  cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
+  quadrantFilter:  (date?: string) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`),
+  pendingBuys:     () => get<any>('/paper/pending-buys'),
 }
 
 export const adaptiveApi = {

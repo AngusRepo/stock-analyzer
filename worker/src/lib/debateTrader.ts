@@ -19,6 +19,7 @@ export interface DebateResult {
   rounds: number
   summary: string  // stored in paper_orders.note
   llmSource: string // 'tunnel' | 'workers_ai' | 'anthropic_api'
+  convictionScore: number // 0-100, judge 的信念度評分
 }
 
 export interface StockProfile {
@@ -167,6 +168,7 @@ export async function runBuyDebate(
   env: LLMEnv,
   usContext?: string,
   stockProfile?: StockProfile,
+  taifexContext?: string,
 ): Promise<DebateResult> {
   // ── Round 1 (Bull): Format ML ensemble reasoning as the bull case ─────────
   const profileLines: string[] = []
@@ -186,6 +188,7 @@ export async function runBuyDebate(
     `Stock: ${symbol} (${stockName})`,
     `Signal: ${signal} | Confidence: ${(confidence * 100).toFixed(1)}%`,
     ...(usContext ? [`【美股前夜】${usContext}`] : []),
+    ...(taifexContext ? [`【台指期夜盤】${taifexContext}`] : []),
     ...profileLines,
     `ML Ensemble Reasoning:`,
     reasoning,
@@ -193,14 +196,21 @@ export async function runBuyDebate(
 
   // ── Round 2 (Bear): Challenge the bull case ──────────────────────────────
   const bearSystemPrompt = [
-    'You are a skeptical risk analyst. Your job is to challenge a BUY recommendation.',
-    'Provide 3-5 concrete risk challenges from these angles:',
-    '1. Model blindness — what data the ML model cannot see',
-    '2. Technical reversal — chart patterns suggesting exhaustion or reversal',
-    '3. Stop-loss risk — potential downside beyond normal volatility',
-    '4. Black swan — macro/sector/geopolitical tail risks',
-    '5. Timing — why entering NOW may be premature',
-    'Be concise. No pleasantries. Max 300 words. Reply in Traditional Chinese.',
+    '你是一位兼具「價值投資」與「逆向操作」風格的風控分析師（模仿 Charlie Munger + Michael Burry）。',
+    '你的任務是從以下角度挑戰這個 BUY 推薦，找出多頭忽略的風險：',
+    '',
+    '【價值面】',
+    '1. 估值合理性 — P/E、P/B 是否偏高？營收成長能否支撐當前價格？',
+    '2. 護城河 — 這家公司有什麼不可替代的競爭優勢？還是純粹概念炒作？',
+    '',
+    '【動能面】',
+    '3. 技術疲態 — RSI 是否超買？量價是否背離？均線支撐還在嗎？',
+    '4. 追高風險 — 此時進場是在趨勢中段還是末段？',
+    '',
+    '【宏觀面】',
+    '5. 總經/地緣 — 有哪些看不到的尾部風險？（美中關係、央行政策、產業鏈轉移）',
+    '',
+    '提出 3-5 個具體挑戰。簡潔有力，最多 300 字。用繁體中文回答。',
   ].join('\n')
 
   let bearCase = ''
@@ -211,18 +221,24 @@ export async function runBuyDebate(
     llmSource = bearResult.source
   } catch (e) {
     console.warn(`[Debate] Bear round failed for ${symbol}: ${e}`)
-    return { verdict: 'APPROVE', rounds: 1, summary: `Bull only (LLM error): ${bullCase}`.slice(0, 500), llmSource: 'none' }
+    return { verdict: 'APPROVE', rounds: 1, summary: `Bull only (LLM error): ${bullCase}`.slice(0, 500), llmSource: 'none', convictionScore: 60 }
   }
 
   // ── Round 3 (Judge): Evaluate both cases and decide ──────────────────────
   const judgeSystemPrompt = [
-    'You are an impartial trading judge. Review the Bull and Bear cases below.',
-    'Output exactly ONE of these verdicts on the FIRST line:',
-    'APPROVE — strong consensus, risks are manageable, proceed with full position',
-    'DOWNGRADE — valid concerns identified, reduce exposure by 50%',
-    'REJECT — critical risks identified, skip this trade entirely',
+    '你是一位公正的交易裁判。審閱以下多空雙方論點後，做出判決。',
     '',
-    'After the verdict line, write a 1-2 sentence rationale in Traditional Chinese. Nothing else.',
+    '第一行輸出格式（嚴格遵守）：',
+    'VERDICT: <APPROVE|DOWNGRADE|REJECT> CONVICTION: <0-100>',
+    '',
+    '判決標準：',
+    'APPROVE — 風險可控，多方論點有力，全倉進場（conviction >= 70）',
+    'DOWNGRADE — 有合理疑慮，減半倉位（conviction 40-69）',
+    'REJECT — 關鍵風險無法忽視，放棄交易（conviction < 40）',
+    '',
+    'conviction score 代表你對此交易的信念程度（0=完全不信 100=極度看好）。',
+    '',
+    '第二行起用繁體中文寫 1-2 句判決理由。不要有其他格式。',
   ].join('\n')
 
   const judgeUserPrompt = [
@@ -246,20 +262,20 @@ export async function runBuyDebate(
     return {
       verdict: 'APPROVE', rounds: 2,
       summary: `Bull+Bear done (Judge error). Bull: ${bullCase.slice(0, 200)} | Bear: ${bearCase.slice(0, 200)}`.slice(0, 500),
-      llmSource,
+      llmSource, convictionScore: 60,
     }
   }
 
   const verdict = parseVerdict(judgeResponse)
+  const convictionScore = parseConviction(judgeResponse)
 
   const summary = [
-    `[${verdict}|${llmSource}] `,
-    `Bull: ${signal} conf=${(confidence * 100).toFixed(0)}% | `,
-    `Bear: ${bearCase.slice(0, 150)} | `,
-    `Judge: ${judgeResponse.slice(0, 150)}`,
+    `[${verdict}|conv:${convictionScore}|${llmSource}] `,
+    `Bear: ${bearCase.slice(0, 120)} | `,
+    `Judge: ${judgeResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)
 
-  return { verdict, rounds: 3, summary, llmSource }
+  return { verdict, rounds: 3, summary, llmSource, convictionScore }
 }
 
 // ─── Verdict Parser ───────────────────────────────────────────────────────────
@@ -277,4 +293,15 @@ function parseVerdict(response: string): DebateVerdict {
 
   // Default: don't block trades on parse error
   return 'APPROVE'
+}
+
+function parseConviction(response: string): number {
+  // 解析 "CONVICTION: 75" 格式
+  const match = response.match(/CONVICTION:\s*(\d+)/i)
+  if (match) return Math.min(100, Math.max(0, parseInt(match[1])))
+  // fallback: 根據 verdict 給預設值
+  const v = parseVerdict(response)
+  if (v === 'APPROVE') return 75
+  if (v === 'DOWNGRADE') return 50
+  return 25
 }

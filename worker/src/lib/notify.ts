@@ -192,7 +192,8 @@ export async function sendReportToChannels(
   embeds: DiscordEmbed[],
   emailSubject: string,
 ): Promise<string> {
-  const webhookUrl = await env.KV.get('discord:webhook:reports') ?? env.DISCORD_WEBHOOK_URL
+  // P0 資安：webhook URL 只從 Worker secret 讀取，不存 KV（防洩漏後被推送假消息）
+  const webhookUrl = env.DISCORD_WEBHOOK_URL
   if (webhookUrl) {
     await sendDiscordEmbeds(webhookUrl, embeds)
     return 'discord'

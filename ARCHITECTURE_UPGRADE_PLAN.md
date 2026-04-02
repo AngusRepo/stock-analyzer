@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-02（v5 — 外部審查修正：決策權限、Checkpointer、OOS lock、紅軍升級）
+> 更新：2026-04-02（v6 — Failure Mode Map：17 種失效模式防禦 + 系統韌性補強）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v6 | 2026-04-02 | 新增 §八 Failure Mode Map（17 種失效模式 × 防禦方案），補強：跌停鎖死、Gap Stop、流動性過濾、模型共錯偵測、Prompt 版控、Agent 限制為只扣分、服務降級、資料驗證層 |
 | v5 | 2026-04-02 | 外部審查修正：新增 Decision Authority Layer（決策權限分層）、Checkpointer 改 GCS/Postgres、Optuna 加 out-of-sample lock、紅軍加 historical replay 必要條件、Session Memory 限制範圍、Phase 2.5 新增 |
 | v4 | 2026-04-01 | 融合 StockVision v12 營運藍圖，新增：模式 13（數據冷熱分級）、模式 14（5 層 Circuit Breaker）、模式 15（Optuna 自動調參 Skill）、模式 16（週報 AI 審計 Graph）、模式 17（Multi-Agent 對抗訓練），更新架構圖、安全防護、導入路徑 |
 | v3 | 2026-04-01 | 融合 [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) 分析，新增：模式 10（Skill 工作流模板）、模式 11（Session 記憶持久化）、模式 12（Agent 安全防護），更新辯論 agent prompt 結構、更新導入路徑 |
@@ -1261,7 +1262,11 @@ ml-controller/
 │   ├── scorer.py        # 評分邏輯
 │   ├── adaptive.py      # 自適應參數
 │   ├── portfolio.py     # [v5] 投組建構（sector cap, correlation, risk parity）
-│   └── execution.py     # [v5] 成交模擬（slippage, partial fill, limit lock）
+│   ├── execution.py     # [v5] 成交模擬（slippage, partial fill, limit lock, gap, 跌停）
+│   ├── resilience.py    # [v6] 服務降級管理（FM-11）
+│   ├── data_validator.py # [v6] 資料品質驗證（FM-12）
+│   ├── ensemble_monitor.py # [v6] 模型共錯偵測（FM-5）
+│   └── alignment.py     # [v6] Label 對齊檢查（FM-6）
 ├── graphs/              # 新增：LangGraph 流程定義
 │   ├── predict_graph.py # ML 預測流程 graph
 │   ├── recommend_graph.py # 推薦辯論 graph
@@ -1272,6 +1277,7 @@ ml-controller/
 │   ├── ml_tools.py      # 包裝 modal_client
 │   ├── data_tools.py    # 包裝 Worker API 呼叫
 │   ├── trade_tools.py   # 包裝交易相關
+│   ├── agent_overlay.py # [v6] Agent 只扣分不加分（FM-9）
 │   ├── permissions.py   # [v2] 工具權限分級邏輯
 │   └── schemas/         # [v2] JSON schema 驅動工具定義
 │       ├── market_data.json
@@ -1290,6 +1296,7 @@ ml-controller/
 │   ├── guard.py         # 交易安全閘門
 │   ├── circuit_breaker.py # [v4] 5 層熔斷機制（硬編碼，不可覆寫）
 │   ├── injection.py     # prompt injection 偵測
+│   ├── prompt_versioning.py # [v6] Prompt 版本控制（FM-8）
 │   └── audit.py         # 審計日誌
 ├── PARITY.md            # [v2] 導入進度追蹤
 └── requirements.txt     # 加 langgraph
@@ -1529,4 +1536,565 @@ Phase 1（基礎建設 + 數據分級）
 | （外部審查新增）投組建構 | Phase 3 | v5: Portfolio Construction | 待導入 |
 | （外部審查新增）成交模擬 | Phase 2.5 | v5: Execution Reality | 待導入，優先於 Phase 3 |
 | （外部審查新增）觀測系統 | Phase 5 | v5: 3-Level Observability | 待導入 |
+| （Failure Mode Map）成交失效防禦 | Phase 2.5 | v6: FM-1~3 | 最高優先 |
+| （Failure Mode Map）模型失效防禦 | Phase 5 | v6: FM-4~6 | 待導入 |
+| （Failure Mode Map）Agent 失效防禦 | Phase 2 | v6: FM-7~9 | 待導入 |
+| （Failure Mode Map）系統韌性 | Phase 1 | v6: FM-10~12 | 基礎設施一起做 |
+
+---
+
+## 八、Failure Mode Map（失效模式防禦） `[v6 新增]`
+
+> 真正會讓你賠錢的不是模型，而是 failure mode。
+> 以下 17 種失效模式按危險等級分類，每種附具體防禦方案和實作位置。
+
+### 為什麼需要這個
+
+模型再好，如果成交環境、系統韌性、決策流程有漏洞，績效都是虛的。這份 Map 解決的核心問題：
+
+| 問題 | 不處理的後果 | 處理後的收益 |
+|------|------------|------------|
+| **成交假設不真實**（FM-1~3） | paper trading 績效好看但實盤賠錢，MDD 被低估 30~50% | 績效數字可信，實盤轉換落差最小化 |
+| **模型一起錯**（FM-5） | 10 模型 ensemble 看似分散但同時看錯，單次大虧 | 偵測共錯事件，自動降低相關模型權重 |
+| **學的跟做的不一樣**（FM-6） | 模型在回測很強但實盤表現差，找不到原因 | 量化「預測出場 vs 實際出場」的差距，找到模型盲點 |
+| **LLM 越幫越忙**（FM-8~9） | prompt 偷偷改壞沒人知道；agent 說「強烈看多」放大部位放大虧損 | prompt 版控可追溯；agent 只能扣分不能加分 |
+| **服務掛一半**（FM-11） | Modal cold start → 今天沒預測 → 盲目交易或不交易 | 降級運行，用快取預測撐住，不會全停 |
+| **吃到髒資料**（FM-12） | 價格 = 0 或昨天的資料 → ML 信號全錯 → 觸發錯誤交易 | 資料進系統前驗證，髒資料直接擋掉 |
+
+### 覆蓋狀態總覽
+
+| FM | 失效模式 | 類型 | v5 已覆蓋？ | v6 補強 |
+|---|---|---|---|---|
+| 1 | 跌停鎖死 | 市場 | 部分 | ✅ 新增 |
+| 2 | Gap-through Stop | 市場 | ❌ | ✅ 新增 |
+| 3 | 流動性幻覺 | 市場 | 部分 | ✅ 補強 |
+| 4 | Regime shift | ML | ✅ HMM + CB L5 | — |
+| 5 | 模型共錯 | ML | ❌ | ✅ 新增 |
+| 6 | Label mismatch | ML | ❌ | ✅ 新增 |
+| 7 | LLM hallucination | Agent | ✅ Decision Authority | — |
+| 8 | Prompt drift | Agent | ❌ | ✅ 新增 |
+| 9 | 過度自信放大 | Agent | ❌ | ✅ 新增 |
+| 10 | Checkpointer crash | 系統 | ✅ GCS/Postgres | — |
+| 11 | 部分服務掛掉 | 系統 | ❌ | ✅ 新增 |
+| 12 | 資料延遲/錯誤 | 系統 | ❌ | ✅ 新增 |
+| 13 | 風控被繞過 | 風控 | ✅ 4 層安全架構 | — |
+| 14 | 連續虧損 spiral | 風控 | ✅ CB L5 | — |
+| 15 | 過度調參 | 風控 | ✅ OOS Lock | — |
+| 16 | AutoML drift | 進化 | ✅ Human approval | — |
+| 17 | 策略退化 | 進化 | ✅ Weekly audit | — |
+
+---
+
+### 類型 1：市場結構失效（Market Reality）
+
+#### FM-1：跌停鎖死（台股特有）
+
+**情境**：持股 -10% 無量跌停，掛賣單無法成交，連續 2~3 天鎖死。
+
+**目前系統**：paper trading 假設掛單即成交 → MDD 被嚴重低估。
+
+**防禦**：
+
+```python
+# services/execution.py 新增
+
+class LockLimitDetector:
+    """偵測跌停鎖死風險"""
+
+    async def check_limit_lock(self, stock_id: str, market_data: dict) -> dict:
+        price_change_pct = market_data["change_pct"]
+        bid_volume = market_data.get("bid_volume", 0)  # 買方掛單量
+
+        is_limit_down = price_change_pct <= -9.5  # 接近跌停
+        is_locked = is_limit_down and bid_volume < 100  # 幾乎無買單
+
+        return {
+            "is_limit_locked": is_locked,
+            "can_exit": not is_locked,
+            "estimated_exit_days": 3 if is_locked else 0,  # 假設鎖 3 天
+        }
+
+    def adjust_paper_pnl(self, position: dict, lock_info: dict) -> dict:
+        """鎖死時用最差情境估算 PnL，而非假設成交"""
+        if lock_info["is_limit_locked"]:
+            # 假設要等 3 天才能出場，每天再跌 5%
+            worst_case_price = position["current_price"] * (0.95 ** 3)
+            position["simulated_exit_price"] = worst_case_price
+            position["pnl_worst_case"] = (worst_case_price - position["entry_price"]) * position["shares"]
+        return position
+```
+
+**實作位置**：`services/execution.py` → Phase 2.5
+
+**選股前置過濾**：
+
+```python
+# services/scorer.py 新增流動性門檻
+
+LIQUIDITY_FILTERS = {
+    "min_avg_daily_volume": 500,      # 日均量 ≥ 500 張
+    "min_avg_daily_turnover": 5_000_000,  # 日均成交金額 ≥ 500 萬
+    "max_position_vs_volume": 0.05,   # 部位 ≤ 日均量 5%
+}
+
+def filter_by_liquidity(candidates: list) -> list:
+    """過濾掉流動性不足的標的"""
+    return [c for c in candidates if
+        c["avg_daily_volume"] >= LIQUIDITY_FILTERS["min_avg_daily_volume"] and
+        c["avg_daily_turnover"] >= LIQUIDITY_FILTERS["min_avg_daily_turnover"]]
+```
+
+---
+
+#### FM-2：Gap-through Stop
+
+**情境**：昨收 100，SL 設 97，今日開盤直接跳空到 90 → 停損單不會在 97 成交。
+
+**目前系統**：假設 SL = 97 就在 97 出場 → 低估虧損。
+
+**防禦**：
+
+```python
+# services/execution.py 新增
+
+def simulate_stop_loss_fill(self, order: dict, market_data: dict) -> dict:
+    """模擬停損單在 gap 情境下的實際成交"""
+    stop_price = order["stop_price"]
+    open_price = market_data["open_price"]
+    prev_close = market_data["prev_close"]
+
+    gap_pct = (open_price - prev_close) / prev_close
+
+    if order["side"] == "sell" and open_price < stop_price:
+        # Gap through：開盤價已低於停損價
+        # 實際成交 = 開盤價（而非停損價）
+        fill_price = open_price
+        gap_loss = (stop_price - open_price) / stop_price  # 額外損失
+        return {
+            "fill_price": fill_price,
+            "gap_through": True,
+            "extra_loss_pct": gap_loss,
+            "note": f"Gap-through SL: 預期 {stop_price}, 實際 {fill_price}"
+        }
+
+    return {"fill_price": stop_price, "gap_through": False}
+```
+
+**額外防禦 — Gap Risk Penalty**：
+
+```python
+# services/scorer.py 新增
+
+def apply_gap_risk_penalty(candidate: dict) -> dict:
+    """對 gap 風險高的股票降分"""
+    # 計算過去 60 天的 gap 頻率
+    gap_days = sum(1 for g in candidate["daily_gaps"] if abs(g) > 0.03)
+    gap_ratio = gap_days / 60
+
+    if gap_ratio > 0.1:  # 超過 10% 的天數有 >3% gap
+        candidate["score"] *= 0.85  # 降 15% 分數
+        candidate["flags"].append(f"HIGH_GAP_RISK: {gap_ratio:.0%}")
+
+    return candidate
+```
+
+**實作位置**：`services/execution.py` + `services/scorer.py` → Phase 2.5
+
+---
+
+#### FM-3：流動性幻覺（補強）
+
+v5 已有 slippage model，補強 Amihud illiquidity filter：
+
+```python
+# services/scorer.py 新增
+
+import numpy as np
+
+def amihud_illiquidity(returns: list, volumes: list) -> float:
+    """Amihud (2002) 非流動性指標：|return| / volume"""
+    daily_illiq = [abs(r) / max(v, 1) for r, v in zip(returns, volumes)]
+    return np.mean(daily_illiq)
+
+def filter_illiquid_stocks(candidates: list, max_amihud: float = 0.001) -> list:
+    """過濾 Amihud 非流動性過高的標的"""
+    filtered = []
+    for c in candidates:
+        illiq = amihud_illiquidity(c["returns_60d"], c["volumes_60d"])
+        if illiq <= max_amihud:
+            filtered.append(c)
+        else:
+            # 記錄被過濾的原因
+            c["filtered_reason"] = f"Amihud illiquidity {illiq:.6f} > {max_amihud}"
+    return filtered
+```
+
+**實作位置**：`services/scorer.py` → Phase 2.5
+
+---
+
+### 類型 2：模型失效（ML Failure）
+
+#### FM-4：Regime Shift — ✅ 已覆蓋
+
+你已有 HMM regime detection + Circuit Breaker L5（連續停損熔斷）。
+
+---
+
+#### FM-5：模型共錯（Correlated Error）
+
+**情境**：10 個模型同時看多，結果全錯。因為模型共享相似特徵或訓練資料。
+
+**防禦**：
+
+```python
+# services/ensemble_monitor.py（新增）
+
+import numpy as np
+
+class EnsembleErrorMonitor:
+    """監控模型間的錯誤相關性"""
+
+    def check_error_correlation(self, model_predictions: dict, actual: float) -> dict:
+        """計算所有模型的 error correlation matrix"""
+        errors = {}
+        for model_name, pred in model_predictions.items():
+            errors[model_name] = pred["predicted"] - actual
+
+        model_names = list(errors.keys())
+        error_matrix = np.array([errors[m] for m in model_names])
+
+        # 計算 error correlation
+        if len(error_matrix.shape) == 1:
+            error_matrix = error_matrix.reshape(-1, 1)
+
+        corr_matrix = np.corrcoef(error_matrix) if error_matrix.shape[0] > 1 else np.array([[1]])
+
+        # 警告：如果 >60% 模型對的 error correlation > 0.7
+        high_corr_pairs = []
+        n = len(model_names)
+        for i in range(n):
+            for j in range(i+1, n):
+                if abs(corr_matrix[i][j]) > 0.7:
+                    high_corr_pairs.append((model_names[i], model_names[j], corr_matrix[i][j]))
+
+        return {
+            "high_correlation_pairs": high_corr_pairs,
+            "avg_correlation": float(np.mean(np.abs(corr_matrix[np.triu_indices(n, k=1)]))),
+            "alert": len(high_corr_pairs) > n * 0.3,  # 超過 30% 的 pair 高度相關
+        }
+
+    def unanimous_wrong_detector(self, predictions: dict, actual_direction: str) -> bool:
+        """偵測所有模型是否一致看錯方向"""
+        directions = [p["direction"] for p in predictions.values()]
+        all_same = len(set(directions)) == 1
+        all_wrong = all_same and directions[0] != actual_direction
+        return all_wrong  # True = 全體共錯
+```
+
+**回饋機制**：共錯事件觸發 ARF bandit 降低相關模型組的權重。
+
+**實作位置**：`ml-service/app/` → Phase 5（觀測系統一起做）
+
+---
+
+#### FM-6：Label Mismatch
+
+**情境**：模型學的是 triple barrier label，但實際出場時機不同（例如被停損或被迫出場），導致模型學到的 pattern 跟實際交易不一致。
+
+**防禦**：
+
+```python
+# services/alignment.py（新增）
+
+class LabelAlignmentChecker:
+    """檢查模型預測的出場情境 vs 實際出場情境是否一致"""
+
+    def check_alignment(self, predictions: list, actual_trades: list) -> dict:
+        """比對 predicted exit 和 actual exit"""
+        mismatches = []
+        for pred, actual in zip(predictions, actual_trades):
+            pred_exit = pred["predicted_exit_type"]    # "take_profit" / "stop_loss" / "timeout"
+            actual_exit = actual["actual_exit_type"]
+
+            if pred_exit != actual_exit:
+                mismatches.append({
+                    "stock_id": pred["stock_id"],
+                    "predicted": pred_exit,
+                    "actual": actual_exit,
+                    "pnl_impact": actual["pnl"] - pred["expected_pnl"],
+                })
+
+        mismatch_rate = len(mismatches) / max(len(predictions), 1)
+
+        return {
+            "mismatch_rate": mismatch_rate,
+            "mismatches": mismatches,
+            "alert": mismatch_rate > 0.3,  # 超過 30% 不匹配要警告
+            "suggestion": "考慮用 MAE/MFE 替代 triple barrier 作為訓練目標"
+                          if mismatch_rate > 0.4 else None
+        }
+```
+
+**MAE/MFE 指標**：
+- **MAE** (Maximum Adverse Excursion)：進場後最大逆向波動
+- **MFE** (Maximum Favorable Excursion)：進場後最大順向波動
+- 用這兩個指標替代 triple barrier，更貼近實際交易體驗
+
+**實作位置**：`ml-controller/services/` → Phase 5
+
+---
+
+### 類型 3：Agent / LLM 失效
+
+#### FM-7：LLM Hallucination — ✅ 已覆蓋
+
+Decision Authority Layer 確保 LLM 只是 overlay，不是 decision maker。
+
+---
+
+#### FM-8：Prompt Drift
+
+**情境**：隨著 prompt 修改累積，agent 行為逐漸偏移，但沒人注意到。
+
+**防禦**：
+
+```python
+# security/prompt_versioning.py（新增）
+
+import hashlib
+from datetime import datetime
+
+class PromptVersionControl:
+    """所有 agent prompt 版本化，可追溯、可回滾"""
+
+    PROMPT_REGISTRY = {}
+
+    @classmethod
+    def register(cls, name: str, prompt: str, version: str):
+        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+        cls.PROMPT_REGISTRY[name] = {
+            "version": version,
+            "hash": prompt_hash,
+            "prompt": prompt,
+            "registered_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def get_prompt(cls, name: str) -> str:
+        entry = cls.PROMPT_REGISTRY[name]
+        # 每次取用時記錄，確保可重現
+        return entry["prompt"]
+
+    @classmethod
+    def audit_prompts(cls) -> list:
+        """列出所有 prompt 版本供審計"""
+        return [
+            {"name": k, "version": v["version"], "hash": v["hash"]}
+            for k, v in cls.PROMPT_REGISTRY.items()
+        ]
+
+# 使用方式
+PromptVersionControl.register(
+    name="bull_agent",
+    version="v1.2",
+    prompt=BULL_AGENT_PROMPT
+)
+
+# 週報審計時可以比對 prompt 是否有變動
+# 回測時可以用特定版本的 prompt 重現
+```
+
+**實作位置**：`security/` → Phase 2
+
+---
+
+#### FM-9：過度自信放大
+
+**情境**：LLM agent 說「強烈看多」→ 信心度被大幅提升 → 放大部位 → 放大虧損。
+
+**防禦原則**：**Agent 只能扣分，不能加分。**
+
+```python
+# tools/agent_overlay.py（新增）
+
+class AgentOverlay:
+    """Agent 對決策的影響限制：只能降低信心，不能提升"""
+
+    MAX_PENALTY = 0.30  # 最多降 30% 信心度
+    BOOST_ALLOWED = False  # ❌ 禁止正向加分
+
+    def apply_overlay(self, original_score: float, agent_adjustment: float) -> float:
+        """套用 agent 的信心度調整"""
+        if agent_adjustment > 0 and not self.BOOST_ALLOWED:
+            # Agent 想加分 → 忽略，記錄日誌
+            return original_score
+
+        # Agent 扣分 → 允許，但有上限
+        penalty = min(abs(agent_adjustment), self.MAX_PENALTY)
+        adjusted = original_score * (1 - penalty)
+
+        return adjusted
+
+# 使用：
+# original_score = 0.85 (ML 信心度)
+# agent 說「風險很高」→ adjustment = -0.20
+# 結果 = 0.85 * (1 - 0.20) = 0.68
+# agent 說「強烈看多」→ adjustment = +0.15
+# 結果 = 0.85（忽略加分）
+```
+
+**實作位置**：`tools/` → Phase 2
+
+---
+
+### 類型 4：系統層失效
+
+#### FM-10：Checkpointer Crash — ✅ 已覆蓋（v5 改 GCS/Postgres）
+
+---
+
+#### FM-11：部分服務掛掉
+
+**情境**：Modal cold start 太慢、Shioaji Proxy 斷線、GCS 暫時不可用。
+
+**防禦 — Degraded Mode（降級運行）**：
+
+```python
+# services/resilience.py（新增）
+
+class DegradedModeManager:
+    """服務降級管理：部分服務掛掉時，系統以降級模式繼續運行"""
+
+    SERVICE_FALLBACKS = {
+        "modal_ml": {
+            "fallback": "use_cached_prediction",  # 用最近一次的預測結果
+            "max_stale_hours": 24,                 # 快取最多用 24 小時
+            "alert": True,
+        },
+        "shioaji_proxy": {
+            "fallback": "use_twse_api",            # 改用 TWSE 公開 API（延遲較大）
+            "max_stale_hours": 0,                  # 報價不能用快取
+            "alert": True,
+        },
+        "gcs": {
+            "fallback": "use_last_config",         # 用上次載入的 config
+            "max_stale_hours": 168,                # 一週內都可以
+            "alert": False,
+        },
+    }
+
+    async def call_with_fallback(self, service: str, primary_fn, fallback_fn):
+        """嘗試主要服務，失敗時降級"""
+        try:
+            return await asyncio.wait_for(primary_fn(), timeout=30)
+        except (asyncio.TimeoutError, Exception) as e:
+            config = self.SERVICE_FALLBACKS.get(service, {})
+            if config.get("alert"):
+                await self.send_alert(f"⚠️ {service} 降級運行：{e}")
+            return await fallback_fn()
+```
+
+**實作位置**：`services/` → Phase 1（基礎設施一起做）
+
+---
+
+#### FM-12：資料延遲 / 錯誤
+
+**情境**：TWSE API 回傳昨天的資料、資料欄位缺失、數值異常（如價格 = 0）。
+
+**防禦**：
+
+```python
+# services/data_validator.py（新增）
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+class DataValidator:
+    """資料品質驗證層：進入系統前必須通過"""
+
+    TW_TZ = ZoneInfo("Asia/Taipei")
+
+    def validate_price_data(self, data: dict) -> tuple[bool, list[str]]:
+        """驗證價格資料品質"""
+        errors = []
+
+        # 1. 時效性檢查
+        data_date = data.get("date")
+        if data_date:
+            age = datetime.now(self.TW_TZ).date() - data_date
+            if age > timedelta(days=1):
+                errors.append(f"STALE_DATA: 資料日期 {data_date}，已過時 {age.days} 天")
+
+        # 2. 數值合理性
+        price = data.get("close", 0)
+        if price <= 0:
+            errors.append(f"INVALID_PRICE: close = {price}")
+        if price > 10000:
+            errors.append(f"SUSPICIOUS_PRICE: close = {price}，超過合理範圍")
+
+        # 3. 欄位完整性
+        required = ["open", "high", "low", "close", "volume"]
+        for field in required:
+            if field not in data or data[field] is None:
+                errors.append(f"MISSING_FIELD: {field}")
+
+        # 4. 邏輯一致性
+        if all(f in data for f in ["high", "low", "close"]):
+            if data["close"] > data["high"] or data["close"] < data["low"]:
+                errors.append(f"LOGIC_ERROR: close {data['close']} 不在 high/low 範圍內")
+
+        return len(errors) == 0, errors
+
+    def validate_batch(self, batch: list[dict]) -> dict:
+        """批次驗證，回傳通過/失敗的資料"""
+        passed, failed = [], []
+        for item in batch:
+            ok, errors = self.validate_price_data(item)
+            if ok:
+                passed.append(item)
+            else:
+                item["validation_errors"] = errors
+                failed.append(item)
+
+        if len(failed) > len(batch) * 0.1:  # 超過 10% 失敗 → 警告
+            # 可能是整批資料有問題（API 異常）
+            pass
+
+        return {"passed": passed, "failed": failed, "fail_rate": len(failed) / max(len(batch), 1)}
+```
+
+**實作位置**：`services/` → Phase 1（資料進入系統的第一道關卡）
+
+---
+
+### 類型 5：風控失效
+
+#### FM-13：風控被繞過 — ✅ 已覆蓋（4 層安全架構 + Circuit Breaker 最前面）
+#### FM-14：連續虧損 Spiral — ✅ 已覆蓋（CB L5 + Dynamic Position Reduction）
+#### FM-15：過度調參 — ✅ 已覆蓋（OOS Lock + Rollback Config）
+
+---
+
+### 類型 6：系統進化失控
+
+#### FM-16：AutoML Drift — ✅ 已覆蓋（Human Approval + Config Versioning）
+#### FM-17：策略靜默退化 — ✅ 已覆蓋（Weekly Audit Graph + Performance Alert）
+
+---
+
+### 失效模式 × Phase 對照
+
+| 優先順序 | Failure Mode | 對應 Phase | 實作位置 |
+|---------|---|---|---|
+| 🥇 | FM-1 跌停鎖死 | Phase 2.5 | services/execution.py + services/scorer.py |
+| 🥇 | FM-2 Gap-through Stop | Phase 2.5 | services/execution.py + services/scorer.py |
+| 🥇 | FM-3 流動性幻覺 | Phase 2.5 | services/scorer.py (Amihud filter) |
+| 🥈 | FM-9 過度自信放大 | Phase 2 | tools/agent_overlay.py |
+| 🥈 | FM-8 Prompt drift | Phase 2 | security/prompt_versioning.py |
+| 🥈 | FM-11 服務降級 | Phase 1 | services/resilience.py |
+| 🥈 | FM-12 資料驗證 | Phase 1 | services/data_validator.py |
+| 🥉 | FM-5 模型共錯 | Phase 5 | ml-service/app/ (ensemble_monitor) |
+| 🥉 | FM-6 Label mismatch | Phase 5 | services/alignment.py |
 

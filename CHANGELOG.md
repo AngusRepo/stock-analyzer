@@ -5,6 +5,18 @@ Format: [Conventional Changelog](https://keepachangelog.com/)
 
 ---
 
+## [12.4.1] - 2026-04-03
+
+### Fixed — Pipeline 確定性 + Signal 完整性
+- **marketReturn5d**：改用 0050 ETF 作為 benchmark（D1 確定性，兩次跑結果一致）
+- **signal_raw 欄位**：predictions 表新增，保留 ensemble 原始 signal（STRONG_BUY/NO_SIGNAL 等）
+- **NO_SIGNAL → null**：不再偽裝成 hold，recommendation 過濾但不誤刪 ML 沒跑到的股票
+- **新股 TI 補算**：screener 選完後立即對缺 technical_indicators 的新股算一次
+- **推薦理由三面向**：【籌碼】+【技術】+【ML 投票明細】，watchPoints 個性化
+- **D1 stock_prices 補充**：API 不足 15 天時自動合併 D1 歷史，消除假日不穩定
+
+---
+
 ## [12.4.0] - 2026-04-03
 
 ### Changed — Screener v2 Bottom-up 多因子重構

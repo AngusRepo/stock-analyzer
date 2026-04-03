@@ -85,7 +85,7 @@ Step 5: 同產業 ≤5 + Pearson 60d 去重 + top 25
 | API | Cloudflare Workers (Hono), D1 (SQLite), KV, Queues |
 | ML Controller | Cloud Run (FastAPI), httpx + Modal SDK |
 | ML Compute | Modal (Python 3.11), PyTorch, scikit-learn, XGBoost, CatBoost, LightGBM, Chronos |
-| Data | TWSE/TPEx 官方 OpenAPI + D1 歷史（FinMind 已移除） |
+| Data | TWSE/TPEx 官方 OpenAPI + D1 歷史 + 0050 ETF benchmark |
 | Notifications | Discord Webhook |
 
 ## Deployment

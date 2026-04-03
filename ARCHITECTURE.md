@@ -46,7 +46,7 @@
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  ML ENSEMBLE (15:30 TW) — Cloud Run                    │
+│                  ML ENSEMBLE (18:00 TW) — Cloud Run                    │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  LAYER 1: 10 Base Models (Independent Predictions)              │   │
@@ -358,7 +358,7 @@ Final signal = weighted_vote(10 models, model_weight)
 15:05  bulk-fetch       TWSE + TPEX + 興櫃 bulk 寫入
 15:10  screener         T0→T5 多層篩選
 15:15  queue-update     Yahoo 回填 + 指標 + 新聞
-15:30  ml-predict       10 模型 + ensemble + meta-learner
+18:00  ml-predict       10 模型 + ensemble + meta-learner
 16:05  adaptive-update  T+1 自適應參數計算
 17:00  daily-report     每日報告 + Discord 推送
 20:00  daily-snapshot   Portfolio snapshot + PnL 計算

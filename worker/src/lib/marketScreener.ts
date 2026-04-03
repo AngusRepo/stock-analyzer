@@ -2269,40 +2269,58 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] 外資天數佔比失敗:', e)
   }
 
-  // ── Step 4c: 趨勢品質 filter（D1 60 天歷史）——
-  // 用 D1 stock_prices 識別「偶爾拉高再緩跌」的 pump-and-fade pattern
+  // ── Step 4c: 趨勢品質 + ADX + 流動性分級（D1 60 天歷史）──
   try {
     const top80 = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
     if (top80.length > 0) {
       const ph = top80.map(() => '?').join(',')
-      // 查 60 天收盤價序列
+      // 查 60 天 OHLCV（ADX 需要 high/low）
       const { results: histRows } = await env.DB.prepare(`
-        SELECT s.symbol, sp.date, sp.close
+        SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
         FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
         WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
         ORDER BY s.symbol, sp.date
-      `).bind(...top80).all<{ symbol: string; date: string; close: number }>()
+      `).bind(...top80).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
 
       // 按 symbol 分組
-      const histBySymbol = new Map<string, number[]>()
+      const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
       for (const r of (histRows ?? [])) {
         if (!histBySymbol.has(r.symbol)) histBySymbol.set(r.symbol, [])
-        histBySymbol.get(r.symbol)!.push(r.close)
+        histBySymbol.get(r.symbol)!.push({ close: r.close, high: r.high ?? r.close, low: r.low ?? r.close, volume: r.volume ?? 0 })
       }
 
-      let trendPenalty = 0, intentPenalty = 0
+      // ── G1: 全 universe 的 intent 百分位排名（adaptive 門檻）──
+      const intentMap = new Map<string, number>()
+      for (const [sym, bars] of histBySymbol) {
+        if (bars.length < 20) continue
+        const latest = bars[bars.length - 1].close
+        const first = bars[0].close
+        let sumAbsRet = 0
+        for (let i = 1; i < bars.length; i++) {
+          if (bars[i - 1].close > 0) sumAbsRet += Math.abs((bars[i].close - bars[i - 1].close) / bars[i - 1].close)
+        }
+        const netReturn = first > 0 ? (latest - first) / first : 0
+        intentMap.set(sym, sumAbsRet > 0 ? netReturn / sumAbsRet : 0)
+      }
+      // 計算百分位門檻
+      const intentValues = [...intentMap.values()].sort((a, b) => a - b)
+      const p10 = intentValues[Math.floor(intentValues.length * 0.10)] ?? -0.3
+      const p20 = intentValues[Math.floor(intentValues.length * 0.20)] ?? -0.1
+
+      let trendPenalty = 0, intentPenalty = 0, adxPenalty = 0, liqPenalty = 0
+
       for (const c of scored) {
-        const closes = histBySymbol.get(c.symbol)
-        if (!closes || closes.length < 20) continue
+        const bars = histBySymbol.get(c.symbol)
+        if (!bars || bars.length < 20) continue
 
-        const latest = closes[closes.length - 1]
-        const first = closes[0]
-        const high60 = Math.max(...closes)
+        const latest = bars[bars.length - 1].close
+        const first = bars[0].close
+        const high60 = Math.max(...bars.map(b => b.close))
 
-        // ① 距離 60 日高點回落幅度（> 10% = pump-and-fade 嫌疑）
+        // ① 距離 60 日高點回落
         const fromHigh = (latest - high60) / high60
         if (fromHigh < -0.15) {
-          c.score -= 8  // 嚴重回落
+          c.score -= 8
           c.reason += `；距高點${(fromHigh * 100).toFixed(0)}%`
           trendPenalty++
         } else if (fromHigh < -0.10) {
@@ -2310,24 +2328,84 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
           trendPenalty++
         }
 
-        // ② 60 天價格意圖因子（用完整歷史，比 20 天 API 資料更準）
-        let sumAbsRet = 0
-        for (let i = 1; i < closes.length; i++) {
-          if (closes[i - 1] > 0) sumAbsRet += Math.abs((closes[i] - closes[i - 1]) / closes[i - 1])
-        }
-        const netReturn = first > 0 ? (latest - first) / first : 0
-        const intent60 = sumAbsRet > 0 ? netReturn / sumAbsRet : 0
-
-        // intent60 < -0.1 = 淨跌且路徑震盪（典型 fade pattern）
-        if (intent60 < -0.1) {
-          c.score -= 5
+        // ② G1: Intent adaptive 百分位扣分
+        const intent = intentMap.get(c.symbol) ?? 0
+        if (intent < p10 && intent < 0) {
+          c.score -= 8  // 最差 10%（淨跌+高震盪）
           intentPenalty++
-        } else if (intent60 > 0.4) {
-          c.score += 3  // 優質趨勢加分
+        } else if (intent < p20 && intent < 0) {
+          c.score -= 5  // 最差 20%
+          intentPenalty++
+        } else if (intent > 0.4) {
+          c.score += 3  // 優質直線上漲
+        }
+
+        // ③ G2+ADX: 計算 ADX 14 — 判斷有無趨勢
+        if (bars.length >= 15) {
+          // +DM / -DM / TR 計算
+          let smoothPlusDM = 0, smoothMinusDM = 0, smoothTR = 0
+          for (let i = 1; i < Math.min(15, bars.length); i++) {
+            const upMove = bars[i].high - bars[i - 1].high
+            const downMove = bars[i - 1].low - bars[i].low
+            const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0
+            const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0
+            const tr = Math.max(
+              bars[i].high - bars[i].low,
+              Math.abs(bars[i].high - bars[i - 1].close),
+              Math.abs(bars[i].low - bars[i - 1].close)
+            )
+            if (i <= 14) {
+              smoothPlusDM += plusDM
+              smoothMinusDM += minusDM
+              smoothTR += tr
+            }
+          }
+          // Wilder smoothing for remaining bars
+          for (let i = 15; i < bars.length; i++) {
+            const upMove = bars[i].high - bars[i - 1].high
+            const downMove = bars[i - 1].low - bars[i].low
+            const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0
+            const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0
+            const tr = Math.max(
+              bars[i].high - bars[i].low,
+              Math.abs(bars[i].high - bars[i - 1].close),
+              Math.abs(bars[i].low - bars[i - 1].close)
+            )
+            smoothPlusDM = smoothPlusDM - smoothPlusDM / 14 + plusDM
+            smoothMinusDM = smoothMinusDM - smoothMinusDM / 14 + minusDM
+            smoothTR = smoothTR - smoothTR / 14 + tr
+          }
+          const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0
+          const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0
+          const dx = (plusDI + minusDI) > 0 ? Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100 : 0
+          const adx = dx  // 簡化：用最新 DX 近似 ADX（完整 ADX 需要 DX 的 14 日均值）
+
+          // ADX < 15 + 法人大買 = 無趨勢但法人掃貨（國光生 pattern）
+          if (adx < 15 && (c as any).chip_score >= 20) {
+            c.score -= 5
+            c.reason += `；ADX${adx.toFixed(0)}無趨勢`
+            adxPenalty++
+          } else if (adx > 30) {
+            // 強趨勢加分（搭配 intent 方向）
+            if (intent > 0.1) c.score += 2
+          }
+        }
+
+        // ④ G4: 流動性分級（不提高硬門檻，用分數機制）
+        const avgTurnover = bars.reduce((s, b) => s + b.close * b.volume, 0) / bars.length
+        if (avgTurnover < 10_000_000) {        // < 1000 萬
+          c.score -= 5
+          liqPenalty++
+        } else if (avgTurnover < 30_000_000) { // 1000~3000 萬
+          c.score -= 2
+          liqPenalty++
+        } else if (avgTurnover > 100_000_000) { // > 1 億
+          c.score += 2  // 高流動性優勢
         }
       }
 
-      debugLog.push(`[Step 4c] 趨勢品質: ${trendPenalty} 檔距高點扣分, ${intentPenalty} 檔意圖負值扣分`)
+      debugLog.push(`[Step 4c] 趨勢品質: 距高點=${trendPenalty} intent=${intentPenalty} ADX無趨勢=${adxPenalty} 低流動性=${liqPenalty}`)
+      debugLog.push(`[Step 4c] Intent adaptive: p10=${p10.toFixed(3)} p20=${p20.toFixed(3)}`)
     }
   } catch (e) {
     console.warn('[Screener v2] 趨勢品質 filter 失敗:', e)

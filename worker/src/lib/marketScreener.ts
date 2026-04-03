@@ -1469,6 +1469,7 @@ async function calcIndustryRRG(
   industryMap: Map<string, string>,
   env: Bindings,
   cfg: TradingConfig,
+  endDate: string,
 ): Promise<Map<string, { rsRatio: number; rsMomentum: number; quadrant: string; bonus: number }>> {
   const result = new Map<string, { rsRatio: number; rsMomentum: number; quadrant: string; bonus: number }>()
 
@@ -1502,31 +1503,45 @@ async function calcIndustryRRG(
     console.warn('[RRG] Regime detection failed, using defaults:', e)
   }
 
-  // ── 按產業聚合報酬 ──
-  const industryReturns = new Map<string, number[]>()  // industry → array of member returns
-  let allReturns: number[] = []
+  // ── 從 D1 stock_prices 讀 N 日報酬（而非即時 API，確保假日也有完整歷史）──
+  const industryReturns = new Map<string, number[]>()
+  try {
+    // 查每支有 industry tag 的股票的 N 日前收盤 vs 最新收盤
+    const { results: returnRows } = await env.DB.prepare(`
+      SELECT s.symbol,
+        (SELECT sp1.close FROM stock_prices sp1 WHERE sp1.stock_id = s.id ORDER BY sp1.date DESC LIMIT 1) as recent_close,
+        (SELECT sp2.close FROM stock_prices sp2 WHERE sp2.stock_id = s.id ORDER BY sp2.date DESC LIMIT 1 OFFSET ?) as old_close
+      FROM stocks s
+      WHERE s.is_active = 1 OR EXISTS (SELECT 1 FROM stock_tags st WHERE st.symbol = s.symbol AND st.tag_type = 'industry')
+    `).bind(rsWindow).all<{ symbol: string; recent_close: number | null; old_close: number | null }>()
 
-  for (const [stockId, prices] of data.prices) {
-    const industry = industryMap.get(stockId)
-    if (!industry) continue
-    if (prices.length < rsWindow) continue
-
-    // N 日累計報酬
-    const recent = prices[prices.length - 1].close
-    const nDaysAgo = prices[Math.max(0, prices.length - rsWindow)].close
-    if (recent <= 0 || nDaysAgo <= 0) continue
-    const ret = (recent - nDaysAgo) / nDaysAgo
-
-    if (!industryReturns.has(industry)) industryReturns.set(industry, [])
-    industryReturns.get(industry)!.push(ret)
-    allReturns.push(ret)
+    for (const r of (returnRows ?? [])) {
+      if (!r.recent_close || !r.old_close || r.old_close <= 0) continue
+      const industry = industryMap.get(r.symbol)
+      if (!industry) continue
+      const ret = (r.recent_close - r.old_close) / r.old_close
+      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
+      industryReturns.get(industry)!.push(ret)
+    }
+  } catch (e) {
+    console.warn('[RRG] D1 stock_prices query failed, fallback to API data:', e)
+    // Fallback: 用 API 即時資料
+    for (const [stockId, prices] of data.prices) {
+      const industry = industryMap.get(stockId)
+      if (!industry) continue
+      if (prices.length < rsWindow) continue
+      const recent = prices[prices.length - 1].close
+      const nDaysAgo = prices[Math.max(0, prices.length - rsWindow)].close
+      if (recent <= 0 || nDaysAgo <= 0) continue
+      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
+      industryReturns.get(industry)!.push((recent - nDaysAgo) / nDaysAgo)
+    }
   }
 
-  if (!allReturns.length) return result
+  if (!industryReturns.size) return result
 
-  // 各產業平均報酬 → 用 Z-score 標準化後 × 100 + 100 作為 RS-Ratio
-  // Why: cumulative return 差異太小（<1%），ratio 接近 1.0，RS ≈ 100 無法區分
-  // Z-score 方式：mean=100, std=每10分位差10分 → 強弱分明
+  // 各產業平均報酬 → Z-score 標準化 → RS-Ratio
+  // Z-score: mean=100, 每 1 std = 10 分 → 強弱分明
   const industryAvgMap = new Map<string, number>()
   for (const [industry, returns] of industryReturns) {
     if (returns.length >= 3) {
@@ -1804,7 +1819,34 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── 建資料結構 ──
   const data = buildStockData(allPrices, allChips)
-  const marketReturn5d = calcMarketReturn5d(data)
+  // 大盤 5d return：優先從 D1 算（API 資料在假日可能不完整）
+  let marketReturn5d = calcMarketReturn5d(data)
+  if (Math.abs(marketReturn5d) < 0.0001) {
+    try {
+      const { results: mktRows } = await env.DB.prepare(`
+        SELECT sp.close FROM stock_prices sp
+        JOIN stocks s ON sp.stock_id = s.id
+        WHERE s.symbol = '0050' OR s.symbol = 'TWII'
+        ORDER BY sp.date DESC LIMIT 6
+      `).all<{ close: number }>()
+      if (mktRows && mktRows.length >= 6) {
+        marketReturn5d = (mktRows[0].close - mktRows[5].close) / mktRows[5].close
+      } else {
+        // Fallback: 用全市場中位數
+        const { results: mktFallback } = await env.DB.prepare(`
+          SELECT AVG(ret) as avg_ret FROM (
+            SELECT (sp1.close - sp2.close) / sp2.close as ret
+            FROM stock_prices sp1
+            JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
+            WHERE sp1.date = (SELECT MAX(date) FROM stock_prices)
+              AND sp2.date = (SELECT MAX(date) FROM stock_prices WHERE date < (SELECT MAX(date) FROM stock_prices LIMIT 1 OFFSET 4))
+            LIMIT 500
+          )
+        `).all<{ avg_ret: number }>()
+        if (mktFallback?.[0]?.avg_ret) marketReturn5d = mktFallback[0].avg_ret
+      }
+    } catch { /* fallback to API-calculated */ }
+  }
 
   // ── Step 1: Universe hard filter ──
   console.log('[Screener v2] Step 1: Universe filtering...')
@@ -1876,7 +1918,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── Step 3: RRG 產業輪動加分 ──
   console.log('[Screener v2] Step 3: RRG industry rotation...')
-  const rrg = await calcIndustryRRG(data, industryMap, env, cfg)
+  const rrg = await calcIndustryRRG(data, industryMap, env, cfg, endDate)
 
   // 寫 sector_flow + sector_heat
   const sectorHeatScores: SectorHeatScore[] = []

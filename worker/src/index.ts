@@ -836,18 +836,23 @@ async function runMLAndRisk(env: Bindings) {
     if (data.error) continue
     try {
       await env.KV.put(`ml:predict:${data.stock_id}`, JSON.stringify(data), { expirationTtl: 86400 })
+      // trade_signal: 簡化版（buy/sell/hold）保留向下相容
+      // signal_raw: ensemble 原始 signal（STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL/NO_SIGNAL）
+      const rawSignal = data.signal ?? 'NO_SIGNAL'
+      const tradeSignal = rawSignal.includes('BUY') ? 'buy' : rawSignal.includes('SELL') ? 'sell' : rawSignal === 'NO_SIGNAL' ? 'hold' : 'hold'
       await env.DB.prepare(`
         INSERT INTO predictions
           (stock_id, model_name, generated_at, horizon, direction_accuracy,
-           forecast_data, entry_price, stop_loss, target1, target2, trade_signal, feature_version)
-        VALUES (?,?,datetime('now'),?,?,?,?,?,?,?,?,?)
+           forecast_data, entry_price, stop_loss, target1, target2, trade_signal, feature_version, signal_raw)
+        VALUES (?,?,datetime('now'),?,?,?,?,?,?,?,?,?,?)
       `).bind(
         data.stock_id, 'ensemble', 14, data.confidence ?? null,
-        JSON.stringify({ signal: data.signal, models: data.models, forecasts: data.forecasts, arf_features: data.arf_features }),
+        JSON.stringify({ signal: rawSignal, models: data.models, forecasts: data.forecasts, arf_features: data.arf_features }),
         data.entry_price ?? null, data.stop_loss ?? null,
         data.target1 ?? null, data.target2 ?? null,
-        data.signal?.includes('BUY') ? 'buy' : data.signal?.includes('SELL') ? 'sell' : 'hold',
+        tradeSignal,
         data.feature_version ?? null,
+        rawSignal,  // 保留原始 signal
       ).run().catch((e: any) => console.warn(`[ML] D1 insert failed for ${data.symbol}:`, e?.message ?? e))
       written++
       console.log(`[ML] ${data.symbol} → ${data.signal}`)

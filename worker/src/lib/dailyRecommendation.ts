@@ -332,7 +332,7 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
   const tiMap = new Map(tiRows?.map((r: any) => [r.stock_id, r]) ?? [])
 
   const { results: mlRows } = await db.prepare(`
-    SELECT stock_id, trade_signal, direction_accuracy, forecast_data
+    SELECT stock_id, trade_signal, signal_raw, direction_accuracy, forecast_data
     FROM predictions
     WHERE generated_at = (SELECT MAX(generated_at) FROM predictions p2 WHERE p2.stock_id = predictions.stock_id)
     AND generated_at >= date('now', '-2 days')
@@ -343,9 +343,10 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
     const models = fd.models ?? []
     const upCount = models.filter((m: any) => m.direction === 'up').length
     const downCount = models.filter((m: any) => m.direction === 'down').length
+    // 優先用 signal_raw（ensemble 原始），其次 trade_signal（簡化版）
+    const signal = r.signal_raw ?? r.trade_signal ?? fd.signal ?? 'HOLD'
     return [r.stock_id, {
-      // trade_signal 優先（D1 欄位），forecast_data.signal 可能不一致（NO_SIGNAL vs hold）
-      signal: r.trade_signal ?? fd.signal,
+      signal,
       confidence: r.direction_accuracy,
       forecast_pct: fd.forecast_pct,
       models_total: models.length,

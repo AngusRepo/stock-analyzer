@@ -389,61 +389,95 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
     return
   }
 
-  // 3. Controller 評分 + LLM（或 legacy fallback）
+  // 3. Screener 分數(60%) + ML 分數(40%) 加權合併
+  //    Screener 決定「哪些值得看」，ML 決定「方向+信心」
   let recommendations: any[] = []
-
-  if (env.ML_CONTROLLER_URL) {
-    // ── Phase 3: Controller 路徑 ──────────────────────────────────────────
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
-    try {
-      const res = await fetch(`${env.ML_CONTROLLER_URL}/recommend`, {
-        method: 'POST', headers,
-        body: JSON.stringify({
-          date: today,
-          stocks: stockPayloads,
-          sectors,
-          anthropic_api_key: env.ANTHROPIC_API_KEY,
-          top_n: 5,
-        }),
-        signal: AbortSignal.timeout(60_000),
-      })
-      if (!res.ok) throw new Error(`Controller /recommend HTTP ${res.status}`)
-      const data = await res.json() as any
-      recommendations = data.recommendations ?? []
-      console.log(`[Recommendation] Controller 回傳 ${recommendations.length} 支推薦`)
-    } catch (e) {
-      console.error('[Recommendation] Controller failed, using legacy fallback:', e)
-      // fall through to legacy
+  {
+    // 讀 ML predictions（KV 快取或 D1 最新）
+    const mlPredMap = new Map<string, { signal: string; confidence: number; forecast_pct: number }>()
+    for (const s of stockPayloads) {
+      if (s.ml_signal) {
+        mlPredMap.set(s.symbol, {
+          signal: s.ml_signal,
+          confidence: s.ml_confidence ?? 0,
+          forecast_pct: s.ml_forecast_pct ?? 0,
+        })
+      }
     }
-  }
 
-  if (!recommendations.length) {
-    // ── Legacy fallback: 本地評分 + LLM ────────────────────────────────────
-    // 簡化版：直接用 Controller scorer 的邏輯在本地跑（避免重複大量 code）
-    // 由於 Controller 已移走評分邏輯，legacy 退化為「只看 ML signal 排名」
-    const withSignal = stockPayloads
-      .filter((s: any) => s.ml_signal?.includes('BUY'))
-      .sort((a: any, b: any) => (b.ml_confidence ?? 0) - (a.ml_confidence ?? 0))
-      .slice(0, 5)
+    const withScore = stockPayloads.map((s: any) => {
+      // ── 籌碼分數 (0-40) ──
+      const chipScore = Math.min(40, Math.max(0,
+        (s.foreign_consecutive ?? 0) * 4 +
+        (((s.foreign_net_5d ?? 0) + (s.trust_net_5d ?? 0)) > 0 ? 12 : 0) +
+        ((s.foreign_net_5d ?? 0) > 0 && (s.trust_net_5d ?? 0) > 0 ? 8 : 0)  // 雙法人同步加分
+      ))
 
-    for (let i = 0; i < withSignal.length; i++) {
-      const s = withSignal[i]
+      // ── 技術分數 (0-30) ──
+      const rsi = s.rsi14 ?? 50
+      const techScore = Math.min(30,
+        (rsi >= 40 && rsi <= 80 ? 8 : rsi > 80 ? 6 : 0) +       // RSI 放寬
+        ((s.macd_hist ?? 0) > 0 ? 8 : 0) +                        // MACD 多頭
+        (s.current_price > (s.ma20 ?? 0) ? 5 : 0) +               // 站上 MA20
+        (s.current_price > (s.ma5 ?? 0) ? 3 : 0) +                // 站上 MA5
+        (rsi >= 55 && rsi <= 70 ? 4 : 0) +                        // RSI 最佳區
+        (s.current_price > (s.ma60 ?? 0) ? 2 : 0)                 // 站上 MA60
+      )
+
+      // ── ML 分數 (0-30) ──
+      const ml = mlPredMap.get(s.symbol)
+      let mlScore = 0
+      if (ml) {
+        // Signal 分數
+        if (ml.signal.includes('STRONG_BUY')) mlScore += 25
+        else if (ml.signal.includes('BUY')) mlScore += 18
+        else if (ml.signal === 'HOLD') mlScore += 8
+        else if (ml.signal.includes('SELL')) mlScore -= 5
+        // Confidence 加成
+        mlScore += ml.confidence * 10
+        // 預測漲幅加成
+        if (ml.forecast_pct > 0.03) mlScore += 5
+        else if (ml.forecast_pct > 0.01) mlScore += 2
+      }
+      mlScore = Math.max(0, Math.min(30, mlScore))
+
+      // ── 加權合併：screener 基礎(chip+tech) 60% + ML 40% ──
+      const baseScore = chipScore + techScore  // 0-70
+      const totalScore = Math.round(baseScore * 0.6 + mlScore * 0.4 + (chipScore + techScore + mlScore) * 0.1)
+
+      return {
+        ...s, _score: totalScore,
+        _chipScore: chipScore, _techScore: techScore, _mlScore: mlScore,
+        _signal: ml?.signal ?? null, _confidence: ml?.confidence ?? null,
+      }
+    })
+    // 過濾 SELL — 沒持股不推薦賣出標的
+    .filter((s: any) => {
+      const sig = (s._signal ?? '').toLowerCase()
+      return !sig.includes('sell') && sig !== 'no_signal'
+    })
+    .sort((a: any, b: any) => b._score - a._score)
+    .slice(0, 25)
+
+    for (let i = 0; i < withScore.length; i++) {
+      const s = withScore[i]
       recommendations.push({
         rank: i + 1, stock_id: s.stock_id, symbol: s.symbol,
-        name: s.name, sector: s.sector, score: 0,
-        chip_score: 0, tech_score: 0, ml_score: 0,
+        name: s.name, sector: s.sector, score: s._score,
+        chip_score: s._chipScore, tech_score: s._techScore, ml_score: s._mlScore,
         current_price: s.current_price,
         foreign_net_5d: (s.foreign_net_5d ?? 0) / 1e8,
         trust_net_5d: (s.trust_net_5d ?? 0) / 1e8,
         rsi14: s.rsi14, macd_hist: s.macd_hist,
-        ml_signal: s.ml_signal, ml_confidence: s.ml_confidence,
-        has_buy_signal: 1,
-        reason: '量化指標呈現強勢訊號（legacy fallback）',
+        ml_signal: s._signal, ml_confidence: s._confidence,
+        has_buy_signal: s._signal?.includes('BUY') ? 1 : 0,
+        reason: `多因子 #${i + 1}（籌碼${s._chipScore}+技術${s._techScore}+ML${s._mlScore}）`,
         watch_points: '["留意大盤整體走勢"]',
       })
     }
-    console.log(`[Recommendation] Legacy fallback: ${recommendations.length} 支推薦`)
+    const sellCount = stockPayloads.filter((s: any) => (s.ml_signal ?? '').toLowerCase().includes('sell')).length
+    const noSigCount = stockPayloads.filter((s: any) => (s.ml_signal ?? '').toLowerCase() === 'no_signal').length
+    console.log(`[Recommendation] Screener+ML 合併: ${recommendations.length} 支推薦 (過濾 ${sellCount} SELL + ${noSigCount} NO_SIGNAL)`)
   }
 
   if (!recommendations.length) {

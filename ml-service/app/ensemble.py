@@ -142,8 +142,17 @@ def weighted_vote(
     up_count = sum(1 for p in predictions if p.direction == "up")
     consensus = max(up_count, len(predictions) - up_count) / len(predictions)
 
-    # ── 整體信心分數 ──────────────────────────────────────────────────────────
-    avg_confidence = sum(p.confidence * w for p, w in zip(predictions, norm_weights))
+    # ── 整體信心分數（只算贏方向的加權 confidence）──────────────────────────
+    # Bug fix: 之前用全模型加權平均，UP 的低 confidence 會拉低 DOWN 的高 confidence
+    # 修正：只計算勝出方向模型的加權 confidence
+    winning_dir = "up" if up_weight > down_weight else "down"
+    winning_conf_sum = 0.0
+    winning_weight_sum = 0.0
+    for p, w in zip(predictions, norm_weights):
+        if p.direction == winning_dir:
+            winning_conf_sum += p.confidence * w
+            winning_weight_sum += w
+    avg_confidence = winning_conf_sum / winning_weight_sum if winning_weight_sum > 0 else 0.5
     avg_confidence *= donothing_penalty  # DoNothing arm 修正
 
     # ── Anomaly soft penalty（取代 hard gate）─────────────────────────────────
@@ -153,14 +162,14 @@ def weighted_vote(
         anomaly_penalty = max(0.5, 1.0 + (anomaly_score + 0.5) * 1.0)
         avg_confidence *= anomaly_penalty
 
-    # ── 信心門檻過濾（soft degradation：低於門檻降級為 HOLD，不再直接 NO_SIGNAL）
+    # ── 信心門檻過濾 ─────────────────────────────────────────────────────────
     CONFIDENCE_THRESHOLD = float(_adaptive.get("confidence_threshold", 0.55))
     CONSENSUS_THRESHOLD  = dynamic_consensus_thr   # 由 regime 決定（0.55~0.72）
 
     below_confidence = avg_confidence < CONFIDENCE_THRESHOLD
     below_consensus  = consensus < CONSENSUS_THRESHOLD
 
-    # 只有兩者同時不過才 NO_SIGNAL，單項不過降級為 HOLD
+    # 雙低 → NO_SIGNAL
     if below_confidence and below_consensus:
         return _no_signal(
             current_price, atr,
@@ -194,19 +203,22 @@ def weighted_vote(
     # signal_score = direction_weight × confidence 的連續映射，0~1
     signal_score = direction_weight * final_conf
 
-    # 單項不過門檻 → 強制降級為 HOLD（但不 NO_SIGNAL）
-    if below_confidence or below_consensus:
-        signal = "HOLD"
-        stars = 2
-    elif signal_score >= 0.72:       # ~0.9 × 0.80
+    # 單項不過門檻：降低 signal_strength 但不強制 HOLD
+    # 如果 signal_score 夠高（方向明確 × 信心高），仍給出 BUY/SELL
+    threshold_penalty = 1 if (below_confidence or below_consensus) else 0
+
+    if signal_score >= 0.72:       # ~0.9 × 0.80
         signal = "STRONG_BUY" if is_up else "STRONG_SELL"
-        stars = 5
+        stars = max(4, 5 - threshold_penalty)
     elif signal_score >= 0.52:       # ~0.75 × 0.70
         signal = "BUY" if is_up else "SELL"
-        stars = 4
+        stars = max(3, 4 - threshold_penalty)
     elif signal_score >= 0.36:       # ~0.60 × 0.60
-        signal = "BUY" if is_up else "SELL"
-        stars = 3
+        if threshold_penalty:
+            signal = "HOLD"  # signal_score 偏低 + 門檻沒過 → HOLD
+        else:
+            signal = "BUY" if is_up else "SELL"
+        stars = max(2, 3 - threshold_penalty)
     else:
         signal = "HOLD"
         stars = 2

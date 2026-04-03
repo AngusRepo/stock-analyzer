@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-02（v6 — Failure Mode Map：17 種失效模式防禦 + 系統韌性補強）
+> 更新：2026-04-02（v7 — Screener 重構整併：Bottom-up 多因子 + RRG 產業輪動）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v7 | 2026-04-02 | 整併 Screener 重構計畫（§九），新增 Phase 0，刪除 DATA_CLEANSING_PLAN.md |
 | v6 | 2026-04-02 | 新增 §八 Failure Mode Map（17 種失效模式 × 防禦方案），補強：跌停鎖死、Gap Stop、流動性過濾、模型共錯偵測、Prompt 版控、Agent 限制為只扣分、服務降級、資料驗證層 |
 | v5 | 2026-04-02 | 外部審查修正：新增 Decision Authority Layer（決策權限分層）、Checkpointer 改 GCS/Postgres、Optuna 加 out-of-sample lock、紅軍加 historical replay 必要條件、Session Memory 限制範圍、Phase 2.5 新增 |
 | v4 | 2026-04-01 | 融合 StockVision v12 營運藍圖，新增：模式 13（數據冷熱分級）、模式 14（5 層 Circuit Breaker）、模式 15（Optuna 自動調參 Skill）、模式 16（週報 AI 審計 Graph）、模式 17（Multi-Agent 對抗訓練），更新架構圖、安全防護、導入路徑 |
@@ -1492,36 +1493,51 @@ class ExecutionSimulator:
 
 ---
 
-## 七、導入路徑 `[v5 更新]`
+## 七、導入路徑 `[v7 更新]`
 
-| Phase | 項目 | 涵蓋模式 / 層 | 說明 |
-|-------|------|-------------|------|
+| Phase | 項目 | 涵蓋 | 說明 |
+|-------|------|------|------|
+| **Phase 0** | **Screener 重構** | **§九** | **最優先：Bottom-up 多因子 + RRG + 去重 + 資料品質。源頭乾淨，後面才有意義** `[v7 新增]` |
 | **Phase 1** | 基礎建設 | 模式 1, 6, 8, 9, 13 | Tool System + Feature Flags + JSON Schema + PARITY.md + 數據分級路由 |
-| **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12, 14 + Decision Authority | Coordinator 辯論 + 權限分級 + 安全防護 + Circuit Breaker + 決策權限分層 `[v5 更新]` |
-| **Phase 2.5** | 成交模擬 | §6.2 Execution Reality | Slippage、Partial Fill、Limit Lock — 比 Phase 3~6 都重要 `[v5 新增]` |
-| **Phase 3** | 任務鏈 + Skill + 投組 | 模式 5, 10 + §6.1 Portfolio | Cron pipeline + checkpointer + Skill + Portfolio Construction `[v5 更新]` |
-| **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶（限 UI 範圍） `[v5 更新]` |
-| **Phase 5** | 自我演化 | 模式 15, 16 + §6.3 Observability | Optuna（含 OOS lock）+ 週報審計 + 三層觀測系統 `[v5 更新]` |
-| **Phase 6** | 對抗訓練 | 模式 17 | 紅藍軍（Historical Replay 優先，LLM 輔助分析） `[v5 更新]` |
+| **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12, 14 + Decision Authority | Coordinator 辯論 + 權限分級 + 安全防護 + Circuit Breaker + 決策權限分層 |
+| **Phase 2.5** | 成交模擬 | §6.2 Execution Reality | Slippage、Partial Fill、Limit Lock |
+| **Phase 3** | 任務鏈 + Skill + 投組 | 模式 5, 10 + §6.1 Portfolio | Cron pipeline + checkpointer + Skill + Portfolio Construction |
+| **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶（限 UI 範圍） |
+| **Phase 5** | 自我演化 | 模式 15, 16 + §6.3 Observability | Optuna（含 OOS lock）+ 週報審計 + 三層觀測系統 |
+| **Phase 6** | 對抗訓練 | 模式 17 | 紅藍軍（Historical Replay 優先，LLM 輔助分析） |
 
-### Phase 間的依賴關係 `[v5 更新]`
+### Phase 0 實作順序（Screener 重構）`[v7 新增]`
+
+| 順序 | 項目 | 前置條件 | 說明 |
+|------|------|---------|------|
+| 0-1 | 擴展資料抓取到 20 日 | 無 | 改 `fetchMultiDayMarketData(5)` → `(20)` |
+| 0-2 | Step 2 多因子評分 | 0-1 | 從現有 `filterCandidates` + `scorer.py` 整合 |
+| 0-3 | Step 3 RRG 計算 | 0-1 | 新增 RRG 計算函式 + DB migration |
+| 0-4 | Step 4 接入 `news.ts` | 無 | 呼叫現有 `analyzeSentiment` |
+| 0-5 | Step 5 去重 + 截斷 | 0-2 | 報酬率相關性計算 + top 25 |
+| 0-6 | Step 6 資料品質檢查 | 無 | 缺值/異常/時效 |
+| 0-7 | 移除舊流程 | 0-2~0-6 全完成 | 刪除 concept heat 選股邏輯（保留前端展示） |
+
+### Phase 間的依賴關係 `[v7 更新]`
 
 ```
-Phase 1（基礎建設 + 數據分級）
+Phase 0（Screener 重構 — 最先做）
   │
-  ├──→ Phase 2（辯論 + 權限 + 熔斷 + Decision Authority）
-  │       │
-  │       ├──→ Phase 2.5（成交模擬 — Execution Reality）← 交易品質關鍵
-  │       │       │
-  │       │       └──→ Phase 3（任務鏈 + Skill + 投組建構）
-  │       │               │
-  │       │               └──→ Phase 5（Optuna + 週報審計 + 觀測系統）
-  │       │                       │
-  │       │                       └──→ Phase 6（紅藍軍 Historical Replay）
-  │       │
-  │       └──→ Phase 5（可與 Phase 3 平行，但需 Phase 2 的安全層）
-  │
-  └──→ Phase 4（智能互動 + 記憶）← 可與 Phase 2-6 獨立平行
+  └──→ Phase 1（基礎建設 + 數據分級）
+         │
+         ├──→ Phase 2（辯論 + 權限 + 熔斷 + Decision Authority）
+         │       │
+         │       ├──→ Phase 2.5（成交模擬 — Execution Reality）
+         │       │       │
+         │       │       └──→ Phase 3（任務鏈 + Skill + 投組建構）
+         │       │               │
+         │       │               └──→ Phase 5（Optuna + 週報審計 + 觀測系統）
+         │       │                       │
+         │       │                       └──→ Phase 6（紅藍軍 Historical Replay）
+         │       │
+         │       └──→ Phase 5（可與 Phase 3 平行）
+         │
+         └──→ Phase 4（智能互動 + 記憶）← 可獨立平行
 ```
 
 ### 時程對應 v12 藍圖 `[v5 更新]`
@@ -1540,6 +1556,7 @@ Phase 1（基礎建設 + 數據分級）
 | （Failure Mode Map）模型失效防禦 | Phase 5 | v6: FM-4~6 | 待導入 |
 | （Failure Mode Map）Agent 失效防禦 | Phase 2 | v6: FM-7~9 | 待導入 |
 | （Failure Mode Map）系統韌性 | Phase 1 | v6: FM-10~12 | 基礎設施一起做 |
+| **Screener 重構** | **Phase 0** | **v7: §九** | **最優先，源頭乾淨後面才有意義** |
 
 ---
 
@@ -2098,3 +2115,216 @@ class DataValidator:
 | 🥉 | FM-5 模型共錯 | Phase 5 | ml-service/app/ (ensemble_monitor) |
 | 🥉 | FM-6 Label mismatch | Phase 5 | services/alignment.py |
 
+---
+
+## 九、Screener 重構：Bottom-up 多因子 + RRG 產業輪動 `[v7 新增]`
+
+> 核心變更：從 top-down（先選概念族群）翻轉為 bottom-up（先評個股）
+> 這是整個系統最根本的改動 — 源頭乾淨了，後面的 ML 和 meta 才有意義。
+
+### 9.1 現況問題
+
+現有流程是 top-down：概念族群熱度 top 8 → 從族群內挑個股 → 放寬加入族群所有成員 → ~45 檔
+
+問題：
+1. **概念族群是入口門檻**：不在 hot concept 裡的好股票直接被排除
+2. **放寬太鬆**：hot concept 成員幾乎全加入（只過濾股價 < 10）→ 膨脹主因
+3. **概念標籤是手動維護的**（`seed_concept_tags.py` 28 個概念）→ 不準、不即時
+4. **新聞情緒沒用到**：`news.ts` 有鉅亨網 + Yahoo 爬蟲但 screener 沒接
+5. **RRG 沒接入**：前端有 RRG 四象限圖但 screener 沒用
+
+業界共識：
+- 板塊配置只貢獻 9% 報酬（vs 個股選擇 12%）
+- 量化系統主流是 bottom-up 多因子為主，top-down 為輔
+- 報酬率聚類比 GICS/概念標籤更準（RMSE 低 15.9%）
+- 台股概念股分類全部是人工維護（CMoney、Goodinfo、鉅亨網皆是）
+
+### 9.2 重構後完整流程
+
+```
+Step 1: Universe 定義（全市場流動性門檻）
+│
+│   資料來源：
+│   ├── TWSE/TPEx 全市場 20 日 OHLCV
+│   ├── 三大法人籌碼
+│   ├── 鉅亨網 + Yahoo 新聞
+│   └── PTT 熱門概念
+│
+│   產業分類：FMStockInfo.industry_category
+│   ├── TWSE 上市：33 類
+│   ├── TPEx 上櫃：30 類
+│   └── 合計約 38 個不重複產業別（OpenAPI 直接取得，不需維護）
+│
+│   Hard filter：
+│   ├── close >= 15
+│   ├── close <= 2000
+│   ├── 20 日均量 >= 300,000
+│   ├── 最新日 volume > 0
+│   └── 排除處置股（punishedSet）
+│
+│   → ~800-1000 檔通過，每檔自帶官方產業別
+│
+      ▼
+Step 2: 多因子評分（Bottom-up 主篩選，每檔獨立評分）
+│
+│   籌碼面 (0-40)：
+│   ├── 外資+投信 5 日淨買超量 → 分級給分
+│   │   > 10 億 = 36, > 5 億 = 28, > 2 億 = 20, > 0 = 12, > -2 億 = 5, else 0
+│   └── 法人連續買超天數
+│       >= 5 天 +4, >= 3 天 +2
+│
+│   技術面 (0-30)：
+│   ├── RSI 14：55-70 = 12, 50-55 = 8, 45-50 = 4, >70 = 5
+│   ├── MACD histogram：> 0 = +8, > -0.5 = +3
+│   ├── 均線排列：MA5 +3, MA20 +4, MA60 +3
+│   └── 肯特納通道突破：close > MA20 + 1.5×ATR = +6
+│
+│   動能面 (0-20)：
+│   ├── 5 日報酬率 vs 大盤 (0-10)
+│   ├── 量能比：近 3 日 vs 20 日均量 (0-7)
+│   └── RSI 鈍化：RSI > 80 連 3+ 天 = +3
+│
+│   → 每檔得到 base_score (0-90)
+│
+      ▼
+Step 3: RRG 產業輪動定位（官方 38 產業別）
+│
+│   RS-Ratio 計算：
+│   ├── 每個產業的成員市值加權平均報酬（20 日窗口）
+│   ├── ÷ 大盤（TWII/TPEx）同期報酬
+│   └── EMA(10) 平滑 × 100（100 = 與大盤同步）
+│
+│   RS-Momentum 計算：
+│   └── RS-Ratio(today) - RS-Ratio(10 days ago)
+│
+│   四象限分類 + 加分：
+│   ├── Leading   (Ratio > 100, Momentum > 0) → +10 分
+│   ├── Improving (Ratio < 100, Momentum > 0) → +7 分
+│   ├── Weakening (Ratio > 100, Momentum < 0) → +0 分
+│   └── Lagging   (Ratio < 100, Momentum < 0) → -5 分
+│
+│   每檔股票依其官方產業別獲得 RRG bonus/penalty
+│   38 類粒度足夠：RRG 看「產業層級順逆風」，個股精細度靠 Step 2 + Step 5 補足
+│
+      ▼
+Step 4: 情緒面加分（多源彙整）
+│
+│   新聞情緒 bonus (0-10)：← 現有 news.ts，目前 screener 沒接
+│   ├── 鉅亨網 RSS → analyzeSentiment()
+│   ├── Yahoo Finance → analyzeSentiment()
+│   └── positive = +5~10, neutral = 0, negative = -5
+│
+│   PTT buzz bonus (0-5)：← 從主角降為配角
+│   └── mentionCount + sentimentAvg → 加分
+│
+│   概念標籤 bonus (0-5)：← 降為最低權重，不影響選股
+│   └── 屬於 hot concept → +3~5（僅前端展示用）
+│
+│   → total_score = base_score + rrg_bonus + 情緒 bonus (0-120)
+│
+      ▼
+Step 5: 排序 + 去重 + 截斷
+│
+│   5a. 全部候選按 total_score 排序
+│   5b. 同產業上限 5 檔（用官方產業別）
+│   5c. 報酬率相關性去重
+│       60 日報酬相關性 > 0.8 的只留最高分
+│       用簡易 Pearson 相關性（~50 檔 = 1,225 次計算，Worker 跑得動）
+│       不需概念標籤，數據驅動
+│   5d. 取 top 25（硬上限）
+│
+      ▼
+Step 6: 資料品質檢查（輕量清洗）
+│
+│   ├── 缺值：close / volume = 0 或 null → 排除
+│   ├── 異常值：單日漲跌 > 10%（非漲跌停日）→ 標記
+│   └── 資料時效：超過 1 天 → 排除
+│
+      ▼
+~20-25 檔 → 寫 D1 → ML pipeline（10 模型 Ensemble）
+```
+
+### 9.3 分類體系角色對照
+
+| 分類來源 | 數量 | 在流程中的角色 | 維護方式 |
+|---------|------|--------------|---------|
+| **官方產業別** | TWSE 33 + TPEx 30 ≈ 38 不重複 | Step 3 RRG 計算 + Step 5 同產業上限 | 不需維護，OpenAPI 直接取 |
+| **報酬率相關性分群** | 動態（每週變） | Step 5 去重 | 每週自動計算 |
+| **概念標籤** | 現有 28 個 | Step 4 輕量加分 + 前端展示 | 偶爾手動更新 |
+
+**選股邏輯不再依賴概念標籤的準確度。** 標籤分錯最多影響 ±5 分（滿分 120），不會決定一檔股票進不進候選。
+
+### 9.4 跟現有流程的差異
+
+| | 現在 | 重構後 |
+|---|---|---|
+| **架構** | Top-down（概念族群 → 個股） | Bottom-up（個股評分 → 產業加分） |
+| **入口** | 先選 8 個 hot concept | 全市場每檔都評分 |
+| **概念族群** | 第一道門檻（決定 universe） | 降為 Step 4 加分項（+0~5） |
+| **RRG** | 沒有 | Step 3 用官方 38 產業計算四象限 |
+| **新聞情緒** | `news.ts` 沒接入 screener | Step 4 鉅亨+Yahoo 情感加分 |
+| **PTT** | 概念熱度主來源 (0-30) | 降為輔助 (0-5) |
+| **候選膨脹** | 放寬 concept 成員 + 動量 15 檔 → ~45 | top 25 硬截斷 |
+| **動量突破** | 獨立掃描加 15 檔 | 併入 Step 2 動能面 |
+| **去重** | 沒有 | Step 5 報酬率相關性去重 |
+| **資料品質** | 沒有 | Step 6 缺值/異常/時效檢查 |
+| **產業分類** | 手動 28 概念標籤 | 官方 38 產業（自動）+ 報酬率聚類（自動） |
+| **控制數量** | 靠 topNPerSector × 族群數（不穩定） | top 25 硬截斷（穩定） |
+
+### 9.5 RRG 計算細節
+
+| 資料 | 來源 | 現有？ |
+|------|------|--------|
+| 每檔股票的官方產業別 | `FMStockInfo.industry_category` | ✅ 已有 |
+| 每檔股票的 20 日 OHLCV | TWSE/TPEx API | ✅ 已有（目前抓 5 日，需擴到 20 日） |
+| 大盤指數日報酬 | TWII / TPEx 指數 | ✅ 已有（`usLeading.ts` 有抓） |
+| 每檔股票的市值 | TWSE BWIBBU API | ✅ 已有（`twseApi.ts`） |
+
+```
+計算步驟：
+1. 每日：計算每個產業的市值加權平均報酬
+   industry_return[i] = Σ(stock_return × market_cap) / Σ(market_cap)
+
+2. 每日：計算相對強度
+   relative_strength[i] = industry_cumulative_return(20d) / market_cumulative_return(20d)
+
+3. RS-Ratio = EMA(relative_strength, 10) × 100
+   → > 100 表示該產業強於大盤
+
+4. RS-Momentum = RS-Ratio[today] - RS-Ratio[10d ago]
+   → > 0 表示動能正在增加
+
+5. 四象限 = f(RS-Ratio, RS-Momentum)
+```
+
+DB 變更：`sector_heat` 表新增欄位
+
+```sql
+ALTER TABLE sector_heat ADD COLUMN rs_ratio REAL;
+ALTER TABLE sector_heat ADD COLUMN rs_momentum REAL;
+ALTER TABLE sector_heat ADD COLUMN quadrant TEXT;  -- 'Leading'|'Improving'|'Weakening'|'Lagging'
+```
+
+### 9.6 改動範圍
+
+| 檔案 | 改動 | 大小 |
+|------|------|------|
+| `marketScreener.ts` | 重構主流程 | 大（核心） |
+| `news.ts` | 新增 `batchSentiment(symbols)` | 小 |
+| `tradingConfig.ts` | 新增 `maxCandidates: 25`、`maxPerSector: 5` | 小 |
+| `finmind.ts` 或 `twseApi.ts` | 擴展抓 20 日資料（目前 5 日） | 小 |
+| `schema.sql` + migration | `sector_heat` 加 `rs_ratio`、`rs_momentum`、`quadrant` | 小 |
+| `dailyRecommendation.ts` | `sector_flow` 寫入時一併算 RRG 座標 | 中 |
+| `scorer.py` | 不動（ML 階段評分邏輯不變） | 無 |
+
+### 9.7 預期效果
+
+| 指標 | 現在 | 重構後 |
+|------|------|--------|
+| 候選數量 | ~45（不穩定） | ~25（穩定，硬上限） |
+| ML timeout | 偶發 | 應消除 |
+| 漏選好股票 | 不在 hot concept = 被排除 | 全市場都評分，不會漏 |
+| 同質重複 | 多（同概念走勢一樣） | 報酬率去重消除 |
+| 新聞情緒 | 沒用到 | 接入加分 |
+| RRG 輪動 | 前端有但 screener 沒用 | 接入 Step 3 |
+| 分類維護成本 | 手動維護 28 概念 | 官方產業別自動取得 |

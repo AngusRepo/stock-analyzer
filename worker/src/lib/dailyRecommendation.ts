@@ -340,7 +340,18 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
   const mlMap = new Map(mlRows?.map((r: any) => {
     let fd: any = {}
     try { fd = JSON.parse(r.forecast_data ?? '{}') } catch {}
-    return [r.stock_id, { signal: fd.signal ?? r.trade_signal, confidence: r.direction_accuracy, forecast_pct: fd.forecast_pct }]
+    const models = fd.models ?? []
+    const upCount = models.filter((m: any) => m.direction === 'up').length
+    const downCount = models.filter((m: any) => m.direction === 'down').length
+    return [r.stock_id, {
+      signal: fd.signal ?? r.trade_signal,
+      confidence: r.direction_accuracy,
+      forecast_pct: fd.forecast_pct,
+      models_total: models.length,
+      models_up: upCount,
+      models_down: downCount,
+      reasoning: fd.reasoning ?? null,  // ensemble 生成的推理說明
+    }]
   }) ?? [])
 
   // 批量查歷史勝率
@@ -377,6 +388,10 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
       ml_signal:           ml?.signal ?? null,
       ml_confidence:       ml?.confidence ?? null,
       ml_forecast_pct:     ml?.forecast_pct ?? null,
+      ml_models_total:     ml?.models_total ?? 0,
+      ml_models_up:        ml?.models_up ?? 0,
+      ml_models_down:      ml?.models_down ?? 0,
+      ml_reasoning:        ml?.reasoning ?? null,
       hist_accuracy:       acc?.accuracy ?? null,
       hist_count:          acc?.total_count ?? 0,
     }
@@ -401,11 +416,30 @@ function buildReason(s: any): string {
   if ((s.macd_hist ?? 0) > 0) parts.push('MACD 多頭排列')
   if (s.current_price && s.ma20 && s.current_price > s.ma20) parts.push('站穩月線之上')
 
-  // ML
+  // ML — 用模型投票數據生成有意義的理由
   const sig = (s._signal ?? '').toUpperCase()
-  if (sig.includes('STRONG_BUY')) parts.push('ML 強烈看多')
-  else if (sig.includes('BUY')) parts.push('ML 模型看多')
-  else if (sig === 'HOLD') parts.push('ML 建議觀望')
+  const total = s.ml_models_total ?? 0
+  const up = s.ml_models_up ?? 0
+  const down = s.ml_models_down ?? 0
+  const conf = s.ml_confidence ?? 0
+  const forecastPct = s.ml_forecast_pct ?? 0
+
+  if (sig.includes('STRONG_BUY')) {
+    parts.push(`ML 強烈看多（${up}/${total}模型看漲，信心${(conf * 100).toFixed(0)}%）`)
+  } else if (sig.includes('BUY')) {
+    parts.push(`ML 看多（${up}/${total}模型看漲，預期${forecastPct > 0 ? '+' : ''}${(forecastPct * 100).toFixed(1)}%）`)
+  } else if (sig === 'HOLD' && total > 0) {
+    // 說明 WHY hold — 是多空分歧、還是信心不足
+    if (down > up) {
+      parts.push(`${down}/${total}模型偏空但信心不足，暫列觀望`)
+    } else if (up > down) {
+      parts.push(`${up}/${total}模型偏多但共識未達門檻，暫列觀望`)
+    } else {
+      parts.push(`模型多空分歧（${up}多/${down}空），方向不明`)
+    }
+  } else if (total === 0) {
+    parts.push('ML 尚未分析')
+  }
 
   if (!parts.length) parts.push('多因子綜合評分入選')
   return parts.join('，')
@@ -502,7 +536,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
       const payload = stockPayloads.find((s: any) => s.symbol === rec.symbol)
       const currentPrice = payload?.current_price ?? rec.current_price ?? null
 
-      // 建 reason
+      // 建 reason（含 ML 投票細節 — 直接從 stockPayloads 取 model 數據）
       const reasonData = {
         foreign_consecutive: payload?.foreign_consecutive ?? 0,
         foreign_net_5d: payload?.foreign_net_5d ?? 0,
@@ -511,7 +545,12 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
         macd_hist: payload?.macd_hist ?? null,
         current_price: currentPrice,
         ma20: payload?.ma20 ?? null,
-        _signal: ml?.signal ?? null,
+        _signal: ml ? ml.signal : null,
+        ml_confidence: ml ? ml.confidence : (payload?.ml_confidence ?? 0),
+        ml_forecast_pct: ml ? ml.forecast_pct : (payload?.ml_forecast_pct ?? 0),
+        ml_models_total: payload?.ml_models_total ?? 0,
+        ml_models_up: payload?.ml_models_up ?? 0,
+        ml_models_down: payload?.ml_models_down ?? (payload?.ml_models_total ?? 0) - (payload?.ml_models_up ?? 0),
       }
 
       // 所有 bind 值強制 null 化（D1 不接受 undefined）

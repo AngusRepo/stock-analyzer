@@ -543,8 +543,9 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
       const ml = mlPredMap.get(rec.symbol)
       const sig = ml?.signal ? ml.signal.toUpperCase() : null
 
-      // 過濾：SELL（沒持股不推）/ NO_SIGNAL（模型無結果）/ null（ML 沒跑到）
-      if (!sig || sig.includes('SELL') || sig === 'NO_SIGNAL') {
+      // 過濾：只刪 SELL 和 NO_SIGNAL
+      // null（ML 沒跑到）→ 保留，標記為「ML 尚未分析」（screener 選了就值得看）
+      if (sig && (sig.includes('SELL') || sig === 'NO_SIGNAL')) {
         sellCount++
         updateBatch.push(env.DB.prepare(
           "DELETE FROM daily_recommendations WHERE date = ? AND symbol = ?"

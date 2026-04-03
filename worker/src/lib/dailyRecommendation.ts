@@ -315,9 +315,10 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
   const consecMap = new Map(consecRows?.map((r: any) => [r.symbol, r.consec]) ?? [])
 
   const { results: tiRows } = await db.prepare(`
-    SELECT ti.stock_id, ti.rsi14, ti.macd_hist, sp.close as current_price, ti.ma5, ti.ma20, ti.ma60
+    SELECT ti.stock_id, ti.rsi14, ti.macd_hist,
+      (SELECT sp.close FROM stock_prices sp WHERE sp.stock_id = ti.stock_id ORDER BY sp.date DESC LIMIT 1) as current_price,
+      ti.ma5, ti.ma20, ti.ma60
     FROM technical_indicators ti
-    JOIN stock_prices sp ON sp.stock_id = ti.stock_id AND sp.date = ti.date
     WHERE ti.date = (SELECT MAX(date) FROM technical_indicators ti2 WHERE ti2.stock_id = ti.stock_id)
   `).all<any>()
   const tiMap = new Map(tiRows?.map((r: any) => [r.stock_id, r]) ?? [])
@@ -369,6 +370,45 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
       hist_count:          acc?.total_count ?? 0,
     }
   })
+}
+
+// ─── 推薦理由生成 ──────────────────────────────────────────────────────────
+function buildReason(s: any): string {
+  const parts: string[] = []
+
+  // 籌碼面
+  if (s.foreign_consecutive >= 5) parts.push(`法人連續買超${s.foreign_consecutive}天`)
+  else if (s.foreign_consecutive >= 3) parts.push(`法人連買${s.foreign_consecutive}天`)
+  const netAmount = ((s.foreign_net_5d ?? 0) + (s.trust_net_5d ?? 0)) / 1e8
+  if (netAmount > 5) parts.push(`5日法人淨買超${netAmount.toFixed(1)}億`)
+  else if (netAmount > 1) parts.push(`法人買超${netAmount.toFixed(1)}億`)
+
+  // 技術面
+  const rsi = s.rsi14 ?? 50
+  if (rsi >= 55 && rsi <= 70) parts.push(`RSI ${rsi.toFixed(0)} 健康區間`)
+  else if (rsi > 70) parts.push(`RSI ${rsi.toFixed(0)} 強勢`)
+  if ((s.macd_hist ?? 0) > 0) parts.push('MACD 多頭排列')
+  if (s.current_price && s.ma20 && s.current_price > s.ma20) parts.push('站穩月線之上')
+
+  // ML
+  const sig = (s._signal ?? '').toUpperCase()
+  if (sig.includes('STRONG_BUY')) parts.push('ML 強烈看多')
+  else if (sig.includes('BUY')) parts.push('ML 模型看多')
+  else if (sig === 'HOLD') parts.push('ML 建議觀望')
+
+  if (!parts.length) parts.push('多因子綜合評分入選')
+  return parts.join('，')
+}
+
+function buildWatchPoints(s: any): string[] {
+  const points: string[] = []
+  const rsi = s.rsi14 ?? 50
+  if (rsi > 75) points.push('RSI 偏高，注意短期回檔風險')
+  if ((s.foreign_net_5d ?? 0) < 0) points.push('外資近期偏賣，留意籌碼變化')
+  const sig = (s._signal ?? '').toLowerCase()
+  if (sig === 'hold') points.push('ML 信心不足，建議小量試單或觀望')
+  points.push('留意大盤整體走勢與國際局勢')
+  return points
 }
 
 // ─── 主函式 ──────────────────────────────────────────────────────────────────
@@ -441,9 +481,8 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
       }
       mlScore = Math.max(0, Math.min(30, mlScore))
 
-      // ── 加權合併：screener 基礎(chip+tech) 60% + ML 40% ──
-      const baseScore = chipScore + techScore  // 0-70
-      const totalScore = Math.round(baseScore * 0.6 + mlScore * 0.4 + (chipScore + techScore + mlScore) * 0.1)
+      // total = chip + tech + ml（滿分 100，直接加總）
+      const totalScore = chipScore + techScore + mlScore
 
       return {
         ...s, _score: totalScore,
@@ -471,8 +510,8 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
         rsi14: s.rsi14, macd_hist: s.macd_hist,
         ml_signal: s._signal, ml_confidence: s._confidence,
         has_buy_signal: s._signal?.includes('BUY') ? 1 : 0,
-        reason: `多因子 #${i + 1}（籌碼${s._chipScore}+技術${s._techScore}+ML${s._mlScore}）`,
-        watch_points: '["留意大盤整體走勢"]',
+        reason: buildReason(s),
+        watch_points: JSON.stringify(buildWatchPoints(s)),
       })
     }
     const sellCount = stockPayloads.filter((s: any) => (s.ml_signal ?? '').toLowerCase().includes('sell')).length

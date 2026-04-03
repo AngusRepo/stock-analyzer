@@ -1103,33 +1103,29 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── 建資料結構 ──
   const data = buildStockData(allPrices, allChips)
-  // 大盤 5d return：優先從 D1 算（API 資料在假日可能不完整）
-  let marketReturn5d = calcMarketReturn5d(data)
-  if (Math.abs(marketReturn5d) < 0.0001) {
-    try {
-      const { results: mktRows } = await env.DB.prepare(`
-        SELECT sp.close FROM stock_prices sp
-        JOIN stocks s ON sp.stock_id = s.id
-        WHERE s.symbol = '0050' OR s.symbol = 'TWII'
-        ORDER BY sp.date DESC LIMIT 6
-      `).all<{ close: number }>()
-      if (mktRows && mktRows.length >= 6) {
-        marketReturn5d = (mktRows[0].close - mktRows[5].close) / mktRows[5].close
-      } else {
-        // Fallback: 用全市場中位數
-        const { results: mktFallback } = await env.DB.prepare(`
-          SELECT AVG(ret) as avg_ret FROM (
-            SELECT (sp1.close - sp2.close) / sp2.close as ret
-            FROM stock_prices sp1
-            JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
-            WHERE sp1.date = (SELECT MAX(date) FROM stock_prices)
-              AND sp2.date = (SELECT MAX(date) FROM stock_prices WHERE date < (SELECT MAX(date) FROM stock_prices LIMIT 1 OFFSET 4))
-            LIMIT 500
-          )
-        `).all<{ avg_ret: number }>()
-        if (mktFallback?.[0]?.avg_ret) marketReturn5d = mktFallback[0].avg_ret
-      }
-    } catch { /* fallback to API-calculated */ }
+  // 大盤 5d return：永遠從 D1 算（確保可重現，不受 API 波動影響）
+  let marketReturn5d = 0
+  try {
+    // 用 D1 全市場等權平均 5 日報酬
+    const { results: mktRows } = await env.DB.prepare(`
+      SELECT AVG(ret) as avg_ret FROM (
+        SELECT (sp1.close - sp2.close) / sp2.close as ret
+        FROM stock_prices sp1
+        JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
+        JOIN stocks s ON s.id = sp1.stock_id
+        WHERE sp1.date = (SELECT MAX(date) FROM stock_prices)
+          AND sp2.date = (SELECT date FROM (SELECT DISTINCT date FROM stock_prices ORDER BY date DESC LIMIT 6) ORDER BY date ASC LIMIT 1)
+          AND sp2.close > 0
+        LIMIT 1000
+      )
+    `).all<{ avg_ret: number }>()
+    if (mktRows?.[0]?.avg_ret != null) {
+      marketReturn5d = mktRows[0].avg_ret
+    }
+  } catch (e) {
+    // Fallback: 用 API 資料
+    marketReturn5d = calcMarketReturn5d(data)
+    console.warn('[Screener v2] D1 marketReturn 查詢失敗，fallback API:', e)
   }
 
   // ── Step 0.5: D1 stock_prices 補充 API 資料（確保假日/手動重跑時資料完整）──

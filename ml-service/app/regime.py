@@ -29,7 +29,7 @@ REGIME_CONFIG = {
     3: {"label": "熊市危機",   "price_mult": 0.65, "feature_mult": 0.75, "consensus_threshold": 0.72},
 }
 
-PRICE_MODEL_NAMES   = {"KalmanFilter", "DLinear", "N-HiTS", "PatchTST", "Chronos"}
+PRICE_MODEL_NAMES   = {"KalmanFilter", "DLinear", "MarkovSwitching", "PatchTST", "Chronos"}
 FEATURE_MODEL_NAMES = {"XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"}
 
 

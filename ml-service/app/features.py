@@ -19,6 +19,7 @@ def compute_triple_barrier_labels(
     upper_pct_cap: float = 0.07,   # 停利上限 7%
     lower_pct_cap: float = 0.03,   # 停損上限 3%
     max_days: int = 20,
+    transaction_cost_pct: float = 0.003,  # 來回手續費+稅 0.3%（台股：買 0.1425% + 賣 0.1425% + 證交稅 0.15%）
 ) -> pd.Series:
     """
     三重屏障標籤：
@@ -44,9 +45,10 @@ def compute_triple_barrier_labels(
             continue
 
         atr = atr_arr[i] if not np.isnan(atr_arr[i]) else price * 0.02
-        # 動態邊界 + 百分比封頂
-        upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap)
-        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap)
+        # 動態邊界 + 百分比封頂 — 扣除交易成本（barrier 需要覆蓋成本才算獲利）
+        cost = price * transaction_cost_pct
+        upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap) + cost
+        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap) + cost
 
         end_idx = min(i + max_days, n - 1)
         if end_idx <= i:
@@ -314,8 +316,14 @@ FEATURE_COLS = [
     "market_return_5d",    # 大盤近 5 日漲跌
     "market_bias_20d",     # 大盤 20 日乖離率（過熱/過冷指標）
     "stock_vs_market",     # 個股相對大盤強弱
-    # ── Phase 5: 主力波動指標 ─────────────────────────────────────────────────
-    # "broker_vol_index",  # TODO: 需串接 FinMind broker order flow API，目前無資料源，暫時停用
+    # ── 台指期夜盤特徵（07:15 re-predict 可用，15:30 填 0）──────────────────
+    "taifex_night_change_pct",  # 夜盤漲跌幅 %
+    "taifex_night_range_pct",   # 夜盤振幅 %
+    "taifex_night_available",   # 0=無資料(15:30) / 1=有資料(07:15)
+    # ── 五檔報價特徵（盤中 intraday-check 可用，盤前/盤後填 0）─────────────
+    "orderbook_imbalance",      # bid-ask imbalance -1~+1（正=買強）
+    "orderbook_spread_pct",     # 內外盤 spread %（越大流動性越差）
+    "orderbook_available",      # 0=無資料 / 1=有資料
 ]
 
 
@@ -327,6 +335,34 @@ def get_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[str]]:
     X = df_clean[available].values
     y = df_clean["target_dir"].values
     return X, y, available
+
+
+# ── 夜盤特徵 Training Masking ──────────────────────────────────────────────
+# 50% 的 training samples 隨機 mask 夜盤特徵 → 模型學會「有就用，沒有靠其他 features」
+NIGHT_SESSION_COLS = ["taifex_night_change_pct", "taifex_night_range_pct", "taifex_night_available"]
+ORDERBOOK_COLS = ["orderbook_imbalance", "orderbook_spread_pct", "orderbook_available"]
+# 所有 optional features（training 時需要 masking）
+OPTIONAL_FEATURE_COLS = NIGHT_SESSION_COLS + ORDERBOOK_COLS
+
+def mask_night_session_features(
+    X: np.ndarray,
+    feature_names: list[str],
+    mask_ratio: float = 0.5,
+    seed: int = 42,
+) -> np.ndarray:
+    """Training 時隨機 mask 夜盤特徵（模擬 15:30 無夜盤資料的情況）"""
+    night_indices = [i for i, name in enumerate(feature_names) if name in OPTIONAL_FEATURE_COLS]
+    if not night_indices:
+        return X  # 沒有夜盤欄位，不做任何事
+
+    X_masked = X.copy()
+    rng = np.random.RandomState(seed)
+    mask = rng.random(len(X_masked)) < mask_ratio
+    for idx in night_indices:
+        X_masked[mask, idx] = 0.0
+    masked_count = mask.sum()
+    print(f"[NightMask] Masked {masked_count}/{len(X)} samples ({mask_ratio*100:.0f}%) for night session features")
+    return X_masked
 
 
 # ── #6 CatBoost 滯後特徵（input diversity）─────────────────────────────────
@@ -354,3 +390,42 @@ def get_lgbm_features(X: np.ndarray) -> np.ndarray:
     """LightGBM 專用：rank transform（每欄轉為百分位排名）"""
     from scipy.stats import rankdata
     return np.apply_along_axis(lambda col: rankdata(col) / len(col), axis=0, arr=X)
+
+
+# ── Z-score / Robust Scaling（DLinear, PatchTST, FT-Transformer, KalmanFilter 等 scale-sensitive 模型用）──
+
+_robust_scaler_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}  # {stock_id: (median, iqr)}
+
+
+def fit_robust_scaler(X: np.ndarray, stock_id: str = "default") -> tuple[np.ndarray, np.ndarray]:
+    """
+    RobustScaler：用 median 和 IQR 做標準化，比 StandardScaler 抗離群值。
+    Tree models 不需要（scale-invariant），只用於 DLinear/PatchTST/FT-Transformer/KalmanFilter。
+    """
+    median = np.median(X, axis=0)
+    q75 = np.percentile(X, 75, axis=0)
+    q25 = np.percentile(X, 25, axis=0)
+    iqr = q75 - q25
+    iqr[iqr < 1e-8] = 1.0  # 避免除以零
+    _robust_scaler_cache[stock_id] = (median, iqr)
+    return median, iqr
+
+
+def apply_robust_scaler(X: np.ndarray, stock_id: str = "default",
+                        median: Optional[np.ndarray] = None,
+                        iqr: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    對 X 做 RobustScaler 轉換。若未提供 median/iqr，從 cache 取。
+    回傳標準化後的 X（原始 X 不被修改）。
+    """
+    if median is None or iqr is None:
+        cached = _robust_scaler_cache.get(stock_id)
+        if cached is None:
+            # 沒有 cache → 直接 fit on current data（inference 時的 fallback）
+            median, iqr = fit_robust_scaler(X, stock_id)
+        else:
+            median, iqr = cached
+    return (X - median) / iqr
+
+
+    pass  # get_scaled_features removed — scaling done inline in main.py

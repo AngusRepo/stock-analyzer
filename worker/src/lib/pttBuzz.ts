@@ -8,8 +8,8 @@
 
 import type { Bindings } from '../types'
 
-// ── 概念關鍵字對照表 ────────────────────────────────────────────────────────
-// tag 對應到 stock_tags.tag，keywords 是 PTT 標題中可能出現的關鍵字
+// ── FALLBACK 概念關鍵字（當 D1 動態載入失敗時使用）────────────────────────
+// 正常情況下由 loadBuzzKeywords(db) 從 D1 stock_tags 動態生成
 const CONCEPT_KEYWORDS: Record<string, string[]> = {
   'AI_Server':       ['AI', 'GB200', 'H100', 'H200', 'B200', 'AI伺服器', 'AI server', 'NVIDIA', '輝達'],
   'CoWoS先進封裝':    ['CoWoS', '先進封裝', '封裝', 'InFO'],
@@ -38,6 +38,14 @@ const CONCEPT_KEYWORDS: Record<string, string[]> = {
   'PCB印刷電路板':   ['PCB', '印刷電路板', '欣興', '南電', '景碩', 'ABF'],
   '鋼鐵':            ['鋼鐵', '中鋼', '大成鋼', '豐興', '鋼價'],
   '觀光飯店':        ['觀光', '飯店', '旅遊', '晶華', '旅宿'],
+  '散熱':            ['散熱', '水冷', '液冷', '熱管', '雙鴻', '奇鋐'],
+  '機器人':          ['機器人', 'robot', '人形', '機械手臂', '自動化'],
+  '資料中心':        ['資料中心', 'data center', 'DC', '伺服器'],
+  'ABF載板':         ['ABF', '載板', '欣興', '南電', '景碩'],
+  '碳權':            ['碳權', '碳交易', 'ESG', '碳中和', '淨零'],
+  'CIS影像感測':     ['CIS', '影像感測', '鏡頭', '光學鏡片'],
+  '量子計算':        ['量子', 'quantum', '量子電腦'],
+  '邊緣AI':          ['邊緣AI', 'Edge AI', '端側', 'AIoT', 'ASIC'],
 }
 
 interface PttPost {
@@ -111,10 +119,71 @@ export interface ConceptBuzzResult {
 }
 
 /**
+ * 從 D1 stock_tags 動態載入概念關鍵字
+ * tag name 本身作為 keyword + 每個 tag 的 top 5 成員股名稱
+ * KV 快取 24h，避免重複查詢
+ */
+export async function loadBuzzKeywords(db: D1Database, kv?: KVNamespace): Promise<Record<string, string[]>> {
+  // 嘗試 KV 快取
+  if (kv) {
+    const cached = await kv.get('buzz:keywords', 'json') as Record<string, string[]> | null
+    if (cached) return cached
+  }
+
+  // 從 D1 讀取所有 tags + 成員股名稱
+  const { results: tagRows } = await db.prepare(`
+    SELECT st.tag, s.name
+    FROM stock_tags st
+    JOIN stocks s ON s.symbol = st.symbol
+    WHERE st.weight >= 0.3
+    ORDER BY st.tag, st.weight DESC
+  `).all<{ tag: string; name: string }>()
+
+  if (!tagRows?.length) return CONCEPT_KEYWORDS  // fallback
+
+  const kwMap: Record<string, string[]> = {}
+  const tagStocks = new Map<string, string[]>()  // tag → stock names
+
+  for (const row of tagRows) {
+    if (!tagStocks.has(row.tag)) tagStocks.set(row.tag, [])
+    const names = tagStocks.get(row.tag)!
+    if (names.length < 5) names.push(row.name)
+  }
+
+  for (const [tag, stockNames] of tagStocks) {
+    // tag name 本身 + 去掉常見後綴的短版 + 成員股名稱
+    const keywords = new Set<string>()
+    keywords.add(tag)
+    // 拆分 tag name：'塑膠工業' → '塑膠'、'HBM記憶體' → 'HBM', '記憶體'
+    const parts = tag.split(/[_（）()、]/).filter(p => p.length >= 2)
+    for (const p of parts) keywords.add(p)
+    // 去掉「工業」「業」等通用後綴
+    const stripped = tag.replace(/(工業|纖維|業|及週邊設備|保險|百貨|燃氣|餐旅)$/, '')
+    if (stripped.length >= 2 && stripped !== tag) keywords.add(stripped)
+    // 成員股名稱（去掉常見公司後綴）
+    for (const name of stockNames) {
+      const clean = name.replace(/(股份有限公司|-KY|投控|控股)$/, '').trim()
+      if (clean.length >= 2) keywords.add(clean)
+    }
+    kwMap[tag] = [...keywords]
+  }
+
+  // 寫入 KV 快取 24h
+  if (kv) {
+    await kv.put('buzz:keywords', JSON.stringify(kwMap), { expirationTtl: 86400 })
+  }
+
+  console.log(`[BuzzKeywords] Loaded ${Object.keys(kwMap).length} concepts from D1 (${tagRows.length} tag-stock pairs)`)
+  return kwMap
+}
+
+/**
  * 偵測 PTT Stock 板的概念題材熱度
  * 爬最近 ~60 篇文章，統計各概念被提及次數
+ * @param keywords — 動態概念關鍵字（由 loadBuzzKeywords 預載），fallback 用 hardcoded
  */
-export async function detectPttBuzz(): Promise<ConceptBuzzResult[]> {
+export async function detectPttBuzz(keywords?: Record<string, string[]>): Promise<ConceptBuzzResult[]> {
+  const kwMap = keywords ?? CONCEPT_KEYWORDS
   // 抓最新 2 頁（~40 篇）
   const prevPage = await getPttPrevPage()
   const [page1, page2] = await Promise.all([
@@ -130,14 +199,14 @@ export async function detectPttBuzz(): Promise<ConceptBuzzResult[]> {
   // 統計各概念
   const stats = new Map<string, { count: number; totalNrec: number; posts: string[] }>()
 
-  for (const [concept, keywords] of Object.entries(CONCEPT_KEYWORDS)) {
+  for (const concept of Object.keys(kwMap)) {
     stats.set(concept, { count: 0, totalNrec: 0, posts: [] })
   }
 
   for (const post of allPosts) {
     const titleLower = post.title.toLowerCase()
-    for (const [concept, keywords] of Object.entries(CONCEPT_KEYWORDS)) {
-      const matched = keywords.some(kw => titleLower.includes(kw.toLowerCase()))
+    for (const [concept, kws] of Object.entries(kwMap)) {
+      const matched = kws.some(kw => titleLower.includes(kw.toLowerCase()))
       if (matched) {
         const s = stats.get(concept)!
         s.count++

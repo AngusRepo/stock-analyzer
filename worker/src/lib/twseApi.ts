@@ -8,6 +8,40 @@
  * 全部免費、無配額限制。
  */
 
+// ─── Retry wrapper ───────────────────────────────────────────────────────────
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit = {},
+  opts: { maxRetries?: number; baseDelay?: number; label?: string } = {},
+): Promise<Response> {
+  const { maxRetries = 3, baseDelay = 2000, label = url.slice(0, 60) } = opts
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, init)
+      if (res.status === 429 || res.status === 503) {
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1)
+          console.warn(`[twseApi] ${label} → ${res.status}, retry ${attempt}/${maxRetries} in ${delay}ms`)
+          await new Promise(r => setTimeout(r, delay))
+          continue
+        }
+      }
+      return res
+    } catch (e: any) {
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1)
+        console.warn(`[twseApi] ${label} → ${e.message ?? e}, retry ${attempt}/${maxRetries} in ${delay}ms`)
+        await new Promise(r => setTimeout(r, delay))
+      } else {
+        throw e
+      }
+    }
+  }
+  throw new Error(`[twseApi] ${label} → max retries exceeded`)
+}
+
+const TWSE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseTwNum(s: string): number {
@@ -53,11 +87,137 @@ export interface BulkMarginRow {
   short_sell: number
 }
 
+// ─── 除權除息預告 ─────────────────────────────────────────────────────────────
+
+export interface ExDividendRow {
+  symbol: string
+  ex_date: string     // ISO date
+  type: 'cash' | 'stock' | 'both'
+  cash_dividend: number | null
+  stock_dividend: number | null
+}
+
+export async function fetchExDividendForecast(): Promise<ExDividendRow[]> {
+  const fetchTwse = async (): Promise<ExDividendRow[]> => {
+    try {
+      const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/TWT48U', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!res.ok) return []
+      const body = await res.json() as any[]
+      if (!Array.isArray(body)) return []
+      return body
+        .filter(r => isStockCode(r['證券代號'] ?? ''))
+        .map(r => {
+          const typeStr = (r['除權息類別'] ?? '').trim()
+          const hasCash = typeStr.includes('息')
+          const hasStock = typeStr.includes('權')
+          const type: 'cash' | 'stock' | 'both' = hasCash && hasStock ? 'both' : hasStock ? 'stock' : 'cash'
+          const rawDate = (r['除權息日期'] ?? '').trim()  // 民國 "115/04/10" or "1150410"
+          let exDate = ''
+          if (rawDate.includes('/')) {
+            const parts = rawDate.split('/')
+            const y = parseInt(parts[0]) + 1911
+            exDate = `${y}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+          } else if (rawDate.length >= 7) {
+            const y = parseInt(rawDate.slice(0, 3)) + 1911
+            exDate = `${y}-${rawDate.slice(3, 5)}-${rawDate.slice(5, 7)}`
+          }
+          const cashDiv = r['現金股利'] ? parseFloat(String(r['現金股利']).replace(/,/g, '')) || null : null
+          const stockDiv = r['無償配股率'] ? parseFloat(String(r['無償配股率']).replace(/,/g, '')) || null : null
+          return {
+            symbol: (r['證券代號'] ?? '').trim(),
+            ex_date: exDate,
+            type,
+            cash_dividend: cashDiv,
+            stock_dividend: stockDiv,
+          }
+        })
+        .filter(r => r.ex_date)
+    } catch (e) {
+      console.warn('[ExDiv] TWSE fetch failed:', e)
+      return []
+    }
+  }
+
+  const fetchTpex = async (): Promise<ExDividendRow[]> => {
+    try {
+      const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_ex_dividend_forecast', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!res.ok) return []
+      const text = await res.text()
+      if (!text.startsWith('[')) return []
+      const body = JSON.parse(text) as any[]
+      if (!Array.isArray(body)) return []
+      return body
+        .filter(r => isStockCode(r.SecuritiesCompanyCode ?? r['證券代號'] ?? ''))
+        .map(r => {
+          const sym = (r.SecuritiesCompanyCode ?? r['證券代號'] ?? '').trim()
+          const typeStr = (r.ExDividendType ?? r['除權息類別'] ?? '').trim()
+          const hasCash = typeStr.includes('息') || typeStr.toLowerCase().includes('cash')
+          const hasStock = typeStr.includes('權') || typeStr.toLowerCase().includes('stock')
+          const type: 'cash' | 'stock' | 'both' = hasCash && hasStock ? 'both' : hasStock ? 'stock' : 'cash'
+          const rawDate = (r.ExDividendDate ?? r['除權息日期'] ?? '').trim()
+          let exDate = ''
+          if (rawDate.includes('/')) {
+            const parts = rawDate.split('/')
+            const y = parseInt(parts[0]) + 1911
+            exDate = `${y}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+          } else if (rawDate.length >= 7) {
+            const y = parseInt(rawDate.slice(0, 3)) + 1911
+            exDate = `${y}-${rawDate.slice(3, 5)}-${rawDate.slice(5, 7)}`
+          }
+          const cashDiv = r.CashDividend ?? r['現金股利']
+          const stockDiv = r.StockDividend ?? r['無償配股率']
+          return {
+            symbol: sym,
+            ex_date: exDate,
+            type,
+            cash_dividend: cashDiv ? parseFloat(String(cashDiv).replace(/,/g, '')) || null : null,
+            stock_dividend: stockDiv ? parseFloat(String(stockDiv).replace(/,/g, '')) || null : null,
+          }
+        })
+        .filter(r => r.ex_date)
+    } catch (e) {
+      console.warn('[ExDiv] TPEX fetch failed:', e)
+      return []
+    }
+  }
+
+  const [twse, tpex] = await Promise.allSettled([fetchTwse(), fetchTpex()])
+  return [
+    ...(twse.status === 'fulfilled' ? twse.value : []),
+    ...(tpex.status === 'fulfilled' ? tpex.value : []),
+  ]
+}
+
 // ─── TWSE 處置股 + 注意股 ────────────────────────────────────────────────────
+
+export async function fetchAttentionStocks(): Promise<string[]> {
+  try {
+    const res = await fetch('https://www.twse.com.tw/rwd/zh/announcement/notice?response=json', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return []
+    const body = await res.json() as any
+    if (body.stat !== 'OK' || !body.data) return []
+    // data: [序號, 日期, 代號, 名稱, ...]
+    return body.data
+      .map((r: any[]) => String(r[2]).trim())
+      .filter((s: string) => isStockCode(s))
+  } catch (e) {
+    console.warn('[Attention] TWSE fetch failed:', e)
+    return []
+  }
+}
 
 export async function fetchPunishedStocks(): Promise<string[]> {
   const res = await fetch('https://www.twse.com.tw/rwd/zh/announcement/punish?response=json', {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(15000),
   })
   if (!res.ok) return []
@@ -67,6 +227,29 @@ export async function fetchPunishedStocks(): Promise<string[]> {
   return body.data
     .map((r: any[]) => String(r[2]).trim())
     .filter((s: string) => /^\d{4,6}$/.test(s))
+}
+
+// ─── TWSE 當沖標的 ──────────────────────────────────────────────────────────
+
+export async function fetchDayTradeEligible(): Promise<string[]> {
+  try {
+    const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10).replace(/-/g, '')
+    const url = `https://www.twse.com.tw/exchangeReport/TWTB4U?response=json&date=${today}&selectType=All`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return []
+    const body = await res.json() as any
+    if (body.stat !== 'OK' || !body.tables?.[1]?.data) return []
+    // tables[1].data: [證券代號, 證券名稱, 暫停註記, ...]
+    return body.tables[1].data
+      .map((r: any[]) => String(r[0]).trim())
+      .filter((s: string) => /^\d{4,6}$/.test(s))
+  } catch (e) {
+    console.warn('[DayTrade] TWSE TWTB4U fetch failed:', e)
+    return []
+  }
 }
 
 // ─── TWSE PER/PBR/殖利率（全市場）────────────────────────────────────────────
@@ -81,7 +264,7 @@ export interface BulkValuationRow {
 export async function fetchTwseValuation(date: string): Promise<BulkValuationRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_ALL?date=${twseDate(date)}&response=json`
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) return []
@@ -110,7 +293,7 @@ export interface MonthlyRevenueRow {
 
 export async function fetchTwseMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
   const res = await fetch('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) return []
@@ -138,6 +321,135 @@ export async function fetchTwseMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
     .filter(r => r.year_month)
 }
 
+// ─── TPEX 月營收（openapi）────────────────────────────────────────────────────
+
+export async function fetchTpexMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
+  const res = await fetch('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    signal: AbortSignal.timeout(30000),
+  })
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text.startsWith('[')) return []
+  const body = JSON.parse(text) as any[]
+  if (!Array.isArray(body)) return []
+
+  return body
+    .filter(r => isStockCode(r['公司代號'] ?? ''))
+    .map(r => {
+      const ym = r['資料年月'] ?? ''
+      const rocYear = parseInt(ym.slice(0, -2)) || 0
+      const month = parseInt(ym.slice(-2)) || 0
+      const isoYM = rocYear > 0 ? `${rocYear + 1911}-${String(month).padStart(2, '0')}` : ''
+      const rev = parseInt((r['營業收入-當月營收'] ?? '0').toString().replace(/,/g, '')) || 0
+      const prevRev = parseInt((r['營業收入-上月營收'] ?? '0').toString().replace(/,/g, '')) || 0
+      const lastYearRev = parseInt((r['營業收入-去年當月營收'] ?? '0').toString().replace(/,/g, '')) || 0
+      return {
+        symbol: (r['公司代號'] ?? '').trim(),
+        year_month: isoYM,
+        revenue: rev,
+        revenue_yoy: lastYearRev > 0 ? (rev - lastYearRev) / lastYearRev * 100 : null,
+        revenue_mom: prevRev > 0 ? (rev - prevRev) / prevRev * 100 : null,
+      }
+    })
+    .filter(r => r.year_month)
+}
+
+// ─── TPEX 財報（openapi EPS + ROE）─────────────────────────────────────────
+
+export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
+  const incomeUrls = [
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O',     // 一般業
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_Obasi', // 金融業
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_Oins',  // 保險業
+  ]
+  const bsUrls = [
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_O',
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_Obasi',
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_Oins',
+  ]
+
+  const fetchJson = async (url: string) => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(30000),
+      })
+      if (!res.ok) return []
+      const text = await res.text()
+      if (!text.startsWith('[')) return []
+      return JSON.parse(text) as any[]
+    } catch { return [] }
+  }
+
+  const [incomeResults, bsResults] = await Promise.all([
+    Promise.all(incomeUrls.map(fetchJson)),
+    Promise.all(bsUrls.map(fetchJson)),
+  ])
+
+  const incomeRows = incomeResults.flat()
+  const bsRows = bsResults.flat()
+
+  const equityMap = new Map<string, number>()
+  for (const r of bsRows) {
+    const sym = (r['公司代號'] ?? '').trim()
+    if (!isStockCode(sym)) continue
+    const equity = parseInt((r['權益總額'] ?? '0').toString().replace(/,/g, '')) || 0
+    if (equity > 0) equityMap.set(sym, equity)
+  }
+
+  const results: BulkFinancialRow[] = []
+  for (const r of incomeRows) {
+    const sym = (r['公司代號'] ?? '').trim()
+    if (!isStockCode(sym)) continue
+
+    const rocYear = parseInt(r['年度'] ?? '0') || 0
+    const quarter = (r['季別'] ?? '').trim()
+    const year = rocYear > 0 ? String(rocYear + 1911) : ''
+    if (!year || !quarter) continue
+
+    const keys = Object.keys(r)
+    const epsKey = keys.find(k => k.includes('每股') && k.includes('盈餘')) ?? keys[keys.length - 1]
+    const eps = parseFloat(r[epsKey] ?? '0') || null
+
+    const revenueKey = keys.find(k => k === '營業收入' || (k.includes('營業') && k.includes('收入')))
+    const revenue = revenueKey ? (parseFloat((r[revenueKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
+    const netIncomeKey = keys.find(k => (k.includes('本期') && k.includes('淨利')) || (k.includes('稅後') && k.includes('淨利')))
+    const netIncome = netIncomeKey ? (parseFloat((r[netIncomeKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
+    const equity = equityMap.get(sym) ?? null
+    const roe = netIncome && equity && equity > 0 ? (netIncome / equity * 100) : null
+
+    results.push({ symbol: sym, year, quarter, eps, revenue, net_income: netIncome, equity, roe: roe ? Math.round(roe * 100) / 100 : null })
+  }
+
+  return results
+}
+
+// ─── TPEX PER/PBR/殖利率（全市場）────────────────────────────────────────────
+
+export async function fetchTpexValuation(): Promise<BulkValuationRow[]> {
+  const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    signal: AbortSignal.timeout(30000),
+  })
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text.startsWith('[')) return []
+  const body = JSON.parse(text) as any[]
+  if (!Array.isArray(body)) return []
+
+  return body
+    .filter(r => isStockCode(r.SecuritiesCompanyCode ?? ''))
+    .map(r => ({
+      symbol: (r.SecuritiesCompanyCode ?? '').trim(),
+      dividend_yield: r.DividendYield ? parseFloat(r.DividendYield) || null : null,
+      pe: r.PriceEarningRatio ? parseFloat(r.PriceEarningRatio) || null : null,
+      pb: r.PriceBookRatio ? parseFloat(r.PriceBookRatio) || null : null,
+    }))
+}
+
 // ─── TWSE 大盤廣度（漲跌家數）───────────────────────────────────────────────
 
 export interface MarketBreadthData {
@@ -150,7 +462,7 @@ export interface MarketBreadthData {
 
 export async function fetchMarketBreadth(): Promise<MarketBreadthData | null> {
   const res = await fetch('https://openapi.twse.com.tw/v1/opendata/twtazu_od', {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(15000),
   })
   if (!res.ok) return null
@@ -207,7 +519,7 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
   const fetchJson = async (url: string) => {
     try {
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'StockVision/12.3' },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(30000),
       })
       if (!res.ok) return []
@@ -267,10 +579,10 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
 
 export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/fund/T86?date=${twseDate(date)}&selectType=ALL&response=json`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TWSE_T86' })
   if (!res.ok) throw new Error(`TWSE T86 HTTP ${res.status}`)
   const body = await res.json() as any
   if (body.stat !== 'OK' || !body.data) return []
@@ -295,10 +607,10 @@ export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
 
 export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
   const url = `https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&d=${rocDate(date)}&t=D&o=json`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TPEX_3ITRADE' })
   if (!res.ok) throw new Error(`TPEX 3itrade HTTP ${res.status}`)
   const text = await res.text()
   if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
@@ -328,7 +640,7 @@ export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
 export async function fetchTwseMargin(date: string): Promise<BulkMarginRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${twseDate(date)}&selectType=ALL&response=json`
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) throw new Error(`TWSE MI_MARGN HTTP ${res.status}`)
@@ -356,7 +668,7 @@ export async function fetchTwseMargin(date: string): Promise<BulkMarginRow[]> {
 export async function fetchTpexMargin(_date: string): Promise<BulkMarginRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance'
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'StockVision/12.3' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) throw new Error(`TPEX margin HTTP ${res.status}`)
@@ -390,17 +702,17 @@ export async function bulkFetchAndStoreChipData(
 ): Promise<{ chipCount: number; marginCount: number }> {
   console.log(`[BulkChip] Fetching TWSE/TPEX chips + margins for ${date}...`)
 
-  // TWSE 直接呼叫（OK）；TPEX 擋 CF Workers IP → 透過 Controller proxy
-  const tpexViaController = async (): Promise<{ chips: BulkChipRow[]; margins: BulkMarginRow[] }> => {
+  // TWSE + TPEX 都擋 CF Workers IP → 全部透過 Controller proxy
+  const viaController = async (endpoint: string): Promise<{ chips: BulkChipRow[]; margins: BulkMarginRow[] }> => {
     if (!controllerUrl) return { chips: [], margins: [] }
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-    const res = await fetch(`${controllerUrl}/tpex-chips`, {
+    const res = await fetch(`${controllerUrl}/${endpoint}`, {
       method: 'POST', headers,
       body: JSON.stringify({ date }),
       signal: AbortSignal.timeout(60000),
     })
-    if (!res.ok) throw new Error(`Controller /tpex-chips HTTP ${res.status}`)
+    if (!res.ok) throw new Error(`Controller /${endpoint} HTTP ${res.status}`)
     const data = await res.json() as any
     const chips: BulkChipRow[] = (data.chips ?? []).map((c: any) => ({
       symbol: c.symbol, foreign_buy: c.foreign_buy, foreign_sell: c.foreign_sell,
@@ -416,27 +728,21 @@ export async function bulkFetchAndStoreChipData(
     return { chips, margins }
   }
 
-  const [twseChips, tpexResult, twseMargin] = await Promise.allSettled([
-    fetchTwseChips(date),
-    tpexViaController(),
-    fetchTwseMargin(date),
+  const [twseResult, tpexResult] = await Promise.allSettled([
+    viaController('twse-chips'),
+    viaController('tpex-chips'),
   ])
 
+  const twseChips = twseResult.status === 'fulfilled' ? twseResult.value.chips : []
+  const twseMargin = twseResult.status === 'fulfilled' ? twseResult.value.margins : []
   const tpexChips = tpexResult.status === 'fulfilled' ? tpexResult.value.chips : []
   const tpexMargin = tpexResult.status === 'fulfilled' ? tpexResult.value.margins : []
 
-  const allChips = [
-    ...(twseChips.status === 'fulfilled' ? twseChips.value : []),
-    ...tpexChips,
-  ]
-  const allMargin = [
-    ...(twseMargin.status === 'fulfilled' ? twseMargin.value : []),
-    ...tpexMargin,
-  ]
+  const allChips = [...twseChips, ...tpexChips]
+  const allMargin = [...twseMargin, ...tpexMargin]
 
-  if (twseChips.status === 'rejected') console.warn('[BulkChip] TWSE chips failed:', twseChips.reason)
+  if (twseResult.status === 'rejected') console.warn('[BulkChip] TWSE proxy failed:', twseResult.reason)
   if (tpexResult.status === 'rejected') console.warn('[BulkChip] TPEX proxy failed:', tpexResult.reason)
-  if (twseMargin.status === 'rejected') console.warn('[BulkChip] TWSE margin failed:', twseMargin.reason)
 
   console.log(`[BulkChip] Fetched: ${allChips.length} chips, ${allMargin.length} margins`)
 
@@ -445,47 +751,39 @@ export async function bulkFetchAndStoreChipData(
   // Build margin lookup
   const marginMap = new Map(allMargin.map(m => [m.symbol, m]))
 
-  // symbol → stocks.id mapping（查 D1 全部 stocks，不只 active）
-  const idMap = new Map<string, number>()
-  const { results: allStocksRows } = await db.prepare(
-    'SELECT id, symbol FROM stocks'
-  ).all<{ id: number; symbol: string }>()
-  for (const r of allStocksRows ?? []) {
-    idMap.set(r.symbol, r.id)
-  }
-  console.log(`[BulkChip] idMap: ${idMap.size} stocks in D1`)
-
-  // 批次寫入 chip_data
+  // 批次寫入 chip_data（直接用 symbol，不需 idMap 過濾）
+  // Schema 已改為 chip_data(symbol, date) — 不再依賴 stocks 表 FK
   const WRITE_BATCH = 50
   let chipCount = 0
   for (let i = 0; i < allChips.length; i += WRITE_BATCH) {
     const chunk = allChips.slice(i, i + WRITE_BATCH)
-    const stmts = chunk
-      .filter(c => idMap.has(c.symbol))
-      .map(c => {
-        const stockId = idMap.get(c.symbol)!
-        const m = marginMap.get(c.symbol)
-        return db.prepare(`
-          INSERT OR REPLACE INTO chip_data
-            (stock_id, date, foreign_buy, foreign_sell, foreign_net,
-             trust_buy, trust_sell, trust_net, dealer_buy, dealer_sell, dealer_net,
-             margin_balance, short_balance)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        `).bind(
-          stockId, date,
-          c.foreign_buy, c.foreign_sell, c.foreign_net,
-          c.trust_buy, c.trust_sell, c.trust_net,
-          c.dealer_buy, c.dealer_sell, c.dealer_net,
-          m?.margin_balance ?? null, m?.short_balance ?? null,
-        )
-      })
+    const stmts = chunk.map(c => {
+      const m = marginMap.get(c.symbol)
+      return db.prepare(`
+        INSERT OR REPLACE INTO chip_data
+          (symbol, date, foreign_buy, foreign_sell, foreign_net,
+           trust_buy, trust_sell, trust_net, dealer_buy, dealer_sell, dealer_net,
+           margin_balance, short_balance)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        c.symbol, date,
+        c.foreign_buy, c.foreign_sell, c.foreign_net,
+        c.trust_buy, c.trust_sell, c.trust_net,
+        c.dealer_buy, c.dealer_sell, c.dealer_net,
+        m?.margin_balance ?? null, m?.short_balance ?? null,
+      )
+    })
     if (stmts.length) {
       await db.batch(stmts)
       chipCount += stmts.length
     }
   }
 
-  // 寫入 margin_data（詳細融資融券）
+  // 寫入 margin_data（仍用 stock_id FK，需要 idMap）
+  const idMap = new Map<string, number>()
+  const { results: allStocksRows } = await db.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
+  for (const r of allStocksRows ?? []) idMap.set(r.symbol, r.id)
+
   let marginCount = 0
   for (let i = 0; i < allMargin.length; i += WRITE_BATCH) {
     const chunk = allMargin.slice(i, i + WRITE_BATCH)
@@ -518,4 +816,391 @@ export async function bulkFetchAndStoreChipData(
 
   console.log(`[BulkChip] Written: ${chipCount} chip_data + ${marginCount} margin_data rows`)
   return { chipCount, marginCount }
+}
+
+// ─── TWSE STOCK_DAY_ALL: 全市場每日股價（替代 FinMind per-stock fetchTWPrice）──
+
+export interface StockDayAllRow {
+  symbol: string
+  open:   number | null
+  high:   number | null
+  low:    number | null
+  close:  number | null
+  volume: number | null
+  avg_price?: number | null  // 興櫃股的成交均價（漲跌幅基準）
+}
+
+/** TWSE 全市場今日收盤（含量）。非交易日或盤後未公布時回 []。*/
+export async function fetchTwseStockDayAll(date: string): Promise<StockDayAllRow[]> {
+  // 不帶 date → TWSE 回最新交易日；帶 date 指定特定日期
+  const url = `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date=${twseDate(date)}&response=json`
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
+    signal: AbortSignal.timeout(30000),
+  }, { label: 'TWSE_STOCK_DAY_ALL' })
+  if (!res.ok) return []
+  const body = await res.json() as any
+  if (body.stat !== 'OK' || !body.data) return []
+  // fields: [代號, 名稱, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數]
+  return body.data
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      open:   r[4] && r[4] !== '--' ? parseFloat(r[4].replace(/,/g, '')) || null : null,
+      high:   r[5] && r[5] !== '--' ? parseFloat(r[5].replace(/,/g, '')) || null : null,
+      low:    r[6] && r[6] !== '--' ? parseFloat(r[6].replace(/,/g, '')) || null : null,
+      close:  r[7] && r[7] !== '--' ? parseFloat(r[7].replace(/,/g, '')) || null : null,
+      volume: r[2] ? parseTwNum(r[2]) : null,
+    }))
+}
+
+/** TPEX 全市場今日收盤（openapi）*/
+export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
+    signal: AbortSignal.timeout(30000),
+  }, { label: 'TPEX_DAILY_QUOTES' })
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text.startsWith('[')) return []
+  const body = JSON.parse(text) as any[]
+  if (!Array.isArray(body)) return []
+  // fields vary, common keys: SecuritiesCompanyCode, Open, High, Low, Close, TradingShares
+  return body
+    .filter(r => isStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
+    .map(r => {
+      const sym = (r.SecuritiesCompanyCode ?? r.Code ?? '').trim()
+      const pf = (v: any) => v && v !== '--' ? parseFloat(String(v).replace(/,/g, '')) || null : null
+      return {
+        symbol: sym,
+        open:   pf(r.Open ?? r.OpeningPrice),
+        high:   pf(r.High ?? r.HighestPrice),
+        low:    pf(r.Low  ?? r.LowestPrice),
+        close:  pf(r.Close ?? r.ClosingPrice),
+        volume: r.TradingShares ? parseTwNum(String(r.TradingShares)) : null,
+      }
+    })
+}
+
+/** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
+export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics'
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    signal: AbortSignal.timeout(30000),
+  })
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text.startsWith('[')) return []
+  const body = JSON.parse(text) as any[]
+  if (!Array.isArray(body)) return []
+  return body
+    .filter(r => isStockCode(r.SecuritiesCompanyCode ?? ''))
+    .map(r => {
+      const sym = (r.SecuritiesCompanyCode ?? '').trim()
+      const pf = (v: any) => v && v !== '--' && v !== '' ? parseFloat(String(v).replace(/,/g, '')) || null : null
+      return {
+        symbol: sym,
+        open:   null,  // 興櫃 API 無開盤價欄位
+        high:   pf(r.Highest),
+        low:    pf(r.Lowest),
+        close:  pf(r.LatestPrice),
+        volume: r.TransactionVolume ? parseTwNum(String(r.TransactionVolume)) : null,
+        avg_price: pf(r.Average),  // 成交均價 — 隔日漲跌幅基準
+      }
+    })
+}
+
+/**
+ * 每日股價 bulk 寫入（TWSE + TPEX + 興櫃，替代 FinMind per-stock TaiwanStockPrice）
+ * 在 runDailyUpdate 與 bulkFetchAndStoreChipData 同步呼叫。
+ */
+export async function bulkFetchAndStorePrices(
+  db: D1Database,
+  date: string,
+): Promise<number> {
+  const [twseRows, tpexRows, emergingRows] = await Promise.allSettled([
+    fetchTwseStockDayAll(date),
+    fetchTpexStockDayAll(),
+    fetchEmergingStockDayAll(),
+  ])
+
+  const allRows: StockDayAllRow[] = [
+    ...(twseRows.status === 'fulfilled' ? twseRows.value : []),
+    ...(tpexRows.status === 'fulfilled' ? tpexRows.value : []),
+    ...(emergingRows.status === 'fulfilled' ? emergingRows.value : []),
+  ]
+  if (twseRows.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseRows.reason)
+  if (tpexRows.status === 'rejected') console.warn('[BulkPrice] TPEX DayAll failed:', tpexRows.reason)
+  if (emergingRows.status === 'rejected') console.warn('[BulkPrice] Emerging DayAll failed:', emergingRows.reason)
+
+  const validRows = allRows.filter(r => r.close !== null)
+  if (!validRows.length) { console.warn('[BulkPrice] No valid price rows'); return 0 }
+
+  // symbol → stocks.id
+  const { results: allStocks } = await db.prepare('SELECT id, symbol FROM stocks').all<{ id: number; symbol: string }>()
+  const idMap = new Map<string, number>()
+  for (const s of allStocks ?? []) idMap.set(s.symbol, s.id)
+
+  const BATCH = 50
+  let count = 0
+  for (let i = 0; i < validRows.length; i += BATCH) {
+    const stmts = validRows.slice(i, i + BATCH)
+      .filter(r => idMap.has(r.symbol))
+      .map(r => db.prepare(
+        `INSERT OR REPLACE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).bind(idMap.get(r.symbol)!, date, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
+    if (stmts.length) {
+      await db.batch(stmts)
+      count += stmts.length
+    }
+  }
+  // ── 標記興櫃股 market='EMERGING'（讓 screener filter 生效）──
+  const emergingSymbols = emergingRows.status === 'fulfilled'
+    ? emergingRows.value.filter(r => idMap.has(r.symbol)).map(r => r.symbol)
+    : []
+  if (emergingSymbols.length) {
+    const EMG_BATCH = 50
+    for (let i = 0; i < emergingSymbols.length; i += EMG_BATCH) {
+      const batch = emergingSymbols.slice(i, i + EMG_BATCH)
+      const ph = batch.map(() => '?').join(',')
+      await db.prepare(
+        `UPDATE stocks SET market='EMERGING' WHERE symbol IN (${ph}) AND market != 'EMERGING'`
+      ).bind(...batch).run()
+    }
+    console.log(`[BulkPrice] Marked ${emergingSymbols.length} emerging stocks`)
+  }
+
+  console.log(`[BulkPrice] Written: ${count} stock_prices rows (TWSE ${twseRows.status === 'fulfilled' ? twseRows.value.length : 0} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
+  return count
+}
+
+// ── TWSE 官方產業代碼 → 中文名稱 ─────────────────────────────────────────────
+// TWSE openapi t187ap03_L 回傳的 industry code（2026-04-02 用 sample stocks 逐一驗證）
+// 驗證方式：每個 code 取前 5 支 symbol，查已知產業歸屬
+const TWSE_INDUSTRY_MAP: Record<string, string> = {
+  '01': '水泥工業',           // 1101台泥 1102亞泥
+  '02': '食品工業',           // 1201味全 1203味王
+  '03': '塑膠工業',           // 1301台塑 1303南亞
+  '04': '紡織纖維',           // 1402遠東新 1409新纖
+  '05': '電機機械',           // 1503士電 1504東元
+  '06': '電器電纜',           // 1603華電 1605華新
+  '08': '玻璃陶瓷',           // 1802台玻 1806冠軍
+  '09': '造紙工業',           // 1903士紙 1904正隆
+  '10': '鋼鐵工業',           // 2002中鋼 2006東和鋼鐵
+  '11': '橡膠工業',           // 2101南港 2102泰豐
+  '12': '汽車工業',           // 1319東陽 1521大億 1524耿鼎
+  '14': '建材營造業',         // 1316上曜 1436華友聯
+  '15': '航運業',             // 2603長榮 2605新興 2606裕民
+  '16': '觀光餐旅',           // 2701萬企 2702華園
+  '17': '金融保險業',         // 2801彰銀 2812台中銀 2886兆豐金
+  '18': '貿易百貨業',         // 2601益航 2901欣欣 2903遠百
+  '20': '其他電子業',         // 1342八貫 1416廣豐
+  '21': '化學工業',           // 1708永記 1709和益 1710東聯
+  '22': '生技醫療',           // 1707葡萄王 1720生達 1731美吾華
+  '23': '油電燃氣業',         // 6505台塑化 9908大台北 9918欣天然
+  '24': '半導體業',           // 2302麗正 2303聯電 2330台積電 2344華邦電
+  '25': '電腦及週邊設備業',   // 2301光寶 2305全友 2352佳世達
+  '26': '光電業',             // 2323中環 2349錸德 2409友達
+  '27': '電子零組件業',       // 2314台半 2321東訊 2332友訊
+  '28': '其他',               // 1471首利 2308台達電 2313華通
+  '29': '通信網路業',         // 2347聯強 2414精技
+  '30': '資訊服務業',         // 2427三商電 2453凌群
+  '31': '電子通路業',         // 2312金寶 2317鴻海 2354鴻準
+  '35': '居家生活',           // 2072南僑 5765丸美
+  '36': '數位雲端',           // 3130一零四 6165捷泰
+  '37': '綜合',               // 1432大魯閣 1598岱宇
+  '38': '電子商務',           // 2062橘焱 3557嘉威
+  '91': '存託憑證',           // 9103美德醫
+}
+
+// TPEX openapi mopsfin_t187ap03_O 回傳的 industry code（2026-04-02 驗證）
+// TPEX 與 TWSE 使用相同的 code 體系（經比對 sample stocks 確認）
+const TPEX_INDUSTRY_MAP: Record<string, string> = {
+  '02': '食品工業',           // 1264德麥
+  '03': '塑膠工業',           // 4303信立
+  '04': '紡織纖維',           // 4401東隆興
+  '05': '電機機械',           // 1580新麥
+  '06': '電器電纜',           // 2061風青
+  '10': '建材營造業',         // 2035千附
+  '14': '鋼鐵工業',           // 2596綠意
+  '15': '橡膠工業',           // 2641正德
+  '16': '觀光餐旅',           // 2719燦星旅 1268漢來美食
+  '17': '金融保險業',         // 5864致和 5878台名
+  '20': '其他電子業',         // 1584精剛
+  '21': '化學工業',           // 1742台蠟
+  '22': '生技醫療',           // 1565精華 1777科妍
+  '23': '油電燃氣業',         // 8908欣汎 8917明安
+  '24': '半導體業',           // 3105穩懋 3141晶宏
+  '25': '電腦及週邊設備業',   // 3071協禧 3088艾訊
+  '26': '光電業',             // 3066李洲 3128昇銳
+  '27': '電子零組件業',       // 3081聯亞 3095明泰
+  '28': '其他',               // 1336台翰 1595川寶
+  '29': '通信網路業',         // 3224三顧 3232昱捷
+  '30': '資訊服務業',         // 3570大塚 4953緯軟
+  '31': '電子通路業',         // 1785光洋科 3067全域
+  '32': '綠能環保',           // 2926誠品 3064泰偉
+  '33': '數位雲端',           // 1240茂生 6508惠光
+  '35': '文化創意業',         // 3073志旭 3551世禾
+  '36': '農業科技',           // 2640大車隊 2949華航
+  '37': '貿易百貨',           // 1593祺驊 5348川湖
+  '38': '航運業',             // 2916滿心 2924東凌
+}
+
+/**
+ * 同步 TWSE + TPEX 官方產業分類到 stock_tags（tag_type='industry'）
+ * 每支上市/櫃股票得到 1 個 industry tag — 保底覆蓋，不會像概念標籤一樣有缺漏
+ */
+export async function syncIndustryTags(db: D1Database, kv?: KVNamespace): Promise<{ synced: number }> {
+  // 確保 tag_type 欄位存在（idempotent migration）
+  await db.prepare(
+    "SELECT tag_type FROM stock_tags LIMIT 1"
+  ).first().catch(async () => {
+    await db.prepare("ALTER TABLE stock_tags ADD COLUMN tag_type TEXT DEFAULT 'concept'").run()
+    console.log('[IndustrySync] Added tag_type column')
+  })
+
+  // 標記所有現有 tags 為 concept（如果還沒標）
+  await db.prepare("UPDATE stock_tags SET tag_type='concept' WHERE tag_type IS NULL").run()
+
+  // ── 抓 TWSE 上市公司清單 ──
+  let twseData: { symbol: string; industry: string }[] = []
+  try {
+    const res = await fetch('https://openapi.twse.com.tw/v1/opendata/t187ap03_L', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (res.ok) {
+      const body = await res.json() as any[]
+      const keys = body.length ? Object.keys(body[0]) : []
+      // 產業別 field key varies by encoding — find by position (index 5) or by content pattern
+      const codeKey = keys[1]  // 公司代號
+      const indKey = keys[5]   // 產業別
+      for (const row of body) {
+        const sym = String(row[codeKey] ?? '').trim()
+        const indCode = String(row[indKey] ?? '').trim()
+        if (/^\d{4}$/.test(sym) && TWSE_INDUSTRY_MAP[indCode]) {
+          twseData.push({ symbol: sym, industry: TWSE_INDUSTRY_MAP[indCode] })
+        }
+      }
+    }
+  } catch (e) { console.warn('[IndustrySync] TWSE fetch failed:', e) }
+
+  // ── 抓 TPEX 上櫃公司清單 ──
+  let tpexData: { symbol: string; industry: string }[] = []
+  try {
+    const res = await fetch('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (res.ok) {
+      const body = await res.json() as any[]
+      const keys = body.length ? Object.keys(body[0]) : []
+      const codeKey = keys[1]
+      const indKey = keys[5]
+      for (const row of body) {
+        const sym = String(row[codeKey] ?? '').trim()
+        const indCode = String(row[indKey] ?? '').trim()
+        if (/^\d{4}$/.test(sym) && TPEX_INDUSTRY_MAP[indCode]) {
+          tpexData.push({ symbol: sym, industry: TPEX_INDUSTRY_MAP[indCode] })
+        }
+      }
+    }
+  } catch (e) { console.warn('[IndustrySync] TPEX fetch failed:', e) }
+
+  const allData = [...twseData, ...tpexData]
+  if (!allData.length) {
+    console.warn('[IndustrySync] No data fetched')
+    return { synced: 0 }
+  }
+
+  // ── Batch upsert into stock_tags ──
+  const BATCH = 50
+  let synced = 0
+  for (let i = 0; i < allData.length; i += BATCH) {
+    const stmts = allData.slice(i, i + BATCH).map(d =>
+      db.prepare(`
+        INSERT INTO stock_tags (symbol, tag, source, weight, tag_type)
+        VALUES (?, ?, 'twse', 1.0, 'industry')
+        ON CONFLICT(symbol, tag) DO UPDATE SET
+          source='twse', weight=1.0, tag_type='industry', updated_at=datetime('now')
+      `).bind(d.symbol, d.industry)
+    )
+    if (stmts.length) {
+      await db.batch(stmts)
+      synced += stmts.length
+    }
+  }
+
+  // 清除 KV 快取（讓新 tags 生效）
+  if (kv) {
+    await kv.delete('screener:sector-map')
+    await kv.delete('buzz:keywords')
+  }
+  console.log(`[IndustrySync] Synced ${synced} industry tags (TWSE ${twseData.length} + TPEX ${tpexData.length})`)
+  return { synced }
+}
+
+// ── 台指期夜盤收盤資料（TAIFEX MIS API）─────────────────────────────────────
+export interface TaifexNightSession {
+  lastPrice: number       // 夜盤最後成交價
+  refPrice: number        // 前日結算價
+  changePoints: number    // 漲跌點數
+  changePct: number       // 漲跌幅 %
+  date: string            // 資料日期 YYYYMMDD
+  time: string            // 最後更新時間
+}
+
+/**
+ * 從 TAIFEX MIS API 取台指期近月合約的最新報價
+ * 07:15 呼叫時會拿到夜盤（15:00~05:00）收盤數據
+ * 盤中呼叫則拿到即時報價
+ */
+export async function fetchTaifexNightClose(): Promise<TaifexNightSession | null> {
+  try {
+    // TAIFEX MIS API — 不需 auth，POST 取台指期報價
+    // SymbolID 格式：TXF{月份}{年份}-F（近月合約），用空 SymbolID 取全部
+    const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      body: JSON.stringify({ CID: '', SymbolID: '', MarketType: '0' }),
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return null
+    const body = await res.json() as any
+    const quotes = body?.RtData?.QuoteList as any[] | undefined
+    if (!quotes?.length) return null
+
+    // 找台指期近月合約（DispCName 包含「臺指期」且為最近月份）
+    // 第一筆 TXF-S 是現貨，跳過；找第一個 -F 結尾的才是期貨
+    const txf = quotes.find(q =>
+      q.SymbolID?.endsWith('-F') &&
+      q.DispCName?.includes('臺指期') &&
+      q.CLastPrice && q.CLastPrice !== ''
+    )
+    if (!txf) return null
+
+    const lastPrice = parseFloat(txf.CLastPrice)
+    const refPrice = parseFloat(txf.CRefPrice)
+    if (isNaN(lastPrice) || isNaN(refPrice) || refPrice === 0) return null
+
+    const changePoints = lastPrice - refPrice
+    const changePct = (changePoints / refPrice) * 100
+
+    console.log(`[TAIFEX] ${txf.DispCName}: ${lastPrice} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%) ref=${refPrice}`)
+
+    return {
+      lastPrice,
+      refPrice,
+      changePoints,
+      changePct,
+      date: txf.CDate ?? '',
+      time: txf.CTime ?? '',
+    }
+  } catch (e) {
+    console.warn('[TAIFEX] fetchTaifexNightClose failed:', e)
+    return null
+  }
 }

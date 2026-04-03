@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_fin_stock_period ON financials(stock_id, period);
 
 CREATE TABLE IF NOT EXISTS chip_data (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  stock_id       INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+  symbol         TEXT NOT NULL,
   date           TEXT NOT NULL,
   foreign_buy    INTEGER, foreign_sell INTEGER, foreign_net INTEGER,
   trust_buy      INTEGER, trust_sell   INTEGER, trust_net   INTEGER,
@@ -86,9 +86,9 @@ CREATE TABLE IF NOT EXISTS chip_data (
   margin_balance INTEGER,
   short_balance  INTEGER,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(stock_id, date)
+  UNIQUE(symbol, date)
 );
-CREATE INDEX IF NOT EXISTS idx_chip_stock_date ON chip_data(stock_id, date);
+CREATE INDEX IF NOT EXISTS idx_chip_symbol_date ON chip_data(symbol, date);
 
 CREATE TABLE IF NOT EXISTS news (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

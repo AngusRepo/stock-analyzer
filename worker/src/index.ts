@@ -8,6 +8,15 @@ import { paper, runPaperAutoTrade, setupMorningPendingBuys, runIntradayCheck, ru
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// P3 資安：Security headers（防 XSS + clickjacking + MIME sniffing）
+app.use('/api/*', async (c, next) => {
+  await next()
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('X-Frame-Options', 'DENY')
+  c.header('X-XSS-Protection', '1; mode=block')
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+})
+
 app.use('/api/*', cors({
   origin: (origin, c) => {
     // server-to-server（Cron、Queue）：無 Origin header，直接放行
@@ -92,6 +101,7 @@ app.put('/api/admin/config', async (c) => {
     exit: { ...current.exit, ...body.exit },
     position: { ...current.position, ...body.position },
     screener: { ...current.screener, ...body.screener },
+    rrg: { ...current.rrg, ...body.rrg },
   }
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
@@ -167,28 +177,48 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'morning-setup',    tw_time: '07:15',       description: '預熱+掛單+Debate' },
     { task: 'morning-briefing', tw_time: '07:50',       description: '盤前攻略 Discord' },
     { task: 'intraday-check',   tw_time: '09:00-13:30', description: '盤中限價買入+止損停利' },
-    { task: 'screener',         tw_time: '14:00',       description: '全市場篩選' },
-    { task: 'eod-exit',         tw_time: '14:10',       description: 'EOD 出場檢查' },
+    { task: 'eod-exit',         tw_time: '13:25',       description: 'EOD 收盤前出場（13:25-13:35 TW）' },
     { task: 'daily-snapshot',   tw_time: '14:20',       description: 'PnL+Sharpe+Drawdown' },
-    { task: 'data-update',      tw_time: '15:05',       description: '收盤後抓股價/籌碼/新聞' },
-    { task: 'ml-warmup',        tw_time: '15:25',       description: 'Cloud Run 預熱' },
-    { task: 'ml-predict',       tw_time: '15:30',       description: 'ML 預測+大盤風險' },
-    { task: 'recommendation',   tw_time: '15:35',       description: '每日選股推薦' },
-    { task: 'verify',           tw_time: '16:00',       description: '預測驗證' },
-    { task: 'adapt',            tw_time: '16:05',       description: '自適應參數更新' },
-    { task: 'daily-report',     tw_time: '16:10',       description: '收盤報告 Discord' },
+    { task: 'data-update',      tw_time: '17:30',       description: '收盤後抓股價/籌碼（via Controller proxy）' },
+    { task: 'screener',         tw_time: '17:40',       description: '全市場篩選（chip 齊全）' },
+    { task: 'ml-warmup',        tw_time: '17:50',       description: 'Cloud Run 預熱' },
+    { task: 'ml-predict',       tw_time: '18:00',       description: 'ML 預測+大盤風險' },
+    { task: 'recommendation',   tw_time: '18:05',       description: '每日選股推薦' },
+    { task: 'verify',           tw_time: '18:15',       description: '預測驗證' },
+    { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
+    { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
   ]
   return c.json({ schedule })
 })
 
-// ─── Admin: 手動觸發 cron 任務（STOCKVISION_AUTH_TOKEN 驗證）────────────────
+// ─── Admin: 手動觸發 cron 任務（STOCKVISION_AUTH_TOKEN 驗證 + Rate Limit）───
 app.post('/api/admin/trigger/:task', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
     return c.json({ error: 'Unauthorized' }, 401)
 
+  // Rate limiting: 100 req/hr per token（防 API 濫用 → D1 寫入爆量 + Cloud Run 帳單飆升）
+  const rlKey = `ratelimit:admin:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
+  const rlCount = parseInt(await c.env.KV.get(rlKey) ?? '0')
+  if (rlCount >= 100) return c.json({ error: 'Rate limit exceeded (100/hr)' }, 429)
+  await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
+
   const task = c.req.param('task')
+
+  // ── 非交易日防呆：週末+國定假日，資料寫入類 task 全擋（加 ?force=1 繞過）──
+  const DATA_TASKS = new Set(['screener', 'update', 'ml', 'recommendation', 'paper-trade', 'morning-setup', 'intraday-check', 'eod-exit', 'pipeline', 'adapt'])
+  if (DATA_TASKS.has(task) && !c.req.query('force')) {
+    const twNow = new Date(Date.now() + 8 * 3600_000)
+    const dayOfWeek = twNow.getUTCDay() // 0=Sun, 6=Sat
+    const twDate = twNow.toISOString().slice(0, 10)
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
+    const isHoliday = await c.env.KV.get(`holiday:${twDate}`)
+    if (isWeekend || isHoliday) {
+      return c.json({ error: `非交易日（${isWeekend ? '週末' : isHoliday}），跳過 ${task}。加 ?force=1 強制執行。` }, 400)
+    }
+  }
+
   /** 等待 Queue 消費完畢（輪詢 stock_prices 更新數量） */
   const waitForQueue = async (table: string, dateCol: string, minExpected: number, timeoutMs = 300_000) => {
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -205,13 +235,29 @@ app.post('/api/admin/trigger/:task', async (c) => {
 
   const taskMap: Record<string, () => Promise<any>> = {
     screener:      () => runMarketScreener(c.env),
-    update:        () => runDailyUpdate(c.env),
+    update:        () => runDailyUpdate(c.env, !!c.req.query('force')),
     ml:            () => runMLAndRisk(c.env),
     recommendation:() => runDailyRecommendation(c.env),
     'paper-trade': () => runPaperAutoTrade(c.env),
     'morning-setup': () => setupMorningPendingBuys(c.env),
-    'intraday-check': () => runIntradayCheck(c.env),
-    'eod-exit': () => runEODExit(c.env),
+    'intraday-check': () => {
+      // 防呆：非交易時間不執行（避免手動觸發造成異常成交）
+      const h = (new Date().getUTCHours() + 8) % 24
+      const m = new Date().getUTCMinutes()
+      const open = h >= 9 && (h < 13 || (h === 13 && m <= 30))
+      if (!open && !c.req.query('force')) return Promise.resolve('SKIPPED: 非交易時間（加 ?force=1 強制）')
+      return runIntradayCheck(c.env)
+    },
+    'eod-exit': () => {
+      // 防呆：只在 13:25~13:35 TW 執行（收盤前最後出場窗口）
+      // 台股 13:30 收盤，BOT 應在收盤前出場，不依賴盤後定價（不保證成交）
+      const h = (new Date().getUTCHours() + 8) % 24
+      const m = new Date().getUTCMinutes()
+      const twTime = h * 100 + m  // e.g. 1325
+      const validEod = twTime >= 1325 && twTime <= 1335
+      if (!validEod && !c.req.query('force')) return Promise.resolve('SKIPPED: 非 EOD 時段 13:25-13:35 TW（加 ?force=1 強制）')
+      return runEODExit(c.env)
+    },
     'daily-snapshot': () => runDailySnapshot(c.env),
     warmup:        () => runMorningWarmup(c.env),
     'morning-briefing': async () => { const { generateMorningBriefing } = await import('./lib/morningBriefing'); return generateMorningBriefing(c.env) },
@@ -220,26 +266,35 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
     'adapt':            async () => { const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine'); return runAdaptiveUpdate(c.env) },
     'reclassify-tags':  async () => { const { reclassifyTags } = await import('./lib/tagReclassifier'); return reclassifyTags(c.env) },
+    'sync-industries':  async () => { const { syncIndustryTags } = await import('./lib/twseApi'); return syncIndustryTags(c.env.DB, c.env.KV) },
+    'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
+    'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
+    'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
     // ── 完整 Pipeline：依序等待每步完成 ──
     pipeline: async () => {
       const steps: string[] = []
+
+      // 1. Bulk Fetch（全市場 prices+chips → D1）
+      await runBulkFetch(c.env)
+      steps.push('bulk-fetch')
+
+      // 2. Screener T1+T2（D1 資料齊全後篩選）
+      const result = await runMarketScreener(c.env)
+      steps.push(`screener(${result.candidates?.length ?? 0} candidates)`)
+
       const activeCount = (await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1").first<any>())?.cnt ?? 60
 
-      // 1. Screener
-      await runMarketScreener(c.env)
-      steps.push('screener')
-
-      // 2. Data update + 等 queue 消化
-      await runDailyUpdate(c.env)
+      // 3. Queue Update（篩後候選股 Yahoo+指標+新聞）
+      await runQueueUpdate(c.env)
       const updated = await waitForQueue('stock_prices', 'date', Math.floor(activeCount * 0.8))
-      steps.push(`data-update(${updated} prices)`)
+      steps.push(`queue-update(${updated} prices)`)
 
-      // 3. ML predict + 等 queue 消化
+      // 4. ML predict
       await runMLAndRisk(c.env)
       const predicted = await waitForQueue('predictions', "date(generated_at)", Math.floor(activeCount * 0.5))
       steps.push(`ml-predict(${predicted} predictions)`)
 
-      // 4. Recommendation（chip_data 已更新）
+      // 5. Recommendation（評分，T2 已在 Screener 完成）
       await runDailyRecommendation(c.env)
       steps.push('recommendation')
 
@@ -263,31 +318,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
   }
 })
 
-// ─── Debug: 測試單支股票 FinMind chip fetch ─────────────────────────────────
-app.get('/api/admin/debug-chips/:symbol', async (c) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) return c.json({ error: 'Unauthorized' }, 401)
-
-  const symbol = c.req.param('symbol')
-  const { fetchTWChips, aggregateChips } = await import('./lib/finmind')
-  const chipStart = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-
-  try {
-    const chipRows = await fetchTWChips(c.env.FINMIND_TOKEN, symbol, chipStart)
-    const chipMap = aggregateChips(chipRows)
-    return c.json({
-      symbol,
-      finmind_token_set: !!c.env.FINMIND_TOKEN,
-      chipStart,
-      raw_rows: chipRows.length,
-      sample_raw: chipRows.slice(0, 5),
-      aggregated_dates: Object.keys(chipMap).length,
-      sample_aggregated: Object.fromEntries(Object.entries(chipMap).slice(-3)),
-    })
-  } catch (e: any) {
-    return c.json({ error: e.message, stack: e.stack })
-  }
-})
+// [REMOVED] debug-chips endpoint — FinMind fully deprecated, replaced by TWSE/TPEX bulk APIs
 
 // ─── 每批處理的股票數量 ──────────────────────────────────────────────────────
 // 免費方案：6 支（每支 ~3s，30s 限制內安全完成）
@@ -331,43 +362,73 @@ async function runMorningWarmup(env: Bindings) {
   // 清除 KV 快取，確保今日資料不會被昨日快取污染
   const keysToDelete = ['market:risk:latest', 'market:overview']
   await Promise.allSettled(keysToDelete.map(k => env.KV.delete(k)))
+
+  // 取得今日當沖標的清單 → KV（paper.ts 盤中用來判斷可否同日賣出）
+  try {
+    const { fetchDayTradeEligible } = await import('./lib/twseApi')
+    const eligible = await fetchDayTradeEligible()
+    if (eligible.length > 0) {
+      await env.KV.put('market:daytrade_eligible', JSON.stringify(eligible), { expirationTtl: 86400 })
+      console.log(`[Warmup] 當沖標的: ${eligible.length} 股`)
+    } else {
+      console.log('[Warmup] 當沖標的: 0（非交易日或盤前未更新）')
+    }
+  } catch (e) {
+    console.warn('[Warmup] 當沖標的 fetch failed (non-blocking):', e)
+  }
+
   console.log('[Cron] Morning warmup done.')
 }
 
-// ─── Cron 1：每日 15:05 — 啟動資料更新 Queue ────────────────────────────────
-async function runDailyUpdate(env: Bindings) {
-  const triggerTime = new Date().toISOString().split('T')[0]  // YYYY-MM-DD
-  // 冪等保護：同一天不重複觸發（防止 admin 手動 + Cron 雙重觸發浪費 FinMind 配額）
-  const lockKey = `cron:daily-update:${triggerTime}`
+// ─── Cron 1a：15:05 TW — Bulk Fetch（全市場 prices+chips → D1）──────────────
+async function runBulkFetch(env: Bindings, force = false) {
+  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const lockKey = `cron:bulk-fetch:${twToday}`
+  if (!force && await env.KV.get(lockKey)) {
+    console.log(`[Cron] Bulk fetch already done today (${twToday}), skipping.`)
+    return
+  }
+
+  try {
+    const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./lib/twseApi')
+    const [{ chipCount, marginCount }, priceCount] = await Promise.all([
+      bulkFetchAndStoreChipData(env.DB, twToday, env.SHIOAJI_PROXY_URL, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(env.DB, twToday),
+    ])
+    console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
+    await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+  } catch (e) {
+    console.warn('[Cron] Bulk fetch failed:', e)
+  }
+
+  // Wave 2：月營收 + 大盤廣度（並行）
+  const triggerTime = twToday
+  await fetchWave2Data(env, triggerTime).catch(e => console.warn('[Wave2] failed:', e))
+}
+
+// ─── Cron 1b：15:15 TW — Queue Update（篩後候選股 Yahoo+指標+新聞）─────────
+async function runQueueUpdate(env: Bindings) {
+  const triggerTime = new Date().toISOString().split('T')[0]
+  const lockKey = `cron:queue-update:${triggerTime}`
   if (await env.KV.get(lockKey)) {
-    console.log(`[Cron] Daily update already triggered today (${triggerTime}), skipping.`)
+    console.log(`[Cron] Queue update already triggered today, skipping.`)
     return
   }
   await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
 
-  // ── Bulk: 全市場三大法人+融資融券（TWSE/TPEX 官方 API，不消耗 FinMind 配額）───
-  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  try {
-    const { bulkFetchAndStoreChipData } = await import('./lib/twseApi')
-    const { chipCount, marginCount } = await bulkFetchAndStoreChipData(
-      env.DB, twToday, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET
-    )
-    console.log(`[Cron] Bulk chip: ${chipCount} chips + ${marginCount} margins written (TWSE/TPEX)`)
-  } catch (e) {
-    console.warn('[Cron] Bulk chip fetch failed, FinMind fallback still in Queue:', e)
-  }
-
-  console.log('[Cron] Kicking off daily update via Queue...')
+  console.log('[Cron] Kicking off Queue update for screened candidates...')
   await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
+}
 
-  // Wave 2：月營收 + 大盤廣度（與 Queue batch 並行，不阻塞）
-  await fetchWave2Data(env, triggerTime).catch(e => console.warn('[Wave2] failed:', e))
-  console.log('[Cron] First batch queued + Wave2 data fetched.')
+// ─── Legacy wrapper（admin trigger 用）────────────────────────────────────────
+async function runDailyUpdate(env: Bindings, force = false) {
+  await runBulkFetch(env, force)
+  await runQueueUpdate(env)
 }
 
 // ─── Wave 2 數據：PER/PBR + 月營收 + 大盤廣度（全部改用 TWSE/TPEX 官方 API）──
 async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
-  const { fetchTwseValuation, fetchTwseMonthlyRevenue, fetchMarketBreadth, fetchTwseFinancials } = await import('./lib/twseApi')
+  const { fetchTwseValuation, fetchTpexValuation, fetchTwseMonthlyRevenue, fetchTpexMonthlyRevenue, fetchMarketBreadth, fetchTwseFinancials, fetchTpexFinancials, fetchExDividendForecast, fetchAttentionStocks } = await import('./lib/twseApi')
 
   // ── 大盤廣度（TWSE opendata，不需 FinMind）──────────────────────────
   try {
@@ -384,31 +445,51 @@ async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
     }
   } catch (e) { console.warn('[Wave2] Market breadth failed:', e) }
 
-  // ── PER/PBR/殖利率（TWSE BWIBBU_ALL，全市場 ~1069 股）─────────────
+  // ── PER/PBR/殖利率（TWSE + TPEX）──────────────────────────────────
   try {
-    const valRows = await fetchTwseValuation(today)
+    const [twseVal, tpexVal] = await Promise.allSettled([fetchTwseValuation(today), fetchTpexValuation()])
+    const valRows = [
+      ...(twseVal.status === 'fulfilled' ? twseVal.value : []),
+      ...(tpexVal.status === 'fulfilled' ? tpexVal.value : []),
+    ]
     if (valRows.length) {
+      // 取當前季度（e.g. 2026Q1）
+      const twNow = new Date(Date.now() + 8 * 3600_000)
+      const currentQ = `${twNow.getFullYear()}Q${Math.ceil((twNow.getMonth() + 1) / 3)}`
+
       const stmts = valRows
         .filter(v => v.pe !== null || v.pb !== null || v.dividend_yield !== null)
-        .map(v =>
+        .flatMap(v => [
+          // 先嘗試 UPDATE 最新 Q 記錄
           env.DB.prepare(`
             UPDATE financials SET pe=?, pb=?, dividend_yield=?
             WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
-            AND period = (SELECT MAX(period) FROM financials WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?))
-          `).bind(v.pe, v.pb, v.dividend_yield, v.symbol, v.symbol)
-        )
+            AND period = (SELECT MAX(period) FROM financials WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?) AND period LIKE '%Q%')
+          `).bind(v.pe, v.pb, v.dividend_yield, v.symbol, v.symbol),
+          // 如果沒有 Q 記錄（OTC 等），INSERT 一筆
+          env.DB.prepare(`
+            INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
+            SELECT s.id, ?, 'quarterly', ?, ?, ?
+            FROM stocks s WHERE s.symbol = ?
+            AND NOT EXISTS (SELECT 1 FROM financials f WHERE f.stock_id = s.id AND f.period LIKE '%Q%')
+          `).bind(currentQ, v.pe, v.pb, v.dividend_yield, v.symbol),
+        ])
       for (let i = 0; i < stmts.length; i += 50) {
         await env.DB.batch(stmts.slice(i, i + 50))
       }
-      console.log(`[Wave2] PER/PBR: ${valRows.length} stocks updated (TWSE BWIBBU_ALL)`)
+      console.log(`[Wave2] PER/PBR: ${valRows.length} stocks (TWSE ${twseVal.status === 'fulfilled' ? twseVal.value.length : 0} + TPEX ${tpexVal.status === 'fulfilled' ? tpexVal.value.length : 0})`)
     }
   } catch (e) { console.warn('[Wave2] PER/PBR failed:', e) }
 
-  // ── 月營收（TWSE opendata，每月前 12 天抓）─────────────────────────
+  // ── 月營收（TWSE + TPEX opendata，每月前 12 天抓）──────────────────
   const day = parseInt(today.slice(8, 10))
   if (day <= 12) {
     try {
-      const revData = await fetchTwseMonthlyRevenue()
+      const [twseRev, tpexRev] = await Promise.allSettled([fetchTwseMonthlyRevenue(), fetchTpexMonthlyRevenue()])
+      const revData = [
+        ...(twseRev.status === 'fulfilled' ? twseRev.value : []),
+        ...(tpexRev.status === 'fulfilled' ? tpexRev.value : []),
+      ]
       if (revData.length) {
         const stmts = revData.map(r =>
           env.DB.prepare(`
@@ -422,14 +503,18 @@ async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
         for (let i = 0; i < stmts.length; i += 50) {
           await env.DB.batch(stmts.slice(i, i + 50))
         }
-        console.log(`[Wave2] Monthly revenue: ${revData.length} entries (TWSE opendata)`)
+        console.log(`[Wave2] Monthly revenue: ${revData.length} entries (TWSE ${twseRev.status === 'fulfilled' ? twseRev.value.length : 0} + TPEX ${tpexRev.status === 'fulfilled' ? tpexRev.value.length : 0})`)
       }
     } catch (e) { console.warn('[Wave2] Monthly revenue failed:', e) }
   }
 
-  // ── 財報 EPS/ROE（TWSE opendata，季報更新時才有新資料）─────────────
+  // ── 財報 EPS/ROE（TWSE + TPEX opendata，季報更新時才有新資料）──────
   try {
-    const finRows = await fetchTwseFinancials()
+    const [twseFin, tpexFin] = await Promise.allSettled([fetchTwseFinancials(), fetchTpexFinancials()])
+    const finRows = [
+      ...(twseFin.status === 'fulfilled' ? twseFin.value : []),
+      ...(tpexFin.status === 'fulfilled' ? tpexFin.value : []),
+    ]
     if (finRows.length) {
       const stmts = finRows
         .filter(f => f.eps !== null)
@@ -448,9 +533,37 @@ async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
       for (let i = 0; i < stmts.length; i += 50) {
         await env.DB.batch(stmts.slice(i, i + 50))
       }
-      console.log(`[Wave2] Financials: ${finRows.length} entries (TWSE opendata EPS+ROE)`)
+      console.log(`[Wave2] Financials: ${finRows.length} entries (TWSE+TPEX opendata EPS+ROE)`)
     }
   } catch (e) { console.warn('[Wave2] Financials failed:', e) }
+
+  // ── 除權除息 + 注意股（透過 Controller proxy，避免 CF Worker IP 被 TWSE 擋）──
+  if (env.ML_CONTROLLER_URL) {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+    try {
+      const res = await fetch(`${env.ML_CONTROLLER_URL}/twse/ex-dividend`, { headers, signal: AbortSignal.timeout(30000) })
+      if (res.ok) {
+        const exDivRows = await res.json() as any[]
+        if (exDivRows.length) {
+          await env.KV.put('market:ex_dividend_forecast', JSON.stringify(exDivRows), { expirationTtl: 86400 })
+          console.log(`[Wave2] Ex-dividend (via Controller): ${exDivRows.length} entries`)
+        }
+      }
+    } catch (e) { console.warn('[Wave2] Ex-dividend proxy failed:', e) }
+
+    try {
+      const res = await fetch(`${env.ML_CONTROLLER_URL}/twse/attention-stocks`, { headers, signal: AbortSignal.timeout(30000) })
+      if (res.ok) {
+        const attentionSymbols = await res.json() as string[]
+        if (attentionSymbols.length) {
+          await env.KV.put('market:attention_stocks', JSON.stringify(attentionSymbols), { expirationTtl: 86400 })
+          console.log(`[Wave2] Attention stocks (via Controller): ${attentionSymbols.length} symbols`)
+        }
+      }
+    } catch (e) { console.warn('[Wave2] Attention stocks proxy failed:', e) }
+  }
 }
 
 // ─── Queue Consumer：處理一批股票資料更新，完成後自動推下一批 ────────────────
@@ -488,8 +601,13 @@ async function processUpdateBatch(
 
   for (const stock of batch) {
     try {
-      await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
-      // SRP：指標計算獨立於資料抓取，在同一 pipeline stage 呼叫但邏輯分離
+      // 價格：只在歷史不足 20 筆時 fetch Yahoo（每日 TWSE bulk 已處理當日價格）
+      const priceCount = await env.DB.prepare(
+        'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?'
+      ).bind(stock.id).first<{ cnt: number }>()
+      if ((priceCount?.cnt ?? 0) < 20) {
+        await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
+      }
       await computeAndStoreIndicators(env.DB, stock.id)
       await crawlAndStoreNews(env.DB, stock)
       await new Promise(r => setTimeout(r, 300))
@@ -525,19 +643,12 @@ async function processUpdateBatch(
 
 // ─── Cron 2：每日 15:30 — 計算大盤風險 + Controller 並行 ML 預測 ─────────────
 async function runMLAndRisk(env: Bindings) {
-  const today = new Date().toISOString().split('T')[0]
-  const lockKey = `cron:ml-risk:${today}`
-  if (await env.KV.get(lockKey)) {
-    console.log(`[Cron] ML+Risk already triggered today (${today}), skipping.`)
-    return
-  }
-  await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
   console.log(`[Cron] Starting market risk + ML batch predict... (controller=${env.ML_CONTROLLER_URL ? 'SET' : 'NOT_SET'}, mlService=${env.ML_SERVICE_URL ? 'SET' : 'NOT_SET'})`)
 
   // 1. 大盤風險（直接執行，速度快）
   try {
     const { calcMarketRisk } = await import('./lib/marketRisk')
-    const risk = await calcMarketRisk(env.FINMIND_TOKEN, env.ANTHROPIC_API_KEY)
+    const risk = await calcMarketRisk(env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET)
     await env.DB.prepare(`
       INSERT OR REPLACE INTO market_risk
         (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
@@ -556,20 +667,13 @@ async function runMLAndRisk(env: Bindings) {
     console.error('[Cron] Market risk failed:', e)
   }
 
-  // 2. ML 並行預測（Controller → Modal .map）
+  // 2. ML 並行預測（Worker → Controller → Modal）
   if (!env.ML_CONTROLLER_URL) {
-    // Fallback: 若 Controller 未部署，走舊路徑（Phase 3 過渡期）
-    if (env.ML_SERVICE_URL && env.ML_QUEUE) {
-      try {
-        const mlHeaders: Record<string, string> = {}
-        if (env.ML_SERVICE_SECRET) mlHeaders['X-Service-Token'] = env.ML_SERVICE_SECRET
-        await fetch(`${env.ML_SERVICE_URL}/warmup`, { headers: mlHeaders, signal: AbortSignal.timeout(90_000) }).catch(() => {})
-        await env.ML_QUEUE.send({ type: 'ml_batch', cursor: 0, triggerTime: today })
-        console.log('[Cron] ML_CONTROLLER_URL not set, falling back to legacy ML_QUEUE')
-      } catch (e) { console.error('[Cron] Legacy ML fallback failed:', e) }
-    } else {
-      console.warn('[Cron] Neither ML_CONTROLLER_URL nor ML_SERVICE_URL set, skipping ML')
-    }
+    console.warn('[ML] ML_CONTROLLER_URL not set — skipping ML predict. Deploy Controller to Cloud Run first.')
+    // 仍然觸發 recommendation（用 screener 分數，ML=0）
+    try {
+      await runDailyRecommendation(env)
+    } catch (e) { console.warn('[ML] recommendation fallback failed:', e) }
     return
   }
 
@@ -627,7 +731,7 @@ async function runMLAndRisk(env: Bindings) {
       const [prices, indicators, chips, newsRows] = await Promise.all([
         env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stock.id).all<any>(),
         env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 200').bind(stock.id).all<any>(),
+        env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
         env.DB.prepare("SELECT date(published_at) as date, AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90").bind(stock.id).all<any>(),
       ])
 
@@ -711,13 +815,29 @@ async function runMLAndRisk(env: Bindings) {
     return
   }
 
-  // ── 2c. Controller 並行推論（Modal .map → 50 stocks in ~30s）────────────
-  console.log(`[ML] Sending ${payloads.length} stocks to Controller /batch-predict...`)
+  // ── 2c. Controller 分批推論（避免 CF Worker 100s subrequest timeout）─────
   const t0 = Date.now()
-  const controllerResult = await postController(env, '/batch-predict', { stocks: payloads }) as any
+  const results: any[] = []
+  const BATCH_SIZE = 12  // 12 stocks/batch ≈ 60-80s（含 Modal cold start）
+  console.log(`[ML] Sending ${payloads.length} stocks in batches of ${BATCH_SIZE}...`)
+
+  for (let i = 0; i < payloads.length; i += BATCH_SIZE) {
+    const batch = payloads.slice(i, i + BATCH_SIZE)
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1
+    const totalBatches = Math.ceil(payloads.length / BATCH_SIZE)
+    try {
+      console.log(`[ML] Batch ${batchNum}/${totalBatches}: ${batch.length} stocks...`)
+      const batchResult = await postController(env, '/batch-predict', { stocks: batch }, 90_000) as any
+      results.push(...(batchResult.results ?? []))
+      console.log(`[ML] Batch ${batchNum} done: ${(batchResult.results ?? []).length} results`)
+    } catch (e: any) {
+      console.error(`[ML] Batch ${batchNum} failed: ${e.message}`)
+      // 繼續下一批，不中斷整個 pipeline
+    }
+  }
+
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-  const results = controllerResult.results ?? []
-  console.log(`[ML] Controller returned ${results.length} results in ${elapsed}s (${controllerResult.errors ?? 0} errors)`)
+  console.log(`[ML] All batches done: ${results.length}/${payloads.length} in ${elapsed}s`)
 
   // ── 2d. 寫入 D1 predictions + KV 快取 ─────────────────────────────────────
   let written = 0
@@ -725,18 +845,27 @@ async function runMLAndRisk(env: Bindings) {
     if (data.error) continue
     try {
       await env.KV.put(`ml:predict:${data.stock_id}`, JSON.stringify(data), { expirationTtl: 86400 })
+      // trade_signal: 簡化版（buy/sell/hold）保留向下相容
+      // signal_raw: ensemble 原始 signal（STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL/NO_SIGNAL）
+      const rawSignal = data.signal ?? 'NO_SIGNAL'
+      // NO_SIGNAL → null（跳過，不寫 trade_signal）
+      const tradeSignal = rawSignal.includes('BUY') ? 'buy'
+        : rawSignal.includes('SELL') ? 'sell'
+        : rawSignal === 'NO_SIGNAL' ? null
+        : 'hold'
       await env.DB.prepare(`
         INSERT INTO predictions
           (stock_id, model_name, generated_at, horizon, direction_accuracy,
-           forecast_data, entry_price, stop_loss, target1, target2, trade_signal, feature_version)
-        VALUES (?,?,datetime('now'),?,?,?,?,?,?,?,?,?)
+           forecast_data, entry_price, stop_loss, target1, target2, trade_signal, feature_version, signal_raw)
+        VALUES (?,?,datetime('now'),?,?,?,?,?,?,?,?,?,?)
       `).bind(
         data.stock_id, 'ensemble', 14, data.confidence ?? null,
-        JSON.stringify({ signal: data.signal, models: data.models, forecasts: data.forecasts, arf_features: data.arf_features }),
+        JSON.stringify({ signal: rawSignal, models: data.models, forecasts: data.forecasts, arf_features: data.arf_features }),
         data.entry_price ?? null, data.stop_loss ?? null,
         data.target1 ?? null, data.target2 ?? null,
-        data.signal?.includes('BUY') ? 'buy' : data.signal?.includes('SELL') ? 'sell' : 'hold',
+        tradeSignal,
         data.feature_version ?? null,
+        rawSignal,  // 保留原始 signal
       ).run().catch((e: any) => console.warn(`[ML] D1 insert failed for ${data.symbol}:`, e?.message ?? e))
       written++
       console.log(`[ML] ${data.symbol} → ${data.signal}`)
@@ -745,6 +874,33 @@ async function runMLAndRisk(env: Bindings) {
     }
   }
   console.log(`[ML] Batch predict done: ${written}/${payloads.length} written, ${elapsed}s total`)
+
+  // ── 2d+. Store per-model timing & feature count to KV ──────────────────
+  {
+    const timingAgg: Record<string, number[]> = {}
+    const featureCounts: number[] = []
+    for (const data of results) {
+      if (data.model_timings_ms) {
+        for (const [model, ms] of Object.entries(data.model_timings_ms)) {
+          if (!timingAgg[model]) timingAgg[model] = []
+          timingAgg[model].push(ms as number)
+        }
+      }
+      if (data.feature_count) featureCounts.push(data.feature_count as number)
+    }
+    const avgTimings: Record<string, number> = {}
+    for (const [model, arr] of Object.entries(timingAgg)) {
+      avgTimings[model] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
+    }
+    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    await env.KV.put(`ml:perf:${twToday}`, JSON.stringify({
+      avg_model_timings_ms: avgTimings,
+      avg_feature_count: featureCounts.length ? Math.round(featureCounts.reduce((a, b) => a + b, 0) / featureCounts.length) : 0,
+      total_stocks: results.length,
+      total_time_s: parseFloat(elapsed),
+    }), { expirationTtl: 30 * 86400 })
+    console.log(`[ML] Performance stored: ${Object.keys(avgTimings).length} models, avg features=${featureCounts[0] ?? 0}`)
+  }
 
   // ── 2e. Event-driven chain: ML complete → trigger recommendation ───────
   try {
@@ -778,7 +934,7 @@ async function runWeeklyICaudit(env: Bindings) {
   const [prices, indicators, chips] = await Promise.all([
     env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
     env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 200').bind(topStock.id).all<any>(),
+    env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(topStock.symbol).all<any>(),
   ])
 
   const mlHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -818,6 +974,51 @@ async function runWeeklyICaudit(env: Bindings) {
   }
 }
 
+async function runWeeklyDriftCheck(env: Bindings) {
+  const ML_URL = env.ML_SERVICE_URL
+  if (!ML_URL) return
+
+  // 用跟 IC audit 相同的資料最多股票
+  const topStock = await env.DB.prepare(`
+    SELECT s.id, s.symbol FROM stocks s
+    JOIN stock_prices sp ON sp.stock_id=s.id
+    WHERE s.is_active=1
+    GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
+  `).first<any>()
+  if (!topStock) return
+
+  const [prices, indicators, chips] = await Promise.all([
+    env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(topStock.symbol).all<any>(),
+  ])
+
+  const mlHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_SERVICE_SECRET) mlHeaders['X-Service-Token'] = env.ML_SERVICE_SECRET
+
+  const res = await fetch(`${ML_URL}/feature-drift`, {
+    method: 'POST',
+    headers: mlHeaders,
+    body: JSON.stringify({
+      stock_id: topStock.id, symbol: topStock.symbol,
+      prices: (prices.results ?? []).reverse(),
+      indicators: (indicators.results ?? []).reverse(),
+      chips: (chips.results ?? []).reverse(),
+    }),
+    signal: AbortSignal.timeout(60_000),
+  })
+
+  if (!res.ok) {
+    console.warn(`[Drift Check] HTTP ${res.status}`)
+    return
+  }
+
+  const data = await res.json() as any
+  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  await env.KV.put(`ml:drift:${twDate}`, JSON.stringify(data), { expirationTtl: 30 * 86400 })
+  console.log(`[Drift Check] ${data.drifted_count}/${data.total_features} features drifted, needs_retrain=${data.needs_retrain}`)
+}
+
 async function runWeeklyRetrain(env: Bindings) {
   console.log('[WeeklyRetrain] Starting weekly model retraining...')
 
@@ -844,7 +1045,7 @@ async function runWeeklyRetrain(env: Bindings) {
       const [prices, indicators, chips] = await Promise.all([
         env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(stock.id).all<any>(),
         env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT * FROM chip_data WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(stock.id).all<any>(),
+        env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(stock.symbol).all<any>(),
       ])
       if ((prices.results?.length ?? 0) < 60) continue
       payloads.push({
@@ -962,23 +1163,14 @@ async function checkAlerts(env: Bindings) {
     'SELECT a.*, s.symbol, s.market FROM alert_rules a JOIN stocks s ON a.stock_id=s.id WHERE a.is_active=1'
   ).all<any>()
 
-  const { fetchTWCurrentPrice } = await import('./lib/finmind')
-
   for (const alert of results) {
     try {
-      const isTW = alert.market === 'TWSE' || alert.market === 'OTC' || /^\d{4,}/.test(alert.symbol)
       let price: number | null = null
 
-      if (isTW && env.FINMIND_TOKEN) {
-        // 台股：FinMind
-        price = await fetchTWCurrentPrice(env.FINMIND_TOKEN, alert.symbol.replace(/\.TW$|\.TWO$/, ''))
-      } else {
-        // 美股：Yahoo
-        // [CODE-REVIEW-FIX] 2026-03-23: 加 timeout 防止 Worker 無限等待
-        const res  = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${alert.symbol}`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8_000) })
-        const json = await res.json() as any
-        price = json.quoteResponse?.result?.[0]?.regularMarketPrice ?? null
-      }
+      // 台股 + 美股統一走 Yahoo Finance（台股 symbol 帶 .TW/.TWO 後綴）
+      const res  = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${alert.symbol}`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8_000) })
+      const json = await res.json() as any
+      price = json.quoteResponse?.result?.[0]?.regularMarketPrice ?? null
 
       if (!price) continue
       const triggered = (alert.rule_type === 'price_above' && price >= alert.threshold) ||
@@ -1005,59 +1197,78 @@ async function checkAlerts(env: Bindings) {
   }
 }
 
-// ─── Wave 3：集保餘額（每週日抓 active 股票）──────────────────────────────
+// ─── Wave 3：集保分布（TDCC opendata，替代 FinMind TaiwanStockShareholding）──
+// TDCC 每週更新一次（通常週四）
 async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
-  const { fetchTWShareholding } = await import('./lib/finmind')
-  const token = env.FINMIND_TOKEN
-  const startDate = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
+  const retailLevels = new Set(['1-999', '1,000-5,000', '5,001-10,000', '10,001-15,000',
+    '15,001-20,000', '20,001-30,000', '30,001-40,000', '40,001-50,000'])
+  const largeLevels = new Set(['400,001-600,000', '600,001-800,000', '800,001-1,000,000', '1,000,001以上'])
 
-  const { results: activeStocks } = await env.DB.prepare(
-    'SELECT id, symbol FROM stocks WHERE is_active=1 ORDER BY id'
-  ).all<any>()
+  try {
+    // TDCC opendata 1-5：全市場持股分布（JSON，按股票代號 + 持股級距）
+    const res = await fetch('https://openapi.tdcc.com.tw/v1/opendata/1-5', {
+      headers: { 'User-Agent': 'StockVision/12.3' },
+      signal: AbortSignal.timeout(60000),
+    })
+    if (!res.ok) { console.warn(`[Wave3] TDCC opendata HTTP ${res.status}`); return }
+    const body = await res.json() as any[]
+    if (!Array.isArray(body) || !body.length) { console.warn('[Wave3] TDCC empty response'); return }
 
-  let count = 0
-  for (const stock of (activeStocks ?? [])) {
-    try {
-      const rows = await fetchTWShareholding(token, stock.symbol, startDate)
-      if (!rows.length) continue
+    // 建 symbol → stock_id map
+    const { results: dbStocks } = await env.DB.prepare('SELECT id, symbol FROM stocks WHERE is_active=1').all<any>()
+    const idMap = new Map<string, number>()
+    for (const s of dbStocks ?? []) idMap.set(s.symbol, s.id)
 
-      // 按日期分組
-      const byDate = new Map<string, typeof rows>()
-      for (const r of rows) {
-        if (!byDate.has(r.date)) byDate.set(r.date, [])
-        byDate.get(r.date)!.push(r)
+    // TDCC 欄位：證券代號, 持股/單位數分級, 人數, 股數(單位數), 佔集保庫存數比例(%)
+    //   日期欄位: 資料日期 (YYYY/MM/DD or YYY/MM/DD ROC format)
+    type TDCCRow = { '證券代號': string; '持股/單位數分級': string; '人數': string; '股數(單位數)': string; '佔集保庫存數比例(%)': string; '資料日期': string }
+    const bySymbol = new Map<string, { date: string; rows: TDCCRow[] }>()
+    for (const r of body as TDCCRow[]) {
+      const sym = (r['證券代號'] ?? '').trim()
+      if (!sym || !idMap.has(sym)) continue
+      if (!bySymbol.has(sym)) bySymbol.set(sym, { date: r['資料日期'] ?? '', rows: [] })
+      bySymbol.get(sym)!.rows.push(r)
+    }
+
+    const BATCH = 50
+    const stmts: D1PreparedStatement[] = []
+    for (const [sym, { date: rawDate, rows }] of bySymbol.entries()) {
+      const stockId = idMap.get(sym)!
+      // 轉換日期（民國 YYY/MM/DD → ISO 或 ISO YYYY/MM/DD）
+      let isoDate = rawDate.replace(/\//g, '-')
+      if (isoDate.length === 8 && !isoDate.startsWith('20')) {
+        // ROC format: 115/03/20 → 2026-03-20
+        const parts = rawDate.split('/')
+        isoDate = `${parseInt(parts[0]) + 1911}-${parts[1]}-${parts[2]}`
       }
 
-      // 取最新日期
-      const latestDate = [...byDate.keys()].sort().pop()
-      if (!latestDate) continue
-      const latest = byDate.get(latestDate)!
+      const totalShares = rows.reduce((s, r) => s + (parseInt(r['股數(單位數)'].replace(/,/g, '')) || 0), 0)
+      const totalHolders = rows.reduce((s, r) => s + (parseInt(r['人數'].replace(/,/g, '')) || 0), 0)
+      const retailShares = rows.filter(r => retailLevels.has(r['持股/單位數分級']))
+        .reduce((s, r) => s + (parseInt(r['股數(單位數)'].replace(/,/g, '')) || 0), 0)
+      const largeShares = rows.filter(r => largeLevels.has(r['持股/單位數分級']))
+        .reduce((s, r) => s + (parseInt(r['股數(單位數)'].replace(/,/g, '')) || 0), 0)
 
-      // 計算散戶占比（持股 <50 張 = <50,000 股 的級距）
-      const totalShares = latest.reduce((s, r) => s + r.unit, 0)
-      const totalHolders = latest.reduce((s, r) => s + r.people, 0)
-      // 散戶級距：1-999, 1000-5000, 5001-10000, 10001-15000, 15001-20000, 20001-30000, 30001-40000, 40001-50000
-      const retailLevels = ['1-999', '1,000-5,000', '5,001-10,000', '10,001-15,000', '15,001-20,000', '20,001-30,000', '30,001-40,000', '40,001-50,000']
-      const retailShares = latest.filter(r => retailLevels.includes(r.HoldingSharesLevel)).reduce((s, r) => s + r.unit, 0)
-      const retailPct = totalShares > 0 ? (retailShares / totalShares) * 100 : null
-      // 大戶：>= 400 張 = >= 400,000 股
-      const largeLevels = ['400,001-600,000', '600,001-800,000', '800,001-1,000,000', '1,000,001以上']
-      const largeShares = latest.filter(r => largeLevels.includes(r.HoldingSharesLevel)).reduce((s, r) => s + r.unit, 0)
-      const largePct = totalShares > 0 ? (largeShares / totalShares) * 100 : null
-
-      await env.DB.prepare(`
+      stmts.push(env.DB.prepare(`
         INSERT INTO shareholding (stock_id, date, total_shares, holder_count, retail_shares, retail_pct, large_holder_shares, large_holder_pct)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(stock_id, date) DO UPDATE SET
           total_shares=excluded.total_shares, holder_count=excluded.holder_count,
           retail_shares=excluded.retail_shares, retail_pct=excluded.retail_pct,
           large_holder_shares=excluded.large_holder_shares, large_holder_pct=excluded.large_holder_pct
-      `).bind(stock.id, latestDate, totalShares, totalHolders, retailShares, retailPct, largeShares, largePct).run()
-      count++
-      await new Promise(r => setTimeout(r, 300))  // FinMind rate limit
-    } catch (e) { console.warn(`[Shareholding] ${stock.symbol} failed:`, e) }
-  }
-  console.log(`[Wave3] Shareholding: ${count}/${activeStocks?.length ?? 0} stocks updated`)
+      `).bind(
+        stockId, isoDate, totalShares, totalHolders, retailShares,
+        totalShares > 0 ? (retailShares / totalShares) * 100 : null,
+        largeShares,
+        totalShares > 0 ? (largeShares / totalShares) * 100 : null,
+      ))
+    }
+
+    for (let i = 0; i < stmts.length; i += BATCH) {
+      await env.DB.batch(stmts.slice(i, i + BATCH))
+    }
+    console.log(`[Wave3] Shareholding (TDCC): ${stmts.length} stocks written`)
+  } catch (e) { console.warn('[Wave3] TDCC shareholding failed:', e) }
 }
 
 import { crawlAndStoreNews } from './lib/news'
@@ -1074,8 +1285,8 @@ async function runDailyRecommendation(env: Bindings) {
 }
 
 async function runMarketScreener(env: Bindings) {
-  const { runMarketScreener: screener } = await import('./lib/marketScreener')
-  return screener(env)
+  const { runBottomUpScreener } = await import('./lib/marketScreener')
+  return runBottomUpScreener(env)
 }
 
 export default {
@@ -1091,10 +1302,11 @@ export default {
     // "0 20 * * 0"   → 每週日 04:00 台北 → 清理舊資料
     // ── 國定假日檢查（台股休市日不跑任何交易相關 cron）──────────────────
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
+    const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
     const isHoliday = await env.KV.get(`holiday:${twToday}`)
-    if (isHoliday && cron !== '0 20 * * 0') {
-      // 週清理照跑，其他全跳過
-      console.log(`[Cron] ${twToday} 休市（${isHoliday}），跳過 ${cron}`)
+    if ((isWeekend || isHoliday) && cron !== '0 20 * * 0') {
+      console.log(`[Cron] ${twToday} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
     }
 
@@ -1121,7 +1333,7 @@ export default {
         const count = pending ? JSON.parse(pending).length : 0
         return `預熱完成，掛單 ${count} 支`
       })
-    } else if (cron === '25 7 * * 1-5') {
+    } else if (cron === '50 9 * * 1-5') {
       runWithLog('ml-warmup', async () => {
         if (env.ML_SERVICE_URL) {
           const h: Record<string, string> = {}
@@ -1131,22 +1343,25 @@ export default {
         }
         return '跳過（ML_SERVICE_URL 未設定）'
       })
-    } else if (cron === '0 6 * * 1-5') {
+    } else if (cron === '30 9 * * 1-5') {
+      // 17:30 TW → Bulk Fetch（法人資料 17:00 後才完整，via Controller proxy）
+      runWithLog('data-update', async () => {
+        await runBulkFetch(env)
+        return 'Bulk Fetch 完成（全市場 prices+chips 已寫入 D1）'
+      })
+    } else if (cron === '40 9 * * 1-5') {
+      // 17:40 TW → Screener T1+T2（chip 資料齊全後篩選）
       runWithLog('screener', async () => {
         const result = await runMarketScreener(env)
         return `篩選完成：${result.hotSectors?.length ?? 0} 概念、${result.candidates?.length ?? 0} 候選股`
       })
-    } else if (cron === '5 7 * * 1-5') {
-      runWithLog('data-update', async () => {
-        await runDailyUpdate(env)
-        return '資料更新已排入 Queue'
-      })
-    } else if (cron === '30 7 * * 1-5') {
+    } else if (cron === '0 10 * * 1-5') {
+      // 18:00 TW → ML 預測 + 大盤風險
       runWithLog('ml-predict', async () => {
         await runMLAndRisk(env)
         return 'ML 預測 + 大盤風險完成（Controller 並行推論）'
       })
-    } else if (cron === '35 7 * * 1-5') {
+    } else if (cron === '5 10 * * 1-5') {
       runWithLog('recommendation', async () => {
         await runDailyRecommendation(env)
         const recs = await env.DB.prepare(
@@ -1154,12 +1369,12 @@ export default {
         ).bind(twToday).first<any>()
         return `推薦完成：${recs?.cnt ?? 0} 支 BUY signal`
       })
-    } else if (cron === '0 8 * * 1-5') {
+    } else if (cron === '15 10 * * 1-5') {
       runWithLog('verify', async () => {
         await runPredictionVerification(env)
         return '預測驗證完成'
       })
-    } else if (cron === '5 8 * * 1-5') {
+    } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
@@ -1207,7 +1422,7 @@ export default {
         const { generateMorningBriefing } = await import('./lib/morningBriefing')
         return await generateMorningBriefing(env)
       })
-    } else if (cron === '10 8 * * 1-5') {
+    } else if (cron === '25 10 * * 1-5') {
       runWithLog('daily-report', async () => {
         const { generateDailyReport } = await import('./lib/dailyReport')
         return await generateDailyReport(env)
@@ -1217,12 +1432,24 @@ export default {
         await runWeeklyCleanup(env)
         await runWeeklyRetrain(env)
         await fetchWeeklyShareholding(env).catch(e => console.warn('[Wave3] Shareholding failed:', e))
-        // Weekly IC audit: 用資料最多的一支股票跑 factor IC check
+        // Weekly IC audit + feature drift + quintile alpha check
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
+        // Feature drift detection（同一支股票的資料）
+        await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
         // Timeverse 台股研究資料庫同步
         const { syncTimeverse } = await import('./lib/timeverse')
         await syncTimeverse(env).catch(e => console.warn('[Timeverse] sync failed:', e))
-        return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步完成'
+        // P1 資安：D1 關鍵表 weekly snapshot → KV（災難恢復用，7 天 TTL）
+        try {
+          const tables = ['paper_accounts', 'paper_positions', 'paper_orders'] as const
+          const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+          for (const t of tables) {
+            const { results } = await env.DB.prepare(`SELECT * FROM ${t}`).all()
+            await env.KV.put(`backup:${t}:${twDate}`, JSON.stringify(results ?? []), { expirationTtl: 604800 })
+          }
+          console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
+        } catch (e) { console.warn('[Backup] D1 snapshot failed:', e) }
+        return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

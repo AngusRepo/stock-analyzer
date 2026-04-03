@@ -11,6 +11,7 @@ export interface TradingConfig {
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
     tax: number            // 賣出交易稅率（預設 0.003 = 0.3%）
+    dayTradeTax: number    // 當沖賣出交易稅率（預設 0.0015 = 0.15%，減半至 2027 底）
     minCommission: number  // 最低手續費 NT$（預設 20）
   }
   circuit: {
@@ -48,6 +49,7 @@ export interface TradingConfig {
     minPrice: number             // 最低股價（預設 15）
     maxPrice: number             // 最高股價（預設 2000）
     minAvgVolume: number         // 最低日均量（預設 300000 shares）
+    minDailyTurnover: number     // 最低日均成交金額（預設 5000000 = 500萬，Survivorship Bias 防護）
     max5dDrop: number            // 最大 5 日跌幅（預設 -0.10）
     minVolRatio: number          // 動量掃描最低量比（預設 1.2）
     strongVolRatio: number       // 量能放大標記門檻（預設 1.5）
@@ -55,6 +57,16 @@ export interface TradingConfig {
     minMomAvgVol: number         // 動量最低均量（預設 50000）
     topNPerSector: number        // 每族群取 top N（預設 8）
     topNMomentum: number         // 動量 top N（預設 15）
+    maxCandidates: number        // Bottom-up 最終候選上限（預設 25）
+    maxPerIndustry: number       // 同官方產業上限（預設 5）
+    correlationThreshold: number // 報酬率去重門檻（預設 0.8）
+    correlationWindow: number    // 去重計算天數（預設 60）
+  }
+  rrg: {
+    leadingBonus: number         // Leading 象限加分（預設 10）
+    improvingBonus: number       // Improving 象限加分（預設 7）
+    weakeningBonus: number       // Weakening 象限加分（預設 0）
+    laggingPenalty: number       // Lagging 象限扣分（預設 -5）
   }
 }
 
@@ -64,6 +76,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   fees: {
     commission: 0.001425,
     tax: 0.003,
+    dayTradeTax: 0.0015,
     minCommission: 20,
   },
   circuit: {
@@ -77,7 +90,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     highVolReducedPosPct: 0.04,
   },
   exit: {
-    hardStopPct: -0.12,
+    hardStopPct: -0.10,
     fallbackInitStopMult: 0.93,
     fallbackTp1Mult: 1.03,
     fallbackTp2Mult: 1.06,
@@ -101,6 +114,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     minPrice: 15,
     maxPrice: 2000,
     minAvgVolume: 300_000,
+    minDailyTurnover: 5_000_000,  // 500 萬：排除殭屍股但保留小型黑馬
     max5dDrop: -0.10,
     minVolRatio: 1.2,
     strongVolRatio: 1.5,
@@ -108,6 +122,16 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     minMomAvgVol: 50_000,
     topNPerSector: 8,
     topNMomentum: 15,
+    maxCandidates: 25,
+    maxPerIndustry: 5,
+    correlationThreshold: 0.8,
+    correlationWindow: 60,
+  },
+  rrg: {
+    leadingBonus: 10,
+    improvingBonus: 7,
+    weakeningBonus: 0,
+    laggingPenalty: -5,
   },
 }
 
@@ -128,6 +152,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     exit: { ...d.exit, ...partial.exit },
     position: { ...d.position, ...partial.position },
     screener: { ...d.screener, ...partial.screener },
+    rrg: { ...d.rrg, ...partial.rrg },
   }
 }
 

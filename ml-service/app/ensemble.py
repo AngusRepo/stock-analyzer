@@ -1,13 +1,15 @@
 """
-ensemble.py — 多模型加權投票引擎（v11）
-動態權重 × Regime Filter × Stacking Meta-Learner × GARCH 停損 × NO_SIGNAL 機制
+ensemble.py — 多模型加權投票引擎（v12 adaptive）
+動態權重 × Regime Filter × Stacking Meta-Learner × GARCH 停損 × Soft Gate
 
-架構：
-  1. Isolation Forest 異常偵測（在 main.py 呼叫，異常直接 NO_SIGNAL）
-  2. HMM Regime 偵測 → 根據市場狀態調整各模型的基礎權重
-  3. 加權投票（準確率 × profit_factor × regime_multiplier × 信心）
-  4. Stacking Meta-Learner 修正最終方向（若有訓練好的 meta-learner）
-  5. GARCH 波動率 → 動態停損/停利倍數
+三層 meta 架構：
+  ① HMM Regime → ② Models + LinUCB → ③ Conformal Prediction → ARF
+
+改動（v12）：
+  - Isolation Forest 從 hard gate 降級為 anomaly_score soft penalty
+  - confidence/consensus 雙低才 NO_SIGNAL，單項不過降級為 HOLD
+  - signal_strength 從硬階梯改為 direction_weight × confidence 連續分數
+  - confidence_threshold 從 0.60 降至 0.55（adaptive via KV）
 """
 import numpy as np
 from dataclasses import dataclass
@@ -49,6 +51,7 @@ def weighted_vote(
     garch_vol: float | None = None,           # 來自 run_garch_volatility()，price 單位
     bandit_multipliers: dict[str, float] | None = None,  # 來自 LinUCB bandit（第11模型）
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
+    anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
 ) -> EnsembleResult:
     """
     加權投票主邏輯（v12 + LinUCB bandit）：
@@ -114,10 +117,19 @@ def weighted_vote(
         conf_weight   = p.confidence
         regime_mult   = regime_mults.get(p.model_name, 1.0)
         bandit_mult   = (bandit_multipliers or {}).get(p.model_name, 1.0)
-        weights.append(acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult)
+        raw_w = acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult
+        weights.append(max(raw_w, 0.01))  # 防權重坍縮：5層乘積可能趨近 0，保底 1%
 
     total_w = sum(weights) or 1.0
     norm_weights = [w / total_w for w in weights]
+
+    # ── DoNothing arm 檢查：若 bandit 認為「不出手」最好，降低整體信心 ─────────
+    # DoNothing 沒有 prediction，它的影響透過 bandit_multipliers 傳遞
+    donothing_mult = (bandit_multipliers or {}).get("DoNothing", 1.0)
+    max_model_mult = max((bandit_multipliers or {}).get(p.model_name, 1.0) for p in predictions) if predictions else 1.0
+    donothing_is_best = donothing_mult > max_model_mult and donothing_mult > 1.5
+    # 若 DoNothing 是 bandit 最高權重 arm → 市場混沌，所有模型都不可信
+    donothing_penalty = 0.7 if donothing_is_best else 1.0
 
     # ── 加權方向投票 ──────────────────────────────────────────────────────────
     up_weight = sum(w for p, w in zip(predictions, norm_weights) if p.direction == "up")
@@ -130,17 +142,38 @@ def weighted_vote(
     up_count = sum(1 for p in predictions if p.direction == "up")
     consensus = max(up_count, len(predictions) - up_count) / len(predictions)
 
-    # ── 整體信心分數 ──────────────────────────────────────────────────────────
-    avg_confidence = sum(p.confidence * w for p, w in zip(predictions, norm_weights))
+    # ── 整體信心分數（只算贏方向的加權 confidence）──────────────────────────
+    # Bug fix: 之前用全模型加權平均，UP 的低 confidence 會拉低 DOWN 的高 confidence
+    # 修正：只計算勝出方向模型的加權 confidence
+    winning_dir = "up" if up_weight > down_weight else "down"
+    winning_conf_sum = 0.0
+    winning_weight_sum = 0.0
+    for p, w in zip(predictions, norm_weights):
+        if p.direction == winning_dir:
+            winning_conf_sum += p.confidence * w
+            winning_weight_sum += w
+    avg_confidence = winning_conf_sum / winning_weight_sum if winning_weight_sum > 0 else 0.5
+    avg_confidence *= donothing_penalty  # DoNothing arm 修正
 
-    # ── 信心門檻過濾（優先使用 adaptive KV 值，fallback 0.60）─────────────────
-    CONFIDENCE_THRESHOLD = float(_adaptive.get("confidence_threshold", 0.60))
+    # ── Anomaly soft penalty（取代 hard gate）─────────────────────────────────
+    # anomaly_score 越負代表越異常，-0.5 以下開始施加 penalty
+    if anomaly_score < -0.5:
+        # 線性映射：score=-0.5→1.0, score=-1.0→0.5（最低打 5 折）
+        anomaly_penalty = max(0.5, 1.0 + (anomaly_score + 0.5) * 1.0)
+        avg_confidence *= anomaly_penalty
+
+    # ── 信心門檻過濾 ─────────────────────────────────────────────────────────
+    CONFIDENCE_THRESHOLD = float(_adaptive.get("confidence_threshold", 0.55))
     CONSENSUS_THRESHOLD  = dynamic_consensus_thr   # 由 regime 決定（0.55~0.72）
 
-    if avg_confidence < CONFIDENCE_THRESHOLD or consensus < CONSENSUS_THRESHOLD:
+    below_confidence = avg_confidence < CONFIDENCE_THRESHOLD
+    below_consensus  = consensus < CONSENSUS_THRESHOLD
+
+    # 雙低 → NO_SIGNAL
+    if below_confidence and below_consensus:
         return _no_signal(
             current_price, atr,
-            f"信心不足（信心={avg_confidence:.2f}, 共識={consensus:.2f}, "
+            f"信心與共識雙低（信心={avg_confidence:.2f}, 共識={consensus:.2f}, "
             f"門檻={CONSENSUS_THRESHOLD:.2f}, regime={regime_info.get('label','?') if regime_info else 'N/A'}）"
         )
 
@@ -166,16 +199,26 @@ def weighted_vote(
     direction: Literal["up", "down"] = "up" if is_up else "down"
     direction_weight = up_weight if is_up else down_weight
 
-    # 訊號強度
-    if direction_weight >= 0.9 and final_conf >= 0.80:
+    # ── 訊號強度（連續分數，取代硬階梯）──────────────────────────────────────
+    # signal_score = direction_weight × confidence 的連續映射，0~1
+    signal_score = direction_weight * final_conf
+
+    # 單項不過門檻：降低 signal_strength 但不強制 HOLD
+    # 如果 signal_score 夠高（方向明確 × 信心高），仍給出 BUY/SELL
+    threshold_penalty = 1 if (below_confidence or below_consensus) else 0
+
+    if signal_score >= 0.72:       # ~0.9 × 0.80
         signal = "STRONG_BUY" if is_up else "STRONG_SELL"
-        stars = 5
-    elif direction_weight >= 0.75 and final_conf >= 0.70:
+        stars = max(4, 5 - threshold_penalty)
+    elif signal_score >= 0.52:       # ~0.75 × 0.70
         signal = "BUY" if is_up else "SELL"
-        stars = 4
-    elif direction_weight >= 0.60:
-        signal = "BUY" if is_up else "SELL"
-        stars = 3
+        stars = max(3, 4 - threshold_penalty)
+    elif signal_score >= 0.36:       # ~0.60 × 0.60
+        if threshold_penalty:
+            signal = "HOLD"  # signal_score 偏低 + 門檻沒過 → HOLD
+        else:
+            signal = "BUY" if is_up else "SELL"
+        stars = max(2, 3 - threshold_penalty)
     else:
         signal = "HOLD"
         stars = 2

@@ -24,7 +24,7 @@ import {
   Trash2, RefreshCw, BarChart2, Home,
   PieChart, Brain, LogIn, Activity, Sparkles, Menu,
   Newspaper, LogOut, ChevronRight, Search, Layers, ShieldAlert, Bell,
-  Star, ShieldCheck } from 'lucide-react'
+  Star, ShieldCheck, Users } from 'lucide-react'
 import StockSearchCombobox, { type StockSelection } from '@/components/StockSearchCombobox'
 import StockPriceChart from '@/components/StockPriceChart'
 import TechnicalChart from '@/components/TechnicalChart'
@@ -34,7 +34,7 @@ import FinancialSummary from '@/components/FinancialSummary'
 import AlertManager from '@/components/AlertManager'
 import FactorAnalysis from '@/components/FactorAnalysis'
 import RiskMetricsPanel from '@/components/RiskMetricsPanel'
-import { ManusAnalystPanel } from '@/components/ManusAnalystPanel'
+import StockAIReport from '@/components/StockAIReport'
 import NewsPanel from '@/components/NewsPanel'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
@@ -234,6 +234,58 @@ const QUICK_STOCKS = [
 ]
 
 // ── Market Overview Row ──────────────────────────────────────────────────────
+function ExDividendCard() {
+  const { data } = useQuery({ queryKey: ['ex-dividend'], queryFn: marketApi.exDividend, staleTime: 3600_000 })
+  if (!data?.length) return null
+  return (
+    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+      <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        近期除權除息
+      </h3>
+      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+        {data.slice(0, 15).map((item: any, i: number) => (
+          <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-white/[0.04] last:border-0">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-muted-foreground">{item.symbol || item.code}</span>
+              <span className="truncate max-w-[80px]">{item.name}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-muted-foreground">{item.ex_date || item.date}</span>
+              {item.cash_dividend && <Badge variant="outline" className="text-[10px] px-1 py-0 text-emerald-400 border-emerald-500/20">息 ${item.cash_dividend}</Badge>}
+              {item.stock_dividend && <Badge variant="outline" className="text-[10px] px-1 py-0 text-amber-400 border-amber-500/20">權 {item.stock_dividend}</Badge>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AttentionStocksCard() {
+  const { data } = useQuery({ queryKey: ['attention-stocks'], queryFn: marketApi.attentionStocks, staleTime: 3600_000 })
+  if (!data?.length) return null
+  return (
+    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] backdrop-blur-sm p-4">
+      <h3 className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+        <ShieldAlert className="w-3.5 h-3.5" />
+        注意股
+      </h3>
+      <div className="flex flex-wrap gap-1.5">
+        {data.slice(0, 20).map((item: any, i: number) => {
+          const sym = typeof item === 'string' ? item : (item.symbol || item.code)
+          const name = typeof item === 'string' ? '' : (item.name || '')
+          return (
+            <span key={i} className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 border border-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-300">
+              <span className="font-mono">{sym}</span>
+              {name && <span className="text-amber-400/60">{name}</span>}
+            </span>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function MarketOverviewRow() {
   const { data: indices } = useQuery({
     queryKey: ['market', 'indices'],
@@ -309,7 +361,14 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
                   {s.market ?? 'TW'}
                 </Badge>
               </div>
-              <p className="text-[11px] text-muted-foreground truncate mb-2">{s.name}</p>
+              <p className="text-[11px] text-muted-foreground truncate mb-1">{s.name}</p>
+              {s.tags && (
+                <div className="flex flex-wrap gap-0.5 mb-1.5">
+                  {(s.tags as string).split(',').slice(0, 3).map((tag: string) => (
+                    <span key={tag} className="text-[8px] px-1 py-0 rounded bg-primary/10 text-primary/70 leading-tight">{tag}</span>
+                  ))}
+                </div>
+              )}
               <div className="flex items-end justify-between">
                 <p className="text-base font-bold font-mono">
                   ${s.close?.toLocaleString('zh-TW', { minimumFractionDigits: s.close >= 100 ? 0 : 2, maximumFractionDigits: s.close >= 100 ? 0 : 2 }) ?? '—'}
@@ -371,7 +430,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         <MarketOverviewRow />
 
         {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
-        <div className={`grid grid-cols-1 gap-4 ${isAdmin ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
           {/* 左欄：自選股 + 大盤風險 + Bot */}
           <div className="space-y-4">
@@ -397,21 +456,17 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           </div>
 
           {/* 中左欄：每日選股推薦 */}
-          <div>
+          <div className="space-y-4">
             <DailyRecommendationPanel />
+            <ExDividendCard />
           </div>
 
           {/* 中右欄：主題輪動 */}
-          <div>
+          <div className="space-y-4">
             <ThemeFlowPanel />
+            <AttentionStocksCard />
           </div>
 
-          {/* 右欄：使用者管理（admin only） */}
-          {isAdmin && (
-            <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
-              <AdminUsersPanel />
-            </div>
-          )}
 
         </div>
       </div>
@@ -436,6 +491,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 export default function Dashboard() {
   const qc = useQueryClient()
   const { user, isAuthenticated, login, logout } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const { canInstall, install } = usePWA()
   const [activeStock, setActiveStock] = useState<StockSelection | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -552,6 +608,21 @@ export default function Dashboard() {
         })}
       </div>
 
+      {/* Admin: 使用者管理 */}
+      {isAdmin && (
+        <div className="px-2 pb-2">
+          <details className="group">
+            <summary className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer rounded-md hover:bg-accent/50 transition-colors">
+              <Users className="w-3.5 h-3.5" />
+              <span>使用者管理</span>
+            </summary>
+            <div className="mt-1 max-h-60 overflow-y-auto">
+              <AdminUsersPanel />
+            </div>
+          </details>
+        </div>
+      )}
+
       {/* 底部：用戶資訊 */}
       <div className="p-3 border-t border-border/40">
         {canInstall && (
@@ -589,13 +660,13 @@ export default function Dashboard() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
-          <div className="flex h-screen bg-background text-foreground overflow-hidden relative">
+          <div className="flex h-screen text-foreground overflow-hidden relative">
 
-            {/* Background Glow Blobs */}
-            <div className="pointer-events-none fixed inset-0 z-0">
-              <div className="absolute" style={{ left: '-15%', top: '10%', width: '55vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.18) 0%, transparent 70%)' }} />
-              <div className="absolute" style={{ right: '-10%', top: '0%', width: '45vw', height: '55vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.07) 0%, transparent 70%)' }} />
-              <div className="absolute" style={{ left: '25%', bottom: '0%', width: '40vw', height: '35vh', background: 'radial-gradient(ellipse at center, rgba(16,185,129,0.10) 0%, transparent 70%)' }} />
+            {/* Background Glow Blobs — mix-blend-mode screen 讓光暈穿透 */}
+            <div className="pointer-events-none fixed inset-0 z-[1]" style={{ mixBlendMode: 'screen' }}>
+              <div className="absolute" style={{ left: '-10%', top: '5%', width: '60vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.35) 0%, transparent 65%)', animation: 'blob-drift-1 18s ease-in-out infinite', willChange: 'transform' }} />
+              <div className="absolute" style={{ right: '-5%', top: '-5%', width: '50vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.08) 0%, transparent 65%)', animation: 'blob-drift-2 22s ease-in-out infinite', willChange: 'transform' }} />
+              <div className="absolute" style={{ left: '20%', bottom: '-5%', width: '50vw', height: '45vh', background: 'radial-gradient(ellipse at center, rgba(16,185,129,0.25) 0%, transparent 65%)', animation: 'blob-drift-3 15s ease-in-out infinite', willChange: 'transform' }} />
             </div>
 
             {/* Desktop Sidebar */}
@@ -688,7 +759,7 @@ export default function Dashboard() {
                               { value: 'fundamental',  icon: PieChart,   label: '財報' },
                               { value: 'ai',           icon: Sparkles,   label: 'AI 分析' },
                               { value: 'news',         icon: Newspaper,  label: '新聞' },
-                              ...(user?.role === 'admin' ? [{ value: 'admin', icon: ShieldCheck, label: '用戶管理' }] : []),
+                              // 用戶管理已移至 Dashboard 主頁右欄
                             ].map(tab => (
                               <TabsTrigger
                                 key={tab.value}
@@ -764,25 +835,10 @@ export default function Dashboard() {
                           </div>
                         </TabsContent>
 
-                        {/* ── AI 分析 Tab ──────────────────────────────────── */}
+                        {/* ── AI 分析 Tab（整頁式報告）──────────────────────── */}
                         <TabsContent value="ai" className="flex-1 overflow-y-auto p-4">
                           <div className="max-w-4xl mx-auto">
-                            {isAuthenticated ? (
-                              <Card>
-                                <ManusAnalystPanel stockId={activeStock.id} />
-                              </Card>
-                            ) : (
-                              <div className="rounded-xl border border-dashed border-border/50 p-10 text-center">
-                                <Brain className="w-10 h-10 mx-auto mb-3 text-muted-foreground/30" />
-                                <p className="font-medium mb-1">AI 分析功能</p>
-                                <p className="text-sm text-muted-foreground mb-4">
-                                  登入後即可使用 ML 預測、技術分析、交易建議與 AI 問答
-                                </p>
-                                <Button onClick={login} variant="outline" className="gap-2 text-sm">
-                                  <LogIn className="w-4 h-4" /> Google 登入
-                                </Button>
-                              </div>
-                            )}
+                            <StockAIReport stockId={activeStock.id} />
                           </div>
                         </TabsContent>
 
@@ -795,13 +851,7 @@ export default function Dashboard() {
 
                         {/* 市場風險 + 每日推薦 已移至首頁 */}
 
-                        {user?.role === 'admin' && (
-                          <TabsContent value="admin" className="flex-1 overflow-y-auto p-4">
-                            <div className="max-w-2xl mx-auto">
-                              <AdminUsersPanel />
-                            </div>
-                          </TabsContent>
-                        )}
+                        {/* 用戶管理已移至 Dashboard 主頁右欄 */}
                       </Tabs>
                     </div>
                   </div>

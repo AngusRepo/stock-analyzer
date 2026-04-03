@@ -52,6 +52,11 @@ async def verify_service_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid service token")
 
 
+class NightSessionData(BaseModel):
+    change_pct: float = 0       # 夜盤漲跌幅 %
+    range_pct: float = 0        # 夜盤振幅 %
+    date: str = ""              # 資料日期（防呆用）
+
 class PredictRequest(BaseModel):
     stock_id: int
     symbol: str
@@ -64,7 +69,9 @@ class PredictRequest(BaseModel):
     market: str = "TW"
     market_env: dict | None = None
     model_stats: dict[str, dict] = {}
-    adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
+    adaptive_params: dict = {}   # 來自 KV ml:adaptive_aram（T+1 自適應，向後相容）
+    night_session: NightSessionData | None = None  # 台指期夜盤（07:15 re-predict 時傳入）
+    context: str = "scheduled_daily"  # "scheduled_daily" (15:30) or "morning_repredict" (07:15)
 
 
 @app.get("/health")
@@ -193,12 +200,46 @@ def predict_stock(req: PredictRequest) -> dict:
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else 0.0
 
+    # ── 台指期夜盤特徵注入 ──────────────────────────────────────────────────
+    # 15:30 (scheduled_daily): 無夜盤資料 → 全填 0
+    # 07:15 (morning_repredict): 夜盤已收盤 → 填實際值
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    ns = req.night_session
+    if ns and ns.date and ns.date == today_str:
+        df["taifex_night_change_pct"] = np.clip(ns.change_pct, -10, 10)
+        df["taifex_night_range_pct"] = np.clip(ns.range_pct, 0, 15)
+        df["taifex_night_available"] = 1.0
+        print(f"[Predict] {req.symbol} night_session: {ns.change_pct:.2f}% (date={ns.date})")
+    else:
+        df["taifex_night_change_pct"] = 0.0
+        df["taifex_night_range_pct"] = 0.0
+        df["taifex_night_available"] = 0.0
+        if ns and ns.date and ns.date != today_str:
+            print(f"[Predict] {req.symbol} stale night_session ({ns.date} != {today_str}), zeroed")
+
+    # ── 五檔報價特徵（盤中由 Worker 傳入，盤前/盤後填 0）──────────────────
+    # 目前 /predict 是盤後批次呼叫，orderbook 不可用，全填 0
+    # 未來盤中 re-predict 可傳入 orderbook features
+    df["orderbook_imbalance"] = 0.0
+    df["orderbook_spread_pct"] = 0.0
+    df["orderbook_available"] = 0.0
+
     # #5 Price model input diversity：準備 adj_close 和 log(adj_close) 序列
     adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
     log_adj_prices_arr = np.log(np.maximum(adj_prices_arr, 1e-8))
 
     X, y, feature_names = get_features(df)
     X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
+
+    # RobustScaler for scale-sensitive models (DLinear, PatchTST, FT-Transformer)
+    # Tree models (XGB, CatBoost, ExtraTrees, LGBM) are scale-invariant → use raw X
+    from .features import fit_robust_scaler, apply_robust_scaler
+    if len(X) > 0:
+        fit_robust_scaler(X, req.symbol)
+        X_scaled = apply_robust_scaler(X, req.symbol)
+        X_scaled_latest = X_scaled[-1]
+    else:
+        X_scaled, X_scaled_latest = X, X_latest
 
     # #6 Feature model input diversity：CatBoost 滯後特徵 + LightGBM rank transform
     X_cb, y_cb, cb_names = get_catboost_features(df)
@@ -207,33 +248,7 @@ def predict_stock(req: PredictRequest) -> dict:
     X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
     stock_id = req.stock_id
 
-    # ── Isolation Forest 異常偵測閘 ───────────────────────────────────────────
-    is_anomaly, anomaly_score = _check_anomaly(X, X_latest) if len(X) >= 30 else (False, 0.0)
-    if is_anomaly:
-        print(f"[Anomaly] {req.symbol} 特徵組合異常（score={anomaly_score:.3f}）")
-        return {
-            "stock_id": stock_id, "symbol": req.symbol,
-            "current_price": current_price,
-            "signal": "NO_SIGNAL", "direction": "neutral",
-            "confidence": 0.0, "consensus": 0.0,
-            "forecast_pct": 0.0, "signal_strength": 0,
-            "reasoning": f"特徵組合異常（Isolation Forest score={anomaly_score:.3f}），建議觀望",
-            "entry_price": current_price,
-            "stop_loss": round(current_price * 0.97, 2),
-            "target1":   round(current_price * 1.03, 2),
-            "target2":   round(current_price * 1.05, 2),
-            "forecast_range": {"low": round(current_price * 0.95, 2),
-                               "high": round(current_price * 1.05, 2)},
-            "models": [], "forecasts": [], "features_used": feature_names,
-            "feature_importance": {}, "feature_version": "v4_9models",
-            "anomaly_score": round(anomaly_score, 4),
-            "regime": "N/A", "garch_vol": None, "meta_learner_used": False,
-        }
-
-    # ── GARCH 波動率 ──────────────────────────────────────────────────────────
-    garch_vol = run_garch_volatility(prices_arr, horizon=5)
-
-    # ── HMM Regime 偵測 ───────────────────────────────────────────────────────
+    # ── ① HMM Regime 偵測（最前面：只需 market_env，不依賴 model output）────
     regime_info = None
     regime_label = "N/A"
     try:
@@ -251,6 +266,14 @@ def predict_stock(req: PredictRequest) -> dict:
                 regime_label = regime_info.get("label", "N/A")
     except Exception as e:
         print(f"[Regime] failed: {e}")
+
+    # ── GARCH 波動率 ──────────────────────────────────────────────────────────
+    garch_vol = run_garch_volatility(prices_arr, horizon=5)
+
+    # ── Isolation Forest（降級為 soft penalty，不再 hard gate）────────────────
+    _, anomaly_score = _check_anomaly(X, X_latest) if len(X) >= 30 else (False, 0.0)
+    if anomaly_score < -0.5:
+        print(f"[Anomaly] {req.symbol} soft penalty（score={anomaly_score:.3f}），models 照跑")
 
     # ── Stacking Meta-Learner 載入 ────────────────────────────────────────────
     meta_bundle = None
@@ -310,7 +333,7 @@ def predict_stock(req: PredictRequest) -> dict:
             ("CatBoost",       lambda: run_catboost(X_cb, y_cb, X_cb_latest, prices_arr, req.horizon, stock_id, cb_names)),  # #6 滯後特徵
             ("ExtraTrees",     lambda: run_extra_trees(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names)),
             ("LightGBM",       lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names)),  # #6 rank transform
-            ("FT-Transformer", lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names)),
+            ("FT-Transformer", lambda: run_ft_transformer(X_scaled, y, X_scaled_latest, prices_arr, req.horizon, stock_id, feature_names)),  # RobustScaler
         ]
 
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -334,7 +357,7 @@ def predict_stock(req: PredictRequest) -> dict:
         market_risk_score=_market_risk,
     )
 
-    # ── Ensemble（Layer 1 LinUCB 加權投票）────────────────────────────────────
+    # ── Ensemble（Layer 1 LinUCB 加權投票 + anomaly soft penalty）────────────
     result = weighted_vote(
         predictions, current_price, atr,
         req.real_accuracies, req.model_stats,
@@ -343,7 +366,29 @@ def predict_stock(req: PredictRequest) -> dict:
         garch_vol=garch_vol,
         bandit_multipliers=bandit_multipliers,
         adaptive_params=req.adaptive_params,   # T+1 自適應（信心門檻/PF/SL_TP）
+        anomaly_score=anomaly_score,            # soft penalty，不再 hard gate
     )
+
+    # ── ③ Conformal Prediction 校準（ensemble 之後、ARF 之前）────────────────
+    conformal_info = {}
+    try:
+        from .conformal import load_conformal, apply_conformal_calibration
+        _conformal = load_conformal()
+        cal_conf, conformal_info = apply_conformal_calibration(
+            _conformal,
+            forecast_pct=result.forecast_pct,
+            confidence=result.confidence,
+            anomaly_score=anomaly_score,
+        )
+        if conformal_info.get("is_calibrated"):
+            result.confidence = round(cal_conf, 3)
+            result.reasoning = (
+                f"[Conformal: ±{conformal_info['interval_width']:.1%}, "
+                f"penalty={conformal_info['uncertainty_penalty']:.2f}] "
+                + result.reasoning
+            )
+    except Exception as e:
+        print(f"[Conformal] failed: {e}")
 
     # ── ARF 修正（Layer 2 增量聚合）───────────────────────────────────────────
     # warm-up 前 apply_arf_correction 完全透明（回傳原始值）
@@ -393,6 +438,11 @@ def predict_stock(req: PredictRequest) -> dict:
         "arf_n_trained":     _arf.n_trained,
         # arf_features 序列化供驗證 cron 回填 reward 使用
         "arf_features":      _arf_features.tolist(),
+        # ── Conformal Prediction 校準狀態 ────────────────────────────────────
+        "conformal_calibrated":  conformal_info.get("is_calibrated", False),
+        "conformal_interval":    conformal_info.get("interval_width", 0.0),
+        "conformal_penalty":     conformal_info.get("uncertainty_penalty", 1.0),
+        "conformal_n_residuals": conformal_info.get("n_residuals", 0),
     }
 
 
@@ -411,11 +461,23 @@ def retrain_stock(req: PredictRequest) -> dict:
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df          = build_feature_matrix(req.prices, req.indicators, chips_input,
                                         req.sentiment_scores, req.market_env)
+    # retrain 時 optional features 填 0（歷史資料暫無，收集後再回填）
+    df["taifex_night_change_pct"] = 0.0
+    df["taifex_night_range_pct"] = 0.0
+    df["taifex_night_available"] = 0.0
+    df["orderbook_imbalance"] = 0.0
+    df["orderbook_spread_pct"] = 0.0
+    df["orderbook_available"] = 0.0
+
     prices_arr  = np.array([float(p["close"]) for p in req.prices])
     X, y, feature_names = get_features(df)
 
     if len(X) < 30:
         raise ValueError("特徵樣本不足 30 筆")
+
+    # Training masking：50% samples 隨機 mask 夜盤特徵
+    from .features import mask_night_session_features
+    X = mask_night_session_features(X, feature_names, mask_ratio=0.5)
 
     results = {}
     split   = int(len(X) * 0.8)
@@ -512,6 +574,10 @@ class ARFUpdateRequest(BaseModel):
     actual_return: float = 0.0    # 實際 5 日漲跌幅（小數）
     forecast_pct: float = 0.0     # 模型預測漲跌幅（小數）
 
+# 台股單趟摩擦成本：買手續費 0.1425% + 賣手續費 0.1425% + 交易稅 0.3% = 0.585%
+# Reward 只有在扣除摩擦成本後仍為正時才給 1，避免學出「帳面賺、實際賠」的微利策略
+FRICTION_COST_PCT = 0.00585
+
 
 def update_arf(req: ARFUpdateRequest) -> dict:
     """Core ARF/LinUCB update logic — no auth, callable by Modal or HTTP."""
@@ -522,9 +588,11 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     results: dict = {}
 
     # ── Layer 2：ARF 線上更新 ──────────────────────────────────────────────────
+    # 扣除摩擦成本：只有淨收益 > 0.585% 才算「真正上漲」
+    net_profitable = req.actual_return > FRICTION_COST_PCT
     try:
         _arf = load_arf(ARF_STATE_DIR)
-        _arf.update(features, req.actual_up)
+        _arf.update(features, net_profitable)
         save_arf(_arf, ARF_STATE_DIR)
         results["arf"] = {
             "updated": True,
@@ -537,24 +605,34 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     # ── Layer 1：LinUCB Bandit 更新（若有提供 model_name）────────────────────
     if req.model_name:
         try:
-            from .linucb_bandit import linucb_update, load_bandit, save_bandit
+            from .linucb_bandit import linucb_update, load_bandit, save_bandit, DONOTHING_ARM_IDX
             _bandit = load_bandit("/tmp/linucb_bandit")
+            # Reward 扣摩擦成本：淨收益 > 0.585% 才有 reward
+            # 漲幅越大 reward 越高（ratio-based），但微利不給分
+            raw_reward = float(np.clip(
+                req.actual_return / max(abs(req.forecast_pct), 0.005), 0.0, 1.0
+            )) if net_profitable else 0.0
             linucb_update(
                 hmm_regime=req.hmm_regime,
                 garch_vol=req.garch_vol,
                 current_price=req.current_price,
                 market_risk_score=req.market_risk_score,
                 model_name=req.model_name,
-                # #14 reward 豐富化：考慮漲幅大小而非 0/1 二元
-                reward=float(np.clip(
-                    req.actual_return / max(abs(req.forecast_pct), 0.005), 0.0, 1.0
-                )) if req.actual_up else 0.0,
+                reward=raw_reward,
                 bandit=_bandit,
             )
+            # DoNothing arm 同步更新：市場下跌 > 摩擦成本 → 不出手是對的 (reward=1)
+            # 市場上漲 > 摩擦成本 → 不出手是錯的 (reward=0)
+            from .linucb_bandit import build_context
+            donothing_reward = 1.0 if req.actual_return < -FRICTION_COST_PCT else 0.0
+            ctx = build_context(req.hmm_regime, req.garch_vol, req.current_price, req.market_risk_score)
+            _bandit.update(DONOTHING_ARM_IDX, ctx, donothing_reward)
+
             save_bandit(_bandit, "/tmp/linucb_bandit")
             results["linucb"] = {
                 "updated": True,
                 "model_name": req.model_name,
+                "donothing_reward": donothing_reward,
                 "total_observations": _bandit.total_observations(),
                 "is_warmed_up": _bandit.is_warmed_up(),
             }
@@ -564,6 +642,9 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     return {
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "actual_up": req.actual_up,
+        "actual_return": req.actual_return,
+        "net_profitable": net_profitable,
+        "friction_cost": FRICTION_COST_PCT,
         "results": results,
     }
 
@@ -623,12 +704,17 @@ def predict_all_models(req: PredictRequest):
         ("LightGBM",        lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names),  True),
         ("FT-Transformer",  lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),       True),
     ]
+    import time as _time
+    model_timings = {}
     for name, fn, needs_feat in specs:
-        if needs_feat and len(X) < 30:
+        if needs_feat and len(X) < 20:
             results[name] = {"error": "insufficient feature samples"}
             continue
         try:
+            t0 = _time.monotonic()
             p = fn()
+            elapsed_ms = round((_time.monotonic() - t0) * 1000)
+            model_timings[name] = elapsed_ms
             results[name] = {
                 "direction": p.direction, "confidence": p.confidence,
                 "forecast_pct": p.forecast_pct, "direction_accuracy": p.direction_accuracy,
@@ -639,7 +725,9 @@ def predict_all_models(req: PredictRequest):
 
     garch_vol = run_garch_volatility(prices_arr, horizon=5)
     return {"stock_id": req.stock_id, "symbol": req.symbol,
-            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None}
+            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None,
+            "model_timings_ms": model_timings,
+            "feature_count": len(X)}
 
 
 # ── Phase 3: Factor IC 監控 endpoint ────────────────────────────────────────
@@ -673,6 +761,41 @@ async def factor_ic(req: PredictRequest, request: Request):
     }
 
 
+# ── Feature Drift Detection endpoint ──────────────────────────────────────────
+@app.post("/feature-drift")
+async def feature_drift(req: PredictRequest, request: Request):
+    """
+    偵測特徵分佈漂移：比較訓練期（前 80%）vs 近期（後 20%）的 quantile shift。
+    Drifted features 應降低權重或觸發 retrain。
+    """
+    await verify_service_token(request)
+    from .factor_monitor import detect_feature_drift
+    from .features import FEATURE_COLS
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(req.prices, req.indicators, chips_input,
+                               req.sentiment_scores, req.market_env)
+
+    if len(df) < 30:
+        return {"error": "insufficient data for drift detection", "sample_count": len(df)}
+
+    split_idx = int(len(df) * 0.8)
+    df_train = df.iloc[:split_idx]
+    df_recent = df.iloc[split_idx:]
+
+    drift_results = detect_feature_drift(df_train, df_recent, FEATURE_COLS)
+    drifted_count = sum(1 for r in drift_results if r["drifted"])
+
+    return {
+        "stock_id": req.stock_id,
+        "symbol": req.symbol,
+        "drift_results": drift_results,
+        "drifted_count": drifted_count,
+        "total_features": len(drift_results),
+        "needs_retrain": drifted_count > len(drift_results) * 0.3,
+    }
+
+
 # ── Phase 4: MAE/MFE 分群 endpoint ──────────────────────────────────────────
 class TradeClusterRequest(BaseModel):
     trades: list[dict]
@@ -703,3 +826,25 @@ async def trade_cluster(req: TradeClusterRequest, request: Request):
         "feature_importance": tree_result.get("feature_importance", {}),
         "tree_accuracy": tree_result.get("tree_accuracy"),
     }
+
+
+# ── Feature Audit endpoint（Weekly pipeline）──────────────────────────────────
+@app.post("/feature-audit")
+async def feature_audit_endpoint(req: PredictRequest, request: Request):
+    """
+    特徵重要性審計 + LinUCB arm weight 週報。
+    結果由 Worker 存入 D1 feature_importance / model_weights_weekly。
+    """
+    await verify_service_token(request)
+    from .feature_audit import run_feature_audit
+    from .features import FEATURE_COLS
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(req.prices, req.indicators, chips_input,
+                               req.sentiment_scores, req.market_env)
+    X, y, feature_names = get_features(df)
+
+    if len(X) < 50:
+        return {"error": "insufficient data for audit", "sample_count": len(X)}
+
+    return run_feature_audit(X, y, feature_names)

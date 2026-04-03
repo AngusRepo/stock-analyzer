@@ -49,7 +49,13 @@ ARM_NAMES = [
     "ExtraTrees",
     "LightGBM",
     "FT-Transformer",
+    "DoNothing",    # 第 11 個 arm：不出手基線。混沌市場時 bandit 可選擇「不交易」
 ]
+
+# DoNothing arm 的 reward 邏輯（在 main.py 處理）：
+# - 市場下跌 > 摩擦成本 → reward=1（不出手是對的）
+# - 市場上漲 > 摩擦成本 → reward=0（錯失機會）
+DONOTHING_ARM_IDX = ARM_NAMES.index("DoNothing")
 
 CONTEXT_DIM  = 4      # context 向量維度
 NUM_ARMS     = len(ARM_NAMES)
@@ -250,6 +256,31 @@ def load_bandit(dir_path: str) -> LinUCBBandit:
     bandit.A         = data["A"].copy()
     bandit.b         = data["b"].copy()
     bandit.obs_count = data["obs_count"].copy()
+    bandit = _migrate_bandit_arms(bandit)
+    return bandit
+
+
+def _migrate_bandit_arms(bandit: LinUCBBandit) -> LinUCBBandit:
+    """向後兼容：舊 state 10 arms → 新 11 arms（加 DoNothing）"""
+    if bandit.A.shape[0] >= NUM_ARMS:
+        # 已經是新版或更大，確保 k 正確
+        bandit.k = bandit.A.shape[0]
+        return bandit
+    old_k = bandit.A.shape[0]
+    new_k = NUM_ARMS
+    diff = new_k - old_k
+    d = bandit.d
+    # 擴展 A: 新 arms 初始化為 Identity
+    new_A = np.concatenate([bandit.A, np.stack([np.eye(d, dtype=np.float64)] * diff)])
+    # 擴展 b: 新 arms 初始化為零向量
+    new_b = np.concatenate([bandit.b, np.zeros((diff, d), dtype=np.float64)])
+    # 擴展 obs_count
+    new_obs = np.concatenate([bandit.obs_count, np.zeros(diff, dtype=np.float64)])
+    bandit.A = new_A
+    bandit.b = new_b
+    bandit.obs_count = new_obs
+    bandit.k = new_k
+    print(f"[LinUCB] Migrated {old_k} → {new_k} arms (added DoNothing)")
     return bandit
 
 
@@ -293,7 +324,8 @@ def _load_bandit_gcs() -> LinUCBBandit | None:
         bandit.A         = data["A"].copy()
         bandit.b         = data["b"].copy()
         bandit.obs_count = data["obs_count"].copy()
-        print(f"[LinUCB] loaded from GCS (obs={bandit.total_observations()})")
+        bandit = _migrate_bandit_arms(bandit)
+        print(f"[LinUCB] loaded from GCS (obs={bandit.total_observations()}, arms={bandit.k})")
         return bandit
     except Exception as e:
         print(f"[LinUCB] GCS load failed: {e}")

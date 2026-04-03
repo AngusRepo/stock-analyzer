@@ -14,10 +14,6 @@ import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { withCache, TTL } from '../lib/cache'
 import { rateLimitMiddleware } from '../lib/rateLimit'
-import {
-  fetchTWPrice,
-  type FMStockPrice,
-} from '../lib/finmind'
 
 const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -49,7 +45,7 @@ stocks.get('/:id', async (c) => {
   // 附帶各資料表最新日期（讓前端顯示更新狀態）
   const [latestPrice, latestChip, latestPred] = await Promise.all([
     c.env.DB.prepare('SELECT date FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
-    c.env.DB.prepare('SELECT date FROM chip_data    WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
+    c.env.DB.prepare('SELECT date FROM chip_data    WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(row.symbol).first<any>(),
     c.env.DB.prepare('SELECT generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(id).first<any>(),
   ])
 
@@ -121,10 +117,24 @@ stocks.get('/:id/indicators', async (c) => {
   const days = parsePosInt(c.req.query('days'), 365)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { results } = await c.env.DB.prepare(
+  let { results } = await c.env.DB.prepare(
     'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
   ).bind(id, since).all()
-  return c.json(results)
+
+  // On-demand: 若無指標資料，自動計算（支援興櫃等非 active 股票）
+  if (!results?.length) {
+    try {
+      await computeAndStoreIndicators(c.env.DB, id)
+      const retry = await c.env.DB.prepare(
+        'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
+      ).bind(id, since).all()
+      results = retry.results
+    } catch (e) {
+      console.warn(`[Indicators] On-demand compute failed for stock_id=${id}:`, e)
+    }
+  }
+
+  return c.json(results ?? [])
 })
 
 // ─── GET /api/stocks/:id/financials?limit=12 ─────────────────────────────────
@@ -139,16 +149,29 @@ stocks.get('/:id/financials', async (c) => {
   return c.json(results)
 })
 
+// ─── GET /api/stocks/:id/monthly-revenue?months=12 ──────────────────────────
+stocks.get('/:id/monthly-revenue', async (c) => {
+  const id = parseId(c.req.param('id'))
+  if (!id) return c.json({ error: '無效 ID' }, 400)
+  const months = parsePosInt(c.req.query('months'), 12)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM monthly_revenue WHERE stock_id=? ORDER BY date DESC LIMIT ?'
+  ).bind(id, months).all()
+  return c.json(results ?? [])
+})
+
 // ─── GET /api/stocks/:id/chips?days=60 ───────────────────────────────────────
 stocks.get('/:id/chips', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
+  const stock = await c.env.DB.prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  if (!stock) return c.json({ error: '股票不存在' }, 404)
   const days = parsePosInt(c.req.query('days'), 60)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM chip_data WHERE stock_id=? AND date>=? ORDER BY date'
-  ).bind(id, since).all()
+    'SELECT * FROM chip_data WHERE symbol=? AND date>=? ORDER BY date'
+  ).bind(stock.symbol, since).all()
   return c.json(results)
 })
 
@@ -182,7 +205,15 @@ stocks.get('/:id/factors', async (c) => {
   const row = await c.env.DB.prepare(
     'SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1'
   ).bind(id).first()
-  return c.json(row ?? null)
+  if (!row) {
+    const priceCount = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?'
+    ).bind(id).first<{ cnt: number }>()
+    return c.json({ empty: true, reason: (priceCount?.cnt ?? 0) < 60
+      ? '歷史價格資料不足 60 筆，無法計算多因子分析'
+      : '此股票尚未納入排程計算，資料待下次排程更新' })
+  }
+  return c.json(row)
 })
 
 // ─── GET /api/stocks/:id/risk?period=1y ──────────────────────────────────────
@@ -193,7 +224,15 @@ stocks.get('/:id/risk', async (c) => {
   const row    = await c.env.DB.prepare(
     'SELECT * FROM risk_metrics WHERE stock_id=? AND period=? ORDER BY calculated_at DESC LIMIT 1'
   ).bind(id, period).first()
-  return c.json(row ?? null)
+  if (!row) {
+    const priceCount = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?'
+    ).bind(id).first<{ cnt: number }>()
+    return c.json({ empty: true, reason: (priceCount?.cnt ?? 0) < 60
+      ? '歷史價格資料不足 60 筆，無法計算風險指標'
+      : '此股票尚未納入排程計算，資料待下次排程更新' })
+  }
+  return c.json(row)
 })
 
 // ─── GET /api/stocks/:id/valuations ──────────────────────────────────────────
@@ -228,46 +267,15 @@ stocks.post('/:id/refresh', authMiddleware, adminMiddleware, async (c) => {
   return c.json({ success: true, message: `已更新 ${stock.symbol}` })
 })
 
-// ─── 資料更新總入口：台股 → FinMind，美股 → Yahoo Finance ────────────────────
+// ─── 資料更新總入口：Yahoo Finance（台股 + 美股）─────────────────────────────
+// 台股每日收盤股價已由 bulkFetchAndStorePrices (TWSE STOCK_DAY_ALL) 寫入；
+// Queue per-stock 呼叫此函式補充 Yahoo 歷史 + 觸發指標計算。
+// 籌碼：bulkFetchAndStoreChipData (TWSE/TPEX)
+// 財報：Wave2 bulk TWSE opendata
 export async function fetchAndStoreStockData(
-  db: D1Database, kv: KVNamespace, stock: any, finmindToken?: string,
+  db: D1Database, kv: KVNamespace, stock: any, _finmindToken?: string,
 ) {
-  const isTW = stock.market === 'TWSE' || stock.market === 'OTC' || /^\d{4,}/.test(stock.symbol)
-  if (isTW && finmindToken) {
-    await fetchAndStoreFinMind(db, stock, finmindToken)
-  } else {
-    await fetchAndStoreYahoo(db, stock)
-  }
-}
-
-// ─── FinMind：台股完整資料（股價 + 籌碼 + 財報）──────────────────────────────
-async function fetchAndStoreFinMind(db: D1Database, stock: any, token: string) {
-  const stockId  = stock.symbol.replace(/\.TW$|\.TWO$/, '')
-  const startDate = new Date(Date.now() - 365 * 86400000).toISOString().split('T')[0]
-
-  try {
-    // ── 1. 股價 ────────────────────────────────────────────────────────────────
-    const prices = await fetchTWPrice(token, stockId, startDate)
-    if (prices.length) {
-      const batch = prices.map(p =>
-        db.prepare(
-          `INSERT OR REPLACE INTO stock_prices
-             (stock_id, date, open, high, low, close, adj_close, volume)
-           VALUES (?,?,?,?,?,?,?,?)`
-        ).bind(stock.id, p.date, p.open, p.max, p.min, p.close, p.close, p.Trading_Volume)
-      )
-      await db.batch(batch)
-      // 指標計算已移至 computeAndStoreIndicators()，由 Queue consumer 呼叫（SRP）
-    }
-  } catch (e) {
-    console.error(`[FinMind] Price failed ${stockId}:`, e)
-  }
-
-  // ── 2. 三大法人+融資融券 → 已由 bulkFetchAndStoreChipData (TWSE/TPEX) 處理 ──
-  // 不再逐股呼叫 FinMind，省 ~326 API calls/day
-
-  // ── 3. 財報 → 已由 Wave2 bulk TWSE opendata 處理（EPS/ROE/PER/PBR）──────
-  // 不再逐股呼叫 FinMind 財報 API
+  await fetchAndStoreYahoo(db, stock)
 }
 
 // ─── Yahoo Finance：美股（或 token 未設定時的 fallback）─────────────────────
@@ -396,5 +404,52 @@ function computeIndicators(closes: number[], highs: number[], lows: number[]) {
 
   return { ma5, ma10, ma20, ma60, rsi14, macd, macdSignal, macdHist, bbUpper, bbMid, bbLower, atr14 }
 }
+
+// ─── GET /api/stocks/:id/ai-summary ─ 個股 AI 摘要（推薦+tags+籌碼+profile）──
+stocks.get('/:id/ai-summary', async (c) => {
+  const id = parseId(c.req.param('id'))
+  if (!id) return c.json({ error: '無效 ID' }, 400)
+  const stock = await c.env.DB.prepare('SELECT symbol, name, sector, market FROM stocks WHERE id=?').bind(id).first<any>()
+  if (!stock) return c.json({ error: '股票不存在' }, 404)
+
+  // 平行查詢
+  const [recRow, tagsRows, chipRows, profileRow, finRow] = await Promise.all([
+    // 最新推薦
+    c.env.DB.prepare(
+      'SELECT * FROM daily_recommendations WHERE symbol=? ORDER BY date DESC LIMIT 1'
+    ).bind(stock.symbol).first<any>().catch(() => null),
+    // 概念標籤
+    c.env.DB.prepare(
+      'SELECT tag, weight FROM stock_tags WHERE symbol=? ORDER BY weight DESC'
+    ).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
+    // 近 5 日法人
+    c.env.DB.prepare(`
+      SELECT SUM(foreign_buy - foreign_sell) as foreign_net,
+             SUM(trust_buy - trust_sell) as trust_net,
+             SUM(dealer_buy - dealer_sell) as dealer_net
+      FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 5
+    `).bind(stock.symbol).first<any>().catch(() => null),
+    // 公司概況
+    c.env.DB.prepare(
+      'SELECT business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol=?'
+    ).bind(stock.symbol).first<any>().catch(() => null),
+    // 最新財報
+    c.env.DB.prepare(
+      "SELECT period, eps, pe, pb, dividend_yield, roe FROM financials WHERE stock_id=? AND period LIKE '%Q%' ORDER BY period DESC LIMIT 1"
+    ).bind(id).first<any>().catch(() => null),
+  ])
+
+  return c.json({
+    symbol: stock.symbol,
+    name: stock.name,
+    sector: stock.sector,
+    market: stock.market,
+    recommendation: recRow,
+    tags: tagsRows,
+    chip5d: chipRows,
+    profile: profileRow,
+    financials: finRow,
+  })
+})
 
 export { stocks }

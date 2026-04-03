@@ -3,11 +3,15 @@ version: '3.8'
 services:
   freqtrade:
     build: .
+    env_file:
+      - .env
     volumes:
       - ./strategies:/freqtrade/user_data/strategies
       - ./scripts:/freqtrade/scripts
       - ./user_data/data:/freqtrade/user_data/data
       - ./user_data/backtest_results:/freqtrade/user_data/backtest_results
+      - ./user_data/hyperopt_results:/freqtrade/user_data/hyperopt_results
+      - ./user_data/walk_forward_results:/freqtrade/user_data/walk_forward_results
     environment:
       # Cloudflare D1 REST API
       - CF_ACCOUNT_ID=619a83ac9f20847d9e2f2920823b727d

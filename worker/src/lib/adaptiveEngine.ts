@@ -84,6 +84,17 @@ async function queryAdaptiveInputs(env: { DB: D1Database; KV: KVNamespace }) {
     FROM paper_orders WHERE side='sell' AND created_at >= ? AND realized_pnl IS NOT NULL
   `).bind(fiveDaysAgo).first<{ losses: number | null; total: number | null }>().catch(() => null)
 
+  // RRG Quadrant 分布（多數 Lagging → 提高門檻）
+  const { results: qDistRows } = await env.DB.prepare(`
+    SELECT quadrant, COUNT(*) as cnt FROM sector_flow
+    WHERE classification = 'theme' AND quadrant IS NOT NULL
+      AND date = (SELECT MAX(date) FROM sector_flow WHERE classification = 'theme' AND quadrant IS NOT NULL)
+    GROUP BY quadrant
+  `).all<any>().catch(() => ({ results: [] as any[] }))
+  const qDist: Record<string, number> = {}
+  let qTotal = 0
+  for (const r of qDistRows ?? []) { qDist[r.quadrant] = r.cnt; qTotal += r.cnt }
+
   return {
     riskScore:   riskRow?.risk_score ?? 50,
     riskLevel:   riskRow?.risk_level ?? 'medium',
@@ -92,6 +103,8 @@ async function queryAdaptiveInputs(env: { DB: D1Database; KV: KVNamespace }) {
     rows90d:     rows90d ?? [],
     losses5d:    recentOrders?.losses ?? 0,
     total5d:     recentOrders?.total ?? 0,
+    quadrantDist: qDist,
+    quadrantTotal: qTotal,
   }
 }
 
@@ -138,7 +151,16 @@ export async function runAdaptiveUpdate(env: {
   }
 
   // ── Legacy fallback: 本地計算 ─────────────────────────────────────────────
-  const confidenceThreshold = computeConfidenceThreshold(inputs.riskScore, inputs.accuracy30d)
+  let confidenceThreshold = computeConfidenceThreshold(inputs.riskScore, inputs.accuracy30d)
+  // RRG 加成：多數概念在 Lagging → 提高門檻（市場整體弱勢）
+  if (inputs.quadrantTotal > 0) {
+    const laggingPct = (inputs.quadrantDist['Lagging'] ?? 0) / inputs.quadrantTotal
+    if (laggingPct > 0.5) {
+      const boost = clip((laggingPct - 0.5) * 0.1, 0, 0.05) // 最多 +0.05
+      confidenceThreshold = clip(confidenceThreshold + boost, 0.55, 0.75)
+      console.log(`[AdaptiveEngine] RRG boost: ${(laggingPct * 100).toFixed(0)}% Lagging → conf +${(boost * 100).toFixed(1)}%`)
+    }
+  }
   const pfQualityMult       = computePFQualityMults(inputs.rows30d, inputs.rows90d)
   const slTpOverride        = computeSLTPOverride(inputs.riskLevel)
   const { banditMaxMult, banditForceExplore } = computeBanditProtection(inputs.losses5d, inputs.total5d)

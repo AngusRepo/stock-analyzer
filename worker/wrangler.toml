@@ -35,13 +35,11 @@ binding = "AI"
 
 [vars]
 ENVIRONMENT = "production"
-ML_SERVICE_URL = "https://wayne60619--stockvision-ml-fastapi-app.modal.run"
-# Phase 3 MVC: Cloud Run ML Controller（部署後填入）
-# ML_CONTROLLER_URL = "https://ml-controller-xxx.a.run.app"
 # 前端 Pages 精確 URL（部署完成後填入，用於 CORS 白名單）
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
 
 # 以下 secrets 請用 wrangler secret put 設定：
+# wrangler secret put ML_SERVICE_URL       ← Modal ML endpoint（已從 [vars] 移出）
 # wrangler secret put JWT_SECRET
 # wrangler secret put GOOGLE_CLIENT_ID
 # wrangler secret put GOOGLE_CLIENT_SECRET
@@ -55,21 +53,30 @@ PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
 
 [triggers]
 crons = [
-  "0 6 * * 1-5",    # 14:00 TW → 全市場篩選（Market Screener）
-  "5 7 * * 1-5",    # 15:05 TW → 收盤後抓股價/籌碼/新聞
-  "15 23 * * 1-5",  # 07:15 TW (次日) → Morning Setup（預熱 + 掛單準備 + Debate）
-  "25 7 * * 1-5",   # 15:25 TW → ML 預熱（喚醒 Cloud Run）
-  "30 7 * * 1-5",   # 15:30 TW → ML預測 + 大盤風險計算
-  "35 7 * * 1-5",   # 15:35 TW → 每日選股推薦（ML跑完後）
-  "0 20 * * 6",     # 週六 04:00 TW → D1 舊資料清理
-  "0 8 * * 1-5",    # 16:00 TW → 預測驗證 + 準確率更新
-  "5 8 * * 1-5",    # 16:05 TW → 自適應參數計算（verify 完後立即執行）
-  "* 1-5 * * 1-5",   # 盤中每分鐘：限價買入 + 止損停利巡檢（TW 09:00-13:55）
-  "10 6 * * 1-5",   # 14:10 TW → EOD 賣出檢查（ML SELL + 時間止損）
-  "20 6 * * 1-5",   # 14:20 TW → Daily Snapshot（PnL + Sharpe + Drawdown）
-  "30 22 * * 1-5",  # 06:30 TW (次日) → 美股先行指標（美股 04:00 收盤後 2.5hr）
-  "50 23 * * 1-5",  # 07:50 TW (次日) → 盤前攻略推送 Discord
-  "10 8 * * 1-5",   # 16:10 TW → 收盤完整報告推送 Discord
+  # ── 盤中（TW 09:00-13:30）──
+  "* 1-5 * * 1-5",   # 盤中每分鐘：限價買入 + 止損停利巡檢
+  "25 5 * * 1-5",    # 13:25 TW → EOD 收盤前出場檢查
+
+  # ── 收盤後 Pipeline（TW 14:20 + 17:30-18:30）──
+  # 法人買賣超（T86）約 17:00 TW 才完整，15:05 抓到的是空的
+  "20 6 * * 1-5",    # 14:20 TW → Daily Snapshot（收盤後立即算 PnL，不需 chip）
+  "30 9 * * 1-5",    # 17:30 TW → Bulk Fetch（全市場股價+籌碼，via Controller proxy）
+  "40 9 * * 1-5",    # 17:40 TW → Screener T1+T2（chip 齊全後篩選）
+  "50 9 * * 1-5",    # 17:50 TW → ML 預熱（喚醒 Cloud Run）
+  "0 10 * * 1-5",    # 18:00 TW → ML 預測 + 大盤風險
+  "5 10 * * 1-5",    # 18:05 TW → Recommendation（評分）
+  "15 10 * * 1-5",   # 18:15 TW → 預測驗證 + 準確率更新
+  "20 10 * * 1-5",   # 18:20 TW → Adaptive Engine
+  "25 10 * * 1-5",   # 18:25 TW → 收盤報告推送 Discord
+
+  # ── 次日盤前（TW 06:30-07:50）──
+  # TW 週一 06:30 = UTC 週日 22:30 → 必須含 Sun(0)，否則週一早上不觸發
+  "30 22 * * SUN-THU",   # 06:30 TW (=UTC Sun-Thu 22:30) → 美股先行指標
+  "15 23 * * SUN-THU",   # 07:15 TW (=UTC Sun-Thu 23:15) → Morning Setup（Debate + 掛單）
+  "50 23 * * SUN-THU",   # 07:50 TW (=UTC Sun-Thu 23:50) → 盤前攻略 Discord
+
+  # ── 週末維護 ──
+  "0 20 * * 6",      # 週六 04:00 TW → D1 清理 + Retrain + IC Audit
 ]
 
 # ── 選配：Cron 失敗 Telegram 通知 ─────────────────────────────────────────────

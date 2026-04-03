@@ -49,4 +49,28 @@ declare interface ScheduledEvent {
 declare interface ExportedHandler<Env = unknown> {
   fetch?(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>
   scheduled?(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void>
+  queue?<T = unknown>(batch: MessageBatch<T>, env: Env, ctx: ExecutionContext): Promise<void>
 }
+
+// ─── Queue Types ─────────────────────────────────────────────────────────────
+
+declare interface Queue<T = unknown> {
+  send(message: T, options?: { contentType?: string }): Promise<void>
+  sendBatch(messages: { body: T; contentType?: string }[]): Promise<void>
+}
+
+declare interface MessageBatch<T = unknown> {
+  readonly queue: string
+  readonly messages: Message<T>[]
+  ackAll(): void
+  retryAll(): void
+}
+
+declare interface Message<T = unknown> {
+  readonly id: string
+  readonly timestamp: Date
+  readonly body: T
+  ack(): void
+  retry(): void
+}
+

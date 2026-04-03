@@ -173,3 +173,85 @@ def compute_feature_weights_from_ic(
         weights = {c: 1.0 / n for c in feature_cols}
 
     return weights
+
+
+# ── Alpha Quintile Test ──────────────────────────────────────────────────────
+
+def compute_quintile_returns(
+    df: pd.DataFrame,
+    score_col: str,
+    return_col: str = "target_5d",
+    n_quantiles: int = 5,
+) -> dict:
+    """
+    Quintile portfolio return comparison:
+    - Sort by score_col → split into 5 groups
+    - Compare mean return of top vs bottom quintile
+    - Alpha = top quintile return - bottom quintile return
+
+    Returns:
+        {"quintile_returns": [...], "alpha": float, "monotonic": bool}
+    """
+    valid = df[[score_col, return_col]].dropna()
+    if len(valid) < n_quantiles * 10:
+        return {"error": "insufficient data", "sample_count": len(valid)}
+
+    valid["quantile"] = pd.qcut(valid[score_col], n_quantiles, labels=False, duplicates="drop")
+    q_returns = valid.groupby("quantile")[return_col].mean()
+
+    quintile_list = [{"quintile": int(q), "mean_return": round(float(r), 6)}
+                     for q, r in q_returns.items()]
+
+    # Monotonicity check: higher quintile → higher return
+    rets = [r["mean_return"] for r in quintile_list]
+    monotonic = all(rets[i] <= rets[i + 1] for i in range(len(rets) - 1))
+
+    alpha = rets[-1] - rets[0] if len(rets) >= 2 else 0.0
+
+    return {
+        "quintile_returns": quintile_list,
+        "alpha": round(alpha, 6),
+        "monotonic": monotonic,
+        "top_quintile_return": round(rets[-1], 6) if rets else None,
+        "bottom_quintile_return": round(rets[0], 6) if rets else None,
+        "sample_count": len(valid),
+    }
+
+
+# ── Feature Drift Detection ──────────────────────────────────────────────────
+
+def detect_feature_drift(
+    df_train: pd.DataFrame,
+    df_recent: pd.DataFrame,
+    feature_cols: list[str],
+    threshold: float = 0.15,
+) -> list[dict]:
+    """
+    比較訓練期 vs 近期特徵分佈，用 quantile shift 偵測漂移。
+
+    方法：比較每個 feature 的 [25%, 50%, 75%] quantile。
+    若任一 quantile 的相對偏移超過 threshold → 標記為 drifted。
+
+    Returns:
+        list of {feature, q25_shift, q50_shift, q75_shift, drifted}
+    """
+    results = []
+    for feat in feature_cols:
+        if feat not in df_train.columns or feat not in df_recent.columns:
+            continue
+        train_vals = df_train[feat].dropna()
+        recent_vals = df_recent[feat].dropna()
+        if len(train_vals) < 10 or len(recent_vals) < 5:
+            continue
+
+        shifts = {}
+        for q_label, q_val in [("q25", 0.25), ("q50", 0.50), ("q75", 0.75)]:
+            train_q = train_vals.quantile(q_val)
+            recent_q = recent_vals.quantile(q_val)
+            denom = abs(train_q) if abs(train_q) > 1e-6 else 1.0
+            shifts[f"{q_label}_shift"] = round((recent_q - train_q) / denom, 4)
+
+        drifted = any(abs(v) > threshold for v in shifts.values())
+        results.append({"feature": feat, **shifts, "drifted": drifted})
+
+    return results

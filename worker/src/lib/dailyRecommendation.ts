@@ -1,12 +1,17 @@
 /**
  * dailyRecommendation.ts — 每日選股推薦引擎
  *
- * Phase 3 MVC：
- *   1. Worker pre-query D1（族群流向 + 個股多因子資料）
- *   2. POST Controller /recommend（評分 + LLM 理由）
- *   3. Worker 寫入 D1 daily_recommendations + sector_flow
+ * 流程（v2）：
+ *   1. Screener 在 17:40 寫入 daily_recommendations（chip_score + tech_score + current_price）
+ *   2. ML predict 在 18:00 跑 10 model ensemble → 寫 predictions 表
+ *   3. 本模組在 18:05：
+ *      a. 讀 screener 已寫的 daily_recommendations
+ *      b. 讀 ML predictions → 計算 ml_score(0-30)
+ *      c. UPDATE ml_score + signal + reason + 過濾 SELL
+ *      d. 寫 sector_flow（theme 族群資金流向）
+ *   4. Morning-setup 在 07:15：T2 debate 從 daily_recommendations 挑股買入
  *
- * 若 ML_CONTROLLER_URL 未設定 → 走 legacy 本地評分路徑（rollback 安全）
+ * chip_score/tech_score 由 screener 算一次，recommendation 不重算。
  */
 
 import type { Bindings } from '../types'
@@ -315,11 +320,14 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
   const consecMap = new Map(consecRows?.map((r: any) => [r.symbol, r.consec]) ?? [])
 
   const { results: tiRows } = await db.prepare(`
-    SELECT ti.stock_id, ti.rsi14, ti.macd_hist,
-      (SELECT sp.close FROM stock_prices sp WHERE sp.stock_id = ti.stock_id ORDER BY sp.date DESC LIMIT 1) as current_price,
-      ti.ma5, ti.ma20, ti.ma60
-    FROM technical_indicators ti
-    WHERE ti.date = (SELECT MAX(date) FROM technical_indicators ti2 WHERE ti2.stock_id = ti.stock_id)
+    SELECT s.id as stock_id,
+      ti.rsi14, ti.macd_hist, ti.ma5, ti.ma20, ti.ma60,
+      (SELECT sp.close FROM stock_prices sp WHERE sp.stock_id = s.id ORDER BY sp.date DESC LIMIT 1) as current_price
+    FROM stocks s
+    LEFT JOIN technical_indicators ti ON ti.stock_id = s.id
+      AND ti.date = (SELECT MAX(date) FROM technical_indicators ti2 WHERE ti2.stock_id = s.id)
+    WHERE s.is_active = 1
+      OR s.symbol IN (SELECT symbol FROM daily_recommendations WHERE date = (SELECT MAX(date) FROM daily_recommendations))
   `).all<any>()
   const tiMap = new Map(tiRows?.map((r: any) => [r.stock_id, r]) ?? [])
 
@@ -341,7 +349,10 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
   ).all<any>().catch(() => ({ results: [] }))
   const accMap = new Map((accRows ?? []).map((r: any) => [r.stock_id, r]))
 
-  const { results: stocks } = await db.prepare('SELECT id, symbol, name, sector FROM stocks WHERE is_active=1').all<any>()
+  const { results: stocks } = await db.prepare(
+    `SELECT id, symbol, name, sector FROM stocks
+     WHERE is_active=1 OR symbol IN (SELECT symbol FROM daily_recommendations WHERE date = (SELECT MAX(date) FROM daily_recommendations))`
+  ).all<any>()
   if (!stocks?.length) return []
 
   return stocks.map((stock: any) => {
@@ -429,11 +440,22 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
     return
   }
 
-  // 3. Screener 分數(60%) + ML 分數(40%) 加權合併
-  //    Screener 決定「哪些值得看」，ML 決定「方向+信心」
+  // 3. 讀 screener 已寫入的 daily_recommendations（chip+tech），補 ML 分數
+  //    Screener 寫 chip_score + tech_score → recommendation 補 ml_score + signal + reason
   let recommendations: any[] = []
   {
-    // 讀 ML predictions（KV 快取或 D1 最新）
+    // 讀 screener 已寫的候選（chip+tech 已有分數）
+    const { results: screenerRecs } = await env.DB.prepare(
+      "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank"
+    ).bind(today).all<any>()
+
+    if (!screenerRecs?.length) {
+      console.warn('[Recommendation] Screener 尚未寫入 daily_recommendations，使用 stockPayloads fallback')
+      // fallback: screener 沒跑就跳過
+      return
+    }
+
+    // 建 ML prediction map
     const mlPredMap = new Map<string, { signal: string; confidence: number; forecast_pct: number }>()
     for (const s of stockPayloads) {
       if (s.ml_signal) {
@@ -445,112 +467,104 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
       }
     }
 
-    const withScore = stockPayloads.map((s: any) => {
-      // ── 籌碼分數 (0-40) ──
-      const chipScore = Math.min(40, Math.max(0,
-        (s.foreign_consecutive ?? 0) * 4 +
-        (((s.foreign_net_5d ?? 0) + (s.trust_net_5d ?? 0)) > 0 ? 12 : 0) +
-        ((s.foreign_net_5d ?? 0) > 0 && (s.trust_net_5d ?? 0) > 0 ? 8 : 0)  // 雙法人同步加分
-      ))
+    // 更新每筆 recommendation 的 ML 分數 + signal + reason + price
+    const updateBatch = []
+    let sellCount = 0
+    for (const rec of screenerRecs) {
+      const ml = mlPredMap.get(rec.symbol)
+      const sig = (ml?.signal ?? 'HOLD').toUpperCase()
 
-      // ── 技術分數 (0-30) ──
-      const rsi = s.rsi14 ?? 50
-      const techScore = Math.min(30,
-        (rsi >= 40 && rsi <= 80 ? 8 : rsi > 80 ? 6 : 0) +       // RSI 放寬
-        ((s.macd_hist ?? 0) > 0 ? 8 : 0) +                        // MACD 多頭
-        (s.current_price > (s.ma20 ?? 0) ? 5 : 0) +               // 站上 MA20
-        (s.current_price > (s.ma5 ?? 0) ? 3 : 0) +                // 站上 MA5
-        (rsi >= 55 && rsi <= 70 ? 4 : 0) +                        // RSI 最佳區
-        (s.current_price > (s.ma60 ?? 0) ? 2 : 0)                 // 站上 MA60
-      )
+      // 過濾 SELL / NO_SIGNAL（沒持股不推 SELL）
+      if (sig.includes('SELL') || sig === 'NO_SIGNAL') {
+        sellCount++
+        updateBatch.push(env.DB.prepare(
+          "DELETE FROM daily_recommendations WHERE date = ? AND symbol = ?"
+        ).bind(today, rec.symbol))
+        continue
+      }
 
-      // ── ML 分數 (0-30) ──
-      const ml = mlPredMap.get(s.symbol)
+      // ML 分數 (0-30)
       let mlScore = 0
       if (ml) {
-        // Signal 分數
-        if (ml.signal.includes('STRONG_BUY')) mlScore += 25
-        else if (ml.signal.includes('BUY')) mlScore += 18
-        else if (ml.signal === 'HOLD') mlScore += 8
-        else if (ml.signal.includes('SELL')) mlScore -= 5
-        // Confidence 加成
+        if (sig.includes('STRONG_BUY')) mlScore += 25
+        else if (sig.includes('BUY')) mlScore += 18
+        else if (sig === 'HOLD') mlScore += 8
         mlScore += ml.confidence * 10
-        // 預測漲幅加成
         if (ml.forecast_pct > 0.03) mlScore += 5
         else if (ml.forecast_pct > 0.01) mlScore += 2
       }
-      mlScore = Math.max(0, Math.min(30, mlScore))
+      mlScore = Math.round(Math.max(0, Math.min(30, mlScore)) * 10) / 10  // 四捨五入到小數第一位
 
-      // total = chip + tech + ml（滿分 100，直接加總）
-      const totalScore = chipScore + techScore + mlScore
+      // total = chip + tech + ml
+      const totalScore = Math.round(((rec.chip_score ?? 0) + (rec.tech_score ?? 0) + mlScore) * 10) / 10
 
-      return {
-        ...s, _score: totalScore,
-        _chipScore: chipScore, _techScore: techScore, _mlScore: mlScore,
-        _signal: ml?.signal ?? null, _confidence: ml?.confidence ?? null,
+      // 取最新收盤價
+      const payload = stockPayloads.find((s: any) => s.symbol === rec.symbol)
+      const currentPrice = payload?.current_price ?? rec.current_price ?? null
+
+      // 建 reason
+      const reasonData = {
+        foreign_consecutive: payload?.foreign_consecutive ?? 0,
+        foreign_net_5d: payload?.foreign_net_5d ?? 0,
+        trust_net_5d: payload?.trust_net_5d ?? 0,
+        rsi14: payload?.rsi14 ?? null,
+        macd_hist: payload?.macd_hist ?? null,
+        current_price: currentPrice,
+        ma20: payload?.ma20 ?? null,
+        _signal: ml?.signal ?? null,
       }
-    })
-    // 過濾 SELL — 沒持股不推薦賣出標的
-    .filter((s: any) => {
-      const sig = (s._signal ?? '').toLowerCase()
-      return !sig.includes('sell') && sig !== 'no_signal'
-    })
-    .sort((a: any, b: any) => b._score - a._score)
-    .slice(0, 25)
 
-    for (let i = 0; i < withScore.length; i++) {
-      const s = withScore[i]
-      recommendations.push({
-        rank: i + 1, stock_id: s.stock_id, symbol: s.symbol,
-        name: s.name, sector: s.sector, score: s._score,
-        chip_score: s._chipScore, tech_score: s._techScore, ml_score: s._mlScore,
-        current_price: s.current_price,
-        foreign_net_5d: (s.foreign_net_5d ?? 0) / 1e8,
-        trust_net_5d: (s.trust_net_5d ?? 0) / 1e8,
-        rsi14: s.rsi14, macd_hist: s.macd_hist,
-        ml_signal: s._signal, ml_confidence: s._confidence,
-        has_buy_signal: s._signal?.includes('BUY') ? 1 : 0,
-        reason: buildReason(s),
-        watch_points: JSON.stringify(buildWatchPoints(s)),
-      })
+      // 所有 bind 值強制 null 化（D1 不接受 undefined）
+      const safeNull = (v: any) => v === undefined ? null : v
+      updateBatch.push(env.DB.prepare(`
+        UPDATE daily_recommendations SET
+          ml_score = ?, score = ?, signal = ?, confidence = ?,
+          current_price = ?, has_buy_signal = ?,
+          reason = ?, watch_points = ?,
+          foreign_net_5d = ?, trust_net_5d = ?, rsi14 = ?, macd_hist = ?
+        WHERE date = ? AND symbol = ?
+      `).bind(
+        mlScore, totalScore,
+        safeNull(ml?.signal), safeNull(ml?.confidence),
+        safeNull(currentPrice), sig.includes('BUY') ? 1 : 0,
+        buildReason(reasonData), JSON.stringify(buildWatchPoints(reasonData)),
+        payload ? (payload.foreign_net_5d ?? 0) / 1e8 : 0,
+        payload ? (payload.trust_net_5d ?? 0) / 1e8 : 0,
+        safeNull(payload?.rsi14), safeNull(payload?.macd_hist),
+        today, rec.symbol,
+      ))
     }
-    const sellCount = stockPayloads.filter((s: any) => (s.ml_signal ?? '').toLowerCase().includes('sell')).length
-    const noSigCount = stockPayloads.filter((s: any) => (s.ml_signal ?? '').toLowerCase() === 'no_signal').length
-    console.log(`[Recommendation] Screener+ML 合併: ${recommendations.length} 支推薦 (過濾 ${sellCount} SELL + ${noSigCount} NO_SIGNAL)`)
+
+    // 批次執行
+    const BATCH = 50
+    for (let b = 0; b < updateBatch.length; b += BATCH) {
+      await env.DB.batch(updateBatch.slice(b, b + BATCH))
+    }
+
+    // 重新排名（SELL 刪掉後重排）
+    const { results: finalRecs } = await env.DB.prepare(
+      "SELECT symbol FROM daily_recommendations WHERE date = ? ORDER BY score DESC"
+    ).bind(today).all<any>()
+    for (let i = 0; i < (finalRecs?.length ?? 0); i++) {
+      await env.DB.prepare(
+        "UPDATE daily_recommendations SET rank = ? WHERE date = ? AND symbol = ?"
+      ).bind(i + 1, today, finalRecs![i].symbol).run()
+    }
+
+    recommendations = finalRecs ?? []
+    console.log(`[Recommendation] ML 補分完成: ${recommendations.length} 支推薦 (過濾 ${sellCount} SELL)`)
   }
 
   if (!recommendations.length) {
     console.log('[Recommendation] 無符合條件的股票，跳過')
-    return
+    // 即使 ML 補分為空（screener 沒跑），仍然繼續寫 sector_flow
   }
 
-  // T2 RRG Filter 已移至 Screener（Step 4.6），此處不再重複過濾
-  const finalRecs = recommendations
-  finalRecs.forEach((r, i) => { r.rank = i + 1 })
+  // screener 已寫入 daily_recommendations（chip+tech），ML 補分已透過 UPDATE 完成（上方）
+  // 不再用 INSERT OR REPLACE 覆寫（舊 Controller 殘留已移除）
+  // T2 debate 在 morning-setup（paper.ts）執行，不在此處
 
-  // 4. 寫入 daily_recommendations（T2 過濾後）
-  const recBatch = finalRecs.map((r: any) =>
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO daily_recommendations
-        (date, stock_id, symbol, name, sector, rank, score,
-         signal, confidence, reason, watch_points, has_buy_signal,
-         current_price, foreign_net_5d, trust_net_5d, rsi14, macd_hist,
-         chip_score, tech_score, ml_score)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).bind(
-      today, r.stock_id, r.symbol, r.name, r.sector, r.rank, r.score,
-      r.ml_signal, r.ml_confidence,
-      (r.reason ?? '').slice(0, 500),
-      typeof r.watch_points === 'string' ? r.watch_points : JSON.stringify(r.watch_points ?? []),
-      r.has_buy_signal ?? 0,
-      r.current_price, r.foreign_net_5d, r.trust_net_5d,
-      r.rsi14, r.macd_hist,
-      r.chip_score, r.tech_score, r.ml_score,
-    )
-  )
-  await env.DB.batch(recBatch)
-
-  // 5. 寫入 sector_flow（theme only，industry 已移除）
+  // 5. 寫入 sector_flow（theme only，industry 由 screener 寫）
   {
     const batch = themeSectors.slice(0, 50)
     if (batch.length) {

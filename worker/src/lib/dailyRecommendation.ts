@@ -344,7 +344,8 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
     const upCount = models.filter((m: any) => m.direction === 'up').length
     const downCount = models.filter((m: any) => m.direction === 'down').length
     return [r.stock_id, {
-      signal: fd.signal ?? r.trade_signal,
+      // trade_signal 優先（D1 欄位），forecast_data.signal 可能不一致（NO_SIGNAL vs hold）
+      signal: r.trade_signal ?? fd.signal,
       confidence: r.direction_accuracy,
       forecast_pct: fd.forecast_pct,
       models_total: models.length,
@@ -458,11 +459,34 @@ function buildReason(s: any): string {
 function buildWatchPoints(s: any): string[] {
   const points: string[] = []
   const rsi = s.rsi14 ?? 50
-  if (rsi > 75) points.push('RSI 偏高，注意短期回檔風險')
+  const conf = s.ml_confidence ?? 0
+
+  // 技術面注意事項
+  if (rsi > 80) points.push('RSI 超買，短線可能過熱')
+  else if (rsi > 75) points.push('RSI 偏高，留意回檔')
+  if ((s.macd_hist ?? 0) < 0 && s.current_price > (s.ma20 ?? 0)) {
+    points.push('MACD 走弱但仍在月線上，留意趨勢轉折')
+  }
+
+  // 籌碼面注意事項
   if ((s.foreign_net_5d ?? 0) < 0) points.push('外資近期偏賣，留意籌碼變化')
+  if ((s.trust_net_5d ?? 0) < 0 && (s.foreign_net_5d ?? 0) > 0) {
+    points.push('外資買但投信賣，法人方向不一致')
+  }
+
+  // ML 注意事項（根據信心度分級，不是全部都說「信心不足」）
   const sig = (s._signal ?? '').toLowerCase()
-  if (sig === 'hold') points.push('ML 信心不足，建議小量試單或觀望')
-  points.push('留意大盤整體走勢與國際局勢')
+  if (sig.includes('sell')) {
+    points.push('ML 模型偏空，不建議新建倉位')
+  } else if (conf < 0.45) {
+    points.push('ML 信心偏低，建議觀望或小量試單')
+  } else if (conf >= 0.45 && conf < 0.55 && sig === 'hold') {
+    points.push('ML 信心中等，方向未明確，可等待訊號確認')
+  } else if (conf >= 0.55) {
+    // 信心 55%+ 不說「信心不足」
+  }
+
+  if (!points.length) points.push('留意大盤整體走勢與國際局勢')
   return points
 }
 

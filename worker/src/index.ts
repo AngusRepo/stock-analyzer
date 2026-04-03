@@ -839,7 +839,11 @@ async function runMLAndRisk(env: Bindings) {
       // trade_signal: 簡化版（buy/sell/hold）保留向下相容
       // signal_raw: ensemble 原始 signal（STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL/NO_SIGNAL）
       const rawSignal = data.signal ?? 'NO_SIGNAL'
-      const tradeSignal = rawSignal.includes('BUY') ? 'buy' : rawSignal.includes('SELL') ? 'sell' : rawSignal === 'NO_SIGNAL' ? 'hold' : 'hold'
+      // NO_SIGNAL → null（跳過，不寫 trade_signal）
+      const tradeSignal = rawSignal.includes('BUY') ? 'buy'
+        : rawSignal.includes('SELL') ? 'sell'
+        : rawSignal === 'NO_SIGNAL' ? null
+        : 'hold'
       await env.DB.prepare(`
         INSERT INTO predictions
           (stock_id, model_name, generated_at, horizon, direction_accuracy,

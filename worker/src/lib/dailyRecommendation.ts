@@ -400,49 +400,59 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
 
 // ─── 推薦理由生成 ──────────────────────────────────────────────────────────
 function buildReason(s: any): string {
-  const parts: string[] = []
+  // 三面向都必須有理由：籌碼 → 技術 → ML
 
-  // 籌碼面
-  if (s.foreign_consecutive >= 5) parts.push(`法人連續買超${s.foreign_consecutive}天`)
-  else if (s.foreign_consecutive >= 3) parts.push(`法人連買${s.foreign_consecutive}天`)
+  // ── 籌碼面 ──
+  let chipReason = ''
+  const consec = s.foreign_consecutive ?? 0
   const netAmount = ((s.foreign_net_5d ?? 0) + (s.trust_net_5d ?? 0)) / 1e8
-  if (netAmount > 5) parts.push(`5日法人淨買超${netAmount.toFixed(1)}億`)
-  else if (netAmount > 1) parts.push(`法人買超${netAmount.toFixed(1)}億`)
+  if (consec >= 5 && netAmount > 5) chipReason = `法人連買${consec}天、淨買超${netAmount.toFixed(1)}億`
+  else if (consec >= 3) chipReason = `法人連買${consec}天${netAmount > 1 ? `（${netAmount.toFixed(1)}億）` : ''}`
+  else if (netAmount > 5) chipReason = `5日法人淨買超${netAmount.toFixed(1)}億`
+  else if (netAmount > 1) chipReason = `法人買超${netAmount.toFixed(1)}億`
+  else if (netAmount > 0) chipReason = '法人小幅買超'
+  else if (netAmount > -1) chipReason = '法人持平'
+  else chipReason = `法人賣超${Math.abs(netAmount).toFixed(1)}億`
 
-  // 技術面
-  const rsi = s.rsi14 ?? 50
-  if (rsi >= 55 && rsi <= 70) parts.push(`RSI ${rsi.toFixed(0)} 健康區間`)
-  else if (rsi > 70) parts.push(`RSI ${rsi.toFixed(0)} 強勢`)
-  if ((s.macd_hist ?? 0) > 0) parts.push('MACD 多頭排列')
-  if (s.current_price && s.ma20 && s.current_price > s.ma20) parts.push('站穩月線之上')
+  // ── 技術面 ──
+  let techReason = ''
+  const rsi = s.rsi14 ?? 0
+  const macdUp = (s.macd_hist ?? 0) > 0
+  const aboveMa = s.current_price && s.ma20 && s.current_price > s.ma20
+  const techParts: string[] = []
+  if (rsi > 0) {
+    if (rsi > 75) techParts.push(`RSI ${rsi.toFixed(0)} 強勢`)
+    else if (rsi >= 55) techParts.push(`RSI ${rsi.toFixed(0)} 健康`)
+    else if (rsi >= 40) techParts.push(`RSI ${rsi.toFixed(0)} 中性`)
+    else techParts.push(`RSI ${rsi.toFixed(0)} 偏弱`)
+  }
+  if (macdUp) techParts.push('MACD 多頭')
+  else techParts.push('MACD 空頭')
+  if (aboveMa) techParts.push('站穩月線')
+  else techParts.push('月線下方')
+  techReason = techParts.join('、')
 
-  // ML — 用模型投票數據生成有意義的理由
+  // ── ML 面 ──
+  let mlReason = ''
   const sig = (s._signal ?? '').toUpperCase()
   const total = s.ml_models_total ?? 0
   const up = s.ml_models_up ?? 0
   const down = s.ml_models_down ?? 0
-  const conf = s.ml_confidence ?? 0
   const forecastPct = s.ml_forecast_pct ?? 0
 
-  if (sig.includes('STRONG_BUY')) {
-    parts.push(`ML 強烈看多（${up}/${total}模型看漲，信心${(conf * 100).toFixed(0)}%）`)
+  if (total === 0) {
+    mlReason = 'ML 尚未分析'
+  } else if (sig.includes('STRONG_BUY')) {
+    mlReason = `ML 強烈看多（${up}/${total}看漲，預期${forecastPct > 0 ? '+' : ''}${(forecastPct * 100).toFixed(1)}%）`
   } else if (sig.includes('BUY')) {
-    parts.push(`ML 看多（${up}/${total}模型看漲，預期${forecastPct > 0 ? '+' : ''}${(forecastPct * 100).toFixed(1)}%）`)
-  } else if (sig === 'HOLD' && total > 0) {
-    // 說明 WHY hold — 是多空分歧、還是信心不足
-    if (down > up) {
-      parts.push(`${down}/${total}模型偏空但信心不足，暫列觀望`)
-    } else if (up > down) {
-      parts.push(`${up}/${total}模型偏多但共識未達門檻，暫列觀望`)
-    } else {
-      parts.push(`模型多空分歧（${up}多/${down}空），方向不明`)
-    }
-  } else if (total === 0) {
-    parts.push('ML 尚未分析')
+    mlReason = `ML 看多（${up}/${total}看漲，預期${forecastPct > 0 ? '+' : ''}${(forecastPct * 100).toFixed(1)}%）`
+  } else if (sig === 'HOLD') {
+    if (down > up) mlReason = `ML 觀望（${down}/${total}偏空但信心不足）`
+    else if (up > down) mlReason = `ML 觀望（${up}/${total}偏多但共識未達門檻）`
+    else mlReason = `ML 觀望（多空分歧 ${up}/${down}）`
   }
 
-  if (!parts.length) parts.push('多因子綜合評分入選')
-  return parts.join('，')
+  return `【籌碼】${chipReason}｜【技術】${techReason}｜【ML】${mlReason}`
 }
 
 function buildWatchPoints(s: any): string[] {

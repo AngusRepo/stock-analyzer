@@ -1524,8 +1524,18 @@ async function calcIndustryRRG(
 
   if (!allReturns.length) return result
 
-  // 大盤等權平均報酬
-  const marketReturn = allReturns.reduce((a, b) => a + b, 0) / allReturns.length
+  // 各產業平均報酬 → 用 Z-score 標準化後 × 100 + 100 作為 RS-Ratio
+  // Why: cumulative return 差異太小（<1%），ratio 接近 1.0，RS ≈ 100 無法區分
+  // Z-score 方式：mean=100, std=每10分位差10分 → 強弱分明
+  const industryAvgMap = new Map<string, number>()
+  for (const [industry, returns] of industryReturns) {
+    if (returns.length >= 3) {
+      industryAvgMap.set(industry, returns.reduce((a, b) => a + b, 0) / returns.length)
+    }
+  }
+  const avgValues = [...industryAvgMap.values()]
+  const mean = avgValues.reduce((a, b) => a + b, 0) / avgValues.length
+  const std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
 
   // ── 計算 RS-Ratio ──
   // 查歷史 RS-Ratio（用 sector_flow 前日資料算 momentum）
@@ -1533,9 +1543,9 @@ async function calcIndustryRRG(
   try {
     const { results: prevRows } = await env.DB.prepare(
       `SELECT sector, rs_ratio FROM sector_flow
-       WHERE classification='industry' AND rs_ratio IS NOT NULL
+       WHERE classification='industry' AND rs_ratio IS NOT NULL AND date < ?
        ORDER BY date DESC LIMIT 100`
-    ).all<{ sector: string; rs_ratio: number }>()
+    ).bind(endDate).all<{ sector: string; rs_ratio: number }>()
     // 取每個 sector 最近的一筆（已按 date DESC）
     for (const r of (prevRows ?? [])) {
       if (!prevRsMap.has(r.sector)) prevRsMap.set(r.sector, r.rs_ratio)
@@ -1554,10 +1564,15 @@ async function calcIndustryRRG(
   for (const [industry, returns] of industryReturns) {
     if (returns.length < 3) continue  // 太少成員的產業不計
 
-    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length
-    // RS-Ratio = (1 + industry_return) / (1 + market_return) × 100
-    // > 100 = 強於大盤, < 100 = 弱於大盤
-    const rawRs = ((1 + avgReturn) / (1 + marketReturn)) * 100
+    const avgReturn = industryAvgMap.get(industry)
+    if (avgReturn == null) continue
+    // RS-Ratio = Z-score × 10 + 100
+    // > 100 = 強於中位產業, < 100 = 弱於中位產業
+    // 每 1 std ≈ 10 分：110 = 強 1 std, 90 = 弱 1 std
+    const rawRs = ((avgReturn - mean) / std) * 10 + 100
+    if (industryReturns.size <= 5) {
+      console.log(`[RRG debug] ${industry}: avg=${avgReturn.toFixed(6)} mean=${mean.toFixed(6)} std=${std.toFixed(6)} rawRs=${rawRs.toFixed(2)}`)
+    }
     // EMA 平滑：如果有前值就做 EMA，沒有就用 raw
     const prevRs = prevRsMap.get(industry)
     const k = 2 / (emaSpan + 1)
@@ -1585,7 +1600,13 @@ async function calcIndustryRRG(
     result.set(industry, { rsRatio, rsMomentum, quadrant, bonus })
   }
 
-  console.log(`[RRG] ${isColdStart ? 'COLD START — ' : ''}${result.size} industries: Leading=[${[...result.entries()].filter(([, v]) => v.quadrant === 'Leading').map(([k]) => k).join(', ') || 'none'}]`)
+  // Debug: print mean, std, and sample rawRs values
+  const sampleRs = [...result.entries()].slice(0, 5).map(([k, v]) => `${k}=${v.rsRatio.toFixed(1)}`).join(', ')
+  console.log(`[RRG] cold=${isColdStart} mean=${mean.toFixed(6)} std=${std.toFixed(6)} prevRsMap.size=${prevRsMap.size} industries=${industryAvgMap.size}`)
+  console.log(`[RRG] sample: ${sampleRs}`)
+
+  // Attach debug info to result for caller to read
+  ;(result as any)._debug = `cold=${isColdStart} mean=${mean.toFixed(6)} std=${std.toFixed(6)} industries=${industryAvgMap.size} prevRs=${prevRsMap.size}`
   return result
 }
 
@@ -1680,8 +1701,10 @@ async function deduplicateByCorrelation(
 export async function runBottomUpScreener(env: Bindings): Promise<{
   hotSectors: SectorHeatScore[]
   candidates: ScreenerCandidate[]
+  debugLog?: string[]
 }> {
   console.log('[Screener v2] Starting bottom-up multi-factor screening...')
+  const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
   const endDate = today()
@@ -1806,7 +1829,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
     universe.push({ stockId, prices })
   }
-  console.log(`[Screener v2] Universe: ${universe.length} stocks (skip: price=${skipPrice} vol=${skipVol} turnover=${skipTurnover} punish=${skipPunish} volZero=${skipVolZero})`)
+  const universeMsg = `[Step 1] Universe: ${universe.length} 檔通過 | 篩掉: 股價=${skipPrice} 均量=${skipVol} 成交額=${skipTurnover} 處置=${skipPunish} 零量=${skipVolZero} 天數不足=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero}`
+  debugLog.push(universeMsg)
+  console.log(universeMsg)
 
   // ── Step 2: 多因子評分 ──
   console.log('[Screener v2] Step 2: Multi-factor scoring...')
@@ -1833,6 +1858,21 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       industry,
     })
   }
+
+  // Step 2 debug: top 30 scored
+  debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
+  const scoredSorted = [...scored].sort((a, b) => b.score - a.score)
+  debugLog.push(`[Step 2] Top 15 (base_score):`)
+  for (const c of scoredSorted.slice(0, 15)) {
+    debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | base=${c.score.toFixed(1)} chip=${c.chip_score} tech=${c.tech_score} mom=${c.momentum_score.toFixed(1)} | ${c.reason}`)
+  }
+
+  // Score 分布
+  const ranges = [
+    { label: '60+', min: 60 }, { label: '50-60', min: 50 }, { label: '40-50', min: 40 },
+    { label: '30-40', min: 30 }, { label: '20-30', min: 20 }, { label: '<20', min: 0 },
+  ]
+  debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
   // ── Step 3: RRG 產業輪動加分 ──
   console.log('[Screener v2] Step 3: RRG industry rotation...')
@@ -1861,6 +1901,18 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     })
   }
   sectorHeatScores.sort((a, b) => b.score - a.score)
+
+  // Step 3 debug
+  const rrqSample = [...rrg.entries()].slice(0, 3).map(([k, v]) => `${k}:RS=${v.rsRatio.toFixed(2)}`).join(', ')
+  debugLog.push(`[Step 3] RRG: ${rrg.size} 產業 | ${(rrg as any)._debug ?? 'no debug'} | sample=[${rrqSample}]`)
+  const rrqQuadrants = { Leading: 0, Improving: 0, Weakening: 0, Lagging: 0 }
+  for (const [ind, r] of rrg) {
+    (rrqQuadrants as any)[r.quadrant] = ((rrqQuadrants as any)[r.quadrant] ?? 0) + 1
+  }
+  debugLog.push(`[Step 3] 象限分布: Leading=${rrqQuadrants.Leading} Improving=${rrqQuadrants.Improving} Weakening=${rrqQuadrants.Weakening} Lagging=${rrqQuadrants.Lagging}`)
+  for (const [ind, r] of [...rrg.entries()].sort((a, b) => b[1].rsRatio - a[1].rsRatio).slice(0, 10)) {
+    debugLog.push(`  ${ind}: RS=${r.rsRatio.toFixed(1)} Mom=${r.rsMomentum.toFixed(2)} ${r.quadrant} bonus=${r.bonus}`)
+  }
 
   // 寫 sector_flow（RRG 資料）
   try {
@@ -1936,6 +1988,14 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // ── Step 5: 排序 + 去重 + 截斷 ──
+  // Step 4 debug
+  debugLog.push(`[Step 4] 情緒面加分完成 | PTT hot concepts: ${[...hotConcepts].join(', ')}`)
+  const afterSentiment = [...scored].sort((a, b) => b.score - a.score)
+  debugLog.push(`[Step 4] Top 10 (with sentiment):`)
+  for (const c of afterSentiment.slice(0, 10)) {
+    debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | total=${c.score.toFixed(1)} | ${c.reason}`)
+  }
+
   console.log('[Screener v2] Step 5: Sort, dedup, truncate...')
   scored.sort((a, b) => b.score - a.score)
 
@@ -1966,7 +2026,30 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // 5d: top N 截斷
   const maxCandidates = (sc as any).maxCandidates ?? 25
   const finalCandidates: ScreenerCandidate[] = afterIndustryLimit.slice(0, maxCandidates)
-  console.log(`[Screener v2] Step 5: ${scored.length} → industry limit → ${afterIndustryLimit.length} → top ${maxCandidates} → ${finalCandidates.length}`)
+  const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
+  debugLog.push(step5Msg)
+  console.log(step5Msg)
+
+  // 被產業上限篩掉的
+  const removedByIndustry = scored.filter(c => !afterIndustryLimit.includes(c)).slice(0, 10)
+  if (removedByIndustry.length) {
+    debugLog.push(`[Step 5b] 被同產業上限篩掉（前 10）:`)
+    for (const c of removedByIndustry) {
+      debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} score=${c.score.toFixed(1)}`)
+    }
+  }
+
+  // 被去重篩掉的
+  const afterDedupSet = new Set(afterIndustryLimit.map(c => c.symbol))
+  const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
+  // 被截斷的
+  const truncated = afterIndustryLimit.slice(maxCandidates)
+  if (truncated.length) {
+    debugLog.push(`[Step 5d] 被 top ${maxCandidates} 截斷（前 10）:`)
+    for (const c of truncated.slice(0, 10)) {
+      debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} score=${c.score.toFixed(1)}`)
+    }
+  }
 
   // ── Step 6: 資料品質（DelistingMonitor）──
   try {
@@ -2033,5 +2116,11 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] Discord failed:', e)
   }
 
-  return { hotSectors: sectorHeatScores, candidates: finalCandidates }
+  // Final debug summary
+  debugLog.push(`[Final] ${finalCandidates.length} 檔:`)
+  for (const c of finalCandidates) {
+    debugLog.push(`  ${c.symbol} ${(c as any).name ?? ''} ${(c as any).industry ?? c.sector} score=${c.score.toFixed(1)}`)
+  }
+
+  return { hotSectors: sectorHeatScores, candidates: finalCandidates, debugLog }
 }

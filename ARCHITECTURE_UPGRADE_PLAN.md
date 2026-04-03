@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-02（v7 — Screener 重構整併：Bottom-up 多因子 + RRG 產業輪動）
+> 更新：2026-04-03（v8 — 整併策略驗證排程 W1-W6 + Freqtrade + PTT 情緒 + Trump Code）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v8 | 2026-04-03 | 整併策略驗證排程 W1-W6（§十）：Freqtrade 回測引擎、蒙地卡羅/Walk-Forward/PBO 驗證、PTT 情緒 4 features、Trump Code 串接、參數高原掃描。更新 Phase 路徑整合雙軌排程 |
 | v7 | 2026-04-02 | 整併 Screener 重構計畫（§九），新增 Phase 0，刪除 DATA_CLEANSING_PLAN.md |
 | v6 | 2026-04-02 | 新增 §八 Failure Mode Map（17 種失效模式 × 防禦方案），補強：跌停鎖死、Gap Stop、流動性過濾、模型共錯偵測、Prompt 版控、Agent 限制為只扣分、服務降級、資料驗證層 |
 | v5 | 2026-04-02 | 外部審查修正：新增 Decision Authority Layer（決策權限分層）、Checkpointer 改 GCS/Postgres、Optuna 加 out-of-sample lock、紅軍加 historical replay 必要條件、Session Memory 限制範圍、Phase 2.5 新增 |
@@ -1493,20 +1494,36 @@ class ExecutionSimulator:
 
 ---
 
-## 七、導入路徑 `[v7 更新]`
+## 七、導入路徑 `[v8 更新]`
+
+> 兩條軌道並行：「架構升級 Phase 0-6」（設計模式 + 系統層）與「策略驗證 W1-W6」（回測 + 防過擬合 + 外部訊號）。
+> Phase 0（Screener 重構）最優先；W1（Freqtrade 基礎建設）可與 Phase 0 平行。
+
+### 架構升級軌道
 
 | Phase | 項目 | 涵蓋 | 說明 |
 |-------|------|------|------|
-| **Phase 0** | **Screener 重構** | **§九** | **最優先：Bottom-up 多因子 + RRG + 去重 + 資料品質。源頭乾淨，後面才有意義** `[v7 新增]` |
+| **Phase 0** | **Screener 重構** | **§九** | **最優先：Bottom-up 多因子 + RRG + 去重 + 資料品質** |
 | **Phase 1** | 基礎建設 | 模式 1, 6, 8, 9, 13 | Tool System + Feature Flags + JSON Schema + PARITY.md + 數據分級路由 |
 | **Phase 2** | 辯論 + 權限 + 安全 | 模式 3, 7, 12, 14 + Decision Authority | Coordinator 辯論 + 權限分級 + 安全防護 + Circuit Breaker + 決策權限分層 |
-| **Phase 2.5** | 成交模擬 | §6.2 Execution Reality | Slippage、Partial Fill、Limit Lock |
+| **Phase 2.5** | 成交模擬 | §6.2 Execution Reality | Slippage、Partial Fill、Limit Lock（與 §十 W5 Risk Gate 互補）|
 | **Phase 3** | 任務鏈 + Skill + 投組 | 模式 5, 10 + §6.1 Portfolio | Cron pipeline + checkpointer + Skill + Portfolio Construction |
 | **Phase 4** | 智能互動 + 記憶 | 模式 2, 4, 11 | ToolSearch + Chat compaction + Session 記憶（限 UI 範圍） |
-| **Phase 5** | 自我演化 | 模式 15, 16 + §6.3 Observability | Optuna（含 OOS lock）+ 週報審計 + 三層觀測系統 |
-| **Phase 6** | 對抗訓練 | 模式 17 | 紅藍軍（Historical Replay 優先，LLM 輔助分析） |
+| **Phase 5** | 自我演化 | 模式 15, 16 + §6.3 Observability | Optuna / hyperopt（含 OOS lock）+ 週報審計 + 觀測系統（與 §十 W4 高原掃描共用） |
+| **Phase 6** | 對抗訓練 | 模式 17 | 紅藍軍（Freqtrade Historical Replay + LLM 輔助分析）（與 §十 W3 壓力測試共用）|
 
-### Phase 0 實作順序（Screener 重構）`[v7 新增]`
+### 策略驗證軌道（§十 W1-W6）
+
+| Week | 項目 | 涵蓋 | 說明 |
+|------|------|------|------|
+| **W1** | Freqtrade 基礎建設 | §十 | Docker + OHLCV 匯出 + Strategy adapter + 首次回測 |
+| **W2** | 基礎驗證指標 | §十 | 蒙地卡羅 MDD + CAGR/Calmar/Sortino + Strategy Scorecard |
+| **W3** | 防過擬合驗證 | §十 | Walk-Forward + PBO + Stress Test（與 Phase 6 紅軍共用 Freqtrade） |
+| **W4** | 參數穩健性 | §十 | Freqtrade hyperopt + Grid Heatmap 高原掃描（與 Phase 5 Optuna 同目標） |
+| **W5** | 閉環 + 外部訊號 | §十 | Risk Gate 微調 + Trump Code + PTT Phase 1 四特徵（與 §九 Step 4 PTT 整合） |
+| **W6** | PTT Phase 2 + 進階 | §十 | IC audit 驗證 PTT features + CPCV + Dashboard |
+
+### Phase 0 實作順序（Screener 重構）
 
 | 順序 | 項目 | 前置條件 | 說明 |
 |------|------|---------|------|
@@ -1518,45 +1535,55 @@ class ExecutionSimulator:
 | 0-6 | Step 6 資料品質檢查 | 無 | 缺值/異常/時效 |
 | 0-7 | 移除舊流程 | 0-2~0-6 全完成 | 刪除 concept heat 選股邏輯（保留前端展示） |
 
-### Phase 間的依賴關係 `[v7 更新]`
+### 雙軌依賴關係 `[v8 更新]`
 
 ```
-Phase 0（Screener 重構 — 最先做）
-  │
-  └──→ Phase 1（基礎建設 + 數據分級）
-         │
-         ├──→ Phase 2（辯論 + 權限 + 熔斷 + Decision Authority）
-         │       │
-         │       ├──→ Phase 2.5（成交模擬 — Execution Reality）
-         │       │       │
-         │       │       └──→ Phase 3（任務鏈 + Skill + 投組建構）
-         │       │               │
-         │       │               └──→ Phase 5（Optuna + 週報審計 + 觀測系統）
+Phase 0（Screener 重構 — 最先做）──────── W1（Freqtrade 基礎建設）← 可平行
+  │                                         │
+  │                                         ├── W2（蒙地卡羅 + Scorecard）
+  │                                         │
+  └──→ Phase 1（基礎建設）                   ├── W3（Walk-Forward + PBO + Stress Test）
+         │                                   │        ↕ 共用 Freqtrade 引擎
+         ├──→ Phase 2（安全 + 決策權限）      ├── W4（hyperopt 高原掃描）
+         │       │                           │        ↕ 同目標：Phase 5 Optuna
+         │       ├──→ Phase 2.5（成交模擬）   │
+         │       │       ↕ 與 W5 Risk Gate 互補
+         │       │       │                   ├── W5（Risk Gate + Trump Code + PTT Phase 1）
+         │       │       └──→ Phase 3        │        ↕ PTT 整合至 §九 Step 4
+         │       │               │           │
+         │       │               └──→ Phase 5 ←─── W4 高原掃描結果
          │       │                       │
-         │       │                       └──→ Phase 6（紅藍軍 Historical Replay）
+         │       │                       └──→ Phase 6 ←─── W3 Stress Test 引擎
          │       │
          │       └──→ Phase 5（可與 Phase 3 平行）
          │
-         └──→ Phase 4（智能互動 + 記憶）← 可獨立平行
+         └──→ Phase 4（智能互動 + 記憶）     W6（PTT Phase 2 + 進階驗證）← 需 W5 完成
 ```
 
-### 時程對應 v12 藍圖 `[v5 更新]`
+### 交叉對照表 `[v8 更新]`
 
-| v12 藍圖章節 | 對應 Phase | 補強來源 | 狀態 |
-|-------------|-----------|---------|------|
-| 一、基礎設施：極簡化與數據分級 | Phase 1 | — | 架構已完成，分級路由待導入 |
-| 二、決策維度：AI 代理與高平原審計 | Phase 2 + 5 | v5: Decision Authority Layer | 待導入 |
-| 三、進化維度：神經網路自動調參 | Phase 5 | v5: OOS Lock | 待導入 |
-| 四、未來優化路徑 | Phase 6 | v5: Historical Replay 必要條件 | 規劃中 |
-| 五、風控底線 | Phase 2 | v5: 四層安全架構 | 待導入，最高優先 |
-| （外部審查新增）投組建構 | Phase 3 | v5: Portfolio Construction | 待導入 |
-| （外部審查新增）成交模擬 | Phase 2.5 | v5: Execution Reality | 待導入，優先於 Phase 3 |
-| （外部審查新增）觀測系統 | Phase 5 | v5: 3-Level Observability | 待導入 |
-| （Failure Mode Map）成交失效防禦 | Phase 2.5 | v6: FM-1~3 | 最高優先 |
-| （Failure Mode Map）模型失效防禦 | Phase 5 | v6: FM-4~6 | 待導入 |
-| （Failure Mode Map）Agent 失效防禦 | Phase 2 | v6: FM-7~9 | 待導入 |
-| （Failure Mode Map）系統韌性 | Phase 1 | v6: FM-10~12 | 基礎設施一起做 |
-| **Screener 重構** | **Phase 0** | **v7: §九** | **最優先，源頭乾淨後面才有意義** |
+| 來源 | 對應 Phase / Week | 補強來源 | 狀態 |
+|------|------------------|---------|------|
+| **Screener 重構** | **Phase 0** | v7: §九 | **最優先** |
+| Freqtrade 回測引擎 | W1 | v8: §十 | 待導入 |
+| 蒙地卡羅 MDD + Scorecard | W2 | v8: §十 | 待導入 |
+| Walk-Forward + PBO + Stress Test | W3 | v8: §十（與 Phase 6 紅軍共用引擎） | 待導入 |
+| 參數高原掃描 | W4 + Phase 5 | v8: §十 hyperopt + v4: 模式 15 Optuna | 待導入（同一目標，雙工具） |
+| Risk Gate 微調 | W5 + Phase 2 | v8: §十 + v5: Decision Authority | 待導入（同一系統） |
+| Trump Code | W5 | v8: §十 | 待導入 |
+| PTT 情緒 Phase 1 | W5 + Phase 0 Step 4 | v8: §十（詳細 4 features）+ v7: §九（screener 加分） | 待導入 |
+| PTT 情緒 Phase 2 | W6 | v8: §十 | 待導入 |
+| 基礎設施 | Phase 1 | — | 架構已完成，分級路由待導入 |
+| 辯論 + 權限 + 安全 | Phase 2 | v5: Decision Authority | 待導入 |
+| 成交模擬 | Phase 2.5 | v5: Execution Reality + v6: FM-1~3 | 待導入 |
+| 投組建構 | Phase 3 | v5: Portfolio Construction | 待導入 |
+| 智能互動 + 記憶 | Phase 4 | — | 待導入 |
+| 自我演化 | Phase 5 | v5: OOS Lock + §6.3 Observability | 待導入 |
+| 對抗訓練 | Phase 6 | v5: Historical Replay（用 W3 Freqtrade 引擎） | 規劃中 |
+| Failure Mode Map 成交失效 | Phase 2.5 | v6: FM-1~3 | 最高優先 |
+| Failure Mode Map 模型失效 | Phase 5 | v6: FM-4~6 | 待導入 |
+| Failure Mode Map Agent 失效 | Phase 2 | v6: FM-7~9 | 待導入 |
+| Failure Mode Map 系統韌性 | Phase 1 | v6: FM-10~12 | 基礎設施一起做 |
 
 ---
 
@@ -2328,3 +2355,177 @@ ALTER TABLE sector_heat ADD COLUMN quadrant TEXT;  -- 'Leading'|'Improving'|'Wea
 | 新聞情緒 | 沒用到 | 接入加分 |
 | RRG 輪動 | 前端有但 screener 沒用 | 接入 Step 3 |
 | 分類維護成本 | 手動維護 28 概念 | 官方產業別自動取得 |
+
+---
+
+## 十、策略驗證與風險評估排程（W1-W6） `[v8 新增]`
+
+> 2026/03/26 確立，Solo Dev 節奏，預估 6 週 + 1 週可選
+> 含 Freqtrade 回測引擎 + PTT 情緒分析 + Trump Code 串接
+> 與架構升級 Phase 0-6 **雙軌平行**（依賴關係見 §七）
+
+### 現有基礎（不需重建）
+
+| 模組 | 成熟度 | 位置 |
+|------|--------|------|
+| Market Risk Gate（5 級制度 + circuit breaker） | 90% | marketRisk.ts + paper.ts |
+| Performance Tracker（PnL/Sharpe 30d/MDD/MAE/MFE） | 90% | paper.ts + predictionVerifier.ts |
+| Prediction Verification（方向準確率/trade outcome） | 95% | predictionVerifier.ts |
+| Regime Detection（HMM 4 regime） | 85% | regime.py |
+| Risk-Based Position Sizing | 100% | paper.ts |
+| 回饋迴路（LinUCB bandit + stock_memories） | 70% | linucb_bandit.py + ensemble.py |
+
+> 備註：Market Risk Gate 與模式 14（5 層 Circuit Breaker）、Decision Authority Layer（§二）是**同一系統的不同面向**。
+> Risk Gate 是現有的風險分級實作，Phase 2 的 Circuit Breaker 是對它的硬編碼安全層升級。
+
+---
+
+### W1：Freqtrade 基礎建設（5 天）
+
+| Day | 任務 |
+|-----|------|
+| 1 | Docker 環境 + D1 stock_prices → Freqtrade OHLCV JSON 匯出 script |
+| 2-3 | FreqtradeStrategy class adapter（讀 ML predictions，mirror paper.ts 進出場邏輯） |
+| 4 | 首次歷史回測 2024-01 ~ 2026-03 + 交叉驗證 paper trading 實際結果 |
+| 5 | 週日 cron 自動回測骨架（Cloud Run job → D1 backtest_results） |
+
+> 與 Phase 6（紅藍軍 Historical Replay）的關係：Freqtrade 就是紅軍的回測引擎。
+> W1 建好基礎設施，Phase 6 在上面跑壓力測試。
+
+✅ 里程碑：Freqtrade 能跑歷史回測，結果可與 paper trading 對照
+
+---
+
+### W2：基礎驗證指標（4 天）
+
+| Day | 任務 | 備註 |
+|-----|------|------|
+| 1-2 | 蒙地卡羅 MDD 模擬（10000 次 bootstrap） | Cloud Run Python，從 Freqtrade 回測結果餵入 |
+| 3 | CAGR / Calmar / Sortino 計算模組 | Sortino 欄位已存在只需填值，Calmar = CAGR/MDD |
+| 4 | Strategy Scorecard 整合（低於門檻自動過濾） | 組合公式 + 存 KV |
+
+✅ 里程碑：每個 Recommendation 自動附帶完整 scorecard
+
+---
+
+### W3：防過擬合驗證（5 天）
+
+| Day | 任務 | 優先級 |
+|-----|------|--------|
+| 1-2 | Walk-Forward Analysis（Freqtrade timerange 切割） | P0 |
+| 3 | PBO（pypbo）+ Deflated Sharpe Ratio | P1 |
+| 4-5 | Stress Test + Synthetic Regime（加噪音/延遲/滑價 + 蒙地卡羅 regime 切換） | P1 |
+
+> 與 Phase 6（紅藍軍）的關係：W3 Stress Test 就是紅軍的雛形。
+> Phase 6 在此基礎上加入 LLM 輔助分析壓力測試結果。
+
+> 與模式 15（Optuna OOS Lock）的關係：W3 的 Walk-Forward 驗證框架，
+> 就是 Optuna 的 out-of-sample validation 層。兩者共用 train/validation/test 分割邏輯。
+
+✅ 里程碑：PBO < 50%、DSR 顯著、Stress Test Sharpe 衰退 < 30%
+
+---
+
+### W4：參數穩健性（4 天）
+
+| Day | 任務 |
+|-----|------|
+| 1-2 | Freqtrade hyperopt 搜索最佳 stop/target/regime 參數 |
+| 3-4 | 以 hyperopt 最佳解為中心做 Grid Heatmap 高原掃描驗證穩健性 |
+
+> 與 Phase 5（Optuna 自動調參）的關係：**同一目標，雙工具**。
+> W4 用 Freqtrade hyperopt（基於回測結果），Phase 5 用 Modal Optuna（基於 live data）。
+> W4 先做（基於歷史數據），Phase 5 後做（基於每週 live 表現）。
+> 兩者都追求「參數高平原」而非「孤峰」。
+
+✅ 里程碑：最佳參數周圍 ±20% 範圍內 Sharpe 衰退 < 15%（高原而非尖峰）
+
+---
+
+### W5：閉環 + Dashboard + 外部訊號（5 天）
+
+| Day | 任務 | 優先級 |
+|-----|------|--------|
+| 1 | Risk Gate 分級微調（risk_level → 倉位比例映射） | P0 |
+| 2 | 推薦 vs 實際對照 Dashboard | P1 |
+| 3 | Trump Code 串接（fetch daily_report.json → market_risk ±5） | P1 |
+| 4-5 | PTT 情緒 Phase 1（4 features） | P1 |
+
+#### Trump Code 串接細節
+
+- Morning Setup 09:00 加 fetch `daily_report.json`
+- TARIFF + CHINA → market_risk +5，RELIEF → market_risk -5
+- mutation_score > 10 → 標記 regime_alert
+- 權重壓低，壞了不影響主 pipeline
+- Circuit breaker：連續 3 天訊號相反 → 自動停用
+
+#### PTT 情緒 Phase 1 細節
+
+> 與 §九 Screener Step 4 的關係：PTT 4 features 是 Step 4 情緒加分的**具體實作**。
+> §九 定義了 PTT buzz bonus (0-5) 的位置，這裡定義怎麼算。
+
+**資料清洗（進場前過濾）**：
+- 標題 regex 黑名單：`/請益|閒聊|心得分享|新手|開戶|抽籤/` → 丟棄
+- 正文 < 30 字 → 丟棄（純喊單無訊號）
+- 同日同作者相似標題 → content hash 去重，只留一篇
+- 總互動（推+噓+箭頭）< 3 → 丟棄（無人關注的文章）
+
+**分類（加權詞庫 + 否定偵測，不用 NLP 分類器）**：
+- 利多詞庫：`突破|創高|法說利多|上調|營收暴增|外資買|投信買` → +1
+- 利空詞庫：`崩|跌停|外資砍|下修|利空|破底|融資追繳` → -1
+- 否定偵測：`不會崩|沒有利空|不可能跌` → 翻轉分數
+- 每篇算 net sentiment score，聚合為當日特徵向量
+
+**4 features 存 D1**：
+
+| Feature | 定義 | 用途 |
+|---------|------|------|
+| `ptt_volume_ratio` | 發文量 vs 20 日均量倍數 | 異常關注度偵測 |
+| `ptt_bearish_pct` | 利空關鍵字佔比（清洗後） | 市場恐慌指標 |
+| `ptt_push_ratio` | 推噓比中位數 | 散戶情緒方向 |
+| `ptt_burst` | 量暴增 binary（>3x 均量） | Code Change Detection |
+
+**原則**：
+- 作為 ML feature 輸入（跟 `us_sox_return` 同層級），不獨立決策
+- 每日聚合為特徵向量（不逐篇分析）
+- 行為改變本身就是訊號（Code Change Detection 從 Trump Code 搬來）
+
+✅ 里程碑：完整閉環 — 推薦 → 追蹤 → 回饋 → 優化 + 外部訊號
+
+---
+
+### W6：PTT Phase 2 + 進階驗證（可選）
+
+| 任務 | 優先級 |
+|------|--------|
+| PTT Phase 2：用 Walk-Forward + IC audit 驗證 PTT features 有效性 | P1 |
+| IC < 0.02 → 自動降權（現有 ml:weak_features 機制） | P1 |
+| CPCV（Combinatorial Purged CV） | P2 |
+| Dashboard：排程動態化 + Job 歷史 + Market Risk 歷史圖 | P1 |
+| 錯誤通知（LINE Notify / Telegram） | P1 |
+
+#### PTT 特有維度（Phase 2+ 才處理）
+
+| 維度 | 實作 | 難度 |
+|------|------|------|
+| 標題黨過濾 | NLP 分類器區分「喊單噪音」vs「有內容」 | 中高 |
+| 重複帳號/分身 | 發文頻率 + 帳號年齡 + 相似度偵測 | 高 |
+| 散戶 vs 大戶 | 歷史發文準確率建立信用分數 | 高（需長期累積） |
+
+---
+
+### 長期方向（不在 W1-W6 排程內）
+
+需要 W1-W5 驗證基礎設施完成後才有意義：
+- Genetic / Bayesian Strategy Search
+- Automated Feature Pruning
+- Meta-learning for model / parameter selection
+- PTT 深度分析（散戶/大戶分級、刪文偵測）
+
+### 注意事項
+
+- 蒙地卡羅 + 高原掃描 + Freqtrade hyperopt 計算量大，跑在 Cloud Run
+- Freqtrade 做歷史回測引擎，現有 paper trading 做前向測試（混合方案）
+- Trump Code 只做 Risk Gate 輸入（+5/-5），不做交易依據
+- PTT features 必須通過驗證框架確認有效後才上線
+- P0 = 必做、P1 = 強烈建議、P2 = 可選

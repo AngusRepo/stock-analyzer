@@ -815,13 +815,29 @@ async function runMLAndRisk(env: Bindings) {
     return
   }
 
-  // ── 2c. Controller 並行推論（Modal .map → 50 stocks in ~30s）────────────
-  console.log(`[ML] Sending ${payloads.length} stocks to Controller /batch-predict...`)
+  // ── 2c. Controller 分批推論（避免 CF Worker 100s subrequest timeout）─────
   const t0 = Date.now()
-  const controllerResult = await postController(env, '/batch-predict', { stocks: payloads }) as any
+  const results: any[] = []
+  const BATCH_SIZE = 12  // 12 stocks/batch ≈ 60-80s（含 Modal cold start）
+  console.log(`[ML] Sending ${payloads.length} stocks in batches of ${BATCH_SIZE}...`)
+
+  for (let i = 0; i < payloads.length; i += BATCH_SIZE) {
+    const batch = payloads.slice(i, i + BATCH_SIZE)
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1
+    const totalBatches = Math.ceil(payloads.length / BATCH_SIZE)
+    try {
+      console.log(`[ML] Batch ${batchNum}/${totalBatches}: ${batch.length} stocks...`)
+      const batchResult = await postController(env, '/batch-predict', { stocks: batch }, 90_000) as any
+      results.push(...(batchResult.results ?? []))
+      console.log(`[ML] Batch ${batchNum} done: ${(batchResult.results ?? []).length} results`)
+    } catch (e: any) {
+      console.error(`[ML] Batch ${batchNum} failed: ${e.message}`)
+      // 繼續下一批，不中斷整個 pipeline
+    }
+  }
+
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-  const results = controllerResult.results ?? []
-  console.log(`[ML] Controller returned ${results.length} results in ${elapsed}s (${controllerResult.errors ?? 0} errors)`)
+  console.log(`[ML] All batches done: ${results.length}/${payloads.length} in ${elapsed}s`)
 
   // ── 2d. 寫入 D1 predictions + KV 快取 ─────────────────────────────────────
   let written = 0

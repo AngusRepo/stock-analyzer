@@ -602,7 +602,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
       `).bind(
         mlScore, totalScore,
         safeNull(ml?.signal), safeNull(ml?.confidence),
-        safeNull(currentPrice), sig.includes('BUY') ? 1 : 0,
+        safeNull(currentPrice), sig?.includes('BUY') ? 1 : 0,
         buildReason(reasonData), JSON.stringify(buildWatchPoints(reasonData)),
         payload ? (payload.foreign_net_5d ?? 0) / 1e8 : 0,
         payload ? (payload.trust_net_5d ?? 0) / 1e8 : 0,

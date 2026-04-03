@@ -1103,27 +1103,41 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── 建資料結構 ──
   const data = buildStockData(allPrices, allChips)
-  // 大盤 5d return：永遠從 D1 算（確保可重現，不受 API 波動影響）
+  // 大盤 5d return：用 D1 的 0050（元大台灣50 ETF）作為 benchmark
+  // 0050 追蹤加權指數，是最穩定的大盤代理。若沒有就用加權指數近似
   let marketReturn5d = 0
   try {
-    // 用 D1 全市場等權平均 5 日報酬
-    const { results: mktRows } = await env.DB.prepare(`
-      SELECT AVG(ret) as avg_ret FROM (
-        SELECT (sp1.close - sp2.close) / sp2.close as ret
-        FROM stock_prices sp1
-        JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
-        JOIN stocks s ON s.id = sp1.stock_id
-        WHERE sp1.date = (SELECT MAX(date) FROM stock_prices)
-          AND sp2.date = (SELECT date FROM (SELECT DISTINCT date FROM stock_prices ORDER BY date DESC LIMIT 6) ORDER BY date ASC LIMIT 1)
-          AND sp2.close > 0
-        LIMIT 1000
-      )
-    `).all<{ avg_ret: number }>()
-    if (mktRows?.[0]?.avg_ret != null) {
-      marketReturn5d = mktRows[0].avg_ret
+    const latestDate = await env.DB.prepare("SELECT MAX(date) as d FROM stock_prices").first<{ d: string }>()
+    const fiveDaysAgoDate = await env.DB.prepare(
+      "SELECT date FROM (SELECT DISTINCT date FROM stock_prices ORDER BY date DESC LIMIT 6) ORDER BY date ASC LIMIT 1"
+    ).first<{ date: string }>()
+
+    if (latestDate?.d && fiveDaysAgoDate?.date) {
+      // 嘗試 0050 ETF
+      const row0050 = await env.DB.prepare(`
+        SELECT
+          (SELECT close FROM stock_prices sp JOIN stocks s ON sp.stock_id=s.id WHERE s.symbol='0050' AND sp.date=?) as latest,
+          (SELECT close FROM stock_prices sp JOIN stocks s ON sp.stock_id=s.id WHERE s.symbol='0050' AND sp.date=?) as old
+      `).bind(latestDate.d, fiveDaysAgoDate.date).first<{ latest: number; old: number }>()
+
+      if (row0050?.latest && row0050?.old && row0050.old > 0) {
+        marketReturn5d = (row0050.latest - row0050.old) / row0050.old
+      } else {
+        // Fallback: 全市場中位數（確定性，不用 LIMIT）
+        const { results: allRets } = await env.DB.prepare(`
+          SELECT (sp1.close - sp2.close) / sp2.close as ret
+          FROM stock_prices sp1
+          JOIN stock_prices sp2 ON sp1.stock_id = sp2.stock_id
+          WHERE sp1.date = ? AND sp2.date = ? AND sp2.close > 0
+        `).bind(latestDate.d, fiveDaysAgoDate.date).all<{ ret: number }>()
+
+        if (allRets?.length) {
+          const sorted = allRets.map(r => r.ret).sort((a, b) => a - b)
+          marketReturn5d = sorted[Math.floor(sorted.length / 2)]  // 中位數
+        }
+      }
     }
   } catch (e) {
-    // Fallback: 用 API 資料
     marketReturn5d = calcMarketReturn5d(data)
     console.warn('[Screener v2] D1 marketReturn 查詢失敗，fallback API:', e)
   }
@@ -1732,6 +1746,28 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     ).bind(endDate).run()
 
     console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
+
+    // 對缺 technical_indicators 的新股立即計算（不等 Queue，避免 ML NO_SIGNAL）
+    try {
+      const { computeAndStoreIndicators } = await import('../routes/stocks')
+      const { results: noTiStocks } = await env.DB.prepare(`
+        SELECT s.id, s.symbol FROM stocks s
+        WHERE s.is_active = 1
+          AND NOT EXISTS (SELECT 1 FROM technical_indicators ti WHERE ti.stock_id = s.id AND ti.date >= date('now', '-3 days'))
+          AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
+      `).all<{ id: number; symbol: string }>()
+
+      if (noTiStocks?.length) {
+        let computed = 0
+        for (const stock of noTiStocks) {
+          await computeAndStoreIndicators(env.DB, stock.id)
+          computed++
+        }
+        console.log(`[Screener v2] 補算 ${computed} 支新股的 technical_indicators: ${noTiStocks.map(s => s.symbol).join(', ')}`)
+      }
+    } catch (e) {
+      console.warn('[Screener v2] 新股 TI 補算失敗 (non-blocking):', e)
+    }
   } catch (e) {
     console.warn('[Screener v2] daily_recommendations 寫入失敗:', e)
   }

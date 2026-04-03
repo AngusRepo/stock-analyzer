@@ -247,6 +247,80 @@ ATR14: ${s.atr14?.toFixed(2) ?? 'N/A'}
 交易信號: ${s.tradeSignal ?? 'N/A'} | 進場=${s.entryPrice ?? 'N/A'} | 止損=${s.stopLoss ?? 'N/A'} | 目標1=${s.target1 ?? 'N/A'} | 目標2=${s.target2 ?? 'N/A'}`
 }
 
+// ─── Batch Recommendation Reasons（全部打包 1 次 Haiku call）──────────────────
+export interface RecommendationCandidate {
+  symbol: string
+  name: string
+  signal: string
+  score: number
+  chip_score: number
+  tech_score: number
+  ml_score: number
+  ml_confidence: number
+  ml_models_up: number
+  ml_models_down: number
+  ml_models_total: number
+  rsi14: number | null
+  macd_hist: number | null
+  foreign_net_5d: number | null
+  trust_net_5d: number | null
+  current_price: number | null
+}
+
+export async function generateRecommendationReasons(
+  apiKey: string,
+  candidates: RecommendationCandidate[],
+  topThemes: string[] = [],
+): Promise<Map<string, { reason: string; watchPoints: string[] }>> {
+  const result = new Map<string, { reason: string; watchPoints: string[] }>()
+  if (!candidates.length) return result
+
+  const system = `你是台灣股市資深分析師，負責為每日推薦清單撰寫簡潔推薦理由。
+規則：
+- 每支股票的 reason 限 120 字以內，需整合籌碼、技術、ML 三面向的重點
+- watchPoints 給 2-3 條觀察重點（每條 30 字以內）
+- 語氣專業簡潔，不用「建議」「推薦」等字眼，改用「留意」「觀察」
+- 若 ML 信心高(>0.6)，可強調模型共識；若低(<0.5)，強調需確認
+- 必須回傳 JSON array，格式：[{"symbol":"2330","reason":"...","watchPoints":["...","..."]}]
+- 長度必須和輸入股票數量完全一致`
+
+  const stockList = candidates.map((c, i) => {
+    const chipAmt = ((c.foreign_net_5d ?? 0) + (c.trust_net_5d ?? 0)).toFixed(1)
+    return `${i + 1}. ${c.symbol} ${c.name} | signal=${c.signal} score=${c.score}(籌碼${c.chip_score}+技術${c.tech_score}+ML${c.ml_score}) | ML投票${c.ml_models_up}↑/${c.ml_models_down}↓(共${c.ml_models_total}) conf=${(c.ml_confidence * 100).toFixed(0)}% | RSI=${c.rsi14?.toFixed(0) ?? 'N/A'} MACD${(c.macd_hist ?? 0) > 0 ? '多' : '空'} | 5日法人淨額${chipAmt}億 | 價${c.current_price ?? 'N/A'}`
+  }).join('\n')
+
+  const themeHint = topThemes.length ? `\n\n今日主流主題：${topThemes.join('、')}` : ''
+
+  try {
+    const raw = await callClaude(
+      apiKey,
+      system,
+      `請為以下 ${candidates.length} 支推薦股票各寫一段推薦理由：\n${stockList}${themeHint}`,
+      Math.min(4096, candidates.length * 200),
+      'haiku',
+      true,
+    )
+
+    const match = raw.match(/\[[\s\S]*\]/s)
+    if (match) {
+      const parsed: Array<{ symbol: string; reason: string; watchPoints: string[] }> = JSON.parse(match[0])
+      for (const item of parsed) {
+        if (item.symbol && item.reason) {
+          result.set(item.symbol, {
+            reason: item.reason.slice(0, 200),
+            watchPoints: (item.watchPoints ?? []).slice(0, 3),
+          })
+        }
+      }
+    }
+    console.log(`[LLM] 推薦理由生成完成：${result.size}/${candidates.length} 支`)
+  } catch (e) {
+    console.error('[LLM] 推薦理由生成失敗（使用 template fallback）:', e)
+  }
+
+  return result
+}
+
 // ─── Batch News Sentiment（5篇一批，省 80% API 呼叫次數）──────────────────────
 export async function batchAnalyzeSentiment(
   apiKey: string,

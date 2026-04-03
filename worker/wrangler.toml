@@ -35,13 +35,11 @@ binding = "AI"
 
 [vars]
 ENVIRONMENT = "production"
-ML_SERVICE_URL = "https://wayne60619--stockvision-ml-fastapi-app.modal.run"
-# Phase 3 MVC: Cloud Run ML Controller（部署後填入）
-# ML_CONTROLLER_URL = "https://ml-controller-xxx.a.run.app"
 # 前端 Pages 精確 URL（部署完成後填入，用於 CORS 白名單）
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
 
 # 以下 secrets 請用 wrangler secret put 設定：
+# wrangler secret put ML_SERVICE_URL       ← Modal ML endpoint（已從 [vars] 移出）
 # wrangler secret put JWT_SECRET
 # wrangler secret put GOOGLE_CLIENT_ID
 # wrangler secret put GOOGLE_CLIENT_SECRET

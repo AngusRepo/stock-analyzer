@@ -704,12 +704,17 @@ def predict_all_models(req: PredictRequest):
         ("LightGBM",        lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names),  True),
         ("FT-Transformer",  lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),       True),
     ]
+    import time as _time
+    model_timings = {}
     for name, fn, needs_feat in specs:
-        if needs_feat and len(X) < 30:
+        if needs_feat and len(X) < 20:
             results[name] = {"error": "insufficient feature samples"}
             continue
         try:
+            t0 = _time.monotonic()
             p = fn()
+            elapsed_ms = round((_time.monotonic() - t0) * 1000)
+            model_timings[name] = elapsed_ms
             results[name] = {
                 "direction": p.direction, "confidence": p.confidence,
                 "forecast_pct": p.forecast_pct, "direction_accuracy": p.direction_accuracy,
@@ -720,7 +725,9 @@ def predict_all_models(req: PredictRequest):
 
     garch_vol = run_garch_volatility(prices_arr, horizon=5)
     return {"stock_id": req.stock_id, "symbol": req.symbol,
-            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None}
+            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None,
+            "model_timings_ms": model_timings,
+            "feature_count": len(X)}
 
 
 # ── Phase 3: Factor IC 監控 endpoint ────────────────────────────────────────
@@ -751,6 +758,41 @@ async def factor_ic(req: PredictRequest, request: Request):
         "total_features": len(FEATURE_COLS),
         "effective_count": len(effective),
         "dropped_count": len(FEATURE_COLS) - len(effective),
+    }
+
+
+# ── Feature Drift Detection endpoint ──────────────────────────────────────────
+@app.post("/feature-drift")
+async def feature_drift(req: PredictRequest, request: Request):
+    """
+    偵測特徵分佈漂移：比較訓練期（前 80%）vs 近期（後 20%）的 quantile shift。
+    Drifted features 應降低權重或觸發 retrain。
+    """
+    await verify_service_token(request)
+    from .factor_monitor import detect_feature_drift
+    from .features import FEATURE_COLS
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(req.prices, req.indicators, chips_input,
+                               req.sentiment_scores, req.market_env)
+
+    if len(df) < 30:
+        return {"error": "insufficient data for drift detection", "sample_count": len(df)}
+
+    split_idx = int(len(df) * 0.8)
+    df_train = df.iloc[:split_idx]
+    df_recent = df.iloc[split_idx:]
+
+    drift_results = detect_feature_drift(df_train, df_recent, FEATURE_COLS)
+    drifted_count = sum(1 for r in drift_results if r["drifted"])
+
+    return {
+        "stock_id": req.stock_id,
+        "symbol": req.symbol,
+        "drift_results": drift_results,
+        "drifted_count": drifted_count,
+        "total_features": len(drift_results),
+        "needs_retrain": drifted_count > len(drift_results) * 0.3,
     }
 
 

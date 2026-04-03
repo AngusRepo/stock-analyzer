@@ -15,6 +15,7 @@
  */
 
 import type { Bindings } from '../types'
+import { generateRecommendationReasons, type RecommendationCandidate } from './llm'
 
 interface SectorSummary {
   sector: string
@@ -628,6 +629,59 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
 
     recommendations = finalRecs ?? []
     console.log(`[Recommendation] ML 補分完成: ${recommendations.length} 支推薦 (過濾 ${sellCount} SELL)`)
+
+    // ── LLM 推薦理由（覆寫 template reason，失敗時保留 template）──
+    if (recommendations.length && env.ANTHROPIC_API_KEY) {
+      try {
+        const { results: recRows } = await env.DB.prepare(
+          `SELECT symbol, name, signal, score, chip_score, tech_score, ml_score,
+                  confidence, foreign_net_5d, trust_net_5d, rsi14, macd_hist, current_price
+           FROM daily_recommendations WHERE date = ? ORDER BY rank`
+        ).bind(today).all<any>()
+
+        if (recRows?.length) {
+          const llmCandidates: RecommendationCandidate[] = recRows.map(r => {
+            const payload = stockPayloads.find(s => s.symbol === r.symbol)
+            return {
+              symbol: r.symbol,
+              name: r.name,
+              signal: r.signal ?? 'HOLD',
+              score: r.score ?? 0,
+              chip_score: r.chip_score ?? 0,
+              tech_score: r.tech_score ?? 0,
+              ml_score: r.ml_score ?? 0,
+              ml_confidence: r.confidence ?? 0,
+              ml_models_up: payload?.ml_models_up ?? 0,
+              ml_models_down: payload?.ml_models_down ?? 0,
+              ml_models_total: payload?.ml_models_total ?? 0,
+              rsi14: r.rsi14,
+              macd_hist: r.macd_hist,
+              foreign_net_5d: r.foreign_net_5d,
+              trust_net_5d: r.trust_net_5d,
+              current_price: r.current_price,
+            }
+          })
+
+          const topThemes = themeSectors.slice(0, 5).map(s => s.sector)
+          const llmReasons = await generateRecommendationReasons(env.ANTHROPIC_API_KEY, llmCandidates, topThemes)
+
+          if (llmReasons.size > 0) {
+            const llmUpdateBatch = []
+            for (const [symbol, { reason, watchPoints }] of llmReasons) {
+              llmUpdateBatch.push(env.DB.prepare(
+                "UPDATE daily_recommendations SET reason = ?, watch_points = ? WHERE date = ? AND symbol = ?"
+              ).bind(reason, JSON.stringify(watchPoints), today, symbol))
+            }
+            for (let b = 0; b < llmUpdateBatch.length; b += 50) {
+              await env.DB.batch(llmUpdateBatch.slice(b, b + 50))
+            }
+            console.log(`[Recommendation] LLM 理由覆寫完成：${llmReasons.size} 支`)
+          }
+        }
+      } catch (e) {
+        console.error('[Recommendation] LLM 理由失敗（保留 template）:', e)
+      }
+    }
   }
 
   if (!recommendations.length) {

@@ -19,6 +19,7 @@ def compute_triple_barrier_labels(
     upper_pct_cap: float = 0.07,   # 停利上限 7%
     lower_pct_cap: float = 0.03,   # 停損上限 3%
     max_days: int = 20,
+    transaction_cost_pct: float = 0.003,  # 來回手續費+稅 0.3%（台股：買 0.1425% + 賣 0.1425% + 證交稅 0.15%）
 ) -> pd.Series:
     """
     三重屏障標籤：
@@ -44,9 +45,10 @@ def compute_triple_barrier_labels(
             continue
 
         atr = atr_arr[i] if not np.isnan(atr_arr[i]) else price * 0.02
-        # 動態邊界 + 百分比封頂
-        upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap)
-        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap)
+        # 動態邊界 + 百分比封頂 — 扣除交易成本（barrier 需要覆蓋成本才算獲利）
+        cost = price * transaction_cost_pct
+        upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap) + cost
+        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap) + cost
 
         end_idx = min(i + max_days, n - 1)
         if end_idx <= i:

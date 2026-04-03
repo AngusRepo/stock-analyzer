@@ -35,18 +35,18 @@ function fmt(n: number | null | undefined, decimals = 0): string {
 }
 
 function pctClass(pct: number): string {
-  if (pct > 0) return 'text-emerald-400'
-  if (pct < 0) return 'text-red-400'
+  if (pct > 0) return 'text-red-400'
+  if (pct < 0) return 'text-emerald-400'
   return 'text-zinc-400'
 }
 
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
-  // 暗綠 #228B22, 暗紅 #B22222 — Gemini 建議的沉穩配色
-  if (s.includes('STRONG_BUY')) return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>STRONG BUY</Badge>
-  if (s.includes('BUY'))        return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>BUY</Badge>
-  if (s.includes('STRONG_SELL'))return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>STRONG SELL</Badge>
-  if (s.includes('SELL'))       return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>SELL</Badge>
+  // 台股慣例：紅=買/漲, 綠=賣/跌
+  if (s.includes('STRONG_BUY')) return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>STRONG BUY</Badge>
+  if (s.includes('BUY'))        return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>BUY</Badge>
+  if (s.includes('STRONG_SELL'))return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>STRONG SELL</Badge>
+  if (s.includes('SELL'))       return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>SELL</Badge>
   if (s.includes('NO_SIGNAL'))  return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">—</Badge>
   return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">HOLD</Badge>
 }
@@ -102,8 +102,8 @@ function MicroRRG({ quadrant }: { quadrant?: string }) {
 function WinLossBadge({ win }: { win: boolean | null }) {
   if (win === null) return <span className="text-zinc-600 text-xs">-</span>
   return win
-    ? <span className="text-xs font-bold text-emerald-400">勝</span>
-    : <span className="text-xs font-bold text-red-400">負</span>
+    ? <span className="text-xs font-bold text-red-400">勝</span>
+    : <span className="text-xs font-bold text-emerald-400">負</span>
 }
 
 function PortfolioSummary() {
@@ -414,12 +414,12 @@ function PositionsTable() {
                   </td>
                   <td className="p-2 text-right">
                     {p.tp1_price && (
-                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-zinc-500 line-through' : 'text-emerald-400'}`}>
+                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-zinc-500 line-through' : 'text-red-400'}`}>
                         T1 ${fmt(p.tp1_price, 1)}
                       </div>
                     )}
                     {p.tp2_price && (
-                      <div className="font-mono text-xs text-emerald-300">T2 ${fmt(p.tp2_price, 1)}</div>
+                      <div className="font-mono text-xs text-red-300">T2 ${fmt(p.tp2_price, 1)}</div>
                     )}
                     {!p.tp1_price && !p.tp2_price && <span className="text-zinc-600">—</span>}
                   </td>
@@ -507,8 +507,8 @@ function TradeHistory() {
                 </td>
                 <td className="p-2">
                   <Badge className={isBuy
-                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                    : 'bg-red-500/20 text-red-400 border-red-500/30'
+                    ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                    : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
                   }>
                     {isBuy ? <ArrowUpRight className="w-3 h-3 mr-1" /> : <ArrowDownRight className="w-3 h-3 mr-1" />}
                     {o.side?.toUpperCase()}

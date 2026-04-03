@@ -834,7 +834,16 @@ async function calcIndustryRRG(
   }
   const avgValues = [...industryAvgMap.values()]
   const mean = avgValues.reduce((a, b) => a + b, 0) / avgValues.length
-  const std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
+  let std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
+
+  // ── Plateau Calibration: 偵測 RS-Ratio 壓縮，放寬 normalization ──
+  // 全市場報酬 std 太低（< 0.005 = 0.5%）→ 所有產業擠在 95-105
+  // 放大 std 使 Z-score 更離散，恢復象限分布
+  if (std < 0.005) {
+    const calibratedStd = 0.005
+    console.log(`[RRG] Plateau detected: std=${(std * 100).toFixed(3)}% < 0.5% → calibrate to ${(calibratedStd * 100).toFixed(1)}%`)
+    std = calibratedStd
+  }
 
   // ── 計算 RS-Ratio ──
   // 查歷史 RS-Ratio（用 sector_flow 前日資料算 momentum）

@@ -29,7 +29,7 @@ function fmtChipAmount(billion: number | null | undefined): string {
 // ─── Signal badge config ───────────────────────────────────────────────────
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
   STRONG_BUY: { label: '強烈買進', color: 'bg-red-500 text-white',     icon: Zap },
-  BUY:        { label: '買進',     color: 'bg-green-500 text-white',   icon: TrendingUp },
+  BUY:        { label: '買進',     color: 'bg-orange-500 text-white',  icon: TrendingUp },
   HOLD:       { label: '觀望',     color: 'bg-yellow-500 text-white',  icon: Minus },
   SELL:       { label: '賣出',     color: 'bg-blue-500 text-white',    icon: TrendingDown },
   STRONG_SELL:{ label: '強烈賣出', color: 'bg-purple-600 text-white',  icon: TrendingDown },
@@ -97,7 +97,7 @@ export function RecommendationCard({ rec, rank }: { rec: any; rank: number }) {
               {sig.label}
             </Badge>
             {/* Chip flow */}
-            <span className={cn('text-xs flex items-center gap-1', chipPositive ? 'text-green-600' : 'text-red-500')}>
+            <span className={cn('text-xs flex items-center gap-1', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
               <Users className="w-3 h-3" />
               法人 {fmtChipAmount(chip5dRaw)}
             </span>
@@ -189,22 +189,22 @@ function SectorFlowBar({ flow, maxAbs }: { flow: any; maxAbs: number }) {
     <div className="flex items-center gap-2 text-xs">
       <span className="w-20 truncate text-muted-foreground shrink-0" title={flow.sector}>{flow.sector}</span>
       <div className="flex-1 flex items-center h-4">
-        {/* 左半：賣超（紅色，從中間向左長） */}
+        {/* 左半：賣超（綠色，從中間向左長） */}
         <div className="w-1/2 flex justify-end">
           {!positive && (
-            <div className="bg-red-400/70 h-3 rounded-sm" style={{ width: `${pct}%` }} />
+            <div className="bg-emerald-400/70 h-3 rounded-sm" style={{ width: `${pct}%` }} />
           )}
         </div>
         {/* 中線 */}
         <div className="w-px h-4 bg-border shrink-0" />
-        {/* 右半：買超（綠色，從中間向右長） */}
+        {/* 右半：買超（紅色，從中間向右長） */}
         <div className="w-1/2">
           {positive && (
-            <div className="bg-emerald-500/80 h-3 rounded-sm" style={{ width: `${pct}%` }} />
+            <div className="bg-red-500/80 h-3 rounded-sm" style={{ width: `${pct}%` }} />
           )}
         </div>
       </div>
-      <span className={cn('w-16 text-right font-mono', positive ? 'text-emerald-400' : 'text-red-400')}>
+      <span className={cn('w-16 text-right font-mono', positive ? 'text-red-400' : 'text-emerald-400')}>
         {fmtChipAmount(net)}
       </span>
     </div>
@@ -344,7 +344,7 @@ function WordCloud({ items, type }: { items: { text: string; value: number; posi
               key={item.text}
               className={cn(
                 'absolute cursor-default hover:scale-125 hover:!opacity-100 transition-[transform,opacity] duration-200',
-                item.positive ? 'text-cyan-400' : 'text-red-400',
+                item.positive ? 'text-red-400' : 'text-emerald-400',
               )}
               style={{
                 left: `${x}%`,
@@ -402,14 +402,14 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
                   <td className="py-1 px-1">
                     <div className="flex items-center h-3">
                       <div className="w-1/2 flex justify-end">
-                        {net < 0 && <div className="bg-red-400/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
+                        {net < 0 && <div className="bg-emerald-400/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
                       </div>
                       <div className="w-px h-3 bg-zinc-700 shrink-0" />
                       <div className="w-1/2">
-                        {net >= 0 && <div className="bg-emerald-500/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
+                        {net >= 0 && <div className="bg-red-500/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
                       </div>
                     </div>
-                    <div className={cn('text-[10px] font-mono text-center', net >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                    <div className={cn('text-[10px] font-mono text-center', net >= 0 ? 'text-red-400' : 'text-emerald-400')}>
                       {fmtChipAmount(net)}
                     </div>
                   </td>
@@ -520,7 +520,7 @@ export function ThemeFlowPanel() {
           )}
           {/* Bar chart — 買超 */}
           <div>
-            <p className="text-xs text-emerald-400 font-medium mb-2">買超前 10 大</p>
+            <p className="text-xs text-red-400 font-medium mb-2">買超前 10 大</p>
             <div className="space-y-1.5">
               {topBuy.length ? topBuy.map((f: any) => (
                 <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
@@ -529,7 +529,7 @@ export function ThemeFlowPanel() {
           </div>
           {/* Bar chart — 賣超 */}
           <div>
-            <p className="text-xs text-red-400 font-medium mb-2">賣超前 10 大</p>
+            <p className="text-xs text-emerald-400 font-medium mb-2">賣超前 10 大</p>
             <div className="space-y-1.5">
               {topSell.length ? topSell.map((f: any) => (
                 <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
@@ -640,7 +640,7 @@ function QuadrantFilterLog() {
               {entry.quadrant}
             </Badge>
             {entry.momentum_dir && (
-              <span className={cn('text-[10px]', entry.momentum_dir === 'up' ? 'text-emerald-400' : 'text-red-400')}>
+              <span className={cn('text-[10px]', entry.momentum_dir === 'up' ? 'text-red-400' : 'text-emerald-400')}>
                 {entry.momentum_dir === 'up' ? '▲' : '▼'}
               </span>
             )}
@@ -714,8 +714,8 @@ export function BotThemeFlowPanel() {
             </div>
           )}
           {/* Bot Ranking Tables — 含象限 + RS 差異化 */}
-          <BotThemeRankingTable flows={topBuy} title="買超前 10 大" color="text-emerald-400" />
-          <BotThemeRankingTable flows={topSell} title="賣超前 10 大" color="text-red-400" />
+          <BotThemeRankingTable flows={topBuy} title="買超前 10 大" color="text-red-400" />
+          <BotThemeRankingTable flows={topSell} title="賣超前 10 大" color="text-emerald-400" />
         </div>
       )}
     </div>

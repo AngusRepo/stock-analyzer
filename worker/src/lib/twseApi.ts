@@ -8,6 +8,40 @@
  * 全部免費、無配額限制。
  */
 
+// ─── Retry wrapper ───────────────────────────────────────────────────────────
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit = {},
+  opts: { maxRetries?: number; baseDelay?: number; label?: string } = {},
+): Promise<Response> {
+  const { maxRetries = 3, baseDelay = 2000, label = url.slice(0, 60) } = opts
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, init)
+      if (res.status === 429 || res.status === 503) {
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1)
+          console.warn(`[twseApi] ${label} → ${res.status}, retry ${attempt}/${maxRetries} in ${delay}ms`)
+          await new Promise(r => setTimeout(r, delay))
+          continue
+        }
+      }
+      return res
+    } catch (e: any) {
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1)
+        console.warn(`[twseApi] ${label} → ${e.message ?? e}, retry ${attempt}/${maxRetries} in ${delay}ms`)
+        await new Promise(r => setTimeout(r, delay))
+      } else {
+        throw e
+      }
+    }
+  }
+  throw new Error(`[twseApi] ${label} → max retries exceeded`)
+}
+
+const TWSE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseTwNum(s: string): number {
@@ -545,10 +579,10 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
 
 export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/fund/T86?date=${twseDate(date)}&selectType=ALL&response=json`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TWSE_T86' })
   if (!res.ok) throw new Error(`TWSE T86 HTTP ${res.status}`)
   const body = await res.json() as any
   if (body.stat !== 'OK' || !body.data) return []
@@ -573,10 +607,10 @@ export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
 
 export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
   const url = `https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&d=${rocDate(date)}&t=D&o=json`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TPEX_3ITRADE' })
   if (!res.ok) throw new Error(`TPEX 3itrade HTTP ${res.status}`)
   const text = await res.text()
   if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
@@ -800,10 +834,10 @@ export interface StockDayAllRow {
 export async function fetchTwseStockDayAll(date: string): Promise<StockDayAllRow[]> {
   // 不帶 date → TWSE 回最新交易日；帶 date 指定特定日期
   const url = `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date=${twseDate(date)}&response=json`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TWSE_STOCK_DAY_ALL' })
   if (!res.ok) return []
   const body = await res.json() as any
   if (body.stat !== 'OK' || !body.data) return []
@@ -823,10 +857,10 @@ export async function fetchTwseStockDayAll(date: string): Promise<StockDayAllRow
 /** TPEX 全市場今日收盤（openapi）*/
 export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  })
+  }, { label: 'TPEX_DAILY_QUOTES' })
   if (!res.ok) return []
   const text = await res.text()
   if (!text.startsWith('[')) return []

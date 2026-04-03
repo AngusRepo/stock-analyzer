@@ -675,7 +675,8 @@ async function runMLAndRisk(env: Bindings) {
         const mlHeaders: Record<string, string> = {}
         if (env.ML_SERVICE_SECRET) mlHeaders['X-Service-Token'] = env.ML_SERVICE_SECRET
         await fetch(`${env.ML_SERVICE_URL}/warmup`, { headers: mlHeaders, signal: AbortSignal.timeout(90_000) }).catch(() => {})
-        await env.ML_QUEUE.send({ type: 'ml_batch', cursor: 0, triggerTime: today })
+        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        await env.ML_QUEUE.send({ type: 'ml_batch', cursor: 0, triggerTime: twToday })
         console.log('[Cron] ML_CONTROLLER_URL not set, falling back to legacy ML_QUEUE')
       } catch (e) { console.error('[Cron] Legacy ML fallback failed:', e) }
     } else {
@@ -866,6 +867,33 @@ async function runMLAndRisk(env: Bindings) {
   }
   console.log(`[ML] Batch predict done: ${written}/${payloads.length} written, ${elapsed}s total`)
 
+  // ── 2d+. Store per-model timing & feature count to KV ──────────────────
+  {
+    const timingAgg: Record<string, number[]> = {}
+    const featureCounts: number[] = []
+    for (const data of results) {
+      if (data.model_timings_ms) {
+        for (const [model, ms] of Object.entries(data.model_timings_ms)) {
+          if (!timingAgg[model]) timingAgg[model] = []
+          timingAgg[model].push(ms as number)
+        }
+      }
+      if (data.feature_count) featureCounts.push(data.feature_count as number)
+    }
+    const avgTimings: Record<string, number> = {}
+    for (const [model, arr] of Object.entries(timingAgg)) {
+      avgTimings[model] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
+    }
+    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    await env.KV.put(`ml:perf:${twToday}`, JSON.stringify({
+      avg_model_timings_ms: avgTimings,
+      avg_feature_count: featureCounts.length ? Math.round(featureCounts.reduce((a, b) => a + b, 0) / featureCounts.length) : 0,
+      total_stocks: results.length,
+      total_time_s: parseFloat(elapsed),
+    }), { expirationTtl: 30 * 86400 })
+    console.log(`[ML] Performance stored: ${Object.keys(avgTimings).length} models, avg features=${featureCounts[0] ?? 0}`)
+  }
+
   // ── 2e. Event-driven chain: ML complete → trigger recommendation ───────
   try {
     await runDailyRecommendation(env)
@@ -936,6 +964,51 @@ async function runWeeklyICaudit(env: Bindings) {
     `).bind(r.feature, r.ic_mean, r.ic_std, r.icir, r.ic_trend, r.effective ? 1 : 0)
       .run().catch(() => {})
   }
+}
+
+async function runWeeklyDriftCheck(env: Bindings) {
+  const ML_URL = env.ML_SERVICE_URL
+  if (!ML_URL) return
+
+  // 用跟 IC audit 相同的資料最多股票
+  const topStock = await env.DB.prepare(`
+    SELECT s.id, s.symbol FROM stocks s
+    JOIN stock_prices sp ON sp.stock_id=s.id
+    WHERE s.is_active=1
+    GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
+  `).first<any>()
+  if (!topStock) return
+
+  const [prices, indicators, chips] = await Promise.all([
+    env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
+    env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(topStock.symbol).all<any>(),
+  ])
+
+  const mlHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_SERVICE_SECRET) mlHeaders['X-Service-Token'] = env.ML_SERVICE_SECRET
+
+  const res = await fetch(`${ML_URL}/feature-drift`, {
+    method: 'POST',
+    headers: mlHeaders,
+    body: JSON.stringify({
+      stock_id: topStock.id, symbol: topStock.symbol,
+      prices: (prices.results ?? []).reverse(),
+      indicators: (indicators.results ?? []).reverse(),
+      chips: (chips.results ?? []).reverse(),
+    }),
+    signal: AbortSignal.timeout(60_000),
+  })
+
+  if (!res.ok) {
+    console.warn(`[Drift Check] HTTP ${res.status}`)
+    return
+  }
+
+  const data = await res.json() as any
+  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  await env.KV.put(`ml:drift:${twDate}`, JSON.stringify(data), { expirationTtl: 30 * 86400 })
+  console.log(`[Drift Check] ${data.drifted_count}/${data.total_features} features drifted, needs_retrain=${data.needs_retrain}`)
 }
 
 async function runWeeklyRetrain(env: Bindings) {
@@ -1351,8 +1424,10 @@ export default {
         await runWeeklyCleanup(env)
         await runWeeklyRetrain(env)
         await fetchWeeklyShareholding(env).catch(e => console.warn('[Wave3] Shareholding failed:', e))
-        // Weekly IC audit: 用資料最多的一支股票跑 factor IC check
+        // Weekly IC audit + feature drift + quintile alpha check
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
+        // Feature drift detection（同一支股票的資料）
+        await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
         // Timeverse 台股研究資料庫同步
         const { syncTimeverse } = await import('./lib/timeverse')
         await syncTimeverse(env).catch(e => console.warn('[Timeverse] sync failed:', e))

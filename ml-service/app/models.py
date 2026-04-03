@@ -77,7 +77,7 @@ def _fallback_model(name: str, prices: np.ndarray, horizon: int, reason: str) ->
     return ModelPrediction(
         model_name=name,
         direction="up",
-        confidence=0.5,
+        confidence=0.35,       # 低信心避免 fallback 模型的假共識干擾 real models
         forecast_pct=0.0,
         forecasts=forecasts,
         direction_accuracy=0.5,

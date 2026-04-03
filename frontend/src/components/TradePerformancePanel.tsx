@@ -52,9 +52,9 @@ const sign = (v: number | null) => v == null ? 'N/A' : `${v > 0 ? '+' : ''}${(v 
 const r    = (v: number | null) => v == null ? 'N/A' : `${v > 0 ? '+' : ''}${v.toFixed(2)}R`
 
 const outcomeLabel: Record<string, { label: string; color: string }> = {
-  hit_target2: { label: '達目標 2 ✦', color: 'text-emerald-400' },
-  hit_target1: { label: '達目標 1 ✓', color: 'text-green-400' },
-  hit_stop:    { label: '觸停損 ✗',   color: 'text-red-400' },
+  hit_target2: { label: '達目標 2 ✦', color: 'text-red-400' },
+  hit_target1: { label: '達目標 1 ✓', color: 'text-red-300' },
+  hit_stop:    { label: '觸停損 ✗',   color: 'text-emerald-400' },
   expired:     { label: '到期平倉',   color: 'text-gray-400' },
 }
 
@@ -140,54 +140,54 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
               label="累計模擬損益"
               value={sign(perf.total_pnl_pct)}
               sub={`共 ${perf.total_trades} 筆`}
-              color={perf.total_pnl_pct == null ? 'text-white' : perf.total_pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'}
+              color={perf.total_pnl_pct == null ? 'text-white' : perf.total_pnl_pct >= 0 ? 'text-red-400' : 'text-emerald-400'}
             />
             <StatCard
               label="獲利因子"
               value={perf.profit_factor ? perf.profit_factor.toFixed(2) : 'N/A'}
               sub="毛利 ÷ 毛損，> 1 為正期望"
               color={perf.profit_factor == null ? 'text-white'
-                : perf.profit_factor >= 1.5 ? 'text-emerald-400'
-                : perf.profit_factor >= 1.0 ? 'text-yellow-400' : 'text-red-400'}
+                : perf.profit_factor >= 1.5 ? 'text-red-400'
+                : perf.profit_factor >= 1.0 ? 'text-yellow-400' : 'text-emerald-400'}
             />
             <StatCard
               label="期望值 / 每筆"
               value={sign(perf.expectancy)}
               sub={r(perf.avg_pnl_r)}
-              color={perf.expectancy == null ? 'text-white' : perf.expectancy >= 0 ? 'text-green-400' : 'text-red-400'}
+              color={perf.expectancy == null ? 'text-white' : perf.expectancy >= 0 ? 'text-red-400' : 'text-emerald-400'}
             />
             <StatCard
               label="勝率"
               value={`${(winRate * 100).toFixed(0)}%`}
               sub={`${perf.win_trades}勝 ${perf.loss_trades}敗`}
-              color={winRate >= 0.55 ? 'text-green-400' : winRate >= 0.45 ? 'text-yellow-400' : 'text-red-400'}
+              color={winRate >= 0.55 ? 'text-red-400' : winRate >= 0.45 ? 'text-yellow-400' : 'text-emerald-400'}
             />
           </div>
 
           {/* 盈虧不對稱性 */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <StatCard label="平均獲利"  value={sign(perf.avg_win_pct)}  color="text-green-400" />
-            <StatCard label="平均虧損"  value={sign(perf.avg_loss_pct)} color="text-red-400" />
-            <StatCard label="最大單筆獲利" value={sign(perf.max_win_pct)} color="text-emerald-400" />
-            <StatCard label="最大單筆虧損" value={sign(perf.max_loss_pct)} color="text-red-500" />
+            <StatCard label="平均獲利"  value={sign(perf.avg_win_pct)}  color="text-red-400" />
+            <StatCard label="平均虧損"  value={sign(perf.avg_loss_pct)} color="text-emerald-400" />
+            <StatCard label="最大單筆獲利" value={sign(perf.max_win_pct)} color="text-red-400" />
+            <StatCard label="最大單筆虧損" value={sign(perf.max_loss_pct)} color="text-emerald-500" />
           </div>
 
           {/* 出場分佈 */}
           <div className="bg-gray-800 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-2">出場結果分佈</p>
             <div className="flex gap-3 flex-wrap text-xs">
-              <span className="text-emerald-400">達目標2: {perf.hit_target2_count}</span>
-              <span className="text-green-400">達目標1: {perf.hit_target1_count}</span>
-              <span className="text-red-400">觸停損: {perf.hit_stop_count}</span>
+              <span className="text-red-400">達目標2: {perf.hit_target2_count}</span>
+              <span className="text-red-300">達目標1: {perf.hit_target1_count}</span>
+              <span className="text-emerald-400">觸停損: {perf.hit_stop_count}</span>
               <span className="text-gray-400">到期: {perf.expired_count}</span>
             </div>
             {/* 視覺化條形 */}
             {perf.total_trades > 0 && (
               <div className="flex h-3 mt-2 rounded overflow-hidden gap-0.5">
-                {perf.hit_target2_count > 0 && <div className="bg-emerald-500" style={{ flex: perf.hit_target2_count }} />}
-                {perf.hit_target1_count > 0 && <div className="bg-green-500"   style={{ flex: perf.hit_target1_count }} />}
+                {perf.hit_target2_count > 0 && <div className="bg-red-500"     style={{ flex: perf.hit_target2_count }} />}
+                {perf.hit_target1_count > 0 && <div className="bg-red-400"     style={{ flex: perf.hit_target1_count }} />}
                 {perf.expired_count > 0      && <div className="bg-gray-600"   style={{ flex: perf.expired_count }} />}
-                {perf.hit_stop_count > 0     && <div className="bg-red-500"    style={{ flex: perf.hit_stop_count }} />}
+                {perf.hit_stop_count > 0     && <div className="bg-emerald-500" style={{ flex: perf.hit_stop_count }} />}
               </div>
             )}
           </div>
@@ -195,7 +195,7 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
           {/* MAE / MFE */}
           {(perf.avg_mfe || perf.avg_mae) && (
             <div className="grid grid-cols-2 gap-2">
-              <StatCard label="平均最大有利波動 (MFE)" value={pct(perf.avg_mfe)} sub="若分批出場的最大潛在" color="text-green-400" />
+              <StatCard label="平均最大有利波動 (MFE)" value={pct(perf.avg_mfe)} sub="若分批出場的最大潛在" color="text-red-400" />
               <StatCard label="平均最大不利波動 (MAE)" value={pct(perf.avg_mae)} sub="持倉期間最深回撤" color="text-orange-400" />
             </div>
           )}
@@ -228,15 +228,15 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
                       <td className="py-1 pr-2 text-gray-400">{h.generated_at.slice(0, 10)}</td>
                       <td className="py-1 pr-2">{h.model_name}</td>
                       <td className="py-1 pr-2">
-                        <span className={h.predicted_direction === 'up' ? 'text-green-400' : 'text-red-400'}>
+                        <span className={h.predicted_direction === 'up' ? 'text-red-400' : 'text-emerald-400'}>
                           {h.trade_signal}
                         </span>
                       </td>
                       <td className={`py-1 pr-2 ${oc.color}`}>{oc.label}</td>
-                      <td className={`py-1 pr-2 text-right font-mono ${pnl == null ? 'text-gray-500' : pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      <td className={`py-1 pr-2 text-right font-mono ${pnl == null ? 'text-gray-500' : pnl >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         {pnl == null ? '-' : `${pnl >= 0 ? '+' : ''}${(pnl * 100).toFixed(2)}%`}
                       </td>
-                      <td className={`py-1 pr-2 text-right font-mono ${!h.trade_pnl_r ? 'text-gray-500' : h.trade_pnl_r >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      <td className={`py-1 pr-2 text-right font-mono ${!h.trade_pnl_r ? 'text-gray-500' : h.trade_pnl_r >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         {h.trade_pnl_r == null ? '-' : r(h.trade_pnl_r)}
                       </td>
                       <td className={`py-1 text-xs ${riskColor[h.market_risk_level ?? ''] ?? 'text-gray-500'}`}>

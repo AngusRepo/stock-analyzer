@@ -1460,6 +1460,98 @@ function classifyQuadrant(rsRatio: number, rsMomentum: number): string {
 }
 
 /**
+ * 一次性回填 RRG 歷史 — 對過去 N 個交易日逐日計算 RS-Ratio/Momentum 寫入 sector_flow
+ */
+export async function backfillRRG(env: Bindings): Promise<{ filled: number; dates: string[] }> {
+  const industryMap = await getIndustryMapping(env.DB, env.KV)
+  if (!industryMap.size) return { filled: 0, dates: [] }
+
+  // 取所有有 stock_prices 的交易日（近 30 天）
+  const { results: dateRows } = await env.DB.prepare(
+    "SELECT DISTINCT date FROM stock_prices WHERE date >= date('now', '-40 days') ORDER BY date"
+  ).all<{ date: string }>()
+  const tradingDates = (dateRows ?? []).map(r => r.date)
+  if (tradingDates.length < 2) return { filled: 0, dates: [] }
+
+  const rsWindow = 15  // 固定用 15 天窗口回填
+  const emaSpan = 8
+  const filledDates: string[] = []
+
+  // 逐日計算
+  for (let i = rsWindow; i < tradingDates.length; i++) {
+    const targetDate = tradingDates[i]
+    const windowStartDate = tradingDates[i - rsWindow]
+
+    // 查每支股票在 windowStartDate 和 targetDate 的收盤價
+    const { results: priceRows } = await env.DB.prepare(`
+      SELECT s.symbol,
+        (SELECT sp1.close FROM stock_prices sp1 WHERE sp1.stock_id = s.id AND sp1.date = ?) as old_close,
+        (SELECT sp2.close FROM stock_prices sp2 WHERE sp2.stock_id = s.id AND sp2.date = ?) as recent_close
+      FROM stocks s
+      WHERE EXISTS (SELECT 1 FROM stock_tags st WHERE st.symbol = s.symbol AND st.tag_type = 'industry')
+    `).bind(windowStartDate, targetDate).all<{ symbol: string; old_close: number | null; recent_close: number | null }>()
+
+    // 按產業聚合報酬
+    const industryReturns = new Map<string, number[]>()
+    for (const r of (priceRows ?? [])) {
+      if (!r.recent_close || !r.old_close || r.old_close <= 0) continue
+      const industry = industryMap.get(r.symbol)
+      if (!industry) continue
+      const ret = (r.recent_close - r.old_close) / r.old_close
+      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
+      industryReturns.get(industry)!.push(ret)
+    }
+
+    // Z-score RS-Ratio
+    const industryAvgMap = new Map<string, number>()
+    for (const [ind, rets] of industryReturns) {
+      if (rets.length >= 3) {
+        industryAvgMap.set(ind, rets.reduce((a, b) => a + b, 0) / rets.length)
+      }
+    }
+    const avgValues = [...industryAvgMap.values()]
+    if (!avgValues.length) continue
+    const mean = avgValues.reduce((a, b) => a + b, 0) / avgValues.length
+    const std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
+
+    // 讀前一天的 RS-Ratio 做 EMA
+    const prevDate = tradingDates[i - 1]
+    const { results: prevRows } = await env.DB.prepare(
+      "SELECT sector, rs_ratio FROM sector_flow WHERE date = ? AND classification = 'industry' AND rs_ratio IS NOT NULL"
+    ).bind(prevDate).all<{ sector: string; rs_ratio: number }>()
+    const prevRsMap = new Map<string, number>()
+    for (const r of (prevRows ?? [])) prevRsMap.set(r.sector, r.rs_ratio)
+
+    const k = 2 / (emaSpan + 1)
+    const batch = []
+    for (const [industry, avgRet] of industryAvgMap) {
+      const rawRs = ((avgRet - mean) / std) * 10 + 100
+      const prevRs = prevRsMap.get(industry)
+      const rsRatio = prevRs != null ? prevRs + k * (rawRs - prevRs) : rawRs
+      const rsMomentum = prevRs != null ? rsRatio - prevRs : 0
+      const quadrant = classifyQuadrant(rsRatio, rsMomentum)
+      const members = industryReturns.get(industry)?.length ?? 0
+
+      batch.push(env.DB.prepare(`
+        INSERT INTO sector_flow (date, sector, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, stock_count, up_count, classification, rs_ratio, rs_momentum, quadrant)
+        VALUES (?, ?, 0, 0, 0, NULL, 0, ?, 0, 'industry', ?, ?, ?)
+        ON CONFLICT(date, sector) DO UPDATE SET
+          rs_ratio=excluded.rs_ratio, rs_momentum=excluded.rs_momentum, quadrant=excluded.quadrant,
+          stock_count=excluded.stock_count, classification='industry'
+      `).bind(targetDate, industry, members, rsRatio, rsMomentum, quadrant))
+    }
+
+    const BATCH_SIZE = 50
+    for (let b = 0; b < batch.length; b += BATCH_SIZE) {
+      await env.DB.batch(batch.slice(b, b + BATCH_SIZE))
+    }
+    filledDates.push(targetDate)
+  }
+
+  return { filled: filledDates.length, dates: filledDates }
+}
+
+/**
  * Step 3: RRG 產業輪動計算（Regime-conditioned 參數）
  *
  * 每個官方產業用等權平均報酬 vs 大盤，計算 RS-Ratio/Momentum/Quadrant

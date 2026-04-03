@@ -1132,6 +1132,58 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     } catch { /* fallback to API-calculated */ }
   }
 
+  // ── Step 0.5: D1 stock_prices 補充 API 資料（確保假日/手動重跑時資料完整）──
+  try {
+    const { results: d1Prices } = await env.DB.prepare(`
+      SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
+      FROM stock_prices sp
+      JOIN stocks s ON sp.stock_id = s.id
+      WHERE sp.date >= date('now', '-30 days')
+      ORDER BY s.symbol, sp.date
+    `).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
+
+    if (d1Prices?.length) {
+      // 合併：D1 資料優先（更完整），API 資料補充最新日
+      const d1BySymbol = new Map<string, FMStockPrice[]>()
+      for (const r of d1Prices) {
+        if (!d1BySymbol.has(r.symbol)) d1BySymbol.set(r.symbol, [])
+        d1BySymbol.get(r.symbol)!.push({
+          date: r.date, stock_id: r.symbol,
+          open: r.open, max: r.high, min: r.low, close: r.close,
+          Trading_Volume: r.volume ?? 0, Trading_money: 0, spread: 0, Trading_turnover: 0,
+        })
+      }
+
+      let merged = 0
+      for (const [symbol, d1Arr] of d1BySymbol) {
+        const apiArr = data.prices.get(symbol)
+        if (!apiArr || apiArr.length < 15) {
+          // API 資料不足 15 天 → 用 D1 替代
+          const d1Dates = new Set(d1Arr.map(p => p.date))
+          // 合併 API 獨有的日期（可能有比 D1 更新的當日資料）
+          if (apiArr) {
+            for (const p of apiArr) {
+              if (!d1Dates.has(p.date)) d1Arr.push(p)
+            }
+          }
+          d1Arr.sort((a, b) => a.date.localeCompare(b.date))
+          data.prices.set(symbol, d1Arr)
+          merged++
+        }
+      }
+      // 補充 API 完全沒有的股票（D1 有但 API 假日沒抓到）
+      for (const [symbol, d1Arr] of d1BySymbol) {
+        if (!data.prices.has(symbol)) {
+          data.prices.set(symbol, d1Arr)
+          merged++
+        }
+      }
+      if (merged > 0) console.log(`[Screener v2] D1 補充 ${merged} 支股票的價格資料`)
+    }
+  } catch (e) {
+    console.warn('[Screener v2] D1 stock_prices 補充失敗:', e)
+  }
+
   // ── Step 1: Universe hard filter ──
   console.log('[Screener v2] Step 1: Universe filtering...')
   const universe: { stockId: string; prices: FMStockPrice[] }[] = []

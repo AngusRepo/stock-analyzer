@@ -130,9 +130,23 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig): Promise
     const current  = values[0]
     const maxValue = Math.max(...values)
     const drawdown = maxValue > 0 ? (maxValue - current) / maxValue : 0
+
+    // P1-9: MDD-based 動態部位管理（FinLab 槓桿調控公式）
+    // M(k) = gamma * (epsilon_bar - mdd(k)) / (1 - mdd(k))
+    // gamma=1（無槓桿），epsilon_bar=drawdownHalt（最大容忍回撤）
+    // 效果：MDD 增加 → 逐步縮減 maxPositionPct，接近上限時幾乎清倉
     if (drawdown > cc.drawdownHalt) {
       console.warn(`[CircuitBreaker] Layer1 HALT: drawdown ${(drawdown * 100).toFixed(1)}% > ${(cc.drawdownHalt * 100).toFixed(0)}%`)
-      return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: cc.drawdownReducedPosPct, buyConfThreshold: cc.drawdownRaisedConf, sellConfThreshold: cc.drawdownRaisedConf }
+      return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: cc.drawdownRaisedConf, sellConfThreshold: cc.drawdownRaisedConf }
+    } else if (drawdown > 0.03) {
+      // 連續調控：drawdown 3%~15% 之間逐步縮減部位
+      const mddMultiplier = Math.max(0.2, (cc.drawdownHalt - drawdown) / (1 - drawdown))
+      const adjustedPosPct = cc.maxPositionPct * mddMultiplier
+      const adjustedConf = drawdown > cc.drawdownHalt * 0.5
+        ? cc.drawdownRaisedConf  // 回撤超過一半上限 → 提高信心門檻
+        : cc.buyConfThreshold
+      console.log(`[CircuitBreaker] Layer1 SCALE: drawdown ${(drawdown * 100).toFixed(1)}% → posPct ${(adjustedPosPct * 100).toFixed(1)}% (mult=${mddMultiplier.toFixed(2)})`)
+      return { ...defaults, maxPositionPct: adjustedPosPct, buyConfThreshold: adjustedConf, reason: `MDD ${(drawdown * 100).toFixed(1)}% 動態縮減` }
     }
   }
 

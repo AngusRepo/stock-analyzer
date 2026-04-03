@@ -268,6 +268,8 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'reclassify-tags':  async () => { const { reclassifyTags } = await import('./lib/tagReclassifier'); return reclassifyTags(c.env) },
     'sync-industries':  async () => { const { syncIndustryTags } = await import('./lib/twseApi'); return syncIndustryTags(c.env.DB, c.env.KV) },
     'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
+    'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
+    'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
     // ── 完整 Pipeline：依序等待每步完成 ──
     pipeline: async () => {
       const steps: string[] = []

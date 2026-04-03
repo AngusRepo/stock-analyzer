@@ -1306,7 +1306,11 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
 }
 
 /**
- * Step 2: 多因子評分 — 籌碼(0-40) + 技術(0-30) + 動能(0-20)
+ * Step 2: 多因子評分（FinLab 優化版）
+ *
+ * 籌碼(0-40): 用相對比例（佔日均成交%），不偏向權值股
+ * 技術(0-30): RSI 40-80 全給分，超買不扣分（FinLab 驗證）
+ * 動能(0-20): 超額報酬 + 量能比 + 價格意圖因子 + RSI 鈍化
  */
 function scoreMultiFactor(
   prices: FMStockPrice[],
@@ -1315,33 +1319,39 @@ function scoreMultiFactor(
   latestClose: number,
 ): { base_score: number; chip_score: number; tech_score: number; momentum_score: number; reasons: string[] } {
   const reasons: string[] = []
+  const latest = prices[prices.length - 1]
 
-  // ── 籌碼面 (0-40) ──
+  // ── P0-1: 籌碼面 (0-40) — 用相對比例，消除大小型股偏差 ──
   let chip_score = 0
   if (chipDates) {
-    // 5 日外資+投信淨買超金額（股數 → 概估億元）
-    let netBuyAmount = 0
+    let netBuyShares = 0  // 5 日淨買超股數
     let consecBuyDays = 0
     const sortedDates = [...chipDates.keys()].sort().slice(-5)
     for (let i = sortedDates.length - 1; i >= 0; i--) {
       const d = sortedDates[i]
       const nets = chipDates.get(d)!
       const dayNet = nets.foreign + nets.trust
-      netBuyAmount += dayNet * latestClose / 1e8  // 股數×股價→億
+      netBuyShares += dayNet
       if (i === sortedDates.length - 1 || consecBuyDays > 0) {
         if (dayNet > 0) consecBuyDays++
-        else if (i < sortedDates.length - 1) consecBuyDays = 0 // 斷了就停
+        else if (i < sortedDates.length - 1) consecBuyDays = 0
       }
     }
-    // 淨買超金額分級
-    if (netBuyAmount > 10) chip_score = 36
-    else if (netBuyAmount > 5) chip_score = 28
-    else if (netBuyAmount > 2) chip_score = 20
-    else if (netBuyAmount > 0) chip_score = 12
-    else if (netBuyAmount > -2) chip_score = 5
+
+    // chip_intensity = 淨買超金額 / 20日均成交金額（比例）
+    const netBuyAmount = netBuyShares * latestClose  // 元
+    const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
+    const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
+
+    // 相對比例分級（消除大小型股偏差）
+    if (chipIntensity > 0.20) chip_score = 36       // 佔日均成交 20%+ 極強
+    else if (chipIntensity > 0.10) chip_score = 28  // 10%+
+    else if (chipIntensity > 0.05) chip_score = 20  // 5%+
+    else if (chipIntensity > 0) chip_score = 12     // 正向
+    else if (chipIntensity > -0.05) chip_score = 5  // 微賣
     // else 0
 
-    if (netBuyAmount > 2) reasons.push(`法人買超${netBuyAmount.toFixed(1)}億`)
+    if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
 
     // 連續買超天數 bonus
     if (consecBuyDays >= 5) { chip_score += 4; reasons.push(`連買${consecBuyDays}天`) }
@@ -1349,10 +1359,10 @@ function scoreMultiFactor(
   }
   chip_score = clamp(chip_score, 0, 40)
 
-  // ── 技術面 (0-30) ──
+  // ── P0-2: 技術面 (0-30) — RSI 區間放寬，超買不扣分 ──
   let tech_score = 0
 
-  // RSI 14
+  // RSI 14（FinLab 驗證：超買不隱含回調，40-80 全給分）
   let rsiValue = 50
   if (prices.length >= 15) {
     const changes14 = prices.slice(-15).map((p, i, arr) =>
@@ -1365,25 +1375,24 @@ function scoreMultiFactor(
     const rsi = 100 - 100 / (1 + avgGain / avgLoss)
     rsiValue = rsi
 
-    if (rsi >= 55 && rsi <= 70) { tech_score += 12; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi >= 50 && rsi < 55) tech_score += 8
-    else if (rsi >= 45 && rsi < 50) tech_score += 4
-    else if (rsi > 70 && rsi <= 80) tech_score += 5
+    // 放寬版評分（原本 55-70 才給高分，現在 40-80 都給分）
+    if (rsi >= 55 && rsi <= 75) { tech_score += 12; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi >= 45 && rsi < 55) tech_score += 8
+    else if (rsi >= 40 && rsi < 45) tech_score += 6
+    else if (rsi > 75) tech_score += 8  // 超買不扣分，動能延續
+    else if (rsi >= 30 && rsi < 40) tech_score += 3  // 超賣反彈潛力
   }
 
-  // MACD histogram（近似：EMA12 - EMA26 的 signal line diff）
+  // MACD（近似 EMA12 - EMA26）
   if (prices.length >= 20) {
-    // 簡化：用 12d vs 26d 均線差
     const ma12 = prices.slice(-12).reduce((s, p) => s + p.close, 0) / 12
     const ma26 = prices.slice(-Math.min(26, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(26, prices.length)
     const macdApprox = ma12 - ma26
-    // Signal line 近似：用 9d 移動平均 of MACD（這裡簡化為當前值）
     if (macdApprox > 0) { tech_score += 8; reasons.push('MACD 多頭') }
     else if (macdApprox > -0.5 * latestClose / 100) tech_score += 3
   }
 
   // 均線排列
-  const latest = prices[prices.length - 1]
   if (prices.length >= 5) {
     const ma5 = prices.slice(-5).reduce((s, p) => s + p.close, 0) / 5
     if (latest.close > ma5) tech_score += 3
@@ -1392,46 +1401,67 @@ function scoreMultiFactor(
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
     if (latest.close > ma20) { tech_score += 4; reasons.push('站上MA20') }
   }
-  // MA60 需要 60 天資料，只有 20 天 → 跳過（+0）
 
-  // 肯特納通道突破
+  // P3-5: NATR 低波動加分（低波動 + 趨勢中 = 穩健上漲）
   if (prices.length >= 14) {
-    const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
     const trueRanges = prices.slice(-15).map((p, i, arr) => {
       if (i === 0) return p.max - p.min
       const prev = arr[i - 1]
       return Math.max(p.max - p.min, Math.abs(p.max - prev.close), Math.abs(p.min - prev.close))
     }).slice(1)
     const atr14 = trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length
+    const natr = latestClose > 0 ? (atr14 / latestClose) * 100 : 0
+
+    // 肯特納通道突破
+    const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
     if (latest.close > ma20 + 1.5 * atr14 && atr14 > 0) {
-      tech_score += 6
-      reasons.push('突破肯特納上軌')
+      tech_score += 3
+      reasons.push('突破肯特納')
     }
+
+    // NATR 低波動：< 3% 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
+    if (natr < 3 && latest.close > ma20) tech_score += 2
   }
   tech_score = clamp(tech_score, 0, 30)
 
-  // ── 動能面 (0-20) ──
+  // ── 動能面 (0-20) — 加入價格意圖因子 ──
   let momentum_score = 0
 
-  // 5d excess return vs 大盤
+  // 5d excess return vs 大盤 (0-7)
   if (prices.length >= 6) {
     const stockReturn = (latest.close - prices[prices.length - 6].close) / prices[prices.length - 6].close
     const excess = stockReturn - marketReturn5d
-    momentum_score += normalize(excess, -0.03, 0.05, 10)
+    momentum_score += normalize(excess, -0.03, 0.05, 7)
     if (excess > 0.02) reasons.push(`超額+${(excess * 100).toFixed(1)}%`)
   }
 
-  // 量能比：近 3 日 vs 20 日均量
+  // 量能比：近 3 日 vs 20 日均量 (0-5)
   if (prices.length >= 5) {
     const recent3 = prices.slice(-3).reduce((s, p) => s + p.Trading_Volume, 0) / 3
     const avg20 = prices.reduce((s, p) => s + p.Trading_Volume, 0) / prices.length
     const volRatio = avg20 > 0 ? recent3 / avg20 : 1
-    momentum_score += normalize(volRatio, 0.7, 2.5, 7)
+    momentum_score += normalize(volRatio, 0.7, 2.5, 5)
     if (volRatio > 1.5) reasons.push(`量能${volRatio.toFixed(1)}倍`)
   }
 
-  // RSI 鈍化：RSI > 80 連 3+ 天
-  if (rsiValue > 80 && prices.length >= 6) {
+  // P1-3: 價格意圖因子 (0-5) — FinLab 線性因子
+  // price_intent = N日報酬 / N日每日絕對報酬總和（1=直線上漲，0=震盪）
+  if (prices.length >= 15) {
+    const n = Math.min(20, prices.length - 1)
+    const retN = (latest.close - prices[prices.length - 1 - n].close) / prices[prices.length - 1 - n].close
+    let sumAbsRet = 0
+    for (let d = prices.length - n; d < prices.length; d++) {
+      if (prices[d - 1].close > 0) sumAbsRet += Math.abs((prices[d].close - prices[d - 1].close) / prices[d - 1].close)
+    }
+    const priceIntent = sumAbsRet > 0 ? retN / sumAbsRet : 0
+    // intent > 0.5 = 大部分漲幅是直線上漲（主力護盤訊號）
+    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`意圖${(priceIntent * 100).toFixed(0)}%`) }
+    else if (priceIntent > 0.3) momentum_score += 3
+    else if (priceIntent > 0.1) momentum_score += 1
+  }
+
+  // RSI 鈍化：RSI > 75 連 3+ 天（門檻從 80 降到 75）
+  if (rsiValue > 75 && prices.length >= 6) {
     const recentChanges = prices.slice(-6).map((p, i, arr) =>
       i === 0 ? 0 : p.close - arr[i - 1].close
     ).slice(1)
@@ -1578,8 +1608,20 @@ async function calcIndustryRRG(
     const regimeStr = await env.KV.get('ml:regime')
     const regime = regimeStr ?? 'sideways'
 
+    // P3-11: ATR V 轉指標 — 全市場高波動股 ATR/Close > 8% = 急跌末段
+    const atrVTurn = await env.DB.prepare(`
+      SELECT AVG(ti.atr14 / sp.close * 100) as avg_natr
+      FROM technical_indicators ti
+      JOIN stock_prices sp ON ti.stock_id = sp.stock_id AND ti.date = sp.date
+      WHERE ti.date = (SELECT MAX(date) FROM technical_indicators)
+      AND ti.atr14 IS NOT NULL AND sp.close > 0
+    `).first<{ avg_natr: number }>().catch(() => null)
+    const marketNatr = atrVTurn?.avg_natr ?? 0
+    if (marketNatr > 8) {
+      console.log(`[RRG] ATR V-turn detected: market NATR=${marketNatr.toFixed(1)}% > 8% → 急跌末段`)
+    }
+
     if (riskLevel === 'red' || riskLevel === 'black') {
-      // High volatility → 極短窗口
       rsWindow = 10; emaSpan = 5; momLookback = 5
       console.log(`[RRG] High vol mode (risk=${riskLevel}): window=${rsWindow}`)
     } else if (regime.includes('bull') || regime.includes('bear')) {
@@ -2133,6 +2175,100 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   console.log('[Screener v2] Step 5: Sort, dedup, truncate...')
   scored.sort((a, b) => b.score - a.score)
 
+  // ── Step 4b: 基本面加分（F-Score + 毛利率事件）──
+  try {
+    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
+    if (topSymbols4b.length > 0) {
+      const ph = topSymbols4b.map(() => '?').join(',')
+
+      // P2-4: 簡化版 F-Score（用 D1 financials 可用欄位）
+      // 完整 F-Score 9 項，我們有: ROE(→ROA proxy), EPS, revenue_growth_yoy
+      const { results: finRows } = await env.DB.prepare(`
+        SELECT s.symbol, f.roe, f.eps, f.revenue_growth_yoy
+        FROM financials f
+        JOIN stocks s ON f.stock_id = s.id
+        WHERE s.symbol IN (${ph}) AND f.period_type = 'quarterly'
+        AND f.period = (SELECT MAX(f2.period) FROM financials f2 WHERE f2.stock_id = f.stock_id AND f2.period_type = 'quarterly')
+      `).bind(...topSymbols4b).all<{ symbol: string; roe: number | null; eps: number | null; revenue_growth_yoy: number | null }>()
+
+      // 前一季
+      const { results: prevFinRows } = await env.DB.prepare(`
+        SELECT s.symbol, f.roe, f.eps
+        FROM financials f
+        JOIN stocks s ON f.stock_id = s.id
+        WHERE s.symbol IN (${ph}) AND f.period_type = 'quarterly'
+        AND f.period = (SELECT MAX(f2.period) FROM financials f2 WHERE f2.stock_id = f.stock_id AND f2.period_type = 'quarterly' AND f2.period < (SELECT MAX(f3.period) FROM financials f3 WHERE f3.stock_id = f.stock_id AND f3.period_type = 'quarterly'))
+      `).bind(...topSymbols4b).all<{ symbol: string; roe: number | null; eps: number | null }>()
+
+      const prevFinMap = new Map<string, { roe: number | null; eps: number | null }>()
+      for (const r of (prevFinRows ?? [])) prevFinMap.set(r.symbol, r)
+
+      let fscoreApplied = 0
+      for (const r of (finRows ?? [])) {
+        let fScore = 0
+        // 獲利性
+        if (r.roe && r.roe > 0) fScore++                     // ROA proxy: ROE > 0
+        if (r.eps && r.eps > 0) fScore++                     // EPS > 0
+        // 成長性
+        if (r.revenue_growth_yoy && r.revenue_growth_yoy > 0) fScore++  // 營收 YoY 成長
+        const prev = prevFinMap.get(r.symbol)
+        if (prev?.roe && r.roe && r.roe > prev.roe) fScore++ // ROE 改善
+        if (prev?.eps && r.eps && r.eps > prev.eps) fScore++ // EPS 改善
+
+        // F-Score >= 4 加分（滿分 5，對應完整 F-Score 的 8/9）
+        const c = scored.find(s => s.symbol === r.symbol)
+        if (c && fScore >= 4) {
+          c.score += 5
+          fscoreApplied++
+        } else if (c && fScore >= 3) {
+          c.score += 2
+        } else if (c && fScore <= 1) {
+          c.score -= 3  // 財務惡化扣分
+        }
+      }
+
+      // P3-12: 毛利率創新高事件（簡化版 — 用 revenue_growth_yoy proxy）
+      // 真正的毛利率需要 gross_margin 欄位，暫用營收 YoY > 20% 替代
+      for (const r of (finRows ?? [])) {
+        if (r.revenue_growth_yoy && r.revenue_growth_yoy > 20) {
+          const c = scored.find(s => s.symbol === r.symbol)
+          if (c) { c.score += 3; c.reason += '；營收高成長' }
+        }
+      }
+
+      debugLog.push(`[Step 4b] F-Score 加分: ${fscoreApplied} 檔 (>=4分)`)
+    }
+  } catch (e) {
+    console.warn('[Screener v2] F-Score/毛利率加分失敗:', e)
+  }
+
+  // ── P2-10: 外資淨買超天數佔比（大盤層級 risk overlay）──
+  // P3-11: ATR V 轉指標
+  try {
+    const { results: foreignRows } = await env.DB.prepare(`
+      SELECT date, SUM(foreign_net) as total_foreign_net
+      FROM chip_data
+      WHERE date >= date('now', '-40 days')
+      GROUP BY date ORDER BY date
+    `).all<{ date: string; total_foreign_net: number }>()
+
+    if (foreignRows && foreignRows.length >= 10) {
+      const buyDays = foreignRows.filter(r => r.total_foreign_net > 0).length
+      const foreignBuyRatio = buyDays / foreignRows.length
+      // < 0.4 = 外資持續賣超 → 全體候選扣分
+      if (foreignBuyRatio < 0.35) {
+        for (const c of scored) c.score -= 3
+        debugLog.push(`[Step 4b] 外資避險: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}% < 35% → 全體 -3`)
+      } else if (foreignBuyRatio > 0.65) {
+        debugLog.push(`[Step 4b] 外資偏多: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}%`)
+      } else {
+        debugLog.push(`[Step 4b] 外資中性: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}%`)
+      }
+    }
+  } catch (e) {
+    console.warn('[Screener v2] 外資天數佔比失敗:', e)
+  }
+
   // 5a+5b: 同產業上限
   const maxPerIndustry = (sc as any).maxPerIndustry ?? 5
   const industryCount = new Map<string, number>()
@@ -2257,4 +2393,192 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   return { hotSectors: sectorHeatScores, candidates: finalCandidates, debugLog }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P2-7: IC（Information Coefficient）驗證框架
+// P3-8: MAE 停損分析
+// P3-6: Z-score 工具
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * P3-6: Z-score 標準化工具
+ * 將任意數值陣列轉為 Z-score，截斷 [-3, 3]
+ */
+function zScore(values: number[]): number[] {
+  const mean = values.reduce((a, b) => a + b, 0) / values.length
+  const std = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length) || 0.001
+  return values.map(v => Math.max(-3, Math.min(3, (v - mean) / std)))
+}
+
+/**
+ * P2-7: 因子 IC 計算 — 各因子與未來 N 日報酬的 Spearman rank correlation
+ * 用於驗證 chip_score / tech_score / momentum_score 的預測力
+ * 門檻：IC > 0.05 (ML), > 0.01 (Factor)
+ */
+export async function calcFactorIC(env: Bindings): Promise<{
+  factors: { name: string; ic_5d: number; ic_10d: number; ic_20d: number; sample: number }[]
+}> {
+  // 查最近 30 天的 daily_recommendations（有 chip_score, tech_score, ml_score）
+  const { results: recRows } = await env.DB.prepare(`
+    SELECT r.symbol, r.date, r.chip_score, r.tech_score, r.ml_score, r.score as total_score
+    FROM daily_recommendations r
+    WHERE r.date >= date('now', '-30 days')
+    ORDER BY r.date, r.symbol
+  `).all<{ symbol: string; date: string; chip_score: number; tech_score: number; ml_score: number; total_score: number }>()
+
+  if (!recRows?.length) return { factors: [] }
+
+  // 查每支股票的未來報酬（5d, 10d, 20d）
+  const symbols = [...new Set(recRows.map(r => r.symbol))]
+  const ph = symbols.map(() => '?').join(',')
+  const { results: priceRows } = await env.DB.prepare(`
+    SELECT s.symbol, sp.date, sp.close
+    FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
+    WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-60 days')
+    ORDER BY s.symbol, sp.date
+  `).bind(...symbols).all<{ symbol: string; date: string; close: number }>()
+
+  // 建 symbol → date → close map
+  const priceMap = new Map<string, Map<string, number>>()
+  for (const r of (priceRows ?? [])) {
+    if (!priceMap.has(r.symbol)) priceMap.set(r.symbol, new Map())
+    priceMap.get(r.symbol)!.set(r.date, r.close)
+  }
+
+  // Spearman rank correlation
+  function spearmanCorr(x: number[], y: number[]): number {
+    const n = x.length
+    if (n < 5) return 0
+    const rankX = rankArray(x), rankY = rankArray(y)
+    let sumD2 = 0
+    for (let i = 0; i < n; i++) sumD2 += (rankX[i] - rankY[i]) ** 2
+    return 1 - (6 * sumD2) / (n * (n * n - 1))
+  }
+  function rankArray(arr: number[]): number[] {
+    const sorted = arr.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v)
+    const ranks = new Array(arr.length)
+    sorted.forEach((s, rank) => { ranks[s.i] = rank + 1 })
+    return ranks
+  }
+
+  // 計算每個因子的 IC
+  const factors = ['chip_score', 'tech_score', 'ml_score', 'total_score'] as const
+  const results = []
+
+  for (const factor of factors) {
+    const ic: { [horizon: string]: number[] } = { '5d': [], '10d': [], '20d': [] }
+
+    // 按日期分組算橫截面 IC
+    const byDate = new Map<string, typeof recRows>()
+    for (const r of recRows) {
+      if (!byDate.has(r.date)) byDate.set(r.date, [])
+      byDate.get(r.date)!.push(r)
+    }
+
+    for (const [date, recs] of byDate) {
+      for (const [horizon, days] of [['5d', 5], ['10d', 10], ['20d', 20]] as const) {
+        const factorValues: number[] = []
+        const futureReturns: number[] = []
+
+        for (const rec of recs) {
+          const prices = priceMap.get(rec.symbol)
+          if (!prices) continue
+          const dates = [...prices.keys()].sort()
+          const dateIdx = dates.indexOf(date)
+          if (dateIdx < 0 || dateIdx + days >= dates.length) continue
+
+          const closeNow = prices.get(dates[dateIdx])!
+          const closeFuture = prices.get(dates[dateIdx + days])!
+          if (closeNow <= 0) continue
+
+          factorValues.push(rec[factor])
+          futureReturns.push((closeFuture - closeNow) / closeNow)
+        }
+
+        if (factorValues.length >= 5) {
+          ic[horizon].push(spearmanCorr(factorValues, futureReturns))
+        }
+      }
+    }
+
+    results.push({
+      name: factor,
+      ic_5d: ic['5d'].length ? +(ic['5d'].reduce((a, b) => a + b, 0) / ic['5d'].length).toFixed(4) : 0,
+      ic_10d: ic['10d'].length ? +(ic['10d'].reduce((a, b) => a + b, 0) / ic['10d'].length).toFixed(4) : 0,
+      ic_20d: ic['20d'].length ? +(ic['20d'].reduce((a, b) => a + b, 0) / ic['20d'].length).toFixed(4) : 0,
+      sample: recRows.length,
+    })
+  }
+
+  return { factors: results }
+}
+
+/**
+ * P3-8: MAE 停損分析 — 用 predictions 表的 max_adverse_pct 分析最佳停損點
+ */
+export async function analyzeMAE(env: Bindings): Promise<{
+  summary: {
+    total_trades: number
+    winning_trades: number
+    losing_trades: number
+    winning_mae_p75: number   // 獲利交易的 75 百分位 MAE
+    losing_mae_p25: number    // 虧損交易的 25 百分位 MAE
+    suggested_stop: number    // 建議停損 %
+  }
+  distribution: { bucket: string; winning: number; losing: number }[]
+}> {
+  const { results: trades } = await env.DB.prepare(`
+    SELECT max_adverse_pct, actual_return_pct, trade_outcome
+    FROM predictions
+    WHERE max_adverse_pct IS NOT NULL AND actual_return_pct IS NOT NULL
+    ORDER BY generated_at DESC LIMIT 500
+  `).all<{ max_adverse_pct: number; actual_return_pct: number; trade_outcome: string | null }>()
+
+  if (!trades?.length) return {
+    summary: { total_trades: 0, winning_trades: 0, losing_trades: 0, winning_mae_p75: 0, losing_mae_p25: 0, suggested_stop: -0.10 },
+    distribution: [],
+  }
+
+  const winning = trades.filter(t => t.actual_return_pct > 0)
+  const losing = trades.filter(t => t.actual_return_pct <= 0)
+
+  // MAE 分布（每 2% 一個 bucket）
+  const buckets = ['-2%', '-4%', '-6%', '-8%', '-10%', '-12%', '-15%', '-20%', '>-20%']
+  const thresholds = [-0.02, -0.04, -0.06, -0.08, -0.10, -0.12, -0.15, -0.20, -1]
+  const distribution = buckets.map((bucket, i) => {
+    const lo = i === 0 ? 0 : thresholds[i - 1]
+    const hi = thresholds[i]
+    return {
+      bucket,
+      winning: winning.filter(t => t.max_adverse_pct >= hi && t.max_adverse_pct < lo).length,
+      losing: losing.filter(t => t.max_adverse_pct >= hi && t.max_adverse_pct < lo).length,
+    }
+  })
+
+  // 百分位計算
+  const percentile = (arr: number[], p: number) => {
+    const sorted = [...arr].sort((a, b) => a - b)
+    const idx = Math.floor(sorted.length * p)
+    return sorted[Math.min(idx, sorted.length - 1)] ?? 0
+  }
+
+  const winMAEs = winning.map(t => t.max_adverse_pct)
+  const loseMAEs = losing.map(t => t.max_adverse_pct)
+
+  // 建議停損：獲利交易 75 百分位 MAE（保留大部分獲利交易）
+  const winP75 = winMAEs.length ? percentile(winMAEs, 0.25) : -0.05  // 25th percentile of MAE (most negative)
+  const suggestedStop = Math.min(winP75 * 1.2, -0.03)  // 多留 20% buffer，最少 -3%
+
+  return {
+    summary: {
+      total_trades: trades.length,
+      winning_trades: winning.length,
+      losing_trades: losing.length,
+      winning_mae_p75: +(winP75 * 100).toFixed(2),
+      losing_mae_p25: loseMAEs.length ? +(percentile(loseMAEs, 0.25) * 100).toFixed(2) : 0,
+      suggested_stop: +suggestedStop.toFixed(4),
+    },
+    distribution,
+  }
 }

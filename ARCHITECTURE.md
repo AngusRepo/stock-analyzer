@@ -1,6 +1,6 @@
 # StockVision v12 — Complete System Architecture
 
-> 自動化台股量化交易系統。10 模型 ensemble + LinUCB meta-learner + ARF online aggregator + Opus 多空辯論 + 7 層出場 + 5 層 Circuit Breaker。
+> 自動化台股量化交易系統。Bottom-up 多因子選股 + RRG 產業輪動 + 10 模型 ensemble + LinUCB + ARF + Conformal Prediction + Opus 多空辯論 + MDD 動態部位管理。
 
 ---
 
@@ -8,23 +8,40 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        DATA LAYER (15:05 TW)                            │
+│                        DATA LAYER (17:30 TW)                            │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │TWSE T86  │  │TPEX 3i   │  │TPEX ESB  │  │Yahoo     │  │PTT/Anue  │  │
-│  │Chips     │  │OTC Chips │  │興櫃 +均價 │  │OHLCV     │  │Sentiment │  │
+│  │TWSE      │  │TPEX      │  │D1 stock_ │  │Yahoo     │  │PTT/Anue  │  │
+│  │STOCK_DAY │  │OTC_QUOTES│  │prices    │  │(Queue)   │  │Sentiment │  │
+│  │+T86 Chips│  │+3itrade  │  │(歷史補充)│  │歷史回填  │  │即時爬蟲  │  │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
 │       └──────────────┴──────────────┴──────────────┴──────────────┘      │
 │                              ↓ D1 Database (38 tables)                  │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     SCREENER (15:10 TW) — 1,800 → 30~50                │
-│  T0 Basic Excl. → T1 Sector Heat → T2 RRG Filter → T3 Risk Excl.     │
-│  → T4 Technical → T4.5 RRG Fine-tune → T4.6 Lagging Removal → T5     │
+│              SCREENER v2 (17:40 TW) — Bottom-up 多因子                  │
+│                                                                         │
+│  Step 1: Universe hard filter (~800-1000 檔)                           │
+│     close 15-2000 + 20d avg vol > 300K + turnover > 500 萬             │
+│     D1 stock_prices 補充 API 不足天數                                    │
+│                                                                         │
+│  Step 2: 多因子評分 (0-90)                                              │
+│     籌碼(0-40): 法人佔日均成交% + 連買天數                               │
+│     技術(0-30): RSI + MACD + 均線 + 肯特納 + NATR低波動                 │
+│     動能(0-20): excess return + 量能比 + 價格意圖因子 + RSI鈍化          │
+│                                                                         │
+│  Step 3: RRG 產業輪動 (官方38產業, Regime-adaptive window)              │
+│     RS-Ratio Z-score + EMA momentum → Leading/Improving/Weakening/Lag  │
+│                                                                         │
+│  Step 4: 情緒面 + F-Score + 外資天數佔比                                │
+│  Step 4c: 趨勢品質 (ADX + intent adaptive 百分位 + 流動性分級)          │
+│  Step 5: 同產業≤5 + Pearson 60d 去重 + top 25                          │
+│                                                                         │
+│  Output: daily_recommendations (chip+tech+price) + stocks is_active     │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     QUEUE + ENRICH (15:15 TW)                          │
+│                     QUEUE + ENRICH (17:40~ parallel)                    │
 │  Yahoo 歷史回填 → 技術指標 → 新聞情緒 → 三源 Buzz (PTT+News+Anue)    │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓

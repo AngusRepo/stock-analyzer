@@ -5,6 +5,68 @@ Format: [Conventional Changelog](https://keepachangelog.com/)
 
 ---
 
+## [12.4.0] - 2026-04-03
+
+### Changed — Screener v2 Bottom-up 多因子重構
+- **架構翻轉**：Top-down（概念族群→個股）→ Bottom-up（全市場個股評分→產業加分）
+- **籌碼評分**：絕對金額 → 相對比例（`法人佔日均成交%`），消除大小型股偏差
+- **RRG 產業輪動**：官方 38 產業 TWSE/TPEx + Regime-conditioned 參數（HMM bull→長窗口, sideways→短, high vol→極短）
+- **趨勢品質 Gate**：ADX14 + 價格意圖因子（Kaufman ER）+ 流動性分級
+- **D1 資料源**：多因子評分改讀 D1 stock_prices（API fallback），假日結果可重現
+- **候選硬上限**：top 25 + 同產業 ≤5 + Pearson 60d 去重（舊流程 ~45 檔不穩定）
+
+### Added — FinLab 12 項優化
+1. 籌碼相對比例（`chip_intensity = net_buy / avg_daily_turnover`）
+2. RSI 40-80 全給分，超買不扣分（FinLab 回測驗證）
+3. 價格意圖因子（`return / Σ|daily_return|`，偵測主力護盤）
+4. F-Score 簡化版 overlay（5 項基本面品質）
+5. NATR 低波動加分（<3% + MA 上方 = 穩健趨勢）
+6. Z-score 工具函式
+7. IC 驗證框架（`/admin/trigger/factor-ic`）
+8. MAE 停損分析（`/admin/trigger/mae-analysis`）
+9. MDD 動態部位管理（Circuit Breaker binary→連續調控）
+10. 外資淨買超天數佔比（<35% → 全體扣分）
+11. ATR V 轉指標（market NATR > 8% 偵測）
+12. 營收高成長加分（YoY > 20%）
+
+### Fixed — ML Ensemble
+- `avg_confidence` 只算勝出方向模型（修正全模型平均導致信心被拉低）
+- Soft gate 放寬：`signal_score ≥ 0.52` 給 BUY/SELL（原本單項不過就強制 HOLD）
+- TWSE/TPEX 產業代碼 map 全面重建（用 sample stocks 逐一驗證）
+
+### Fixed — Pipeline 一致性
+- Screener 寫 `daily_recommendations`（chip+tech+price），recommendation 只補 ML
+- 移除有害的 `INSERT OR REPLACE`（舊 Controller 殘留，覆寫 screener 分數）
+- `buildStockPayloads` 擴大查詢範圍（含 daily_recommendations 的股票）
+- `current_price` 改讀 D1 stock_prices（不依賴 technical_indicators 的舊日期）
+- `is_active` 保證：screener 寫完 recommendations 後強制 UPDATE
+- `sector_flow` UNIQUE 約束加入 `classification`
+- 推薦理由三面向：【籌碼】+【技術】+【ML】
+
+### Removed
+- 舊 `runMarketScreener`（top-down，832 行 dead code）
+- `computeSectorHeatScores` + `filterCandidates` + `SectorAgg` interface
+- Controller `/recommend` 依賴（recommendation 改為本地評分）
+
+### Impact
+- `marketScreener.ts`：-832 行 dead code，+500 行新 bottom-up 邏輯
+- `ensemble.py`：avg_confidence + soft gate 修正（Modal deploy）
+- `dailyRecommendation.ts`：流程從「自己算分」改為「讀 screener + 補 ML」
+- 新 migration：`migration_screener_v2.sql`、`migration_sector_flow_unique.sql`
+
+---
+
+## [12.3.0] - 2026-04-01
+
+### Changed — ML Anomaly Gate 重構
+- Isolation Forest hard gate → soft penalty（不再阻擋 model 推論）
+- HMM Regime 提前到 pipeline 最前面
+- Conformal Prediction 加入（Split Conformal 校準器）
+- Signal score 從硬階梯改為連續分數
+- `confidence_threshold` 0.60 → 0.55（adaptive via KV）
+
+---
+
 ## [12.2.0] - 2026-03-27
 
 ### Changed — MVC 架構重構

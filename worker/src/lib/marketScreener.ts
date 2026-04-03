@@ -2269,6 +2269,70 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] 外資天數佔比失敗:', e)
   }
 
+  // ── Step 4c: 趨勢品質 filter（D1 60 天歷史）——
+  // 用 D1 stock_prices 識別「偶爾拉高再緩跌」的 pump-and-fade pattern
+  try {
+    const top80 = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
+    if (top80.length > 0) {
+      const ph = top80.map(() => '?').join(',')
+      // 查 60 天收盤價序列
+      const { results: histRows } = await env.DB.prepare(`
+        SELECT s.symbol, sp.date, sp.close
+        FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
+        WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
+        ORDER BY s.symbol, sp.date
+      `).bind(...top80).all<{ symbol: string; date: string; close: number }>()
+
+      // 按 symbol 分組
+      const histBySymbol = new Map<string, number[]>()
+      for (const r of (histRows ?? [])) {
+        if (!histBySymbol.has(r.symbol)) histBySymbol.set(r.symbol, [])
+        histBySymbol.get(r.symbol)!.push(r.close)
+      }
+
+      let trendPenalty = 0, intentPenalty = 0
+      for (const c of scored) {
+        const closes = histBySymbol.get(c.symbol)
+        if (!closes || closes.length < 20) continue
+
+        const latest = closes[closes.length - 1]
+        const first = closes[0]
+        const high60 = Math.max(...closes)
+
+        // ① 距離 60 日高點回落幅度（> 10% = pump-and-fade 嫌疑）
+        const fromHigh = (latest - high60) / high60
+        if (fromHigh < -0.15) {
+          c.score -= 8  // 嚴重回落
+          c.reason += `；距高點${(fromHigh * 100).toFixed(0)}%`
+          trendPenalty++
+        } else if (fromHigh < -0.10) {
+          c.score -= 5
+          trendPenalty++
+        }
+
+        // ② 60 天價格意圖因子（用完整歷史，比 20 天 API 資料更準）
+        let sumAbsRet = 0
+        for (let i = 1; i < closes.length; i++) {
+          if (closes[i - 1] > 0) sumAbsRet += Math.abs((closes[i] - closes[i - 1]) / closes[i - 1])
+        }
+        const netReturn = first > 0 ? (latest - first) / first : 0
+        const intent60 = sumAbsRet > 0 ? netReturn / sumAbsRet : 0
+
+        // intent60 < -0.1 = 淨跌且路徑震盪（典型 fade pattern）
+        if (intent60 < -0.1) {
+          c.score -= 5
+          intentPenalty++
+        } else if (intent60 > 0.4) {
+          c.score += 3  // 優質趨勢加分
+        }
+      }
+
+      debugLog.push(`[Step 4c] 趨勢品質: ${trendPenalty} 檔距高點扣分, ${intentPenalty} 檔意圖負值扣分`)
+    }
+  } catch (e) {
+    console.warn('[Screener v2] 趨勢品質 filter 失敗:', e)
+  }
+
   // 5a+5b: 同產業上限
   const maxPerIndustry = (sc as any).maxPerIndustry ?? 5
   const industryCount = new Map<string, number>()

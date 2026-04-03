@@ -296,8 +296,8 @@ export async function generateRecommendationReasons(
       apiKey,
       system,
       `請為以下 ${candidates.length} 支推薦股票各寫一段推薦理由：\n${stockList}${themeHint}`,
-      Math.min(4096, candidates.length * 200),
-      'haiku',
+      Math.min(4096, candidates.length * 250),
+      'sonnet',
       true,
     )
 

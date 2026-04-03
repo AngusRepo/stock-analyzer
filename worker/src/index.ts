@@ -667,21 +667,13 @@ async function runMLAndRisk(env: Bindings) {
     console.error('[Cron] Market risk failed:', e)
   }
 
-  // 2. ML 並行預測（Controller → Modal .map）
+  // 2. ML 並行預測（Worker → Controller → Modal）
   if (!env.ML_CONTROLLER_URL) {
-    // Fallback: 若 Controller 未部署，走舊路徑（Phase 3 過渡期）
-    if (env.ML_SERVICE_URL && env.ML_QUEUE) {
-      try {
-        const mlHeaders: Record<string, string> = {}
-        if (env.ML_SERVICE_SECRET) mlHeaders['X-Service-Token'] = env.ML_SERVICE_SECRET
-        await fetch(`${env.ML_SERVICE_URL}/warmup`, { headers: mlHeaders, signal: AbortSignal.timeout(90_000) }).catch(() => {})
-        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-        await env.ML_QUEUE.send({ type: 'ml_batch', cursor: 0, triggerTime: twToday })
-        console.log('[Cron] ML_CONTROLLER_URL not set, falling back to legacy ML_QUEUE')
-      } catch (e) { console.error('[Cron] Legacy ML fallback failed:', e) }
-    } else {
-      console.warn('[Cron] Neither ML_CONTROLLER_URL nor ML_SERVICE_URL set, skipping ML')
-    }
+    console.warn('[ML] ML_CONTROLLER_URL not set — skipping ML predict. Deploy Controller to Cloud Run first.')
+    // 仍然觸發 recommendation（用 screener 分數，ML=0）
+    try {
+      await runDailyRecommendation(env)
+    } catch (e) { console.warn('[ML] recommendation fallback failed:', e) }
     return
   }
 

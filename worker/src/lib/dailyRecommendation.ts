@@ -668,9 +668,16 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
           if (llmReasons.size > 0) {
             const llmUpdateBatch = []
             for (const [symbol, { reason, watchPoints }] of llmReasons) {
-              llmUpdateBatch.push(env.DB.prepare(
-                "UPDATE daily_recommendations SET reason = ?, watch_points = ? WHERE date = ? AND symbol = ?"
-              ).bind(reason, JSON.stringify(watchPoints), today, symbol))
+              // watch_points 只在 LLM 回傳非空時才覆寫（保護 template 的注意事項）
+              if (watchPoints.length > 0) {
+                llmUpdateBatch.push(env.DB.prepare(
+                  "UPDATE daily_recommendations SET reason = ?, watch_points = ? WHERE date = ? AND symbol = ?"
+                ).bind(reason, JSON.stringify(watchPoints), today, symbol))
+              } else {
+                llmUpdateBatch.push(env.DB.prepare(
+                  "UPDATE daily_recommendations SET reason = ? WHERE date = ? AND symbol = ?"
+                ).bind(reason, today, symbol))
+              }
             }
             for (let b = 0; b < llmUpdateBatch.length; b += 50) {
               await env.DB.batch(llmUpdateBatch.slice(b, b + 50))

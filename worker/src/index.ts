@@ -334,6 +334,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     backtest: () => runWeeklyBacktest(c.env),
     'monte-carlo': () => runWeeklyMonteCarlo(c.env),
     pbo: () => runWeeklyPBO(c.env),
+    lifecycle: () => runWeeklyLifecycleCheck(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -754,6 +755,23 @@ async function runMLAndRisk(env: Bindings) {
   const { getAdaptiveParams } = await import('./lib/adaptiveConfig')
   const adaptiveParams = await getAdaptiveParams(env.KV)
 
+  // P1#8: Read lifecycle weight overrides from D1
+  let lifecycleWeights: Record<string, number> = {}
+  try {
+    const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
+    if (lcRow?.state_json) {
+      const states = JSON.parse(lcRow.state_json)
+      for (const [name, s] of Object.entries(states as Record<string, any>)) {
+        if (s.weight_mult != null && s.weight_mult !== 1.0) {
+          lifecycleWeights[name] = s.weight_mult
+        }
+      }
+      if (Object.keys(lifecycleWeights).length > 0) {
+        console.log(`[ML] Lifecycle weights active: ${JSON.stringify(lifecycleWeights)}`)
+      }
+    }
+  } catch (e) { console.warn('[ML] Lifecycle weights read failed:', e) }
+
   // ── 2b. 逐股查詢 + 建構 payload ──────────────────────────────────────────
   const { results: allStocks } = await env.DB.prepare(
     'SELECT * FROM stocks WHERE is_active=1 ORDER BY id ASC'
@@ -838,6 +856,7 @@ async function runMLAndRisk(env: Bindings) {
         market: stock.market ?? 'TW',
         market_env: marketEnv,
         adaptive_params: adaptiveParams,
+        lifecycle_weights: lifecycleWeights,
       })
     } catch (e) {
       console.error(`[ML] Failed building payload for ${stock.symbol}:`, e)
@@ -947,6 +966,27 @@ async function runMLAndRisk(env: Bindings) {
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
 // Legacy ML_QUEUE fallback retained in runMLAndRisk for rollback safety
+
+
+// ─── Cron P1#8：Model Lifecycle Check（Controller 觸發） ─────────────────────
+async function runWeeklyLifecycleCheck(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[Lifecycle] Running weekly model lifecycle check...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/lifecycle/check?degrade=0.45&restore=0.55`, {
+    method: 'POST', headers, signal: AbortSignal.timeout(60_000),
+  }).catch(() => null)
+
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status === 'failed' || r.status === 'error') return `failed: ${r.error ?? r.status}`
+  const degraded = Object.values(r.models ?? {}).filter((m: any) => m.status === 'degraded').length
+  const events = (r.events ?? []).length
+  return `${degraded} degraded, ${events} events, guard=${r.balance_guard}`
+}
 
 
 // ─── Cron P0#4：每週日回測（Controller 觸發） ─────────────────────────────────
@@ -1561,6 +1601,8 @@ export default {
       runWithLog('weekly-cleanup', async () => {
         await runWeeklyCleanup(env)
         await runWeeklyRetrain(env)
+        // P1#8: Model lifecycle check (after retrain, uses fresh accuracy data)
+        await runWeeklyLifecycleCheck(env).catch(e => console.warn('[Lifecycle] failed:', e))
         await fetchWeeklyShareholding(env).catch(e => console.warn('[Wave3] Shareholding failed:', e))
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
         await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))

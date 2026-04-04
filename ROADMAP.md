@@ -57,11 +57,12 @@
 
 ## P1 — Self-Learning + Architecture (Week 3-6)
 
-### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore)
-- **What**: 30d accuracy < 0.45 for 2 consecutive weeks -> downweight to 0.05x. Restore > 0.55 -> back to 1.0x. **Thresholds themselves searched by Optuna** (0.40-0.50 / 0.50-0.60). Balance guard: price >= 3, feature >= 3. `model_candidates.py` with substitute library + matching rules (degradation cause -> candidate when_useful)
-- **Where**: New `ml-service/app/model_lifecycle.py` + `ml-service/config/model_candidates.py` + KV `ml:model_penalty`
-- **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause -> candidate match), requires your confirmation
-- **Expected**: Ensemble quality auto-maintained. No more "why is accuracy dropping for 3 weeks"
+### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore) ✅
+- **What**: 30d accuracy < 0.45 for 2 consecutive weeks → downweight to 0.05x. Restore > 0.55 → back to 1.0x. Balance guard: min 3 price + 3 feature models active. Substitute library with matching rules
+- **Where**: `ml-service/app/model_lifecycle.py` + `ml-controller/services/lifecycle_service.py` + `ml-controller/routers/lifecycle.py` + `ml-service/app/ensemble.py` lifecycle_weights param
+- **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause → candidate match)
+- **Expected**: Ensemble quality auto-maintained
+- **Impl**: D1 model_lifecycle_state + model_lifecycle_events tables. Worker reads lifecycle weights → passes to predict payload → ensemble applies lifecycle_mult. Weekly check in Sunday cron (after retrain). Admin taskMap for manual trigger
 
 ### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna
 - **What**: IC audit effective features automatically passed to Sunday retrain (only train on effective features). Retrain also runs Optuna for each model's hyperparameters (XGB depth[3-6], lr[0.01-0.1], n_est[100-300])

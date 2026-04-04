@@ -52,6 +52,7 @@ def weighted_vote(
     bandit_multipliers: dict[str, float] | None = None,  # 來自 LinUCB bandit（第11模型）
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
+    lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
 ) -> EnsembleResult:
     """
     加權投票主邏輯（v12 + LinUCB bandit）：
@@ -117,7 +118,8 @@ def weighted_vote(
         conf_weight   = p.confidence
         regime_mult   = regime_mults.get(p.model_name, 1.0)
         bandit_mult   = (bandit_multipliers or {}).get(p.model_name, 1.0)
-        raw_w = acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult
+        lifecycle_mult = (lifecycle_weights or {}).get(p.model_name, 1.0)  # P1#8
+        raw_w = acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult * lifecycle_mult
         weights.append(max(raw_w, 0.01))  # 防權重坍縮：5層乘積可能趨近 0，保底 1%
 
     total_w = sum(weights) or 1.0

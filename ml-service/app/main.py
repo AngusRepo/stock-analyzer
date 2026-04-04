@@ -69,7 +69,8 @@ class PredictRequest(BaseModel):
     market: str = "TW"
     market_env: dict | None = None
     model_stats: dict[str, dict] = {}
-    adaptive_params: dict = {}   # 來自 KV ml:adaptive_aram（T+1 自適應，向後相容）
+    adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
+    lifecycle_weights: dict[str, float] = {}  # P1#8: per-model lifecycle weight overrides
     night_session: NightSessionData | None = None  # 台指期夜盤（07:15 re-predict 時傳入）
     context: str = "scheduled_daily"  # "scheduled_daily" (15:30) or "morning_repredict" (07:15)
 
@@ -367,6 +368,7 @@ def predict_stock(req: PredictRequest) -> dict:
         bandit_multipliers=bandit_multipliers,
         adaptive_params=req.adaptive_params,   # T+1 自適應（信心門檻/PF/SL_TP）
         anomaly_score=anomaly_score,            # soft penalty，不再 hard gate
+        lifecycle_weights=req.lifecycle_weights, # P1#8: model lifecycle 降權
     )
 
     # ── ③ Conformal Prediction 校準（ensemble 之後、ARF 之前）────────────────

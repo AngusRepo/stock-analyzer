@@ -116,11 +116,13 @@
   - Step 3: Execute swap or skip. `max_daily_swaps: 1`. Log skipped recommendations
   - Sector check: if new stock's sector already has 2 holdings → don't swap even if score is higher
 
-  **Interaction with existing 7-layer exit**: No conflict. ATR sizing decides "how much to buy" at entry. 7-layer exit decides "when to sell" during holding. TP1 partial sell naturally reduces position risk contribution — this is expected behavior (let profits run on remaining shares), no rebalancing needed
+  **Interaction with existing 7-layer exit**: No conflict. ATR sizing decides "how much to buy" at entry. 7-layer exit decides "when to sell" during holding
 
-- **Where**: `worker/src/routes/paper.ts` executePendingBuys (batch allocation rewrite) + `worker/src/lib/tradingConfig.ts` (new params) + new replacement logic in morning setup
-- **Why**: Three problems: (1) Position sizes cascade unfairly (first=25万, fifth=5万). (2) No hard limit on positions. (3) Full positions → new signals ignored, no swap evaluation. ATR sizing makes every position contribute equal risk. Replacement ensures best stocks always in portfolio
-- **Expected**: Portfolio Sharpe +0.3-0.5, position sizes balanced, annual turnover controlled < 50%
+- **Where**: `worker/src/routes/paper.ts` + `worker/src/lib/tradingConfig.ts`
+- **Why**: Three problems: (1) No position count limit. (2) Full positions → new signals ignored. (3) No weakness evaluation
+- **Expected**: Portfolio Sharpe +0.3-0.5, position sizes balanced
+- **Status**: ✅
+- **Impl**: maxPositions=5 hard cap. Weakness score = pnlPct(35%) + timeRatio(25%) + tp1Status(20%) + negPnl(20%). Swap: new score must exceed weakest×1.15, held>=3d, not near TP1. Max 1 swap/day. minPositionValue=30K guard. Sell order logged as SWAP_OUT with reason
 
 ### #13 Execution Reality
 - **What**: Slippage model (daily turnover < 50M -> slippage 1-2%) + Partial Fill (order > 5% daily volume -> partial) + Limit-down lock detection (drop >= 9.5% + volume < 10% yesterday -> can't exit)

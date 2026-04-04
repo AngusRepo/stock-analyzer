@@ -1215,6 +1215,106 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     positionValue += p * pos.shares
   }
   const totalPortfolio = acc.cash + positionValue
+  const currentPositionCount = (positions ?? []).length
+
+  // P1#12: maxPositions check — if at cap, evaluate replacement before proceeding
+  const maxPos = cfg.position.maxPositions ?? 5
+  let dailySwaps = 0
+  const maxSwaps = cfg.position.maxDailySwaps ?? 1
+
+  if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
+    console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
+
+    // Load full position data for weakness scoring
+    const { results: fullPositions } = await env.DB.prepare(`
+      SELECT symbol, shares, avg_cost, entry_date, entry_price,
+             initial_stop, tp1_price, tp1_hit, highest_since_entry
+      FROM paper_positions WHERE account_id=? AND shares>0
+    `).bind(ACCOUNT_ID).all<any>()
+
+    // Calculate weakness score for each position
+    const weaknessScores: { symbol: string; score: number }[] = []
+    for (const pos of (fullPositions ?? [])) {
+      const px = posValueMap.get(pos.symbol) ?? pos.avg_cost
+      const pnlPct = pos.avg_cost > 0 ? (px - pos.avg_cost) / pos.avg_cost : 0
+      const daysHeld = pos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date).getTime()) / 86400_000)
+        : 0
+      const timeRatio = Math.min(1, daysHeld / (cfg.exit.timeStopDays ?? 20))
+
+      // Weakness = weighted sum (higher = weaker)
+      const pnlScore = Math.max(0, -pnlPct * 100)   // more loss = weaker (0-12 range for -12%)
+      const timeScore = timeRatio * 100               // closer to time stop = weaker
+      const score = pnlScore * 0.35 + timeScore * 0.25 + (1 - (pos.tp1_hit ? 0.5 : 0)) * 40 * 0.20 + (pnlPct < 0 ? 20 : 0) * 0.20
+      weaknessScores.push({ symbol: pos.symbol, score })
+    }
+    weaknessScores.sort((a, b) => b.score - a.score) // weakest first
+
+    // Try to replace weakest with each pending buy (max 1 swap/day)
+    const swapThreshold = cfg.position.swapThreshold ?? 1.15
+    const minHoldDays = cfg.position.swapMinHoldDays ?? 3
+
+    for (const pending of [...pendingBuys]) {
+      if (dailySwaps >= maxSwaps) break
+      if (weaknessScores.length === 0) break
+
+      const weakest = weaknessScores[0]
+      const weakPos = (fullPositions ?? []).find((p: any) => p.symbol === weakest.symbol)
+      if (!weakPos) continue
+
+      const daysHeld = weakPos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
+        : 0
+      if (daysHeld < minHoldDays) {
+        console.log(`[Swap] ${weakest.symbol} held only ${daysHeld}d < ${minHoldDays}d, skip swap`)
+        continue
+      }
+
+      // Check if new stock is meaningfully better
+      const newScore = (pending.confidence ?? 0.6) * 100
+      if (newScore < weakest.score * swapThreshold) {
+        console.log(`[Swap] ${pending.symbol}(${newScore.toFixed(0)}) not ${swapThreshold}x better than ${weakest.symbol}(${weakest.score.toFixed(0)}), skip`)
+        continue
+      }
+
+      // Near TP1 check: don't swap out if close to profit target
+      const weakPx = posValueMap.get(weakest.symbol) ?? weakPos.avg_cost
+      if (weakPos.tp1_price && weakPx >= weakPos.tp1_price * 0.97) {
+        console.log(`[Swap] ${weakest.symbol} near TP1 (${weakPx}/${weakPos.tp1_price}), skip swap`)
+        continue
+      }
+
+      // Execute swap: sell weakest position
+      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(score=${newScore.toFixed(1)})`)
+      const sellPrice = weakPx
+      const sellValue = sellPrice * weakPos.shares
+      const sellTax = sellValue * 0.003
+      const sellComm = sellValue * 0.001425
+      const sellProceeds = sellValue - sellTax - sellComm
+
+      // Update cash
+      await env.DB.prepare('UPDATE paper_accounts SET cash = cash + ? WHERE id=?')
+        .bind(sellProceeds, ACCOUNT_ID).run()
+      acc.cash += sellProceeds
+
+      // Record sell order
+      await env.DB.prepare(`
+        INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
+        VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
+      `).bind(
+        ACCOUNT_ID, weakest.symbol, weakPos.name ?? weakest.symbol,
+        weakPos.shares, sellPrice, sellComm, sellTax, -sellProceeds,
+        `SWAP_OUT: weakness=${weakest.score.toFixed(1)}, replaced by ${pending.symbol}`,
+        ).run()
+
+      // Remove position
+      await env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?')
+        .bind(ACCOUNT_ID, weakest.symbol).run()
+
+      weaknessScores.shift() // remove swapped position
+      dailySwaps++
+    }
+  }
 
   // ATR batch fetch
   const atrMap = await batchGetATR(env.DB, pendingSymbols)
@@ -1365,6 +1465,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
 
+    // P1#12: Position count check (including any swaps done above)
+    const currentCount = await env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0'
+    ).bind(ACCOUNT_ID).first<any>()
+    if ((currentCount?.cnt ?? 0) >= maxPos) {
+      console.log(`[Intraday] ${pending.symbol}: position cap (${maxPos}) reached, skip`)
+      continue
+    }
+
     // 額度檢查
     if (dailyBuyTotal >= DAILY_BUY_LIMIT) break
     if (acc.cash < cfg.position.minCashToTrade) break
@@ -1393,6 +1502,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     else { shares = Math.floor(budget / fillPrice); isOddLot = true; if (shares < 1) { console.log(`[Intraday] ${pending.symbol}: shares<1, skip`); continue } }
 
     const txValue = fillPrice * shares
+    // P1#12: minPositionValue guard
+    const minPosVal = cfg.position.minPositionValue ?? 30_000
+    if (txValue < minPosVal) { console.log(`[Intraday] ${pending.symbol}: txValue ${txValue} < min ${minPosVal}, skip`); continue }
     const commission = calcCommission(txValue, cfg)
     const totalCost = txValue + commission
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue

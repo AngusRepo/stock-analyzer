@@ -117,13 +117,29 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
     return data.get("success", False)
 
 
-def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
+@dataclass
+class PairingResult:
+    """FIFO pairing output with data quality metrics."""
+    trades: list[dict]
+    # Data quality
+    total_orders: int = 0
+    paired_trades: int = 0
+    orphan_sells: int = 0           # sell 沒有對應 buy
+    excess_shares: int = 0          # sell 股數 > buy 餘量
+    open_positions: int = 0         # 未平倉 buy（正常：目前持有中）
+    dirty_symbols: list[str] = None # 有資料問題的股票
+    data_quality: str = "CLEAN"     # "CLEAN" | "USABLE" | "DIRTY"
+    quality_detail: str = ""
+
+
+def _validate_and_pair_orders(orders: list[dict]) -> PairingResult:
     """
-    Pair buy→sell orders using FIFO matching.
-    One sell can consume multiple buys (partial positions).
-    Returns list of completed trade dicts with per-trade P&L.
+    Pre-validate data integrity then FIFO pair.
+    Returns trades + data quality report so caller can decide whether to proceed.
     """
-    # Group orders by symbol, maintain chronological order
+    result = PairingResult(trades=[], total_orders=len(orders), dirty_symbols=[])
+
+    # Group orders by symbol
     by_symbol: dict[str, list[dict]] = {}
     for o in orders:
         sym = o["symbol"]
@@ -131,12 +147,24 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
             by_symbol[sym] = []
         by_symbol[sym].append(o)
 
-    trades = []
-    orphan_sells = 0
-    excess_shares = 0
-
+    # ── Pre-validation: per-symbol integrity check ──
     for sym, sym_orders in by_symbol.items():
-        buy_queue: list[dict] = []  # FIFO queue of buy lots
+        buy_shares = sum(o["shares"] for o in sym_orders if o["side"] == "buy")
+        sell_shares = sum(o["shares"] for o in sym_orders if o["side"] == "sell")
+        first_order = sym_orders[0]["side"] if sym_orders else None
+
+        issues = []
+        if first_order == "sell":
+            issues.append("first order is sell (missing earlier buy)")
+        if sell_shares > buy_shares:
+            issues.append(f"sell({sell_shares}) > buy({buy_shares})")
+
+        if issues:
+            result.dirty_symbols.append(f"{sym}: {'; '.join(issues)}")
+
+    # ── FIFO pairing ──
+    for sym, sym_orders in by_symbol.items():
+        buy_queue: list[dict] = []
 
         for order in sym_orders:
             if order["side"] == "buy":
@@ -148,30 +176,24 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
                 })
             elif order["side"] == "sell":
                 if not buy_queue:
-                    orphan_sells += 1
-                    logger.warning(
-                        f"[FIFO] Orphan sell: {sym} {order['shares']}shares "
-                        f"@ {order['created_at']} — no matching buy in queue"
-                    )
+                    result.orphan_sells += 1
                     continue
 
                 sell_price = order["price"]
                 sell_date = order["created_at"]
                 shares_to_sell = order["shares"]
 
-                # FIFO: consume from earliest buy lots
                 while shares_to_sell > 0 and buy_queue:
                     lot = buy_queue[0]
                     sold = min(lot["remaining"], shares_to_sell)
                     lot["remaining"] -= sold
                     shares_to_sell -= sold
 
-                    # Per-lot P&L with real TW fees
                     buy_cost = lot["price"] * (1 + TW_BUY_FEE)
                     sell_net = sell_price * (1 - TW_SELL_FEE)
                     profit_ratio = (sell_net - buy_cost) / buy_cost
 
-                    trades.append({
+                    result.trades.append({
                         "symbol": sym,
                         "entry_date": lot["date"][:10],
                         "exit_date": sell_date[:10],
@@ -186,20 +208,37 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
                         buy_queue.pop(0)
 
                 if shares_to_sell > 0:
-                    excess_shares += shares_to_sell
-                    logger.warning(
-                        f"[FIFO] Excess sell: {sym} {shares_to_sell}shares "
-                        f"@ {sell_date} — sell qty exceeds buy queue"
-                    )
+                    result.excess_shares += shares_to_sell
 
-    if orphan_sells or excess_shares:
-        logger.warning(
-            f"[FIFO] Pairing summary: {len(trades)} trades paired, "
-            f"{orphan_sells} orphan sells dropped, "
-            f"{excess_shares} excess shares dropped"
+        # Remaining buy lots = open positions (normal)
+        result.open_positions += len(buy_queue)
+
+    result.paired_trades = len(result.trades)
+
+    # ── Data quality verdict ──
+    dirty_count = len(result.dirty_symbols)
+    total_symbols = len(by_symbol)
+
+    if dirty_count == 0:
+        result.data_quality = "CLEAN"
+        result.quality_detail = f"{total_symbols} symbols, all clean"
+    elif dirty_count / max(total_symbols, 1) < 0.1:
+        result.data_quality = "USABLE"
+        result.quality_detail = (
+            f"{dirty_count}/{total_symbols} symbols have issues: "
+            + ", ".join(result.dirty_symbols[:5])
         )
+        logger.warning(f"[FIFO] Data quality USABLE — {result.quality_detail}")
+    else:
+        result.data_quality = "DIRTY"
+        result.quality_detail = (
+            f"{dirty_count}/{total_symbols} symbols have issues (>{10}%). "
+            "Results unreliable. Fix paper_orders data first. "
+            + ", ".join(result.dirty_symbols[:10])
+        )
+        logger.error(f"[FIFO] Data quality DIRTY — {result.quality_detail}")
 
-    return trades
+    return result
 
 
 def _compute_mdd(returns: list[float]) -> float:
@@ -299,6 +338,8 @@ async def run_monte_carlo_mdd(
         # ── Step 1: Fetch trade returns ──
         trade_returns: list[float] = []
 
+        data_quality_info: dict = {}
+
         if source == "paper":
             logger.info("[MonteCarlo] Fetching paper_orders from D1...")
             orders = await _d1_query(
@@ -312,9 +353,32 @@ async def run_monte_carlo_mdd(
             if not orders:
                 return {"error": "No paper orders found", "status": "failed"}
 
-            logger.info(f"[MonteCarlo] Found {len(orders)} orders, pairing FIFO...")
-            trades = _pair_orders_fifo(orders)
-            trade_returns = [t["profit_ratio"] for t in trades]
+            logger.info(f"[MonteCarlo] Found {len(orders)} orders, validating + pairing...")
+            pairing = _validate_and_pair_orders(orders)
+
+            # Reject if data is too dirty
+            if pairing.data_quality == "DIRTY":
+                return {
+                    "error": "Paper orders data too dirty for reliable Monte Carlo",
+                    "status": "failed",
+                    "data_quality": pairing.data_quality,
+                    "detail": pairing.quality_detail,
+                    "orphan_sells": pairing.orphan_sells,
+                    "excess_shares": pairing.excess_shares,
+                    "dirty_symbols": pairing.dirty_symbols[:20],
+                }
+
+            trade_returns = [t["profit_ratio"] for t in pairing.trades]
+            data_quality_info = {
+                "data_quality": pairing.data_quality,
+                "total_orders": pairing.total_orders,
+                "paired_trades": pairing.paired_trades,
+                "orphan_sells": pairing.orphan_sells,
+                "excess_shares": pairing.excess_shares,
+                "open_positions": pairing.open_positions,
+                "dirty_symbols": pairing.dirty_symbols[:10],
+                "quality_detail": pairing.quality_detail,
+            }
 
         elif source == "backtest":
             logger.info("[MonteCarlo] Fetching backtest trades from D1...")
@@ -367,7 +431,8 @@ async def run_monte_carlo_mdd(
             "distribution": mdds_for_dist,
             "histogram": buckets,
             "source": source,
-            "n_trades": len(trades),
+            "n_trades": len(trade_returns),
+            "data_quality": data_quality_info or None,
         }, ensure_ascii=False)
 
         success = await _d1_exec(
@@ -410,6 +475,7 @@ async def run_monte_carlo_mdd(
             "mdd_median": f"{mc.mdd_median:.2%}",
             "go_live_verdict": mc.go_live_verdict,
             "verdict_reason": mc.verdict_reason,
+            "data_quality": data_quality_info or None,
         }
         logger.info(f"[MonteCarlo] Done: {mc.go_live_verdict} — 95th MDD = {mc.mdd_95th:.2%}")
         return summary

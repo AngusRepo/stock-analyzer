@@ -30,6 +30,7 @@ Worker 呼叫格式：
   }
 """
 import os
+import re
 import json
 import logging
 import httpx
@@ -101,7 +102,7 @@ def _llm_reasons(
         )
         resp.raise_for_status()
         text = resp.json()["content"][0]["text"]
-        match = __import__("re").search(r"\[[\s\S]*\]", text)
+        match = re.search(r"\[[\s\S]*\]", text)
         if match:
             return json.loads(match.group())
     except Exception as e:

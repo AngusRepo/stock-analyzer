@@ -1,6 +1,5 @@
 /**
  * llm.ts — Anthropic Claude API client
- * Replaces Manus forge API (forge.manus.im)
  */
 
 export interface RichContext {

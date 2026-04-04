@@ -4,9 +4,9 @@
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
  */
-import { useState, Fragment } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi, getToken } from '@/lib/api'
+import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'

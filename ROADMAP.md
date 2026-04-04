@@ -138,11 +138,12 @@
 - **Expected**: Prevent LLM manipulation affecting trade decisions
 - **Impl**: 10 regex patterns (critical/high/medium). Critical → REJECT, High → DOWNGRADE. Patterns: instruction_override, role_hijack, extreme_action, insider_claim, urgency_manipulation, unrealistic_claim. Both Python (for controller-side use) and TypeScript (inline in debateTrader) implementations
 
-### #15 Three-layer Observability
-- **What**: L1 Trade (existing PnL/WinRate/MDD). **L2 Decision**: each trade logs "chip_score contributed 38%, ML 45%, debate flipped direction" -> D1 `decision_logs`. **L3 Model**: daily per-model accuracy/IC/drift -> KV `ml:model_health:{date}`
-- **Where**: `worker/src/lib/dailyRecommendation.ts` L2 + `worker/src/lib/predictionVerifier.ts` L3 + frontend dashboard
-- **Why**: Currently can only see "PnL is bad". Can't diagnose: stock selection wrong? Exit wrong? Which model degraded?
-- **Expected**: Answer "why are we losing money" with data, not guesses
+### #15 Three-layer Observability ✅
+- **What**: L1 Trade (existing). L2 Decision: per-trade factor attribution. L3 Model: daily per-model health
+- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `worker/src/index.ts` L3 model_health_daily + KV
+- **Why**: Currently can only see "PnL is bad". Can't diagnose which layer is wrong
+- **Expected**: Answer "why are we losing money" with data
+- **Impl**: L2: INSERT decision_logs on each BUY with chip_pct/tech_pct/ml_pct contribution + debate verdict. L3: After daily verify, snapshot all 10 models' accuracy/PF/expectancy/lifecycle to D1 + KV. API: GET /api/observability/decisions + /model-health
 
 ---
 

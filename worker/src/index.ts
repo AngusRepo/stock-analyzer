@@ -153,6 +153,38 @@ app.get('/api/backtest/monte-carlo', async (c) => {
   return c.json(row ?? null)
 })
 
+// ─── P1#15 L2: Decision Logs ─────────────────────────────────────────────────
+app.get('/api/observability/decisions', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
+  ).bind(date).all()
+  return c.json({ date, decisions: results ?? [] })
+})
+
+// ─── P1#15 L3: Model Health ─────────────────────────────────────────────────
+app.get('/api/observability/model-health', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM model_health_daily WHERE date=? ORDER BY model_name'
+  ).bind(date).all()
+  return c.json({ date, models: results ?? [] })
+})
+
 // ─── PBO Results（P0#6，Dashboard 用）─────────────────────────────────────────
 app.get('/api/backtest/pbo', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -1553,7 +1585,62 @@ export default {
     } else if (cron === '15 10 * * 1-5') {
       runWithLog('verify', async () => {
         await runPredictionVerification(env)
-        return '預測驗證完成'
+
+        // P1#15 L3: Daily model health snapshot
+        try {
+          const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+          const ALL_MODELS = ['KalmanFilter','DLinear','MarkovSwitching','PatchTST','Chronos',
+                              'XGBoost','CatBoost','ExtraTrees','LightGBM','FT-Transformer']
+          // Fetch model accuracies
+          const { results: acc30 } = await env.DB.prepare(`
+            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy,
+                   AVG(profit_factor) as pf, AVG(expectancy) as exp
+            FROM model_accuracy WHERE period='30d'
+            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
+            GROUP BY model_name
+          `).bind(...ALL_MODELS).all<any>()
+          const { results: acc90 } = await env.DB.prepare(`
+            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy
+            FROM model_accuracy WHERE period='90d'
+            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
+            GROUP BY model_name
+          `).bind(...ALL_MODELS).all<any>()
+          const acc30Map = Object.fromEntries((acc30 ?? []).map((r: any) => [r.model_name, r]))
+          const acc90Map = Object.fromEntries((acc90 ?? []).map((r: any) => [r.model_name, r]))
+
+          // Lifecycle state
+          const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
+          const lcStates = lcRow?.state_json ? JSON.parse(lcRow.state_json) : {}
+
+          // Insert per-model health
+          for (const model of ALL_MODELS) {
+            const a30 = acc30Map[model] ?? {}
+            const a90 = acc90Map[model] ?? {}
+            const lc = lcStates[model] ?? {}
+            await env.DB.prepare(`
+              INSERT OR REPLACE INTO model_health_daily
+                (date, model_name, accuracy_30d, accuracy_90d, profit_factor, expectancy,
+                 lifecycle_status, lifecycle_weight)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              twToday, model,
+              a30.accuracy ?? null, a90.accuracy ?? null,
+              a30.pf ?? null, a30.exp ?? null,
+              lc.status ?? 'active', lc.weight_mult ?? 1.0,
+            ).run()
+          }
+          // Also store to KV for quick access
+          const healthSummary = ALL_MODELS.map(m => ({
+            model: m,
+            acc_30d: acc30Map[m]?.accuracy ?? null,
+            status: lcStates[m]?.status ?? 'active',
+            weight: lcStates[m]?.weight_mult ?? 1.0,
+          }))
+          await env.KV.put(`ml:model_health:${twToday}`, JSON.stringify(healthSummary), { expirationTtl: 30 * 86400 })
+          console.log(`[L3] Model health snapshot: ${ALL_MODELS.length} models logged`)
+        } catch (e) { console.warn('[L3] Model health failed:', e) }
+
+        return '預測驗證 + L3 model health 完成'
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {

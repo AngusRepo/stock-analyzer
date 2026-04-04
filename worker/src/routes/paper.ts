@@ -1606,6 +1606,32 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     dailyBuyTotal += totalCost
     sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
+    // P1#15 L2: Decision log — per-trade factor attribution
+    try {
+      const recRow = await env.DB.prepare(
+        'SELECT chip_score, tech_score, ml_score, score FROM daily_recommendations WHERE date=? AND symbol=?'
+      ).bind(today, pending.symbol).first<any>()
+      if (recRow) {
+        const total = recRow.score || 1
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO decision_logs
+            (date, symbol, action, chip_score, tech_score, ml_score, total_score,
+             chip_pct, tech_pct, ml_pct, ml_signal, ml_confidence,
+             debate_verdict, debate_summary, market_risk, sector, entry_price)
+          VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          today, pending.symbol,
+          recRow.chip_score, recRow.tech_score, recRow.ml_score, total,
+          Math.round((recRow.chip_score / total) * 100) / 100,
+          Math.round((recRow.tech_score / total) * 100) / 100,
+          Math.round((recRow.ml_score / total) * 100) / 100,
+          pending.signal, pending.confidence,
+          pending.debate_verdict ?? null, null,
+          marketRisk?.risk_level ?? null, recSector, fillPrice,
+        ).run()
+      }
+    } catch (e) { console.warn('[L2] Decision log failed:', e) }
+
     const lotTag = isOddLot ? ' [零股]' : ''
     console.log(`[Intraday] ✅ 成交 ${pending.symbol} ${shares}股${lotTag} @ ${fillPrice}（市價${price} +滑價）`)
     void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,

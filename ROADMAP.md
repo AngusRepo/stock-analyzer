@@ -77,11 +77,12 @@
 - **Why**: Three meta components were all hardcoded. Now self-adjusting based on market conditions
 - **Expected**: Losing → explore. Winning → exploit. High vol → fast adapt
 
-### #11 LangGraph Integration in Controller
-- **What**: Daily pipeline as StateGraph: screener -> ML -> recommend with checkpoint (GCS JSON) + retry 3x + state auto-pass
-- **Where**: `ml-controller/graphs/daily_pipeline.py` (new)
-- **Why**: Currently if ML predict fails at 18:00, recommendation at 18:05 doesn't know and runs with empty predictions. LangGraph: fail -> retry from last checkpoint
-- **Expected**: Pipeline resilience + LangGraph Studio visualization
+### #11 LangGraph Integration in Controller ✅
+- **What**: Daily pipeline as StateGraph: screener → ML → recommend with JSON checkpoint + retry 3x + auto-pass
+- **Where**: `ml-controller/graphs/daily_pipeline.py` + `ml-controller/routers/pipeline.py` POST /pipeline/run
+- **Why**: Previously if ML predict fails, recommendation runs with empty predictions
+- **Expected**: Pipeline resilience + resumable from checkpoint
+- **Impl**: Lightweight custom StateGraph (no langgraph dep). 3x retry per step with exponential backoff (2/5/15s). Checkpoint after each step. Dependency chain: screener → ml_predict → recommend. POST /pipeline/run with resume + date params
 
 ### #12 Portfolio Construction + Position Replacement
 - **What**: Three sub-systems:

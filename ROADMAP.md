@@ -64,11 +64,12 @@
 - **Expected**: Ensemble quality auto-maintained
 - **Impl**: D1 model_lifecycle_state + model_lifecycle_events tables. Worker reads lifecycle weights → passes to predict payload → ensemble applies lifecycle_mult. Weekly check in Sunday cron (after retrain). Admin taskMap for manual trigger
 
-### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna
-- **What**: IC audit effective features automatically passed to Sunday retrain (only train on effective features). Retrain also runs Optuna for each model's hyperparameters (XGB depth[3-6], lr[0.01-0.1], n_est[100-300])
-- **Where**: `worker/src/index.ts` runWeeklyRetrain + `ml-service/app/main.py` retrain endpoint
-- **Why**: Currently retrain uses all 26 features (including noise) with hardcoded hyperparams (depth=4 since day 1). Optuna finds best params per market condition
+### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna ✅
+- **What**: IC audit weak features excluded during retrain. Optuna 20-trial search per model (XGB/CatBoost/ExtraTrees/LightGBM)
+- **Where**: `worker/src/index.ts` reads KV `ml:weak_features` → retrain payload. `ml-service/app/main.py` filters features + runs Optuna. `ml-service/app/optuna_retrain.py` search spaces
+- **Why**: Previously retrain used all 32 features (including noise) with hardcoded hyperparams
 - **Expected**: Reduce overfitting, model accuracy +2-3%
+- **Impl**: Worker passes weak_features + use_optuna in payload. ML service drops weak features (guard: keep >=5). Optuna searches depth/lr/n_estimators/subsample per model. Falls back to defaults if Optuna fails
 
 ### #10 Meta-layer Dynamic Adjustment
 - **What**: ARF warm-up dynamic (high vol -> 30 lower threshold for fast adaptation; low vol -> 80 for stability). Stacking blend by recent 30d meta vs ensemble accuracy (meta more accurate -> ratio to 70%). LinUCB alpha by win/loss streak (losing -> alpha up explore; winning -> alpha down exploit)

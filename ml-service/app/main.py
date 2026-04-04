@@ -71,6 +71,8 @@ class PredictRequest(BaseModel):
     model_stats: dict[str, dict] = {}
     adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
     lifecycle_weights: dict[str, float] = {}  # P1#8: per-model lifecycle weight overrides
+    weak_features: list[str] = []             # P1#9: IC audit 無效特徵（retrain 時排除）
+    use_optuna: bool = False                  # P1#9: 啟用 Optuna 超參數搜索
     night_session: NightSessionData | None = None  # 台指期夜盤（07:15 re-predict 時傳入）
     context: str = "scheduled_daily"  # "scheduled_daily" (15:30) or "morning_repredict" (07:15)
 
@@ -474,6 +476,16 @@ def retrain_stock(req: PredictRequest) -> dict:
     prices_arr  = np.array([float(p["close"]) for p in req.prices])
     X, y, feature_names = get_features(df)
 
+    # P1#9: Filter out weak features identified by IC audit
+    if req.weak_features:
+        weak_set = set(req.weak_features)
+        keep_idx = [i for i, f in enumerate(feature_names) if f not in weak_set]
+        if len(keep_idx) >= 5:  # guard: keep at least 5 features
+            dropped = len(feature_names) - len(keep_idx)
+            X = X[:, keep_idx]
+            feature_names = [feature_names[i] for i in keep_idx]
+            print(f"[Retrain] IC filter: dropped {dropped} weak features, {len(feature_names)} remaining")
+
     if len(X) < 30:
         raise ValueError("特徵樣本不足 30 筆")
 
@@ -485,16 +497,41 @@ def retrain_stock(req: PredictRequest) -> dict:
     split   = int(len(X) * 0.8)
     from .model_store import save_model
 
+    # P1#9: Optuna hyperparameter search (if enabled)
+    optuna_params: dict[str, dict] = {}
+    if req.use_optuna and len(X) >= 60:
+        from .optuna_retrain import search_best_params
+        for model_name in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]:
+            bp = search_best_params(model_name, X, y)
+            if bp:
+                optuna_params[model_name] = bp
+                print(f"[Retrain] Optuna {model_name}: {bp}")
+
+    # Build model specs — use Optuna params if available, else defaults
+    xgb_p = optuna_params.get("XGBoost", {})
+    cat_p = optuna_params.get("CatBoost", {})
+    et_p  = optuna_params.get("ExtraTrees", {})
+
     _specs = [
         ("XGBoost",    lambda: __import__("xgboost", fromlist=["XGBClassifier"]).XGBClassifier(
-                           n_estimators=150, max_depth=4, learning_rate=0.05,
+                           n_estimators=xgb_p.get("n_estimators", 150),
+                           max_depth=xgb_p.get("max_depth", 4),
+                           learning_rate=xgb_p.get("learning_rate", 0.05),
+                           subsample=xgb_p.get("subsample", 0.9),
+                           colsample_bytree=xgb_p.get("colsample_bytree", 0.9),
                            use_label_encoder=False, eval_metric="logloss",
                            random_state=42, verbosity=0)),
         ("CatBoost",   lambda: __import__("catboost", fromlist=["CatBoostClassifier"]).CatBoostClassifier(
-                           iterations=200, depth=5, learning_rate=0.05,
+                           iterations=cat_p.get("iterations", 200),
+                           depth=cat_p.get("depth", 5),
+                           learning_rate=cat_p.get("learning_rate", 0.05),
+                           l2_leaf_reg=cat_p.get("l2_leaf_reg", 3.0),
                            loss_function="Logloss", random_seed=42, verbose=0)),
         ("ExtraTrees", lambda: __import__("sklearn.ensemble", fromlist=["ExtraTreesClassifier"]).ExtraTreesClassifier(
-                           n_estimators=200, max_depth=6, min_samples_split=5, min_samples_leaf=3,
+                           n_estimators=et_p.get("n_estimators", 200),
+                           max_depth=et_p.get("max_depth", 6),
+                           min_samples_split=et_p.get("min_samples_split", 5),
+                           min_samples_leaf=et_p.get("min_samples_leaf", 3),
                            max_features="sqrt", class_weight="balanced", bootstrap=True,
                            random_state=42, n_jobs=-1)),
         ("LightGBM",   lambda: None),         # 特殊處理（直接呼叫 run_lightgbm）
@@ -506,7 +543,8 @@ def retrain_stock(req: PredictRequest) -> dict:
     for name, factory in _specs:
         try:
             if name == "LightGBM":
-                result = run_lightgbm(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)
+                result = run_lightgbm(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names,
+                                       optuna_params=optuna_params.get("LightGBM"))
                 acc = float(result.direction_accuracy)
             elif name == "FT-Transformer":
                 result = run_ft_transformer(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)
@@ -549,7 +587,9 @@ def retrain_stock(req: PredictRequest) -> dict:
         "stock_id": req.stock_id, "symbol": req.symbol,
         "retrained_at": datetime.utcnow().isoformat() + "Z",
         "feature_count": len(feature_names),
-        "feature_version": "v4_9models",
+        "features_dropped": len(req.weak_features) if req.weak_features else 0,
+        "optuna_models": list(optuna_params.keys()),
+        "feature_version": "v5_ic_optuna",
         "results": results,
     }
 

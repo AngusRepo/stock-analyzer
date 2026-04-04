@@ -1205,6 +1205,16 @@ async function runWeeklyRetrain(env: Bindings) {
     "SELECT id, symbol, market FROM stocks WHERE market IN ('TW','TWO','TWSE','OTC') AND is_active=1 ORDER BY id LIMIT 50"
   ).all<any>()
 
+  // P1#9: Read weak features from IC audit (stored by runWeeklyICaudit)
+  let weakFeatures: string[] = []
+  try {
+    const wfJson = await env.KV.get('ml:weak_features')
+    if (wfJson) {
+      weakFeatures = JSON.parse(wfJson)
+      console.log(`[WeeklyRetrain] IC audit: ${weakFeatures.length} weak features to exclude`)
+    }
+  } catch (e) { console.warn('[WeeklyRetrain] Failed reading weak features:', e) }
+
   // 建構 payloads
   const payloads: any[] = []
   for (const stock of (stocks ?? [])) {
@@ -1226,6 +1236,8 @@ async function runWeeklyRetrain(env: Bindings) {
           risk_level: marketRiskRow?.risk_level ?? 'medium',
           history: mrHistMap,
         },
+        weak_features: weakFeatures,  // P1#9: IC audit 無效特徵
+        use_optuna: true,             // P1#9: 啟用 Optuna 超參數搜索
       })
     } catch (e) {
       console.error(`[WeeklyRetrain] Failed building payload for ${stock.symbol}:`, e)

@@ -132,6 +132,8 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
         by_symbol[sym].append(o)
 
     trades = []
+    orphan_sells = 0
+    excess_shares = 0
 
     for sym, sym_orders in by_symbol.items():
         buy_queue: list[dict] = []  # FIFO queue of buy lots
@@ -144,7 +146,15 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
                     "remaining": order["shares"],
                     "date": order["created_at"],
                 })
-            elif order["side"] == "sell" and buy_queue:
+            elif order["side"] == "sell":
+                if not buy_queue:
+                    orphan_sells += 1
+                    logger.warning(
+                        f"[FIFO] Orphan sell: {sym} {order['shares']}shares "
+                        f"@ {order['created_at']} — no matching buy in queue"
+                    )
+                    continue
+
                 sell_price = order["price"]
                 sell_date = order["created_at"]
                 shares_to_sell = order["shares"]
@@ -174,6 +184,20 @@ def _pair_orders_fifo(orders: list[dict]) -> list[dict]:
 
                     if lot["remaining"] <= 0:
                         buy_queue.pop(0)
+
+                if shares_to_sell > 0:
+                    excess_shares += shares_to_sell
+                    logger.warning(
+                        f"[FIFO] Excess sell: {sym} {shares_to_sell}shares "
+                        f"@ {sell_date} — sell qty exceeds buy queue"
+                    )
+
+    if orphan_sells or excess_shares:
+        logger.warning(
+            f"[FIFO] Pairing summary: {len(trades)} trades paired, "
+            f"{orphan_sells} orphan sells dropped, "
+            f"{excess_shares} excess shares dropped"
+        )
 
     return trades
 

@@ -32,11 +32,12 @@
 - **Expected**: Frontend shows weekly updated strategy performance
 - **Impl**: Python backtester on Cloud Run mirroring StockVisionStrategy (no Freqtrade binary needed). Worker → Controller POST /backtest/run → D1
 
-### #5 Monte Carlo MDD
+### #5 Monte Carlo MDD ✅
 - **What**: Shuffle paper_orders trade sequence 1000x, calculate 95th percentile worst-case MDD distribution
-- **Where**: New `ml-service/scripts/monte_carlo_mdd.py`
+- **Where**: `ml-controller/services/monte_carlo_service.py` + `ml-controller/routers/backtest.py` POST /backtest/monte-carlo
 - **Why**: Currently only know historical MDD. Don't know "worst case if unlucky". This number decides if strategy can go live with real money
 - **Expected**: 95% confidence MDD ceiling (e.g. "MDD won't exceed 18% with 95% confidence")
+- **Impl**: FIFO order pairing from paper_orders + backtest trades, 1000x shuffle, go-live verdict (PASS/CAUTION/FAIL). Worker GET /api/backtest/monte-carlo for frontend
 
 ### #6 PBO (Probability of Backtest Overfitting)
 - **What**: Combinatorial Purged Cross-Validation: multiple train/test splits, calculate probability strategy loses money OOS

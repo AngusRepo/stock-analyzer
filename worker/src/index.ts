@@ -138,6 +138,21 @@ app.get('/api/backtest/latest', async (c) => {
   return c.json(row ?? null)
 })
 
+// ─── Monte Carlo MDD Results（P0#5，Dashboard 用）─────────────────────────────
+app.get('/api/backtest/monte-carlo', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM monte_carlo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
+  ).first()
+  return c.json(row ?? null)
+})
+
 // ─── Admin: Adaptive Params（讀取 / 手動覆蓋）──────────────────────────────
 app.get('/api/admin/adaptive-params', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -188,7 +203,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
-    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測（retrain 後 2hr）' },
+    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測 + Monte Carlo MDD' },
   ]
   return c.json({ schedule })
 })
@@ -302,6 +317,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
       return { steps, message: '完整 pipeline 完成' }
     },
     backtest: () => runWeeklyBacktest(c.env),
+    'monte-carlo': () => runWeeklyMonteCarlo(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -950,6 +966,43 @@ async function runWeeklyBacktest(env: Bindings) {
 }
 
 
+// ─── Cron P0#5：Monte Carlo MDD（Controller 觸發） ───────────────────────────
+async function runWeeklyMonteCarlo(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) {
+    console.warn('[MonteCarlo] ML_CONTROLLER_URL not set, skipping')
+    return 'skipped (no controller URL)'
+  }
+  console.log('[MonteCarlo] Running Monte Carlo MDD simulation...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  // Run both paper and backtest sources
+  const results: string[] = []
+  for (const source of ['paper', 'backtest'] as const) {
+    const resp = await fetch(`${CTRL_URL}/backtest/monte-carlo?n=1000&source=${source}`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(120_000), // 2 min timeout
+    }).catch(() => null)
+
+    if (!resp?.ok) {
+      results.push(`${source}:failed`)
+      continue
+    }
+    const r = await resp.json() as Record<string, any>
+    if (r.status === 'failed' || r.status === 'error') {
+      results.push(`${source}:${r.error ?? 'failed'}`)
+    } else {
+      results.push(`${source}:${r.go_live_verdict}(95th=${r.mdd_95th})`)
+    }
+  }
+  const summary = results.join(', ')
+  console.log(`[MonteCarlo] ${summary}`)
+  return summary
+}
+
+
 // ─── Cron 3：每週日 04:00 — D1 舊資料清理 ────────────────────────────────────
 // ─── Cron 5（內嵌於週日清理）：每週重訓所有股票的 ML 模型 ──────────────────
 // ─── Weekly IC Audit：用資料最多的股票跑 Factor IC check ─────────────────────
@@ -1487,9 +1540,14 @@ export default {
         return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
       })
     } else if (cron === '0 22 * * 6') {
-      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 自動回測（retrain 完成 2hr 後）
+      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 回測 + P0#5 Monte Carlo MDD
       runWithLog('weekly-backtest', async () => {
-        return await runWeeklyBacktest(env)
+        const bt = await runWeeklyBacktest(env)
+        const mc = await runWeeklyMonteCarlo(env).catch(e => {
+          console.warn('[MonteCarlo] failed:', e)
+          return 'failed'
+        })
+        return `backtest(${bt}) | monte_carlo(${mc})`
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

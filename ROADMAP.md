@@ -124,11 +124,12 @@
 - **Status**: ✅
 - **Impl**: maxPositions=5 hard cap. Weakness score = pnlPct(35%) + timeRatio(25%) + tp1Status(20%) + negPnl(20%). Swap: new score must exceed weakest×1.15, held>=3d, not near TP1. Max 1 swap/day. minPositionValue=30K guard. Sell order logged as SWAP_OUT with reason
 
-### #13 Execution Reality
-- **What**: Slippage model (daily turnover < 50M -> slippage 1-2%) + Partial Fill (order > 5% daily volume -> partial) + Limit-down lock detection (drop >= 9.5% + volume < 10% yesterday -> can't exit)
-- **Where**: `worker/src/routes/paper.ts` order execution + `worker/src/lib/tradingConfig.ts`
-- **Why**: Paper trading assumes 100% fill at market price. Real trading: small caps slip 1-2%, limit-down days can't exit at all
+### #13 Execution Reality ✅
+- **What**: Volume-based slippage + partial fill + limit-down lock detection
+- **Where**: `worker/src/routes/paper.ts` applySlippage/applyPartialFill/isLimitDownLocked
+- **Why**: Paper trading assumed 100% fill at market price
 - **Expected**: Paper PnL closer to reality
+- **Impl**: Slippage: <10M turnover → +3 ticks, <50M → +1 tick. Partial fill: order >5% daily vol → fill 80%. Limit-down: drop >=9.5% + vol <10% prev → block sell
 
 ### #14 Prompt Injection Detection
 - **What**: Detect patterns in LLM output: "ignore previous", "all in", "sell everything". Debate result with danger words -> auto-downgrade to template reason

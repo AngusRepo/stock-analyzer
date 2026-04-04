@@ -27,14 +27,53 @@ function calcCommission(value: number, cfg: TradingConfig): number {
 }
 
 /**
- * 滑價模擬：真實市場成交價不會精確等於即時報價
- * Buy: +1~3 tick（買到偏貴）；Sell: -1~3 tick（賣到偏便宜）
+ * P1#13: Enhanced slippage model with volume consideration
  * 台股 tick size: <10→0.01, <50→0.05, <100→0.1, <500→0.5, <1000→1, ≥1000→5
+ * Small cap (daily turnover < 50M) → extra slippage 1-2%
  */
-function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1): number {
-  const tickSize = price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
-  const slippage = tickSize * ticks
+function getTickSize(price: number): number {
+  return price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
+}
+function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, dailyTurnover?: number): number {
+  const tickSize = getTickSize(price)
+  // P1#13: Volume-based extra slippage for low-liquidity stocks
+  let extraTicks = 0
+  if (dailyTurnover != null && dailyTurnover > 0) {
+    if (dailyTurnover < 10_000_000) extraTicks = 3      // < 1千萬: +3 ticks (very illiquid)
+    else if (dailyTurnover < 50_000_000) extraTicks = 1  // < 5千萬: +1 tick
+  }
+  const slippage = tickSize * (ticks + extraTicks)
   return side === 'buy' ? price + slippage : Math.max(price - slippage, tickSize)
+}
+
+/**
+ * P1#13: Partial fill simulation — order > 5% of daily volume → partial fill
+ */
+function applyPartialFill(shares: number, price: number, dailyVolume: number): number {
+  if (dailyVolume <= 0) return shares
+  const orderVolume = shares * price
+  const dailyValue = dailyVolume * price
+  const pctOfDaily = orderVolume / dailyValue
+  if (pctOfDaily > 0.05) {
+    // Fill only 80% of shares that exceed 5% threshold
+    const maxFillValue = dailyValue * 0.05
+    const excessShares = Math.max(0, shares - Math.floor(maxFillValue / price))
+    const filledShares = shares - Math.floor(excessShares * 0.2)
+    console.log(`[PartialFill] Order ${shares} shares = ${(pctOfDaily*100).toFixed(1)}% of daily vol → filled ${filledShares}`)
+    return Math.max(1, filledShares)
+  }
+  return shares
+}
+
+/**
+ * P1#13: Limit-down lock detection — can't exit if stock is locked limit-down
+ * Drop >= 9.5% + volume < 10% of yesterday → locked, can't sell
+ */
+function isLimitDownLocked(currentPrice: number, prevClose: number, volume: number, prevVolume: number): boolean {
+  if (prevClose <= 0) return false
+  const dropPct = (currentPrice - prevClose) / prevClose
+  const volRatio = prevVolume > 0 ? volume / prevVolume : 1
+  return dropPct <= -0.095 && volRatio < 0.1
 }
 function calcTax(value: number, cfg: TradingConfig, isDayTrade = false): number {
   const rate = isDayTrade ? cfg.fees.dayTradeTax : cfg.fees.tax
@@ -1596,6 +1635,16 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     const price = priceMap.get(pos.symbol)
     if (!price) continue
     const atr = atrMap.get(pos.symbol) ?? price * cfg.exit.fallbackAtrPct
+
+    // P1#13: Limit-down lock detection — can't exit if stock is locked
+    const prevCloseRow = await env.DB.prepare(
+      'SELECT close, volume FROM stock_prices WHERE stock_id=(SELECT id FROM stocks WHERE symbol=?) ORDER BY date DESC LIMIT 1'
+    ).bind(pos.symbol).first<any>()
+    if (prevCloseRow && isLimitDownLocked(price, prevCloseRow.close, 0, prevCloseRow.volume)) {
+      console.log(`[Exit] ${pos.symbol} limit-down locked (${((price-prevCloseRow.close)/prevCloseRow.close*100).toFixed(1)}%), can't sell`)
+      continue
+    }
+
     const decision = checkExitConditions(pos, price, atr, false, false, cfg)
     if (decision.action === 'hold') continue
 

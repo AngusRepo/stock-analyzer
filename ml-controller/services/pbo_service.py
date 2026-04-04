@@ -107,6 +107,16 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
     return resp.status_code == 200 and resp.json().get("success", False)
 
 
+def _date_diff_days(date1: str, date2: str) -> int:
+    """Calendar day difference between two YYYY-MM-DD strings."""
+    try:
+        d1 = datetime.strptime(date1[:10], "%Y-%m-%d")
+        d2 = datetime.strptime(date2[:10], "%Y-%m-%d")
+        return (d1 - d2).days
+    except (ValueError, TypeError):
+        return 999  # treat parse errors as far apart (no purge)
+
+
 def _partition_trades(trades: list[dict], n_partitions: int) -> list[list[dict]]:
     """Split trades into n roughly equal time-ordered partitions."""
     # Sort by exit_date (or entry_date)
@@ -173,6 +183,37 @@ def _run_cpcv(
     is_returns = []
     oos_returns = []
 
+    # Pre-compute partition boundary dates for purging
+    boundary_dates: list[str] = []
+    for i in range(len(partitions) - 1):
+        last_date = partitions[i][-1].get("exit_date", "")[:10] if partitions[i] else ""
+        if last_date:
+            boundary_dates.append(last_date)
+
+    def _purge_boundary_trades(trades_list: list[dict], adjacent_indices: set[int]) -> list[dict]:
+        """Remove trades within PURGE_DAYS of partition boundaries adjacent to the other set."""
+        if not boundary_dates:
+            return trades_list
+        purge_boundaries = set()
+        for idx in adjacent_indices:
+            if 0 <= idx < len(boundary_dates):
+                purge_boundaries.add(boundary_dates[idx])
+            if 0 <= idx - 1 < len(boundary_dates):
+                purge_boundaries.add(boundary_dates[idx - 1])
+        if not purge_boundaries:
+            return trades_list
+        purged = []
+        for t in trades_list:
+            t_date = t.get("exit_date", t.get("entry_date", ""))[:10]
+            too_close = False
+            for bd in purge_boundaries:
+                if abs(_date_diff_days(t_date, bd)) <= PURGE_DAYS:
+                    too_close = True
+                    break
+            if not too_close:
+                purged.append(t)
+        return purged
+
     for train_indices in all_combos:
         test_indices = [i for i in partition_indices if i not in train_indices]
 
@@ -185,8 +226,14 @@ def _run_cpcv(
         for i in test_indices:
             test_trades.extend(partitions[i])
 
+        # Purge trades near train/test boundaries to prevent leakage
+        train_set = set(train_indices)
+        test_set = set(test_indices)
+        adjacent = {i for i in train_set if (i - 1) in test_set or (i + 1) in test_set}
+        test_trades = _purge_boundary_trades(test_trades, adjacent)
+
         is_ret = _compute_partition_return(train_trades)
-        oos_ret = _compute_partition_return(test_trades)
+        oos_ret = _compute_partition_return(test_trades) if test_trades else 0.0
 
         is_returns.append(is_ret)
         oos_returns.append(oos_ret)
@@ -196,7 +243,7 @@ def _run_cpcv(
     result.pbo = result.n_oos_negative / len(oos_returns) if oos_returns else 1.0
 
     result.oos_mean_return = statistics.mean(oos_returns) if oos_returns else 0.0
-    result.oos_median_return = sorted(oos_returns)[len(oos_returns) // 2] if oos_returns else 0.0
+    result.oos_median_return = statistics.median(oos_returns) if oos_returns else 0.0
     result.is_mean_return = statistics.mean(is_returns) if is_returns else 0.0
     result.degradation = result.is_mean_return - result.oos_mean_return
 

@@ -1700,12 +1700,9 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
       const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length)
       sharpe30d = std > 0 ? (mean / std) * Math.sqrt(252) : null
 
-      // P0#7 Sortino: only downside deviation
-      const downside = returns.filter(r => r < 0)
-      if (downside.length >= 2) {
-        const downStd = Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / downside.length)
-        sortino30d = downStd > 0 ? (mean / downStd) * Math.sqrt(252) : null
-      }
+      // P0#7 Sortino: downside deviation (square negative returns, divide by total N)
+      const downStd = Math.sqrt(returns.reduce((a, r) => a + (r < 0 ? r ** 2 : 0), 0) / returns.length)
+      sortino30d = downStd > 0 ? (mean / downStd) * Math.sqrt(252) : null
     }
   }
 

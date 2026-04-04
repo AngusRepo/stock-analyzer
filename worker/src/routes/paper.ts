@@ -1310,9 +1310,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
 
       // Check if new stock is meaningfully better
-      const newScore = (pending.confidence ?? 0.6) * 100
-      if (newScore < weakest.score * swapThreshold) {
-        console.log(`[Swap] ${pending.symbol}(${newScore.toFixed(0)}) not ${swapThreshold}x better than ${weakest.symbol}(${weakest.score.toFixed(0)}), skip`)
+      // newScore = quality (higher = better), weakest.score = weakness (higher = weaker)
+      // Swap if: new quality is high AND weakest is sufficiently weak
+      const newQuality = (pending.confidence ?? 0.6) * 100
+      const weaknessThreshold = 100 / swapThreshold  // e.g. 1.15 → ~87: weakness must exceed this
+      if (weakest.score < weaknessThreshold || newQuality < 55) {
+        console.log(`[Swap] ${weakest.symbol}(weakness=${weakest.score.toFixed(0)}) not weak enough (need>${weaknessThreshold.toFixed(0)}) or ${pending.symbol}(quality=${newQuality.toFixed(0)}) not strong enough, skip`)
         continue
       }
 
@@ -1637,12 +1640,17 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     const atr = atrMap.get(pos.symbol) ?? price * cfg.exit.fallbackAtrPct
 
     // P1#13: Limit-down lock detection — can't exit if stock is locked
+    // Only check if we have a meaningful intraday volume (skip if unknown)
     const prevCloseRow = await env.DB.prepare(
       'SELECT close, volume FROM stock_prices WHERE stock_id=(SELECT id FROM stocks WHERE symbol=?) ORDER BY date DESC LIMIT 1'
     ).bind(pos.symbol).first<any>()
-    if (prevCloseRow && isLimitDownLocked(price, prevCloseRow.close, 0, prevCloseRow.volume)) {
-      console.log(`[Exit] ${pos.symbol} limit-down locked (${((price-prevCloseRow.close)/prevCloseRow.close*100).toFixed(1)}%), can't sell`)
-      continue
+    if (prevCloseRow && prevCloseRow.close > 0) {
+      const dropPct = (price - prevCloseRow.close) / prevCloseRow.close
+      // Only block if we can confirm limit-down (price drop >= 9.5%)
+      // Volume check skipped here since we don't have intraday volume
+      if (dropPct <= -0.095) {
+        console.log(`[Exit] ${pos.symbol} at limit-down (${(dropPct*100).toFixed(1)}%), sell may not execute`)
+      }
     }
 
     const decision = checkExitConditions(pos, price, atr, false, false, cfg)

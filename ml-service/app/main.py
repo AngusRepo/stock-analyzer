@@ -551,8 +551,9 @@ def retrain_stock(req: PredictRequest) -> dict:
     for name, factory in _specs:
         try:
             if name == "LightGBM":
-                result = run_lightgbm(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names,
-                                       optuna_params=optuna_params.get("LightGBM"))
+                # P1#9: LightGBM has its own internal params, Optuna params logged but not injected
+                # (run_lightgbm uses lgb.train API which takes params dict differently)
+                result = run_lightgbm(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)
                 acc = float(result.direction_accuracy)
             elif name == "FT-Transformer":
                 result = run_ft_transformer(X, y, X_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names)

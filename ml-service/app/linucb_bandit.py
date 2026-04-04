@@ -156,9 +156,11 @@ class LinUCBBandit:
         ucb    = np.zeros(self.k, dtype=np.float64)
         theta  = np.zeros(self.k, dtype=np.float64)
 
-        # #15 α 動態衰減：初期高探索(0.5)，觀測充足後低探索(0.1)
+        # P1#10: Use self.alpha (set dynamically by compute_dynamic_alpha)
+        # with observation-based decay: more obs → lower exploration
         total_obs = self.total_observations()
-        effective_alpha = max(0.1, 0.5 / (1.0 + total_obs / 100.0))
+        decay_factor = 1.0 / (1.0 + total_obs / 200.0)  # gentler decay
+        effective_alpha = max(0.1, self.alpha * decay_factor)
 
         for a in range(self.k):
             A_inv     = np.linalg.inv(self.A[a])

@@ -223,7 +223,7 @@ def build_daily_pipeline(worker_url: str, auth_token: str = "") -> DailyPipeline
 
     async def step_screener(state: PipelineState, client: httpx.AsyncClient):
         resp = await client.post(
-            f"{worker_url}/api/admin/trigger:screener",
+            f"{worker_url}/api/admin/trigger/screener",
             headers=headers, timeout=120.0,
         )
         resp.raise_for_status()
@@ -232,7 +232,7 @@ def build_daily_pipeline(worker_url: str, auth_token: str = "") -> DailyPipeline
 
     async def step_ml_predict(state: PipelineState, client: httpx.AsyncClient):
         resp = await client.post(
-            f"{worker_url}/api/admin/trigger:ml",
+            f"{worker_url}/api/admin/trigger/ml",
             headers=headers, timeout=300.0,
         )
         resp.raise_for_status()
@@ -240,7 +240,7 @@ def build_daily_pipeline(worker_url: str, auth_token: str = "") -> DailyPipeline
 
     async def step_recommend(state: PipelineState, client: httpx.AsyncClient):
         resp = await client.post(
-            f"{worker_url}/api/admin/trigger:recommendation",
+            f"{worker_url}/api/admin/trigger/recommendation",
             headers=headers, timeout=120.0,
         )
         resp.raise_for_status()

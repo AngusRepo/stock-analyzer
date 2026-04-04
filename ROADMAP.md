@@ -25,11 +25,12 @@
 - **Why**: Stop loss / take profit directly determines win/loss ratio per trade. Trailing 3-stage is hardcoded
 - **Expected**: Profit Factor +0.2-0.5
 
-### #4 Automated Backtest Cron
-- **What**: Sunday cron: export_d1 -> freqtrade backtest -> import_results -> D1 backtest_results table
-- **Where**: `worker/src/index.ts` weekly cron + `freqtrade/scripts/`
+### #4 Automated Backtest Cron ✅
+- **What**: Sunday cron: D1 export → in-memory backtest (7-layer cascade) → D1 backtest_results table
+- **Where**: `ml-controller/services/backtest_service.py` + `ml-controller/routers/backtest.py` + `worker/src/index.ts` Sunday cron
 - **Why**: Frontend Backtest card shows "no results". Scripts exist but never auto-triggered. backtest_results table is empty
 - **Expected**: Frontend shows weekly updated strategy performance
+- **Impl**: Python backtester on Cloud Run mirroring StockVisionStrategy (no Freqtrade binary needed). Worker → Controller POST /backtest/run → D1
 
 ### #5 Monte Carlo MDD
 - **What**: Shuffle paper_orders trade sequence 1000x, calculate 95th percentile worst-case MDD distribution

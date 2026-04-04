@@ -187,7 +187,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'verify',           tw_time: '18:15',       description: '預測驗證' },
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
-    { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
+    { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+回測+集保+IC+Timeverse' },
   ]
   return c.json({ schedule })
 })
@@ -300,6 +300,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
 
       return { steps, message: '完整 pipeline 完成' }
     },
+    backtest: () => runWeeklyBacktest(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -915,6 +916,39 @@ async function runMLAndRisk(env: Bindings) {
 // Legacy ML_QUEUE fallback retained in runMLAndRisk for rollback safety
 
 
+// ─── Cron P0#4：每週日回測（Controller 觸發） ─────────────────────────────────
+async function runWeeklyBacktest(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) {
+    console.warn('[Backtest] ML_CONTROLLER_URL not set, skipping')
+    return 'skipped (no controller URL)'
+  }
+  console.log('[Backtest] Triggering weekly backtest via Controller...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/backtest/run`, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(300_000), // 5 min timeout
+  })
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    console.error(`[Backtest] Controller returned ${resp.status}: ${text.slice(0, 200)}`)
+    return `failed (${resp.status})`
+  }
+
+  const result = await resp.json() as Record<string, any>
+  console.log('[Backtest] Result:', JSON.stringify(result).slice(0, 500))
+  if (result.status === 'failed' || result.status === 'error') {
+    console.error(`[Backtest] Pipeline failed: ${result.error ?? 'unknown'}`)
+    return `failed: ${result.error ?? result.status}`
+  }
+  return `trades=${result.total_trades ?? 0}, win=${result.win_rate ?? '-'}, sharpe=${result.sharpe ?? '-'}`
+}
+
+
 // ─── Cron 3：每週日 04:00 — D1 舊資料清理 ────────────────────────────────────
 // ─── Cron 5（內嵌於週日清理）：每週重訓所有股票的 ML 模型 ──────────────────
 // ─── Weekly IC Audit：用資料最多的股票跑 Factor IC check ─────────────────────
@@ -1436,6 +1470,12 @@ export default {
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
         // Feature drift detection（同一支股票的資料）
         await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
+        // P0#4: Weekly automated backtest (after retrain, uses latest models)
+        const btResult = await runWeeklyBacktest(env).catch(e => {
+          console.warn('[Backtest] failed:', e)
+          return 'failed'
+        })
+        console.log(`[Backtest] ${btResult}`)
         // Timeverse 台股研究資料庫同步
         const { syncTimeverse } = await import('./lib/timeverse')
         await syncTimeverse(env).catch(e => console.warn('[Timeverse] sync failed:', e))
@@ -1449,7 +1489,7 @@ export default {
           }
           console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
         } catch (e) { console.warn('[Backup] D1 snapshot failed:', e) }
-        return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
+        return `週清理 + 重訓 + 回測(${btResult}) + 集保 + IC審計 + Timeverse同步 + D1備份完成`
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

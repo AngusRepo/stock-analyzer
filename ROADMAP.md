@@ -39,17 +39,19 @@
 - **Expected**: 95% confidence MDD ceiling (e.g. "MDD won't exceed 18% with 95% confidence")
 - **Impl**: FIFO order pairing from paper_orders + backtest trades, 1000x shuffle, go-live verdict (PASS/CAUTION/FAIL). Worker GET /api/backtest/monte-carlo for frontend
 
-### #6 PBO (Probability of Backtest Overfitting)
+### #6 PBO (Probability of Backtest Overfitting) ✅
 - **What**: Combinatorial Purged Cross-Validation: multiple train/test splits, calculate probability strategy loses money OOS
-- **Where**: New `ml-service/scripts/pbo_analysis.py`
+- **Where**: `ml-controller/services/pbo_service.py` + `ml-controller/routers/backtest.py` POST /backtest/pbo
 - **Why**: Answers "is this alpha real or curve-fitting?" PBO < 0.5 = alpha credible. > 0.5 = ban from going live
 - **Expected**: Binary go/no-go decision for live trading
+- **Impl**: CPCV with 10 partitions, C(10,5)=252 combinations, Worker cron + GET /api/backtest/pbo
 
-### #7 Sortino / Calmar / CAGR
-- **What**: Add 3 metrics to daily_snapshot: Sortino (only penalize downside vol), Calmar (CAGR/MDD), CAGR (annualized return)
-- **Where**: `worker/src/routes/paper.ts` runDailySnapshot + frontend BotDashboard.tsx
+### #7 Sortino / Calmar / CAGR ✅
+- **What**: Add 3 metrics to daily_snapshot + backtest card: Sortino, Calmar (CAGR/MDD), CAGR
+- **Where**: `worker/src/routes/paper.ts` runDailySnapshot + `frontend/src/pages/BotDashboard.tsx` BacktestCard
 - **Why**: Sharpe penalizes all volatility including upside. Sortino is more appropriate for trading strategy evaluation
 - **Expected**: Complete performance metrics on frontend
+- **Impl**: Sortino 30d (downside-only), CAGR from inception, Calmar = CAGR/MDD. Frontend shows 9 metrics + MC/PBO verdict badges
 
 ---
 

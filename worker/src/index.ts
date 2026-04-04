@@ -153,6 +153,21 @@ app.get('/api/backtest/monte-carlo', async (c) => {
   return c.json(row ?? null)
 })
 
+// ─── PBO Results（P0#6，Dashboard 用）─────────────────────────────────────────
+app.get('/api/backtest/pbo', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM pbo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
+  ).first()
+  return c.json(row ?? null)
+})
+
 // ─── Admin: Adaptive Params（讀取 / 手動覆蓋）──────────────────────────────
 app.get('/api/admin/adaptive-params', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -203,7 +218,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
-    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測 + Monte Carlo MDD' },
+    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測 + MC MDD + PBO' },
   ]
   return c.json({ schedule })
 })
@@ -318,6 +333,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     },
     backtest: () => runWeeklyBacktest(c.env),
     'monte-carlo': () => runWeeklyMonteCarlo(c.env),
+    pbo: () => runWeeklyPBO(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -1003,6 +1019,29 @@ async function runWeeklyMonteCarlo(env: Bindings) {
 }
 
 
+// ─── Cron P0#6：PBO 過擬合檢測（Controller 觸發） ───────────────────────────
+async function runWeeklyPBO(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[PBO] Running Probability of Backtest Overfitting analysis...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/backtest/pbo?partitions=10&source=backtest`, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null)
+
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status === 'failed' || r.status === 'error') return `failed: ${r.error ?? r.status}`
+  const summary = `PBO=${r.pbo}(${r.go_live_verdict}), OOS=${r.oos_mean_return}`
+  console.log(`[PBO] ${summary}`)
+  return summary
+}
+
+
 // ─── Cron 3：每週日 04:00 — D1 舊資料清理 ────────────────────────────────────
 // ─── Cron 5（內嵌於週日清理）：每週重訓所有股票的 ML 模型 ──────────────────
 // ─── Weekly IC Audit：用資料最多的股票跑 Factor IC check ─────────────────────
@@ -1540,14 +1579,12 @@ export default {
         return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
       })
     } else if (cron === '0 22 * * 6') {
-      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 回測 + P0#5 Monte Carlo MDD
+      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 回測 + P0#5 MC + P0#6 PBO
       runWithLog('weekly-backtest', async () => {
         const bt = await runWeeklyBacktest(env)
-        const mc = await runWeeklyMonteCarlo(env).catch(e => {
-          console.warn('[MonteCarlo] failed:', e)
-          return 'failed'
-        })
-        return `backtest(${bt}) | monte_carlo(${mc})`
+        const mc = await runWeeklyMonteCarlo(env).catch(e => { console.warn('[MC]', e); return 'failed' })
+        const pbo = await runWeeklyPBO(env).catch(e => { console.warn('[PBO]', e); return 'failed' })
+        return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

@@ -742,6 +742,16 @@ function BacktestCard() {
     queryFn: backtestApi.latest,
     staleTime: 30 * 60_000,
   })
+  const { data: mcData } = useQuery({
+    queryKey: ['backtest', 'monte-carlo'],
+    queryFn: backtestApi.monteCarlo,
+    staleTime: 30 * 60_000,
+  })
+  const { data: pboData } = useQuery({
+    queryKey: ['backtest', 'pbo'],
+    queryFn: backtestApi.pbo,
+    staleTime: 30 * 60_000,
+  })
 
   if (isLoading) {
     return (
@@ -775,12 +785,26 @@ function BacktestCard() {
 
   const metrics = [
     { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1 },
+    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5 },
     { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15 },
     { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5 },
     { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5 },
+    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0 },
+    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1 },
     { label: 'Trades', value: data.total_trades ?? '-', good: true },
     { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0 },
   ]
+
+  // MC MDD verdict badge
+  const mcVerdict = mcData?.go_live_verdict
+  const mcBadge = mcVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
+    : mcVerdict === 'CAUTION' ? 'bg-yellow-500/20 text-yellow-400'
+    : mcVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
+
+  // PBO verdict badge
+  const pboVerdict = pboData?.go_live_verdict
+  const pboBadge = pboVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
+    : pboVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
 
   return (
     <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
@@ -791,7 +815,7 @@ function BacktestCard() {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
             <div key={m.label} className="text-center">
               <div className="text-zinc-500 text-[10px] uppercase tracking-wider">{m.label}</div>
@@ -801,6 +825,21 @@ function BacktestCard() {
             </div>
           ))}
         </div>
+        {/* MC + PBO go-live verdicts */}
+        {(mcVerdict || pboVerdict) && (
+          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/[0.06]">
+            {mcVerdict && (
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${mcBadge}`}>
+                MC MDD 95th: {mcData.mdd_95th} {mcVerdict}
+              </span>
+            )}
+            {pboVerdict && (
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${pboBadge}`}>
+                PBO: {pboData.pbo != null ? `${(pboData.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict}
+              </span>
+            )}
+          </div>
+        )}
         {data.timerange && (
           <div className="text-zinc-600 text-[10px] mt-2 text-center">{data.timerange}</div>
         )}

@@ -152,6 +152,8 @@ export const recommendationsApi = {
 
 export const backtestApi = {
   latest: () => get<any>('/backtest/latest'),
+  monteCarlo: () => get<any>('/backtest/monte-carlo'),
+  pbo: () => get<any>('/backtest/pbo'),
 }
 
 export const cronApi = {

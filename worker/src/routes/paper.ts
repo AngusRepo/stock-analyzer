@@ -546,7 +546,7 @@ paper.get('/pnl', async (c) => {
   if (!acc) return c.json({ error: '帳戶不存在' }, 404)
 
   const { results: snapshots } = await c.env.DB.prepare(
-    'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
+    'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
 
   return c.json({
@@ -1682,8 +1682,12 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     maxDrawdownToDate = Math.max(maxDd, peak > 0 ? (peak - tv) / peak : 0)
   }
 
-  // sharpe 30d
+  // ── Sharpe / Sortino 30d + CAGR + Calmar ───────────────────────────────────
   let sharpe30d: number | null = null
+  let sortino30d: number | null = null
+  let cagr: number | null = null
+  let calmar: number | null = null
+
   const { results: recent30 } = await env.DB.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 31'
   ).bind(ACCOUNT_ID).all<any>()
@@ -1695,22 +1699,48 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
       const mean = returns.reduce((a, b) => a + b, 0) / returns.length
       const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length)
       sharpe30d = std > 0 ? (mean / std) * Math.sqrt(252) : null
+
+      // P0#7 Sortino: only downside deviation
+      const downside = returns.filter(r => r < 0)
+      if (downside.length >= 2) {
+        const downStd = Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / downside.length)
+        sortino30d = downStd > 0 ? (mean / downStd) * Math.sqrt(252) : null
+      }
     }
+  }
+
+  // P0#7 CAGR: annualized compound return from inception
+  const firstSnapshot = await env.DB.prepare(
+    'SELECT date FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC LIMIT 1'
+  ).bind(ACCOUNT_ID).first<any>()
+  if (firstSnapshot?.date && updatedAcc.initial_cash > 0 && tv > 0) {
+    const d0 = new Date(firstSnapshot.date)
+    const d1 = new Date(today)
+    const years = Math.max((d1.getTime() - d0.getTime()) / (365.25 * 86400_000), 0.01)
+    cagr = Math.pow(tv / updatedAcc.initial_cash, 1 / years) - 1
+  }
+
+  // P0#7 Calmar: CAGR / MDD
+  if (cagr != null && maxDrawdownToDate != null && maxDrawdownToDate > 0) {
+    calmar = cagr / maxDrawdownToDate
   }
 
   await env.DB.prepare(`
     INSERT INTO paper_daily_snapshots
       (account_id, date, cash, positions_value, total_value, pnl, pnl_pct,
-       benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d,
+       sortino_30d, calmar, cagr)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id, date) DO UPDATE SET
       cash=excluded.cash, positions_value=excluded.positions_value,
       total_value=excluded.total_value, pnl=excluded.pnl, pnl_pct=excluded.pnl_pct,
       benchmark_value=excluded.benchmark_value, twii_value=excluded.twii_value,
       max_drawdown_to_date=excluded.max_drawdown_to_date,
-      sharpe_30d=excluded.sharpe_30d
+      sharpe_30d=excluded.sharpe_30d,
+      sortino_30d=excluded.sortino_30d, calmar=excluded.calmar, cagr=excluded.cagr
   `).bind(ACCOUNT_ID, today, updatedAcc.cash, finalPosValue, tv, pnl, pnlP,
-           benchmarkValue, twiiValue, maxDrawdownToDate, sharpe30d).run()
+           benchmarkValue, twiiValue, maxDrawdownToDate, sharpe30d,
+           sortino30d, calmar, cagr).run()
 
   console.log(`[Snapshot] 總資產 NT$${Math.round(tv).toLocaleString()}，損益 ${(pnlP).toFixed(2)}%`)
 

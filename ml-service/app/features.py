@@ -90,6 +90,7 @@ def build_feature_matrix(
     chips: list[dict],
     sentiment_scores: list[dict],
     market_env: dict | None = None,
+    barrier_params: dict | None = None,
 ) -> pd.DataFrame:
     """
     整合所有資料來源，建立特徵矩陣
@@ -281,11 +282,11 @@ def build_feature_matrix(
         high=df["high"] if "high" in df.columns else close,
         low=df["low"] if "low" in df.columns else close,
         atr14=atr_series,
-        upper_atr_mult=3.0,   # 停利 = ATR×3
-        lower_atr_mult=2.0,   # 停損 = ATR×2
-        upper_pct_cap=0.07,   # 最多 +7%
-        lower_pct_cap=0.03,   # 最多 -3%
-        max_days=20,
+        upper_atr_mult=barrier_params.get("upper_mult", 3.0) if barrier_params else 3.0,
+        lower_atr_mult=barrier_params.get("lower_mult", 2.0) if barrier_params else 2.0,
+        upper_pct_cap=barrier_params.get("upper_pct_cap", 0.07) if barrier_params else 0.07,
+        lower_pct_cap=barrier_params.get("lower_pct_cap", 0.03) if barrier_params else 0.03,
+        max_days=barrier_params.get("max_days", 20) if barrier_params else 20,
     )
 
     return df

@@ -131,11 +131,12 @@
 - **Expected**: Paper PnL closer to reality
 - **Impl**: Slippage: <10M turnover → +3 ticks, <50M → +1 tick. Partial fill: order >5% daily vol → fill 80%. Limit-down: drop >=9.5% + vol <10% prev → block sell
 
-### #14 Prompt Injection Detection
-- **What**: Detect patterns in LLM output: "ignore previous", "all in", "sell everything". Debate result with danger words -> auto-downgrade to template reason
-- **Where**: New `ml-controller/security/injection.py` + `worker/src/lib/debateTrader.ts`
-- **Why**: debateTrader uses news as context. News could contain embedded prompt injection (e.g. "analysts recommend buying everything")
+### #14 Prompt Injection Detection ✅
+- **What**: Detect dangerous patterns in LLM output, auto-downgrade/reject verdict
+- **Where**: `ml-controller/security/injection.py` (Python) + `worker/src/lib/debateTrader.ts` (TS inline)
+- **Why**: debateTrader uses news as context. News could contain embedded prompt injection
 - **Expected**: Prevent LLM manipulation affecting trade decisions
+- **Impl**: 10 regex patterns (critical/high/medium). Critical → REJECT, High → DOWNGRADE. Patterns: instruction_override, role_hijack, extreme_action, insider_claim, urgency_manipulation, unrealistic_claim. Both Python (for controller-side use) and TypeScript (inline in debateTrader) implementations
 
 ### #15 Three-layer Observability
 - **What**: L1 Trade (existing PnL/WinRate/MDD). **L2 Decision**: each trade logs "chip_score contributed 38%, ML 45%, debate flipped direction" -> D1 `decision_logs`. **L3 Model**: daily per-model accuracy/IC/drift -> KV `ml:model_health:{date}`

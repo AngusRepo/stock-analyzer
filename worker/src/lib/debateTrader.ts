@@ -12,6 +12,35 @@
  * Verdict: APPROVE → normal buy / DOWNGRADE → halve position / REJECT → skip
  */
 
+// ─── P1#14: Prompt Injection Detection ────────────────────────────────────────
+const DANGER_PATTERNS: Array<[RegExp, string, string]> = [
+  [/ignore\s+(all\s+)?(previous|above|prior)\s+(instruction|prompt|rule)/i, 'critical', 'instruction_override'],
+  [/disregard\s+(everything|all|the)\s+(above|previous)/i, 'critical', 'instruction_override'],
+  [/forget\s+(your|all|previous)\s+(instruction|rule|prompt)/i, 'critical', 'instruction_override'],
+  [/you\s+are\s+now\s+a/i, 'critical', 'role_hijack'],
+  [/\b(all[\s-]?in|go\s+all\s+in)\b/i, 'high', 'extreme_action'],
+  [/\b(sell\s+everything|liquidate\s+all|dump\s+all)\b/i, 'high', 'extreme_action'],
+  [/\b(buy\s+maximum|max\s+position|maximum\s+leverage)\b/i, 'high', 'extreme_action'],
+  [/\b(guaranteed|risk[\s-]?free|cannot\s+lose|sure\s+thing)\b/i, 'medium', 'unrealistic_claim'],
+  [/\b(insider|confidential|secret\s+info|tip\s+from)\b/i, 'high', 'insider_claim'],
+  [/\b(act\s+now|immediately|urgent|don'?t\s+wait|must\s+buy\s+today)\b/i, 'medium', 'urgency_manipulation'],
+]
+
+function checkInjection(text: string): { action: string; severity: string; matches: Array<{pattern: string; severity: string}> } {
+  const matches: Array<{pattern: string; severity: string}> = []
+  for (const [regex, severity, desc] of DANGER_PATTERNS) {
+    if (regex.test(text)) matches.push({ pattern: desc, severity })
+  }
+  if (matches.length === 0) return { action: 'pass', severity: 'none', matches: [] }
+  const hasCritical = matches.some(m => m.severity === 'critical')
+  const hasHigh = matches.some(m => m.severity === 'high')
+  return {
+    action: hasCritical ? 'reject' : hasHigh ? 'downgrade' : 'downgrade',
+    severity: hasCritical ? 'critical' : hasHigh ? 'high' : 'medium',
+    matches,
+  }
+}
+
 export type DebateVerdict = 'APPROVE' | 'DOWNGRADE' | 'REJECT'
 
 export interface DebateResult {
@@ -266,11 +295,29 @@ export async function runBuyDebate(
     }
   }
 
-  const verdict = parseVerdict(judgeResponse)
+  // P1#14: Prompt injection detection on all LLM outputs
+  const injectionCheck = checkInjection([bullCase, bearCase, judgeResponse].join('\n'))
+  if (injectionCheck.action === 'reject') {
+    console.warn(`[Debate] INJECTION DETECTED for ${symbol}: ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`)
+    return {
+      verdict: 'REJECT' as DebateVerdict, rounds: 3,
+      summary: `[INJECTION_BLOCKED] ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`.slice(0, 500),
+      llmSource, convictionScore: 0,
+    }
+  }
+
+  let verdict = parseVerdict(judgeResponse)
   const convictionScore = parseConviction(judgeResponse)
+
+  // P1#14: Downgrade if medium/high injection detected
+  if (injectionCheck.action === 'downgrade' && verdict === 'APPROVE') {
+    console.warn(`[Debate] Injection downgrade for ${symbol}: ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`)
+    verdict = 'DOWNGRADE'
+  }
 
   const summary = [
     `[${verdict}|conv:${convictionScore}|${llmSource}] `,
+    injectionCheck.action !== 'pass' ? `[INJ:${injectionCheck.severity}] ` : '',
     `Bear: ${bearCase.slice(0, 120)} | `,
     `Judge: ${judgeResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)

@@ -1579,7 +1579,18 @@ export default {
         ).bind(twToday).first<{ cnt: number }>()
         const before = ordersBefore?.cnt ?? 0
 
-        await runIntradayCheck(env)
+        // VULN-40 fix: KV lock to prevent concurrent intraday executions
+        const intradayLock = await env.KV.get('cron:intraday-lock')
+        if (intradayLock) {
+          // Another execution still running, skip
+          return
+        }
+        await env.KV.put('cron:intraday-lock', '1', { expirationTtl: 120 }) // 2 min TTL
+        try {
+          await runIntradayCheck(env)
+        } finally {
+          await env.KV.delete('cron:intraday-lock')
+        }
 
         const ordersAfter = await env.DB.prepare(
           "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'"

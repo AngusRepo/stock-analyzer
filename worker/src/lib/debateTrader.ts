@@ -22,11 +22,13 @@ const DANGER_PATTERNS: Array<[RegExp, string, string]> = [
   [/\b(sell\s+everything|liquidate\s+all|dump\s+all)\b/i, 'high', 'extreme_action'],
   [/\b(buy\s+maximum|max\s+position|maximum\s+leverage)\b/i, 'high', 'extreme_action'],
   [/\b(guaranteed|risk[\s-]?free|cannot\s+lose|sure\s+thing)\b/i, 'medium', 'unrealistic_claim'],
-  [/\b(insider|confidential|secret\s+info|tip\s+from)\b/i, 'high', 'insider_claim'],
+  [/\b(insider\s+(info|tip|knowledge)|confidential\s+(info|source)|secret\s+info|tip\s+from\s+(a|an|my)\s+(friend|source))\b/i, 'high', 'insider_claim'],
   [/\b(act\s+now|immediately|urgent|don'?t\s+wait|must\s+buy\s+today)\b/i, 'medium', 'urgency_manipulation'],
 ]
 
-function checkInjection(text: string): { action: string; severity: string; matches: Array<{pattern: string; severity: string}> } {
+function checkInjection(rawText: string): { action: string; severity: string; matches: Array<{pattern: string; severity: string}> } {
+  // VULN-31 fix: strip zero-width Unicode characters before matching
+  const text = rawText.replace(/[\u200B\u200C\u200D\u2060\uFEFF\u00AD]/g, '')
   const matches: Array<{pattern: string; severity: string}> = []
   for (const [regex, severity, desc] of DANGER_PATTERNS) {
     if (regex.test(text)) matches.push({ pattern: desc, severity })

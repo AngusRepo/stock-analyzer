@@ -176,8 +176,15 @@ def _run_cpcv(
     half = actual_n // 2
     partition_indices = list(range(actual_n))
 
-    # Limit combinations for performance (C(10,5) = 252, manageable)
+    # Limit combinations for performance — cap at 252 (C(10,5))
+    # C(12,6)=924, C(14,7)=3432, C(20,10)=184756 — too many
     all_combos = list(combinations(partition_indices, half))
+    MAX_COMBOS = 500
+    if len(all_combos) > MAX_COMBOS:
+        import random
+        rng = random.Random(42)
+        all_combos = rng.sample(all_combos, MAX_COMBOS)
+        logger.warning(f"[PBO] Too many combinations ({len(all_combos)}→{MAX_COMBOS} sampled)")
     result.n_combinations = len(all_combos)
 
     is_returns = []
@@ -233,12 +240,17 @@ def _run_cpcv(
         test_trades = _purge_boundary_trades(test_trades, adjacent)
 
         is_ret = _compute_partition_return(train_trades)
-        oos_ret = _compute_partition_return(test_trades) if test_trades else 0.0
+        # If purge removed all test trades, skip this combination (don't bias PBO)
+        if not test_trades:
+            continue
+        oos_ret = _compute_partition_return(test_trades)
 
         is_returns.append(is_ret)
         oos_returns.append(oos_ret)
 
     # PBO = fraction of combos where OOS return < 0
+    # n_combinations reflects actual evaluated (some may be skipped due to purge)
+    result.n_combinations = len(oos_returns)
     result.n_oos_negative = sum(1 for r in oos_returns if r < 0)
     result.pbo = result.n_oos_negative / len(oos_returns) if oos_returns else 1.0
 

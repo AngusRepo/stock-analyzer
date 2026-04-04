@@ -152,6 +152,12 @@ def search_best_params(
     if split < 20 or len(X) - split < 10:
         return None
 
+    # VULN-24 fix: skip Optuna if labels have no variance (all same class)
+    unique_classes = len(set(y[:split].tolist() if hasattr(y[:split], 'tolist') else list(y[:split])))
+    if unique_classes < 2:
+        logger.warning(f"[Optuna] {model_name}: y has only {unique_classes} class(es), skipping")
+        return None
+
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 

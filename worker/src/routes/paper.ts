@@ -1327,31 +1327,33 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
 
       // Execute swap: sell weakest position
-      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(score=${newScore.toFixed(1)})`)
       const sellPrice = weakPx
+      if (!sellPrice || sellPrice <= 0) {
+        console.warn(`[Swap] ${weakest.symbol} has no valid price (${sellPrice}), skip swap`)
+        continue
+      }
+      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(quality=${newQuality.toFixed(1)})`)
       const sellValue = sellPrice * weakPos.shares
       const sellTax = sellValue * 0.003
       const sellComm = sellValue * 0.001425
       const sellProceeds = sellValue - sellTax - sellComm
 
-      // Update cash
-      await env.DB.prepare('UPDATE paper_accounts SET cash = cash + ? WHERE id=?')
-        .bind(sellProceeds, ACCOUNT_ID).run()
+      // VULN-28 fix: batch all swap DB operations for atomicity
+      await env.DB.batch([
+        env.DB.prepare('UPDATE paper_accounts SET cash = cash + ?, updated_at=datetime(\'now\') WHERE id=?')
+          .bind(sellProceeds, ACCOUNT_ID),
+        env.DB.prepare(`
+          INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
+          VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
+        `).bind(
+          ACCOUNT_ID, weakest.symbol, weakPos.name ?? weakest.symbol,
+          weakPos.shares, sellPrice, sellComm, sellTax, -sellProceeds,
+          `SWAP_OUT: weakness=${weakest.score.toFixed(1)}, replaced by ${pending.symbol}`,
+        ),
+        env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?')
+          .bind(ACCOUNT_ID, weakest.symbol),
+      ])
       acc.cash += sellProceeds
-
-      // Record sell order
-      await env.DB.prepare(`
-        INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
-        VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
-      `).bind(
-        ACCOUNT_ID, weakest.symbol, weakPos.name ?? weakest.symbol,
-        weakPos.shares, sellPrice, sellComm, sellTax, -sellProceeds,
-        `SWAP_OUT: weakness=${weakest.score.toFixed(1)}, replaced by ${pending.symbol}`,
-        ).run()
-
-      // Remove position
-      await env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?')
-        .bind(ACCOUNT_ID, weakest.symbol).run()
 
       weaknessScores.shift() // remove swapped position
       dailySwaps++

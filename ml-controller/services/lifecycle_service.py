@@ -300,8 +300,10 @@ async def run_lifecycle_check(
             GROUP BY model_name
         """)
 
-        acc_30d = {r["model_name"]: r.get("accuracy") or 0 for r in rows_30d}
-        acc_90d = {r["model_name"]: r.get("accuracy") or 0 for r in rows_90d}
+        # VULN-15 fix: models with no accuracy data default to 0.5 (neutral), not 0
+        # Prevents fresh install from degrading all models after 2 weeks
+        acc_30d = {r["model_name"]: r.get("accuracy") or 0.5 for r in rows_30d}
+        acc_90d = {r["model_name"]: r.get("accuracy") or 0.5 for r in rows_90d}
 
         # ── Step 2: Load previous lifecycle state ──
         prev_row = await _d1_query(client, """
@@ -318,8 +320,8 @@ async def run_lifecycle_check(
         # ── Step 3: Evaluate each model ──
         lifecycle = LifecycleResult()
         for model_name in ALL_MODELS:
-            a30 = acc_30d.get(model_name, 0)
-            a90 = acc_90d.get(model_name, 0)
+            a30 = acc_30d.get(model_name, 0.5)  # default neutral, not degraded
+            a90 = acc_90d.get(model_name, 0.5)
             prev = prev_states.get(model_name, {})
 
             state = _evaluate_model(

@@ -71,11 +71,11 @@
 - **Expected**: Reduce overfitting, model accuracy +2-3%
 - **Impl**: Worker passes weak_features + use_optuna in payload. ML service drops weak features (guard: keep >=5). Optuna searches depth/lr/n_estimators/subsample per model. Falls back to defaults if Optuna fails
 
-### #10 Meta-layer Dynamic Adjustment
-- **What**: ARF warm-up dynamic (high vol -> 30 lower threshold for fast adaptation; low vol -> 80 for stability). Stacking blend by recent 30d meta vs ensemble accuracy (meta more accurate -> ratio to 70%). LinUCB alpha by win/loss streak (losing -> alpha up explore; winning -> alpha down exploit)
-- **Where**: `ml-service/app/arf_aggregator.py` + `ml-service/app/ensemble.py` stacking blend + `ml-service/app/linucb_bandit.py`
-- **Why**: Three meta components all hardcoded. During losing streaks, system should try different model combinations automatically
-- **Expected**: Self-adjusting meta-layer. Losing -> explore. Winning -> exploit
+### #10 Meta-layer Dynamic Adjustment ✅
+- **What**: ARF warm-up dynamic (vol→30/80), Stacking blend dynamic (meta_acc vs ensemble_acc → 30-70%), LinUCB alpha dynamic (loss_rate → 0.1-0.7)
+- **Where**: `ml-service/app/arf_aggregator.py` get_dynamic_min_obs + `ml-service/app/ensemble.py` dynamic meta_ratio + `ml-service/app/linucb_bandit.py` compute_dynamic_alpha
+- **Why**: Three meta components were all hardcoded. Now self-adjusting based on market conditions
+- **Expected**: Losing → explore. Winning → exploit. High vol → fast adapt
 
 ### #11 LangGraph Integration in Controller
 - **What**: Daily pipeline as StateGraph: screener -> ML -> recommend with checkpoint (GCS JSON) + retry 3x + state auto-pass

@@ -25,9 +25,10 @@ from .models import (
     run_garch_volatility,
 )
 from .ensemble import weighted_vote
-from .linucb_bandit import linucb_select, load_bandit, build_context
+from .linucb_bandit import linucb_select, load_bandit, build_context, compute_dynamic_alpha
 from .arf_aggregator import (
     build_arf_features, load_arf, save_arf, apply_arf_correction, ARF_STATE_DIR,
+    get_dynamic_min_obs,
 )
 
 app = FastAPI(title="StockVision ML Service", version="2.0.0")
@@ -293,6 +294,10 @@ def predict_stock(req: PredictRequest) -> dict:
     _bandit       = None
     try:
         _bandit = load_bandit("/tmp/linucb_bandit")
+        # P1#10: dynamic alpha from adaptive_params (win/loss streak)
+        _losses_5d = int(req.adaptive_params.get("losses_5d", 0))
+        _total_5d = int(req.adaptive_params.get("total_5d", 0))
+        _bandit.alpha = compute_dynamic_alpha(_losses_5d, _total_5d)
         bandit_multipliers = linucb_select(
             hmm_regime=_regime_label,
             garch_vol=garch_vol,
@@ -406,7 +411,10 @@ def predict_stock(req: PredictRequest) -> dict:
     arf_changed = arf_signal != result.signal
 
     # 若 ARF 有修正訊號，更新 result 欄位（保守：只修改 signal / confidence）
-    if arf_changed and _arf.is_warmed_up():
+    # P1#10: dynamic warm-up threshold based on volatility
+    _garch_norm = min(2.0, garch_vol / (current_price * 0.02)) if garch_vol and current_price > 0 else 0.4
+    _arf_min_obs = get_dynamic_min_obs(_garch_norm)
+    if arf_changed and _arf.is_warmed_up(min_obs=_arf_min_obs):
         result.signal     = arf_signal
         result.confidence = round(arf_conf, 3)
         result.reasoning  = (

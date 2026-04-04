@@ -189,10 +189,19 @@ def weighted_vote(
             pass
 
     # 決定最終方向：meta-learner 優先，其次加權投票
+    # P1#10: dynamic stacking blend — compare 30d meta vs ensemble accuracy
     if meta_direction is not None and meta_confidence is not None:
         is_up       = meta_direction == "up"
-        final_conf  = (avg_confidence * 0.4 + meta_confidence * 0.6)  # meta 佔 60%
-        reasoning_meta = f"[Meta-Learner 修正為 {'↑' if is_up else '↓'}，信心={meta_confidence:.0%}] "
+        # Dynamic blend: if meta more accurate recently, weight it higher (up to 70%)
+        meta_acc_30d = float(_adaptive.get("meta_accuracy_30d", 0))
+        ensemble_acc_30d = float(_adaptive.get("recent_accuracy_30d", 0))
+        if meta_acc_30d > 0 and ensemble_acc_30d > 0:
+            # Higher meta accuracy → higher meta ratio (0.5 to 0.7)
+            meta_ratio = np.clip(0.5 + (meta_acc_30d - ensemble_acc_30d), 0.3, 0.7)
+        else:
+            meta_ratio = 0.6  # default
+        final_conf  = avg_confidence * (1 - meta_ratio) + meta_confidence * meta_ratio
+        reasoning_meta = f"[Meta-Learner 修正為 {'↑' if is_up else '↓'}，信心={meta_confidence:.0%}，blend={meta_ratio:.0%}] "
     else:
         is_up       = up_weight > down_weight
         final_conf  = avg_confidence

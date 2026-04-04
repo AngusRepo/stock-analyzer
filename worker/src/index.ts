@@ -1454,7 +1454,7 @@ export default {
         }
       })())
 
-    if (cron === '15 23 * * 1-5') {
+    if (cron === '15 23 * * SUN-THU') {
       runWithLog('morning-setup', async () => {
         await runMorningWarmup(env)
         await setupMorningPendingBuys(env)
@@ -1508,7 +1508,7 @@ export default {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
       })
-    } else if (cron === '10 6 * * 1-5') {
+    } else if (cron === '25 5 * * 1-5') {
       runWithLog('eod-exit', async () => {
         await runEODExit(env)
         return 'EOD 出場檢查完成'
@@ -1540,13 +1540,13 @@ export default {
           })
         }
       })())
-    } else if (cron === '30 22 * * 1-5') {
+    } else if (cron === '30 22 * * SUN-THU') {
       runWithLog('us-leading', async () => {
         const { fetchAndStoreUSLeading } = await import('./lib/usLeading')
         const signal = await fetchAndStoreUSLeading(env)
         return signal ? `SOX ${((signal.sox_return ?? 0) * 100).toFixed(1)}% | ${signal.sentiment}` : '抓取失敗'
       })
-    } else if (cron === '50 23 * * 1-5') {
+    } else if (cron === '50 23 * * SUN-THU') {
       runWithLog('morning-briefing', async () => {
         const { generateMorningBriefing } = await import('./lib/morningBriefing')
         return await generateMorningBriefing(env)

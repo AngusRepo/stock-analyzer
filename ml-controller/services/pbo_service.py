@@ -288,6 +288,7 @@ async def run_pbo_analysis(
     async with httpx.AsyncClient() as client:
         # ── Step 1: Fetch trade data ──
         trades: list[dict] = []
+        trades_truncated = False
 
         if source == "backtest":
             logger.info("[PBO] Fetching backtest trades from D1...")
@@ -302,10 +303,17 @@ async def run_pbo_analysis(
             raw = json.loads(row[0]["raw_results"])
             trades = raw.get("trades", [])
 
-            # If all_returns available but trades truncated, we can't do CPCV
-            # (need full trade objects with dates for time-partitioning)
             if not trades:
                 return {"error": "No trade details in backtest results", "status": "failed"}
+
+            # Warn if trades were truncated (backtest stores max 500)
+            total_from_summary = raw.get("summary", {}).get("total_trades", 0)
+            if total_from_summary > len(trades):
+                trades_truncated = True
+                logger.warning(
+                    f"[PBO] Trades truncated: {len(trades)}/{total_from_summary}. "
+                    f"PBO accuracy may be reduced."
+                )
 
         elif source == "paper":
             logger.info("[PBO] Fetching paper_orders from D1...")
@@ -382,6 +390,7 @@ async def run_pbo_analysis(
             "degradation": f"{pbo.degradation:.2%}",
             "go_live_verdict": pbo.go_live_verdict,
             "verdict_reason": pbo.verdict_reason,
+            "trades_truncated": trades_truncated,
         }
         logger.info(f"[PBO] Done: {pbo.go_live_verdict} — PBO = {pbo.pbo:.1%}")
         return summary

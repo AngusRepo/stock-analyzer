@@ -830,7 +830,7 @@ function BacktestCard() {
           <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/[0.06]">
             {mcVerdict && (
               <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${mcBadge}`}>
-                MC MDD 95th: {mcData.mdd_95th} {mcVerdict}
+                MC 95th: {mcData.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict}
               </span>
             )}
             {pboVerdict && (

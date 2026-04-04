@@ -76,7 +76,8 @@ crons = [
   "50 23 * * SUN-THU",   # 07:50 TW (=UTC Sun-Thu 23:50) → 盤前攻略 Discord
 
   # ── 週末維護 ──
-  "0 20 * * 6",      # 週六 04:00 TW → D1 清理 + Retrain + IC Audit
+  "0 20 * * 6",      # 週日 04:00 TW (=UTC Sat 20:00) → D1 清理 + Retrain + IC Audit
+  "0 22 * * 6",      # 週日 06:00 TW (=UTC Sat 22:00) → P0#4 自動回測（retrain 後 2hr）
 ]
 
 # ── 選配：Cron 失敗 Telegram 通知 ─────────────────────────────────────────────

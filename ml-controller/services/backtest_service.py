@@ -1,22 +1,29 @@
 """
 backtest_service.py — Python backtester mirroring StockVisionStrategy 7-layer cascade
 
-Pipeline: D1 export → in-memory backtest → D1 import
+Pipeline: D1 export → in-memory backtest (FIFO order matching) → D1 import
 No Freqtrade binary needed — runs entirely on Cloud Run.
 
+FIFO Order Matching:
+  - Each stock maintains a queue of BuyLot(s)
+  - Sells consume lots from the earliest buy first (FIFO)
+  - TP1 partial exit: sell 50% of position (earliest lots first)
+  - TP2/stop/time: sell all remaining lots
+  - Each lot produces its own trade record with true per-lot P&L
+
 Entry: ML BUY/STRONG_BUY + confidence >= threshold
-Exit 7-layer cascade:
+Exit 7-layer cascade (mirrors StockVisionStrategy.py):
   1. Hard stop (-12%)
-  2. ATR initial stop
+  2+4. ATR trailing stop (profit-tiered: 3.0x / 2.5x / 2.0x)
   3. ML SELL signal
-  4. Chandelier trailing stop (ATR-based, tightens with profit)
-  5. TP1: entry × 1.03 (sell 50%)
-  6. TP2: entry × 1.06 (sell remaining)
+  5. TP2: entry × 1.06 (full exit)  — checked before TP1
+  6. TP1: entry × 1.03 (sell 50%)
   7. Time stop: 20 days + profit > 0.5%
 """
 import os
 import json
 import logging
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,40 +33,113 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ── D1 API Config ────────────────────────────────────────────────────────────
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
+CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
-D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+
+D1_API = (
+    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
+    f"/d1/database/{CF_D1_DB_ID}/query"
+)
 
 # ── Strategy Parameters (mirror StockVisionStrategy defaults) ─────────────────
 CONFIDENCE_THRESHOLD = 0.60
 HARD_STOP_PCT = -0.12
 TP1_MULT = 1.03
 TP2_MULT = 1.06
+TP1_SELL_RATIO = 0.50  # TP1 賣出比例（50%）
 TIME_STOP_DAYS = 20
 TRAIL_MULT_DEFAULT = 3.0
 TRAIL_MULT_3PCT = 2.5
 TRAIL_MULT_8PCT = 2.0
 MAX_OPEN_TRADES = 5
 STAKE_AMOUNT = 200_000
-TW_BUY_FEE = 0.001425
-TW_SELL_FEE = 0.004425  # 手續費 + 證交稅
+TW_BUY_FEE = 0.001425       # 買入手續費 0.1425%
+TW_SELL_FEE = 0.004425       # 賣出手續費 0.1425% + 證交稅 0.3%
+
+
+# ── Data Classes ──────────────────────────────────────────────────────────────
+
+@dataclass
+class BuyLot:
+    """Single buy order — FIFO queue element."""
+    symbol: str
+    date: str
+    price: float
+    shares: int
+    remaining: int = 0
+
+    def __post_init__(self):
+        if self.remaining == 0:
+            self.remaining = self.shares
 
 
 @dataclass
-class Trade:
+class Position:
+    """Open position for a stock — may contain multiple buy lots (FIFO)."""
     symbol: str
-    entry_date: str
-    entry_price: float
-    shares: int
+    lots: list[BuyLot] = field(default_factory=list)
     highest_since_entry: float = 0.0
-    exit_date: Optional[str] = None
-    exit_price: Optional[float] = None
-    exit_reason: Optional[str] = None
-    profit_ratio: Optional[float] = None
+    tp1_hit: bool = False
 
-    def __post_init__(self):
-        self.highest_since_entry = self.entry_price
+    @property
+    def total_shares(self) -> int:
+        return sum(lot.remaining for lot in self.lots)
+
+    @property
+    def avg_cost(self) -> float:
+        total_cost = sum(lot.price * lot.remaining for lot in self.lots)
+        total_shares = self.total_shares
+        return total_cost / total_shares if total_shares > 0 else 0.0
+
+    @property
+    def entry_date(self) -> str:
+        return self.lots[0].date if self.lots else ""
+
+    @property
+    def entry_price(self) -> float:
+        """First lot price (for stop/TP threshold calculation)."""
+        return self.lots[0].price if self.lots else 0.0
+
+    def sell_fifo(self, shares_to_sell: int, sell_date: str, sell_price: float,
+                  exit_reason: str) -> list[dict]:
+        """
+        Sell shares using FIFO matching. Returns list of completed trade dicts.
+        Each lot consumed produces a separate trade record with true per-lot P&L.
+        """
+        trades = []
+        remaining_to_sell = shares_to_sell
+
+        for lot in self.lots:
+            if remaining_to_sell <= 0:
+                break
+            if lot.remaining <= 0:
+                continue
+
+            sold = min(lot.remaining, remaining_to_sell)
+            lot.remaining -= sold
+            remaining_to_sell -= sold
+
+            # Per-lot P&L with real TW fees
+            buy_cost = lot.price * (1 + TW_BUY_FEE)
+            sell_net = sell_price * (1 - TW_SELL_FEE)
+            profit_ratio = (sell_net - buy_cost) / buy_cost
+
+            trades.append({
+                "symbol": self.symbol,
+                "entry_date": lot.date,
+                "exit_date": sell_date,
+                "entry_price": lot.price,
+                "exit_price": sell_price,
+                "shares": sold,
+                "profit_ratio": profit_ratio,
+                "exit_reason": exit_reason,
+                "days_held": _date_diff(lot.date, sell_date),
+            })
+
+        # Remove exhausted lots
+        self.lots = [lot for lot in self.lots if lot.remaining > 0]
+        return trades
 
 
 @dataclass
@@ -76,10 +156,13 @@ class BacktestResult:
     expectancy: float = 0.0
     sharpe: Optional[float] = None
     sortino: Optional[float] = None
+    calmar: Optional[float] = None
     max_drawdown: float = 0.0
     cagr: Optional[float] = None
     trades: list = field(default_factory=list)
 
+
+# ── D1 Helpers ────────────────────────────────────────────────────────────────
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
     """Execute a D1 SQL query via REST API."""
@@ -144,6 +227,8 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
     return data.get("success", False)
 
 
+# ── Backtest Engine ───────────────────────────────────────────────────────────
+
 def _compute_atr14(prices: list[dict], idx: int) -> float:
     """Compute ATR(14) at given index."""
     if idx < 14:
@@ -160,110 +245,6 @@ def _compute_atr14(prices: list[dict], idx: int) -> float:
     return sum(trs) / len(trs) if trs else 0.0
 
 
-def _run_backtest_for_stock(
-    prices: list[dict],
-    signals: list[dict],
-) -> list[dict]:
-    """Run backtest for a single stock. Returns list of completed trade dicts."""
-    if len(prices) < 30:
-        return []
-
-    # Build signal lookup: date → signal dict
-    sig_map = {s["date"]: s for s in signals if s.get("date")}
-
-    completed_trades: list[dict] = []
-    open_trade: Optional[Trade] = None
-
-    for idx, bar in enumerate(prices):
-        date_str = bar["date"]
-        close = float(bar["close"])
-        high = float(bar.get("high") or close)
-        low = float(bar.get("low") or close)
-        sig = sig_map.get(date_str, {})
-        signal = sig.get("signal", "HOLD")
-        confidence = float(sig.get("confidence") or 0)
-
-        # ── Check exit conditions for open trade ──
-        if open_trade is not None:
-            open_trade.highest_since_entry = max(open_trade.highest_since_entry, high)
-            entry = open_trade.entry_price
-            profit_ratio = (close - entry) / entry
-            days_held = _date_diff(open_trade.entry_date, date_str)
-            atr = _compute_atr14(prices, idx)
-
-            exit_reason = None
-
-            # Layer 1: Hard stop
-            if profit_ratio <= HARD_STOP_PCT:
-                exit_reason = f"HardStop ({profit_ratio*100:.1f}%)"
-
-            # Layer 2+4 unified: ATR trailing stop (mirrors StockVisionStrategy.custom_stoploss)
-            # Freqtrade evaluates custom_stoploss every bar — profit-tiered ATR distance from current price
-            elif atr > 0:
-                if profit_ratio > 0.08:
-                    mult = TRAIL_MULT_8PCT
-                elif profit_ratio > 0.03:
-                    mult = TRAIL_MULT_3PCT
-                else:
-                    mult = TRAIL_MULT_DEFAULT
-                trail_distance = (atr * mult) / close
-                # Stop triggers if price drops below current_price * (1 - trail_distance)
-                # But don't widen beyond hard stop
-                effective_stop_pct = max(-trail_distance, HARD_STOP_PCT)
-                if profit_ratio <= effective_stop_pct:
-                    exit_reason = f"ATR_TrailStop ({close:.1f}, mult={mult})"
-
-            # Layer 3: ML SELL signal
-            if exit_reason is None and signal in ("SELL", "STRONG_SELL"):
-                exit_reason = f"ML_SELL ({signal})"
-
-            # Layer 5: TP2 checked first (mirrors StockVisionStrategy.custom_exit order)
-            # In Freqtrade, TP2 is checked before TP1 — if price jumps above both, exit at TP2
-            if exit_reason is None and close >= entry * TP2_MULT:
-                exit_reason = f"TP2 @ {close:.1f} (+{profit_ratio*100:.1f}%)"
-
-            # Layer 6: TP1 full exit (matches Freqtrade: no partial sell support)
-            if exit_reason is None and close >= entry * TP1_MULT:
-                exit_reason = f"TP1 @ {close:.1f} (+{profit_ratio*100:.1f}%)"
-
-            # Layer 7: Time stop
-            if exit_reason is None and days_held >= TIME_STOP_DAYS and profit_ratio > 0.005:
-                exit_reason = f"TimeStop ({days_held}d, +{profit_ratio*100:.1f}%)"
-
-            if exit_reason:
-                open_trade.exit_date = date_str
-                open_trade.exit_price = close
-                open_trade.exit_reason = exit_reason
-                # Net profit after fees
-                buy_cost = entry * (1 + TW_BUY_FEE)
-                sell_net = close * (1 - TW_SELL_FEE)
-                open_trade.profit_ratio = (sell_net - buy_cost) / buy_cost
-                completed_trades.append({
-                    "symbol": open_trade.symbol,
-                    "entry_date": open_trade.entry_date,
-                    "exit_date": date_str,
-                    "entry_price": entry,
-                    "exit_price": close,
-                    "profit_ratio": open_trade.profit_ratio,
-                    "exit_reason": exit_reason,
-                    "days_held": days_held,
-                })
-                open_trade = None
-
-        # ── Check entry conditions (only if no open trade for this stock) ──
-        if open_trade is None and signal in ("BUY", "STRONG_BUY") and confidence >= CONFIDENCE_THRESHOLD:
-            shares = int(STAKE_AMOUNT / close) if close > 0 else 0
-            if shares > 0:
-                open_trade = Trade(
-                    symbol=bar.get("symbol", ""),
-                    entry_date=date_str,
-                    entry_price=close,
-                    shares=shares,
-                )
-
-    return completed_trades
-
-
 def _date_diff(date1: str, date2: str) -> int:
     """Calculate calendar-day difference between two date strings."""
     try:
@@ -274,8 +255,119 @@ def _date_diff(date1: str, date2: str) -> int:
         return 0
 
 
+def _run_backtest_for_stock(
+    prices: list[dict],
+    signals: list[dict],
+) -> list[dict]:
+    """
+    Run backtest for a single stock with FIFO order matching.
+    Returns list of completed trade dicts (one per lot consumed).
+    """
+    if len(prices) < 30:
+        return []
+
+    sig_map = {s["date"]: s for s in signals if s.get("date")}
+
+    completed_trades: list[dict] = []
+    position: Optional[Position] = None
+
+    for idx, bar in enumerate(prices):
+        date_str = bar["date"]
+        close = float(bar["close"])
+        high = float(bar.get("high") or close)
+        low = float(bar.get("low") or close)
+        sig = sig_map.get(date_str, {})
+        signal = sig.get("signal", "HOLD")
+        confidence = float(sig.get("confidence") or 0)
+
+        # ── Check exit conditions for open position ──
+        if position is not None and position.total_shares > 0:
+            position.highest_since_entry = max(position.highest_since_entry, high)
+            entry = position.entry_price  # first lot price for threshold calc
+            profit_ratio = (close - entry) / entry
+            days_held = _date_diff(position.entry_date, date_str)
+            atr = _compute_atr14(prices, idx)
+
+            exit_reason = None
+            sell_all = False  # True = exit entire position; False = check partial
+
+            # Layer 1: Hard stop (-12%)
+            if profit_ratio <= HARD_STOP_PCT:
+                exit_reason = f"HardStop ({profit_ratio * 100:.1f}%)"
+                sell_all = True
+
+            # Layer 2+4: ATR trailing stop (mirrors custom_stoploss)
+            elif atr > 0:
+                if profit_ratio > 0.08:
+                    mult = TRAIL_MULT_8PCT
+                elif profit_ratio > 0.03:
+                    mult = TRAIL_MULT_3PCT
+                else:
+                    mult = TRAIL_MULT_DEFAULT
+                trail_distance = (atr * mult) / close
+                effective_stop_pct = max(-trail_distance, HARD_STOP_PCT)
+                if profit_ratio <= effective_stop_pct:
+                    exit_reason = f"ATR_TrailStop ({close:.1f}, mult={mult})"
+                    sell_all = True
+
+            # Layer 3: ML SELL signal
+            if exit_reason is None and signal in ("SELL", "STRONG_SELL"):
+                exit_reason = f"ML_SELL ({signal})"
+                sell_all = True
+
+            # Layer 5: TP2 full exit (checked before TP1, mirrors Freqtrade order)
+            if exit_reason is None and close >= entry * TP2_MULT:
+                exit_reason = f"TP2 @ {close:.1f} (+{profit_ratio * 100:.1f}%)"
+                sell_all = True
+
+            # Layer 6: TP1 partial exit (sell 50% FIFO, keep rest for TP2)
+            if exit_reason is None and not position.tp1_hit and close >= entry * TP1_MULT:
+                position.tp1_hit = True
+                shares_to_sell = max(1, int(position.total_shares * TP1_SELL_RATIO))
+                reason = f"TP1 @ {close:.1f} (+{profit_ratio * 100:.1f}%)"
+                trades = position.sell_fifo(shares_to_sell, date_str, close, reason)
+                completed_trades.extend(trades)
+                # Don't set sell_all — remaining shares stay open
+
+            # Layer 7: Time stop
+            if exit_reason is None and days_held >= TIME_STOP_DAYS and profit_ratio > 0.005:
+                exit_reason = f"TimeStop ({days_held}d, +{profit_ratio * 100:.1f}%)"
+                sell_all = True
+
+            # Execute full exit if triggered
+            if sell_all and exit_reason and position.total_shares > 0:
+                trades = position.sell_fifo(
+                    position.total_shares, date_str, close, exit_reason
+                )
+                completed_trades.extend(trades)
+
+            # Clean up if position fully closed
+            if position is not None and position.total_shares <= 0:
+                position = None
+
+        # ── Check entry conditions ──
+        if position is None and signal in ("BUY", "STRONG_BUY") and confidence >= CONFIDENCE_THRESHOLD:
+            shares = int(STAKE_AMOUNT / close) if close > 0 else 0
+            if shares > 0:
+                lot = BuyLot(
+                    symbol=bar.get("symbol", ""),
+                    date=date_str,
+                    price=close,
+                    shares=shares,
+                )
+                position = Position(
+                    symbol=bar.get("symbol", ""),
+                    lots=[lot],
+                    highest_since_entry=close,
+                )
+
+    return completed_trades
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
 def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) -> BacktestResult:
-    """Compute aggregate backtest metrics from all trades."""
+    """Compute aggregate backtest metrics from all completed trades."""
     result = BacktestResult(timerange=f"{first_date}~{last_date}")
     result.total_trades = len(all_trades)
     result.trades = all_trades
@@ -297,13 +389,13 @@ def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) ->
     avg_loss = result.gross_loss / len(losses) if losses else 0
     result.expectancy = avg_win * result.win_rate - avg_loss * (1 - result.win_rate)
 
-    # Sharpe / Sortino (approximate from trade returns)
+    # Sharpe / Sortino (annualized from trade returns)
     returns = [t["profit_ratio"] for t in all_trades]
     if len(returns) >= 2:
-        import statistics
         mean_r = statistics.mean(returns)
         std_r = statistics.stdev(returns)
         trades_per_year = min(len(returns), 250)
+
         if std_r > 0:
             result.sharpe = (mean_r / std_r) * (trades_per_year ** 0.5)
 
@@ -314,7 +406,7 @@ def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) ->
             if downside_std > 0:
                 result.sortino = (mean_r / downside_std) * (trades_per_year ** 0.5)
 
-    # Max Drawdown (from cumulative equity curve)
+    # Max Drawdown (cumulative equity curve)
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
@@ -325,24 +417,28 @@ def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) ->
         max_dd = max(max_dd, dd)
     result.max_drawdown = max_dd
 
-    # CAGR
+    # CAGR + Calmar
     try:
         d1 = datetime.strptime(first_date[:10], "%Y-%m-%d")
         d2 = datetime.strptime(last_date[:10], "%Y-%m-%d")
         years = max((d2 - d1).days / 365.25, 0.1)
         if equity > 0:
             result.cagr = (equity ** (1 / years)) - 1
+            if max_dd > 0:
+                result.calmar = result.cagr / max_dd
     except (ValueError, TypeError):
         pass
 
     return result
 
 
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
 async def run_full_backtest() -> dict:
     """
     Full backtest pipeline:
     1. Fetch stock list + OHLCV + ML signals from D1
-    2. Run in-memory backtest per stock
+    2. Run FIFO in-memory backtest per stock
     3. Aggregate metrics
     4. Write results back to D1 backtest_results table
     """
@@ -371,6 +467,7 @@ async def run_full_backtest() -> dict:
         first_date = "9999-12-31"
         last_date = "0000-01-01"
         stocks_processed = 0
+        stocks_skipped = 0
 
         for stock in stocks:
             symbol = stock["symbol"]
@@ -385,6 +482,7 @@ async def run_full_backtest() -> dict:
             )
 
             if len(prices) < 30:
+                stocks_skipped += 1
                 continue
 
             # Fetch ML signals (ensemble predictions, last 2 years)
@@ -417,11 +515,11 @@ async def run_full_backtest() -> dict:
                     "target2": p.get("target2"),
                 })
 
-            # Add symbol to price bars for trade tracking
+            # Tag price bars with symbol
             for bar in prices:
                 bar["symbol"] = symbol
 
-            # Run backtest
+            # Run backtest with FIFO matching
             trades = _run_backtest_for_stock(prices, signals)
             all_trades.extend(trades)
             stocks_processed += 1
@@ -431,22 +529,50 @@ async def run_full_backtest() -> dict:
                 last_date = max(last_date, prices[-1]["date"])
 
         # ── Step 2: Compute metrics ──
-        logger.info(f"[Backtest] {stocks_processed} stocks processed, {len(all_trades)} trades")
+        logger.info(
+            f"[Backtest] {stocks_processed} stocks processed, "
+            f"{stocks_skipped} skipped, {len(all_trades)} trades"
+        )
         result = _compute_metrics(all_trades, first_date, last_date)
 
-        # ── Step 3: Write to D1 ──
+        # ── Step 3: Exit distribution summary ──
+        exit_dist: dict[str, int] = {}
+        for t in all_trades:
+            # Normalize exit reason to category
+            reason = t.get("exit_reason", "Unknown")
+            if "TP1" in reason:
+                cat = "TP1"
+            elif "TP2" in reason:
+                cat = "TP2"
+            elif "HardStop" in reason:
+                cat = "HardStop"
+            elif "ATR_TrailStop" in reason:
+                cat = "TrailStop"
+            elif "ML_SELL" in reason:
+                cat = "ML_SELL"
+            elif "TimeStop" in reason:
+                cat = "TimeStop"
+            else:
+                cat = "Other"
+            exit_dist[cat] = exit_dist.get(cat, 0) + 1
+
+        # ── Step 4: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         raw_json = json.dumps({
-            "trades": all_trades[:500],  # Truncate to top 500 trades for storage
+            "trades": all_trades[:500],
+            "exit_distribution": exit_dist,
             "summary": {
                 "total_trades": result.total_trades,
                 "win_rate": result.win_rate,
                 "sharpe": result.sharpe,
                 "sortino": result.sortino,
+                "calmar": result.calmar,
                 "max_drawdown": result.max_drawdown,
                 "profit_factor": result.profit_factor,
                 "expectancy": result.expectancy,
+                "cagr": result.cagr,
                 "stocks_processed": stocks_processed,
+                "stocks_skipped": stocks_skipped,
             },
         }, ensure_ascii=False)
 
@@ -465,7 +591,7 @@ async def run_full_backtest() -> dict:
                 result.win_rate,
                 result.sharpe,
                 result.sortino,
-                None,  # calmar (not computed yet)
+                result.calmar,
                 result.max_drawdown,
                 result.cagr,
                 result.profit_factor,
@@ -478,14 +604,17 @@ async def run_full_backtest() -> dict:
             "status": "success" if success else "d1_write_failed",
             "run_date": today,
             "stocks_processed": stocks_processed,
+            "stocks_skipped": stocks_skipped,
             "total_trades": result.total_trades,
             "win_rate": round(result.win_rate, 4),
             "sharpe": round(result.sharpe, 2) if result.sharpe else None,
             "sortino": round(result.sortino, 2) if result.sortino else None,
+            "calmar": round(result.calmar, 2) if result.calmar else None,
             "max_drawdown": round(result.max_drawdown, 4),
             "profit_factor": round(result.profit_factor, 2),
             "expectancy": round(result.expectancy, 4),
             "cagr": round(result.cagr, 4) if result.cagr else None,
+            "exit_distribution": exit_dist,
         }
         logger.info(f"[Backtest] Done: {summary}")
         return summary

@@ -1,8 +1,8 @@
 """
 backtest.py — Weekly automated backtest endpoint
 
-POST /backtest/run → full pipeline: D1 export → backtest → D1 import
-Triggered by Worker Sunday cron (0 20 * * 0 = 04:00 TW)
+POST /backtest/run → full pipeline: D1 export → FIFO backtest → D1 import
+Triggered by Worker Sunday cron (0 22 * * 6 = 週日 06:00 TW)
 """
 import logging
 from fastapi import APIRouter

@@ -187,7 +187,8 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'verify',           tw_time: '18:15',       description: '預測驗證' },
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
-    { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+回測+集保+IC+Timeverse' },
+    { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
+    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測（retrain 後 2hr）' },
   ]
   return c.json({ schedule })
 })
@@ -1333,13 +1334,15 @@ export default {
     // "5 7 * * 1-5"  → 15:05 台北 → 推第一批到 UPDATE_QUEUE
     // "0 1 * * 1-5"  → 09:00 台北 → 開盤前預熱
     // "30 7 * * 1-5" → 15:30 台北 → 大盤風險 + 推第一批到 ML_QUEUE
-    // "0 20 * * 0"   → 每週日 04:00 台北 → 清理舊資料
+    // "0 20 * * 6"   → 每週日 04:00 台北 (UTC Sat 20:00) → 清理舊資料
+    // "0 22 * * 6"   → 每週日 06:00 台北 (UTC Sat 22:00) → 自動回測
     // ── 國定假日檢查（台股休市日不跑任何交易相關 cron）──────────────────
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
     const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
     const isHoliday = await env.KV.get(`holiday:${twToday}`)
-    if ((isWeekend || isHoliday) && cron !== '0 20 * * 0') {
+    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6'])
+    if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
       console.log(`[Cron] ${twToday} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
     }
@@ -1461,22 +1464,14 @@ export default {
         const { generateDailyReport } = await import('./lib/dailyReport')
         return await generateDailyReport(env)
       })
-    } else if (cron === '0 20 * * 0') {
+    } else if (cron === '0 20 * * 6') {
+      // 週日 04:00 TW (=UTC Sat 20:00) → 清理 + 重訓 + IC + Timeverse + 備份
       runWithLog('weekly-cleanup', async () => {
         await runWeeklyCleanup(env)
         await runWeeklyRetrain(env)
         await fetchWeeklyShareholding(env).catch(e => console.warn('[Wave3] Shareholding failed:', e))
-        // Weekly IC audit + feature drift + quintile alpha check
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
-        // Feature drift detection（同一支股票的資料）
         await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
-        // P0#4: Weekly automated backtest (tests past week's predictions stored in D1)
-        const btResult = await runWeeklyBacktest(env).catch(e => {
-          console.warn('[Backtest] failed:', e)
-          return 'failed'
-        })
-        console.log(`[Backtest] ${btResult}`)
-        // Timeverse 台股研究資料庫同步
         const { syncTimeverse } = await import('./lib/timeverse')
         await syncTimeverse(env).catch(e => console.warn('[Timeverse] sync failed:', e))
         // P1 資安：D1 關鍵表 weekly snapshot → KV（災難恢復用，7 天 TTL）
@@ -1489,7 +1484,12 @@ export default {
           }
           console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
         } catch (e) { console.warn('[Backup] D1 snapshot failed:', e) }
-        return `週清理 + 重訓 + 回測(${btResult}) + 集保 + IC審計 + Timeverse同步 + D1備份完成`
+        return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
+      })
+    } else if (cron === '0 22 * * 6') {
+      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 自動回測（retrain 完成 2hr 後）
+      runWithLog('weekly-backtest', async () => {
+        return await runWeeklyBacktest(env)
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

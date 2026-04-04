@@ -303,9 +303,8 @@ def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) ->
         import statistics
         mean_r = statistics.mean(returns)
         std_r = statistics.stdev(returns)
+        trades_per_year = min(len(returns), 250)
         if std_r > 0:
-            # Annualize: assume ~120 trades/year for daily strategy
-            trades_per_year = min(len(returns), 250)
             result.sharpe = (mean_r / std_r) * (trades_per_year ** 0.5)
 
         # Sortino: only downside deviation

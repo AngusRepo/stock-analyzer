@@ -1470,7 +1470,7 @@ export default {
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
         // Feature drift detection（同一支股票的資料）
         await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
-        // P0#4: Weekly automated backtest (after retrain, uses latest models)
+        // P0#4: Weekly automated backtest (tests past week's predictions stored in D1)
         const btResult = await runWeeklyBacktest(env).catch(e => {
           console.warn('[Backtest] failed:', e)
           return 'failed'

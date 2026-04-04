@@ -558,8 +558,11 @@ async def run_full_backtest() -> dict:
 
         # ── Step 4: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
+        all_returns = [t["profit_ratio"] for t in all_trades]
         raw_json = json.dumps({
             "trades": all_trades[:500],
+            "all_returns": all_returns,  # full list for Monte Carlo source=backtest
             "exit_distribution": exit_dist,
             "summary": {
                 "total_trades": result.total_trades,

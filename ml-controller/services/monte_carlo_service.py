@@ -52,6 +52,7 @@ class MonteCarloResult:
     mdd_std: float = 0.0              # MDD 標準差
     go_live_verdict: str = ""         # "PASS" / "FAIL" / "CAUTION"
     verdict_reason: str = ""
+    mdds_sorted: list = None          # sorted MDD distribution (reuse, avoid recompute)
 
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
@@ -230,6 +231,7 @@ def _run_monte_carlo(
     result.mdd_95th = mdds[int(len(mdds) * 0.95)]
     result.mdd_99th = mdds[min(int(len(mdds) * 0.99), len(mdds) - 1)]
     result.mdd_worst = mdds[-1]
+    result.mdds_sorted = [round(m, 6) for m in mdds]  # store for reuse
 
     # Go-live verdict
     # 台股策略: MDD 95th < 20% = PASS, 20-30% = CAUTION, > 30% = FAIL
@@ -270,7 +272,9 @@ async def run_monte_carlo_mdd(
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
-        # ── Step 1: Fetch trade data ──
+        # ── Step 1: Fetch trade returns ──
+        trade_returns: list[float] = []
+
         if source == "paper":
             logger.info("[MonteCarlo] Fetching paper_orders from D1...")
             orders = await _d1_query(
@@ -286,9 +290,9 @@ async def run_monte_carlo_mdd(
 
             logger.info(f"[MonteCarlo] Found {len(orders)} orders, pairing FIFO...")
             trades = _pair_orders_fifo(orders)
+            trade_returns = [t["profit_ratio"] for t in trades]
 
         elif source == "backtest":
-            # Use latest backtest trades from raw_results JSON
             logger.info("[MonteCarlo] Fetching backtest trades from D1...")
             row = await _d1_query(
                 client,
@@ -300,19 +304,21 @@ async def run_monte_carlo_mdd(
                 return {"error": "No backtest results found", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
-            trades = raw.get("trades", [])
+            # Prefer all_returns (complete, not truncated) over trades[:500]
+            if raw.get("all_returns"):
+                trade_returns = raw["all_returns"]
+            else:
+                trades = raw.get("trades", [])
+                trade_returns = [t["profit_ratio"] for t in trades]
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
 
-        if len(trades) < 5:
+        if len(trade_returns) < 5:
             return {
-                "error": f"Only {len(trades)} completed trades, need >= 5",
+                "error": f"Only {len(trade_returns)} completed trades, need >= 5",
                 "status": "failed",
             }
-
-        # ── Step 2: Extract return sequence ──
-        trade_returns = [t["profit_ratio"] for t in trades]
         logger.info(
             f"[MonteCarlo] {len(trade_returns)} trades, "
             f"running {n_simulations} simulations..."
@@ -324,14 +330,8 @@ async def run_monte_carlo_mdd(
         # ── Step 4: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Build percentile distribution for storage
-        rng = random.Random(42)
-        mdds_for_dist = []
-        for _ in range(n_simulations):
-            shuffled = trade_returns.copy()
-            rng.shuffle(shuffled)
-            mdds_for_dist.append(round(_compute_mdd(shuffled), 6))
-        mdds_for_dist.sort()
+        # Reuse sorted MDD distribution from simulation (no recompute)
+        mdds_for_dist = mc.mdds_sorted or []
 
         # Store histogram buckets (for frontend visualization)
         buckets = {}

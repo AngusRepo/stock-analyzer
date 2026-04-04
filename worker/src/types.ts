@@ -29,6 +29,8 @@ export type Bindings = {
   LOCAL_TUNNEL_URL?: string
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
+  // Freqtrade Backtest Service URL（Cloud Run / Docker）
+  BACKTEST_SERVICE_URL?: string
   // Cloudflare Workers AI binding
   AI?: any
 }

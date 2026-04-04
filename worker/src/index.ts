@@ -188,6 +188,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
+    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '週回測（paper trading 績效計算）' },
   ]
   return c.json({ schedule })
 })
@@ -270,6 +271,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
     'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
     'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
+    'backtest':         async () => { const { runWeeklyBacktest } = await import('./lib/backtestRunner'); return runWeeklyBacktest(c.env) },
     // ── 完整 Pipeline：依序等待每步完成 ──
     pipeline: async () => {
       const steps: string[] = []
@@ -1450,6 +1452,11 @@ export default {
           console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
         } catch (e) { console.warn('[Backup] D1 snapshot failed:', e) }
         return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
+      })
+    } else if (cron === '0 22 * * 6') {
+      runWithLog('weekly-backtest', async () => {
+        const { runWeeklyBacktest } = await import('./lib/backtestRunner')
+        return await runWeeklyBacktest(env)
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

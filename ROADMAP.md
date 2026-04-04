@@ -77,11 +77,43 @@
 - **Why**: Currently if ML predict fails at 18:00, recommendation at 18:05 doesn't know and runs with empty predictions. LangGraph: fail -> retry from last checkpoint
 - **Expected**: Pipeline resilience + LangGraph Studio visualization
 
-### #12 Portfolio Construction
-- **What**: Sector Cap 30% + Volatility Scaling (ATR inverse allocation) + Risk Parity (equal risk contribution)
-- **Where**: New `ml-controller/services/portfolio.py` + `worker/src/routes/paper.ts` position sizing
-- **Why**: Currently only "pick stocks". Missing "how much to buy each". High vol stocks get same allocation as low vol = unbalanced risk
-- **Expected**: Portfolio Sharpe +0.3-0.5
+### #12 Portfolio Construction + Position Replacement
+- **What**: Three sub-systems:
+
+  **A. ATR Fixed-Risk Position Sizing** (replace current `maxPctOfCash` 30% cascading)
+  - `risk_per_trade = totalPortfolio × riskPct` (default 1.5%)
+  - `stop_distance = ATR14 × slMultiplier` (existing initial_stop logic)
+  - `shares = risk_per_trade / stop_distance`
+  - Batch allocation: receive all daily recommendations → calculate all at once → no order dependency
+  - Upper bound: `position_value <= 25% portfolio` and `<= dailyBuyLimit`
+  - Lower bound: `position_value >= 30,000` (below this not worth transaction cost)
+  - Solves: first stock gets 25万 vs fifth stock gets 5万 imbalance. Every position now has equal "loss if stopped out"
+
+  **B. maxPositions Hard Cap** (new: currently no limit)
+  - `maxPositions: 5` in tradingConfig.ts
+  - Current system relies on cash depletion to naturally limit positions (can reach 6-7)
+
+  **C. Position Replacement** (new: currently skips new signals when full)
+  - Trigger: positions = maxPositions AND new recommendation arrives
+  - Step 1: Calculate `weakness_score` for each holding:
+    - Unrealized PnL rank (more loss = weaker) — 30%
+    - Holding days / timeStopDays ratio — 15%
+    - Latest ML signal (SELL=0, HOLD=30, BUY=70) — 25%
+    - RRG quadrant (Lagging=0, Weakening=30, Improving=60, Leading=100) — 15%
+    - Technical decay (RSI<50 or MACD cross-down or 3-day losing streak) — 15%
+  - Step 2: Compare new vs weakest. ALL conditions must be met:
+    - `new_total_score > weakest_total_score × 1.15` (15% threshold, higher than US 10% due to TW tax)
+    - weakest held >= 3 days (avoid churn)
+    - weakest NOT near TP1 trigger (price < tp1_price × 0.97)
+    - Expected net gain > 1.5% (covers TW swap cost: sell 0.1425%+0.3% tax + buy 0.1425%+0.1% slippage ≈ 0.685% + safety margin)
+  - Step 3: Execute swap or skip. `max_daily_swaps: 1`. Log skipped recommendations
+  - Sector check: if new stock's sector already has 2 holdings → don't swap even if score is higher
+
+  **Interaction with existing 7-layer exit**: No conflict. ATR sizing decides "how much to buy" at entry. 7-layer exit decides "when to sell" during holding. TP1 partial sell naturally reduces position risk contribution — this is expected behavior (let profits run on remaining shares), no rebalancing needed
+
+- **Where**: `worker/src/routes/paper.ts` executePendingBuys (batch allocation rewrite) + `worker/src/lib/tradingConfig.ts` (new params) + new replacement logic in morning setup
+- **Why**: Three problems: (1) Position sizes cascade unfairly (first=25万, fifth=5万). (2) No hard limit on positions. (3) Full positions → new signals ignored, no swap evaluation. ATR sizing makes every position contribute equal risk. Replacement ensures best stocks always in portfolio
+- **Expected**: Portfolio Sharpe +0.3-0.5, position sizes balanced, annual turnover controlled < 50%
 
 ### #13 Execution Reality
 - **What**: Slippage model (daily turnover < 50M -> slippage 1-2%) + Partial Fill (order > 5% daily volume -> partial) + Limit-down lock detection (drop >= 9.5% + volume < 10% yesterday -> can't exit)
@@ -129,8 +161,8 @@
 - **Why**: Don't find single optimal point (overfits). Find most robust plateau region
 - **Expected**: Leading stock selection 5d excess return +1-2%
 
-### #20 Circuit Breaker + Trailing Optuna
-- **What**: drawdownHalt[0.08-0.20] x maxPositionPct[0.04-0.12] x highVolReducedPct[0.02-0.06] + trailing 3-stage switch points profit%[2-5, 4-8, 7-12] and per-stage mult[1.5-3.5]
+### #20 Circuit Breaker + Trailing + Replacement Optuna
+- **What**: drawdownHalt[0.08-0.20] x maxPositionPct[0.04-0.12] x highVolReducedPct[0.02-0.06] + trailing 3-stage switch points profit%[2-5, 4-8, 7-12] and per-stage mult[1.5-3.5] + **position replacement params**: riskPct[0.01-0.025] x score_diff_threshold[0.10-0.25] x min_hold_days[3-7] x min_position_value[20000-50000] x max_daily_swaps[1-2]
 - **Where**: `worker/src/lib/tradingConfig.ts`
 - **Why**: Risk control not too conservative (good runs blocked) or too aggressive (should stop but didn't)
 - **Expected**: Optimal risk-adjusted Sharpe

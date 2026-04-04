@@ -4,7 +4,7 @@ import type { Bindings, Variables, UpdateQueueMsg } from './types'
 import { auth } from './routes/auth'
 import { stocks, fetchAndStoreStockData, computeAndStoreIndicators } from './routes/stocks'
 import { market, llm, watchlist, alerts, news, ml, notifications, system, recommendations, chat } from './routes/other'
-import { paper, runPaperAutoTrade, setupMorningPendingBuys, runIntradayCheck, runEODExit, runDailySnapshot, pollIntradayStopLoss } from './routes/paper'
+import { paper, runPaperAutoTrade, setupMorningPendingBuys, runIntradayCheck, runEODExit, runDailySnapshot } from './routes/paper'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 

@@ -7,11 +7,11 @@ import os
 import logging
 import httpx
 from fastapi import APIRouter
+from main import VERSION as _VERSION
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_VERSION        = "12.2.0"
 _ML_SERVICE_URL = os.environ.get("ML_SERVICE_URL", "")
 _USE_MODAL      = bool(os.environ.get("MODAL_TOKEN_ID", ""))
 

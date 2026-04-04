@@ -6,7 +6,7 @@ services/adaptive.py — 自適應參數計算引擎
 T+1 生效原則：今天算的參數明天才用，斷開 feedback loop。
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 

@@ -1277,7 +1277,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const px = posValueMap.get(pos.symbol) ?? pos.avg_cost
       const pnlPct = pos.avg_cost > 0 ? (px - pos.avg_cost) / pos.avg_cost : 0
       const daysHeld = pos.entry_date
-        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date).getTime()) / 86400_000)
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date + 'T00:00:00+08:00').getTime()) / 86400_000)
         : 0
       const timeRatio = Math.min(1, daysHeld / (cfg.exit.timeStopDays ?? 20))
 
@@ -1868,11 +1868,12 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     for (let i = 1; i < vals.length; i++) { if (vals[i-1] > 0) returns.push((vals[i] - vals[i-1]) / vals[i-1]) }
     if (returns.length >= 5) {
       const mean = returns.reduce((a, b) => a + b, 0) / returns.length
-      const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length)
+      const n = returns.length
+      const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1))  // sample stddev (N-1)
       sharpe30d = std > 0 ? (mean / std) * Math.sqrt(252) : null
 
       // P0#7 Sortino: downside deviation (square negative returns, divide by total N)
-      const downStd = Math.sqrt(returns.reduce((a, r) => a + (r < 0 ? r ** 2 : 0), 0) / returns.length)
+      const downStd = Math.sqrt(returns.reduce((a, r) => a + (r < 0 ? r ** 2 : 0), 0) / n)
       sortino30d = downStd > 0 ? (mean / downStd) * Math.sqrt(252) : null
     }
   }

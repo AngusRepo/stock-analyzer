@@ -282,8 +282,10 @@ def _run_backtest_for_stock(
 
         # ── Check exit conditions for open position ──
         if position is not None and position.total_shares > 0:
-            position.highest_since_entry = max(position.highest_since_entry, high)
             entry = position.entry_price  # first lot price for threshold calc
+            if close <= 0 or entry <= 0:
+                continue  # skip bars with invalid price data
+            position.highest_since_entry = max(position.highest_since_entry, high)
             profit_ratio = (close - entry) / entry
             days_held = _date_diff(position.entry_date, date_str)
             atr = _compute_atr14(prices, idx)

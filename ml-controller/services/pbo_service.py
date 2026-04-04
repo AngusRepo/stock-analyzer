@@ -54,6 +54,7 @@ class PBOResult:
     degradation: float = 0.0    # IS return - OOS return (overfitting gap)
     go_live_verdict: str = ""   # "PASS" / "FAIL"
     verdict_reason: str = ""
+    sampled: bool = False       # True if combinations were randomly sampled
     partition_details: list = field(default_factory=list)
 
 
@@ -157,6 +158,16 @@ def _run_cpcv(
     """
     result = PBOResult(n_partitions=n_partitions, n_trades=len(trades))
 
+    # Check time spread: if all trades share same date, partitioning is meaningless
+    unique_dates = len(set(t.get("exit_date", "")[:10] for t in trades))
+    if unique_dates < n_partitions:
+        result.go_live_verdict = "FAIL"
+        result.verdict_reason = (
+            f"Only {unique_dates} unique trade dates for {n_partitions} partitions. "
+            f"Time-based partitioning is meaningless."
+        )
+        return result
+
     if len(trades) < n_partitions * 3:
         result.go_live_verdict = "FAIL"
         result.verdict_reason = (
@@ -176,15 +187,18 @@ def _run_cpcv(
     half = actual_n // 2
     partition_indices = list(range(actual_n))
 
-    # Limit combinations for performance — cap at 252 (C(10,5))
-    # C(12,6)=924, C(14,7)=3432, C(20,10)=184756 — too many
+    # Limit combinations — C(10,5)=252, C(16,8)=12870 OK, C(18,9)=48620+ gets sampled
     all_combos = list(combinations(partition_indices, half))
-    MAX_COMBOS = 500
+    sampled = False
+    MAX_COMBOS = 15_000
     if len(all_combos) > MAX_COMBOS:
+        original_count = len(all_combos)
         import random
         rng = random.Random(42)
         all_combos = rng.sample(all_combos, MAX_COMBOS)
-        logger.warning(f"[PBO] Too many combinations ({len(all_combos)}→{MAX_COMBOS} sampled)")
+        sampled = True
+        logger.warning(f"[PBO] {original_count} combinations → sampled {MAX_COMBOS}")
+    result.sampled = sampled
     result.n_combinations = len(all_combos)
 
     is_returns = []
@@ -403,6 +417,7 @@ async def run_pbo_analysis(
             "go_live_verdict": pbo.go_live_verdict,
             "verdict_reason": pbo.verdict_reason,
             "trades_truncated": trades_truncated,
+            "sampled": pbo.sampled,
         }
         logger.info(f"[PBO] Done: {pbo.go_live_verdict} — PBO = {pbo.pbo:.1%}")
         return summary

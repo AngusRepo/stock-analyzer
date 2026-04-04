@@ -297,8 +297,8 @@ export async function runBuyDebate(
     }
   }
 
-  // P1#14: Prompt injection detection on all LLM outputs
-  const injectionCheck = checkInjection([bullCase, bearCase, judgeResponse].join('\n'))
+  // P1#14: Prompt injection detection — only scan bear + judge (not bull, which is ML's own reasoning)
+  const injectionCheck = checkInjection([bearCase, judgeResponse].join('\n'))
   if (injectionCheck.action === 'reject') {
     console.warn(`[Debate] INJECTION DETECTED for ${symbol}: ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`)
     return {

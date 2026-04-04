@@ -152,6 +152,11 @@ def search_best_params(
     if split < 20 or len(X) - split < 10:
         return None
 
+    # VULN-22 fix: skip if features contain NaN
+    if np.isnan(X).any():
+        logger.warning(f"[Optuna] {model_name}: X contains NaN values, skipping")
+        return None
+
     # VULN-24 fix: skip Optuna if labels have no variance (all same class)
     unique_classes = len(set(y[:split].tolist() if hasattr(y[:split], 'tolist') else list(y[:split])))
     if unique_classes < 2:

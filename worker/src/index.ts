@@ -368,6 +368,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'monte-carlo': () => runWeeklyMonteCarlo(c.env),
     pbo: () => runWeeklyPBO(c.env),
     lifecycle: () => runWeeklyLifecycleCheck(c.env),
+    'monthly-optuna': () => runMonthlyOptunaResearch(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -1026,6 +1027,48 @@ async function runWeeklyAudit(env: Bindings) {
 }
 
 
+// ─── Cron: Monthly Optuna Parameter Re-search ────────────────────────────────
+async function runMonthlyOptunaResearch(env: Bindings) {
+  const ML_URL = env.ML_SERVICE_URL
+  if (!ML_URL) return 'skipped (no ML_SERVICE_URL)'
+  console.log('[Monthly] Starting Optuna parameter re-search (P0#1-3)...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_SERVICE_SECRET) headers['X-Service-Token'] = env.ML_SERVICE_SECRET
+
+  const results: string[] = []
+
+  // P0#1: Triple Barrier
+  try {
+    const r = await fetch(`${ML_URL}/optuna/barrier`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`barrier:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('barrier:ERROR') }
+
+  // P0#2: Signal + Screener Weight
+  try {
+    const r = await fetch(`${ML_URL}/optuna/signal`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`signal:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('signal:ERROR') }
+
+  // P0#3: SL/TP + Trailing
+  try {
+    const r = await fetch(`${ML_URL}/optuna/sltp`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`sltp:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('sltp:ERROR') }
+
+  const summary = results.join(', ')
+  console.log(`[Monthly] Optuna re-search: ${summary}`)
+
+  // Push notification
+  if ((env as any).DISCORD_WEBHOOK_URL) {
+    const { sendDiscordNotification } = await import('./lib/notify')
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
+      `🔬 **Monthly Optuna Re-search Complete**\n${summary}`)
+  }
+
+  return summary
+}
+
+
 // ─── Cron P1#8：Model Lifecycle Check（Controller 觸發） ─────────────────────
 async function runWeeklyLifecycleCheck(env: Bindings) {
   const CTRL_URL = env.ML_CONTROLLER_URL
@@ -1543,7 +1586,7 @@ export default {
     const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
     const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
     const isHoliday = await env.KV.get(`holiday:${twToday}`)
-    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6'])
+    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '0 16 1-7 * 6'])
     if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
       console.log(`[Cron] ${twToday} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
@@ -1768,6 +1811,11 @@ export default {
         const mc = await runWeeklyMonteCarlo(env).catch(e => { console.warn('[MC]', e); return 'failed' })
         const pbo = await runWeeklyPBO(env).catch(e => { console.warn('[PBO]', e); return 'failed' })
         return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
+      })
+    } else if (cron === '0 16 1-7 * 6') {
+      // 每月第一個週六 00:00 TW (=UTC Sat 16:00) → Optuna 參數重搜
+      runWithLog('monthly-optuna', async () => {
+        return await runMonthlyOptunaResearch(env)
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

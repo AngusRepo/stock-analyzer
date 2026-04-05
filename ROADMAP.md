@@ -280,12 +280,35 @@ Evolution:  3/10  ->  5/10  ->  8/10  ->  9.5/10
 
 ## Pending Action Items (手動執行)
 
+### 🔴 Deploy 前完整驗證流程（按順序執行）
+1. [ ] 跑所有 D1 migrations（7 個 .sql）
+2. [ ] 跑 `backfill_delisted_stocks.py` 補齊下市股資料
+3. [ ] Optuna P0#1-3 重搜（Triple Barrier / Signal / SL-TP）— 因為 ensemble 邏輯改了
+4. [ ] 完整回測（新滑價 + ATR TP + point-in-time universe）
+5. [ ] Monte Carlo MDD（驗證 95th MDD < 20%）
+6. [ ] PBO（驗證 PBO < 0.5）
+7. [ ] **確認 MC=PASS + PBO=PASS 才能 deploy。任一 FAIL 就停下查原因。**
+
 ### 🔴 Data Backfill（上線前必做）
 - [ ] 跑 `scripts/backfill_delisted_stocks.py` 補齊 2023-01-01 起的下市股 OHLCV
   - 需要：`CF_API_TOKEN` + `FINMIND_TOKEN`
   - 用途：C1 存活偏差修正，回測才能包含已下市股票
 - [ ] 跑 `worker/migration_stock_pit.sql` 加上 `listed_date` / `delisted_date` 欄位
 - [ ] 確認所有現存股票的 `stock_prices` 有 2023-01-01 起的完整日K
+
+### 🟢 回測 / 參數搜索頻率
+| 類型 | 頻率 | Cron | 說明 |
+|---|---|---|---|
+| **常規回測** | 每週 | `0 22 * * 6`（週日 06:00 TW） | 追蹤策略績效是否退化 |
+| **MC + PBO** | 每週 | 同上（回測後自動跑） | go-live verdict 每週更新 |
+| **Optuna 參數重搜** | 每月 | `0 16 1-7 * 6`（每月第一個週六 00:00 TW） | P0#1-3 重搜，適應市場結構變化 |
+| **完整驗證** | 重大改動後 | 手動觸發 | 改了 ensemble/出場/模型後必跑 |
+| **Ensemble w1~w6 搜索** | 每季（手動） | — | 需 350+ 筆交易，目前等權 |
+
+業界參考：搖擺交易策略（持倉 10-20 天）通常每週回測 + 每月參數重搜。
+Optuna 不是類神經網路 — 它是 hyperparameter 搜索框架（Tree-Structured Parzen Estimator），
+用貝葉斯優化找最佳參數組合。每月重搜是為了適應市場 regime 變化，
+跟「模型訓練」不同 — 訓練是每週日 retrain，搜索是每月重新找最佳參數。
 
 ### 🟡 Ensemble Learned Weights（350+ 筆交易後）
 - [ ] 3 年回測跑完，確認交易筆數 >= 350

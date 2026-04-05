@@ -310,6 +310,10 @@ Optuna 不是類神經網路 — 它是 hyperparameter 搜索框架（Tree-Struc
 用貝葉斯優化找最佳參數組合。每月重搜是為了適應市場 regime 變化，
 跟「模型訓練」不同 — 訓練是每週日 retrain，搜索是每月重新找最佳參數。
 
+### 🟡 P2 部署時需要接線（程式碼已寫好，尚未接入 cron）
+- [ ] **MLP Shadow (#21)**：在 `retrain_stock()` 中呼叫 `train_shadow_mlp()`，追蹤 4 週 MLP vs LR 結果
+- [ ] **FT Online Update (#22)**：在 `runPredictionVerification` 後呼叫 `online_update_ft_transformer()`，每日微調最後 2 層
+
 ### 🟡 Ensemble Learned Weights（350+ 筆交易後）
 - [ ] 3 年回測跑完，確認交易筆數 >= 350
 - [ ] 用 Optuna 搜索 ensemble log-linear 係數 w1~w6

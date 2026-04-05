@@ -30,14 +30,16 @@ export interface PercentileScore {
 export class PercentileScorer {
   private percentiles: Map<string, number[]> = new Map()
   private factorMaxScores: Record<string, number> = {
+    // Chip (40 total)
     foreign_net_5d: 20,
     trust_net_5d: 15,
     volume_ratio: 5,
+    // Tech (30 total)
     rsi14: 10,
     macd_hist: 10,
     market_cap: 10,
-    daily_turnover: 15,
-    liquidity_combined: 15,
+    // Liquidity (30 total)
+    daily_turnover: 30,
   }
 
   constructor(universe: StockFactors[]) {
@@ -98,7 +100,7 @@ export class PercentileScorer {
     // Liquidity score (0-30): daily turnover + combined
     const turnoverPct = this.getPercentile('daily_turnover', stock.daily_turnover)
     const liquidity_score = Math.round(
-      turnoverPct * (this.factorMaxScores.daily_turnover + this.factorMaxScores.liquidity_combined)
+      turnoverPct * this.factorMaxScores.daily_turnover
     )
 
     return {

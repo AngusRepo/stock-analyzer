@@ -69,17 +69,17 @@ ALPHA_MAX = 0.7       # losing streak → explore (high alpha)
 
 def compute_dynamic_alpha(losses_5d: int = 0, total_5d: int = 0) -> float:
     """
-    P1#10: Adjust LinUCB exploration based on recent trading performance.
+    P1#10 + H2 fix: Adjust LinUCB exploration with guaranteed minimum exploration.
     Losing streak → increase alpha (explore new model combinations)
-    Winning streak → decrease alpha (exploit what's working)
+    Winning streak → decrease alpha but NEVER below ALPHA_FLOOR (H2: anti-herding)
     """
     if total_5d < 3:
         return ALPHA_EXPLORE  # not enough data, use default
 
     loss_rate = losses_5d / total_5d
-    # Linear interpolation: loss_rate 0→ALPHA_MIN, 1→ALPHA_MAX
     alpha = ALPHA_MIN + loss_rate * (ALPHA_MAX - ALPHA_MIN)
-    return round(float(np.clip(alpha, ALPHA_MIN, ALPHA_MAX)), 3)
+    # H2 fix: floor at 0.15 to prevent complete exploitation (anti-feedback-loop)
+    return round(float(np.clip(alpha, 0.15, ALPHA_MAX)), 3)
 
 
 # ── Context Builder ───────────────────────────────────────────────────────────

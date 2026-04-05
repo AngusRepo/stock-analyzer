@@ -119,8 +119,21 @@ def weighted_vote(
         regime_mult   = regime_mults.get(p.model_name, 1.0)
         bandit_mult   = (bandit_multipliers or {}).get(p.model_name, 1.0)
         lifecycle_mult = (lifecycle_weights or {}).get(p.model_name, 1.0)  # P1#8
-        raw_w = acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult * lifecycle_mult
-        weights.append(max(raw_w, 0.01))  # 防權重坍縮：5層乘積可能趨近 0，保底 1%
+
+        # C3 fix: log-linear combination prevents weight explosion
+        # Instead of raw multiplication (ratio up to 29,500:1), use log-space
+        # with clipping to bound max/min ratio to ~55:1
+        import math
+        log_w = (
+            math.log(max(acc_weight, 0.01))
+            + math.log(max(conf_weight, 0.01))
+            + math.log(max(quality_mult, 0.01))
+            + math.log(max(regime_mult, 0.01))
+            + math.log(max(bandit_mult, 0.01))
+            + math.log(max(lifecycle_mult, 0.01))
+        )
+        raw_w = math.exp(max(min(log_w, 2.0), -2.0))  # clip log to [-2, 2] → ratio ~55:1
+        weights.append(raw_w)
 
     total_w = sum(weights) or 1.0
     norm_weights = [w / total_w for w in weights]

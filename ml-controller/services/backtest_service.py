@@ -42,11 +42,11 @@ D1_API = (
     f"/d1/database/{CF_D1_DB_ID}/query"
 )
 
-# ── Strategy Parameters (mirror StockVisionStrategy defaults) ─────────────────
+# ── Strategy Parameters (mirror Worker tradingConfig + paper.ts) ──────────────
 CONFIDENCE_THRESHOLD = 0.60
 HARD_STOP_PCT = -0.12
-TP1_MULT = 1.03
-TP2_MULT = 1.06
+TP1_ATR_MULT = 1.5    # H9 fix: ATR-relative (was fixed 1.03)
+TP2_ATR_MULT = 3.0    # H9 fix: ATR-relative (was fixed 1.06)
 TP1_SELL_RATIO = 0.50  # TP1 賣出比例（50%）
 TIME_STOP_DAYS = 20
 TRAIL_MULT_DEFAULT = 3.0
@@ -229,6 +229,25 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
 
 # ── Backtest Engine ───────────────────────────────────────────────────────────
 
+def _tick_size(price: float) -> float:
+    """Taiwan stock tick size by price level."""
+    if price < 10: return 0.01
+    if price < 50: return 0.05
+    if price < 100: return 0.1
+    if price < 500: return 0.5
+    if price < 1000: return 1.0
+    return 5.0
+
+
+def _apply_slippage(price: float, side: str, ticks: int = 1) -> float:
+    """C4 fix: apply tick-based slippage to backtest fills."""
+    tick = _tick_size(price)
+    slip = tick * ticks
+    if side == "buy":
+        return price + slip
+    return max(price - slip, tick)
+
+
 def _compute_atr14(prices: list[dict], idx: int) -> float:
     """Compute ATR(14) at given index."""
     if idx < 14:
@@ -317,17 +336,20 @@ def _run_backtest_for_stock(
                 exit_reason = f"ML_SELL ({signal})"
                 sell_all = True
 
-            # Layer 5: TP2 full exit (checked before TP1, mirrors Freqtrade order)
-            if exit_reason is None and close >= entry * TP2_MULT:
+            # Layer 5: TP2 full exit — ATR-relative (H9 fix, matches Worker)
+            tp2_price = entry + atr * TP2_ATR_MULT if atr > 0 else entry * 1.06
+            if exit_reason is None and close >= tp2_price:
                 exit_reason = f"TP2 @ {close:.1f} (+{profit_ratio * 100:.1f}%)"
                 sell_all = True
 
-            # Layer 6: TP1 partial exit (sell 50% FIFO, keep rest for TP2)
-            if exit_reason is None and not position.tp1_hit and close >= entry * TP1_MULT:
+            # Layer 6: TP1 partial exit — ATR-relative (H9 fix, matches Worker)
+            tp1_price = entry + atr * TP1_ATR_MULT if atr > 0 else entry * 1.03
+            if exit_reason is None and not position.tp1_hit and close >= tp1_price:
                 position.tp1_hit = True
                 shares_to_sell = max(1, int(position.total_shares * TP1_SELL_RATIO))
                 reason = f"TP1 @ {close:.1f} (+{profit_ratio * 100:.1f}%)"
-                trades = position.sell_fifo(shares_to_sell, date_str, close, reason)
+                sell_px = _apply_slippage(close, "sell")  # C4: slippage on TP1
+                trades = position.sell_fifo(shares_to_sell, date_str, sell_px, reason)
                 completed_trades.extend(trades)
                 # Don't set sell_all — remaining shares stay open
 
@@ -338,8 +360,9 @@ def _run_backtest_for_stock(
 
             # Execute full exit if triggered
             if sell_all and exit_reason and position.total_shares > 0:
+                sell_px = _apply_slippage(close, "sell")  # C4: slippage on exit
                 trades = position.sell_fifo(
-                    position.total_shares, date_str, close, exit_reason
+                    position.total_shares, date_str, sell_px, exit_reason
                 )
                 completed_trades.extend(trades)
 
@@ -349,18 +372,19 @@ def _run_backtest_for_stock(
 
         # ── Check entry conditions ──
         if position is None and signal in ("BUY", "STRONG_BUY") and confidence >= CONFIDENCE_THRESHOLD:
-            shares = int(STAKE_AMOUNT / close) if close > 0 else 0
+            fill_price = _apply_slippage(close, "buy")  # C4: slippage on entry
+            shares = int(STAKE_AMOUNT / fill_price) if fill_price > 0 else 0
             if shares > 0:
                 lot = BuyLot(
                     symbol=bar.get("symbol", ""),
                     date=date_str,
-                    price=close,
+                    price=fill_price,  # C4: use slippage-adjusted price
                     shares=shares,
                 )
                 position = Position(
                     symbol=bar.get("symbol", ""),
                     lots=[lot],
-                    highest_since_entry=close,
+                    highest_since_entry=fill_price,
                 )
 
     return completed_trades
@@ -448,12 +472,15 @@ async def run_full_backtest() -> dict:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
-        # ── Step 1: Fetch stocks ──
-        logger.info("[Backtest] Fetching stock list from D1...")
+        # ── Step 1: Fetch stocks (point-in-time universe, C1 fix) ──
+        # Include delisted stocks that were tradable during the backtest period
+        logger.info("[Backtest] Fetching point-in-time stock universe from D1...")
         stocks = await _d1_query(client, """
             SELECT DISTINCT s.id, s.symbol, s.name
             FROM stocks s
-            WHERE s.is_active = 1
+            WHERE (s.is_active = 1
+                   OR (s.delisted_date IS NOT NULL AND s.delisted_date >= '2023-01-01'))
+              AND (s.listed_date IS NULL OR s.listed_date <= date('now'))
             UNION
             SELECT DISTINCT s.id, s.symbol, s.name
             FROM stocks s

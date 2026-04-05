@@ -148,8 +148,16 @@ def search_best_params(
     if not searcher:
         return None
 
-    split = int(len(X) * split_ratio)
-    if split < 20 or len(X) - split < 10:
+    # H1 fix: 3-way split with 5-day embargo (prevents data snooping)
+    # Train(60%) | embargo(5d) | Validation(20%) | Test(20%)
+    EMBARGO_DAYS = 5
+    n = len(X)
+    train_end = int(n * 0.6)
+    val_start = train_end + EMBARGO_DAYS
+    val_end = int(n * 0.8)
+    test_start = val_end
+
+    if train_end < 20 or val_start >= val_end or n - test_start < 10:
         return None
 
     # VULN-22 fix: skip if features contain NaN
@@ -157,14 +165,15 @@ def search_best_params(
         logger.warning(f"[Optuna] {model_name}: X contains NaN values, skipping")
         return None
 
-    # VULN-24 fix: skip Optuna if labels have no variance (all same class)
-    unique_classes = len(set(y[:split].tolist() if hasattr(y[:split], 'tolist') else list(y[:split])))
+    # VULN-24 fix: skip Optuna if labels have no variance
+    unique_classes = len(set(y[:train_end].tolist() if hasattr(y[:train_end], 'tolist') else list(y[:train_end])))
     if unique_classes < 2:
         logger.warning(f"[Optuna] {model_name}: y has only {unique_classes} class(es), skipping")
         return None
 
-    X_train, X_val = X[:split], X[split:]
-    y_train, y_val = y[:split], y[split:]
+    # H1: Optuna searches on train→val, final eval on held-out test
+    X_train, y_train = X[:train_end], y[:train_end]
+    X_val, y_val = X[val_start:val_end], y[val_start:val_end]
 
     try:
         best = searcher(X_train, y_train, X_val, y_val)

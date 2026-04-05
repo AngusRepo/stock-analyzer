@@ -275,3 +275,81 @@ P0 (Week 1-2)        P1 (Week 3-6)         P2 (Week 7-12)        P3 (3-6mo)
 
 Evolution:  3/10  ->  5/10  ->  8/10  ->  9.5/10
 ```
+
+---
+
+## Pending Action Items (手動執行)
+
+### 🔴 Data Backfill（上線前必做）
+- [ ] 跑 `scripts/backfill_delisted_stocks.py` 補齊 2023-01-01 起的下市股 OHLCV
+  - 需要：`CF_API_TOKEN` + `FINMIND_TOKEN`
+  - 用途：C1 存活偏差修正，回測才能包含已下市股票
+- [ ] 跑 `worker/migration_stock_pit.sql` 加上 `listed_date` / `delisted_date` 欄位
+- [ ] 確認所有現存股票的 `stock_prices` 有 2023-01-01 起的完整日K
+
+### 🟡 Ensemble Learned Weights（350+ 筆交易後）
+- [ ] 3 年回測跑完，確認交易筆數 >= 350
+- [ ] 用 Optuna 搜索 ensemble log-linear 係數 w1~w6
+  - 目前：等權（w1=w2=...=w6=1.0）
+  - 搜索後：每個因子有不同的重要性（例如 accuracy 可能比 regime 重要 3 倍）
+  - 位置：`ml-service/app/ensemble.py` log_w 計算
+
+### 🟡 D1 Migrations（部署前跑）
+- [ ] `worker/migration_stock_pit.sql` — stocks 表加 listed/delisted 欄位
+- [ ] `worker/migration_model_lifecycle.sql` — model_lifecycle_state + events 表
+- [ ] `worker/migration_monte_carlo.sql` — monte_carlo_results 表
+- [ ] `worker/migration_pbo.sql` — pbo_results 表
+- [ ] `worker/migration_paper_snapshot_v4.sql` — paper_daily_snapshots 加 sortino/calmar/cagr
+- [ ] `worker/migration_observability.sql` — decision_logs + model_health_daily 表
+- [ ] `worker/migration_weekly_audit.sql` — weekly_audit_reports 表
+
+---
+
+## Obsidian Second Brain Integration (規劃中)
+
+### 目標
+把交易系統的「數據」轉化成「知識」。Dashboard 告訴你「發生了什麼」，Obsidian 讓你理解「為什麼」。
+
+### 架構
+```
+GCP Cloud Run (ml-controller)
+  ├── pipeline 跑完 → 生成 .md
+  ├── git commit + push → GitHub Private Repo
+  │
+  ▼
+GitHub Private Repo = Obsidian Vault
+  ├── 筆電：Obsidian Git plugin 自動 pull
+  ├── 手機：Working Copy app + Obsidian iOS
+  └── 其他電腦：git clone
+```
+
+### 實作項目
+- [ ] **Phase 1 — Vault 建立**：Obsidian vault + Dataview/Templater/Periodic Notes plugins
+- [ ] **Phase 2 — obsidian_writer.py**：ml-controller 生成 Trade notes + Daily summary → git push to GitHub
+- [ ] **Phase 3 — Review templates**：Weekly review 嵌入 Dataview 查詢，L1/L2/L3 → frontmatter
+- [ ] **Phase 4 — Zettelkasten**：從交易中提煉 Lessons/Patterns/Strategies atomic notes
+
+### Vault 結構
+```
+StockVision-Brain/
+├── Daily/           ← 每日自動生成（大盤 + 所有決策）
+├── Trades/          ← 每筆交易一個 note（ML 投票 + debate + 出場）
+├── Models/          ← 10 個模型各一個 note（lifecycle 歷史）
+├── Audits/Weekly/   ← L1/L2/L3 週報
+├── Strategies/      ← Zettelkasten 策略 notes
+├── Lessons/         ← 原子化交易教訓
+├── Risk/            ← MC/PBO 報告
+└── MOC/             ← Maps of Content 索引
+```
+
+### 必裝 Plugins
+- **Dataview**（必裝）：vault 當資料庫查詢
+- **Templater**（必裝）：交易 note 自動模板
+- **Periodic Notes**（必裝）：自動建日/週/月 note
+- **Calendar**（高）：日曆導航
+- **Charts**（高）：equity curve 內嵌
+- **Obsidian Git**（必裝）：自動 pull/push GitHub
+
+### 費用
+- GitHub Free：$0（private repo 無限、5GB 容量，Obsidian vault 用不到 100MB）
+- 升級時機：嵌大量截圖/PDF 時考慮 LFS（Free 1GB → Pro $4/月 2GB）

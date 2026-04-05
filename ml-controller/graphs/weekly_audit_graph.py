@@ -200,14 +200,21 @@ async def generate_weekly_audit() -> dict:
         report_sections = []
 
         # Section 1: Performance
-        report_sections.append(
-            f"## 📊 Weekly Performance ({l1['period']})\n"
-            f"- Return: **{l1['weekly_return']}**\n"
-            f"- Trades: {l1['total_buys']} buys, {l1['total_sells']} sells\n"
-            f"- Sharpe: {l1['latest_sharpe']:.2f}" if l1.get('latest_sharpe') else ""
-            f" | Sortino: {l1['latest_sortino']:.2f}" if l1.get('latest_sortino') else ""
-            f" | MDD: {l1['latest_mdd']:.1%}" if l1.get('latest_mdd') else ""
-        )
+        perf_parts = [
+            f"## 📊 Weekly Performance ({l1['period']})",
+            f"- Return: **{l1['weekly_return']}**",
+            f"- Trades: {l1['total_buys']} buys, {l1['total_sells']} sells",
+        ]
+        metrics = []
+        if l1.get('latest_sharpe'):
+            metrics.append(f"Sharpe: {l1['latest_sharpe']:.2f}")
+        if l1.get('latest_sortino'):
+            metrics.append(f"Sortino: {l1['latest_sortino']:.2f}")
+        if l1.get('latest_mdd'):
+            metrics.append(f"MDD: {l1['latest_mdd']:.1%}")
+        if metrics:
+            perf_parts.append(f"- {' | '.join(metrics)}")
+        report_sections.append("\n".join(perf_parts))
 
         # Section 2: Decision Attribution
         report_sections.append(

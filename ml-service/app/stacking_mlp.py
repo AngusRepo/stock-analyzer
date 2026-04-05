@@ -62,17 +62,20 @@ class StackingMLP:
         no_improve = 0
 
         for epoch in range(self.epochs):
-            # Forward
-            probs = self.forward(X, training=True)
+            # Forward (no dropout for gradient computation — consistent graph)
+            h1_raw = X @ self.W1 + self.b1
+            h1 = self._relu(h1_raw)
+            h2_raw = h1 @ self.W2 + self.b2
+            h2 = self._relu(h2_raw)
+            logits = h2 @ self.W3 + self.b3
+            probs = self._softmax(logits)
 
-            # Cross-entropy loss gradient (simplified backprop)
+            # Cross-entropy loss gradient
             y_onehot = np.zeros((len(y), 2))
             y_onehot[np.arange(len(y)), y.astype(int)] = 1
             grad_out = (probs - y_onehot) / len(y)
 
-            # Backprop through W3
-            h1 = self._relu(X @ self.W1 + self.b1)
-            h2 = self._relu(h1 @ self.W2 + self.b2)
+            # Backprop through W3 (using same h1/h2 as forward)
             dW3 = h2.T @ grad_out
             db3 = grad_out.sum(axis=0)
 
@@ -95,7 +98,7 @@ class StackingMLP:
             self.b1 -= self.lr * db1
 
             # Early stopping on validation
-            if X_val is not None and y_val is not None and epoch % 5 == 0:
+            if X_val is not None and y_val is not None:
                 val_probs = self.forward(X_val, training=False)
                 val_loss = -np.mean(np.log(val_probs[np.arange(len(y_val)), y_val.astype(int)] + 1e-8))
                 if val_loss < best_val_loss:

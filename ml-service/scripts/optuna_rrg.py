@@ -43,7 +43,10 @@ def objective(trial, prices_by_stock: dict, benchmark_returns: list[float]):
             ema[i] = alpha * rs[i] + (1 - alpha) * ema[i - 1]
 
         # RS-Ratio (normalized EMA) and RS-Momentum
-        rs_ratio = ema / np.mean(ema[:rs_window]) * 100 if np.mean(ema[:rs_window]) > 0 else ema
+        ema_mean = np.mean(ema[:rs_window])
+        if ema_mean <= 0:
+            continue  # skip stock with invalid EMA
+        rs_ratio = ema / ema_mean * 100
         rs_mom = np.zeros_like(rs_ratio)
         for i in range(mom_lookback, len(rs_ratio)):
             rs_mom[i] = rs_ratio[i] - rs_ratio[i - mom_lookback]

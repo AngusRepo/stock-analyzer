@@ -76,7 +76,7 @@ def _generate_model_co_error(seed: int = 42) -> dict:
     """All models predict wrong for 5 consecutive days"""
     rng = random.Random(seed)
     # Market goes down but models predicted up → forced stop-losses
-    returns = [rng.uniform(-0.02, -0.04) for _ in range(5)]
+    returns = [rng.uniform(-0.04, -0.02) for _ in range(5)]
     returns.extend([rng.uniform(-0.01, 0.02) for _ in range(5)])  # recovery
     return {
         "name": "Model Co-Error",

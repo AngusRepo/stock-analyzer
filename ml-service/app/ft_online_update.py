@@ -68,9 +68,10 @@ def online_update_ft_transformer(
         param.requires_grad = False
 
     # Unfreeze last 2 layers (typically classifier head)
+    # Unfreeze last 2 LAYERS (each layer has weight+bias = 2 params, so 4 total)
     unfrozen = 0
     for name, param in reversed(list(model.named_parameters())):
-        if unfrozen < 2:
+        if unfrozen < 4:
             param.requires_grad = True
             unfrozen += 1
             logger.info(f"[FT-Online] Unfreezing: {name}")

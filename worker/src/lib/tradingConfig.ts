@@ -109,6 +109,13 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,
     minStopPct: 0.03,
+    // P1#12: Portfolio Construction
+    maxPositions: 5,              // hard cap on total positions
+    riskPctPerTrade: 0.015,       // 1.5% of portfolio risk per trade (ATR fixed-risk)
+    minPositionValue: 30_000,     // below this not worth transaction cost
+    maxDailySwaps: 1,             // max position replacements per day
+    swapThreshold: 1.15,          // new score must exceed weakest × 1.15
+    swapMinHoldDays: 3,           // don't swap positions held < 3 days
   },
   screener: {
     minPrice: 15,

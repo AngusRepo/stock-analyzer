@@ -59,8 +59,27 @@ DONOTHING_ARM_IDX = ARM_NAMES.index("DoNothing")
 
 CONTEXT_DIM  = 4      # context 向量維度
 NUM_ARMS     = len(ARM_NAMES)
-ALPHA_EXPLORE = 0.3   # 探索係數：越大越傾向探索未知模型
+ALPHA_EXPLORE = 0.3   # 探索係數：越大越傾向探索未知模型（靜態預設值）
 MIN_OBS_TO_TRUST = 10  # 至少觀測 N 次後才信任 bandit 輸出；前期用均勻權重
+
+# P1#10: Dynamic alpha based on win/loss streak
+ALPHA_MIN = 0.1       # winning streak → exploit (low alpha)
+ALPHA_MAX = 0.7       # losing streak → explore (high alpha)
+
+
+def compute_dynamic_alpha(losses_5d: int = 0, total_5d: int = 0) -> float:
+    """
+    P1#10 + H2 fix: Adjust LinUCB exploration with guaranteed minimum exploration.
+    Losing streak → increase alpha (explore new model combinations)
+    Winning streak → decrease alpha but NEVER below ALPHA_FLOOR (H2: anti-herding)
+    """
+    if total_5d < 3:
+        return ALPHA_EXPLORE  # not enough data, use default
+
+    loss_rate = losses_5d / total_5d
+    alpha = ALPHA_MIN + loss_rate * (ALPHA_MAX - ALPHA_MIN)
+    # H2 fix: floor at 0.15 to prevent complete exploitation (anti-feedback-loop)
+    return round(float(np.clip(alpha, 0.15, ALPHA_MAX)), 3)
 
 
 # ── Context Builder ───────────────────────────────────────────────────────────
@@ -137,9 +156,11 @@ class LinUCBBandit:
         ucb    = np.zeros(self.k, dtype=np.float64)
         theta  = np.zeros(self.k, dtype=np.float64)
 
-        # #15 α 動態衰減：初期高探索(0.5)，觀測充足後低探索(0.1)
+        # P1#10: Use self.alpha (set dynamically by compute_dynamic_alpha)
+        # with observation-based decay: more obs → lower exploration
         total_obs = self.total_observations()
-        effective_alpha = max(0.1, 0.5 / (1.0 + total_obs / 100.0))
+        decay_factor = 1.0 / (1.0 + total_obs / 200.0)  # gentler decay
+        effective_alpha = max(0.1, self.alpha * decay_factor)
 
         for a in range(self.k):
             A_inv     = np.linalg.inv(self.A[a])

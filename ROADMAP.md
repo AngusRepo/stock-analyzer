@@ -25,57 +25,64 @@
 - **Why**: Stop loss / take profit directly determines win/loss ratio per trade. Trailing 3-stage is hardcoded
 - **Expected**: Profit Factor +0.2-0.5
 
-### #4 Automated Backtest Cron
-- **What**: Sunday cron: export_d1 -> freqtrade backtest -> import_results -> D1 backtest_results table
-- **Where**: `worker/src/index.ts` weekly cron + `freqtrade/scripts/`
+### #4 Automated Backtest Cron ✅
+- **What**: Sunday cron: D1 export → in-memory backtest (7-layer cascade) → D1 backtest_results table
+- **Where**: `ml-controller/services/backtest_service.py` + `ml-controller/routers/backtest.py` + `worker/src/index.ts` Sunday cron
 - **Why**: Frontend Backtest card shows "no results". Scripts exist but never auto-triggered. backtest_results table is empty
 - **Expected**: Frontend shows weekly updated strategy performance
+- **Impl**: Python backtester on Cloud Run mirroring StockVisionStrategy (no Freqtrade binary needed). Worker → Controller POST /backtest/run → D1
 
-### #5 Monte Carlo MDD
+### #5 Monte Carlo MDD ✅
 - **What**: Shuffle paper_orders trade sequence 1000x, calculate 95th percentile worst-case MDD distribution
-- **Where**: New `ml-service/scripts/monte_carlo_mdd.py`
+- **Where**: `ml-controller/services/monte_carlo_service.py` + `ml-controller/routers/backtest.py` POST /backtest/monte-carlo
 - **Why**: Currently only know historical MDD. Don't know "worst case if unlucky". This number decides if strategy can go live with real money
 - **Expected**: 95% confidence MDD ceiling (e.g. "MDD won't exceed 18% with 95% confidence")
+- **Impl**: FIFO order pairing from paper_orders + backtest trades, 1000x shuffle, go-live verdict (PASS/CAUTION/FAIL). Worker GET /api/backtest/monte-carlo for frontend
 
-### #6 PBO (Probability of Backtest Overfitting)
+### #6 PBO (Probability of Backtest Overfitting) ✅
 - **What**: Combinatorial Purged Cross-Validation: multiple train/test splits, calculate probability strategy loses money OOS
-- **Where**: New `ml-service/scripts/pbo_analysis.py`
+- **Where**: `ml-controller/services/pbo_service.py` + `ml-controller/routers/backtest.py` POST /backtest/pbo
 - **Why**: Answers "is this alpha real or curve-fitting?" PBO < 0.5 = alpha credible. > 0.5 = ban from going live
 - **Expected**: Binary go/no-go decision for live trading
+- **Impl**: CPCV with 10 partitions, C(10,5)=252 combinations, Worker cron + GET /api/backtest/pbo
 
-### #7 Sortino / Calmar / CAGR
-- **What**: Add 3 metrics to daily_snapshot: Sortino (only penalize downside vol), Calmar (CAGR/MDD), CAGR (annualized return)
-- **Where**: `worker/src/routes/paper.ts` runDailySnapshot + frontend BotDashboard.tsx
+### #7 Sortino / Calmar / CAGR ✅
+- **What**: Add 3 metrics to daily_snapshot + backtest card: Sortino, Calmar (CAGR/MDD), CAGR
+- **Where**: `worker/src/routes/paper.ts` runDailySnapshot + `frontend/src/pages/BotDashboard.tsx` BacktestCard
 - **Why**: Sharpe penalizes all volatility including upside. Sortino is more appropriate for trading strategy evaluation
 - **Expected**: Complete performance metrics on frontend
+- **Impl**: Sortino 30d (downside-only), CAGR from inception, Calmar = CAGR/MDD. Frontend shows 9 metrics + MC/PBO verdict badges
 
 ---
 
 ## P1 — Self-Learning + Architecture (Week 3-6)
 
-### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore)
-- **What**: 30d accuracy < 0.45 for 2 consecutive weeks -> downweight to 0.05x. Restore > 0.55 -> back to 1.0x. **Thresholds themselves searched by Optuna** (0.40-0.50 / 0.50-0.60). Balance guard: price >= 3, feature >= 3. `model_candidates.py` with substitute library + matching rules (degradation cause -> candidate when_useful)
-- **Where**: New `ml-service/app/model_lifecycle.py` + `ml-service/config/model_candidates.py` + KV `ml:model_penalty`
-- **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause -> candidate match), requires your confirmation
-- **Expected**: Ensemble quality auto-maintained. No more "why is accuracy dropping for 3 weeks"
+### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore) ✅
+- **What**: 30d accuracy < 0.45 for 2 consecutive weeks → downweight to 0.05x. Restore > 0.55 → back to 1.0x. Balance guard: min 3 price + 3 feature models active. Substitute library with matching rules
+- **Where**: `ml-service/app/model_lifecycle.py` + `ml-controller/services/lifecycle_service.py` + `ml-controller/routers/lifecycle.py` + `ml-service/app/ensemble.py` lifecycle_weights param
+- **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause → candidate match)
+- **Expected**: Ensemble quality auto-maintained
+- **Impl**: D1 model_lifecycle_state + model_lifecycle_events tables. Worker reads lifecycle weights → passes to predict payload → ensemble applies lifecycle_mult. Weekly check in Sunday cron (after retrain). Admin taskMap for manual trigger
 
-### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna
-- **What**: IC audit effective features automatically passed to Sunday retrain (only train on effective features). Retrain also runs Optuna for each model's hyperparameters (XGB depth[3-6], lr[0.01-0.1], n_est[100-300])
-- **Where**: `worker/src/index.ts` runWeeklyRetrain + `ml-service/app/main.py` retrain endpoint
-- **Why**: Currently retrain uses all 26 features (including noise) with hardcoded hyperparams (depth=4 since day 1). Optuna finds best params per market condition
+### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna ✅
+- **What**: IC audit weak features excluded during retrain. Optuna 20-trial search per model (XGB/CatBoost/ExtraTrees/LightGBM)
+- **Where**: `worker/src/index.ts` reads KV `ml:weak_features` → retrain payload. `ml-service/app/main.py` filters features + runs Optuna. `ml-service/app/optuna_retrain.py` search spaces
+- **Why**: Previously retrain used all 32 features (including noise) with hardcoded hyperparams
 - **Expected**: Reduce overfitting, model accuracy +2-3%
+- **Impl**: Worker passes weak_features + use_optuna in payload. ML service drops weak features (guard: keep >=5). Optuna searches depth/lr/n_estimators/subsample per model. Falls back to defaults if Optuna fails
 
-### #10 Meta-layer Dynamic Adjustment
-- **What**: ARF warm-up dynamic (high vol -> 30 lower threshold for fast adaptation; low vol -> 80 for stability). Stacking blend by recent 30d meta vs ensemble accuracy (meta more accurate -> ratio to 70%). LinUCB alpha by win/loss streak (losing -> alpha up explore; winning -> alpha down exploit)
-- **Where**: `ml-service/app/arf_aggregator.py` + `ml-service/app/ensemble.py` stacking blend + `ml-service/app/linucb_bandit.py`
-- **Why**: Three meta components all hardcoded. During losing streaks, system should try different model combinations automatically
-- **Expected**: Self-adjusting meta-layer. Losing -> explore. Winning -> exploit
+### #10 Meta-layer Dynamic Adjustment ✅
+- **What**: ARF warm-up dynamic (vol→30/80), Stacking blend dynamic (meta_acc vs ensemble_acc → 30-70%), LinUCB alpha dynamic (loss_rate → 0.1-0.7)
+- **Where**: `ml-service/app/arf_aggregator.py` get_dynamic_min_obs + `ml-service/app/ensemble.py` dynamic meta_ratio + `ml-service/app/linucb_bandit.py` compute_dynamic_alpha
+- **Why**: Three meta components were all hardcoded. Now self-adjusting based on market conditions
+- **Expected**: Losing → explore. Winning → exploit. High vol → fast adapt
 
-### #11 LangGraph Integration in Controller
-- **What**: Daily pipeline as StateGraph: screener -> ML -> recommend with checkpoint (GCS JSON) + retry 3x + state auto-pass
-- **Where**: `ml-controller/graphs/daily_pipeline.py` (new)
-- **Why**: Currently if ML predict fails at 18:00, recommendation at 18:05 doesn't know and runs with empty predictions. LangGraph: fail -> retry from last checkpoint
-- **Expected**: Pipeline resilience + LangGraph Studio visualization
+### #11 LangGraph Integration in Controller ✅
+- **What**: Daily pipeline as StateGraph: screener → ML → recommend with JSON checkpoint + retry 3x + auto-pass
+- **Where**: `ml-controller/graphs/daily_pipeline.py` + `ml-controller/routers/pipeline.py` POST /pipeline/run
+- **Why**: Previously if ML predict fails, recommendation runs with empty predictions
+- **Expected**: Pipeline resilience + resumable from checkpoint
+- **Impl**: Lightweight custom StateGraph (no langgraph dep). 3x retry per step with exponential backoff (2/5/15s). Checkpoint after each step. Dependency chain: screener → ml_predict → recommend. POST /pipeline/run with resume + date params
 
 ### #12 Portfolio Construction + Position Replacement
 - **What**: Three sub-systems:
@@ -109,33 +116,38 @@
   - Step 3: Execute swap or skip. `max_daily_swaps: 1`. Log skipped recommendations
   - Sector check: if new stock's sector already has 2 holdings → don't swap even if score is higher
 
-  **Interaction with existing 7-layer exit**: No conflict. ATR sizing decides "how much to buy" at entry. 7-layer exit decides "when to sell" during holding. TP1 partial sell naturally reduces position risk contribution — this is expected behavior (let profits run on remaining shares), no rebalancing needed
+  **Interaction with existing 7-layer exit**: No conflict. ATR sizing decides "how much to buy" at entry. 7-layer exit decides "when to sell" during holding
 
-- **Where**: `worker/src/routes/paper.ts` executePendingBuys (batch allocation rewrite) + `worker/src/lib/tradingConfig.ts` (new params) + new replacement logic in morning setup
-- **Why**: Three problems: (1) Position sizes cascade unfairly (first=25万, fifth=5万). (2) No hard limit on positions. (3) Full positions → new signals ignored, no swap evaluation. ATR sizing makes every position contribute equal risk. Replacement ensures best stocks always in portfolio
-- **Expected**: Portfolio Sharpe +0.3-0.5, position sizes balanced, annual turnover controlled < 50%
+- **Where**: `worker/src/routes/paper.ts` + `worker/src/lib/tradingConfig.ts`
+- **Why**: Three problems: (1) No position count limit. (2) Full positions → new signals ignored. (3) No weakness evaluation
+- **Expected**: Portfolio Sharpe +0.3-0.5, position sizes balanced
+- **Status**: ✅
+- **Impl**: maxPositions=5 hard cap. Weakness score = pnlPct(35%) + timeRatio(25%) + tp1Status(20%) + negPnl(20%). Swap: new score must exceed weakest×1.15, held>=3d, not near TP1. Max 1 swap/day. minPositionValue=30K guard. Sell order logged as SWAP_OUT with reason
 
-### #13 Execution Reality
-- **What**: Slippage model (daily turnover < 50M -> slippage 1-2%) + Partial Fill (order > 5% daily volume -> partial) + Limit-down lock detection (drop >= 9.5% + volume < 10% yesterday -> can't exit)
-- **Where**: `worker/src/routes/paper.ts` order execution + `worker/src/lib/tradingConfig.ts`
-- **Why**: Paper trading assumes 100% fill at market price. Real trading: small caps slip 1-2%, limit-down days can't exit at all
+### #13 Execution Reality ✅
+- **What**: Volume-based slippage + partial fill + limit-down lock detection
+- **Where**: `worker/src/routes/paper.ts` applySlippage/applyPartialFill/isLimitDownLocked
+- **Why**: Paper trading assumed 100% fill at market price
 - **Expected**: Paper PnL closer to reality
+- **Impl**: Slippage: <10M turnover → +3 ticks, <50M → +1 tick. Partial fill: order >5% daily vol → fill 80%. Limit-down: drop >=9.5% + vol <10% prev → block sell
 
-### #14 Prompt Injection Detection
-- **What**: Detect patterns in LLM output: "ignore previous", "all in", "sell everything". Debate result with danger words -> auto-downgrade to template reason
-- **Where**: New `ml-controller/security/injection.py` + `worker/src/lib/debateTrader.ts`
-- **Why**: debateTrader uses news as context. News could contain embedded prompt injection (e.g. "analysts recommend buying everything")
+### #14 Prompt Injection Detection ✅
+- **What**: Detect dangerous patterns in LLM output, auto-downgrade/reject verdict
+- **Where**: `ml-controller/security/injection.py` (Python) + `worker/src/lib/debateTrader.ts` (TS inline)
+- **Why**: debateTrader uses news as context. News could contain embedded prompt injection
 - **Expected**: Prevent LLM manipulation affecting trade decisions
+- **Impl**: 10 regex patterns (critical/high/medium). Critical → REJECT, High → DOWNGRADE. Patterns: instruction_override, role_hijack, extreme_action, insider_claim, urgency_manipulation, unrealistic_claim. Both Python (for controller-side use) and TypeScript (inline in debateTrader) implementations
 
-### #15 Three-layer Observability
-- **What**: L1 Trade (existing PnL/WinRate/MDD). **L2 Decision**: each trade logs "chip_score contributed 38%, ML 45%, debate flipped direction" -> D1 `decision_logs`. **L3 Model**: daily per-model accuracy/IC/drift -> KV `ml:model_health:{date}`
-- **Where**: `worker/src/lib/dailyRecommendation.ts` L2 + `worker/src/lib/predictionVerifier.ts` L3 + frontend dashboard
-- **Why**: Currently can only see "PnL is bad". Can't diagnose: stock selection wrong? Exit wrong? Which model degraded?
-- **Expected**: Answer "why are we losing money" with data, not guesses
+### #15 Three-layer Observability ✅
+- **What**: L1 Trade (existing). L2 Decision: per-trade factor attribution. L3 Model: daily per-model health
+- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `worker/src/index.ts` L3 model_health_daily + KV
+- **Why**: Currently can only see "PnL is bad". Can't diagnose which layer is wrong
+- **Expected**: Answer "why are we losing money" with data
+- **Impl**: L2: INSERT decision_logs on each BUY with chip_pct/tech_pct/ml_pct contribution + debate verdict. L3: After daily verify, snapshot all 10 models' accuracy/PF/expectancy/lifecycle to D1 + KV. API: GET /api/observability/decisions + /model-health
 
 ---
 
-## P2 — Advanced Evolution (Week 7-12)
+## P2 — Advanced Evolution (Week 7-12) ✅ All Complete
 
 ### #16 Weekly AI Audit Report
 - **What**: Friday post-close Controller LangGraph graph: read L1/L2/L3 data -> performance diagnosis + params vs Optuna optimal comparison + model health + substitute recommendation (lookup table match, not LLM hallucination) -> LLM writes human-readable report -> Discord push + D1 archive
@@ -263,3 +275,108 @@ P0 (Week 1-2)        P1 (Week 3-6)         P2 (Week 7-12)        P3 (3-6mo)
 
 Evolution:  3/10  ->  5/10  ->  8/10  ->  9.5/10
 ```
+
+---
+
+## Pending Action Items (手動執行)
+
+### 🔴 Deploy 前完整驗證流程（按順序執行）
+1. [ ] 跑所有 D1 migrations（7 個 .sql）
+2. [ ] 跑 `backfill_delisted_stocks.py` 補齊下市股資料
+3. [ ] Optuna P0#1-3 重搜（Triple Barrier / Signal / SL-TP）— 因為 ensemble 邏輯改了
+4. [ ] 完整回測（新滑價 + ATR TP + point-in-time universe）
+5. [ ] Monte Carlo MDD（驗證 95th MDD < 20%）
+6. [ ] PBO（驗證 PBO < 0.5）
+7. [ ] **確認 MC=PASS + PBO=PASS 才能 deploy。任一 FAIL 就停下查原因。**
+
+### 🔴 Data Backfill（上線前必做）
+- [ ] 跑 `scripts/backfill_delisted_stocks.py` 補齊 2023-01-01 起的下市股 OHLCV
+  - 需要：`CF_API_TOKEN` + `FINMIND_TOKEN`
+  - 用途：C1 存活偏差修正，回測才能包含已下市股票
+- [ ] 跑 `worker/migration_stock_pit.sql` 加上 `listed_date` / `delisted_date` 欄位
+- [ ] 確認所有現存股票的 `stock_prices` 有 2023-01-01 起的完整日K
+
+### 🟢 回測 / 參數搜索頻率
+| 類型 | 頻率 | Cron | 說明 |
+|---|---|---|---|
+| **常規回測** | 每週 | `0 22 * * 6`（週日 06:00 TW） | 追蹤策略績效是否退化 |
+| **MC + PBO** | 每週 | 同上（回測後自動跑） | go-live verdict 每週更新 |
+| **Optuna 參數重搜** | 每月 | `0 16 1-7 * 6`（每月第一個週六 00:00 TW） | P0#1-3 重搜，適應市場結構變化 |
+| **完整驗證** | 重大改動後 | 手動觸發 | 改了 ensemble/出場/模型後必跑 |
+| **Ensemble w1~w6 搜索** | 每季（手動） | — | 需 350+ 筆交易，目前等權 |
+
+業界參考：搖擺交易策略（持倉 10-20 天）通常每週回測 + 每月參數重搜。
+Optuna 不是類神經網路 — 它是 hyperparameter 搜索框架（Tree-Structured Parzen Estimator），
+用貝葉斯優化找最佳參數組合。每月重搜是為了適應市場 regime 變化，
+跟「模型訓練」不同 — 訓練是每週日 retrain，搜索是每月重新找最佳參數。
+
+### 🟡 P2 部署時需要接線（程式碼已寫好，尚未接入 cron）
+- [ ] **MLP Shadow (#21)**：在 `retrain_stock()` 中呼叫 `train_shadow_mlp()`，追蹤 4 週 MLP vs LR 結果
+- [ ] **FT Online Update (#22)**：在 `runPredictionVerification` 後呼叫 `online_update_ft_transformer()`，每日微調最後 2 層
+
+### 🟡 Ensemble Learned Weights（350+ 筆交易後）
+- [ ] 3 年回測跑完，確認交易筆數 >= 350
+- [ ] 用 Optuna 搜索 ensemble log-linear 係數 w1~w6
+  - 目前：等權（w1=w2=...=w6=1.0）
+  - 搜索後：每個因子有不同的重要性（例如 accuracy 可能比 regime 重要 3 倍）
+  - 位置：`ml-service/app/ensemble.py` log_w 計算
+
+### 🟡 D1 Migrations（部署前跑）
+- [ ] `worker/migration_stock_pit.sql` — stocks 表加 listed/delisted 欄位
+- [ ] `worker/migration_model_lifecycle.sql` — model_lifecycle_state + events 表
+- [ ] `worker/migration_monte_carlo.sql` — monte_carlo_results 表
+- [ ] `worker/migration_pbo.sql` — pbo_results 表
+- [ ] `worker/migration_paper_snapshot_v4.sql` — paper_daily_snapshots 加 sortino/calmar/cagr
+- [ ] `worker/migration_observability.sql` — decision_logs + model_health_daily 表
+- [ ] `worker/migration_weekly_audit.sql` — weekly_audit_reports 表
+
+---
+
+## Obsidian Second Brain Integration (規劃中)
+
+### 目標
+把交易系統的「數據」轉化成「知識」。Dashboard 告訴你「發生了什麼」，Obsidian 讓你理解「為什麼」。
+
+### 架構
+```
+GCP Cloud Run (ml-controller)
+  ├── pipeline 跑完 → 生成 .md
+  ├── git commit + push → GitHub Private Repo
+  │
+  ▼
+GitHub Private Repo = Obsidian Vault
+  ├── 筆電：Obsidian Git plugin 自動 pull
+  ├── 手機：Working Copy app + Obsidian iOS
+  └── 其他電腦：git clone
+```
+
+### 實作項目
+- [ ] **Phase 1 — Vault 建立**：Obsidian vault + Dataview/Templater/Periodic Notes plugins
+- [ ] **Phase 2 — obsidian_writer.py**：ml-controller 生成 Trade notes + Daily summary → git push to GitHub
+- [ ] **Phase 3 — Review templates**：Weekly review 嵌入 Dataview 查詢，L1/L2/L3 → frontmatter
+- [ ] **Phase 4 — Zettelkasten**：從交易中提煉 Lessons/Patterns/Strategies atomic notes
+
+### Vault 結構
+```
+StockVision-Brain/
+├── Daily/           ← 每日自動生成（大盤 + 所有決策）
+├── Trades/          ← 每筆交易一個 note（ML 投票 + debate + 出場）
+├── Models/          ← 10 個模型各一個 note（lifecycle 歷史）
+├── Audits/Weekly/   ← L1/L2/L3 週報
+├── Strategies/      ← Zettelkasten 策略 notes
+├── Lessons/         ← 原子化交易教訓
+├── Risk/            ← MC/PBO 報告
+└── MOC/             ← Maps of Content 索引
+```
+
+### 必裝 Plugins
+- **Dataview**（必裝）：vault 當資料庫查詢
+- **Templater**（必裝）：交易 note 自動模板
+- **Periodic Notes**（必裝）：自動建日/週/月 note
+- **Calendar**（高）：日曆導航
+- **Charts**（高）：equity curve 內嵌
+- **Obsidian Git**（必裝）：自動 pull/push GitHub
+
+### 費用
+- GitHub Free：$0（private repo 無限、5GB 容量，Obsidian vault 用不到 100MB）
+- 升級時機：嵌大量截圖/PDF 時考慮 LFS（Free 1GB → Pro $4/月 2GB）

@@ -252,14 +252,23 @@ def build_market_feature_matrix(market_env: dict | None) -> np.ndarray | None:
     if not history or len(history) < 20:
         return None
 
+    # H5 fix: add short-term features for faster regime detection
     rows = []
-    for date in sorted(history.keys()):
+    sorted_dates = sorted(history.keys())
+    for i, date in enumerate(sorted_dates):
         row = history[date]
+        ret_1d = float(row.get("market_return_1d", 0) or 0)
         rows.append([
-            float(row.get("market_return_1d", 0) or 0),
+            ret_1d,
             float(row.get("market_return_5d",  0) or 0),
             float(row.get("risk_score",       50) or 50) / 100,
             float(row.get("market_bias_20d",   0) or 0),
+            abs(ret_1d),  # H5: intraday volatility proxy (|1d return|)
+            # H5: 3-day realized volatility (std of last 3 returns)
+            float(np.std([
+                float(history.get(sorted_dates[max(0, i-j)], {}).get("market_return_1d", 0) or 0)
+                for j in range(min(3, i+1))
+            ])) if i >= 2 else abs(ret_1d),
         ])
 
     if len(rows) < 20:
@@ -280,9 +289,13 @@ def get_current_market_features(market_env: dict | None) -> np.ndarray | None:
     else:
         row = market_env  # 直接用當前值
 
+    ret_1d = float(row.get("market_return_1d", 0) or 0)
+    # H5: include short-term features for faster regime detection
     return np.array([
-        float(row.get("market_return_1d", 0) or 0),
+        ret_1d,
         float(row.get("market_return_5d",  0) or 0),
         float(row.get("risk_score",       50) or 50) / 100,
         float(row.get("market_bias_20d",   0) or 0),
+        abs(ret_1d),  # intraday volatility proxy
+        abs(ret_1d),  # 3d vol placeholder (single-day, no history here)
     ], dtype=float)

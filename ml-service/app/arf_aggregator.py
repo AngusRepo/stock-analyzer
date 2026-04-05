@@ -45,7 +45,24 @@ CONTEXT_DIM      = 3    # hmm_regime_norm, garch_vol_norm, market_risk_score
 FEATURE_DIM      = len(BASE_MODEL_NAMES) * 3 + CONTEXT_DIM  # 33（DoNothing 不影響 ARF 特徵）
 ARF_STATE_DIR    = "/tmp/arf_state"
 ARF_STATE_FILE   = "arf_state.pkl"
-MIN_OBS_TO_TRUST = 50   # 至少 50 筆驗證樣本後才信任 ARF 輸出
+MIN_OBS_TO_TRUST = 50   # 至少 50 筆驗證樣本後才信任 ARF 輸出（靜態預設值）
+
+# P1#10: Dynamic warm-up threshold based on volatility
+MIN_OBS_HIGH_VOL = 30   # high vol → 快速適應，少量樣本就信任
+MIN_OBS_LOW_VOL = 80    # low vol → 穩定為主，需要更多樣本
+
+
+def get_dynamic_min_obs(garch_vol_norm: float = 0.4) -> int:
+    """P1#10: ARF warm-up threshold adapts to market volatility."""
+    # garch_vol_norm: 0~2 (0=calm, 1=normal, 2=volatile)
+    if garch_vol_norm > 1.0:
+        return MIN_OBS_HIGH_VOL   # high vol → fast adapt
+    elif garch_vol_norm < 0.3:
+        return MIN_OBS_LOW_VOL    # low vol → stable
+    else:
+        # Linear interpolation between 80 and 30
+        t = (garch_vol_norm - 0.3) / 0.7  # 0→1
+        return int(MIN_OBS_LOW_VOL + t * (MIN_OBS_HIGH_VOL - MIN_OBS_LOW_VOL))
 
 
 # ── 特徵建構 ──────────────────────────────────────────────────────────────────

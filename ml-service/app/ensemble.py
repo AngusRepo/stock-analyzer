@@ -52,6 +52,7 @@ def weighted_vote(
     bandit_multipliers: dict[str, float] | None = None,  # 來自 LinUCB bandit（第11模型）
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
+    lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
 ) -> EnsembleResult:
     """
     加權投票主邏輯（v12 + LinUCB bandit）：
@@ -117,8 +118,22 @@ def weighted_vote(
         conf_weight   = p.confidence
         regime_mult   = regime_mults.get(p.model_name, 1.0)
         bandit_mult   = (bandit_multipliers or {}).get(p.model_name, 1.0)
-        raw_w = acc_weight * conf_weight * quality_mult * regime_mult * bandit_mult
-        weights.append(max(raw_w, 0.01))  # 防權重坍縮：5層乘積可能趨近 0，保底 1%
+        lifecycle_mult = (lifecycle_weights or {}).get(p.model_name, 1.0)  # P1#8
+
+        # C3 fix: log-linear combination prevents weight explosion
+        # Instead of raw multiplication (ratio up to 29,500:1), use log-space
+        # with clipping to bound max/min ratio to ~55:1
+        import math
+        log_w = (
+            math.log(max(acc_weight, 0.01))
+            + math.log(max(conf_weight, 0.01))
+            + math.log(max(quality_mult, 0.01))
+            + math.log(max(regime_mult, 0.01))
+            + math.log(max(bandit_mult, 0.01))
+            + math.log(max(lifecycle_mult, 0.01))
+        )
+        raw_w = math.exp(max(min(log_w, 2.0), -2.0))  # clip log to [-2, 2] → ratio ~55:1
+        weights.append(raw_w)
 
     total_w = sum(weights) or 1.0
     norm_weights = [w / total_w for w in weights]
@@ -187,10 +202,19 @@ def weighted_vote(
             pass
 
     # 決定最終方向：meta-learner 優先，其次加權投票
+    # P1#10: dynamic stacking blend — compare 30d meta vs ensemble accuracy
     if meta_direction is not None and meta_confidence is not None:
         is_up       = meta_direction == "up"
-        final_conf  = (avg_confidence * 0.4 + meta_confidence * 0.6)  # meta 佔 60%
-        reasoning_meta = f"[Meta-Learner 修正為 {'↑' if is_up else '↓'}，信心={meta_confidence:.0%}] "
+        # Dynamic blend: if meta more accurate recently, weight it higher (up to 70%)
+        meta_acc_30d = float(_adaptive.get("meta_accuracy_30d", 0))
+        ensemble_acc_30d = float(_adaptive.get("recent_accuracy_30d", 0))
+        if meta_acc_30d > 0 and ensemble_acc_30d > 0:
+            # Higher meta accuracy → higher meta ratio (0.5 to 0.7)
+            meta_ratio = np.clip(0.5 + (meta_acc_30d - ensemble_acc_30d), 0.3, 0.7)
+        else:
+            meta_ratio = 0.6  # default
+        final_conf  = avg_confidence * (1 - meta_ratio) + meta_confidence * meta_ratio
+        reasoning_meta = f"[Meta-Learner 修正為 {'↑' if is_up else '↓'}，信心={meta_confidence:.0%}，blend={meta_ratio:.0%}] "
     else:
         is_up       = up_weight > down_weight
         final_conf  = avg_confidence

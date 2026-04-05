@@ -27,14 +27,53 @@ function calcCommission(value: number, cfg: TradingConfig): number {
 }
 
 /**
- * 滑價模擬：真實市場成交價不會精確等於即時報價
- * Buy: +1~3 tick（買到偏貴）；Sell: -1~3 tick（賣到偏便宜）
+ * P1#13: Enhanced slippage model with volume consideration
  * 台股 tick size: <10→0.01, <50→0.05, <100→0.1, <500→0.5, <1000→1, ≥1000→5
+ * Small cap (daily turnover < 50M) → extra slippage 1-2%
  */
-function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1): number {
-  const tickSize = price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
-  const slippage = tickSize * ticks
+function getTickSize(price: number): number {
+  return price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
+}
+function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, dailyTurnover?: number): number {
+  const tickSize = getTickSize(price)
+  // P1#13: Volume-based extra slippage for low-liquidity stocks
+  let extraTicks = 0
+  if (dailyTurnover != null && dailyTurnover > 0) {
+    if (dailyTurnover < 10_000_000) extraTicks = 3      // < 1千萬: +3 ticks (very illiquid)
+    else if (dailyTurnover < 50_000_000) extraTicks = 1  // < 5千萬: +1 tick
+  }
+  const slippage = tickSize * (ticks + extraTicks)
   return side === 'buy' ? price + slippage : Math.max(price - slippage, tickSize)
+}
+
+/**
+ * P1#13: Partial fill simulation — order > 5% of daily volume → partial fill
+ */
+function applyPartialFill(shares: number, price: number, dailyVolume: number): number {
+  if (dailyVolume <= 0) return shares
+  const orderVolume = shares * price
+  const dailyValue = dailyVolume * price
+  const pctOfDaily = orderVolume / dailyValue
+  if (pctOfDaily > 0.05) {
+    // Fill only 80% of shares that exceed 5% threshold
+    const maxFillValue = dailyValue * 0.05
+    const excessShares = Math.max(0, shares - Math.floor(maxFillValue / price))
+    const filledShares = shares - Math.floor(excessShares * 0.2)
+    console.log(`[PartialFill] Order ${shares} shares = ${(pctOfDaily*100).toFixed(1)}% of daily vol → filled ${filledShares}`)
+    return Math.max(1, filledShares)
+  }
+  return shares
+}
+
+/**
+ * P1#13: Limit-down lock detection — can't exit if stock is locked limit-down
+ * Drop >= 9.5% + volume < 10% of yesterday → locked, can't sell
+ */
+function isLimitDownLocked(currentPrice: number, prevClose: number, volume: number, prevVolume: number): boolean {
+  if (prevClose <= 0) return false
+  const dropPct = (currentPrice - prevClose) / prevClose
+  const volRatio = prevVolume > 0 ? volume / prevVolume : 1
+  return dropPct <= -0.095 && volRatio < 0.1
 }
 function calcTax(value: number, cfg: TradingConfig, isDayTrade = false): number {
   const rate = isDayTrade ? cfg.fees.dayTradeTax : cfg.fees.tax
@@ -546,7 +585,7 @@ paper.get('/pnl', async (c) => {
   if (!acc) return c.json({ error: '帳戶不存在' }, 404)
 
   const { results: snapshots } = await c.env.DB.prepare(
-    'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
+    'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
 
   return c.json({
@@ -1215,6 +1254,111 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     positionValue += p * pos.shares
   }
   const totalPortfolio = acc.cash + positionValue
+  const currentPositionCount = (positions ?? []).length
+
+  // P1#12: maxPositions check — if at cap, evaluate replacement before proceeding
+  const maxPos = cfg.position.maxPositions ?? 5
+  let dailySwaps = 0
+  const maxSwaps = cfg.position.maxDailySwaps ?? 1
+
+  if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
+    console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
+
+    // Load full position data for weakness scoring
+    const { results: fullPositions } = await env.DB.prepare(`
+      SELECT symbol, shares, avg_cost, entry_date, entry_price,
+             initial_stop, tp1_price, tp1_hit, highest_since_entry
+      FROM paper_positions WHERE account_id=? AND shares>0
+    `).bind(ACCOUNT_ID).all<any>()
+
+    // Calculate weakness score for each position
+    const weaknessScores: { symbol: string; score: number }[] = []
+    for (const pos of (fullPositions ?? [])) {
+      const px = posValueMap.get(pos.symbol) ?? pos.avg_cost
+      const pnlPct = pos.avg_cost > 0 ? (px - pos.avg_cost) / pos.avg_cost : 0
+      const daysHeld = pos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date + 'T00:00:00+08:00').getTime()) / 86400_000)
+        : 0
+      const timeRatio = Math.min(1, daysHeld / (cfg.exit.timeStopDays ?? 20))
+
+      // Weakness = weighted sum (higher = weaker)
+      const pnlScore = Math.max(0, -pnlPct * 100)   // more loss = weaker (0-12 range for -12%)
+      const timeScore = timeRatio * 100               // closer to time stop = weaker
+      const score = pnlScore * 0.35 + timeScore * 0.25 + (1 - (pos.tp1_hit ? 0.5 : 0)) * 40 * 0.20 + (pnlPct < 0 ? 20 : 0) * 0.20
+      weaknessScores.push({ symbol: pos.symbol, score })
+    }
+    weaknessScores.sort((a, b) => b.score - a.score) // weakest first
+
+    // Try to replace weakest with each pending buy (max 1 swap/day)
+    const swapThreshold = cfg.position.swapThreshold ?? 1.15
+    const minHoldDays = cfg.position.swapMinHoldDays ?? 3
+
+    for (const pending of [...pendingBuys]) {
+      if (dailySwaps >= maxSwaps) break
+      if (weaknessScores.length === 0) break
+
+      const weakest = weaknessScores[0]
+      const weakPos = (fullPositions ?? []).find((p: any) => p.symbol === weakest.symbol)
+      if (!weakPos) continue
+
+      const daysHeld = weakPos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
+        : 0
+      if (daysHeld < minHoldDays) {
+        console.log(`[Swap] ${weakest.symbol} held only ${daysHeld}d < ${minHoldDays}d, skip swap`)
+        continue
+      }
+
+      // Check if new stock is meaningfully better
+      // newScore = quality (higher = better), weakest.score = weakness (higher = weaker)
+      // Swap if: new quality is high AND weakest is sufficiently weak
+      const newQuality = (pending.confidence ?? 0.6) * 100
+      const weaknessThreshold = 100 / swapThreshold  // e.g. 1.15 → ~87: weakness must exceed this
+      if (weakest.score < weaknessThreshold || newQuality < 55) {
+        console.log(`[Swap] ${weakest.symbol}(weakness=${weakest.score.toFixed(0)}) not weak enough (need>${weaknessThreshold.toFixed(0)}) or ${pending.symbol}(quality=${newQuality.toFixed(0)}) not strong enough, skip`)
+        continue
+      }
+
+      // Near TP1 check: don't swap out if close to profit target
+      const weakPx = posValueMap.get(weakest.symbol) ?? weakPos.avg_cost
+      if (weakPos.tp1_price && weakPx >= weakPos.tp1_price * 0.97) {
+        console.log(`[Swap] ${weakest.symbol} near TP1 (${weakPx}/${weakPos.tp1_price}), skip swap`)
+        continue
+      }
+
+      // Execute swap: sell weakest position
+      const sellPrice = weakPx
+      if (!sellPrice || sellPrice <= 0) {
+        console.warn(`[Swap] ${weakest.symbol} has no valid price (${sellPrice}), skip swap`)
+        continue
+      }
+      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(quality=${newQuality.toFixed(1)})`)
+      const sellValue = sellPrice * weakPos.shares
+      const sellTax = sellValue * 0.003
+      const sellComm = sellValue * 0.001425
+      const sellProceeds = sellValue - sellTax - sellComm
+
+      // VULN-28 fix: batch all swap DB operations for atomicity
+      await env.DB.batch([
+        env.DB.prepare('UPDATE paper_accounts SET cash = cash + ?, updated_at=datetime(\'now\') WHERE id=?')
+          .bind(sellProceeds, ACCOUNT_ID),
+        env.DB.prepare(`
+          INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
+          VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
+        `).bind(
+          ACCOUNT_ID, weakest.symbol, weakPos.name ?? weakest.symbol,
+          weakPos.shares, sellPrice, sellComm, sellTax, -sellProceeds,
+          `SWAP_OUT: weakness=${weakest.score.toFixed(1)}, replaced by ${pending.symbol}`,
+        ),
+        env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?')
+          .bind(ACCOUNT_ID, weakest.symbol),
+      ])
+      acc.cash += sellProceeds
+
+      weaknessScores.shift() // remove swapped position
+      dailySwaps++
+    }
+  }
 
   // ATR batch fetch
   const atrMap = await batchGetATR(env.DB, pendingSymbols)
@@ -1365,6 +1509,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
 
+    // P1#12: Position count check (including any swaps done above)
+    const currentCount = await env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0'
+    ).bind(ACCOUNT_ID).first<any>()
+    if ((currentCount?.cnt ?? 0) >= maxPos) {
+      console.log(`[Intraday] ${pending.symbol}: position cap (${maxPos}) reached, skip`)
+      continue
+    }
+
     // 額度檢查
     if (dailyBuyTotal >= DAILY_BUY_LIMIT) break
     if (acc.cash < cfg.position.minCashToTrade) break
@@ -1393,6 +1546,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     else { shares = Math.floor(budget / fillPrice); isOddLot = true; if (shares < 1) { console.log(`[Intraday] ${pending.symbol}: shares<1, skip`); continue } }
 
     const txValue = fillPrice * shares
+    // P1#12: minPositionValue guard
+    const minPosVal = cfg.position.minPositionValue ?? 30_000
+    if (txValue < minPosVal) { console.log(`[Intraday] ${pending.symbol}: txValue ${txValue} < min ${minPosVal}, skip`); continue }
     const commission = calcCommission(txValue, cfg)
     const totalCost = txValue + commission
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue
@@ -1450,6 +1606,32 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     dailyBuyTotal += totalCost
     sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
+    // P1#15 L2: Decision log — per-trade factor attribution
+    try {
+      const recRow = await env.DB.prepare(
+        'SELECT chip_score, tech_score, ml_score, score FROM daily_recommendations WHERE date=? AND symbol=?'
+      ).bind(today, pending.symbol).first<any>()
+      if (recRow) {
+        const total = recRow.score || 1
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO decision_logs
+            (date, symbol, action, chip_score, tech_score, ml_score, total_score,
+             chip_pct, tech_pct, ml_pct, ml_signal, ml_confidence,
+             debate_verdict, debate_summary, market_risk, sector, entry_price)
+          VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          today, pending.symbol,
+          recRow.chip_score, recRow.tech_score, recRow.ml_score, total,
+          Math.round((recRow.chip_score / total) * 100) / 100,
+          Math.round((recRow.tech_score / total) * 100) / 100,
+          Math.round((recRow.ml_score / total) * 100) / 100,
+          pending.signal, pending.confidence,
+          pending.debate_verdict ?? null, null,
+          marketRisk?.risk_level ?? null, recSector, fillPrice,
+        ).run()
+      }
+    } catch (e) { console.warn('[L2] Decision log failed:', e) }
+
     const lotTag = isOddLot ? ' [零股]' : ''
     console.log(`[Intraday] ✅ 成交 ${pending.symbol} ${shares}股${lotTag} @ ${fillPrice}（市價${price} +滑價）`)
     void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
@@ -1484,6 +1666,21 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     const price = priceMap.get(pos.symbol)
     if (!price) continue
     const atr = atrMap.get(pos.symbol) ?? price * cfg.exit.fallbackAtrPct
+
+    // P1#13: Limit-down lock detection — can't exit if stock is locked
+    // Only check if we have a meaningful intraday volume (skip if unknown)
+    const prevCloseRow = await env.DB.prepare(
+      'SELECT close, volume FROM stock_prices WHERE stock_id=(SELECT id FROM stocks WHERE symbol=?) ORDER BY date DESC LIMIT 1'
+    ).bind(pos.symbol).first<any>()
+    if (prevCloseRow && prevCloseRow.close > 0) {
+      const dropPct = (price - prevCloseRow.close) / prevCloseRow.close
+      // Only block if we can confirm limit-down (price drop >= 9.5%)
+      // Volume check skipped here since we don't have intraday volume
+      if (dropPct <= -0.095) {
+        console.log(`[Exit] ${pos.symbol} at limit-down (${(dropPct*100).toFixed(1)}%), sell may not execute`)
+      }
+    }
+
     const decision = checkExitConditions(pos, price, atr, false, false, cfg)
     if (decision.action === 'hold') continue
 
@@ -1682,8 +1879,12 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     maxDrawdownToDate = Math.max(maxDd, peak > 0 ? (peak - tv) / peak : 0)
   }
 
-  // sharpe 30d
+  // ── Sharpe / Sortino 30d + CAGR + Calmar ───────────────────────────────────
   let sharpe30d: number | null = null
+  let sortino30d: number | null = null
+  let cagr: number | null = null
+  let calmar: number | null = null
+
   const { results: recent30 } = await env.DB.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 31'
   ).bind(ACCOUNT_ID).all<any>()
@@ -1693,24 +1894,48 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     for (let i = 1; i < vals.length; i++) { if (vals[i-1] > 0) returns.push((vals[i] - vals[i-1]) / vals[i-1]) }
     if (returns.length >= 5) {
       const mean = returns.reduce((a, b) => a + b, 0) / returns.length
-      const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length)
+      const n = returns.length
+      const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1))  // sample stddev (N-1)
       sharpe30d = std > 0 ? (mean / std) * Math.sqrt(252) : null
+
+      // P0#7 Sortino: downside deviation (square negative returns, divide by total N)
+      const downStd = Math.sqrt(returns.reduce((a, r) => a + (r < 0 ? r ** 2 : 0), 0) / n)
+      sortino30d = downStd > 0 ? (mean / downStd) * Math.sqrt(252) : null
     }
+  }
+
+  // P0#7 CAGR: annualized compound return from inception
+  const firstSnapshot = await env.DB.prepare(
+    'SELECT date FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC LIMIT 1'
+  ).bind(ACCOUNT_ID).first<any>()
+  if (firstSnapshot?.date && updatedAcc.initial_cash > 0 && tv > 0) {
+    const d0 = new Date(firstSnapshot.date)
+    const d1 = new Date(today)
+    const years = Math.max((d1.getTime() - d0.getTime()) / (365.25 * 86400_000), 0.01)
+    cagr = Math.pow(tv / updatedAcc.initial_cash, 1 / years) - 1
+  }
+
+  // P0#7 Calmar: CAGR / MDD
+  if (cagr != null && maxDrawdownToDate != null && maxDrawdownToDate > 0) {
+    calmar = cagr / maxDrawdownToDate
   }
 
   await env.DB.prepare(`
     INSERT INTO paper_daily_snapshots
       (account_id, date, cash, positions_value, total_value, pnl, pnl_pct,
-       benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d,
+       sortino_30d, calmar, cagr)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id, date) DO UPDATE SET
       cash=excluded.cash, positions_value=excluded.positions_value,
       total_value=excluded.total_value, pnl=excluded.pnl, pnl_pct=excluded.pnl_pct,
       benchmark_value=excluded.benchmark_value, twii_value=excluded.twii_value,
       max_drawdown_to_date=excluded.max_drawdown_to_date,
-      sharpe_30d=excluded.sharpe_30d
+      sharpe_30d=excluded.sharpe_30d,
+      sortino_30d=excluded.sortino_30d, calmar=excluded.calmar, cagr=excluded.cagr
   `).bind(ACCOUNT_ID, today, updatedAcc.cash, finalPosValue, tv, pnl, pnlP,
-           benchmarkValue, twiiValue, maxDrawdownToDate, sharpe30d).run()
+           benchmarkValue, twiiValue, maxDrawdownToDate, sharpe30d,
+           sortino30d, calmar, cagr).run()
 
   console.log(`[Snapshot] 總資產 NT$${Math.round(tv).toLocaleString()}，損益 ${(pnlP).toFixed(2)}%`)
 

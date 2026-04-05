@@ -138,6 +138,68 @@ app.get('/api/backtest/latest', async (c) => {
   return c.json(row ?? null)
 })
 
+// ─── Monte Carlo MDD Results（P0#5，Dashboard 用）─────────────────────────────
+app.get('/api/backtest/monte-carlo', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM monte_carlo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
+  ).first()
+  return c.json(row ?? null)
+})
+
+// ─── P1#15 L2: Decision Logs ─────────────────────────────────────────────────
+app.get('/api/observability/decisions', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
+  ).bind(date).all()
+  return c.json({ date, decisions: results ?? [] })
+})
+
+// ─── P1#15 L3: Model Health ─────────────────────────────────────────────────
+app.get('/api/observability/model-health', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM model_health_daily WHERE date=? ORDER BY model_name'
+  ).bind(date).all()
+  return c.json({ date, models: results ?? [] })
+})
+
+// ─── PBO Results（P0#6，Dashboard 用）─────────────────────────────────────────
+app.get('/api/backtest/pbo', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  if (token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token, c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM pbo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
+  ).first()
+  return c.json(row ?? null)
+})
+
 // ─── Admin: Adaptive Params（讀取 / 手動覆蓋）──────────────────────────────
 app.get('/api/admin/adaptive-params', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -188,6 +250,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
+    { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測 + MC MDD + PBO' },
   ]
   return c.json({ schedule })
 })
@@ -262,6 +325,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     warmup:        () => runMorningWarmup(c.env),
     'morning-briefing': async () => { const { generateMorningBriefing } = await import('./lib/morningBriefing'); return generateMorningBriefing(c.env) },
     'daily-report':     async () => { const { generateDailyReport } = await import('./lib/dailyReport'); return generateDailyReport(c.env) },
+    'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
     'adapt':            async () => { const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine'); return runAdaptiveUpdate(c.env) },
@@ -300,6 +364,11 @@ app.post('/api/admin/trigger/:task', async (c) => {
 
       return { steps, message: '完整 pipeline 完成' }
     },
+    backtest: () => runWeeklyBacktest(c.env),
+    'monte-carlo': () => runWeeklyMonteCarlo(c.env),
+    pbo: () => runWeeklyPBO(c.env),
+    lifecycle: () => runWeeklyLifecycleCheck(c.env),
+    'monthly-optuna': () => runMonthlyOptunaResearch(c.env),
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -720,6 +789,23 @@ async function runMLAndRisk(env: Bindings) {
   const { getAdaptiveParams } = await import('./lib/adaptiveConfig')
   const adaptiveParams = await getAdaptiveParams(env.KV)
 
+  // P1#8: Read lifecycle weight overrides from D1
+  let lifecycleWeights: Record<string, number> = {}
+  try {
+    const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
+    if (lcRow?.state_json) {
+      const states = JSON.parse(lcRow.state_json)
+      for (const [name, s] of Object.entries(states as Record<string, any>)) {
+        if (s.weight_mult != null && s.weight_mult !== 1.0) {
+          lifecycleWeights[name] = s.weight_mult
+        }
+      }
+      if (Object.keys(lifecycleWeights).length > 0) {
+        console.log(`[ML] Lifecycle weights active: ${JSON.stringify(lifecycleWeights)}`)
+      }
+    }
+  } catch (e) { console.warn('[ML] Lifecycle weights read failed:', e) }
+
   // ── 2b. 逐股查詢 + 建構 payload ──────────────────────────────────────────
   const { results: allStocks } = await env.DB.prepare(
     'SELECT * FROM stocks WHERE is_active=1 ORDER BY id ASC'
@@ -804,6 +890,7 @@ async function runMLAndRisk(env: Bindings) {
         market: stock.market ?? 'TW',
         market_env: marketEnv,
         adaptive_params: adaptiveParams,
+        lifecycle_weights: lifecycleWeights,
       })
     } catch (e) {
       console.error(`[ML] Failed building payload for ${stock.symbol}:`, e)
@@ -913,6 +1000,187 @@ async function runMLAndRisk(env: Bindings) {
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
 // Legacy ML_QUEUE fallback retained in runMLAndRisk for rollback safety
+
+
+// ─── Cron P2#16：Weekly AI Audit Report（Controller 觸發） ────────────────────
+async function runWeeklyAudit(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[Audit] Generating weekly AI audit report...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/audit/weekly`, {
+    method: 'POST', headers, signal: AbortSignal.timeout(120_000),
+  }).catch(() => null)
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status !== 'success') return `failed: ${r.error ?? r.status}`
+
+  // Push report to Discord
+  if ((env as any).DISCORD_WEBHOOK_URL && r.report) {
+    const { sendDiscordNotification } = await import('./lib/notify')
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
+      `📋 **Weekly AI Audit Report** (${r.report_date})\n\n${r.report}`.slice(0, 2000))
+  }
+  return `report generated, return=${r.l1?.weekly_return ?? 'N/A'}`
+}
+
+
+// ─── Cron: Monthly Optuna Parameter Re-search ────────────────────────────────
+async function runMonthlyOptunaResearch(env: Bindings) {
+  const ML_URL = env.ML_SERVICE_URL
+  if (!ML_URL) return 'skipped (no ML_SERVICE_URL)'
+  console.log('[Monthly] Starting Optuna parameter re-search (P0#1-3)...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_SERVICE_SECRET) headers['X-Service-Token'] = env.ML_SERVICE_SECRET
+
+  const results: string[] = []
+
+  // P0#1: Triple Barrier
+  try {
+    const r = await fetch(`${ML_URL}/optuna/barrier`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`barrier:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('barrier:ERROR') }
+
+  // P0#2: Signal + Screener Weight
+  try {
+    const r = await fetch(`${ML_URL}/optuna/signal`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`signal:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('signal:ERROR') }
+
+  // P0#3: SL/TP + Trailing
+  try {
+    const r = await fetch(`${ML_URL}/optuna/sltp`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
+    results.push(`sltp:${r.ok ? 'OK' : 'FAIL'}`)
+  } catch { results.push('sltp:ERROR') }
+
+  const summary = results.join(', ')
+  console.log(`[Monthly] Optuna re-search: ${summary}`)
+
+  // Push notification
+  if ((env as any).DISCORD_WEBHOOK_URL) {
+    const { sendDiscordNotification } = await import('./lib/notify')
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
+      `🔬 **Monthly Optuna Re-search Complete**\n${summary}`)
+  }
+
+  return summary
+}
+
+
+// ─── Cron P1#8：Model Lifecycle Check（Controller 觸發） ─────────────────────
+async function runWeeklyLifecycleCheck(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[Lifecycle] Running weekly model lifecycle check...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/lifecycle/check?degrade=0.45&restore=0.55`, {
+    method: 'POST', headers, signal: AbortSignal.timeout(60_000),
+  }).catch(() => null)
+
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status === 'failed' || r.status === 'error') return `failed: ${r.error ?? r.status}`
+  const degraded = Object.values(r.models ?? {}).filter((m: any) => m.status === 'degraded').length
+  const events = (r.events ?? []).length
+  return `${degraded} degraded, ${events} events, guard=${r.balance_guard}`
+}
+
+
+// ─── Cron P0#4：每週日回測（Controller 觸發） ─────────────────────────────────
+async function runWeeklyBacktest(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) {
+    console.warn('[Backtest] ML_CONTROLLER_URL not set, skipping')
+    return 'skipped (no controller URL)'
+  }
+  console.log('[Backtest] Triggering weekly backtest via Controller...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/backtest/run`, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(300_000), // 5 min timeout
+  })
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    console.error(`[Backtest] Controller returned ${resp.status}: ${text.slice(0, 200)}`)
+    return `failed (${resp.status})`
+  }
+
+  const result = await resp.json() as Record<string, any>
+  console.log('[Backtest] Result:', JSON.stringify(result).slice(0, 500))
+  if (result.status === 'failed' || result.status === 'error') {
+    console.error(`[Backtest] Pipeline failed: ${result.error ?? 'unknown'}`)
+    return `failed: ${result.error ?? result.status}`
+  }
+  return `trades=${result.total_trades ?? 0}, win=${result.win_rate ?? '-'}, sharpe=${result.sharpe ?? '-'}`
+}
+
+
+// ─── Cron P0#5：Monte Carlo MDD（Controller 觸發） ───────────────────────────
+async function runWeeklyMonteCarlo(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) {
+    console.warn('[MonteCarlo] ML_CONTROLLER_URL not set, skipping')
+    return 'skipped (no controller URL)'
+  }
+  console.log('[MonteCarlo] Running Monte Carlo MDD simulation...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  // Run both paper and backtest sources
+  const results: string[] = []
+  for (const source of ['paper', 'backtest'] as const) {
+    const resp = await fetch(`${CTRL_URL}/backtest/monte-carlo?n=1000&source=${source}`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(120_000), // 2 min timeout
+    }).catch(() => null)
+
+    if (!resp?.ok) {
+      results.push(`${source}:failed`)
+      continue
+    }
+    const r = await resp.json() as Record<string, any>
+    if (r.status === 'failed' || r.status === 'error') {
+      results.push(`${source}:${r.error ?? 'failed'}`)
+    } else {
+      results.push(`${source}:${r.go_live_verdict}(95th=${r.mdd_95th})`)
+    }
+  }
+  const summary = results.join(', ')
+  console.log(`[MonteCarlo] ${summary}`)
+  return summary
+}
+
+
+// ─── Cron P0#6：PBO 過擬合檢測（Controller 觸發） ───────────────────────────
+async function runWeeklyPBO(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[PBO] Running Probability of Backtest Overfitting analysis...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/backtest/pbo?partitions=10&source=backtest`, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null)
+
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status === 'failed' || r.status === 'error') return `failed: ${r.error ?? r.status}`
+  const summary = `PBO=${r.pbo}(${r.go_live_verdict}), OOS=${r.oos_mean_return}`
+  console.log(`[PBO] ${summary}`)
+  return summary
+}
 
 
 // ─── Cron 3：每週日 04:00 — D1 舊資料清理 ────────────────────────────────────
@@ -1038,6 +1306,16 @@ async function runWeeklyRetrain(env: Bindings) {
     "SELECT id, symbol, market FROM stocks WHERE market IN ('TW','TWO','TWSE','OTC') AND is_active=1 ORDER BY id LIMIT 50"
   ).all<any>()
 
+  // P1#9: Read weak features from IC audit (stored by runWeeklyICaudit)
+  let weakFeatures: string[] = []
+  try {
+    const wfJson = await env.KV.get('ml:weak_features')
+    if (wfJson) {
+      weakFeatures = JSON.parse(wfJson)
+      console.log(`[WeeklyRetrain] IC audit: ${weakFeatures.length} weak features to exclude`)
+    }
+  } catch (e) { console.warn('[WeeklyRetrain] Failed reading weak features:', e) }
+
   // 建構 payloads
   const payloads: any[] = []
   for (const stock of (stocks ?? [])) {
@@ -1059,6 +1337,8 @@ async function runWeeklyRetrain(env: Bindings) {
           risk_level: marketRiskRow?.risk_level ?? 'medium',
           history: mrHistMap,
         },
+        weak_features: weakFeatures,  // P1#9: IC audit 無效特徵
+        use_optuna: true,             // P1#9: 啟用 Optuna 超參數搜索
       })
     } catch (e) {
       console.error(`[WeeklyRetrain] Failed building payload for ${stock.symbol}:`, e)
@@ -1299,13 +1579,15 @@ export default {
     // "5 7 * * 1-5"  → 15:05 台北 → 推第一批到 UPDATE_QUEUE
     // "0 1 * * 1-5"  → 09:00 台北 → 開盤前預熱
     // "30 7 * * 1-5" → 15:30 台北 → 大盤風險 + 推第一批到 ML_QUEUE
-    // "0 20 * * 0"   → 每週日 04:00 台北 → 清理舊資料
+    // "0 20 * * 6"   → 每週日 04:00 台北 (UTC Sat 20:00) → 清理舊資料
+    // "0 22 * * 6"   → 每週日 06:00 台北 (UTC Sat 22:00) → 自動回測
     // ── 國定假日檢查（台股休市日不跑任何交易相關 cron）──────────────────
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
     const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
     const isHoliday = await env.KV.get(`holiday:${twToday}`)
-    if ((isWeekend || isHoliday) && cron !== '0 20 * * 0') {
+    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '0 16 1-7 * 6'])
+    if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
       console.log(`[Cron] ${twToday} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
     }
@@ -1325,7 +1607,7 @@ export default {
         }
       })())
 
-    if (cron === '15 23 * * 1-5') {
+    if (cron === '15 23 * * SUN-THU') {
       runWithLog('morning-setup', async () => {
         await runMorningWarmup(env)
         await setupMorningPendingBuys(env)
@@ -1372,14 +1654,69 @@ export default {
     } else if (cron === '15 10 * * 1-5') {
       runWithLog('verify', async () => {
         await runPredictionVerification(env)
-        return '預測驗證完成'
+
+        // P1#15 L3: Daily model health snapshot
+        try {
+          const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+          const ALL_MODELS = ['KalmanFilter','DLinear','MarkovSwitching','PatchTST','Chronos',
+                              'XGBoost','CatBoost','ExtraTrees','LightGBM','FT-Transformer']
+          // Fetch model accuracies
+          const { results: acc30 } = await env.DB.prepare(`
+            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy,
+                   AVG(profit_factor) as pf, AVG(expectancy) as exp
+            FROM model_accuracy WHERE period='30d'
+            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
+            GROUP BY model_name
+          `).bind(...ALL_MODELS).all<any>()
+          const { results: acc90 } = await env.DB.prepare(`
+            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy
+            FROM model_accuracy WHERE period='90d'
+            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
+            GROUP BY model_name
+          `).bind(...ALL_MODELS).all<any>()
+          const acc30Map = Object.fromEntries((acc30 ?? []).map((r: any) => [r.model_name, r]))
+          const acc90Map = Object.fromEntries((acc90 ?? []).map((r: any) => [r.model_name, r]))
+
+          // Lifecycle state
+          const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
+          const lcStates = lcRow?.state_json ? JSON.parse(lcRow.state_json) : {}
+
+          // Insert per-model health
+          for (const model of ALL_MODELS) {
+            const a30 = acc30Map[model] ?? {}
+            const a90 = acc90Map[model] ?? {}
+            const lc = lcStates[model] ?? {}
+            await env.DB.prepare(`
+              INSERT OR REPLACE INTO model_health_daily
+                (date, model_name, accuracy_30d, accuracy_90d, profit_factor, expectancy,
+                 lifecycle_status, lifecycle_weight)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              twToday, model,
+              a30.accuracy ?? null, a90.accuracy ?? null,
+              a30.pf ?? null, a30.exp ?? null,
+              lc.status ?? 'active', lc.weight_mult ?? 1.0,
+            ).run()
+          }
+          // Also store to KV for quick access
+          const healthSummary = ALL_MODELS.map(m => ({
+            model: m,
+            acc_30d: acc30Map[m]?.accuracy ?? null,
+            status: lcStates[m]?.status ?? 'active',
+            weight: lcStates[m]?.weight_mult ?? 1.0,
+          }))
+          await env.KV.put(`ml:model_health:${twToday}`, JSON.stringify(healthSummary), { expirationTtl: 30 * 86400 })
+          console.log(`[L3] Model health snapshot: ${ALL_MODELS.length} models logged`)
+        } catch (e) { console.warn('[L3] Model health failed:', e) }
+
+        return '預測驗證 + L3 model health 完成'
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
       })
-    } else if (cron === '10 6 * * 1-5') {
+    } else if (cron === '25 5 * * 1-5') {
       runWithLog('eod-exit', async () => {
         await runEODExit(env)
         return 'EOD 出場檢查完成'
@@ -1398,7 +1735,18 @@ export default {
         ).bind(twToday).first<{ cnt: number }>()
         const before = ordersBefore?.cnt ?? 0
 
-        await runIntradayCheck(env)
+        // VULN-40 fix: KV lock to prevent concurrent intraday executions
+        const intradayLock = await env.KV.get('cron:intraday-lock')
+        if (intradayLock) {
+          // Another execution still running, skip
+          return
+        }
+        await env.KV.put('cron:intraday-lock', '1', { expirationTtl: 120 }) // 2 min TTL
+        try {
+          await runIntradayCheck(env)
+        } finally {
+          await env.KV.delete('cron:intraday-lock')
+        }
 
         const ordersAfter = await env.DB.prepare(
           "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'"
@@ -1411,13 +1759,13 @@ export default {
           })
         }
       })())
-    } else if (cron === '30 22 * * 1-5') {
+    } else if (cron === '30 22 * * SUN-THU') {
       runWithLog('us-leading', async () => {
         const { fetchAndStoreUSLeading } = await import('./lib/usLeading')
         const signal = await fetchAndStoreUSLeading(env)
         return signal ? `SOX ${((signal.sox_return ?? 0) * 100).toFixed(1)}% | ${signal.sentiment}` : '抓取失敗'
       })
-    } else if (cron === '50 23 * * 1-5') {
+    } else if (cron === '50 23 * * SUN-THU') {
       runWithLog('morning-briefing', async () => {
         const { generateMorningBriefing } = await import('./lib/morningBriefing')
         return await generateMorningBriefing(env)
@@ -1427,16 +1775,21 @@ export default {
         const { generateDailyReport } = await import('./lib/dailyReport')
         return await generateDailyReport(env)
       })
-    } else if (cron === '0 20 * * 0') {
+    } else if (cron === '30 10 * * 5') {
+      // 週五 18:30 TW → P2#16 Weekly AI Audit Report
+      runWithLog('weekly-audit', async () => {
+        return await runWeeklyAudit(env)
+      })
+    } else if (cron === '0 20 * * 6') {
+      // 週日 04:00 TW (=UTC Sat 20:00) → 清理 + 重訓 + IC + Timeverse + 備份
       runWithLog('weekly-cleanup', async () => {
         await runWeeklyCleanup(env)
         await runWeeklyRetrain(env)
+        // P1#8: Model lifecycle check (after retrain, uses fresh accuracy data)
+        await runWeeklyLifecycleCheck(env).catch(e => console.warn('[Lifecycle] failed:', e))
         await fetchWeeklyShareholding(env).catch(e => console.warn('[Wave3] Shareholding failed:', e))
-        // Weekly IC audit + feature drift + quintile alpha check
         await runWeeklyICaudit(env).catch(e => console.warn('[IC Audit] failed:', e))
-        // Feature drift detection（同一支股票的資料）
         await runWeeklyDriftCheck(env).catch(e => console.warn('[Drift Check] failed:', e))
-        // Timeverse 台股研究資料庫同步
         const { syncTimeverse } = await import('./lib/timeverse')
         await syncTimeverse(env).catch(e => console.warn('[Timeverse] sync failed:', e))
         // P1 資安：D1 關鍵表 weekly snapshot → KV（災難恢復用，7 天 TTL）
@@ -1450,6 +1803,19 @@ export default {
           console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
         } catch (e) { console.warn('[Backup] D1 snapshot failed:', e) }
         return '週清理 + 重訓 + 集保 + IC審計 + Timeverse同步 + D1備份完成'
+      })
+    } else if (cron === '0 22 * * 6') {
+      // 週日 06:00 TW (=UTC Sat 22:00) → P0#4 回測 + P0#5 MC + P0#6 PBO
+      runWithLog('weekly-backtest', async () => {
+        const bt = await runWeeklyBacktest(env)
+        const mc = await runWeeklyMonteCarlo(env).catch(e => { console.warn('[MC]', e); return 'failed' })
+        const pbo = await runWeeklyPBO(env).catch(e => { console.warn('[PBO]', e); return 'failed' })
+        return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
+      })
+    } else if (cron === '0 16 1-7 * 6') {
+      // 每月第一個週六 00:00 TW (=UTC Sat 16:00) → Optuna 參數重搜
+      runWithLog('monthly-optuna', async () => {
+        return await runMonthlyOptunaResearch(env)
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

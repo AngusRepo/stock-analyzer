@@ -325,6 +325,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     warmup:        () => runMorningWarmup(c.env),
     'morning-briefing': async () => { const { generateMorningBriefing } = await import('./lib/morningBriefing'); return generateMorningBriefing(c.env) },
     'daily-report':     async () => { const { generateDailyReport } = await import('./lib/dailyReport'); return generateDailyReport(c.env) },
+    'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
     'adapt':            async () => { const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine'); return runAdaptiveUpdate(c.env) },
@@ -998,6 +999,31 @@ async function runMLAndRisk(env: Bindings) {
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
 // Legacy ML_QUEUE fallback retained in runMLAndRisk for rollback safety
+
+
+// ─── Cron P2#16：Weekly AI Audit Report（Controller 觸發） ────────────────────
+async function runWeeklyAudit(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no controller URL)'
+  console.log('[Audit] Generating weekly AI audit report...')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  const resp = await fetch(`${CTRL_URL}/audit/weekly`, {
+    method: 'POST', headers, signal: AbortSignal.timeout(120_000),
+  }).catch(() => null)
+  if (!resp?.ok) return 'failed'
+  const r = await resp.json() as Record<string, any>
+  if (r.status !== 'success') return `failed: ${r.error ?? r.status}`
+
+  // Push report to Discord
+  if ((env as any).DISCORD_WEBHOOK_URL && r.report) {
+    const { sendDiscordNotification } = await import('./lib/notify')
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
+      `📋 **Weekly AI Audit Report** (${r.report_date})\n\n${r.report}`.slice(0, 2000))
+  }
+  return `report generated, return=${r.l1?.weekly_return ?? 'N/A'}`
+}
 
 
 // ─── Cron P1#8：Model Lifecycle Check（Controller 觸發） ─────────────────────
@@ -1705,6 +1731,11 @@ export default {
       runWithLog('daily-report', async () => {
         const { generateDailyReport } = await import('./lib/dailyReport')
         return await generateDailyReport(env)
+      })
+    } else if (cron === '30 10 * * 5') {
+      // 週五 18:30 TW → P2#16 Weekly AI Audit Report
+      runWithLog('weekly-audit', async () => {
+        return await runWeeklyAudit(env)
       })
     } else if (cron === '0 20 * * 6') {
       // 週日 04:00 TW (=UTC Sat 20:00) → 清理 + 重訓 + IC + Timeverse + 備份

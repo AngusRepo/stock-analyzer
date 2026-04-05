@@ -17,7 +17,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import predict, retrain, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline
+from routers import predict, retrain, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit
 
 VERSION = "12.3.0"
 
@@ -53,6 +53,7 @@ app.include_router(sector_flow.router, dependencies=[Depends(verify_token)])
 app.include_router(backtest.router,    dependencies=[Depends(verify_token)])
 app.include_router(lifecycle.router,   dependencies=[Depends(verify_token)])
 app.include_router(pipeline.router,    dependencies=[Depends(verify_token)])
+app.include_router(audit.router,       dependencies=[Depends(verify_token)])
 
 
 @app.get("/health")

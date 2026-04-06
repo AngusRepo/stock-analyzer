@@ -37,8 +37,8 @@ export default defineConfig({
         description: '台股＋美股 AI 驅動分析平台',
         start_url: '/',
         display: 'standalone',
-        background_color: '#09090b',
-        theme_color: '#09090b',
+        background_color: '#0a0b0f',
+        theme_color: '#0a0b0f',
         lang: 'zh-TW',
         categories: ['finance', 'productivity'],
         icons: [

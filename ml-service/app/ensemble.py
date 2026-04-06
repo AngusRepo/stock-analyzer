@@ -171,10 +171,12 @@ def weighted_vote(
     avg_confidence *= donothing_penalty  # DoNothing arm 修正
 
     # ── Anomaly soft penalty（取代 hard gate）─────────────────────────────────
-    # anomaly_score 越負代表越異常，-0.5 以下開始施加 penalty
-    if anomaly_score < -0.5:
-        # 線性映射：score=-0.5→1.0, score=-1.0→0.5（最低打 5 折）
-        anomaly_penalty = max(0.5, 1.0 + (anomaly_score + 0.5) * 1.0)
+    # anomaly_score 越負代表越異常，threshold 以下開始施加 penalty
+    _anomaly_threshold = float(_adaptive.get("anomaly_threshold", -0.5))
+    _anomaly_floor = float(_adaptive.get("anomaly_penalty_floor", 0.5))
+    if anomaly_score < _anomaly_threshold:
+        # 線性映射：score=threshold→1.0, 越負越低（最低 floor 折）
+        anomaly_penalty = max(_anomaly_floor, 1.0 + (anomaly_score - _anomaly_threshold) * 1.0)
         avg_confidence *= anomaly_penalty
 
     # ── 信心門檻過濾 ─────────────────────────────────────────────────────────
@@ -212,7 +214,7 @@ def weighted_vote(
             # Higher meta accuracy → higher meta ratio (0.5 to 0.7)
             meta_ratio = np.clip(0.5 + (meta_acc_30d - ensemble_acc_30d), 0.3, 0.7)
         else:
-            meta_ratio = 0.6  # default
+            meta_ratio = float(_adaptive.get("meta_ratio_default", 0.6))
         final_conf  = avg_confidence * (1 - meta_ratio) + meta_confidence * meta_ratio
         reasoning_meta = f"[Meta-Learner 修正為 {'↑' if is_up else '↓'}，信心={meta_confidence:.0%}，blend={meta_ratio:.0%}] "
     else:
@@ -231,13 +233,18 @@ def weighted_vote(
     # 如果 signal_score 夠高（方向明確 × 信心高），仍給出 BUY/SELL
     threshold_penalty = 1 if (below_confidence or below_consensus) else 0
 
-    if signal_score >= 0.72:       # ~0.9 × 0.80
+    # Signal score 門檻從 KV adaptive_params 讀取（Optuna 可搜尋，零 deploy 更新）
+    STRONG_SIGNAL_SCORE = float(_adaptive.get("strong_signal_score", 0.72))
+    BUY_SIGNAL_SCORE    = float(_adaptive.get("buy_signal_score", 0.52))
+    HOLD_SIGNAL_SCORE   = float(_adaptive.get("hold_signal_score", 0.36))
+
+    if signal_score >= STRONG_SIGNAL_SCORE:
         signal = "STRONG_BUY" if is_up else "STRONG_SELL"
         stars = max(4, 5 - threshold_penalty)
-    elif signal_score >= 0.52:       # ~0.75 × 0.70
+    elif signal_score >= BUY_SIGNAL_SCORE:
         signal = "BUY" if is_up else "SELL"
         stars = max(3, 4 - threshold_penalty)
-    elif signal_score >= 0.36:       # ~0.60 × 0.60
+    elif signal_score >= HOLD_SIGNAL_SCORE:
         if threshold_penalty:
             signal = "HOLD"  # signal_score 偏低 + 門檻沒過 → HOLD
         else:
@@ -253,12 +260,17 @@ def weighted_vote(
     vol_pct = effective_vol / current_price
     vol_source = "GARCH" if (garch_vol and garch_vol > 0) else "ATR"
 
-    if vol_pct < 0.015:      # 低波動
-        sl_mult, tp_mult = 1.5, 1.0
-    elif vol_pct < 0.03:     # 正常
-        sl_mult, tp_mult = 2.0, 1.5
-    else:                    # 高波動
-        sl_mult, tp_mult = 2.5, 2.0
+    # SL/TP base multipliers 從 KV 讀取（Optuna #3 可搜尋）
+    _sl_base = float(_adaptive.get("sl_mult_base", 2.0))
+    _tp_base = float(_adaptive.get("tp_mult_base", 1.5))
+    _vol_low = float(_adaptive.get("vol_threshold_low", 0.015))
+    _vol_high = float(_adaptive.get("vol_threshold_high", 0.03))
+    if vol_pct < _vol_low:      # 低波動：收緊
+        sl_mult, tp_mult = _sl_base * 0.75, _tp_base * 0.67
+    elif vol_pct < _vol_high:     # 正常
+        sl_mult, tp_mult = _sl_base, _tp_base
+    else:                    # 高波動：放寬
+        sl_mult, tp_mult = _sl_base * 1.25, _tp_base * 1.33
 
     # Adaptive SL/TP override（高風險 regime 加寬，避免被洗）
     sl_tp_override = _adaptive.get("sl_tp_override")

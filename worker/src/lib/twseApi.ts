@@ -390,12 +390,17 @@ export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
   const incomeRows = incomeResults.flat()
   const bsRows = bsResults.flat()
 
-  const equityMap = new Map<string, number>()
+  const bsMap = new Map<string, { equity: number; total_assets: number | null; total_liabilities: number | null }>()
   for (const r of bsRows) {
     const sym = (r['公司代號'] ?? '').trim()
     if (!isStockCode(sym)) continue
+    const keys = Object.keys(r)
     const equity = parseInt((r['權益總額'] ?? '0').toString().replace(/,/g, '')) || 0
-    if (equity > 0) equityMap.set(sym, equity)
+    const taKey = keys.find(k => k === '資產總計' || k === '資產總額')
+    const totalAssets = taKey ? (parseFloat((r[taKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+    const tlKey = keys.find(k => k === '負債總計' || k === '負債總額')
+    const totalLiabilities = tlKey ? (parseFloat((r[tlKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+    if (equity > 0) bsMap.set(sym, { equity, total_assets: totalAssets, total_liabilities: totalLiabilities })
   }
 
   const results: BulkFinancialRow[] = []
@@ -415,13 +420,24 @@ export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
     const revenueKey = keys.find(k => k === '營業收入' || (k.includes('營業') && k.includes('收入')))
     const revenue = revenueKey ? (parseFloat((r[revenueKey] ?? '0').toString().replace(/,/g, '')) || null) : null
 
+    const opIncKey = keys.find(k => k === '營業利益' || (k.includes('營業') && k.includes('利益')) || (k.includes('營業') && k.includes('淨利')))
+    const operatingIncome = opIncKey ? (parseFloat((r[opIncKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
     const netIncomeKey = keys.find(k => (k.includes('本期') && k.includes('淨利')) || (k.includes('稅後') && k.includes('淨利')))
     const netIncome = netIncomeKey ? (parseFloat((r[netIncomeKey] ?? '0').toString().replace(/,/g, '')) || null) : null
 
-    const equity = equityMap.get(sym) ?? null
+    const bs = bsMap.get(sym)
+    const equity = bs?.equity ?? null
     const roe = netIncome && equity && equity > 0 ? (netIncome / equity * 100) : null
 
-    results.push({ symbol: sym, year, quarter, eps, revenue, net_income: netIncome, equity, roe: roe ? Math.round(roe * 100) / 100 : null })
+    results.push({
+      symbol: sym, year, quarter, eps, revenue,
+      operating_income: operatingIncome,
+      net_income: netIncome,
+      total_assets: bs?.total_assets ?? null,
+      total_liabilities: bs?.total_liabilities ?? null,
+      equity, roe: roe ? Math.round(roe * 100) / 100 : null,
+    })
   }
 
   return results
@@ -495,10 +511,13 @@ export interface BulkFinancialRow {
   year: string          // 西元年
   quarter: string       // "1"~"4"
   eps: number | null
-  revenue: number | null     // 千元
-  net_income: number | null  // 千元（算 ROE 用）
-  equity: number | null      // 千元（算 ROE 用）
-  roe: number | null         // %
+  revenue: number | null            // 千元
+  operating_income: number | null   // 千元 — 營業利益
+  net_income: number | null         // 千元 — 本期淨利（算 ROE 用）
+  total_assets: number | null       // 千元 — 資產總計
+  total_liabilities: number | null  // 千元 — 負債總計
+  equity: number | null             // 千元（算 ROE 用）
+  roe: number | null                // %
 }
 
 export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
@@ -535,16 +554,23 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
   const incomeRows = incomeResults.flat()
   const bsRows = bsResults.flat()
 
-  // 資產負債表 → symbol → equity
-  const equityMap = new Map<string, number>()
+  // 資產負債表 → symbol → { equity, total_assets, total_liabilities }
+  const bsMap = new Map<string, { equity: number; total_assets: number | null; total_liabilities: number | null }>()
   for (const r of bsRows) {
     const sym = (r['公司代號'] ?? '').trim()
     if (!isStockCode(sym)) continue
+    const keys = Object.keys(r)
     const equity = parseInt((r['權益總額'] ?? '0').toString().replace(/,/g, '')) || 0
-    if (equity > 0) equityMap.set(sym, equity)
+    // 資產總計
+    const taKey = keys.find(k => k === '資產總計' || k === '資產總額')
+    const totalAssets = taKey ? (parseFloat((r[taKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+    // 負債總計
+    const tlKey = keys.find(k => k === '負債總計' || k === '負債總額')
+    const totalLiabilities = tlKey ? (parseFloat((r[tlKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+    if (equity > 0) bsMap.set(sym, { equity, total_assets: totalAssets, total_liabilities: totalLiabilities })
   }
 
-  // 損益表 → EPS + revenue + net_income
+  // 損益表 → EPS + revenue + operating_income + net_income
   const results: BulkFinancialRow[] = []
   for (const r of incomeRows) {
     const sym = (r['公司代號'] ?? '').trim()
@@ -563,13 +589,25 @@ export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
     const revenueKey = keys.find(k => k === '營業收入' || (k.includes('營業') && k.includes('收入')))
     const revenue = revenueKey ? (parseFloat((r[revenueKey] ?? '0').toString().replace(/,/g, '')) || null) : null
 
-    const netIncomeKey = keys.find(k => k.includes('本期') && k.includes('淨利') || k.includes('稅後') && k.includes('淨利'))
+    // 營業利益
+    const opIncKey = keys.find(k => k === '營業利益' || (k.includes('營業') && k.includes('利益')) || (k.includes('營業') && k.includes('淨利')))
+    const operatingIncome = opIncKey ? (parseFloat((r[opIncKey] ?? '0').toString().replace(/,/g, '')) || null) : null
+
+    const netIncomeKey = keys.find(k => (k.includes('本期') && k.includes('淨利')) || (k.includes('稅後') && k.includes('淨利')))
     const netIncome = netIncomeKey ? (parseFloat((r[netIncomeKey] ?? '0').toString().replace(/,/g, '')) || null) : null
 
-    const equity = equityMap.get(sym) ?? null
+    const bs = bsMap.get(sym)
+    const equity = bs?.equity ?? null
     const roe = netIncome && equity && equity > 0 ? (netIncome / equity * 100) : null
 
-    results.push({ symbol: sym, year, quarter, eps, revenue, net_income: netIncome, equity, roe: roe ? Math.round(roe * 100) / 100 : null })
+    results.push({
+      symbol: sym, year, quarter, eps, revenue,
+      operating_income: operatingIncome,
+      net_income: netIncome,
+      total_assets: bs?.total_assets ?? null,
+      total_liabilities: bs?.total_liabilities ?? null,
+      equity, roe: roe ? Math.round(roe * 100) / 100 : null,
+    })
   }
 
   return results

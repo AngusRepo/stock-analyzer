@@ -67,19 +67,26 @@ ALPHA_MIN = 0.1       # winning streak → exploit (low alpha)
 ALPHA_MAX = 0.7       # losing streak → explore (high alpha)
 
 
-def compute_dynamic_alpha(losses_5d: int = 0, total_5d: int = 0) -> float:
+def compute_dynamic_alpha(losses_5d: int = 0, total_5d: int = 0,
+                          adaptive_params: dict | None = None) -> float:
     """
     P1#10 + H2 fix: Adjust LinUCB exploration with guaranteed minimum exploration.
     Losing streak → increase alpha (explore new model combinations)
     Winning streak → decrease alpha but NEVER below ALPHA_FLOOR (H2: anti-herding)
     """
+    _ap = adaptive_params or {}
+    alpha_explore = float(_ap.get("bandit_alpha_explore", ALPHA_EXPLORE))
+    alpha_min = float(_ap.get("bandit_alpha_min", ALPHA_MIN))
+    alpha_max = float(_ap.get("bandit_alpha_max", ALPHA_MAX))
+    min_obs_to_trust = int(_ap.get("bandit_min_obs_to_trust", MIN_OBS_TO_TRUST))
+
     if total_5d < 3:
-        return ALPHA_EXPLORE  # not enough data, use default
+        return alpha_explore  # not enough data, use default
 
     loss_rate = losses_5d / total_5d
-    alpha = ALPHA_MIN + loss_rate * (ALPHA_MAX - ALPHA_MIN)
+    alpha = alpha_min + loss_rate * (alpha_max - alpha_min)
     # H2 fix: floor at 0.15 to prevent complete exploitation (anti-feedback-loop)
-    return round(float(np.clip(alpha, 0.15, ALPHA_MAX)), 3)
+    return round(float(np.clip(alpha, 0.15, alpha_max)), 3)
 
 
 # ── Context Builder ───────────────────────────────────────────────────────────
@@ -89,6 +96,7 @@ def build_context(
     garch_vol:  Optional[float]     = None,    # price 單位的 GARCH 波動率（如 ATR ≈ price*0.02）
     current_price: float            = 1.0,     # 用來將 garch_vol 轉 pct
     market_risk_score: float        = 0.5,     # 0~1
+    adaptive_params: dict | None    = None,    # KV 可調參數
 ) -> np.ndarray:
     """
     將市場情境轉換成 d=4 的 context 向量 x。
@@ -105,11 +113,13 @@ def build_context(
     r = float(np.clip(r, 0.0, 1.0))
 
     # [1] GARCH vol pct，以 price 的 % 表示，clip 到 [0,2]（2% 為中位）
+    _ap = adaptive_params or {}
+    vol_norm = float(_ap.get("bandit_vol_norm_divisor", 0.05))
     if garch_vol is not None and current_price > 0:
         vol_pct = garch_vol / current_price
     else:
         vol_pct = 0.02   # fallback：2% 中性值
-    v = float(np.clip(vol_pct / 0.05, 0.0, 2.0))   # /0.05 使 2% vol → 0.4 (不到中心)
+    v = float(np.clip(vol_pct / vol_norm, 0.0, 2.0))   # /vol_norm 使 2% vol → 0.4 (不到中心)
 
     # [2] Market risk score [0,1]
     mrs = float(np.clip(market_risk_score, 0.0, 1.0))
@@ -143,7 +153,7 @@ class LinUCBBandit:
     # 每個 arm 的觀測次數，用於決定是否信任 bandit
     obs_count: np.ndarray = field(default_factory=lambda: np.zeros(NUM_ARMS, dtype=np.int32))
 
-    def select(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def select(self, x: np.ndarray, adaptive_params: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
         回傳各 arm 的 (UCB 分數, θ 估計值)。
         呼叫方可依此決定是否完全採用 bandit 選擇或僅作為權重修正。
@@ -156,10 +166,13 @@ class LinUCBBandit:
         ucb    = np.zeros(self.k, dtype=np.float64)
         theta  = np.zeros(self.k, dtype=np.float64)
 
+        _ap = adaptive_params or {}
+        decay = float(_ap.get("bandit_decay_factor", 200.0))
+
         # P1#10: Use self.alpha (set dynamically by compute_dynamic_alpha)
         # with observation-based decay: more obs → lower exploration
         total_obs = self.total_observations()
-        decay_factor = 1.0 / (1.0 + total_obs / 200.0)  # gentler decay
+        decay_factor = 1.0 / (1.0 + total_obs / decay)  # gentler decay
         effective_alpha = max(0.1, self.alpha * decay_factor)
 
         for a in range(self.k):
@@ -197,6 +210,7 @@ class LinUCBBandit:
         min_mult: float = 0.3,
         max_mult: float = 2.5,
         force_explore: bool = False,
+        adaptive_params: dict | None = None,
     ) -> dict[str, float]:
         """
         將 UCB 分數轉換成各模型的「權重乘數」（[min_mult, max_mult] 區間）。
@@ -214,7 +228,7 @@ class LinUCBBandit:
         if force_explore:
             self.alpha = 0.5  # 暫時覆蓋
 
-        ucb, _ = self.select(x)
+        ucb, _ = self.select(x, adaptive_params=adaptive_params)
 
         if force_explore:
             self.alpha = _saved_alpha  # 還原
@@ -380,8 +394,10 @@ def linucb_select(
     max_mult      = float(_ap.get("bandit_max_mult",      2.5))
     force_explore = bool(_ap.get("bandit_force_explore", False))
 
-    x = build_context(hmm_regime, garch_vol, current_price, market_risk_score)
-    return bandit.ucb_to_weight_multipliers(x, max_mult=max_mult, force_explore=force_explore)
+    x = build_context(hmm_regime, garch_vol, current_price, market_risk_score,
+                       adaptive_params=_ap)
+    return bandit.ucb_to_weight_multipliers(x, max_mult=max_mult, force_explore=force_explore,
+                                            adaptive_params=_ap)
 
 
 def linucb_update(

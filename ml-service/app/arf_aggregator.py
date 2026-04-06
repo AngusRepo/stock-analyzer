@@ -52,17 +52,25 @@ MIN_OBS_HIGH_VOL = 30   # high vol → 快速適應，少量樣本就信任
 MIN_OBS_LOW_VOL = 80    # low vol → 穩定為主，需要更多樣本
 
 
-def get_dynamic_min_obs(garch_vol_norm: float = 0.4) -> int:
+def get_dynamic_min_obs(garch_vol_norm: float = 0.4,
+                        adaptive_params: dict | None = None) -> int:
     """P1#10: ARF warm-up threshold adapts to market volatility."""
+    _ap = adaptive_params or {}
+    min_obs_default = int(_ap.get("arf_min_obs_to_trust", MIN_OBS_TO_TRUST))
+    min_obs_high = int(_ap.get("arf_min_obs_high_vol", MIN_OBS_HIGH_VOL))
+    min_obs_low = int(_ap.get("arf_min_obs_low_vol", MIN_OBS_LOW_VOL))
+    vol_thresh_high = float(_ap.get("arf_vol_thresh_high", 1.0))
+    vol_thresh_low = float(_ap.get("arf_vol_thresh_low", 0.3))
+
     # garch_vol_norm: 0~2 (0=calm, 1=normal, 2=volatile)
-    if garch_vol_norm > 1.0:
-        return MIN_OBS_HIGH_VOL   # high vol → fast adapt
-    elif garch_vol_norm < 0.3:
-        return MIN_OBS_LOW_VOL    # low vol → stable
+    if garch_vol_norm > vol_thresh_high:
+        return min_obs_high   # high vol → fast adapt
+    elif garch_vol_norm < vol_thresh_low:
+        return min_obs_low    # low vol → stable
     else:
-        # Linear interpolation between 80 and 30
-        t = (garch_vol_norm - 0.3) / 0.7  # 0→1
-        return int(MIN_OBS_LOW_VOL + t * (MIN_OBS_HIGH_VOL - MIN_OBS_LOW_VOL))
+        # Linear interpolation between min_obs_low and min_obs_high
+        t = (garch_vol_norm - vol_thresh_low) / max(vol_thresh_high - vol_thresh_low, 0.01)  # 0→1
+        return int(min_obs_low + t * (min_obs_high - min_obs_low))
 
 
 # ── 特徵建構 ──────────────────────────────────────────────────────────────────
@@ -282,6 +290,7 @@ def apply_arf_correction(
     ensemble_is_up: bool,
     ensemble_confidence: float,
     ensemble_signal: str,
+    adaptive_params: dict | None = None,
 ) -> tuple[bool, float, str, float]:
     """
     將 ARF 的 P(up) 與 weighted_vote 結果融合，回傳修正後的：
@@ -294,6 +303,12 @@ def apply_arf_correction(
     - ARF 弱反向        → 訊號降一級（STRONG→BUY, BUY→HOLD, SELL→HOLD）
     - ARF 強烈反向      → 直接輸出 HOLD（建議觀望）
     """
+    _ap = adaptive_params or {}
+    conf_boost      = float(_ap.get("arf_conf_boost", 0.05))
+    conf_mid_penalty = float(_ap.get("arf_conf_mid_penalty", 0.10))
+    conf_strong_penalty = float(_ap.get("arf_conf_strong_penalty", 0.20))
+    arf_strong_confirm_thresh = float(_ap.get("arf_strong_confirm_thresh", 0.25))
+
     arf_prob = arf.predict_proba(arf_features)
 
     if not arf.is_warmed_up():
@@ -313,8 +328,8 @@ def apply_arf_correction(
 
     if arf_is_up == ensemble_is_up:
         # 同向：强烈確認時小幅提升信心
-        if arf_strength > 0.25:
-            new_conf = min(0.95, ensemble_confidence + 0.05)
+        if arf_strength > arf_strong_confirm_thresh:
+            new_conf = min(0.95, ensemble_confidence + conf_boost)
         else:
             new_conf = ensemble_confidence
         return ensemble_is_up, new_conf, ensemble_signal, arf_prob
@@ -326,9 +341,9 @@ def apply_arf_correction(
     elif arf_strength < 0.30:
         # 中反向：降一級
         downgraded = DOWNGRADE_MAP.get(ensemble_signal, ensemble_signal)
-        new_conf   = max(0.0, ensemble_confidence - 0.10)
+        new_conf   = max(0.0, ensemble_confidence - conf_mid_penalty)
         new_is_up  = ensemble_is_up if downgraded != "HOLD" else ensemble_is_up
         return new_is_up, new_conf, downgraded, arf_prob
     else:
         # 強反向：建議觀望
-        return ensemble_is_up, max(0.0, ensemble_confidence - 0.20), "HOLD", arf_prob
+        return ensemble_is_up, max(0.0, ensemble_confidence - conf_strong_penalty), "HOLD", arf_prob

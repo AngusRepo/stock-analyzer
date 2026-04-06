@@ -2,7 +2,7 @@
 
 > 基於 Claude Code 架構模式 + LangGraph 整合方案
 > 日期：2026-04-01
-> 更新：2026-04-03（v8 — 整併策略驗證排程 W1-W6 + Freqtrade + PTT 情緒 + Trump Code）
+> 更新：2026-04-06（v9 — P0-P2 全完成 + P3 Phase 1-4 + Obsidian + UI Redesign）
 
 ---
 
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| v9 | 2026-04-06 | **重大更新**：P0-P2 全完成（30 items），P3 Phase 1-4 啟動（SHAP/Regime Optuna/RL Shadow/GNN Shadow）。47 個參數 hardcode→KV。Obsidian Second Brain 上線。UI Redesign（AppShell + Fintech dark theme）。Data backfill 165 萬筆。Artifact Registry 清理 + auto-cleanup policy。新增 6 個前端功能（月營收/PE 河流圖/融資融券/Trade Journal/Position Sizer/Pipeline 頁）。完整財報欄位（operating_income/net_income/total_assets/total_liabilities）。MLP Shadow + FT Online 接線完成 |
 | v8 | 2026-04-03 | 整併策略驗證排程 W1-W6（§十）：Freqtrade 回測引擎、蒙地卡羅/Walk-Forward/PBO 驗證、PTT 情緒 4 features、Trump Code 串接、參數高原掃描。更新 Phase 路徑整合雙軌排程 |
 | v7 | 2026-04-02 | 整併 Screener 重構計畫（§九），新增 Phase 0，刪除 DATA_CLEANSING_PLAN.md |
 | v6 | 2026-04-02 | 新增 §八 Failure Mode Map（17 種失效模式 × 防禦方案），補強：跌停鎖死、Gap Stop、流動性過濾、模型共錯偵測、Prompt 版控、Agent 限制為只扣分、服務降級、資料驗證層 |
@@ -48,46 +49,62 @@
 ## 二、系統架構 `[v4 更新]`
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  View     │  Frontend (Vite + React)                         │
-├───────────┼──────────────────────────────────────────────────┤
-│  Router   │  Worker (Cloudflare)                             │
-│           │  • API 路由、Cron 排程觸發                         │
-│           │  • D1/KV 資料存取（熱數據）、Queue                  │
-├───────────┼──────────────────────────────────────────────────┤
-│Controller │  GCP Cloud Run（<200MB 輕量容器）                  │
-│           │  • ml-controller (FastAPI + LangGraph)            │
-│           │  • 風控攔截、5 層 Circuit Breaker                  │
-│           │  • GCS 權重讀取 + 參數載入                          │
-│           │  ⚠ 嚴禁執行任何 ML 訓練任務                         │
-├───────────┼──────────────────────────────────────────────────┤
-│  Model    │  Modal (重型算力)                                  │
-│           │  • ML 推論 (10 模型 Ensemble)                      │
-│           │  • 模型訓練 + Optuna 自動調參                       │
-│           │  • 回測引擎                                        │
-├───────────┼──────────────────────────────────────────────────┤
-│  Data     │  Shioaji Proxy (即時報價)                          │
-│  Layer    │  GCS (冷數據：模型權重、參數配置、歷史歸檔)           │
-└───────────┴──────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  View     │  Frontend (Vite + React 19 + Tailwind 4 + shadcn/ui)    │
+│           │  • AppShell（sidebar nav + topbar market ticker）       │
+│           │  • Dashboard（個股研究）+ Bot Dashboard（交易監控）      │
+│           │  • PWA（vite-plugin-pwa，離線 + 安裝）                  │
+├───────────┼─────────────────────────────────────────────────────────┤
+│  Router   │  Worker (Cloudflare)                                     │
+│           │  • API 路由、19 個 Cron 排程觸發                         │
+│           │  • D1 (SQLite, 45 張表, 260MB) / KV 資料存取             │
+│           │  • Queue（bulk fetch 分批）                              │
+│           │  • 47 個交易參數全讀 KV（零 deploy 更新）                │
+├───────────┼─────────────────────────────────────────────────────────┤
+│Controller │  GCP Cloud Run (asia-east1, <200MB)                      │
+│           │  • ml-controller (FastAPI + LangGraph-style pipeline)    │
+│           │  • Obsidian writer（Daily/Trade/Pipeline notes → GitHub）│
+│           │  • 週報 AI Audit + Red-Blue Army                        │
+│           │  • 風控攔截、5 層 Circuit Breaker                        │
+│           │  ⚠ 嚴禁執行任何 ML 訓練任務                              │
+├───────────┼─────────────────────────────────────────────────────────┤
+│  Model    │  Modal (Serverless GPU/CPU, $30/mo free)                 │
+│           │  • 10 模型 Ensemble（5 price + 5 feature）              │
+│           │  • SHAP 歸因（4 tree models）                           │
+│           │  • RL Shadow（PPO gym env，記錄不交易）                  │
+│           │  • GNN Shadow（numpy GraphSAGE，記錄不交易）            │
+│           │  • MLP Shadow + FT Online Update                        │
+│           │  • 模型訓練 + Optuna 自動調參                            │
+├───────────┼─────────────────────────────────────────────────────────┤
+│  Data     │  D1: 45 tables, 165 萬筆 stock_prices (2023~2026)       │
+│  Layer    │  KV: adaptive_params + trading_config + regime_config   │
+│           │  GCS: 模型權重 (.joblib/.pt) + 參數配置                  │
+├───────────┼─────────────────────────────────────────────────────────┤
+│  Brain    │  Obsidian (GitHub: AngusRepo/Angus-brain)                │
+│           │  • 每日自動 Daily/Trade/Pipeline notes                   │
+│           │  • progress.md → Claude 跨 session 記憶                 │
+│           │  • 每週 Weekly Review (L1/L2/L3)                        │
+└───────────┴─────────────────────────────────────────────────────────┘
 ```
 
 ### 各層職責切割
 
 | 層 | 負責 | 不該做的 |
 |---|---|---|
-| **Worker (CF)** | 路由、排程觸發、D1/KV 存取（熱數據）、Queue | 不做 ML 推論、不做 LLM 呼叫 |
-| **Controller (GCP)** | 編排邏輯、LangGraph 流程、LLM 呼叫、風控攔截、GCS 讀取 | 不存交易數據、不做 ML 訓練、不直接面對前端 |
-| **Model (Modal)** | ML 推論、模型訓練、Optuna 調參、回測 | 不做業務邏輯、不做編排 |
-| **Shioaji Proxy** | 即時報價轉發 | 只做 quote，不做分析 |
-| **Frontend** | UI 渲染 | 不直接 call Modal/GCP |
+| **Worker (CF)** | 路由、19 個 cron 排程、D1/KV 存取、Queue、47 個交易參數讀 KV | 不做 ML 推論、不做 LLM 呼叫 |
+| **Controller (GCP)** | 編排邏輯、LangGraph pipeline、LLM 呼叫、風控攔截、Obsidian notes 生成 + GitHub push | 不存交易數據、不做 ML 訓練、不直接面對前端 |
+| **Model (Modal)** | ML 推論（10 模型 + SHAP）、模型訓練、RL/GNN shadow、Optuna | 不做業務邏輯、不做編排 |
+| **Frontend** | UI 渲染（AppShell + Dashboard + Bot Dashboard）、PWA | 不直接 call Modal/GCP |
+| **Obsidian (GitHub)** | 交易日誌、Pipeline 快照、progress.md、Weekly Review | 只記錄，不觸發交易 |
 
 ### 數據冷熱分級 `[v4 新增]`
 
 | 類型 | 存儲 | 內容 | 存取頻率 |
 |------|------|------|---------|
-| **熱數據** | Cloudflare D1 / KV | 盤中即時訊號、當前持倉、近 60 天特徵（38 張表） | 每秒~每分鐘 |
-| **溫數據** | GCS (active) | 模型權重 (.npz/.pkl)、active_config.json、當週 Debate Logs | 每日 |
-| **冷數據** | GCS (archive) | 每月 D1 備份 (Parquet/CSV)、歷史回測結果、舊版模型權重 | 每週~每月 |
+| **熱數據** | Cloudflare D1 (260MB/10GB) / KV | 盤中訊號、持倉、stock_prices 165 萬筆、45 張表、adaptive_params + trading_config + regime_config | 每秒~每分鐘 |
+| **溫數據** | GCS (active) | 模型權重 (.joblib/.pt)、LinUCB/ARF state、當週 Debate Logs | 每日 |
+| **冷數據** | GCS (archive) | 歷史回測結果、舊版模型權重、月度 D1 備份 | 每週~每月 |
+| **知識** | GitHub (Angus-brain) | Daily/Trade/Pipeline notes、Weekly Review、progress.md | 每日 18:40 自動推 |
 
 ### Decision Authority Layer（決策權限分層） `[v5 新增]`
 

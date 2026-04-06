@@ -385,7 +385,7 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
             <col style={{ width: '12%' }} />
           </colgroup>
           <thead>
-            <tr className="text-muted-foreground border-b border-white/[0.06]">
+            <tr className="text-muted-foreground border-b border-border">
               <th className="text-left py-1 pl-1 font-medium">概念</th>
               <th className="text-center py-1 font-medium">法人淨額</th>
               <th className="text-center py-1 font-medium">象限</th>
@@ -397,14 +397,14 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
               const net = f.total_net ?? 0
               const q = QUADRANT_STYLE[f.quadrant] ?? null
               return (
-                <tr key={f.sector} className="border-b border-white/[0.03]">
+                <tr key={f.sector} className="border-b border-border">
                   <td className="py-1 pl-1 truncate max-w-[6rem]" title={f.sector}>{f.sector}</td>
                   <td className="py-1 px-1">
                     <div className="flex items-center h-3">
                       <div className="w-1/2 flex justify-end">
                         {net < 0 && <div className="bg-emerald-400/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
                       </div>
-                      <div className="w-px h-3 bg-zinc-700 shrink-0" />
+                      <div className="w-px h-3 bg-border shrink-0" />
                       <div className="w-1/2">
                         {net >= 0 && <div className="bg-red-500/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
                       </div>
@@ -463,7 +463,7 @@ export function ThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
         <BarChart3 className="w-4 h-4 text-blue-400" />
         主題輪動（三大法人近5日買賣超）
@@ -580,7 +580,7 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
                 if (!payload?.length) return null
                 const d = payload[0].payload
                 return (
-                  <div className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs">
+                  <div className="bg-card border border-border rounded px-2 py-1 text-xs">
                     <p className="font-medium">{d.name}</p>
                     <p className="text-muted-foreground">RS: {d.x?.toFixed(1)} | Mom: {d.y?.toFixed(1)}</p>
                     <p style={{ color: QUADRANT_COLORS[d.quadrant] }}>{d.quadrant}</p>
@@ -588,7 +588,19 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
                 )
               }}
             />
-            <Scatter data={data}>
+            <Scatter
+              data={data}
+              label={({ x, y, value, index }: any) => {
+                const d = data[index]
+                if (!d) return null
+                return (
+                  <text x={x} y={y - 10} textAnchor="middle" fontSize={10} fontWeight={500}
+                    fill={QUADRANT_COLORS[d.quadrant] ?? '#888'} opacity={0.9}>
+                    {d.name}
+                  </text>
+                )
+              }}
+            >
               {data.map((d, i) => (
                 <Cell key={i} fill={QUADRANT_COLORS[d.quadrant] ?? '#888'} fillOpacity={0.8} />
               ))}
@@ -680,7 +692,7 @@ export function BotThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
         <BarChart3 className="w-4 h-4 text-blue-400" />
         主題輪動 + RRG 四象限
@@ -697,25 +709,6 @@ export function BotThemeFlowPanel() {
           <RRGScatterChart flows={allFlows} />
           {/* T2 Filter Log */}
           <QuadrantFilterLog />
-          {/* Treemap */}
-          {treemapData.length > 0 && (
-            <div>
-              <p className="text-xs text-muted-foreground mb-2">法人資金 Treemap</p>
-              <div className="h-44 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <Treemap
-                    data={treemapData}
-                    dataKey="size"
-                    aspectRatio={4 / 3}
-                    content={<TreemapContent />}
-                  />
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-          {/* Bot Ranking Tables — 含象限 + RS 差異化 */}
-          <BotThemeRankingTable flows={topBuy} title="買超前 10 大" color="text-red-400" />
-          <BotThemeRankingTable flows={topSell} title="賣超前 10 大" color="text-emerald-400" />
         </div>
       )}
     </div>

@@ -2,13 +2,14 @@
 """
 backfill_delisted_stocks.py — 回補下市股票資料（C1 存活偏差修正）
 
-從 TWSE/OTC API 拉取 2023-01-01 以來的下市股票清單，
+從 TWSE/TPEX API 拉取 2023-01-01 以來的下市股票清單，
 包含其 OHLCV 歷史，寫入 D1 stocks + stock_prices 表。
 
-資料來源：
-  1. TWSE 上市公司下市清單：https://www.twse.com.tw/zh/listed/suspension.html
-  2. FinMind TaiwanStockDelisted API
-  3. TWSE STOCK_DAY_ALL 歷史日報
+資料來源（不依賴 FinMind）：
+  1. TWSE 上市公司下市清單：https://www.twse.com.tw/rwd/zh/company/suspendListing
+  2. TPEX 上櫃公司下市清單
+  3. TWSE STOCK_DAY 個股月K歷史（支援下市股）
+  4. TPEX tradingStock 個股月K歷史（支援下市股）
 
 用法：
   CF_API_TOKEN=xxx python3 scripts/backfill_delisted_stocks.py
@@ -23,7 +24,6 @@ from datetime import datetime, timedelta
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
 CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
-FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN", "")
 
 D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
 
@@ -147,24 +147,129 @@ def fetch_delisted_stocks_twse() -> list[dict]:
     return delisted
 
 
-def fetch_stock_history_finmind(symbol: str, start: str, end: str) -> list[dict]:
-    """Fetch OHLCV from FinMind for a specific stock."""
-    if not FINMIND_TOKEN:
-        return []
+def _parse_roc_date(roc_str: str) -> str:
+    """Convert ROC date '114/04/01' to ISO '2025-04-01'."""
+    parts = roc_str.strip().split("/")
+    y = int(parts[0]) + 1911
+    m = int(parts[1])
+    d = int(parts[2])
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def _parse_tw_num(s: str) -> float:
+    """Parse comma-separated number string like '1,234,567' or '--'."""
+    s = s.strip().replace(",", "").replace("--", "0").replace("X", "")
     try:
-        resp = requests.get("https://api.finmindtrade.com/api/v4/data", params={
-            "dataset": "TaiwanStockPrice",
-            "data_id": symbol,
-            "start_date": start,
-            "end_date": end,
-            "token": FINMIND_TOKEN,
-        }, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            return data
-    except Exception as e:
-        print(f"[FinMind] {symbol} failed: {e}")
-    return []
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def fetch_stock_history_twse(symbol: str, start: str, end: str) -> list[dict]:
+    """
+    Fetch OHLCV from TWSE STOCK_DAY (month by month).
+    Works for delisted stocks too.
+    """
+    results = []
+    start_dt = datetime.strptime(start, "%Y-%m-%d")
+    end_dt = datetime.strptime(end, "%Y-%m-%d")
+
+    current = start_dt.replace(day=1)
+    while current <= end_dt:
+        date_param = current.strftime("%Y%m01")
+        url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date_param}&stockNo={symbol}"
+        try:
+            resp = requests.get(url, timeout=30, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("stat") == "OK" and data.get("data"):
+                    for row in data["data"]:
+                        try:
+                            iso_date = _parse_roc_date(row[0])
+                            if iso_date < start or iso_date > end:
+                                continue
+                            results.append({
+                                "date": iso_date,
+                                "open": _parse_tw_num(row[3]),
+                                "high": _parse_tw_num(row[4]),
+                                "low": _parse_tw_num(row[5]),
+                                "close": _parse_tw_num(row[6]),
+                                "volume": int(_parse_tw_num(row[1])),  # shares
+                            })
+                        except (IndexError, ValueError):
+                            pass
+        except Exception as e:
+            print(f"    [TWSE STOCK_DAY] {symbol} {date_param}: {e}")
+
+        # Rate limit: 2 sec between requests
+        time.sleep(2)
+        # Next month
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    return results
+
+
+def fetch_stock_history_tpex(symbol: str, start: str, end: str) -> list[dict]:
+    """
+    Fetch OHLCV from TPEX tradingStock (month by month).
+    Works for delisted OTC stocks too.
+    Volume returned in 張 (lots), converted to shares (x1000).
+    """
+    results = []
+    start_dt = datetime.strptime(start, "%Y-%m-%d")
+    end_dt = datetime.strptime(end, "%Y-%m-%d")
+
+    current = start_dt.replace(day=1)
+    while current <= end_dt:
+        date_param = current.strftime("%Y/%m/01")
+        url = f"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date={date_param}&code={symbol}&response=json"
+        try:
+            resp = requests.get(url, timeout=30, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            if resp.status_code == 200:
+                data = resp.json()
+                tables = data.get("tables", [])
+                if tables and tables[0].get("data"):
+                    for row in tables[0]["data"]:
+                        try:
+                            iso_date = _parse_roc_date(row[0])
+                            if iso_date < start or iso_date > end:
+                                continue
+                            volume_lots = _parse_tw_num(row[1])
+                            results.append({
+                                "date": iso_date,
+                                "open": _parse_tw_num(row[3]),
+                                "high": _parse_tw_num(row[4]),
+                                "low": _parse_tw_num(row[5]),
+                                "close": _parse_tw_num(row[6]),
+                                "volume": int(volume_lots * 1000),  # lots → shares
+                            })
+                        except (IndexError, ValueError):
+                            pass
+        except Exception as e:
+            print(f"    [TPEX] {symbol} {date_param}: {e}")
+
+        time.sleep(2)
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    return results
+
+
+def fetch_stock_history(symbol: str, market: str, start: str, end: str) -> list[dict]:
+    """Fetch OHLCV via TWSE or TPEX based on market."""
+    if market == "OTC":
+        return fetch_stock_history_tpex(symbol, start, end)
+    else:
+        return fetch_stock_history_twse(symbol, start, end)
 
 
 def backfill_stock(stock: dict) -> int:
@@ -196,11 +301,12 @@ def backfill_stock(stock: dict) -> int:
         stock_id = result[0]["id"]
         print(f"  [{symbol}] Inserted new stock (id={stock_id})")
 
-    # Fetch OHLCV history
+    # Fetch OHLCV history from TWSE/TPEX (not FinMind)
     end_date = stock.get("delisted_date", datetime.now().strftime("%Y-%m-%d"))
-    history = fetch_stock_history_finmind(symbol, BACKFILL_START, end_date)
+    market = stock.get("market", "TWSE")
+    history = fetch_stock_history(symbol, market, BACKFILL_START, end_date)
     if not history:
-        print(f"  [{symbol}] No OHLCV history from FinMind")
+        print(f"  [{symbol}] No OHLCV history from {'TPEX' if market == 'OTC' else 'TWSE'}")
         return 0
 
     # Insert prices
@@ -209,8 +315,8 @@ def backfill_stock(stock: dict) -> int:
         ok = d1_exec(
             """INSERT OR IGNORE INTO stock_prices (stock_id, date, open, high, low, close, volume)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            [stock_id, bar["date"], bar.get("open"), bar.get("max"), bar.get("min"),
-             bar.get("close"), bar.get("Trading_Volume")],
+            [stock_id, bar["date"], bar.get("open"), bar.get("high"), bar.get("low"),
+             bar.get("close"), bar.get("volume")],
         )
         if ok:
             rows += 1

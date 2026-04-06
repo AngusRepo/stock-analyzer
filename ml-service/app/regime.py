@@ -22,12 +22,13 @@ logger = logging.getLogger(__name__)
 # 1 = 高波動牛市：籌碼動量驅動，特徵模型（XGB, CatBoost）更準確
 # 2 = 震盪整理：訊號雜訊高，整體降信心，收緊共識門檻
 # 3 = 熊市危機：所有模型保守，GP 寬區間反而誠實
-REGIME_CONFIG = {
+DEFAULT_REGIME_CONFIG = {
     0: {"label": "低波動牛市", "price_mult": 1.2,  "feature_mult": 1.0,  "consensus_threshold": 0.55},
     1: {"label": "高波動牛市", "price_mult": 0.9,  "feature_mult": 1.25, "consensus_threshold": 0.60},
     2: {"label": "震盪整理",   "price_mult": 0.8,  "feature_mult": 0.85, "consensus_threshold": 0.68},
     3: {"label": "熊市危機",   "price_mult": 0.65, "feature_mult": 0.75, "consensus_threshold": 0.72},
 }
+REGIME_CONFIG = DEFAULT_REGIME_CONFIG  # runtime alias, overridden by regime_config_override
 
 PRICE_MODEL_NAMES   = {"KalmanFilter", "DLinear", "MarkovSwitching", "PatchTST", "Chronos"}
 FEATURE_MODEL_NAMES = {"XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"}
@@ -147,10 +148,21 @@ class RegimeDetector:
         return regime_map
 
     # ── 推論 ──────────────────────────────────────────────────────────────────
-    def predict_regime(self, current_features_raw: np.ndarray) -> dict:
+    def predict_regime(self, current_features_raw: np.ndarray, regime_config_override: dict | None = None) -> dict:
         """
-        輸入當前市況特徵向量（1 行），回傳 regime 資訊 dict
+        輸入當前市況特徵向量（1 行），回傳 regime 資訊 dict。
+        regime_config_override: optional KV dict keyed by regime index (int or str),
+            values are partial dicts merged on top of DEFAULT_REGIME_CONFIG.
         """
+        # Deep merge: override 只覆蓋有給的 key，其餘保留 default
+        if regime_config_override:
+            effective_config = {}
+            for k, v in DEFAULT_REGIME_CONFIG.items():
+                override_entry = regime_config_override.get(k) or regime_config_override.get(str(k)) or {}
+                effective_config[k] = {**v, **{ok: float(ov) if ok != "label" else ov for ok, ov in override_entry.items()}}
+        else:
+            effective_config = DEFAULT_REGIME_CONFIG
+
         default = {
             "regime_index": 1, "hmm_state": -1,
             "label": "未知（使用預設）",
@@ -167,7 +179,7 @@ class RegimeDetector:
 
             state     = int(self.model.predict(f)[-1])
             reg_idx   = self.regime_map.get(state, 1)
-            cfg       = REGIME_CONFIG.get(reg_idx, REGIME_CONFIG[1])
+            cfg       = effective_config.get(reg_idx, effective_config[1])
 
             mults = {}
             for m in PRICE_MODEL_NAMES:

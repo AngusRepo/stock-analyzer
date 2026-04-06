@@ -223,22 +223,77 @@
 
 ---
 
-## P3 — Long-term Research (3-6 months)
+## P3 — Intelligence Evolution (建議時程)
 
-### #28 Graph Neural Network (Cross-stock Relations)
-- **What**: Learn supply chain / industry co-movement. "TSMC up -> which suppliers follow" without manual concept tags
-- **Where**: New model in `ml-service/app/models.py`
-- **Why**: All current models predict each stock independently. GNN captures cross-stock patterns
+### Phase 1: SHAP 歸因（Now，1 週內）
+- **#31 SHAP Feature Attribution**
+- **What**: 每筆交易用 SHAP 解釋 10 個模型各 feature 的貢獻度。Obsidian Trade note 自動顯示「這筆虧損主因是 RSI 誤判」
+- **Where**: `ml-service/app/ensemble.py` 加 `shap.TreeExplainer` + Obsidian trade.md.j2 加 SHAP section
+- **Why**: Optuna 找最佳參數，SHAP 解釋為什麼。兩者互補。低成本高洞察
+- **Expected**: 每筆交易可追溯到具體 feature，累積 50+ 筆後 pattern 自然浮現
+- **Effort**: Low（tree model 天然支援 SHAP）
 
-### #29 Reinforcement Learning End-to-End
-- **What**: RL agent learns optimal entry/exit/position sizing from raw data. Replace all rule-based exit logic
-- **Where**: New `ml-service/app/rl_agent.py`
-- **Why**: Theoretical ultimate solution. But needs massive data + training time
+### Phase 2: Regime-conditional Optuna + RL Shadow Framework（1-3 個月）
+- **#32 Per-Regime Parameter Search**
+- **What**: 不再搜全局最佳參數，而是每個 HMM regime 各搜一組。低波動牛市用一組 SL/TP，震盪整理用另一組
+- **Where**: `scripts/optuna_*.py` 改 objective 分 regime 跑 + `ml:adaptive_params` 改為 per-regime dict
+- **Why**: 一組參數應對不了所有盤勢。震盪市該用緊 trailing，趨勢市該放寬
+- **Expected**: 不同 regime 的 Sharpe 各自提升 0.1-0.3
+- **Prerequisite**: 已有 HMM regime detector + regime_config KV 化 ✅
+- **Effort**: Med
 
-### #30 LLM Strategy Generation
-- **What**: Claude analyzes performance -> proposes feature/strategy hypotheses -> Optuna validates -> human confirms. Not writing model code, proposing "chip_momentum = foreign_consecutive x vol_ratio might work" -> auto-validate IC
+- **#29 RL Shadow Framework（搭框架，不上線）**
+- **What**: 搭好 gym environment + 用回測資料訓練 shadow RL。output 只記錄不執行，等 6 個月後有足夠真實交易再 evaluate
+- **Where**: `ml-service/app/rl_advisor.py`（gym env）+ `ml-service/app/rl_shadow.py`（shadow mode 記錄）
+- **Why**: RL 需要大量資料但框架可以先搭。現在開始用回測訓練，同步累積 paper trading 真實資料
+- **⚠️ Shadow only**: 預測結果記錄到 D1 `rl_shadow_predictions` 表，不影響任何實際交易決策
+- **Effort**: Med-High（gym env + PPO/SAC 選型 + 回測 episode 建構）
+
+### Phase 3: GNN + LLM Strategy Gen + Loss Mining（3-6 個月）
+- **#28 Graph Neural Network (Cross-stock Relations)**
+- **What**: 用 60 天報酬率 correlation matrix 自動建圖（不需供應鏈資料），GNN 學跨股票共動模式
+- **Where**: New model in `ml-service/app/gnn_model.py`（PyTorch Geometric）
+- **Why**: 所有現有模型獨立預測每檔股票。GNN 捕捉「台積電漲 → 哪些供應商跟著動」
+- **Data**: 165 萬筆 OHLCV ✅ + 38 個 TWSE 產業分類 ✅ + correlation 自動建邊
+- **Mode**: **Shadow mode 先跑** — GNN 預測記錄但不進 ensemble，連續 4 週 OOS > 現有模型才納入
+- **Effort**: High（PyTorch Geometric + 圖建構 + ensemble 整合）
+
+- **#30 LLM Strategy Generation**
+- **What**: Claude 讀 SHAP 歸因 + 虧損 clustering → 提出 feature 假設 → Optuna IC 驗證 → 你確認
 - **Where**: `ml-controller/graphs/strategy_gen_graph.py` (new)
-- **Why**: Human can't explore all possible feature combinations. LLM proposes, Optuna validates, human decides
+- **Why**: SHAP 說「RSI 害你虧」→ LLM 提出「加 RSI 二階導數 feature」→ IC 自動驗證
+- **Prerequisite**: #31 SHAP 累積 50+ 筆交易
+- **Effort**: Med
+
+- **#33 Loss Pattern Mining**
+- **What**: K-Means clustering 虧損交易（sector, regime, hold_days, exit_reason, SHAP attribution）→ 自動分類虧損類型 → 餵 #30 LLM Gen
+- **Where**: `ml-controller/services/loss_mining.py` (new)
+- **Why**: 從「個別虧損」看到「系統性問題」。3 筆不相關虧損可能是同一個 regime + trailing 缺陷
+- **Effort**: Med
+
+### Phase 4: GA Ensemble + GNN 上線 + RL Evaluate（6+ 個月）
+- **#34 Genetic Algorithm Ensemble Weights**
+- **What**: GA 搜 10 模型 w1~w10 權重。crossover 天然抓參數交互效果
+- **Where**: `ml-service/scripts/ga_ensemble.py` (new)
+- **Why**: 10 維空間 Optuna 效率差，GA 更適合
+- **Prerequisite**: **350+ 筆交易**（8 筆搜 10 權重 = 100% overfitting，數學上不行）
+- **Why not now**: 8 筆交易、150 組候選 = GA 會選中「剛好在 8 筆上表現好」的權重，換新交易全錯
+- **Effort**: Med
+
+- **#28 GNN 正式上線**: Shadow 連續 4 週 OOS 勝出 → 納入 ensemble 作為第 11 個模型
+- **#29 RL Evaluate**: 對比 shadow RL policy vs rule-based Layer 1-7 的出場時機，證明更好才上線
+
+### RL 上線安全規則（Phase 4 通過驗證後才適用）
+```
+架構：
+Layer 1-7: 原封不動（風控骨幹，不可被 RL 覆蓋）
+Layer 8: RL Advisor（建議層）
+  ├── RL 說「建議現在賣」→ 觸發 early exit
+  ├── RL 說「建議繼續抱」→ 放寬 trailing（但 Layer 1 hard stop 永遠生效）
+  └── RL 和 Layer 1-7 衝突 → Layer 1-7 優先（風控永遠有最終否決權）
+
+⚠️ Safety: Hard stop -12% + Circuit Breaker = immutable。RL 不能覆蓋。
+```
 
 ---
 
@@ -246,34 +301,37 @@
 
 | Phase | Auto-Learning | Still Hardcode | Intentionally Manual |
 |---|---|---|---|
-| **Now** | 18% | 72% | 10% |
-| **P0 done** | 35% | 55% | 10% |
-| **P1 done** | 50% | 40% | 10% |
-| **P2 done** | 75% | 15% | 10% |
-| **P3 done** | 90% | 0% | 10% |
+| **P0-P2 done** | 85% | 5% | 10% |
+| **P3 Phase 1-2** | 90% | 0% | 10% |
+| **P3 Phase 3-5** | 95% | 0% | 5% |
 
-**Intentionally manual 10%**: Universe filter (strategy assumption), Hard stop -12% (last defense), Fees/tax (real rates), Model replacement confirmation (your decision).
+**Intentionally manual (never auto)**:
+- Universe filter（策略定義：做哪些市場）
+- Hard stop -12%（最後防線：永遠不能被優化掉）
+- Fees/tax（法規：0.1425% 手續費、0.3% 交易稅）
+- Model replacement confirmation（你的決定：砍模型必須人工確認）
+- RL Layer 8 不能覆蓋 Layer 1-7（風控架構原則）
 
 ---
 
 ## Timeline
 
 ```
-P0 (Week 1-2)        P1 (Week 3-6)         P2 (Week 7-12)        P3 (3-6mo)
-──────────────       ───────────────       ────────────────      ──────────
-#1-3 Optuna x3        #8 Model Lifecycle    #16 Weekly AI Audit   #28 GNN
-#4 Backtest cron      #9 IC+Hyperparams     #17-18 Red-Blue Army  #29 RL
-#5 Monte Carlo        #10 Meta dynamic      #19 RRG Grid          #30 LLM Gen
-#6 PBO                #11 LangGraph         #20 CB+Trailing Opt
-#7 Sortino/Calmar     #12 Portfolio         #21 MLP Shadow
-                      #13 Execution         #22 FT Online Update
-                      #14 Injection Det     #23 PTT ML features
-                      #15 Observability     #24 Conformal Opt
-                                            #25 Screener Percentile
-                                            #26 Exit Dynamic
-                                            #27 Feature Window Opt
+✅ Done              Now                  1-3 months           3-6 months           6+ months
+────────────        ─────────            ──────────           ──────────           ──────────
+P0 #1-7 ✅          #31 SHAP 歸因        #32 Regime Optuna    #28 GNN (shadow)     #34 GA Weights
+P1 #8-15 ✅                              #29 RL framework     #30 LLM Gen          #28 GNN 上線
+P2 #16-27 ✅                             (shadow, 不上線)     #33 Loss Mining      #29 RL evaluate
+47 params KV ✅
+Obsidian ✅
+Data Backfill ✅
 
-Evolution:  3/10  ->  5/10  ->  8/10  ->  9.5/10
+Intelligence:  Rule-based → Optuna-tuned → SHAP-explained → Regime-adaptive → Cross-stock → RL-assisted
+Evolution:     6/10         8/10            8.5/10              9/10                 9.5/10       10/10
+
+Shadow Mode 原則：GNN、RL 都先跑 shadow（預測記錄但不交易），連續 4 週 OOS 勝出才納入正式 ensemble
+GA 等待原則：350+ 筆交易前不跑（8 筆搜 10 維 = 純 overfitting）
+RL 安全原則：上線後只能「加速出場」不能「阻止出場」，Layer 1-7 風控永遠優先
 ```
 
 ---
@@ -281,20 +339,20 @@ Evolution:  3/10  ->  5/10  ->  8/10  ->  9.5/10
 ## Pending Action Items (手動執行)
 
 ### 🔴 Deploy 前完整驗證流程（按順序執行）
-1. [ ] 跑所有 D1 migrations（7 個 .sql）
-2. [ ] 跑 `backfill_delisted_stocks.py` 補齊下市股資料
-3. [ ] Optuna P0#1-3 重搜（Triple Barrier / Signal / SL-TP）— 因為 ensemble 邏輯改了
+1. [x] 跑所有 D1 migrations（8 個 .sql）— ✅ 2026-04-06
+2. [x] 跑 `backfill_delisted_stocks.py` 補齊下市股資料 — ✅ 10 檔 TWSE/TPEX（不用 FinMind）
+3. [x] Optuna P0#1-3 重搜 — ✅ 結果推 KV（barrier+signal+sltp）
 4. [ ] 完整回測（新滑價 + ATR TP + point-in-time universe）
 5. [ ] Monte Carlo MDD（驗證 95th MDD < 20%）
 6. [ ] PBO（驗證 PBO < 0.5）
-7. [ ] **確認 MC=PASS + PBO=PASS 才能 deploy。任一 FAIL 就停下查原因。**
+7. [ ] **確認 MC=PASS + PBO=PASS 才能上真錢。任一 FAIL 就停下查原因。**
 
-### 🔴 Data Backfill（上線前必做）
-- [ ] 跑 `scripts/backfill_delisted_stocks.py` 補齊 2023-01-01 起的下市股 OHLCV
-  - 需要：`CF_API_TOKEN` + `FINMIND_TOKEN`
-  - 用途：C1 存活偏差修正，回測才能包含已下市股票
-- [ ] 跑 `worker/migration_stock_pit.sql` 加上 `listed_date` / `delisted_date` 欄位
-- [ ] 確認所有現存股票的 `stock_prices` 有 2023-01-01 起的完整日K
+### ✅ Data Backfill（已完成 2026-04-06）
+- [x] 下市股 OHLCV：10 檔，4,319 bars（TWSE/TPEX API，不用 FinMind）
+- [x] 現存股 Yahoo backfill：2,329 檔，2023-01-01 ~ 2025-03-24
+- [x] 缺失股 TWSE/TPEX 補齊：324 檔，4,775 bars
+- [x] migration_stock_pit.sql：listed_date / delisted_date 欄位
+- **最終：1,662,865 筆 stock_prices，2,345 檔股票，2023-01-03 ~ 2026-04-02**
 
 ### 🟢 回測 / 參數搜索頻率
 | 類型 | 頻率 | Cron | 說明 |
@@ -321,62 +379,46 @@ Optuna 不是類神經網路 — 它是 hyperparameter 搜索框架（Tree-Struc
   - 搜索後：每個因子有不同的重要性（例如 accuracy 可能比 regime 重要 3 倍）
   - 位置：`ml-service/app/ensemble.py` log_w 計算
 
-### 🟡 D1 Migrations（部署前跑）
-- [ ] `worker/migration_stock_pit.sql` — stocks 表加 listed/delisted 欄位
-- [ ] `worker/migration_model_lifecycle.sql` — model_lifecycle_state + events 表
-- [ ] `worker/migration_monte_carlo.sql` — monte_carlo_results 表
-- [ ] `worker/migration_pbo.sql` — pbo_results 表
-- [ ] `worker/migration_paper_snapshot_v4.sql` — paper_daily_snapshots 加 sortino/calmar/cagr
-- [ ] `worker/migration_observability.sql` — decision_logs + model_health_daily 表
-- [ ] `worker/migration_weekly_audit.sql` — weekly_audit_reports 表
+### ✅ D1 Migrations（全部已跑 2026-04-06）
+- [x] `worker/migration_stock_pit.sql`
+- [x] `worker/migration_model_lifecycle.sql`
+- [x] `worker/migration_monte_carlo.sql`
+- [x] `worker/migration_pbo.sql`
+- [x] `worker/migration_paper_snapshot_v4.sql`
+- [x] `worker/migration_observability.sql`
+- [x] `worker/migration_weekly_audit.sql`
+- [x] `worker/migration_financials_v2.sql` — operating_income/net_income/total_assets/total_liabilities
 
 ---
 
-## Obsidian Second Brain Integration (規劃中)
-
-### 目標
-把交易系統的「數據」轉化成「知識」。Dashboard 告訴你「發生了什麼」，Obsidian 讓你理解「為什麼」。
+## ✅ Obsidian Second Brain Integration（已完成 2026-04-06）
 
 ### 架構
 ```
-GCP Cloud Run (ml-controller)
-  ├── pipeline 跑完 → 生成 .md
-  ├── git commit + push → GitHub Private Repo
-  │
-  ▼
-GitHub Private Repo = Obsidian Vault
-  ├── 筆電：Obsidian Git plugin 自動 pull
-  ├── 手機：Working Copy app + Obsidian iOS
-  └── 其他電腦：git clone
+Worker cron 18:40 TW → POST Controller /obsidian/daily
+  → obsidian_writer.py 讀 D1 → Jinja2 模板 → GitHub Git Trees API batch push
+  → Angus-brain repo: Daily/ + Trades/ + Pipeline/ + Current-State.md
+  → stock-analyzer repo: progress.md（Claude 跨 session 記憶）
 ```
 
-### 實作項目
-- [ ] **Phase 1 — Vault 建立**：Obsidian vault + Dataview/Templater/Periodic Notes plugins
-- [ ] **Phase 2 — obsidian_writer.py**：ml-controller 生成 Trade notes + Daily summary → git push to GitHub
-- [ ] **Phase 3 — Review templates**：Weekly review 嵌入 Dataview 查詢，L1/L2/L3 → frontmatter
-- [ ] **Phase 4 — Zettelkasten**：從交易中提煉 Lessons/Patterns/Strategies atomic notes
+### 已完成
+- [x] **Vault**: `AngusRepo/Angus-brain`（GitHub Private Repo）
+- [x] **obsidian_writer.py**: D1 → Jinja2 → GitHub push（Daily + Trade + Pipeline + Weekly Review）
+- [x] **progress.md 自動同步**: 每日壓縮摘要推到兩個 repo
+- [x] **Cron**: Worker `40 10 * * 1-5`（18:40 TW）自動觸發
+- [x] **Templates**: daily.md.j2 / trade.md.j2 / pipeline.md.j2 / weekly_review.md.j2 / progress.md.j2
+- [x] **Deploy**: Controller Cloud Run + Worker cron 已上線
 
 ### Vault 結構
 ```
-StockVision-Brain/
-├── Daily/           ← 每日自動生成（大盤 + 所有決策）
-├── Trades/          ← 每筆交易一個 note（ML 投票 + debate + 出場）
-├── Models/          ← 10 個模型各一個 note（lifecycle 歷史）
-├── Audits/Weekly/   ← L1/L2/L3 週報
-├── Strategies/      ← Zettelkasten 策略 notes
-├── Lessons/         ← 原子化交易教訓
-├── Risk/            ← MC/PBO 報告
-└── MOC/             ← Maps of Content 索引
+Angus-brain/                    ← Personal Second Brain
+├── StockVision/
+│   ├── Daily/                  ← 每日自動生成
+│   ├── Trades/                 ← 每筆交易 note
+│   ├── Pipeline/               ← 每日選股流程
+│   └── Audits/Weekly/          ← 週報
+├── Projects/                   ← 各專案筆記
+├── Learning/                   ← 學習筆記
+├── Current-State.md            ← Claude context（自動更新）
+└── ...
 ```
-
-### 必裝 Plugins
-- **Dataview**（必裝）：vault 當資料庫查詢
-- **Templater**（必裝）：交易 note 自動模板
-- **Periodic Notes**（必裝）：自動建日/週/月 note
-- **Calendar**（高）：日曆導航
-- **Charts**（高）：equity curve 內嵌
-- **Obsidian Git**（必裝）：自動 pull/push GitHub
-
-### 費用
-- GitHub Free：$0（private repo 無限、5GB 容量，Obsidian vault 用不到 100MB）
-- 升級時機：嵌大量截圖/PDF 時考慮 LFS（Free 1GB → Pro $4/月 2GB）

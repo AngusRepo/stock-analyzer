@@ -7,7 +7,7 @@ import os
 import logging
 import httpx
 from fastapi import APIRouter
-from main import VERSION as _VERSION
+_VERSION = "12.3.0"  # avoid circular import from main
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

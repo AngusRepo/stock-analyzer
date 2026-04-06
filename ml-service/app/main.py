@@ -71,6 +71,7 @@ class PredictRequest(BaseModel):
     market_env: dict | None = None
     model_stats: dict[str, dict] = {}
     adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
+    barrier_params: dict = {}   # 來自 KV trading:config.barrier（Optuna #1 搜尋，零 deploy）
     lifecycle_weights: dict[str, float] = {}  # P1#8: per-model lifecycle weight overrides
     weak_features: list[str] = []             # P1#9: IC audit 無效特徵（retrain 時排除）
     use_optuna: bool = False                  # P1#9: 啟用 Optuna 超參數搜索
@@ -199,7 +200,8 @@ def predict_stock(req: PredictRequest) -> dict:
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df           = build_feature_matrix(req.prices, req.indicators, chips_input,
-                                         req.sentiment_scores, req.market_env)
+                                         req.sentiment_scores, req.market_env,
+                                         barrier_params=req.barrier_params or None)
     prices_arr   = np.array([float(p["close"]) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else 0.0
@@ -579,6 +581,17 @@ def retrain_stock(req: PredictRequest) -> dict:
     except Exception as e:
         results["Stacking"] = {"error": str(e)}
 
+    # P2#21: MLP Shadow — train parallel to LR stacking, compare 4 weeks
+    try:
+        from .stacking_mlp import train_shadow_mlp
+        mlp_result = train_shadow_mlp(X, y)
+        if mlp_result:
+            results["MLP_Shadow"] = {"trained": True, "oos_accuracy": mlp_result.get("oos_accuracy")}
+        else:
+            results["MLP_Shadow"] = {"trained": False, "reason": "insufficient data or failed"}
+    except Exception as e:
+        results["MLP_Shadow"] = {"error": str(e)}
+
     # HMM Regime
     try:
         from .regime import RegimeDetector, build_market_feature_matrix
@@ -689,6 +702,61 @@ def update_arf(req: ARFUpdateRequest) -> dict:
             }
         except Exception as e:
             results["linucb"] = {"updated": False, "error": str(e)}
+
+    # P2#22: FT-Transformer Online Update — fine-tune last 2 layers with new data
+    # FT bundle in model_store: {"state_dict": ..., "scaler": ..., "n_features": ...}
+    # Need to reconstruct PyTorch model from state_dict before fine-tuning
+    try:
+        from .ft_online_update import online_update_ft_transformer
+        from .model_store import load_model as _load_model, save_model as _save_model
+        stock_id = getattr(req, 'stock_id', 0)
+        ft_stored = _load_model(stock_id, "FT-Transformer")
+        if ft_stored and ft_stored[0] is not None:
+            bundle_data, ft_meta = ft_stored
+            # bundle_data is {"state_dict": ..., "scaler": ..., "n_features": ...}
+            if isinstance(bundle_data, dict) and "state_dict" in bundle_data:
+                import torch
+                import torch.nn as nn
+                # Reconstruct FTTransformer (same arch as models.py)
+                _D, _H, _L = 64, 4, 2
+                n_feat = bundle_data.get("n_features", features.shape[-1] if features.ndim > 1 else features.shape[0])
+
+                class _FT(nn.Module):
+                    def __init__(self, nf, d, h, nl):
+                        super().__init__()
+                        self.feat_embed = nn.Linear(1, d, bias=True)
+                        self.cls_token = nn.Parameter(torch.zeros(1, 1, d))
+                        enc_layer = nn.TransformerEncoderLayer(d_model=d, nhead=h, dim_feedforward=d*4, dropout=0.1, batch_first=True)
+                        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=nl)
+                        self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, 2))
+                    def forward(self, x):
+                        x = x.unsqueeze(-1) if x.dim() == 2 else x
+                        x = self.feat_embed(x)
+                        cls = self.cls_token.expand(x.size(0), -1, -1)
+                        x = torch.cat([cls, x], dim=1)
+                        x = self.encoder(x)
+                        return self.head(x[:, 0])
+                ft_model = _FT(n_feat, _D, _H, _L)
+                ft_model.load_state_dict(bundle_data["state_dict"])
+                ft_model.eval()
+
+                ft_bundle = {"model": ft_model, "scaler": bundle_data.get("scaler")}
+                y_label = np.array([1 if req.actual_up else 0])
+                X_new = features.reshape(1, -1) if features.ndim == 1 else features[:1]
+                ft_result = online_update_ft_transformer(ft_bundle, X_new, y_label)
+
+                # Save updated state_dict back
+                if ft_result and ft_result.get("updated"):
+                    bundle_data["state_dict"] = ft_model.state_dict()
+                    _save_model(stock_id, "FT-Transformer", bundle_data,
+                                ft_meta.get("feature_names", []), ft_meta.get("n_samples", 0))
+                results["ft_online"] = ft_result or {"updated": False, "reason": "below MIN_NEW_SAMPLES"}
+            else:
+                results["ft_online"] = {"updated": False, "reason": "bundle format mismatch (no state_dict)"}
+        else:
+            results["ft_online"] = {"updated": False, "reason": "no FT model yet (will be created on Sunday retrain)"}
+    except Exception as e:
+        results["ft_online"] = {"error": str(e)}
 
     return {
         "updated_at": datetime.utcnow().isoformat() + "Z",

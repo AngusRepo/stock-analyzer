@@ -102,6 +102,7 @@ app.put('/api/admin/config', async (c) => {
     position: { ...current.position, ...body.position },
     screener: { ...current.screener, ...body.screener },
     rrg: { ...current.rrg, ...body.rrg },
+    barrier: { ...current.barrier, ...body.barrier },
   }
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
@@ -249,6 +250,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'verify',           tw_time: '18:15',       description: '預測驗證' },
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
+    { task: 'obsidian-daily',   tw_time: '18:40',       description: 'Obsidian 日誌 + progress.md' },
     { task: 'weekly-cleanup',   tw_time: '週日 04:00',  description: '清理+重訓+集保+IC+Timeverse' },
     { task: 'weekly-backtest',  tw_time: '週日 06:00',  description: '自動回測 + MC MDD + PBO' },
   ]
@@ -325,6 +327,14 @@ app.post('/api/admin/trigger/:task', async (c) => {
     warmup:        () => runMorningWarmup(c.env),
     'morning-briefing': async () => { const { generateMorningBriefing } = await import('./lib/morningBriefing'); return generateMorningBriefing(c.env) },
     'daily-report':     async () => { const { generateDailyReport } = await import('./lib/dailyReport'); return generateDailyReport(c.env) },
+    'obsidian-daily':   async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string,string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/obsidian/daily`, { method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000) })
+      return res.ok ? await res.json() : `HTTP ${res.status}`
+    },
     'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
@@ -590,14 +600,18 @@ async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
         .map(f => {
           const period = `${f.year}Q${f.quarter}`
           return env.DB.prepare(`
-            INSERT INTO financials (stock_id, period, period_type, eps, revenue, roe)
-            SELECT s.id, ?, 'quarterly', ?, ?, ?
+            INSERT INTO financials (stock_id, period, period_type, eps, revenue, roe, operating_income, net_income, total_assets, total_liabilities)
+            SELECT s.id, ?, 'quarterly', ?, ?, ?, ?, ?, ?, ?
             FROM stocks s WHERE s.symbol = ?
             ON CONFLICT(stock_id, period) DO UPDATE SET
               eps=COALESCE(excluded.eps, financials.eps),
               revenue=COALESCE(excluded.revenue, financials.revenue),
-              roe=COALESCE(excluded.roe, financials.roe)
-          `).bind(period, f.eps, f.revenue, f.roe, f.symbol)
+              roe=COALESCE(excluded.roe, financials.roe),
+              operating_income=COALESCE(excluded.operating_income, financials.operating_income),
+              net_income=COALESCE(excluded.net_income, financials.net_income),
+              total_assets=COALESCE(excluded.total_assets, financials.total_assets),
+              total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
+          `).bind(period, f.eps, f.revenue, f.roe, f.operating_income, f.net_income, f.total_assets, f.total_liabilities, f.symbol)
         })
       for (let i = 0; i < stmts.length; i += 50) {
         await env.DB.batch(stmts.slice(i, i + 50))
@@ -789,6 +803,10 @@ async function runMLAndRisk(env: Bindings) {
   const { getAdaptiveParams } = await import('./lib/adaptiveConfig')
   const adaptiveParams = await getAdaptiveParams(env.KV)
 
+  // Read trading config for barrier params (Optuna #1 searchable via KV)
+  const { getTradingConfig } = await import('./lib/tradingConfig')
+  const tradingCfg = await getTradingConfig(env.KV)
+
   // P1#8: Read lifecycle weight overrides from D1
   let lifecycleWeights: Record<string, number> = {}
   try {
@@ -891,6 +909,13 @@ async function runMLAndRisk(env: Bindings) {
         market_env: marketEnv,
         adaptive_params: adaptiveParams,
         lifecycle_weights: lifecycleWeights,
+        barrier_params: {
+          upper_mult: tradingCfg.barrier.upperMult,
+          lower_mult: tradingCfg.barrier.lowerMult,
+          upper_pct_cap: tradingCfg.barrier.upperPctCap,
+          lower_pct_cap: tradingCfg.barrier.lowerPctCap,
+          max_days: tradingCfg.barrier.maxDays,
+        },
       })
     } catch (e) {
       console.error(`[ML] Failed building payload for ${stock.symbol}:`, e)
@@ -1774,6 +1799,19 @@ export default {
       runWithLog('daily-report', async () => {
         const { generateDailyReport } = await import('./lib/dailyReport')
         return await generateDailyReport(env)
+      })
+    } else if (cron === '40 10 * * 1-5') {
+      // 18:40 TW → Obsidian daily notes + progress.md sync
+      runWithLog('obsidian-daily', async () => {
+        if (!env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        const res = await fetch(`${env.ML_CONTROLLER_URL}/obsidian/daily`, {
+          method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return await res.json()
       })
     } else if (cron === '30 10 * * 5') {
       // 週五 18:30 TW → P2#16 Weekly AI Audit Report

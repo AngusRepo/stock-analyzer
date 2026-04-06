@@ -1,0 +1,58 @@
+---
+date: {{ date }}
+type: trade
+side: {{ order.side }}
+symbol: {{ order.symbol }}
+name: {{ order.name | default('') }}
+price: {{ order.price }}
+shares: {{ order.shares }}
+signal: {{ order.signal | default('') }}
+confidence: {{ (order.confidence | default(0)) | round(2) }}
+score: {{ decision.total_score | default(0) | round(0) | int }}
+chip_score: {{ decision.chip_score | default(0) | round(0) | int }}
+tech_score: {{ decision.tech_score | default(0) | round(0) | int }}
+ml_score: {{ decision.ml_score | default(0) | round(0) | int }}
+sector: {{ decision.sector | default('') }}
+{% if order.side == 'sell' %}
+hold_days: {{ hold_days | default(0) }}
+pnl: {{ realized_pnl | default(0) | round(0) | int }}
+pnl_pct: {{ realized_pnl_pct | default(0) | round(2) }}
+{% endif %}
+tags: [trade, {{ order.side }}, auto-generated]
+---
+
+# {{ order.side | upper }} {{ order.symbol }} {{ order.name | default('') }} — {{ date }}
+
+## Trade Summary
+- **Side**: {{ order.side | upper }} @ ${{ order.price | round(2) }} x {{ order.shares }} shares
+- **Signal**: {{ order.signal | default('N/A') }} (conf {{ (order.confidence | default(0) * 100) | round(0) | int }}%)
+- **Score**: {{ decision.total_score | default(0) | round(0) | int }}/100 (Chip {{ decision.chip_score | default(0) | int }}/40 + Tech {{ decision.tech_score | default(0) | int }}/30 + ML {{ decision.ml_score | default(0) | int }}/30)
+- **Source**: {{ order.source | default('auto_ml') }}
+
+{% if decision.chip_pct is defined %}
+## Factor Attribution
+| Factor | Contribution |
+|--------|-------------|
+| Chip | {{ (decision.chip_pct | default(0) * 100) | round(1) }}% |
+| Tech | {{ (decision.tech_pct | default(0) * 100) | round(1) }}% |
+| ML | {{ (decision.ml_pct | default(0) * 100) | round(1) }}% |
+{% endif %}
+
+{% if decision.debate_verdict is defined %}
+## Debate Result
+- Verdict: {{ decision.debate_verdict }}
+- Conviction: {{ decision.conviction | default(0) | round(0) | int }}%
+{% endif %}
+
+{% if order.side == 'sell' %}
+## Exit Result
+- Hold Days: {{ hold_days | default('?') }}
+- Realized P&L: {{ realized_pnl | default(0) | round(0) | int }} ({{ realized_pnl_pct | default(0) | round(2) }}%)
+- Exit Reason: {{ exit_reason | default('') }}
+{% endif %}
+
+## Notes
+> (Manual observation)
+
+---
+*Auto-generated from decision_logs + paper_orders*

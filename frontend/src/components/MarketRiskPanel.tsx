@@ -72,7 +72,7 @@ export default function MarketRiskPanel() {
   )
 
   if (error) return (
-    <div className="rounded-xl border border-border/50 bg-card/40 p-6 text-center text-muted-foreground text-sm">
+    <div className="rounded-xl border border-border bg-card p-6 text-center text-muted-foreground text-sm">
       <p className="text-2xl mb-2">📊</p>
       <p>{error}</p>
       <p className="text-xs mt-1">排程將於每日 15:30 自動計算</p>
@@ -126,7 +126,7 @@ export default function MarketRiskPanel() {
       <div className="grid grid-cols-2 gap-3">
 
         {/* VIX */}
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground mb-1">VIX 恐慌指數</div>
           <div className="text-xl font-bold tabular-nums">
             {risk.vix?.toFixed(1) ?? '—'}
@@ -145,7 +145,7 @@ export default function MarketRiskPanel() {
         </div>
 
         {/* 台股波動率 */}
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground mb-1">台股20日波動率</div>
           <div className="text-xl font-bold tabular-nums">
             {risk.twiiVol20 != null ? `${risk.twiiVol20}%` : '—'}
@@ -156,7 +156,7 @@ export default function MarketRiskPanel() {
         </div>
 
         {/* 大盤乖離率 */}
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground mb-1">大盤乖離率（20MA）</div>
           <div className={`text-xl font-bold tabular-nums ${
             risk.twiiBias == null ? '' :
@@ -173,7 +173,7 @@ export default function MarketRiskPanel() {
         </div>
 
         {/* 外資動向 */}
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground mb-1">外資動向</div>
           <div className={`text-xl font-bold tabular-nums ${
             risk.foreignConsecutiveSell <= -3 ? 'text-red-400' :
@@ -197,7 +197,7 @@ export default function MarketRiskPanel() {
 
       {/* 30 日風險趨勢（簡易橫條圖）*/}
       {history.length > 0 && (
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
             近30日風險趨勢
           </div>
@@ -226,7 +226,7 @@ export default function MarketRiskPanel() {
 
       {/* 融資使用率 */}
       {risk.marginRatio != null && (
-        <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-xs text-muted-foreground mb-2">融資使用率</div>
           <div className="flex items-center gap-3">
             <div className={`text-xl font-bold tabular-nums ${

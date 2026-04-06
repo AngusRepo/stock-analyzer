@@ -10,25 +10,26 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { stocksApi, marketApi, notificationsApi, systemApi, watchlistApi } from '@/lib/api'
+import { stocksApi, marketApi, systemApi, watchlistApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { usePWA } from '@/hooks/usePWA'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Sheet, SheetContent } from '@/components/ui/sheet'
 
 import { toast } from 'sonner'
 import { Toaster } from '@/components/ui/sonner'
 import {
   Trash2, RefreshCw, BarChart2, Home,
-  PieChart, Brain, LogIn, Activity, Sparkles, Menu,
+  PieChart, Brain, LogIn, Activity, Sparkles,
   Newspaper, LogOut, ChevronRight, Search, Layers, ShieldAlert, Bell,
   Star, ShieldCheck, Users } from 'lucide-react'
+import AppShell from '@/components/AppShell'
 import StockSearchCombobox, { type StockSelection } from '@/components/StockSearchCombobox'
 import StockPriceChart from '@/components/StockPriceChart'
 import TechnicalChart from '@/components/TechnicalChart'
 import ChipChart from '@/components/ChipChart'
+import MarginChart from '@/components/MarginChart'
 import CandlestickChart from '@/components/CandlestickChart'
 import FinancialSummary from '@/components/FinancialSummary'
 import AlertManager from '@/components/AlertManager'
@@ -44,40 +45,6 @@ import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
-
-// ── 大盤指數 ───────────────────────────────────────────────────────────────────
-function MarketBar() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['market', 'indices'],
-    queryFn: marketApi.indices,
-    refetchInterval: 5 * 60 * 1000,
-    staleTime: 3 * 60 * 1000,
-  })
-
-  if (isLoading || (!data?.twii && !data?.twoii)) return null
-
-  return (
-    <div className="px-4 py-1.5 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-sm flex items-center gap-4 flex-wrap text-xs">
-      {[data?.twii, data?.twoii].filter(Boolean).map((idx: any) => {
-        const up = idx.change >= 0
-        return (
-          <div key={idx.name} className="flex items-center gap-1.5">
-            <span className="text-muted-foreground">{idx.name}</span>
-            <span className="font-mono font-semibold">
-              {idx.current.toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
-            <span className={`font-mono ${up ? 'text-red-400' : 'text-emerald-400'}`}>
-              {up ? '+' : ''}{idx.change.toFixed(2)} ({up ? '+' : ''}{idx.changePct.toFixed(2)}%)
-            </span>
-          </div>
-        )
-      })}
-      <span className="text-muted-foreground/50 ml-auto">
-        {data?.updatedAt ? new Date(data.updatedAt).toLocaleTimeString('zh-TW') : ''}
-      </span>
-    </div>
-  )
-}
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -132,7 +99,7 @@ function StockHero({
   const up = (detail?.change ?? 0) >= 0
 
   return (
-    <div className="px-4 pt-4 pb-3 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-sm">
+    <div className="px-4 pt-4 pb-3 border-b border-border bg-card">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         {/* 左側：名稱 + 報價 */}
         <div className="flex items-end gap-4 flex-wrap">
@@ -238,13 +205,13 @@ function ExDividendCard() {
   const { data } = useQuery({ queryKey: ['ex-dividend'], queryFn: marketApi.exDividend, staleTime: 3600_000 })
   if (!data?.length) return null
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
         近期除權除息
       </h3>
       <div className="space-y-1.5 max-h-48 overflow-y-auto">
         {data.slice(0, 15).map((item: any, i: number) => (
-          <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-white/[0.04] last:border-0">
+          <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-border last:border-0">
             <div className="flex items-center gap-2">
               <span className="font-mono text-muted-foreground">{item.symbol || item.code}</span>
               <span className="truncate max-w-[80px]">{item.name}</span>
@@ -265,7 +232,7 @@ function AttentionStocksCard() {
   const { data } = useQuery({ queryKey: ['attention-stocks'], queryFn: marketApi.attentionStocks, staleTime: 3600_000 })
   if (!data?.length) return null
   return (
-    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] backdrop-blur-sm p-4">
+    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-4">
       <h3 className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-3 flex items-center gap-1.5">
         <ShieldAlert className="w-3.5 h-3.5" />
         注意股
@@ -301,7 +268,7 @@ function MarketOverviewRow() {
       {items.slice(0, 4).map((idx: any) => {
         const up = (idx.change ?? 0) >= 0
         return (
-          <div key={idx.symbol ?? idx.name} className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-2.5">
+          <div key={idx.symbol ?? idx.name} className="rounded-lg border border-border bg-card p-2.5">
             <p className="text-[10px] text-muted-foreground truncate">{idx.name ?? idx.symbol}</p>
             <p className="text-sm font-bold font-mono">{(idx.close ?? idx.price ?? 0).toLocaleString()}</p>
             <p className={`text-xs font-mono ${up ? 'text-red-400' : 'text-emerald-400'}`}>
@@ -325,14 +292,14 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
   })
 
   if (!user) return (
-    <div className="rounded-xl border border-dashed border-white/[0.1] bg-white/[0.02] p-6 text-center">
+    <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
       <Star className="w-6 h-6 text-muted-foreground/30 mx-auto mb-2" />
       <p className="text-sm text-muted-foreground">登入後加入自選股，追蹤你的投資組合</p>
     </div>
   )
 
   if (!stocks.length) return (
-    <div className="rounded-xl border border-dashed border-white/[0.1] bg-white/[0.02] p-6 text-center">
+    <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
       <Star className="w-6 h-6 text-muted-foreground/30 mx-auto mb-2" />
       <p className="text-sm text-muted-foreground">搜尋股票並加入自選清單</p>
     </div>
@@ -353,7 +320,7 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
             <button
               key={s.stock_id ?? s.symbol}
               onClick={() => onSelect({ id: s.stock_id ?? 0, symbol: s.symbol, name: s.name, market: s.market })}
-              className="rounded-xl border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-primary/30 backdrop-blur-sm transition-all p-3 text-left group"
+              className="rounded-xl border border-border bg-card hover:bg-white/[0.07] hover:border-primary/30 transition-all p-3 text-left group"
             >
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-sm font-bold group-hover:text-primary transition-colors">{s.symbol}</span>
@@ -416,7 +383,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
                 <button
                   key={s.symbol}
                   onClick={() => onSelect({ id: 0, ...s })}
-                  className="rounded-lg border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/[0.15] backdrop-blur-sm transition-all px-2 py-1.5 text-center"
+                  className="rounded-lg border border-border bg-card hover:bg-white/[0.07] hover:border-white/[0.15] transition-all px-2 py-1.5 text-center"
                 >
                   <p className="text-xs font-bold">{s.symbol}</p>
                   <p className="text-[10px] text-muted-foreground truncate">{s.name}</p>
@@ -439,7 +406,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
             <div className="space-y-3">
               <MarketRiskPanel />
               {isAdmin && (
-                <a href="/bot" className="block rounded-xl border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.07] hover:border-teal-500/30 backdrop-blur-sm transition-all p-4">
+                <a href="/bot" className="block rounded-xl border border-border bg-card hover:bg-white/[0.07] hover:border-teal-500/30 transition-all p-4">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
                       <Activity className="w-4 h-4 text-emerald-400" />
@@ -477,7 +444,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
 // ── 卡片包裝器（統一樣式）────────────────────────────────────────────────────
 function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={`rounded-xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-4 ${className}`}>
+    <div className={`rounded-xl border border-border bg-card p-4 ${className}`}>
       {children}
     </div>
   )
@@ -494,22 +461,6 @@ export default function Dashboard() {
   const isAdmin = user?.role === 'admin'
   const { canInstall, install } = usePWA()
   const [activeStock, setActiveStock] = useState<StockSelection | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-
-  // 未讀通知 badge（每 60 秒輪詢一次）
-  const { data: notifCount } = useQuery({
-    queryKey: ['notifications', 'count'],
-    queryFn: notificationsApi.count,
-    enabled: isAuthenticated,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const unreadCount = notifCount?.count ?? 0
-
-  const markAllRead = async () => {
-    await notificationsApi.readAll()
-    qc.invalidateQueries({ queryKey: ['notifications'] })
-  }
 
   const { data: stocks = [], isLoading: stocksLoading } = useQuery({
     queryKey: ['watchlist'],
@@ -559,7 +510,6 @@ export default function Dashboard() {
   })
 
   const handleSelect = (s: StockSelection) => {
-    setSidebarOpen(false)
     const existing = (stocks as any[]).find((st: any) => st.symbol === s.symbol)
     if (existing) {
       // watchlist API 回傳 stock_id，前端用 id
@@ -660,205 +610,137 @@ export default function Dashboard() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
-          <div className="flex h-screen text-foreground overflow-hidden relative">
+          <AppShell>
+            {!activeStock ? (
+              <EmptyState onSelect={handleSelect} user={user} />
+            ) : (
+              <div className="flex h-full">
+                {/* Inner watchlist sidebar (desktop only) */}
+                <aside className="hidden lg:flex flex-col w-52 border-r border-border bg-card shrink-0">
+                  <SidebarContent />
+                </aside>
 
-            {/* Background Glow Blobs — mix-blend-mode screen 讓光暈穿透 */}
-            <div className="pointer-events-none fixed inset-0 z-[1]" style={{ mixBlendMode: 'screen' }}>
-              <div className="absolute" style={{ left: '-10%', top: '5%', width: '60vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.35) 0%, transparent 65%)', animation: 'blob-drift-1 18s ease-in-out infinite', willChange: 'transform' }} />
-              <div className="absolute" style={{ right: '-5%', top: '-5%', width: '50vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.08) 0%, transparent 65%)', animation: 'blob-drift-2 22s ease-in-out infinite', willChange: 'transform' }} />
-              <div className="absolute" style={{ left: '20%', bottom: '-5%', width: '50vw', height: '45vh', background: 'radial-gradient(ellipse at center, rgba(16,185,129,0.25) 0%, transparent 65%)', animation: 'blob-drift-3 15s ease-in-out infinite', willChange: 'transform' }} />
-            </div>
+                {/* Stock detail content */}
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Stock Hero */}
+                  <StockHero
+                    stock={activeStock}
+                    detail={detail as any}
+                    onRefresh={() => activeStock.id && refreshMutation.mutate(activeStock.id)}
+                    onRemove={() => activeStock.id && removeMutation.mutate(activeStock.id)}
+                    onBack={() => setActiveStock(null)}
+                    refreshing={refreshMutation.isPending}
+                  />
 
-            {/* Desktop Sidebar */}
-            <aside className="hidden lg:flex flex-col w-52 border-r border-white/[0.07] bg-white/[0.02] backdrop-blur-sm shrink-0 relative z-10">
-              <div className="px-4 py-3 border-b border-white/[0.07] flex items-center gap-2.5">
-                <div className="w-6 h-6 rounded-md bg-teal-500/20 border border-teal-500/30 flex items-center justify-center">
-                  <Activity className="w-3.5 h-3.5 text-teal-400" />
-                </div>
-                <span className="font-bold text-sm tracking-tight">StockVision</span>
-                {isAuthenticated && unreadCount > 0 && (
-                  <Button size="icon" variant="ghost" className="h-6 w-6 ml-auto relative shrink-0" onClick={markAllRead}>
-                    <Bell className="w-3.5 h-3.5" />
-                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">
-                      {unreadCount > 9 ? '9+' : unreadCount}
-                    </span>
-                  </Button>
-                )}
-              </div>
-              <SidebarContent />
-            </aside>
+                  {/* Tabs */}
+                  <div className="flex-1 overflow-y-auto">
+                    <Tabs defaultValue="chart" className="h-full flex flex-col">
+                      <div className="px-4 pt-3 border-b border-border bg-card shrink-0">
+                        <TabsList className="h-9 bg-transparent p-0 gap-1">
+                          {[
+                            { value: 'chart',       icon: BarChart2,  label: '圖表' },
+                            { value: 'chips',        icon: Layers,     label: '籌碼技術' },
+                            { value: 'fundamental',  icon: PieChart,   label: '財報' },
+                            { value: 'ai',           icon: Sparkles,   label: 'AI 分析' },
+                            { value: 'news',         icon: Newspaper,  label: '新聞' },
+                          ].map(tab => (
+                            <TabsTrigger
+                              key={tab.value}
+                              value={tab.value}
+                              className="h-8 px-3 text-xs gap-1.5 rounded-md data-[state=active]:bg-background data-[state=active]:border data-[state=active]:border-border/50 data-[state=active]:shadow-sm"
+                            >
+                              <tab.icon className="w-3 h-3" />
+                              <span className="hidden sm:inline">{tab.label}</span>
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                      </div>
 
-            {/* Mobile Sidebar Sheet */}
-            <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-              <SheetContent side="left" className="w-52 p-0 border-r border-white/[0.07]">
-                <div className="px-4 py-3 border-b border-white/[0.07] flex items-center gap-2.5">
-                  <div className="w-6 h-6 rounded-md bg-teal-500/20 border border-teal-500/30 flex items-center justify-center">
-                    <Activity className="w-3.5 h-3.5 text-teal-400" />
-                  </div>
-                  <span className="font-bold text-sm tracking-tight">StockVision</span>
-                </div>
-                <SidebarContent />
-              </SheetContent>
-            </Sheet>
-
-            {/* Main */}
-            <div className="flex-1 flex flex-col overflow-hidden relative z-10">
-
-              {/* Topbar (mobile only) */}
-              <header className="lg:hidden flex items-center gap-2 px-3 py-2 border-b border-white/[0.06] bg-zinc-950/80 backdrop-blur-xl shrink-0">
-                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setSidebarOpen(true)}>
-                  <Menu className="w-4 h-4" />
-                </Button>
-                <div className="w-5 h-5 rounded bg-teal-500/20 border border-teal-500/30 flex items-center justify-center">
-                  <Activity className="w-3 h-3 text-teal-400" />
-                </div>
-                <span className="font-bold text-sm">StockVision</span>
-                <div className="ml-auto flex items-center gap-1">
-                  {isAuthenticated && unreadCount > 0 && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8 relative" onClick={markAllRead}>
-                      <Bell className="w-4 h-4" />
-                      <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">
-                        {unreadCount > 9 ? '9+' : unreadCount}
-                      </span>
-                    </Button>
-                  )}
-                  {!isAuthenticated && (
-                    <Button size="sm" variant="ghost" className="gap-1.5 text-xs h-7" onClick={login}>
-                      <LogIn className="w-3 h-3" /> 登入
-                    </Button>
-                  )}
-                </div>
-              </header>
-
-              <MarketBar />
-
-              {/* Content */}
-              <main className="flex-1 overflow-y-auto">
-                {!activeStock ? (
-                  <EmptyState onSelect={handleSelect} user={user} />
-                ) : (
-                  <div className="flex flex-col h-full">
-                    {/* Stock Hero */}
-                    <StockHero
-                      stock={activeStock}
-                      detail={detail as any}
-                      onRefresh={() => activeStock.id && refreshMutation.mutate(activeStock.id)}
-                      onRemove={() => activeStock.id && removeMutation.mutate(activeStock.id)}
-                      onBack={() => setActiveStock(null)}
-                      refreshing={refreshMutation.isPending}
-                    />
-
-                    {/* Tabs */}
-                    <div className="flex-1 overflow-y-auto">
-                      <Tabs defaultValue="chart" className="h-full flex flex-col">
-                        <div className="px-4 pt-3 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-sm shrink-0">
-                          <TabsList className="h-9 bg-transparent p-0 gap-1">
-                            {[
-                              { value: 'chart',       icon: BarChart2,  label: '圖表' },
-                              { value: 'chips',        icon: Layers,     label: '籌碼技術' },
-                              { value: 'fundamental',  icon: PieChart,   label: '財報' },
-                              { value: 'ai',           icon: Sparkles,   label: 'AI 分析' },
-                              { value: 'news',         icon: Newspaper,  label: '新聞' },
-                              // 用戶管理已移至 Dashboard 主頁右欄
-                            ].map(tab => (
-                              <TabsTrigger
-                                key={tab.value}
-                                value={tab.value}
-                                className="h-8 px-3 text-xs gap-1.5 rounded-md data-[state=active]:bg-background data-[state=active]:border data-[state=active]:border-border/50 data-[state=active]:shadow-sm"
-                              >
-                                <tab.icon className="w-3 h-3" />
-                                <span className="hidden sm:inline">{tab.label}</span>
-                              </TabsTrigger>
-                            ))}
-                          </TabsList>
+                      {/* ── 圖表 Tab ─────────────────────────────────────── */}
+                      <TabsContent value="chart" className="flex-1 overflow-y-auto p-4">
+                        <div className="max-w-4xl mx-auto space-y-4">
+                          <Card>
+                            <SectionTitle>價格走勢</SectionTitle>
+                            <StockPriceChart stockId={activeStock.id} />
+                          </Card>
                         </div>
+                      </TabsContent>
 
-                        {/* ── 圖表 Tab ─────────────────────────────────────── */}
-                        <TabsContent value="chart" className="flex-1 overflow-y-auto p-4">
-                          <div className="max-w-4xl mx-auto space-y-4">
+                      {/* ── 籌碼技術 Tab ──────────────────────────────────── */}
+                      <TabsContent value="chips" className="flex-1 overflow-y-auto p-4">
+                        <div className="max-w-4xl mx-auto space-y-4">
+                          <Card>
+                            <SectionTitle>K 線圖</SectionTitle>
+                            <CandlestickChart stockId={activeStock.id} />
+                          </Card>
+                          <Card>
+                            <SectionTitle>三大法人籌碼</SectionTitle>
+                            <ChipChart stockId={activeStock.id} />
+                          </Card>
+                          <Card>
+                            <SectionTitle>融資融券趨勢</SectionTitle>
+                            <MarginChart stockId={activeStock.id} />
+                          </Card>
+                          <Card>
+                            <SectionTitle>技術指標 RSI · MACD · 布林通道</SectionTitle>
+                            <TechnicalChart stockId={activeStock.id} />
+                          </Card>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <Card>
-                              <SectionTitle>價格走勢</SectionTitle>
-                              <StockPriceChart stockId={activeStock.id} />
+                              <SectionTitle>風險指標</SectionTitle>
+                              <RiskMetricsPanel stockId={activeStock.id} />
+                            </Card>
+                            <Card>
+                              <SectionTitle>多因子分析</SectionTitle>
+                              <FactorAnalysis stockId={activeStock.id} />
                             </Card>
                           </div>
-                        </TabsContent>
+                        </div>
+                      </TabsContent>
 
-                        {/* ── 籌碼技術 Tab ──────────────────────────────────── */}
-                        <TabsContent value="chips" className="flex-1 overflow-y-auto p-4">
-                          <div className="max-w-4xl mx-auto space-y-4">
+                      {/* ── 基本面 Tab ───────────────────────────────────── */}
+                      <TabsContent value="fundamental" className="flex-1 overflow-y-auto p-4">
+                        <div className="max-w-4xl mx-auto space-y-4">
+                          <Card>
+                            <SectionTitle>財報摘要</SectionTitle>
+                            <FinancialSummary stockId={activeStock.id} />
+                          </Card>
+                          {isAuthenticated ? (
                             <Card>
-                              <SectionTitle>K 線圖</SectionTitle>
-                              <CandlestickChart stockId={activeStock.id} />
+                              <SectionTitle>🔔 價格警報</SectionTitle>
+                              <AlertManager stockId={activeStock.id} />
                             </Card>
-                            <Card>
-                              <SectionTitle>三大法人籌碼</SectionTitle>
-                              <ChipChart stockId={activeStock.id} />
-                            </Card>
-                            <Card>
-                              <SectionTitle>技術指標 RSI · MACD · 布林通道</SectionTitle>
-                              <TechnicalChart stockId={activeStock.id} />
-                            </Card>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              <Card>
-                                <SectionTitle>風險指標</SectionTitle>
-                                <RiskMetricsPanel stockId={activeStock.id} />
-                              </Card>
-                              <Card>
-                                <SectionTitle>多因子分析</SectionTitle>
-                                <FactorAnalysis stockId={activeStock.id} />
-                              </Card>
+                          ) : (
+                            <div className="rounded-xl border border-dashed border-border/50 p-6 text-center">
+                              <Bell className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
+                              <p className="text-sm text-muted-foreground mb-3">登入後可設定價格警報</p>
+                              <Button variant="outline" size="sm" onClick={login} className="gap-2 text-xs">
+                                <LogIn className="w-3.5 h-3.5" /> Google 登入
+                              </Button>
                             </div>
-                          </div>
-                        </TabsContent>
+                          )}
+                        </div>
+                      </TabsContent>
 
-                        {/* ── 基本面 Tab ───────────────────────────────────── */}
-                        <TabsContent value="fundamental" className="flex-1 overflow-y-auto p-4">
-                          <div className="max-w-4xl mx-auto space-y-4">
-                            <Card>
-                              <SectionTitle>財報摘要</SectionTitle>
-                              <FinancialSummary stockId={activeStock.id} />
-                            </Card>
-                            {isAuthenticated ? (
-                              <Card>
-                                <SectionTitle>🔔 價格警報</SectionTitle>
-                                <AlertManager stockId={activeStock.id} />
-                              </Card>
-                            ) : (
-                              <div className="rounded-xl border border-dashed border-border/50 p-6 text-center">
-                                <Bell className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
-                                <p className="text-sm text-muted-foreground mb-3">登入後可設定價格警報</p>
-                                <Button variant="outline" size="sm" onClick={login} className="gap-2 text-xs">
-                                  <LogIn className="w-3.5 h-3.5" /> Google 登入
-                                </Button>
-                              </div>
-                            )}
-                          </div>
-                        </TabsContent>
+                      {/* ── AI 分析 Tab（整頁式報告）──────────────────────── */}
+                      <TabsContent value="ai" className="flex-1 overflow-y-auto p-4">
+                        <div className="max-w-4xl mx-auto">
+                          <StockAIReport stockId={activeStock.id} />
+                        </div>
+                      </TabsContent>
 
-                        {/* ── AI 分析 Tab（整頁式報告）──────────────────────── */}
-                        <TabsContent value="ai" className="flex-1 overflow-y-auto p-4">
-                          <div className="max-w-4xl mx-auto">
-                            <StockAIReport stockId={activeStock.id} />
-                          </div>
-                        </TabsContent>
-
-                        {/* ── 新聞 Tab ─────────────────────────────────────── */}
-                        <TabsContent value="news" className="flex-1 overflow-y-auto">
-                          <div className="max-w-4xl mx-auto">
-                            <NewsPanel stockId={activeStock.id} />
-                          </div>
-                        </TabsContent>
-
-                        {/* 市場風險 + 每日推薦 已移至首頁 */}
-
-                        {/* 用戶管理已移至 Dashboard 主頁右欄 */}
-                      </Tabs>
-                    </div>
+                      {/* ── 新聞 Tab ─────────────────────────────────────── */}
+                      <TabsContent value="news" className="flex-1 overflow-y-auto">
+                        <div className="max-w-4xl mx-auto">
+                          <NewsPanel stockId={activeStock.id} />
+                        </div>
+                      </TabsContent>
+                    </Tabs>
                   </div>
-                )}
-              </main>
-            </div>
-          </div>
+                </div>
+              </div>
+            )}
+          </AppShell>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

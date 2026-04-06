@@ -1,0 +1,82 @@
+---
+date: {{ week_start }} ~ {{ week_end }}
+type: weekly-review
+week: W{{ week_number }}
+weekly_return: {{ weekly_return | default(0) | round(2) }}
+sharpe: {{ sharpe | default('N/A') }}
+win_rate: {{ win_rate | default(0) | round(1) }}
+tags: [weekly, review, auto-generated]
+---
+
+# Week {{ week_number }} Review ({{ week_start }} ~ {{ week_end }})
+
+## L1: Trade Performance
+- Weekly Return: {{ weekly_return | default('N/A') }}%
+- Buys: {{ buy_count | default(0) }} | Sells: {{ sell_count | default(0) }}
+- Win Rate: {{ win_rate | default(0) | round(1) }}%
+- Profit Factor: {{ profit_factor | default('N/A') }}
+- MDD: {{ mdd | default(0) | round(1) }}%
+- Sharpe(30d): {{ sharpe | default('N/A') }}
+- Sortino(30d): {{ sortino | default('N/A') }}
+- Calmar: {{ calmar | default('N/A') }}
+
+### vs 0050 Benchmark
+| Period | Bot | 0050 | Result |
+|--------|-----|------|--------|
+| Week | {{ bot_week | default('?') }}% | {{ bm_week | default('?') }}% | {{ '勝' if bot_week | default(0) > bm_week | default(0) else '負' }} |
+| Month | {{ bot_month | default('?') }}% | {{ bm_month | default('?') }}% | {{ '勝' if bot_month | default(0) > bm_month | default(0) else '負' }} |
+
+## L2: Decision Quality
+
+### Trades This Week
+{% if trades %}
+| Date | Side | Symbol | Score | Signal | P&L |
+|------|------|--------|-------|--------|-----|
+{% for t in trades %}
+| {{ t.date }} | {{ t.side | upper }} | [[Trades/{{ t.side | upper }}-{{ t.symbol }}-{{ t.date }}|{{ t.symbol }}]] | {{ t.score | default(0) | int }} | {{ t.signal | default('') }} | {{ t.pnl | default('—') }} |
+{% endfor %}
+{% else %}
+No trades this week.
+{% endif %}
+
+{% if factor_attribution %}
+### Factor Attribution
+| Factor | Win Contribution | Loss Contribution |
+|--------|-----------------|-------------------|
+{% for f in factor_attribution %}
+| {{ f.name }} | {{ f.win_pct | default(0) | round(1) }}% | {{ f.loss_pct | default(0) | round(1) }}% |
+{% endfor %}
+{% endif %}
+
+## L3: Model Health
+{% if models %}
+| Model | Accuracy(30d) | PF | Status | Weight |
+|-------|---------------|-----|--------|--------|
+{% for m in models %}
+| {{ m.model_name }} | {{ m.accuracy_30d | default(0) | round(2) }} | {{ m.profit_factor | default('?') }} | {{ m.lifecycle_status | default('active') }} | {{ m.weight_mult | default(1.0) }}x |
+{% endfor %}
+{% else %}
+Model health data not available.
+{% endif %}
+
+{% if degraded_models %}
+### Degradation Alerts
+{% for m in degraded_models %}
+- **{{ m.model_name }}**: accuracy {{ m.accuracy_30d | round(2) }} → downweighted to {{ m.weight_mult }}x
+{% endfor %}
+{% endif %}
+
+{% if ai_diagnosis %}
+## AI Diagnosis
+{{ ai_diagnosis }}
+{% endif %}
+
+## Weekly Reflections
+> (Manual: Key takeaway this week?)
+
+### Action Items
+- [ ] Review degraded models
+- [ ] Check Optuna param freshness
+
+---
+*Auto-generated from weekly_audit_reports + L1/L2/L3 data*

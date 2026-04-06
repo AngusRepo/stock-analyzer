@@ -31,6 +31,7 @@ const TASK_NAMES: Record<string, string> = {
   'ml-warmup':        'ML Warmup',
   'morning-briefing': 'Morning Briefing',
   'daily-report':     'Daily Report',
+  'obsidian-daily':   'Obsidian Notes',
 }
 
 export function getTaskDisplayName(task: string): string {

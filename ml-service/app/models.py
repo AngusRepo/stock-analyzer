@@ -29,6 +29,27 @@ class ModelPrediction:
     forecasts: list[dict] = field(default_factory=list)  # 14天逐日預測
     direction_accuracy: float = 0.0        # 歷史方向準確率（walk-forward）
     rmse: float = 0.0
+    shap_top5: list[dict] = field(default_factory=list)  # P3#31: top 5 SHAP feature attributions
+
+
+# ─── SHAP 歸因（P3#31）─────────────────────────────────────────────────────────
+def _compute_shap_top5(model, X_sample: np.ndarray, feature_names: list[str]) -> list[dict]:
+    """Compute top 5 SHAP feature attributions for the latest prediction."""
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+        sv = explainer.shap_values(X_sample.reshape(1, -1))
+        # sv shape: (1, n_features) for binary or list of 2 arrays
+        values = sv[1][0] if isinstance(sv, list) else sv[0]
+        # Top 5 by absolute value
+        indices = np.argsort(np.abs(values))[-5:][::-1]
+        return [
+            {"feature": feature_names[i] if i < len(feature_names) else f"f{i}",
+             "value": round(float(values[i]), 4)}
+            for i in indices
+        ]
+    except Exception:
+        return []
 
 
 # ─── 工具函式 ─────────────────────────────────────────────────────────────────
@@ -656,6 +677,8 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
+        shap_top = _compute_shap_top5(model, X_latest, feature_names or [])
+
         return ModelPrediction(
             model_name="XGBoost",
             direction=direction,
@@ -663,6 +686,7 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
             forecast_pct=round(pct, 4),
             forecasts=forecasts,
             direction_accuracy=round(dir_acc, 3),
+            shap_top5=shap_top,
         )
     except Exception as e:
         return _fallback_model("XGBoost", prices, horizon, str(e))
@@ -713,6 +737,8 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
+        shap_top = _compute_shap_top5(model, X_latest, feature_names or [])
+
         return ModelPrediction(
             model_name="CatBoost",
             direction=direction,
@@ -720,6 +746,7 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
             forecast_pct=round(pct, 4),
             forecasts=forecasts,
             direction_accuracy=round(dir_acc, 3),
+            shap_top5=shap_top,
         )
     except Exception as e:
         return _fallback_model("CatBoost", prices, horizon, str(e))
@@ -773,6 +800,8 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
+        shap_top = _compute_shap_top5(model, X_latest, feature_names or [])
+
         return ModelPrediction(
             model_name="ExtraTrees",
             direction=direction,
@@ -780,6 +809,7 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
             forecast_pct=round(pct, 4),
             forecasts=forecasts,
             direction_accuracy=round(dir_acc, 3),
+            shap_top5=shap_top,
         )
     except Exception as e:
         return _fallback_model("ExtraTrees", prices, horizon, str(e))
@@ -847,6 +877,8 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
+        shap_top = _compute_shap_top5(model, X_latest, feature_names or [])
+
         return ModelPrediction(
             model_name="LightGBM",
             direction=direction,
@@ -854,6 +886,7 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
             forecast_pct=round(pct, 4),
             forecasts=forecasts,
             direction_accuracy=round(dir_acc, 3),
+            shap_top5=shap_top,
         )
     except Exception as e:
         return _fallback_model("LightGBM", prices, horizon, str(e))
@@ -908,7 +941,6 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
     class FTTransformer(nn.Module):
         def __init__(self, n_feat, d_model, n_heads, n_layers):
             super().__init__()
-            # Feature tokenizer: each feature gets its own embedding weight
             self.feat_embed = nn.Linear(1, d_model, bias=True)
             self.cls_token  = nn.Parameter(torch.zeros(1, 1, d_model))
             encoder_layer = nn.TransformerEncoderLayer(

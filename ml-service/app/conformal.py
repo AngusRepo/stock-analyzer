@@ -21,9 +21,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-MIN_CALIBRATION_SIZE = 20       # 最少需要多少歷史 residuals 才啟動校準
+MIN_CALIBRATION_SIZE = 20       # 最少需要多少歷史 residuals 才啟動校準（overridden at runtime via params）
 MAX_RESIDUALS        = 500      # 最多保留多少筆 residuals（滑動窗口）
-DEFAULT_COVERAGE     = 0.90     # 預設 coverage level（90% prediction interval）
+DEFAULT_COVERAGE     = 0.90     # 預設 coverage level（90% prediction interval, overridden at runtime via params）
 STATE_DIR            = "/tmp/conformal_state"
 
 
@@ -43,6 +43,7 @@ class ConformalCalibrator:
         confidence: float,
         anomaly_score: float = 0.0,
         coverage: float | None = None,
+        params: dict | None = None,
     ) -> dict:
         """
         校準 ensemble 預測，回傳：
@@ -51,10 +52,15 @@ class ConformalCalibrator:
           - calibrated_confidence: 校準後的 confidence
           - coverage: 使用的 coverage level
           - is_calibrated: 是否有足夠 residuals 做校準
-        """
-        cov = coverage or self._coverage
 
-        if len(self.residuals) < MIN_CALIBRATION_SIZE:
+        params: optional KV adaptive dict — overrides MIN_CALIBRATION_SIZE / DEFAULT_COVERAGE
+        """
+        _params = params or {}
+        _min_cal = int(_params.get("min_calibration_size", MIN_CALIBRATION_SIZE))
+        _default_cov = float(_params.get("default_coverage", DEFAULT_COVERAGE))
+        cov = coverage or _default_cov
+
+        if len(self.residuals) < _min_cal:
             # 冷啟動：不校準，透明通過
             return {
                 "interval_width": 0.0,
@@ -150,8 +156,9 @@ class ConformalCalibrator:
                 logger.warning(f"[Conformal] load failed: {e}")
         return cal
 
-    def is_calibrated(self) -> bool:
-        return len(self.residuals) >= MIN_CALIBRATION_SIZE
+    def is_calibrated(self, params: dict | None = None) -> bool:
+        _min_cal = int((params or {}).get("min_calibration_size", MIN_CALIBRATION_SIZE))
+        return len(self.residuals) >= _min_cal
 
 
 # ── Convenience functions ─────────────────────────────────────────────────────
@@ -166,10 +173,12 @@ def apply_conformal_calibration(
     forecast_pct: float,
     confidence: float,
     anomaly_score: float = 0.0,
+    params: dict | None = None,
 ) -> tuple[float, dict]:
     """
     套用 Conformal 校準，回傳 (calibrated_confidence, calibration_info)。
     冷啟動時透明通過（calibrated_confidence == confidence）。
+    params: optional KV adaptive dict forwarded to calibrate()。
     """
-    info = calibrator.calibrate(forecast_pct, confidence, anomaly_score)
+    info = calibrator.calibrate(forecast_pct, confidence, anomaly_score, params=params)
     return info["calibrated_confidence"], info

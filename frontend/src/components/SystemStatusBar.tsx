@@ -83,7 +83,7 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
             <Row label="ML 預測"       date={d.predictions.lastDate} ok={d.predictions.isRecent} />
             <Row label="大盤風險"      date={d.marketRisk.lastDate} ok={d.marketRisk.isRecent} />
           </div>
-          <div className="mt-2 pt-2 border-t border-border/50 flex justify-between text-[9px] text-muted-foreground">
+          <div className="mt-2 pt-2 border-t border-border flex justify-between text-[9px] text-muted-foreground">
             <span>監控 {data.meta.activeStocks} 支股票</span>
             {data.meta.dbSizeBytes && (
               <span>DB {(data.meta.dbSizeBytes / 1024 / 1024).toFixed(1)} MB</span>
@@ -96,7 +96,7 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
 
   // full mode
   return (
-    <div className="rounded-xl border border-border/50 bg-card/40 p-4 space-y-2">
+    <div className="rounded-xl border border-border bg-card p-4 space-y-2">
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">資料更新狀態</p>
       <Row label="股價/技術指標" date={d.prices.lastDate}      ok={d.prices.isRecent} />
       <Row label="籌碼資料"      date={d.chips.lastDate}       ok={d.chips.isRecent} />

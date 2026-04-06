@@ -23,6 +23,7 @@ export interface TradingConfig {
     drawdownRaisedConf: number   // 回撤/低準確率時提高的信心門檻（預設 0.70）
     lowAccuracyThreshold: number // 模型準確率警戒線（預設 0.45）
     highVolReducedPosPct: number // 大盤高波動時縮減部位（預設 0.04）
+    bullAlignmentThreshold: number // Layer4 多頭排列警戒線（預設 20）
   }
   exit: {
     hardStopPct: number          // 硬上限止損（預設 -0.12）
@@ -44,6 +45,14 @@ export interface TradingConfig {
     maxPctOfCash: number         // 單筆最大佔現金 %（預設 0.30）
     minCashToTrade: number       // 最低可交易現金（預設 10000）
     minStopPct: number           // 最低停損 %（預設 0.03）
+    partialFillThreshold: number // 佔日均量超過此比例 → partial fill（預設 0.05 = 5%）
+    partialFillRate: number      // 超過部分的未成交比例（預設 0.2 = 80% fill）
+    maxPositions: number         // 最大持有部位數（預設 5）
+    riskPctPerTrade: number      // 每筆交易風險佔 portfolio %（預設 0.015）
+    minPositionValue: number     // 最低部位金額（預設 30000）
+    maxDailySwaps: number        // 每日最大換股次數（預設 1）
+    swapThreshold: number        // 換股評分門檻倍數（預設 1.15）
+    swapMinHoldDays: number      // 換股最低持有天數（預設 3）
   }
   screener: {
     minPrice: number             // 最低股價（預設 15）
@@ -61,12 +70,29 @@ export interface TradingConfig {
     maxPerIndustry: number       // 同官方產業上限（預設 5）
     correlationThreshold: number // 報酬率去重門檻（預設 0.8）
     correlationWindow: number    // 去重計算天數（預設 60）
+    chipScoreTiers: number[]     // 籌碼分級分數（預設 [36,28,20,12,5]）
+    chipIntensityThresholds: number[] // 籌碼強度門檻（預設 [0.20,0.10,0.05,0,-0.05]）
+    consecBuyBonusTiers: number[]    // 連續買超加分（預設 [4,2]，對應 >=5天, >=3天）
+    consecBuyDayThresholds: number[] // 連續買超天數門檻（預設 [5,3]）
+    rsiScoreTiers: number[]          // RSI 分級分數（預設 [12,8,6,8,3]）
+    macdNegativeFactor: number       // MACD 負值比較因子（預設 0.5）
+    keltnerMultiplier: number        // 肯特納通道 ATR 倍數（預設 1.5）
+    natrThreshold: number            // NATR 低波動門檻（預設 3）
+    excessReturnRange: number[]      // 超額報酬 normalize 範圍（預設 [-0.03, 0.05]）
+    volRatioRange: number[]          // 量比 normalize 範圍（預設 [0.7, 2.5]）
   }
   rrg: {
     leadingBonus: number         // Leading 象限加分（預設 10）
     improvingBonus: number       // Improving 象限加分（預設 7）
     weakeningBonus: number       // Weakening 象限加分（預設 0）
     laggingPenalty: number       // Lagging 象限扣分（預設 -5）
+  }
+  barrier: {
+    upperMult: number            // 停利 ATR 倍數（預設 3.0）— Optuna #1 搜尋
+    lowerMult: number            // 停損 ATR 倍數（預設 2.0）
+    upperPctCap: number          // 停利百分比封頂（預設 0.07）
+    lowerPctCap: number          // 停損百分比封頂（預設 0.03）
+    maxDays: number              // 最大持有天數（預設 20）
   }
 }
 
@@ -88,6 +114,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     drawdownRaisedConf: 0.70,
     lowAccuracyThreshold: 0.45,
     highVolReducedPosPct: 0.04,
+    bullAlignmentThreshold: 20,
   },
   exit: {
     hardStopPct: -0.10,
@@ -109,6 +136,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,
     minStopPct: 0.03,
+    partialFillThreshold: 0.05,
+    partialFillRate: 0.2,
     // P1#12: Portfolio Construction
     maxPositions: 5,              // hard cap on total positions
     riskPctPerTrade: 0.015,       // 1.5% of portfolio risk per trade (ATR fixed-risk)
@@ -133,12 +162,29 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxPerIndustry: 5,
     correlationThreshold: 0.8,
     correlationWindow: 60,
+    chipScoreTiers: [36, 28, 20, 12, 5],
+    chipIntensityThresholds: [0.20, 0.10, 0.05, 0, -0.05],
+    consecBuyBonusTiers: [4, 2],
+    consecBuyDayThresholds: [5, 3],
+    rsiScoreTiers: [12, 8, 6, 8, 3],
+    macdNegativeFactor: 0.5,
+    keltnerMultiplier: 1.5,
+    natrThreshold: 3,
+    excessReturnRange: [-0.03, 0.05],
+    volRatioRange: [0.7, 2.5],
   },
   rrg: {
     leadingBonus: 10,
     improvingBonus: 7,
     weakeningBonus: 0,
     laggingPenalty: -5,
+  },
+  barrier: {
+    upperMult: 3.0,
+    lowerMult: 2.0,
+    upperPctCap: 0.07,
+    lowerPctCap: 0.03,
+    maxDays: 20,
   },
 }
 
@@ -160,6 +206,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     position: { ...d.position, ...partial.position },
     screener: { ...d.screener, ...partial.screener },
     rrg: { ...d.rrg, ...partial.rrg },
+    barrier: { ...d.barrier, ...partial.barrier },
   }
 }
 

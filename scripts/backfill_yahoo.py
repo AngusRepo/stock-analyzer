@@ -87,6 +87,11 @@ def fetch_yahoo_ohlcv(symbol: str, market: str) -> list[dict]:
 
             if o is None or c is None:
                 continue
+            # Guard: high/low 可能為 null，用 open/close 補
+            if h is None:
+                h = max(o, c)
+            if l is None:
+                l = min(o, c)
 
             bars.append({
                 "date": dt.strftime("%Y-%m-%d"),

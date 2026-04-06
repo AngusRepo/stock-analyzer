@@ -377,6 +377,11 @@ def build_feature_matrix(
 
 
 # 大盤環境特徵新增 6 個
+# ── 夜盤 / 五檔 optional 特徵（有資料時注入，無資料時填 0）──────────────────
+NIGHT_SESSION_COLS = ["taifex_night_change_pct", "taifex_night_range_pct", "taifex_night_available"]
+ORDERBOOK_COLS = ["orderbook_imbalance", "orderbook_spread_pct", "orderbook_available"]
+OPTIONAL_FEATURE_COLS = NIGHT_SESSION_COLS + ORDERBOOK_COLS
+
 FEATURE_COLS = [
     # 價格動量
     "return_1d", "return_3d", "return_5d", "return_10d",
@@ -423,6 +428,9 @@ FEATURE_COLS = [
     "short_ratio",         # 券資比（融券/融資）
     "margin_change_5d",    # 融資 5 日增減率
     "retail_pct",          # 散戶持股占比 %（<50張）
+    # ── 夜盤 / 五檔（optional，無資料時 0）───────────────────────────────────
+    *NIGHT_SESSION_COLS,
+    *ORDERBOOK_COLS,
 ]
 
 
@@ -434,6 +442,26 @@ def get_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[str]]:
     X = df_clean[available].values
     y = df_clean["target_dir"].values
     return X, y, available
+
+
+def mask_night_session_features(
+    X: np.ndarray,
+    feature_names: list[str],
+    mask_ratio: float = 0.5,
+    seed: int = 42,
+) -> np.ndarray:
+    """Training 時隨機 mask 夜盤特徵（模擬 15:30 無夜盤資料的情況）"""
+    night_indices = [i for i, name in enumerate(feature_names) if name in OPTIONAL_FEATURE_COLS]
+    if not night_indices:
+        return X
+
+    X_masked = X.copy()
+    rng = np.random.RandomState(seed)
+    mask = rng.random(len(X_masked)) < mask_ratio
+    for idx in night_indices:
+        X_masked[mask, idx] = 0.0
+    print(f"[NightMask] Masked {mask.sum()}/{len(X)} samples ({mask_ratio*100:.0f}%) for night session features")
+    return X_masked
 
 
 # ── #6 CatBoost 滯後特徵（input diversity）─────────────────────────────────

@@ -637,6 +637,9 @@ class ARFUpdateRequest(BaseModel):
     # #14 LinUCB reward enrichment
     actual_return: float = 0.0    # 實際 5 日漲跌幅（小數）
     forecast_pct: float = 0.0     # 模型預測漲跌幅（小數）
+    # FT online update 需要 stock_id 定位模型
+    stock_id: int = 0
+    symbol: str = ""
 
 # 台股單趟摩擦成本：買手續費 0.1425% + 賣手續費 0.1425% + 交易稅 0.3% = 0.585%
 # Reward 只有在扣除摩擦成本後仍為正時才給 1，避免學出「帳面賺、實際賠」的微利策略
@@ -709,7 +712,7 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     try:
         from .ft_online_update import online_update_ft_transformer
         from .model_store import load_model as _load_model, save_model as _save_model
-        stock_id = getattr(req, 'stock_id', 0)
+        stock_id = req.stock_id
         ft_stored = _load_model(stock_id, "FT-Transformer")
         if ft_stored and ft_stored[0] is not None:
             bundle_data, ft_meta = ft_stored

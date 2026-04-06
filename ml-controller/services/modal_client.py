@@ -141,5 +141,5 @@ async def batch_update_arf(payloads: list[dict]) -> list[dict]:
         return await _modal_batch_arf(payloads)
     if _ML_SERVICE_URL:
         logger.info(f"[ml_client] HTTP parallel ARF × {len(payloads)}")
-        return await _http_batch("/update-arf", payloads, concurrency=4)
+        return await _http_batch("/arf/update", payloads, concurrency=4)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")

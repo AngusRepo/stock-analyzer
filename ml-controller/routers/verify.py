@@ -34,11 +34,12 @@ async def post_verify(req: VerifyRequest):
 
     arf_payloads = [
         {
-            "stock_id":       v.stock_id,
-            "symbol":         v.symbol,
-            "is_correct":     v.predicted_direction == v.actual_direction,
-            "realized_pnl_r": v.realized_pnl_r,
-            "arf_features":   v.arf_features,
+            "stock_id":         v.stock_id,
+            "symbol":           v.symbol,
+            "arf_features":     v.arf_features,
+            "actual_up":        v.actual_direction == "up",
+            "actual_return":    v.realized_pnl_r,
+            "forecast_pct":     0.0,  # verify 階段無預測值，用 default
         }
         for v in req.verifications
         if v.predicted_direction != "neutral" and v.arf_features

@@ -11,3 +11,5 @@ __pycache__/
 .modal.toml
 /tmp/
 *.log
+scripts/data/
+scripts/backfill_output*

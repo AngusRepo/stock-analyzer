@@ -461,18 +461,18 @@ async function runMorningWarmup(env: Bindings) {
 
 // ─── Cron 1a：15:05 TW — Bulk Fetch（全市場 prices+chips → D1）──────────────
 async function runBulkFetch(env: Bindings, force = false) {
-  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const lockKey = `cron:bulk-fetch:${twToday}`
+  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
-    console.log(`[Cron] Bulk fetch already done today (${twToday}), skipping.`)
+    console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
     return
   }
 
   try {
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./lib/twseApi')
     const [{ chipCount, marginCount }, priceCount] = await Promise.all([
-      bulkFetchAndStoreChipData(env.DB, twToday, env.SHIOAJI_PROXY_URL, env.ML_CONTROLLER_SECRET),
-      bulkFetchAndStorePrices(env.DB, twToday),
+      bulkFetchAndStoreChipData(env.DB, twDate, env.SHIOAJI_PROXY_URL, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(env.DB, twDate),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
@@ -481,7 +481,7 @@ async function runBulkFetch(env: Bindings, force = false) {
   }
 
   // Wave 2：月營收 + 大盤廣度（並行）
-  const triggerTime = twToday
+  const triggerTime = twDate
   await fetchWave2Data(env, triggerTime).catch(e => console.warn('[Wave2] failed:', e))
 }
 
@@ -800,8 +800,8 @@ async function runMLAndRisk(env: Bindings) {
     }
   }
 
-  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const usSignalRaw = await env.KV.get(`us:leading:${twToday}`, 'json') as any
+  // twDate already declared at top of runMLAndRisk via twToday()
+  const usSignalRaw = await env.KV.get(`us:leading:${twDate}`, 'json') as any
   const breadthResult = await env.DB.prepare(
     'SELECT date, advance_ratio, bull_alignment_pct FROM market_breadth ORDER BY date DESC LIMIT 5'
   ).all<any>().catch(() => ({ results: [] }))
@@ -1015,8 +1015,7 @@ async function runMLAndRisk(env: Bindings) {
     for (const [model, arr] of Object.entries(timingAgg)) {
       avgTimings[model] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
     }
-    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-    await env.KV.put(`ml:perf:${twToday}`, JSON.stringify({
+    await env.KV.put(`ml:perf:${twDate}`, JSON.stringify({
       avg_model_timings_ms: avgTimings,
       avg_feature_count: featureCounts.length ? Math.round(featureCounts.reduce((a, b) => a + b, 0) / featureCounts.length) : 0,
       total_stocks: results.length,
@@ -1629,13 +1628,13 @@ export default {
     // "0 20 * * 6"   → 每週日 04:00 台北 (UTC Sat 20:00) → 清理舊資料
     // "0 22 * * 6"   → 每週日 06:00 台北 (UTC Sat 22:00) → 自動回測
     // ── 國定假日檢查（台股休市日不跑任何交易相關 cron）──────────────────
-    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const twTodayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
     const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
-    const isHoliday = await env.KV.get(`holiday:${twToday}`)
+    const isHoliday = await env.KV.get(`holiday:${twTodayStr}`)
     const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '0 16 1-7 * 6'])
     if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
-      console.log(`[Cron] ${twToday} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
+      console.log(`[Cron] ${twTodayStr} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
     }
 
@@ -1658,7 +1657,7 @@ export default {
       runWithLog('morning-setup', async () => {
         await runMorningWarmup(env)
         await setupMorningPendingBuys(env)
-        const pending = await env.KV.get(`paper:pending_buys:${twToday}`)
+        const pending = await env.KV.get(`paper:pending_buys:${twTodayStr}`)
         const count = pending ? JSON.parse(pending).length : 0
         return `預熱完成，掛單 ${count} 支`
       })
@@ -1711,7 +1710,7 @@ export default {
         await env.KV.put('cron:intraday-heartbeat', new Date(Date.now() + 8 * 3600_000).toISOString(), { expirationTtl: 3600 })
         const ordersBefore = await env.DB.prepare(
           "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'"
-        ).bind(twToday).first<{ cnt: number }>()
+        ).bind(twTodayStr).first<{ cnt: number }>()
         const before = ordersBefore?.cnt ?? 0
 
         // VULN-40 fix: KV lock to prevent concurrent intraday executions
@@ -1729,7 +1728,7 @@ export default {
 
         const ordersAfter = await env.DB.prepare(
           "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'"
-        ).bind(twToday).first<{ cnt: number }>()
+        ).bind(twTodayStr).first<{ cnt: number }>()
         const after = ordersAfter?.cnt ?? 0
         if (after > before) {
           const { logCronResult } = await import('./lib/cronLogger')

@@ -1315,6 +1315,10 @@ async function runWeeklyDriftCheck(env: Bindings) {
 async function runWeeklyRetrain(env: Bindings) {
   console.log('[WeeklyRetrain] Starting weekly model retraining...')
 
+  // 讀取 barrier params（與 predict 一致）
+  const { getTradingConfig } = await import('./lib/tradingConfig')
+  const tradingCfg = await getTradingConfig(env.KV)
+
   // 共用市況
   const marketRiskRow = await env.DB.prepare(
     'SELECT risk_level, risk_score FROM market_risk ORDER BY date DESC LIMIT 1'
@@ -1364,6 +1368,13 @@ async function runWeeklyRetrain(env: Bindings) {
         },
         weak_features: weakFeatures,  // P1#9: IC audit 無效特徵
         use_optuna: true,             // P1#9: 啟用 Optuna 超參數搜索
+        barrier_params: {
+          upper_mult: tradingCfg.barrier.upperMult,
+          lower_mult: tradingCfg.barrier.lowerMult,
+          upper_pct_cap: tradingCfg.barrier.upperPctCap,
+          lower_pct_cap: tradingCfg.barrier.lowerPctCap,
+          max_days: tradingCfg.barrier.maxDays,
+        },
       })
     } catch (e) {
       console.error(`[WeeklyRetrain] Failed building payload for ${stock.symbol}:`, e)

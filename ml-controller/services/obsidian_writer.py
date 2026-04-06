@@ -193,7 +193,7 @@ class ObsidianWriter:
             snapshot = snapshot[0] if snapshot else {}
 
             orders = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at)=? ORDER BY created_at", [date])
+                "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date])
 
             positions = await _d1_query(client,
                 "SELECT symbol, name, shares, avg_cost, entry_price, current_price, "
@@ -204,7 +204,7 @@ class ObsidianWriter:
 
             # T2 pending buys (may not exist yet if morning hasn't run)
             t2_buys = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND side='buy' AND DATE(created_at)=? AND source='auto_ml'", [date])
+                "SELECT * FROM paper_orders WHERE account_id=1 AND side='buy' AND DATE(created_at, '+8 hours')=? AND source='auto_ml'", [date])
 
             # ── Generate Daily note ──
             daily_content = _render("daily.md.j2",
@@ -318,7 +318,7 @@ class ObsidianWriter:
             # Weekly trades
             trades = await _d1_query(client,
                 "SELECT side, symbol, signal, price, shares, created_at FROM paper_orders "
-                "WHERE account_id=1 AND DATE(created_at) >= ? AND DATE(created_at) <= ? ORDER BY created_at",
+                "WHERE account_id=1 AND DATE(created_at, '+8 hours') >= ? AND DATE(created_at, '+8 hours') <= ? ORDER BY created_at",
                 [week_start, week_end])
 
             weekly_content = _render("weekly_review.md.j2",

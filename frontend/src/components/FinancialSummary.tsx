@@ -31,7 +31,7 @@ function buildPeRiverData(financials: any[]) {
   // financials is DESC order — reverse for chart
   const sorted = [...financials].reverse()
   return sorted
-    .filter((f: any) => f.pe != null && f.period)
+    .filter((f: any) => f.pe != null && f.period && /Q\d$/.test(f.period))
     .map((f: any) => {
       const pe = f.pe as number
       const row: any = { period: f.period, pe }

@@ -10,15 +10,17 @@ import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronAp
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  Activity, TrendingUp, TrendingDown, DollarSign, Wallet, BarChart3,
-  Bot, ShieldCheck, ShieldAlert, Clock, ArrowUpRight, ArrowDownRight,
-  Minus, RefreshCw, Percent, Shield, Award, Scale, Cpu,
+  Activity, TrendingUp, Wallet, Bot, ShieldCheck, ShieldAlert,
+  Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { BotThemeFlowPanel, RecommendationCard } from '@/components/DailyRecommendationPanel'
 import CandlestickChart from '@/components/CandlestickChart'
+import AppShell from '@/components/AppShell'
+import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -37,7 +39,7 @@ function fmt(n: number | null | undefined, decimals = 0): string {
 function pctClass(pct: number): string {
   if (pct > 0) return 'text-red-400'
   if (pct < 0) return 'text-emerald-400'
-  return 'text-zinc-400'
+  return 'text-muted-foreground'
 }
 
 function signalBadge(signal: string) {
@@ -47,12 +49,8 @@ function signalBadge(signal: string) {
   if (s.includes('BUY'))        return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>BUY</Badge>
   if (s.includes('STRONG_SELL'))return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>STRONG SELL</Badge>
   if (s.includes('SELL'))       return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>SELL</Badge>
-  if (s.includes('NO_SIGNAL'))  return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">—</Badge>
-  return <Badge className="bg-zinc-800/50 text-zinc-500 border-zinc-700/30 text-[10px] px-1.5 py-0">HOLD</Badge>
-}
-
-function StatusDot({ ok }: { ok: boolean }) {
-  return <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
+  if (s.includes('NO_SIGNAL'))  return <Badge className="bg-muted/50 text-muted-foreground border-border/30 text-[10px] px-1.5 py-0">—</Badge>
+  return <Badge className="bg-muted/50 text-muted-foreground border-border/30 text-[10px] px-1.5 py-0">HOLD</Badge>
 }
 
 // ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────
@@ -100,7 +98,7 @@ function MicroRRG({ quadrant }: { quadrant?: string }) {
 // ─── Portfolio Summary（FinLab 風格 6 卡）───────────────────────────────────
 
 function WinLossBadge({ win }: { win: boolean | null }) {
-  if (win === null) return <span className="text-zinc-600 text-xs">-</span>
+  if (win === null) return <span className="text-muted-foreground/60 text-xs">-</span>
   return win
     ? <span className="text-xs font-bold text-red-400">勝</span>
     : <span className="text-xs font-bold text-emerald-400">負</span>
@@ -110,22 +108,10 @@ function PortfolioSummary() {
   const { data: account } = useQuery({ queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: 60_000 })
   const { data: positions } = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 30_000, refetchInterval: isTWMarketOpen() ? 60_000 : false })
   const { data: pnlData } = useQuery({ queryKey: ['paper', 'pnl'], queryFn: paperApi.pnl, staleTime: 5 * 60_000 })
-  // 歷史已實現損益（從 sell orders 計算）
-  const { data: ordersData } = useQuery({ queryKey: ['paper', 'orders', 'all'], queryFn: () => paperApi.orders(999), staleTime: 5 * 60_000 })
-  const sellOrders = (Array.isArray(ordersData) ? ordersData : (ordersData as any)?.orders ?? []).filter((o: any) => o.side === 'sell')
-  const totalRealizedPnl = sellOrders.reduce((sum: number, o: any) => {
-    try {
-      const note = typeof o.note === 'string' ? JSON.parse(o.note) : o.note
-      const entry = note?.entry_price ?? o.price
-      return sum + (o.price - entry) * o.shares
-    } catch {
-      // note 是純文字（舊格式），用 buy order 的 entry_price 回推
-      const buyOrder = (Array.isArray(ordersData) ? ordersData : (ordersData as any)?.orders ?? [])
-        .find((b: any) => b.side === 'buy' && b.symbol === o.symbol)
-      const entryFromBuy = buyOrder?.price ?? o.price
-      return sum + (o.price - entryFromBuy) * o.shares
-    }
-  }, 0)
+  // 歷史已實現損益（Server-side 全歷史計算）
+  const { data: realizedData } = useQuery({ queryKey: ['paper', 'realized'], queryFn: paperApi.realized, staleTime: 5 * 60_000 })
+  const totalRealizedPnl = realizedData?.totalRealizedPnl ?? 0
+  const sellOrderCount = realizedData?.tradeCount ?? 0
 
   const acc = account?.account ?? account ?? {}
   const cash = acc?.cash ?? 0
@@ -190,48 +176,48 @@ function PortfolioSummary() {
   }
 
   return (
-    <div className="grid grid-cols-[auto_repeat(4,minmax(0,1fr))_auto_auto] items-baseline gap-x-5 gap-y-0 mb-2 overflow-x-auto whitespace-nowrap">
+    <div className="grid grid-cols-[1.2fr_repeat(4,1fr)_1fr_1.2fr] items-baseline gap-6 py-1 overflow-x-auto whitespace-nowrap">
       {/* 總資產 */}
-      <div className="shrink-0">
-        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">總資產</div>
-        <div className="text-2xl font-mono text-zinc-100 leading-tight">${fmt(totalAssets)}</div>
-        <span className={`text-sm font-mono ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+      <div>
+        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">總資產</div>
+        <div className="text-3xl font-mono font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
+        <span className={`text-sm font-mono font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
       </div>
       {/* 指標列 */}
       {[
-        { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrders.length}筆`, cls: pctClass(totalRealizedPnl) },
+        { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrderCount}筆`, cls: pctClass(totalRealizedPnl) },
         { label: '年化', val: `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
         { label: 'MDD', val: `-${(maxDrawdown * 100).toFixed(1)}%`, sub: '', cls: maxDrawdown > 0.1 ? 'text-red-400' : maxDrawdown > 0.05 ? 'text-amber-400' : 'text-emerald-400' },
-        { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-zinc-200' : 'text-red-400') : 'text-zinc-500' },
+        { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
       ].map(m => (
-        <div key={m.label} className="shrink-0 min-w-[3.5rem]">
-          <div className="text-[11px] text-zinc-500 uppercase tracking-wide">{m.label}</div>
-          <div className={`text-base font-mono leading-tight ${m.cls}`}>{m.val}</div>
-          <span className="text-[10px] text-zinc-600">{m.sub || '\u00A0'}</span>
+        <div key={m.label}>
+          <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">{m.label}</div>
+          <div className={`text-xl font-mono font-semibold leading-tight ${m.cls}`}>{m.val}</div>
+          <span className="text-[11px] text-muted-foreground/60">{m.sub || '\u00A0'}</span>
         </div>
       ))}
       {/* vs 0050 */}
-      <div className="shrink-0">
-        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">vs 0050</div>
-        <div className="flex gap-2 mt-0.5">
+      <div>
+        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">vs 0050</div>
+        <div className="flex gap-4 mt-0.5">
           {[{ l: '週', w: beatsBenchmark(retWeek, bmWeek) }, { l: '月', w: beatsBenchmark(retMonth, bmMonth) }, { l: '季', w: beatsBenchmark(retQuarter, bmQuarter) }].map(b => (
-            <div key={b.l} className="text-center"><div className="text-[9px] text-zinc-500">{b.l}</div><WinLossBadge win={b.w} /></div>
+            <div key={b.l} className="text-center"><div className="text-[11px] text-muted-foreground">{b.l}</div><WinLossBadge win={b.w} /></div>
           ))}
         </div>
-        <span className="text-[10px] text-zinc-600">{'\u00A0'}</span>
+        <span className="text-[11px] text-muted-foreground/60">{'\u00A0'}</span>
       </div>
-      {/* 近期 */}
-      <div className="shrink-0">
-        <div className="text-[11px] text-zinc-500 uppercase tracking-wide">近期</div>
-        <div className="flex gap-3 mt-0.5">
+      {/* 近期報酬 */}
+      <div>
+        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">近期報酬</div>
+        <div className="flex gap-5 mt-0.5">
           {[{ l: '週', v: retWeek }, { l: '月', v: retMonth }, { l: '季', v: retQuarter }].map(({ l, v }) => (
             <div key={l} className="text-center">
-              <div className="text-[9px] text-zinc-500">{l}</div>
-              <div className={`text-xs font-mono ${v != null ? pctClass(v) : 'text-zinc-600'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
+              <div className="text-[11px] text-muted-foreground">{l}</div>
+              <div className={`text-base font-mono font-semibold ${v != null ? pctClass(v) : 'text-muted-foreground/60'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
             </div>
           ))}
         </div>
-        <span className="text-[10px] text-zinc-600">{'\u00A0'}</span>
+        <span className="text-[11px] text-muted-foreground/60">{'\u00A0'}</span>
       </div>
     </div>
   )
@@ -260,7 +246,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     qfList.map((q: any) => [q.symbol, { quadrant: q.quadrant, action: q.action }])
   )
 
-  if (isLoading) return <div className="text-zinc-500 text-sm p-4 font-mono">Loading...</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
   if (!buys.length) {
@@ -269,7 +255,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-zinc-600 font-mono">{showingDate} · T2 篩選後掛單</div>
+      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         const rec = {
@@ -279,9 +265,15 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
         }
         return (
-          <div key={b.symbol} onClick={() => onSelectSymbol?.(b.symbol)}
-            className={selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}>
+          <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
             <RecommendationCard rec={rec} rank={idx + 1} />
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
+              className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              title="查看 K 線"
+            >
+              <Activity className="w-3.5 h-3.5" />
+            </button>
           </div>
         )
       })}
@@ -297,15 +289,21 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     staleTime: 5 * 60_000,
   })
   const recs = recData?.recommendations ?? recData?.data ?? []
-  if (isLoading) return <div className="text-zinc-500 text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length) return <div className="text-center py-6 text-zinc-600 text-xs">尚無推薦</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
+  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">尚無推薦</div>
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-zinc-600 font-mono">{recData?.date} · 推薦（未經 T2 篩選）</div>
+      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 推薦（未經 T2 篩選）</div>
       {recs.slice(0, 12).map((r: any, idx: number) => (
-        <div key={r.symbol} onClick={() => onSelectSymbol?.(r.symbol)}
-          className={selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}>
+        <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
           <RecommendationCard rec={r} rank={idx + 1} />
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+            className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+            title="查看 K 線"
+          >
+            <Activity className="w-3.5 h-3.5" />
+          </button>
         </div>
       ))}
     </div>
@@ -340,15 +338,15 @@ function PositionsTable() {
       return sum + (proceeds - cost)
     }, 0)
 
-  if (isLoading) return <div className="text-zinc-500 text-sm p-4">Loading...</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
   if (!Array.isArray(positions) || positions.length === 0) {
     return (
-      <div className="text-center py-12 text-zinc-500">
+      <div className="text-center py-12 text-muted-foreground">
         <Wallet className="w-12 h-12 mx-auto mb-3 opacity-30" />
         <p>目前無持倉</p>
         <p className="text-xs mt-1">Bot 會在 ML 訊號觸發時自動建倉</p>
         {summary && (
-          <div className="mt-4 text-xs text-zinc-600">
+          <div className="mt-4 text-xs text-muted-foreground/60">
             現金 ${fmt(summary.cash)} | 總資產 ${fmt(summary.total_value)}
           </div>
         )}
@@ -365,7 +363,7 @@ function PositionsTable() {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-zinc-500 text-xs uppercase border-b border-zinc-800">
+            <tr className="text-muted-foreground text-xs uppercase border-b border-border">
               <th className="text-left p-2">股票</th>
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
@@ -394,34 +392,34 @@ function PositionsTable() {
                 : null
 
               return (
-                <tr key={p.symbol} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                <tr key={p.symbol} className="border-b border-border/50 hover:bg-muted/30">
                   <td className="p-2">
-                    <div className="font-mono text-zinc-200">{p.symbol}</div>
-                    <div className="text-xs text-zinc-500">
+                    <div className="font-mono text-foreground">{p.symbol}</div>
+                    <div className="text-xs text-muted-foreground">
                       {p.name}
-                      {daysHeld != null && <span className="ml-1 text-zinc-600">({daysHeld}天)</span>}
+                      {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
                     </div>
                   </td>
-                  <td className="p-2 text-right font-mono text-zinc-300">{lots}</td>
-                  <td className="p-2 text-right font-mono text-zinc-300">${fmt(entry, 1)}</td>
-                  <td className="p-2 text-right font-mono text-zinc-300">${fmt(current, 1)}</td>
+                  <td className="p-2 text-right font-mono text-foreground/80">{lots}</td>
+                  <td className="p-2 text-right font-mono text-foreground/80">${fmt(entry, 1)}</td>
+                  <td className="p-2 text-right font-mono text-foreground/80">${fmt(current, 1)}</td>
                   <td className="p-2 text-right">
                     {p.trailing_stop ? (
                       <div className="font-mono text-red-400 text-xs">${fmt(p.trailing_stop, 1)}</div>
                     ) : p.initial_stop ? (
                       <div className="font-mono text-red-400/60 text-xs">${fmt(p.initial_stop, 1)}</div>
-                    ) : <span className="text-zinc-600">—</span>}
+                    ) : <span className="text-muted-foreground/60">—</span>}
                   </td>
                   <td className="p-2 text-right">
                     {p.tp1_price && (
-                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-zinc-500 line-through' : 'text-red-400'}`}>
+                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
                         T1 ${fmt(p.tp1_price, 1)}
                       </div>
                     )}
                     {p.tp2_price && (
                       <div className="font-mono text-xs text-red-300">T2 ${fmt(p.tp2_price, 1)}</div>
                     )}
-                    {!p.tp1_price && !p.tp2_price && <span className="text-zinc-600">—</span>}
+                    {!p.tp1_price && !p.tp2_price && <span className="text-muted-foreground/60">—</span>}
                   </td>
                   <td className="p-2 text-right">
                     <div className={`font-mono ${pctClass(pnlPct)}`}>
@@ -439,14 +437,14 @@ function PositionsTable() {
       </div>
 
       {/* Summary bar */}
-      <div className="flex items-center justify-between px-3 py-2 mt-2 bg-zinc-800/40 rounded text-xs">
+      <div className="flex items-center justify-between px-3 py-2 mt-2 bg-muted/40 rounded text-xs">
         <div className="flex gap-4">
-          <span className="text-zinc-500">持倉 <span className="text-zinc-300">{positions.length}</span> 檔</span>
-          <span className="text-zinc-500">成本 <span className="text-zinc-300">${fmt(Math.round(totalCostBasis))}</span></span>
+          <span className="text-muted-foreground">持倉 <span className="text-foreground/80">{positions.length}</span> 檔</span>
+          <span className="text-muted-foreground">成本 <span className="text-foreground/80">${fmt(Math.round(totalCostBasis))}</span></span>
         </div>
         <div className="flex gap-4">
-          <span className="text-zinc-500">未實現 <span className={pctClass(totalUnrealized)}>{totalUnrealized >= 0 ? '+' : ''}${fmt(Math.round(totalUnrealized))}</span></span>
-          {summary && <span className="text-zinc-500">現金 <span className="text-zinc-300">${fmt(Math.round(summary.cash))}</span></span>}
+          <span className="text-muted-foreground">未實現 <span className={pctClass(totalUnrealized)}>{totalUnrealized >= 0 ? '+' : ''}${fmt(Math.round(totalUnrealized))}</span></span>
+          {summary && <span className="text-muted-foreground">現金 <span className="text-foreground/80">${fmt(Math.round(summary.cash))}</span></span>}
         </div>
       </div>
     </div>
@@ -463,10 +461,10 @@ function TradeHistory() {
   })
 
   const orders = Array.isArray(data) ? data : (data as any)?.orders ?? []
-  if (isLoading) return <div className="text-zinc-500 text-sm p-4">Loading...</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
   if (!orders.length) {
     return (
-      <div className="text-center py-12 text-zinc-500">
+      <div className="text-center py-12 text-muted-foreground">
         <Clock className="w-12 h-12 mx-auto mb-3 opacity-30" />
         <p>No trades yet</p>
       </div>
@@ -477,7 +475,7 @@ function TradeHistory() {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-zinc-500 text-xs uppercase border-b border-zinc-800">
+          <tr className="text-muted-foreground text-xs uppercase border-b border-border">
             <th className="text-left p-2">Time</th>
             <th className="text-left p-2">Symbol</th>
             <th className="text-left p-2">Side</th>
@@ -497,13 +495,13 @@ function TradeHistory() {
               else noteDisplay = o.note ?? ''
             } catch { noteDisplay = o.note ?? '' }
             return (
-              <tr key={o.id ?? i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-                <td className="p-2 text-xs text-zinc-500 font-mono whitespace-nowrap">
+              <tr key={o.id ?? i} className="border-b border-border/50 hover:bg-muted/30">
+                <td className="p-2 text-xs text-muted-foreground font-mono whitespace-nowrap">
                   {o.created_at ? new Date(new Date(o.created_at).getTime() + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ') : '-'}
                 </td>
                 <td className="p-2">
-                  <span className="font-mono text-zinc-200">{o.symbol}</span>
-                  <span className="text-xs text-zinc-500 ml-1">{o.name}</span>
+                  <span className="font-mono text-foreground">{o.symbol}</span>
+                  <span className="text-xs text-muted-foreground ml-1">{o.name}</span>
                 </td>
                 <td className="p-2">
                   <Badge className={isBuy
@@ -514,9 +512,9 @@ function TradeHistory() {
                     {o.side?.toUpperCase()}
                   </Badge>
                 </td>
-                <td className="p-2 text-right font-mono text-zinc-300">{fmt(o.shares)}</td>
-                <td className="p-2 text-right font-mono text-zinc-300">${fmt(o.price, 1)}</td>
-                <td className="p-2 text-xs text-zinc-500 hidden md:table-cell max-w-[200px] truncate">
+                <td className="p-2 text-right font-mono text-foreground/80">{fmt(o.shares)}</td>
+                <td className="p-2 text-right font-mono text-foreground/80">${fmt(o.price, 1)}</td>
+                <td className="p-2 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate">
                   {noteDisplay}
                 </td>
               </tr>
@@ -560,15 +558,15 @@ function BotStatusPanel() {
   return (
     <div className="space-y-4">
       {/* Market Risk */}
-      <div className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-lg">
+      <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
         <div className="flex items-center gap-2">
           {riskScore > 70 ? <ShieldAlert className="w-4 h-4 text-red-400" /> : <ShieldCheck className="w-4 h-4 text-emerald-400" />}
-          <span className="text-sm text-zinc-300">Market Risk</span>
+          <span className="text-sm text-foreground/80">Market Risk</span>
         </div>
         <div className="text-right">
           <span className={`font-mono font-semibold ${riskColor}`}>{riskScore}</span>
-          <span className="text-zinc-500 text-xs ml-1">/ 100</span>
-          <Badge className="ml-2 bg-zinc-700/50 text-zinc-400 border-zinc-600/30 text-xs">{riskLevel}</Badge>
+          <span className="text-muted-foreground text-xs ml-1">/ 100</span>
+          <Badge className="ml-2 bg-muted/50 text-muted-foreground border-border/30 text-xs">{riskLevel}</Badge>
         </div>
       </div>
 
@@ -584,29 +582,29 @@ function BotStatusPanel() {
           return (
             <div key={log.task}>
               <div
-                className={`flex items-center justify-between p-2 rounded cursor-pointer hover:bg-zinc-800/30 ${isExpanded ? 'bg-zinc-800/40' : ''}`}
+                className={`flex items-center justify-between p-2 rounded cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/40' : ''}`}
                 onClick={() => setExpanded(isExpanded ? null : log.task)}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
-                    isSuccess ? 'bg-emerald-400' : isError ? 'bg-red-400' : 'bg-zinc-600'
+                    isSuccess ? 'bg-emerald-400' : isError ? 'bg-red-400' : 'bg-muted-foreground/60'
                   }`} />
-                  <span className="text-sm text-zinc-300 truncate">{log.task.replace(/-/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}</span>
+                  <span className="text-sm text-foreground/80 truncate">{log.task.replace(/-/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}</span>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {!isPending && (
-                    <span className="text-[10px] text-zinc-500 font-mono hidden sm:inline">
+                    <span className="text-[10px] text-muted-foreground font-mono hidden sm:inline">
                       {log.duration_ms > 0 ? `${(log.duration_ms / 1000).toFixed(1)}s` : ''}
                     </span>
                   )}
-                  <span className="text-xs text-zinc-500 font-mono">{time}</span>
+                  <span className="text-xs text-muted-foreground font-mono">{time}</span>
                 </div>
               </div>
               {isExpanded && !isPending && (
-                <div className="ml-6 px-3 py-2 text-xs bg-zinc-800/30 rounded-b mb-1">
-                  <div className={isError ? 'text-red-400' : 'text-zinc-400'}>{log.summary}</div>
+                <div className="ml-6 px-3 py-2 text-xs bg-muted/30 rounded-b mb-1">
+                  <div className={isError ? 'text-red-400' : 'text-muted-foreground'}>{log.summary}</div>
                   {log.timestamp && (
-                    <div className="text-zinc-600 mt-1">
+                    <div className="text-muted-foreground/60 mt-1">
                       {new Date(new Date(log.timestamp).getTime() + 8 * 3600_000).toISOString().slice(11, 19)} TW
                     </div>
                   )}
@@ -617,7 +615,7 @@ function BotStatusPanel() {
           )
         })}
         {logs.length === 0 && (
-          <div className="text-center py-8 text-zinc-500 text-sm">
+          <div className="text-center py-8 text-muted-foreground text-sm">
             <Clock className="w-8 h-8 mx-auto mb-2 opacity-30" />
             <p>今日尚無 Cron 執行紀錄</p>
           </div>
@@ -650,7 +648,7 @@ function PerformanceChart() {
 
   if (!Array.isArray(allSnapshots) || allSnapshots.length === 0) {
     return (
-      <div className="text-center py-12 text-zinc-500">
+      <div className="text-center py-12 text-muted-foreground">
         <Activity className="w-12 h-12 mx-auto mb-3 opacity-30" />
         <p>No performance data yet</p>
         <p className="text-xs mt-1">Chart will appear after the first trading day</p>
@@ -697,7 +695,7 @@ function PerformanceChart() {
             className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
               period === p.key
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+                : 'text-muted-foreground hover:text-foreground/80 border border-transparent'
             }`}
           >
             {p.label}
@@ -727,7 +725,7 @@ function PerformanceChart() {
           {hasTwii && (
             <Area type="monotone" dataKey="twii" stroke="#a78bfa" strokeWidth={1} fill="none" dot={false} strokeDasharray="2 2" name="twii" />
           )}
-          <Legend formatter={(value) => <span className="text-[10px] text-zinc-500">{nameMap[value] ?? value}</span>} iconSize={8} />
+          <Legend formatter={(value) => <span className="text-[10px] text-muted-foreground">{nameMap[value] ?? value}</span>} iconSize={8} />
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -755,14 +753,14 @@ function BacktestCard() {
 
   if (isLoading) {
     return (
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+      <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Scale className="w-4 h-4" /> Backtest
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-zinc-600 text-xs">Loading...</p>
+          <p className="text-muted-foreground/60 text-xs">Loading...</p>
         </CardContent>
       </Card>
     )
@@ -770,14 +768,14 @@ function BacktestCard() {
 
   if (!data) {
     return (
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+      <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Scale className="w-4 h-4" /> Backtest
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-zinc-600 text-xs">尚無回測結果</p>
+          <p className="text-muted-foreground/60 text-xs">尚無回測結果</p>
         </CardContent>
       </Card>
     )
@@ -807,18 +805,18 @@ function BacktestCard() {
     : pboVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
 
   return (
-    <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+    <Card className="bg-card border-border backdrop-blur-sm">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Scale className="w-4 h-4" /> Backtest
-          <span className="text-zinc-600 text-xs ml-auto">{data.run_date} · {data.strategy}</span>
+          <span className="text-muted-foreground/60 text-xs ml-auto">{data.run_date} · {data.strategy}</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
             <div key={m.label} className="text-center">
-              <div className="text-zinc-500 text-[10px] uppercase tracking-wider">{m.label}</div>
+              <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{m.label}</div>
               <div className={`text-sm font-mono mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
                 {m.value}
               </div>
@@ -841,7 +839,7 @@ function BacktestCard() {
           </div>
         )}
         {data.timerange && (
-          <div className="text-zinc-600 text-[10px] mt-2 text-center">{data.timerange}</div>
+          <div className="text-muted-foreground/60 text-[10px] mt-2 text-center">{data.timerange}</div>
         )}
       </CardContent>
     </Card>
@@ -859,26 +857,26 @@ function AdaptiveParamsCard() {
 
   if (isLoading) {
     return (
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+      <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Cpu className="w-4 h-4" /> Adaptive Params
           </CardTitle>
         </CardHeader>
-        <CardContent><p className="text-zinc-600 text-xs">Loading...</p></CardContent>
+        <CardContent><p className="text-muted-foreground/60 text-xs">Loading...</p></CardContent>
       </Card>
     )
   }
 
   if (!data || !data.computed_at) {
     return (
-      <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+      <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Cpu className="w-4 h-4" /> Adaptive Params
           </CardTitle>
         </CardHeader>
-        <CardContent><p className="text-zinc-600 text-xs">尚未計算（今日 16:05 後可用）</p></CardContent>
+        <CardContent><p className="text-muted-foreground/60 text-xs">尚未計算（今日 16:05 後可用）</p></CardContent>
       </Card>
     )
   }
@@ -892,33 +890,33 @@ function AdaptiveParamsCard() {
   const version       = data.version ?? 0
   const computedAt    = data.computed_at ? data.computed_at.slice(0, 16).replace('T', ' ') : '-'
 
-  const confColor = confThreshold > 0.65 ? 'text-amber-400' : confThreshold < 0.58 ? 'text-emerald-400' : 'text-zinc-300'
+  const confColor = confThreshold > 0.65 ? 'text-amber-400' : confThreshold < 0.58 ? 'text-emerald-400' : 'text-foreground/80'
 
   return (
-    <Card className="bg-white/[0.03] border-white/[0.08] backdrop-blur-sm">
+    <Card className="bg-card border-border backdrop-blur-sm">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-zinc-400 flex items-center gap-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Cpu className="w-4 h-4" /> Adaptive Params
-          <span className="text-zinc-600 text-xs ml-auto">v{version} · {computedAt}</span>
+          <span className="text-muted-foreground/60 text-xs ml-auto">v{version} · {computedAt}</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
           <div className="text-center">
-            <div className="text-zinc-500 text-[10px] uppercase tracking-wider">信心門檻</div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">信心門檻</div>
             <div className={`text-sm font-mono mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
           </div>
           <div className="text-center">
-            <div className="text-zinc-500 text-[10px] uppercase tracking-wider">Risk Score</div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Risk Score</div>
             <div className={`text-sm font-mono mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
           </div>
           <div className="text-center">
-            <div className="text-zinc-500 text-[10px] uppercase tracking-wider">30d 準確率</div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">30d 準確率</div>
             <div className={`text-sm font-mono mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
           </div>
           <div className="text-center">
-            <div className="text-zinc-500 text-[10px] uppercase tracking-wider">Bandit</div>
-            <div className={`text-sm font-mono mt-0.5 ${forceExplore ? 'text-red-400' : 'text-zinc-300'}`}>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Bandit</div>
+            <div className={`text-sm font-mono mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
               {forceExplore ? '強制探索' : `×${banditMult.toFixed(1)}`}
             </div>
           </div>
@@ -926,6 +924,165 @@ function AdaptiveParamsCard() {
         {slOverride && (
           <div className="text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
             SL +{slOverride.sl_add} ATR / TP +{slOverride.tp_add} ATR（高風險 regime 加寬）
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Trade Journal Analytics ────────────────────────────────────────────────
+
+function TradeJournalAnalytics() {
+  const { data: journalData } = useQuery({
+    queryKey: ['paper', 'journal'],
+    queryFn: paperApi.journal,
+    staleTime: 5 * 60_000,
+  })
+
+  const metrics = journalData?.metrics ?? null
+
+  if (!metrics) {
+    return (
+      <Card className="bg-card border-border backdrop-blur-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">交易分析</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-muted-foreground/60 text-xs">尚無已實現交易</p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const kpis = [
+    { label: '勝率', value: `${(metrics.winRate * 100).toFixed(1)}%`, cls: metrics.winRate >= 0.5 ? 'text-red-400' : 'text-emerald-400' },
+    { label: '平均持有', value: `${metrics.avgHoldDays}天`, cls: 'text-foreground/80' },
+    { label: '最佳交易', value: metrics.best ? `${metrics.best.symbol} +$${fmt(Math.round(metrics.best.pnl))}` : '-', cls: 'text-red-400' },
+    { label: '最差交易', value: metrics.worst ? `${metrics.worst.symbol} $${fmt(Math.round(metrics.worst.pnl))}` : '-', cls: 'text-emerald-400' },
+    { label: '平均獲利', value: `$${fmt(Math.round(metrics.avgWin))}`, cls: 'text-red-400' },
+    { label: '平均虧損', value: `-$${fmt(Math.round(metrics.avgLoss))}`, cls: 'text-emerald-400' },
+    { label: 'Profit Factor', value: metrics.profitFactor === Infinity ? '∞' : metrics.profitFactor.toFixed(2), cls: metrics.profitFactor >= 1.5 ? 'text-red-400' : metrics.profitFactor >= 1 ? 'text-foreground/80' : 'text-emerald-400' },
+    { label: 'Expectancy', value: `${metrics.expectancy >= 0 ? '+' : ''}$${fmt(Math.round(metrics.expectancy))}`, cls: pctClass(metrics.expectancy) },
+  ]
+
+  return (
+    <Card className="bg-card border-border backdrop-blur-sm">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          交易分析 <span className="text-muted-foreground/60 text-xs ml-2">{metrics.totalTrades} 筆</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {kpis.map(k => (
+            <div key={k.label} className="text-center">
+              <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{k.label}</div>
+              <div className={`text-sm font-mono mt-0.5 ${k.cls}`}>{k.value}</div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Position Sizing Calculator ─────────────────────────────────────────────
+
+function PositionSizer() {
+  const { data: account } = useQuery({
+    queryKey: ['paper', 'account'],
+    queryFn: paperApi.account,
+    staleTime: 60_000,
+  })
+  const acc = account?.account ?? account ?? {}
+  const defaultCash = acc?.cash ?? 1_000_000
+
+  const [cash, setCash] = useState<string>('')
+  const [riskPct, setRiskPct] = useState<string>('2')
+  const [entryPrice, setEntryPrice] = useState<string>('')
+  const [stopLoss, setStopLoss] = useState<string>('')
+
+  const cashVal = parseFloat(cash) || defaultCash
+  const riskVal = (parseFloat(riskPct) || 2) / 100
+  const entry = parseFloat(entryPrice) || 0
+  const sl = parseFloat(stopLoss) || 0
+
+  const riskAmt = cashVal * riskVal
+  const priceRisk = entry > 0 && sl > 0 ? Math.abs(entry - sl) : 0
+  const shares = priceRisk > 0 ? Math.floor(riskAmt / priceRisk) : 0
+  const lots = Math.floor(shares / 1000)
+  const positionValue = shares * entry
+  const allocation = cashVal > 0 ? (positionValue / cashVal) * 100 : 0
+
+  const canCalc = entry > 0 && sl > 0 && entry !== sl
+
+  return (
+    <Card className="bg-card border-border backdrop-blur-sm">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">部位計算器</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Inputs */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">帳戶資金</label>
+            <Input
+              type="number"
+              placeholder={fmt(Math.round(defaultCash))}
+              value={cash}
+              onChange={e => setCash(e.target.value)}
+              className="h-8 text-sm font-mono mt-0.5"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">風險 %</label>
+            <Input
+              type="number"
+              placeholder="2"
+              value={riskPct}
+              onChange={e => setRiskPct(e.target.value)}
+              className="h-8 text-sm font-mono mt-0.5"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">進場價</label>
+            <Input
+              type="number"
+              placeholder="0"
+              value={entryPrice}
+              onChange={e => setEntryPrice(e.target.value)}
+              className="h-8 text-sm font-mono mt-0.5"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">停損價</label>
+            <Input
+              type="number"
+              placeholder="0"
+              value={stopLoss}
+              onChange={e => setStopLoss(e.target.value)}
+              className="h-8 text-sm font-mono mt-0.5"
+            />
+          </div>
+        </div>
+
+        {/* Results */}
+        {canCalc && (
+          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50">
+            {[
+              { label: '風險金額', value: `$${fmt(Math.round(riskAmt))}` },
+              { label: '價差風險', value: `$${fmt(priceRisk, 1)}` },
+              { label: '股數', value: fmt(shares) },
+              { label: '張數', value: `${lots} 張` },
+              { label: '部位價值', value: `$${fmt(Math.round(positionValue))}` },
+              { label: '佔比', value: `${allocation.toFixed(1)}%` },
+            ].map(r => (
+              <div key={r.label} className="text-center">
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{r.label}</div>
+                <div className="text-sm font-mono text-foreground/80 mt-0.5">{r.value}</div>
+              </div>
+            ))}
           </div>
         )}
       </CardContent>
@@ -950,81 +1107,54 @@ export default function BotDashboard() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen text-zinc-100 flex items-center justify-center" style={{ background: '#1A1D21' }}>
-        <div className="text-center space-y-4">
-          <Bot className="w-12 h-12 mx-auto text-emerald-400/60" />
-          <p className="text-zinc-400">請先登入以查看 Bot Dashboard</p>
-          <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
-            Google 登入
-          </button>
+      <AppShell>
+        <div className="flex items-center justify-center h-full">
+          <div className="text-center space-y-4">
+            <Bot className="w-12 h-12 mx-auto text-emerald-400/60" />
+            <p className="text-muted-foreground">請先登入以查看 Bot Dashboard</p>
+            <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
+              Google 登入
+            </button>
+          </div>
         </div>
-      </div>
+      </AppShell>
     )
   }
 
   return (
-    <div className="min-h-screen text-zinc-100 relative overflow-x-hidden" style={{ background: '#1A1D21' }}>
-      {/* Background Glow Blobs */}
-      <div className="pointer-events-none fixed inset-0 z-[1]" style={{ mixBlendMode: 'screen' }}>
-        <div className="absolute" style={{ left: '-10%', top: '5%', width: '60vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(34,139,34,0.30) 0%, transparent 65%)', animation: 'blob-drift-1 18s ease-in-out infinite', willChange: 'transform' }} />
-        <div className="absolute" style={{ right: '-5%', top: '-5%', width: '50vw', height: '60vh', background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.06) 0%, transparent 65%)', animation: 'blob-drift-2 22s ease-in-out infinite', willChange: 'transform' }} />
-        <div className="absolute" style={{ left: '20%', bottom: '-5%', width: '50vw', height: '45vh', background: 'radial-gradient(ellipse at center, rgba(34,139,34,0.20) 0%, transparent 65%)', animation: 'blob-drift-3 15s ease-in-out infinite', willChange: 'transform' }} />
-      </div>
+    <AppShell>
+      <div className="p-4 lg:p-5 space-y-3 text-sm">
 
-      {/* Header */}
-      <header className="border-b border-white/[0.06] px-4 py-2 flex items-center justify-between sticky top-0 z-10" style={{ background: 'rgba(26,29,33,0.85)', backdropFilter: 'blur(12px)' }}>
-        <div className="flex items-center gap-2">
-          <Bot className="w-4 h-4 text-emerald-500" />
-          <h1 className="text-sm font-medium tracking-tight font-mono">StockVision Bot</h1>
-        </div>
-        <div className="flex items-center gap-3">
-          <details className="relative">
-            <summary className="flex items-center gap-1.5 cursor-pointer list-none text-xs text-zinc-500 hover:text-zinc-300">
-              <StatusDot ok={true} />
-              <span className="hidden sm:inline font-mono">Online</span>
-            </summary>
-            <div className="absolute right-0 top-full mt-2 w-80 border border-white/[0.08] rounded-xl shadow-2xl p-3 z-50" style={{ background: 'rgba(26,29,33,0.97)', backdropFilter: 'blur(16px)' }}>
-              <BotStatusPanel />
-            </div>
-          </details>
-          <a href="/" className="text-xs text-zinc-600 hover:text-zinc-400 font-mono">Dashboard</a>
-        </div>
-      </header>
+        {/* ═══ Row 1: Portfolio Summary (full-width sticky) ═══ */}
+        <Card className="border-border bg-card sticky top-0 z-20">
+          <CardContent className="pt-3 pb-2 px-4">
+            <PortfolioSummary />
+          </CardContent>
+        </Card>
 
-      <main className="relative z-10 w-full px-2 sm:px-3 lg:px-4 py-2 sm:py-3 space-y-2 sm:space-y-3 text-sm">
-
-        {/* ═══ Top Banner：Portfolio+Chart(40) | Positions(30) | History(30) ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1.5fr_1.5fr] gap-3">
-          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
-            <CardContent className="pt-3 pb-2 px-4">
-              <PortfolioSummary />
+        {/* ═══ Row 2: Equity Curve | Positions ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <Card className="border-border bg-card">
+            <CardHeader className="pb-0 pt-2 px-3">
+              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Equity Curve</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-1 pb-2 px-3">
               <PerformanceChart />
             </CardContent>
           </Card>
-          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+          <Card className="border-border bg-card">
             <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">Positions</CardTitle>
+              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Positions</CardTitle>
             </CardHeader>
             <CardContent className="p-0"><PositionsTable /></CardContent>
           </Card>
-          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">History</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0"><TradeHistory /></CardContent>
-          </Card>
         </div>
 
-        {/* ═══ 三欄主體：族群(40) | AI Picks(30) | Backtest+Adaptive+K線(30) ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1.5fr_1.5fr] gap-3">
-
-          {/* ── 左欄：族群資金流 ── */}
-          <BotThemeFlowPanel />
-
-          {/* ── 中欄：AI 推薦 ── */}
-          <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+        {/* ═══ Row 3: AI Top Picks | Trade History ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <Card className="border-border bg-card">
             <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs font-medium text-zinc-500 flex items-center gap-1.5 font-mono uppercase tracking-wider">
+              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
                 <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
               </CardTitle>
             </CardHeader>
@@ -1032,30 +1162,52 @@ export default function BotDashboard() {
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
             </CardContent>
           </Card>
-
-          {/* ── 右欄：Backtest + Adaptive + K線 ── */}
-          <div className="space-y-3">
-            <BacktestCard />
-            <AdaptiveParamsCard />
-            {selectedStockId ? (
-              <Card className="border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
-                <CardHeader className="pb-1 pt-2 px-3">
-                  <CardTitle className="text-xs font-medium text-zinc-500 font-mono uppercase tracking-wider">
-                    {selectedSymbol} Chart
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-1">
-                  <CandlestickChart stockId={selectedStockId} />
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="rounded-xl border border-dashed border-white/[0.06] p-8 text-center text-zinc-600 text-xs">
-                點擊推薦股票載入 K 線
-              </div>
-            )}
-          </div>
+          <Card className="border-border bg-card">
+            <CardHeader className="pb-0 pt-2 px-3">
+              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Trade History</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0"><TradeHistory /></CardContent>
+          </Card>
         </div>
-      </main>
-    </div>
+
+        {/* K-Line Dialog (popup on stock click) */}
+        <Dialog open={!!selectedStockId} onOpenChange={(open) => { if (!open) setSelectedSymbol(null) }}>
+          <DialogContent className="max-w-4xl bg-card border-border">
+            <DialogHeader>
+              <DialogTitle className="text-sm font-mono">{selectedSymbol} K 線圖</DialogTitle>
+            </DialogHeader>
+            {selectedStockId && <CandlestickChart stockId={selectedStockId} />}
+          </DialogContent>
+        </Dialog>
+
+        {/* ═══ Row 4: Trade Journal + RRG ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <TradeJournalAnalytics />
+          <BotThemeFlowPanel />
+        </div>
+
+        {/* ═══ Row 5: Backtest | Adaptive Params | Position Sizer ═══ */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          <BacktestCard />
+          <AdaptiveParamsCard />
+          <PositionSizer />
+        </div>
+
+        {/* ═══ Row 6: Bot Status (collapsible) ═══ */}
+        <details className="group">
+          <summary className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border bg-card cursor-pointer hover:border-primary/20 transition-colors text-xs font-medium text-muted-foreground select-none">
+            <Bot className="w-3.5 h-3.5" />
+            <span className="font-mono uppercase tracking-wider">Bot Status & Cron Logs</span>
+            <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
+          </summary>
+          <Card className="border-border bg-card mt-2">
+            <CardContent className="p-3">
+              <BotStatusPanel />
+            </CardContent>
+          </Card>
+        </details>
+
+      </div>
+    </AppShell>
   )
 }

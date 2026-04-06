@@ -45,6 +45,7 @@ export const stocksApi = {
   risk:        (id: number, period = '1y') => get<any>(`/stocks/${id}/risk?period=${period}`),
   valuations:  (id: number) => get<any>(`/stocks/${id}/valuations`),
   monthlyRevenue: (id: number, months = 12) => get<any[]>(`/stocks/${id}/monthly-revenue?months=${months}`),
+  margin:         (id: number, days = 60) => get<any[]>(`/stocks/${id}/margin?days=${days}`),
   aiSummary:      (id: number) => get<any>(`/stocks/${id}/ai-summary`),
 }
 export const marketApi = {
@@ -165,6 +166,8 @@ export const paperApi = {
   positions:       () => get<any>('/paper/positions'),
   orders:          (limit = 50) => get<any[]>(`/paper/orders?limit=${limit}`),
   pnl:             () => get<any>('/paper/pnl'),
+  realized:        () => get<any>('/paper/realized'),
+  journal:         () => get<any>('/paper/journal'),
   cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
   quadrantFilter:  (date?: string) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`),
   pendingBuys:     () => get<any>('/paper/pending-buys'),

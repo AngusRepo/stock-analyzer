@@ -394,7 +394,8 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   up_count        INTEGER,  -- 上漲家數
   llm_summary     TEXT,     -- LLM 生成的族群分析
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(date, sector)
+  classification TEXT DEFAULT 'industry',
+  UNIQUE(date, sector, classification)
 );
 CREATE INDEX IF NOT EXISTS idx_sector_flow_date ON sector_flow(date DESC, total_net DESC);
 

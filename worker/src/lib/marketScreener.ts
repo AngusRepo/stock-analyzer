@@ -467,7 +467,9 @@ function scoreMultiFactor(
   chipDates: Map<string, { foreign: number; trust: number }> | undefined,
   marketReturn5d: number,
   latestClose: number,
+  config?: TradingConfig,
 ): { base_score: number; chip_score: number; tech_score: number; momentum_score: number; reasons: string[] } {
+  const sc = config?.screener
   const reasons: string[] = []
   const latest = prices[prices.length - 1]
 
@@ -494,18 +496,22 @@ function scoreMultiFactor(
     const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
 
     // 相對比例分級（消除大小型股偏差）
-    if (chipIntensity > 0.20) chip_score = 36       // 佔日均成交 20%+ 極強
-    else if (chipIntensity > 0.10) chip_score = 28  // 10%+
-    else if (chipIntensity > 0.05) chip_score = 20  // 5%+
-    else if (chipIntensity > 0) chip_score = 12     // 正向
-    else if (chipIntensity > -0.05) chip_score = 5  // 微賣
+    const chipTiers = sc?.chipScoreTiers ?? [36, 28, 20, 12, 5]
+    const chipThresholds = sc?.chipIntensityThresholds ?? [0.20, 0.10, 0.05, 0, -0.05]
+    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]       // 佔日均成交 20%+ 極強
+    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]  // 10%+
+    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]  // 5%+
+    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]  // 正向
+    else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 微賣
     // else 0
 
     if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
 
     // 連續買超天數 bonus
-    if (consecBuyDays >= 5) { chip_score += 4; reasons.push(`連買${consecBuyDays}天`) }
-    else if (consecBuyDays >= 3) { chip_score += 2 }
+    const cbBonus = sc?.consecBuyBonusTiers ?? [4, 2]
+    const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
+    if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`連買${consecBuyDays}天`) }
+    else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
   }
   chip_score = clamp(chip_score, 0, 40)
 
@@ -526,11 +532,12 @@ function scoreMultiFactor(
     rsiValue = rsi
 
     // 放寬版評分（原本 55-70 才給高分，現在 40-80 都給分）
-    if (rsi >= 55 && rsi <= 75) { tech_score += 12; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi >= 45 && rsi < 55) tech_score += 8
-    else if (rsi >= 40 && rsi < 45) tech_score += 6
-    else if (rsi > 75) tech_score += 8  // 超買不扣分，動能延續
-    else if (rsi >= 30 && rsi < 40) tech_score += 3  // 超賣反彈潛力
+    const rsiTiers = sc?.rsiScoreTiers ?? [12, 8, 6, 8, 3]
+    if (rsi >= 55 && rsi <= 75) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[1]
+    else if (rsi >= 40 && rsi < 45) tech_score += rsiTiers[2]
+    else if (rsi > 75) tech_score += rsiTiers[3]  // 超買不扣分，動能延續
+    else if (rsi >= 30 && rsi < 40) tech_score += rsiTiers[4]  // 超賣反彈潛力
   }
 
   // MACD（近似 EMA12 - EMA26）
@@ -539,7 +546,7 @@ function scoreMultiFactor(
     const ma26 = prices.slice(-Math.min(26, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(26, prices.length)
     const macdApprox = ma12 - ma26
     if (macdApprox > 0) { tech_score += 8; reasons.push('MACD 多頭') }
-    else if (macdApprox > -0.5 * latestClose / 100) tech_score += 3
+    else if (macdApprox > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 3
   }
 
   // 均線排列
@@ -564,13 +571,14 @@ function scoreMultiFactor(
 
     // 肯特納通道突破
     const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
-    if (latest.close > ma20 + 1.5 * atr14 && atr14 > 0) {
+    const keltnerMult = sc?.keltnerMultiplier ?? 1.5
+    if (latest.close > ma20 + keltnerMult * atr14 && atr14 > 0) {
       tech_score += 3
       reasons.push('突破肯特納')
     }
 
-    // NATR 低波動：< 3% 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
-    if (natr < 3 && latest.close > ma20) tech_score += 2
+    // NATR 低波動：< threshold 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
+    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 2
   }
   tech_score = clamp(tech_score, 0, 30)
 
@@ -581,7 +589,8 @@ function scoreMultiFactor(
   if (prices.length >= 6) {
     const stockReturn = (latest.close - prices[prices.length - 6].close) / prices[prices.length - 6].close
     const excess = stockReturn - marketReturn5d
-    momentum_score += normalize(excess, -0.03, 0.05, 7)
+    const exRange = sc?.excessReturnRange ?? [-0.03, 0.05]
+    momentum_score += normalize(excess, exRange[0], exRange[1], 7)
     if (excess > 0.02) reasons.push(`超額+${(excess * 100).toFixed(1)}%`)
   }
 
@@ -590,7 +599,8 @@ function scoreMultiFactor(
     const recent3 = prices.slice(-3).reduce((s, p) => s + p.Trading_Volume, 0) / 3
     const avg20 = prices.reduce((s, p) => s + p.Trading_Volume, 0) / prices.length
     const volRatio = avg20 > 0 ? recent3 / avg20 : 1
-    momentum_score += normalize(volRatio, 0.7, 2.5, 5)
+    const vrRange = sc?.volRatioRange ?? [0.7, 2.5]
+    momentum_score += normalize(volRatio, vrRange[0], vrRange[1], 5)
     if (volRatio > 1.5) reasons.push(`量能${volRatio.toFixed(1)}倍`)
   }
 
@@ -715,7 +725,7 @@ export async function backfillRRG(env: Bindings): Promise<{ filled: number; date
       batch.push(env.DB.prepare(`
         INSERT INTO sector_flow (date, sector, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, stock_count, up_count, classification, rs_ratio, rs_momentum, quadrant)
         VALUES (?, ?, 0, 0, 0, NULL, 0, ?, 0, 'industry', ?, ?, ?)
-        ON CONFLICT(date, sector) DO UPDATE SET
+        ON CONFLICT(date, sector, classification) DO UPDATE SET
           rs_ratio=excluded.rs_ratio, rs_momentum=excluded.rs_momentum, quadrant=excluded.quadrant,
           stock_count=excluded.stock_count, classification='industry'
       `).bind(targetDate, industry, members, rsRatio, rsMomentum, quadrant))
@@ -1239,7 +1249,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const latest = prices[prices.length - 1]
     const chipDates = data.chips.get(stockId)
     const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
-      prices, chipDates, marketReturn5d, latest.close
+      prices, chipDates, marketReturn5d, latest.close, cfg
     )
 
     const info = sectorMap[stockId]
@@ -1318,7 +1328,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       return env.DB.prepare(`
         INSERT INTO sector_flow (date, sector, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, stock_count, up_count, classification, rs_ratio, rs_momentum, quadrant)
         VALUES (?, ?, 0, 0, 0, NULL, 0, ?, 0, 'industry', ?, ?, ?)
-        ON CONFLICT(date, sector) DO UPDATE SET
+        ON CONFLICT(date, sector, classification) DO UPDATE SET
           rs_ratio=excluded.rs_ratio, rs_momentum=excluded.rs_momentum, quadrant=excluded.quadrant,
           stock_count=excluded.stock_count, classification='industry'
       `).bind(endDate, industry, members.length, r.rsRatio, r.rsMomentum, r.quadrant)

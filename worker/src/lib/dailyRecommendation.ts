@@ -712,7 +712,7 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
              avg_rsi, avg_momentum_5d, stock_count, up_count, classification,
              rs_ratio, rs_momentum, quadrant)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(date, sector) DO UPDATE SET
+          ON CONFLICT(date, sector, classification) DO UPDATE SET
             foreign_net=excluded.foreign_net, trust_net=excluded.trust_net,
             total_net=excluded.total_net, avg_rsi=excluded.avg_rsi,
             avg_momentum_5d=excluded.avg_momentum_5d, stock_count=excluded.stock_count,

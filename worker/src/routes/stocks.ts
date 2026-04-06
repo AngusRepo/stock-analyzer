@@ -405,6 +405,18 @@ function computeIndicators(closes: number[], highs: number[], lows: number[]) {
   return { ma5, ma10, ma20, ma60, rsi14, macd, macdSignal, macdHist, bbUpper, bbMid, bbLower, atr14 }
 }
 
+// ─── GET /api/stocks/:id/margin?days=60 ─────────────────────────────────────
+stocks.get('/:id/margin', async (c) => {
+  const id = parseId(c.req.param('id'))
+  if (!id) return c.json({ error: '無效 ID' }, 400)
+  const days = parsePosInt(c.req.query('days'), 60)
+
+  const { results } = await c.env.DB.prepare(
+    'SELECT date, margin_buy, margin_sell, margin_balance, short_buy, short_sell, short_balance, margin_usage_pct, short_ratio FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT ?'
+  ).bind(id, days).all()
+  return c.json(results ?? [])
+})
+
 // ─── GET /api/stocks/:id/ai-summary ─ 個股 AI 摘要（推薦+tags+籌碼+profile）──
 stocks.get('/:id/ai-summary', async (c) => {
   const id = parseId(c.req.param('id'))
@@ -424,10 +436,15 @@ stocks.get('/:id/ai-summary', async (c) => {
     ).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
     // 近 5 日法人
     c.env.DB.prepare(`
-      SELECT SUM(foreign_buy - foreign_sell) as foreign_net,
-             SUM(trust_buy - trust_sell) as trust_net,
-             SUM(dealer_buy - dealer_sell) as dealer_net
-      FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 5
+      SELECT SUM(foreign_net) as foreign_net,
+             SUM(trust_net) as trust_net,
+             SUM(dealer_net) as dealer_net
+      FROM (
+        SELECT foreign_buy - foreign_sell as foreign_net,
+               trust_buy - trust_sell as trust_net,
+               dealer_buy - dealer_sell as dealer_net
+        FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 5
+      )
     `).bind(stock.symbol).first<any>().catch(() => null),
     // 公司概況
     c.env.DB.prepare(

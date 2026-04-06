@@ -49,16 +49,18 @@ function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, dailyTurn
 /**
  * P1#13: Partial fill simulation — order > 5% of daily volume → partial fill
  */
-function applyPartialFill(shares: number, price: number, dailyVolume: number): number {
+function applyPartialFill(shares: number, price: number, dailyVolume: number, cfg?: TradingConfig): number {
   if (dailyVolume <= 0) return shares
   const orderVolume = shares * price
   const dailyValue = dailyVolume * price
   const pctOfDaily = orderVolume / dailyValue
-  if (pctOfDaily > 0.05) {
-    // Fill only 80% of shares that exceed 5% threshold
-    const maxFillValue = dailyValue * 0.05
+  const partialFillThreshold = cfg?.position?.partialFillThreshold ?? 0.05
+  const partialFillRate = cfg?.position?.partialFillRate ?? 0.2
+  if (pctOfDaily > partialFillThreshold) {
+    // Fill only (1-partialFillRate) of shares that exceed threshold
+    const maxFillValue = dailyValue * partialFillThreshold
     const excessShares = Math.max(0, shares - Math.floor(maxFillValue / price))
-    const filledShares = shares - Math.floor(excessShares * 0.2)
+    const filledShares = shares - Math.floor(excessShares * partialFillRate)
     console.log(`[PartialFill] Order ${shares} shares = ${(pctOfDaily*100).toFixed(1)}% of daily vol → filled ${filledShares}`)
     return Math.max(1, filledShares)
   }
@@ -214,12 +216,13 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig): Promise
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
   }
 
-  // Layer 4: 大盤廣度 — 多頭排列 < 20% → 空頭擴散，縮減倉位
+  // Layer 4: 大盤廣度 — 多頭排列 < threshold → 空頭擴散，縮減倉位
   const breadth = await db.prepare(
     'SELECT bull_alignment_pct, advance_ratio FROM market_breadth ORDER BY date DESC LIMIT 1'
   ).first<any>()
-  if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < 20) {
-    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < 20%, reducing position`)
+  const bullAlignmentThreshold = cfg.circuit.bullAlignmentThreshold ?? 20
+  if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < bullAlignmentThreshold) {
+    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%, reducing position`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
   }
 
@@ -605,6 +608,113 @@ paper.get('/orders', async (c) => {
   ).bind(ACCOUNT_ID, limit).all<any>()
 
   return c.json({ status: 'success', orders: results ?? [] })
+})
+
+// ─── GET /api/paper/realized — Server-side 已實現損益（全歷史）──────────────
+
+paper.get('/realized', async (c) => {
+  const { results: sells } = await c.env.DB.prepare(
+    'SELECT symbol, price, shares, note, created_at FROM paper_orders WHERE account_id=? AND side=? ORDER BY created_at ASC'
+  ).bind(ACCOUNT_ID, 'sell').all<any>()
+
+  let totalPnl = 0
+  for (const sell of (sells ?? [])) {
+    let entryPrice = sell.price
+    try {
+      const note = typeof sell.note === 'string' ? JSON.parse(sell.note) : sell.note
+      if (note?.entry_price) entryPrice = note.entry_price
+    } catch { /* use sell.price as fallback */ }
+    totalPnl += (sell.price - entryPrice) * (sell.shares ?? 0)
+  }
+
+  return c.json({ status: 'success', totalRealizedPnl: totalPnl, tradeCount: (sells ?? []).length })
+})
+
+// ─── GET /api/paper/journal — Server-side Trade Journal 指標（FIFO 配對）─────
+
+paper.get('/journal', async (c) => {
+  const { results: allOrders } = await c.env.DB.prepare(
+    'SELECT symbol, side, price, shares, note, created_at FROM paper_orders WHERE account_id=? ORDER BY created_at ASC'
+  ).bind(ACCOUNT_ID).all<any>()
+
+  if (!allOrders?.length) return c.json({ status: 'success', metrics: null })
+
+  // FIFO matching: per-symbol buy queue
+  const buyQueues = new Map<string, { price: number; shares: number; date: string }[]>()
+  const trades: { symbol: string; pnl: number; holdDays: number }[] = []
+
+  for (const order of allOrders) {
+    if (order.side === 'buy') {
+      const q = buyQueues.get(order.symbol) ?? []
+      q.push({ price: order.price, shares: order.shares ?? 0, date: order.created_at })
+      buyQueues.set(order.symbol, q)
+    } else if (order.side === 'sell') {
+      let remainShares = order.shares ?? 0
+      const q = buyQueues.get(order.symbol) ?? []
+
+      // Try entry_price from note first
+      let noteEntry: number | null = null
+      try {
+        const note = typeof order.note === 'string' ? JSON.parse(order.note) : order.note
+        if (note?.entry_price) noteEntry = note.entry_price
+      } catch { /* ignore */ }
+
+      while (remainShares > 0 && q.length > 0) {
+        const buy = q[0]
+        const matched = Math.min(remainShares, buy.shares)
+        const entryPrice = noteEntry ?? buy.price
+        const pnl = (order.price - entryPrice) * matched
+        const holdDays = Math.max(1, Math.round(
+          (new Date(order.created_at).getTime() - new Date(buy.date).getTime()) / 86400000
+        ))
+        trades.push({ symbol: order.symbol, pnl, holdDays })
+
+        buy.shares -= matched
+        remainShares -= matched
+        if (buy.shares <= 0) q.shift()
+      }
+
+      // If no matching buys found, use note entry_price or sell price
+      if (remainShares > 0) {
+        const entryPrice = noteEntry ?? order.price
+        const pnl = (order.price - entryPrice) * remainShares
+        trades.push({ symbol: order.symbol, pnl, holdDays: 0 })
+      }
+    }
+  }
+
+  if (!trades.length) return c.json({ status: 'success', metrics: null })
+
+  const wins = trades.filter(t => t.pnl > 0)
+  const losses = trades.filter(t => t.pnl <= 0)
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0
+  const totalWins = wins.reduce((s, t) => s + t.pnl, 0)
+  const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0))
+  const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0
+  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss)
+  const validHolds = trades.filter(t => t.holdDays > 0)
+  const avgHoldDays = validHolds.length > 0
+    ? Math.round(validHolds.reduce((s, t) => s + t.holdDays, 0) / validHolds.length)
+    : 0
+  const best = trades.reduce((a, b) => a.pnl > b.pnl ? a : b)
+  const worst = trades.reduce((a, b) => a.pnl < b.pnl ? a : b)
+
+  return c.json({
+    status: 'success',
+    metrics: {
+      totalTrades: trades.length,
+      winRate,
+      avgHoldDays,
+      avgWin,
+      avgLoss,
+      profitFactor,
+      expectancy,
+      best: { symbol: best.symbol, pnl: best.pnl },
+      worst: { symbol: worst.symbol, pnl: worst.pnl },
+    }
+  })
 })
 
 // ─── GET /api/paper/quadrant-filter — T2 過濾紀錄（Bot Dashboard 用）────────

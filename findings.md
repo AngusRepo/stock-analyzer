@@ -1,25 +1,33 @@
-# Findings — 2026-03-28 Session 2
+# Findings — 完整財報資料流 Audit
 
-## #7/#8 興櫃分析
-- stocks 表有 market 欄位：CHECK(market IN ('TWSE','OTC','US'))，無 EMERGING
-- 興櫃資料目前不在 TWSE/TPEX API 中，需用 GRETAI API
-- BUG: marketScreener.ts:749 硬編碼 market='TWSE'，OTC 股被標成 TWSE
-- 修正計畫：1. 修 market 欄位 CHECK 加 EMERGING 2. 修 screener INSERT 邏輯判斷 TWSE/OTC 3. 暫不串接興櫃資料(無 API)，但在 screener 排除
+## 現有架構
+- `financials` 表：stock_id, period, period_type, revenue, revenue_growth_yoy, eps, roe, pe, pb, dividend_yield, dividend_per_share, book_value_per_share, price_at_record
+- 已填：eps, revenue, roe（quarterly from t187ap06/07）, pe, pb, dividend_yield（daily from BWIBBU）
+- 未填：book_value_per_share, price_at_record, dividend_per_share, revenue_growth_yoy
 
-## #4 Debate quadrant context 移除
-- paper.ts L949-952：組裝 themeCtx
-- paper.ts L969：傳入 runBuyDebate 第 9 參數
-- debateTrader.ts：runBuyDebate 第 9 參數 themeContext?: string
-- bullCase 注入位置：debateTrader.ts 內 bullCase 組裝
+## 資料來源已在用
+- TWSE t187ap06 (損益表) → eps, revenue — 已在 fetchTwseFinancials()
+- TWSE t187ap07 (資產負債表) → roe — 已在 fetchTwseFinancials()
+- TWSE BWIBBU_ALL → pe, pb, dividend_yield — 已在 fetchTwseValuation()
+- 對應 TPEX endpoints 也已在用
 
-## #11 Phase 4.5 雙因子
-- Leading+Mom≥0 → +0.00 | Leading+Mom<0 → -0.03 | Improving+Mom≥0 → -0.02
-- 資料：sector_flow.rs_momentum（已有）
-- 位置：paper.ts T2 filter 後、Debate 前
-- 同步記錄 adjustment 到 quadrant_filter log
+## 缺少的欄位
+需求：operating_income, net_income, total_assets, total_liabilities, cash_flow
+- operating_income (營業利益) → t187ap06 有
+- net_income (本期淨利) → t187ap06 有
+- total_assets (資產總計) → t187ap07 有
+- total_liabilities (負債總計) → t187ap07 有
+- cash_flow → t187ap08 (現金流量表)，需確認 endpoint 是否存在
 
-## PTT 情緒位置
-- T1 Screener：pttBuzz.ts → marketScreener.ts
-- buzzScore = min(30, mentionCount×5 + (sentiment>0 ? 10 : 0))
-- 存入 D1 concept_buzz 表
-- Debate 不讀 PTT 資料
+## 安全改動策略
+1. ALTER TABLE 加新欄位（nullable，不影響現有）
+2. 修改 fetchTwseFinancials / fetchTpexFinancials 多提取欄位
+3. INSERT ON CONFLICT 用 COALESCE 保護現有值
+4. 前端 FinancialSummary 加新區塊顯示
+5. 不動 fetchTwseValuation（PE/PB 流程不改）
+
+## 關鍵檔案
+- worker/src/twseApi.ts: fetchTwseFinancials() L504, fetchTpexFinancials() L360
+- worker/src/index.ts: fetchWave2Data() L430, INSERT SQL L524
+- worker/src/routes/stocks.ts: GET /financials L140
+- frontend/src/components/FinancialSummary.tsx

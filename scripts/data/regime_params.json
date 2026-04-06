@@ -1,0 +1,30 @@
+{
+  "0": {
+    "sl_mult": 2.8366,
+    "tp_mult": 2.4696,
+    "time_stop": 27,
+    "profit_factor": -1.0,
+    "n_days": 193924,
+    "n_trials": 100
+  },
+  "1": {
+    "sl_mult": 2.7557,
+    "tp_mult": 2.0216,
+    "time_stop": 26,
+    "profit_factor": -1.0,
+    "n_days": 259284,
+    "n_trials": 100
+  },
+  "2": {
+    "sl_mult": 2.9108,
+    "tp_mult": 3.7731,
+    "time_stop": 20,
+    "profit_factor": 1.057,
+    "n_days": 1209657,
+    "n_trials": 100
+  },
+  "3": {
+    "status": "skipped",
+    "reason": "only 0 days"
+  }
+}

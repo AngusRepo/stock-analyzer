@@ -48,7 +48,7 @@ def compute_triple_barrier_labels(
         # 動態邊界 + 百分比封頂 — 扣除交易成本（barrier 需要覆蓋成本才算獲利）
         cost = price * transaction_cost_pct
         upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap) + cost
-        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap) + cost
+        lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap) - cost
 
         end_idx = min(i + max_days, n - 1)
         if end_idx <= i:

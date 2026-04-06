@@ -5,16 +5,23 @@ ensemble.py — 多模型加權投票引擎（v12 adaptive）
 三層 meta 架構：
   ① HMM Regime → ② Models + LinUCB → ③ Conformal Prediction → ARF
 
+NOTE: 5 feature models (XGBoost, CatBoost, ExtraTrees, LightGBM, FT-Transformer)
+  share same labels + correlated features. Consensus may be inflated.
+  Future: diversify via different label horizons or feature subsets.
+
 改動（v12）：
   - Isolation Forest 從 hard gate 降級為 anomaly_score soft penalty
   - confidence/consensus 雙低才 NO_SIGNAL，單項不過降級為 HOLD
   - signal_strength 從硬階梯改為 direction_weight × confidence 連續分數
   - confidence_threshold 從 0.60 降至 0.55（adaptive via KV）
 """
+import logging
 import numpy as np
 from dataclasses import dataclass
 from typing import Literal, Any
 from .models import ModelPrediction
+
+logger = logging.getLogger("ensemble")
 
 @dataclass
 class EnsembleResult:
@@ -200,8 +207,8 @@ def weighted_vote(
         try:
             from .stacking import meta_predict
             meta_direction, meta_confidence = meta_predict(predictions, meta_bundle)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Meta] predict failed: {e}")
 
     # 決定最終方向：meta-learner 優先，其次加權投票
     # P1#10: dynamic stacking blend — compare 30d meta vs ensemble accuracy

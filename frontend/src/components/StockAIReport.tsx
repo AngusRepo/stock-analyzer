@@ -22,10 +22,16 @@ const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; bo
   NO_SIGNAL:   { label: '訊號不明', accent: 'text-muted-foreground', bg: 'bg-muted/20', border: 'border-border' },
 }
 const MODEL_COLORS: Record<string, string> = {
-  ARIMA: '#818cf8', XGBoost: '#fb923c', LightGBM: '#34d399',
-  Prophet: '#60a5fa', LSTM: '#f472b6',
-  PatchTST: '#a78bfa', Chronos: '#fbbf24', MarkovSwitching: '#f97316',
-  RandomForest: '#2dd4bf', GradientBoosting: '#fb7185',
+  'KalmanFilter': '#3b82f6',
+  'DLinear': '#8b5cf6',
+  'MarkovSwitching': '#06b6d4',
+  'PatchTST': '#f59e0b',
+  'Chronos': '#ef4444',
+  'XGBoost': '#10b981',
+  'CatBoost': '#f97316',
+  'ExtraTrees': '#ec4899',
+  'LightGBM': '#14b8a6',
+  'FT-Transformer': '#6366f1',
 }
 
 function Section({ title, icon: Icon, children, className }: {

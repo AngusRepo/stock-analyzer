@@ -1,3 +1,4 @@
+import { twToday } from './lib/dateUtils'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { Bindings, Variables, UpdateQueueMsg } from './types'
@@ -92,7 +93,7 @@ app.put('/api/admin/config', async (c) => {
     return c.json({ error: 'Unauthorized' }, 401)
   const body = await c.req.json<any>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const { setTradingConfig, getTradingConfig } = await import('./lib/tradingConfig')
+  const { setTradingConfig, getTradingConfig, validateTradingConfig } = await import('./lib/tradingConfig')
   // Merge: 讀取現有 config，覆蓋傳入的欄位
   const current = await getTradingConfig(c.env.KV)
   const merged = {
@@ -104,6 +105,9 @@ app.put('/api/admin/config', async (c) => {
     rrg: { ...current.rrg, ...body.rrg },
     barrier: { ...current.barrier, ...body.barrier },
   }
+  // C4: Validate bounds before persisting
+  const errors = validateTradingConfig(merged)
+  if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
 })
@@ -117,7 +121,7 @@ app.get('/api/admin/cron-logs', async (c) => {
     const payload = await verifyJWT(token ?? '', c.env.JWT_SECRET)
     if (!payload) return c.json({ error: 'Unauthorized' }, 401)
   }
-  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
+  const date = c.req.query('date') ?? twToday() // TW date
   const { getCronLogs } = await import('./lib/cronLogger')
   const logs = await getCronLogs(c.env.KV, date)
   return c.json({ date, logs })
@@ -163,7 +167,7 @@ app.get('/api/observability/decisions', async (c) => {
     const payload = await verifyJWT(token, c.env.JWT_SECRET)
     if (!payload) return c.json({ error: 'Unauthorized' }, 401)
   }
-  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const date = c.req.query('date') ?? twToday()
   const { results } = await c.env.DB.prepare(
     'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
   ).bind(date).all()
@@ -179,7 +183,7 @@ app.get('/api/observability/model-health', async (c) => {
     const payload = await verifyJWT(token, c.env.JWT_SECRET)
     if (!payload) return c.json({ error: 'Unauthorized' }, 401)
   }
-  const date = c.req.query('date') ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const date = c.req.query('date') ?? twToday()
   const { results } = await c.env.DB.prepare(
     'SELECT * FROM model_health_daily WHERE date=? ORDER BY model_name'
   ).bind(date).all()
@@ -242,12 +246,8 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'intraday-check',   tw_time: '09:00-13:30', description: '盤中限價買入+止損停利' },
     { task: 'eod-exit',         tw_time: '13:25',       description: 'EOD 收盤前出場（13:25-13:35 TW）' },
     { task: 'daily-snapshot',   tw_time: '14:20',       description: 'PnL+Sharpe+Drawdown' },
-    { task: 'data-update',      tw_time: '17:30',       description: '收盤後抓股價/籌碼（via Controller proxy）' },
-    { task: 'screener',         tw_time: '17:40',       description: '全市場篩選（chip 齊全）' },
-    { task: 'ml-warmup',        tw_time: '17:50',       description: 'Cloud Run 預熱' },
-    { task: 'ml-predict',       tw_time: '18:00',       description: 'ML 預測+大盤風險' },
-    { task: 'recommendation',   tw_time: '18:05',       description: '每日選股推薦' },
-    { task: 'verify',           tw_time: '18:15',       description: '預測驗證' },
+    { task: 'pipeline',          tw_time: '17:30',       description: 'LangGraph pipeline（fetch→screener→ML→recommend→verify）' },
+    { task: 'ml-warmup',        tw_time: '17:50',       description: 'Cloud Run 預熱（pipeline 前）' },
     { task: 'adapt',            tw_time: '18:20',       description: '自適應參數更新' },
     { task: 'daily-report',     tw_time: '18:25',       description: '收盤報告 Discord' },
     { task: 'obsidian-daily',   tw_time: '18:40',       description: 'Obsidian 日誌 + progress.md' },
@@ -286,16 +286,16 @@ app.post('/api/admin/trigger/:task', async (c) => {
 
   /** 等待 Queue 消費完畢（輪詢 stock_prices 更新數量） */
   const waitForQueue = async (table: string, dateCol: string, minExpected: number, timeoutMs = 300_000) => {
-    const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const twTodayStr = twToday()
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
       const row = await c.env.DB.prepare(
         `SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol} = ?`
-      ).bind(twToday).first<{ cnt: number }>()
+      ).bind(twTodayStr).first<{ cnt: number }>()
       if ((row?.cnt ?? 0) >= minExpected) return row?.cnt
       await new Promise(r => setTimeout(r, 10_000)) // 10 秒輪詢一次
     }
-    throw new Error(`Queue timeout: ${table} only has ${(await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol}=?`).bind(twToday).first<any>())?.cnt ?? 0} rows after ${timeoutMs / 1000}s`)
+    throw new Error(`Queue timeout: ${table} only has ${(await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol}=?`).bind(twTodayStr).first<any>())?.cnt ?? 0} rows after ${timeoutMs / 1000}s`)
   }
 
   const taskMap: Record<string, () => Promise<any>> = {
@@ -331,7 +331,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
       if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
       const headers: Record<string,string> = { 'Content-Type': 'application/json' }
       if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
-      const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+      const twDate = twToday()
       const res = await fetch(`${c.env.ML_CONTROLLER_URL}/obsidian/daily`, { method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000) })
       return res.ok ? await res.json() : `HTTP ${res.status}`
     },
@@ -726,6 +726,13 @@ async function processUpdateBatch(
 
 // ─── Cron 2：每日 15:30 — 計算大盤風險 + Controller 並行 ML 預測 ─────────────
 async function runMLAndRisk(env: Bindings) {
+  // C3: KV lock — prevent concurrent ML predict runs (cron + event-driven overlap)
+  const twDate = twToday()
+  const lockKey = `lock:ml-predict:${twDate}`
+  const existing = await env.KV.get(lockKey)
+  if (existing) { console.log('[ML] Already running, skip'); return 'LOCKED' }
+  await env.KV.put(lockKey, '1', { expirationTtl: 600 })
+
   console.log(`[Cron] Starting market risk + ML batch predict... (controller=${env.ML_CONTROLLER_URL ? 'SET' : 'NOT_SET'}, mlService=${env.ML_SERVICE_URL ? 'SET' : 'NOT_SET'})`)
 
   // 1. 大盤風險（直接執行，速度快）
@@ -965,6 +972,10 @@ async function runMLAndRisk(env: Bindings) {
         : rawSignal.includes('SELL') ? 'sell'
         : rawSignal === 'NO_SIGNAL' ? null
         : 'hold'
+      // H2: Delete stale prediction for same stock+model+date before INSERT (prevent duplicates)
+      await env.DB.prepare(
+        `DELETE FROM predictions WHERE stock_id=? AND model_name='ensemble' AND date(generated_at)=date('now')`
+      ).bind(data.stock_id).run().catch(() => {})
       await env.DB.prepare(`
         INSERT INTO predictions
           (stock_id, model_name, generated_at, horizon, direction_accuracy,
@@ -1662,90 +1673,22 @@ export default {
         return '跳過（ML_SERVICE_URL 未設定）'
       })
     } else if (cron === '30 9 * * 1-5') {
-      // 17:30 TW → Bulk Fetch（法人資料 17:00 後才完整，via Controller proxy）
-      runWithLog('data-update', async () => {
-        await runBulkFetch(env)
-        return 'Bulk Fetch 完成（全市場 prices+chips 已寫入 D1）'
-      })
-    } else if (cron === '40 9 * * 1-5') {
-      // 17:40 TW → Screener T1+T2（chip 資料齊全後篩選）
-      runWithLog('screener', async () => {
-        const result = await runMarketScreener(env)
-        return `篩選完成：${result.hotSectors?.length ?? 0} 概念、${result.candidates?.length ?? 0} 候選股`
-      })
-    } else if (cron === '0 10 * * 1-5') {
-      // 18:00 TW → ML 預測 + 大盤風險
-      runWithLog('ml-predict', async () => {
-        await runMLAndRisk(env)
-        return 'ML 預測 + 大盤風險完成（Controller 並行推論）'
-      })
-    } else if (cron === '5 10 * * 1-5') {
-      runWithLog('recommendation', async () => {
-        await runDailyRecommendation(env)
-        const recs = await env.DB.prepare(
-          "SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date=? AND has_buy_signal=1"
-        ).bind(twToday).first<any>()
-        return `推薦完成：${recs?.cnt ?? 0} 支 BUY signal`
-      })
-    } else if (cron === '15 10 * * 1-5') {
-      runWithLog('verify', async () => {
-        await runPredictionVerification(env)
-
-        // P1#15 L3: Daily model health snapshot
-        try {
-          const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-          const ALL_MODELS = ['KalmanFilter','DLinear','MarkovSwitching','PatchTST','Chronos',
-                              'XGBoost','CatBoost','ExtraTrees','LightGBM','FT-Transformer']
-          // Fetch model accuracies
-          const { results: acc30 } = await env.DB.prepare(`
-            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy,
-                   AVG(profit_factor) as pf, AVG(expectancy) as exp
-            FROM model_accuracy WHERE period='30d'
-            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
-            GROUP BY model_name
-          `).bind(...ALL_MODELS).all<any>()
-          const { results: acc90 } = await env.DB.prepare(`
-            SELECT model_name, CAST(SUM(correct_count) AS REAL)/NULLIF(SUM(total_count),0) as accuracy
-            FROM model_accuracy WHERE period='90d'
-            AND model_name IN (${ALL_MODELS.map(() => '?').join(',')})
-            GROUP BY model_name
-          `).bind(...ALL_MODELS).all<any>()
-          const acc30Map = Object.fromEntries((acc30 ?? []).map((r: any) => [r.model_name, r]))
-          const acc90Map = Object.fromEntries((acc90 ?? []).map((r: any) => [r.model_name, r]))
-
-          // Lifecycle state
-          const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
-          const lcStates = lcRow?.state_json ? JSON.parse(lcRow.state_json) : {}
-
-          // Insert per-model health
-          for (const model of ALL_MODELS) {
-            const a30 = acc30Map[model] ?? {}
-            const a90 = acc90Map[model] ?? {}
-            const lc = lcStates[model] ?? {}
-            await env.DB.prepare(`
-              INSERT OR REPLACE INTO model_health_daily
-                (date, model_name, accuracy_30d, accuracy_90d, profit_factor, expectancy,
-                 lifecycle_status, lifecycle_weight)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `).bind(
-              twToday, model,
-              a30.accuracy ?? null, a90.accuracy ?? null,
-              a30.pf ?? null, a30.exp ?? null,
-              lc.status ?? 'active', lc.weight_mult ?? 1.0,
-            ).run()
-          }
-          // Also store to KV for quick access
-          const healthSummary = ALL_MODELS.map(m => ({
-            model: m,
-            acc_30d: acc30Map[m]?.accuracy ?? null,
-            status: lcStates[m]?.status ?? 'active',
-            weight: lcStates[m]?.weight_mult ?? 1.0,
-          }))
-          await env.KV.put(`ml:model_health:${twToday}`, JSON.stringify(healthSummary), { expirationTtl: 30 * 86400 })
-          console.log(`[L3] Model health snapshot: ${ALL_MODELS.length} models logged`)
-        } catch (e) { console.warn('[L3] Model health failed:', e) }
-
-        return '預測驗證 + L3 model health 完成'
+      // H5: 17:30 TW → Single pipeline trigger (Controller LangGraph with await gates)
+      // Replaces 5 individual crons: bulk-fetch → screener → ml → recommendation → verify
+      // Individual tasks still available via /admin/trigger/:task as fallback
+      runWithLog('pipeline', async () => {
+        if (!env.ML_CONTROLLER_URL) {
+          // Fallback: run inline pipeline if Controller not configured
+          console.warn('[Pipeline] ML_CONTROLLER_URL not set — running inline pipeline fallback')
+          await runBulkFetch(env)
+          await runMarketScreener(env)
+          await runMLAndRisk(env)
+          // recommendation is triggered by runMLAndRisk event chain
+          await runPredictionVerification(env)
+          return 'Inline pipeline fallback 完成'
+        }
+        const result = await postController(env, '/pipeline/run', { date: twToday() }, 600_000)
+        return typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 300) ?? 'done'
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {

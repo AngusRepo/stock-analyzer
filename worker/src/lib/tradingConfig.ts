@@ -236,3 +236,20 @@ export function invalidateConfigCache(): void {
   _cached = null
   _cachedAt = 0
 }
+
+// ─── C4: Config Validation ──────────────────────────────────────────────────
+
+export function validateTradingConfig(config: TradingConfig): string[] {
+  const errors: string[] = []
+  if (config.exit.hardStopPct > 0 || config.exit.hardStopPct < -0.30)
+    errors.push('hardStopPct must be between -0.30 and 0')
+  if (config.circuit.maxPositionPct < 0.01 || config.circuit.maxPositionPct > 0.50)
+    errors.push('maxPositionPct must be 0.01-0.50')
+  if (config.position.dailyBuyLimit < 0)
+    errors.push('dailyBuyLimit must be >= 0')
+  if (config.barrier.upperMult < 0.5 || config.barrier.upperMult > 10)
+    errors.push('barrier.upperMult must be 0.5-10')
+  if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)
+    errors.push('barrier.lowerMult must be 0.5-10')
+  return errors
+}

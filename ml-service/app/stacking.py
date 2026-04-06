@@ -174,8 +174,15 @@ def train_meta_learner_oof(
     meta_X = np.array(meta_X_all)
     meta_y = np.array(meta_y_all)
 
-    scaler    = StandardScaler()
-    meta_Xs   = scaler.fit_transform(meta_X)
+    # H6 fix: temporal 80/20 split for honest OOF evaluation
+    split = int(len(meta_X) * 0.8)
+    meta_X_train, meta_X_eval = meta_X[:split], meta_X[split:]
+    meta_y_train, meta_y_eval = meta_y[:split], meta_y[split:]
+
+    scaler_eval = StandardScaler()
+    meta_Xs_train = scaler_eval.fit_transform(meta_X_train)
+    meta_Xs_eval  = scaler_eval.transform(meta_X_eval)
+
     # C=1.0（10 模型 × 3 特徵 = 30 維輸入）
     # lbfgs solver 在中等維度比 liblinear 收斂更穩定
     # max_iter=500 確保收斂
@@ -183,10 +190,15 @@ def train_meta_learner_oof(
         penalty="l2", C=1.0, solver="lbfgs",
         max_iter=500, random_state=42,
     )
-    meta_model.fit(meta_Xs, meta_y)
+    meta_model.fit(meta_Xs_train, meta_y_train)
+    oof_acc = meta_model.score(meta_Xs_eval, meta_y_eval)
+    logger.info(f"[Stacking] Meta-learner OOF holdout acc={oof_acc:.3f} (eval={len(meta_y_eval)}, train={len(meta_y_train)})")
 
-    oof_acc = meta_model.score(meta_Xs, meta_y)
-    logger.info(f"[Stacking] Meta-learner 訓練完成: OOF acc={oof_acc:.3f}, n={len(meta_y)}")
+    # Retrain on full data for production use
+    scaler    = StandardScaler()
+    meta_Xs   = scaler.fit_transform(meta_X)
+    meta_model.fit(meta_Xs, meta_y)
+    logger.info(f"[Stacking] Meta-learner 已用全量 {len(meta_y)} 筆重新訓練")
     return {"model": meta_model, "scaler": scaler}
 
 

@@ -287,6 +287,12 @@ function checkExitConditions(
   const entryPrice = pos.entry_price ?? pos.avg_cost
   const pnlPct = (currentPrice - entryPrice) / entryPrice
 
+  // H8: Ex-dividend stop/TP adjustment
+  // When a stock goes ex-dividend, reference price drops by dividend amount
+  // Stops and targets should be adjusted down accordingly
+  // TODO: Implement when ex-dividend forecast data is available in KV
+  // For now, log a warning if we detect a large gap-down on ex-dividend day
+
   // ❶ 硬上限止損
   if (pnlPct <= ex.hardStopPct) {
     return { action: 'full_sell', reason: `硬上限止損 ${(pnlPct * 100).toFixed(1)}%` }
@@ -775,9 +781,18 @@ paper.post('/buy', async (c) => {
     }, 400)
   }
 
+  // H7: T+2 settlement warning (paper trading only — log, don't block)
+  // In live trading, this must block to prevent settlement violations
+  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const recentSells = await c.env.DB.prepare(
+    "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')"
+  ).bind(ACCOUNT_ID).first<any>()
+  if (recentSells?.unsettled > 0) {
+    console.warn(`[Paper] T+2 warning: $${recentSells.unsettled} unsettled from recent sells`)
+  }
+
   // 每日買入額度檢查（防違約交割）
   const MANUAL_DAILY_LIMIT = cfg.position.manualDailyLimit
-  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const todayBoughtManual = await c.env.DB.prepare(
     "SELECT COALESCE(SUM(total_cost), 0) as total FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?"
   ).bind(ACCOUNT_ID, todayStr).first<any>()
@@ -1444,8 +1459,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
       console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(quality=${newQuality.toFixed(1)})`)
       const sellValue = sellPrice * weakPos.shares
-      const sellTax = sellValue * 0.003
-      const sellComm = sellValue * 0.001425
+      const sellTax = calcTax(sellValue, cfg)
+      const sellComm = calcCommission(sellValue, cfg)
       const sellProceeds = sellValue - sellTax - sellComm
 
       // VULN-28 fix: batch all swap DB operations for atomicity
@@ -1472,6 +1487,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   // ATR batch fetch
   const atrMap = await batchGetATR(env.DB, pendingSymbols)
+
+  // H7: T+2 settlement warning (paper trading only — log, don't block)
+  // In live trading, this must block to prevent settlement violations
+  const recentSells = await env.DB.prepare(
+    "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')"
+  ).bind(ACCOUNT_ID).first<any>()
+  if (recentSells?.unsettled > 0) {
+    console.warn(`[Paper] T+2 warning: $${recentSells.unsettled} unsettled from recent sells`)
+  }
 
   // 每日買入額度
   const DAILY_BUY_LIMIT = cfg.position.dailyBuyLimit

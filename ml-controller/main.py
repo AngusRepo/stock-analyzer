@@ -31,12 +31,15 @@ app.add_middleware(
 )
 
 _CONTROLLER_TOKEN = os.environ.get("ML_CONTROLLER_SECRET", "")
+_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 
 
 async def verify_token(request: Request) -> None:
     """Worker → Controller 服務間驗證。ML_CONTROLLER_SECRET 未設定時跳過（開發環境）。"""
     if not _CONTROLLER_TOKEN:
-        return
+        if _ENVIRONMENT == "production":
+            raise HTTPException(status_code=500, detail="ML_CONTROLLER_SECRET not configured")
+        return  # dev mode: skip auth
     token = request.headers.get("X-Controller-Token", "")
     if token != _CONTROLLER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid controller token")

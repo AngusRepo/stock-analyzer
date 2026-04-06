@@ -219,11 +219,13 @@ def build_feature_matrix(
         df["market_return_1d"]  = 0.0
         df["market_return_5d"]  = 0.0
         df["market_bias_20d"]   = 0.0
-        df.iloc[-30:, df.columns.get_loc("market_risk_score")] = risk_score_now
-        df.iloc[-30:, df.columns.get_loc("market_risk_level")] = risk_level_now
-        df.iloc[-30:, df.columns.get_loc("market_return_1d")]  = twii_1d
-        df.iloc[-30:, df.columns.get_loc("market_return_5d")]  = twii_5d
-        df.iloc[-30:, df.columns.get_loc("market_bias_20d")]   = twii_bias
+        # C2 fix: only fill the LATEST row with current values.
+        # Historical rows keep neutral defaults to avoid leaking future market info during training.
+        df.iloc[-1, df.columns.get_loc("market_risk_score")] = risk_score_now
+        df.iloc[-1, df.columns.get_loc("market_risk_level")] = risk_level_now
+        df.iloc[-1, df.columns.get_loc("market_return_1d")]  = twii_1d
+        df.iloc[-1, df.columns.get_loc("market_return_5d")]  = twii_5d
+        df.iloc[-1, df.columns.get_loc("market_bias_20d")]   = twii_bias
     else:
         df["market_risk_score"]  = 0.5
         df["market_risk_level"]  = 0.5
@@ -332,6 +334,9 @@ def build_feature_matrix(
         "institutional_net", "chip_5d", "foreign_5d",
         "ma20_bias", "ma60_bias",
     ]
+    # C1 Fix: 保存原始 ATR（Z-score 前），用於 Triple Barrier label 計算
+    atr14_raw = df["atr14"].copy() if "atr14" in df.columns else None
+
     for col in ZSCORE_COLS:
         if col in df.columns:
             roll_mean = df[col].rolling(60, min_periods=20).mean()
@@ -350,9 +355,10 @@ def build_feature_matrix(
     # ── Triple Barrier Label (Prado 2018) ─────────────────────────────────────
     # 取代舊版固定 5 日方向 + dead zone，改用動態停利/停損邊界
     # 1=觸及停利（賺）, 0=觸及停損（虧）, NaN=到期或資料不足 → dropna 排除
-    if "atr14" in df.columns:
-        atr_series = df["atr14"]
-    else:
+    # C1 Fix: 用 Z-score 前的原始 ATR，不是被 Z-score 後的值
+    if atr14_raw is not None:
+        atr_series = atr14_raw
+    elif "atr14" in df.columns:
         # fallback: 用 14 日 ATR 近似
         tr = pd.concat([
             df["high"] - df["low"],

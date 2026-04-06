@@ -1,0 +1,24 @@
+{
+  "barrier": {
+    "upper_mult": 2.026,
+    "lower_mult": 1.501,
+    "upper_pct_cap": 0.0873,
+    "lower_pct_cap": 0.0873,
+    "max_days": 30,
+    "oos_balance": 0.6923,
+    "n_trials": 150
+  },
+  "signal": {
+    "strong_signal_score": 0.7187,
+    "buy_signal_score": 0.4579,
+    "hold_signal_score": 0.3021,
+    "n_trials": 150
+  },
+  "sltp": {
+    "sl_mult_base": 1.6806,
+    "tp_mult_base": 2.9632,
+    "time_stop_days": 30,
+    "n_trials": 150,
+    "method": "simulation"
+  }
+}

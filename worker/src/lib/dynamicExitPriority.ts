@@ -1,6 +1,22 @@
 /**
  * dynamicExitPriority.ts — P2#26 7-Layer Exit Dynamic Priority
  *
+ * ⚠️ DEFERRED (Sprint 6+) — 2026-04-07 狀態說明
+ *
+ * 這個 module 是「per-regime exit priority matrix」scaffold，目前沒被任何檔案 import。
+ * Paper.ts 的 exit cascade 仍是 hardcode 順序。這不是 dead code，是 incomplete feature。
+ *
+ * 依賴鏈（按順序解鎖）:
+ *   1. Sprint 4-2 revisit (Sprint 6 之後): HMM regime pipeline 寫入 `ml:regime` KV
+ *      - ml-service /regime/current endpoint
+ *      - ml-controller bridge → Worker `/api/admin/optuna-push?source=regime`
+ *      - marketScreener 以外的 consumer 開始吃真實 regime
+ *   2. Sprint 6: Backtest engine `engine.replay_per_regime(...)` 給 per-regime Optuna objective
+ *   3. Sprint 6 之後: paper.ts exit cascade 改呼叫 getExitOrder/getExitMultiplier
+ *   4. Sprint 7+ Robust: Optuna 用 `min(sharpe across regimes)` 搜 REGIME_PRIORITIES 矩陣
+ *
+ * **不要刪**：刪了 Sprint 6+ 要重寫。現階段零 runtime cost（tree-shake 掉）。
+ *
  * Each exit layer gets a priority score based on market regime:
  *   High vol → hard stop highest priority
  *   Trending → trailing highest

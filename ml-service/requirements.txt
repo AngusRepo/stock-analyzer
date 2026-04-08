@@ -27,3 +27,5 @@ gymnasium>=0.29.0
 stable-baselines3>=2.3.0
 # P3#28: GNN Shadow (cross-stock relations)
 torch-geometric>=2.5.0
+# 2026-04-07 Phase 1: Optuna routes (auto-search + push KV)
+optuna>=3.6.0

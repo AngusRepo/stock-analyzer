@@ -18,6 +18,13 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import predict, retrain, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian
+# 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
+try:
+    from routers import optuna as optuna_router
+except ImportError as _e:
+    optuna_router = None
+    import logging
+    logging.getLogger(__name__).warning(f"[main] optuna router not loaded: {_e}")
 
 VERSION = "12.3.0"
 
@@ -59,6 +66,9 @@ app.include_router(pipeline.router,    dependencies=[Depends(verify_token)])
 app.include_router(audit.router,       dependencies=[Depends(verify_token)])
 app.include_router(adversarial.router, dependencies=[Depends(verify_token)])
 app.include_router(obsidian.router, prefix="/obsidian", dependencies=[Depends(verify_token)])
+# 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
+if optuna_router:
+    app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])
 
 
 @app.get("/health")

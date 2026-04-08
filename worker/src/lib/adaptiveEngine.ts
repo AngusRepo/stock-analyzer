@@ -14,45 +14,67 @@
 import type { AdaptiveParams } from './adaptiveConfig'
 import { getAdaptiveParams, setAdaptiveParams } from './adaptiveConfig'
 
-// ── Legacy 計算函數（Controller 未部署時的 fallback）──────────────────────────
+// ── Phase A 改寫：所有 daily formula 從 trading:config.L2_formula 讀係數 ─────
+// 不再 hardcode，公式 inputs 全來自 KV，讓未來 Optuna L2 search 可介入
+
+import type { TradingConfig } from './tradingConfig'
 
 function clip(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
-function computeConfidenceThreshold(riskScore: number, accuracy30d: number): number {
-  return clip(0.60 + (riskScore / 100) * 0.15 + (0.6 - accuracy30d) * 0.20, 0.55, 0.75)
+/** Phase A: 回傳 delta（不是 absolute）— delta = baseline 之外的相對調整 */
+function computeConfidenceDelta(
+  riskScore: number,
+  accuracy30d: number,
+  L2: TradingConfig['L2_formula'],
+): number {
+  const riskAdj = (riskScore / 100) * L2.confidence_risk_mult
+  const perfAdj = (0.6 - accuracy30d) * L2.confidence_perf_mult
+  return clip(riskAdj + perfAdj, L2.confidence_delta_clip_lo, L2.confidence_delta_clip_hi)
 }
 
-function computeSLTPOverride(riskLevel: string): AdaptiveParams['sl_tp_override'] {
+function computeSLTPAdd(
+  riskLevel: string,
+  L2: TradingConfig['L2_formula'],
+): AdaptiveParams['sltp_add'] {
   switch (riskLevel) {
-    case 'orange': return { sl_add: 0.3, tp_add: 0.3 }
-    case 'red':    return { sl_add: 0.5, tp_add: 0.5 }
-    case 'black':  return { sl_add: 1.0, tp_add: 0.5 }
+    case 'orange': return { sl_add: L2.sltp_add_orange_sl, tp_add: L2.sltp_add_orange_tp }
+    case 'red':    return { sl_add: L2.sltp_add_red_sl,    tp_add: L2.sltp_add_red_tp }
+    case 'black':  return { sl_add: L2.sltp_add_black_sl,  tp_add: L2.sltp_add_black_tp }
     default:       return null
   }
 }
 
-function computeBanditProtection(losses5d: number, total5d: number) {
-  if (total5d === 0) return { banditMaxMult: 2.5, banditForceExplore: false }
+function computeBanditProtection(
+  losses5d: number,
+  total5d: number,
+  L2: TradingConfig['L2_formula'],
+) {
+  if (total5d === 0) return { banditMaxMult: L2.bandit_max_mult_low, banditForceExplore: false }
   const lossRate = losses5d / total5d
-  if (lossRate > 0.6) return { banditMaxMult: 1.5, banditForceExplore: true }
-  if (lossRate > 0.4) return { banditMaxMult: 2.0, banditForceExplore: false }
-  return { banditMaxMult: 2.5, banditForceExplore: false }
+  if (lossRate > L2.bandit_loss_thresh_high) return { banditMaxMult: L2.bandit_max_mult_high, banditForceExplore: true }
+  if (lossRate > L2.bandit_loss_thresh_med)  return { banditMaxMult: L2.bandit_max_mult_med,  banditForceExplore: false }
+  return { banditMaxMult: L2.bandit_max_mult_low, banditForceExplore: false }
 }
 
 function computePFQualityMults(
   rows30d: { model_name: string; profit_factor: number | null; total_count: number }[],
   rows90d: { model_name: string; profit_factor: number | null }[],
+  L2: TradingConfig['L2_formula'],
 ): Record<string, number> {
   const pf90Map: Record<string, number> = {}
   for (const r of rows90d) { if (r.profit_factor != null) pf90Map[r.model_name] = r.profit_factor }
   const result: Record<string, number> = {}
+  const lo = L2.pf_quality_clip_lo
+  const hi = L2.pf_quality_clip_hi
+  const w30 = L2.pf_quality_30d_weight
+  const w90 = L2.pf_quality_90d_weight
   for (const r of rows30d) {
     if (r.total_count < 10 || r.profit_factor == null) { result[r.model_name] = 1.0; continue }
-    const pf30 = clip(r.profit_factor, 0.3, 1.8)
-    const pf90 = pf90Map[r.model_name] != null ? clip(pf90Map[r.model_name]!, 0.3, 1.8) : pf30
-    result[r.model_name] = clip(pf30 * 0.7 + pf90 * 0.3, 0.3, 1.8)
+    const pf30 = clip(r.profit_factor, lo, hi)
+    const pf90 = pf90Map[r.model_name] != null ? clip(pf90Map[r.model_name]!, lo, hi) : pf30
+    result[r.model_name] = clip(pf30 * w30 + pf90 * w90, lo, hi)
   }
   return result
 }
@@ -150,43 +172,63 @@ export async function runAdaptiveUpdate(env: {
     }
   }
 
-  // ── Legacy fallback: 本地計算 ─────────────────────────────────────────────
-  let confidenceThreshold = computeConfidenceThreshold(inputs.riskScore, inputs.accuracy30d)
-  // RRG 加成：多數概念在 Lagging → 提高門檻（市場整體弱勢）
+  // ── Legacy fallback: 本地計算（Phase A 改寫為 delta-only + 讀 L2 KV） ────
+  const { getTradingConfig } = await import('./tradingConfig')
+  const tradingCfg = await getTradingConfig(env.KV)
+  const L2 = tradingCfg.L2_formula
+
+  let confidenceDelta = computeConfidenceDelta(inputs.riskScore, inputs.accuracy30d, L2)
+  // RRG 加成：多數概念在 Lagging → 加嚴 delta（市場整體弱勢）
   if (inputs.quadrantTotal > 0) {
     const laggingPct = (inputs.quadrantDist['Lagging'] ?? 0) / inputs.quadrantTotal
     if (laggingPct > 0.5) {
       const boost = clip((laggingPct - 0.5) * 0.1, 0, 0.05) // 最多 +0.05
-      confidenceThreshold = clip(confidenceThreshold + boost, 0.55, 0.75)
-      console.log(`[AdaptiveEngine] RRG boost: ${(laggingPct * 100).toFixed(0)}% Lagging → conf +${(boost * 100).toFixed(1)}%`)
+      confidenceDelta = clip(confidenceDelta + boost, L2.confidence_delta_clip_lo, L2.confidence_delta_clip_hi)
+      console.log(`[AdaptiveEngine] RRG boost: ${(laggingPct * 100).toFixed(0)}% Lagging → delta +${(boost * 100).toFixed(1)}%`)
     }
   }
-  const pfQualityMult       = computePFQualityMults(inputs.rows30d, inputs.rows90d)
-  const slTpOverride        = computeSLTPOverride(inputs.riskLevel)
-  const { banditMaxMult, banditForceExplore } = computeBanditProtection(inputs.losses5d, inputs.total5d)
+  const pfQualityMult       = computePFQualityMults(inputs.rows30d, inputs.rows90d, L2)
+  const sltpAdd             = computeSLTPAdd(inputs.riskLevel, L2)
+  const { banditMaxMult, banditForceExplore } = computeBanditProtection(inputs.losses5d, inputs.total5d, L2)
   const newVersion = (current.version ?? 0) + 1
 
+  // Phase A: 純 delta schema，legacy 欄位保留 backwards compat
+  // Legacy confidence_threshold 用 baseline + delta 重算給 backwards compat
+  const baselineConfidence = tradingCfg.signal.buySignalScore  // Optuna #2 baseline
+  const legacyConfidenceThreshold = clip(
+    baselineConfidence + confidenceDelta,
+    L2.confidence_effective_clip_lo,
+    L2.confidence_effective_clip_hi,
+  )
+
   params = {
-    confidence_threshold:  confidenceThreshold,
+    // 新 schema (delta-based)
+    confidence_delta:      confidenceDelta,
+    position_pct_delta:    0,  // Phase 補齊：將來算 risk-adjusted position delta
+    sltp_add:              sltpAdd,
     pf_quality_mult:       pfQualityMult,
-    sl_tp_override:        slTpOverride,
     bandit_max_mult:       banditMaxMult,
     bandit_force_explore:  banditForceExplore,
     computed_at:           new Date(Date.now() + 8 * 3600_000).toISOString(),
     market_risk_score:     inputs.riskScore,
     recent_accuracy_30d:   Math.round(inputs.accuracy30d * 100) / 100,
     version:               newVersion,
+
+    // legacy fields (backwards compat for current paper.ts wiring，Phase 2 移除)
+    confidence_threshold:  legacyConfidenceThreshold,
+    sl_tp_override:        sltpAdd,
   }
 
   await setAdaptiveParams(env.KV, params)
 
   const summary = [
     `v${newVersion}`,
-    `conf=${confidenceThreshold.toFixed(2)}`,
+    `conf_delta=${confidenceDelta >= 0 ? '+' : ''}${confidenceDelta.toFixed(3)}`,
+    `eff=${legacyConfidenceThreshold.toFixed(2)}`,
     `risk=${inputs.riskLevel}(${inputs.riskScore})`,
     `acc30d=${(inputs.accuracy30d * 100).toFixed(0)}%`,
     `bandit=${banditForceExplore ? 'explore!' : `maxMult=${banditMaxMult}`}`,
-    slTpOverride ? `sl+${slTpOverride.sl_add}/tp+${slTpOverride.tp_add}` : 'sl/tp=default',
+    sltpAdd ? `sl+${sltpAdd.sl_add}/tp+${sltpAdd.tp_add}` : 'sl/tp=default',
   ].join(' | ')
 
   console.log(`[AdaptiveEngine] Legacy: ${summary}`)

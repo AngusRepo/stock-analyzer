@@ -1,0 +1,137 @@
+"""
+llm_reason.py — Generate LLM recommendation reasons
+2026-04-07 LangGraph A+B refactor
+
+Direct port of worker/src/lib/llm.ts:269-324 (generateRecommendationReasons).
+Uses anthropic Python SDK instead of worker callClaude wrapper.
+"""
+from __future__ import annotations
+import os
+import re
+import json
+import logging
+from typing import Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"  # match worker llm.ts default 'sonnet'
+ANTHROPIC_BASE = "https://api.anthropic.com/v1/messages"
+
+
+def _build_stock_line(idx: int, c: dict) -> str:
+    chip_amt = ((c.get("foreign_net_5d") or 0) + (c.get("trust_net_5d") or 0))
+    rsi = c.get("rsi14")
+    rsi_str = f"{rsi:.0f}" if rsi is not None else "N/A"
+    conf_pct = (c.get("ml_confidence") or 0) * 100
+    macd_h = c.get("macd_hist") or 0
+    return (
+        f"{idx + 1}. {c['symbol']} {c.get('name','')} | "
+        f"signal={c.get('signal','N/A')} score={c.get('score',0)}"
+        f"(籌碼{c.get('chip_score',0)}+技術{c.get('tech_score',0)}+ML{c.get('ml_score',0)}) | "
+        f"ML投票{c.get('ml_models_up',0)}↑/{c.get('ml_models_down',0)}↓"
+        f"(共{c.get('ml_models_total',0)}) conf={conf_pct:.0f}% | "
+        f"RSI={rsi_str} MACD{'多' if macd_h > 0 else '空'} | "
+        f"5日法人淨額{chip_amt:.1f}億 | 價{c.get('current_price','N/A')}"
+    )
+
+
+SYSTEM_PROMPT = """你是台灣股市資深分析師，負責為每日推薦清單撰寫具資訊量的推薦理由。
+規則：
+- 每支股票的 reason 限 120 字以內，需整合籌碼、技術、ML 三面向的重點
+- watchPoints 給 3 條具體觀察重點，每條 60-100 字，必須含具體數字（價位/百分比/天數）
+  例：「留意 58.8 月線支撐能否守住，跌破則 ATR 停損 56.08；上方 63.59 為 ML target1」
+  例：「RSI 39 雖未進超賣，但連續 3 日量縮，需確認量能放大才轉強訊號」
+  例：「外資 5 日淨買超 0.3 億偏弱，須觀察下週是否回補；投信若同步買進可加速推升」
+- 語氣專業簡潔，不用「建議」「推薦」等字眼，改用「留意」「觀察」
+- 若 ML 信心高(>0.6)，可強調模型共識；若低(<0.5)，強調需確認
+- 必須回傳 JSON array，格式：[{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
+- 長度必須和輸入股票數量完全一致"""
+
+
+async def generate_recommendation_reasons(
+    candidates: list[dict],
+    top_themes: Optional[list[str]] = None,
+    timeout: float = 60.0,
+) -> dict[str, dict]:
+    """
+    Generate LLM reasons for N candidates in 1 Claude API call.
+
+    Returns: {symbol: {"reason": str, "watchPoints": list[str]}}
+    Falls back to empty dict on any error (template will be used instead).
+    """
+    if not candidates:
+        return {}
+    if not ANTHROPIC_API_KEY:
+        logger.warning("[llm_reason] ANTHROPIC_API_KEY not set, skipping LLM reasons")
+        return {}
+
+    stock_list = "\n".join(_build_stock_line(i, c) for i, c in enumerate(candidates))
+    theme_hint = ""
+    if top_themes:
+        theme_hint = f"\n\n今日主流主題：{'、'.join(top_themes)}"
+
+    user_prompt = (
+        f"請為以下 {len(candidates)} 支推薦股票各寫一段推薦理由：\n"
+        f"{stock_list}{theme_hint}"
+    )
+
+    max_tokens = min(8192, len(candidates) * 500)
+
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": max_tokens,
+        "system": SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(ANTHROPIC_BASE, headers=headers, json=body)
+        if resp.status_code != 200:
+            logger.error(
+                f"[llm_reason] Anthropic API HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+            return {}
+        data = resp.json()
+        # Extract text from Anthropic response: {content: [{type: 'text', text: '...'}]}
+        text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+        raw = "\n".join(text_blocks)
+
+        # Parse JSON array out of response
+        match = re.search(r"\[[\s\S]*\]", raw, re.DOTALL)
+        if not match:
+            logger.error(f"[llm_reason] No JSON array in response: {raw[:200]}")
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError as e:
+            logger.error(f"[llm_reason] JSON parse failed: {e}")
+            return {}
+
+        result: dict[str, dict] = {}
+        for item in parsed:
+            symbol = item.get("symbol")
+            reason = item.get("reason")
+            if symbol and reason:
+                result[symbol] = {
+                    "reason": reason[:200],
+                    "watchPoints": (item.get("watchPoints") or [])[:3],
+                }
+
+        logger.info(f"[llm_reason] Generated {len(result)}/{len(candidates)} reasons")
+        return result
+
+    except httpx.RequestError as e:
+        logger.error(f"[llm_reason] Network error: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"[llm_reason] Unexpected error: {e}")
+        return {}

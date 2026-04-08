@@ -24,6 +24,9 @@ export interface TradingConfig {
     lowAccuracyThreshold: number // 模型準確率警戒線（預設 0.45）
     highVolReducedPosPct: number // 大盤高波動時縮減部位（預設 0.04）
     bullAlignmentThreshold: number // Layer4 多頭排列警戒線（預設 20）
+    // ── Sprint 4-1: L2 drawdown scaling 常數 ───────────────────────────────
+    drawdownScaleStart: number   // 開始縮減部位的回撤起點（預設 0.03）
+    mddMultFloor: number         // mddMultiplier 下限（預設 0.2 = 縮到 20%）
   }
   exit: {
     hardStopPct: number          // 硬上限止損（預設 -0.12）
@@ -53,6 +56,25 @@ export interface TradingConfig {
     maxDailySwaps: number        // 每日最大換股次數（預設 1）
     swapThreshold: number        // 換股評分門檻倍數（預設 1.15）
     swapMinHoldDays: number      // 換股最低持有天數（預設 3）
+    // ── Sprint 3 P0-1: Kelly Position Sizing ────────────────────────────────
+    kelly: {
+      enabled: boolean         // feature flag（預設 false，安全上線）
+      halfKelly: boolean       // 半 Kelly（預設 true，保守）
+      confClipLo: number       // ML confidence 下限 clip（預設 0.50，防 overconfident）
+      confClipHi: number       // ML confidence 上限 clip（預設 0.75）
+      maxKellyPct: number      // Kelly % 上限 hard cap（預設 0.15 = 15%）
+    }
+    // ── Sprint 4-1: Paper.ts L3 hardcode 接 KV ─────────────────────────────
+    swapWeights: {
+      pnl: number              // swap pnlScore 權重（預設 0.35）
+      time: number             // swap timeScore 權重（預設 0.25）
+      tp1: number              // swap tp1_hit 懲罰權重（預設 0.20）
+      loss: number             // swap 虧損懲罰權重（預設 0.20）
+    }
+    tp1ProximityRatio: number  // 接近 tp1 判定比例（預設 0.97）
+    requoteDeviationMax: number  // 重掛 entry 偏離容忍（預設 0.05）
+    requoteDiscount: number      // 重掛新 entry 折扣（預設 0.985）
+    requoteStopFallback: number  // ml_stop_loss fallback 係數（預設 0.92）
   }
   screener: {
     minPrice: number             // 最低股價（預設 15）
@@ -94,6 +116,73 @@ export interface TradingConfig {
     lowerPctCap: number          // 停損百分比封頂（預設 0.03）
     maxDays: number              // 最大持有天數（預設 20）
   }
+  // ── Sprint 3 P0-4: Hybrid Ranking (Architecture C) ─────────────────────────
+  // Why: 解決 "filter 後 0 BUY signal" 問題。combined_score = α*screener + β*ml_conf + γ*signal_tier
+  //      若 has_buy_signal 數量 < topK，用 combined_score 排序 promote 到 has_buy_signal=1
+  // α/β/γ 未來 Sprint 7+ 用 Optuna 搜；目前 hardcode 合理 default
+  ranking: {
+    enabled: boolean             // feature flag（預設 true，直接解 0-signal 問題）
+    topK: number                 // 目標持有部位數（預設 3，對齊 paper.ts morningSetup LIMIT 3）
+    alpha: number                // screener weight 預設 0.40
+    beta: number                 // ml_confidence weight 預設 0.40
+    gamma: number                // signal_tier weight 預設 0.20
+    screenerDenominator: number  // (chip+tech) 正規化分母（預設 60）
+    promoteMinConf: number       // promoted row 的 confidence 保底（預設 0.60，對齊 buyConfThreshold）
+  }
+  // ── 2026-04-07 added: Optuna #2 Signal 月搜結果 destination ────────────────
+  // 之前寫進 ml:adaptive_params 是錯的（adaptive_params 應該只裝 daily delta）
+  signal: {
+    strongSignalScore: number    // STRONG_BUY 門檻（預設 0.72）
+    buySignalScore: number       // BUY 門檻（預設 0.52） — Optuna 月搜的 baseline
+    holdSignalScore: number      // HOLD 門檻（預設 0.36）
+    consensusThreshold: number   // 共識門檻（預設 0.60）
+  }
+  // ── 2026-04-07 added: Optuna #3 SL/TP 月搜結果 destination ─────────────────
+  // 之前 sl_mult_base/tp_mult_base 寫進 ml:adaptive_params 是錯的
+  sltp: {
+    slMultBase: number           // SL × ATR 倍數 baseline（預設 2.0）
+    tpMultBase: number           // TP × ATR 倍數 baseline（預設 1.5）
+    trailSwitch3pct: number      // profit-lock 第一階觸發 (預設 0.03)
+    trailSwitch8pct: number      // profit-lock 第二階觸發 (預設 0.08)
+    volThresholdLow: number      // 低波動定義 (預設 0.015)
+    volThresholdHigh: number     // 高波動定義 (預設 0.03)
+  }
+  // ── 2026-04-07 added: L2 daily formula 內部係數（adaptive.py 用） ──────────
+  // 把 hardcoded formula 常數搬到 KV，讓未來 Optuna 可搜
+  L2_formula: {
+    // confidence delta formula: delta = risk * risk_mult + (0.6 - acc) * perf_mult
+    confidence_risk_mult: number      // 預設 0.15
+    confidence_perf_mult: number      // 預設 0.20
+    confidence_delta_clip_lo: number  // 預設 -0.10
+    confidence_delta_clip_hi: number  // 預設 +0.20
+    // effective clip 套在 baseline + delta 上
+    confidence_effective_clip_lo: number  // 預設 0.45（注意：原 hardcode 0.55）
+    confidence_effective_clip_hi: number  // 預設 0.75
+    // SL/TP 加碼（per market_risk_level）
+    sltp_add_orange_sl: number     // 預設 0.3
+    sltp_add_orange_tp: number     // 預設 0.3
+    sltp_add_red_sl: number        // 預設 0.5
+    sltp_add_red_tp: number        // 預設 0.5
+    sltp_add_black_sl: number      // 預設 1.0
+    sltp_add_black_tp: number      // 預設 0.5
+    // Bandit protection
+    bandit_loss_thresh_high: number   // 預設 0.6 (虧損率)
+    bandit_loss_thresh_med: number    // 預設 0.4
+    bandit_max_mult_high: number      // 預設 1.5
+    bandit_max_mult_med: number       // 預設 2.0
+    bandit_max_mult_low: number       // 預設 2.5
+    // PF quality 加權
+    pf_quality_30d_weight: number     // 預設 0.7
+    pf_quality_90d_weight: number     // 預設 0.3
+    pf_quality_clip_lo: number        // 預設 0.3
+    pf_quality_clip_hi: number        // 預設 1.8
+    // ── Sprint 4-1: 盤前夜盤 RiskGate + medium risk sizing ──────────────────
+    night_drop_severe_pct: number      // 夜盤嚴重跌幅（預設 -1.5 = -1.5%）
+    night_drop_mild_pct: number        // 夜盤中度跌幅（預設 -0.8 = -0.8%）
+    night_drop_severe_adjust: number   // 嚴重跌 entry 調整（預設 0.98 = -2%）
+    night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
+    medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
+  }
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -115,6 +204,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     lowAccuracyThreshold: 0.45,
     highVolReducedPosPct: 0.04,
     bullAlignmentThreshold: 20,
+    // Sprint 4-1
+    drawdownScaleStart: 0.03,
+    mddMultFloor: 0.2,
   },
   exit: {
     hardStopPct: -0.10,
@@ -145,6 +237,25 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxDailySwaps: 1,             // max position replacements per day
     swapThreshold: 1.15,          // new score must exceed weakest × 1.15
     swapMinHoldDays: 3,           // don't swap positions held < 3 days
+    // Sprint 3 P0-1: Kelly (default OFF; flip in KV when ready)
+    kelly: {
+      enabled: false,
+      halfKelly: true,
+      confClipLo: 0.50,
+      confClipHi: 0.75,
+      maxKellyPct: 0.15,
+    },
+    // ── Sprint 4-1: Paper.ts L3 hardcode 接 KV ─────────────────────────────
+    swapWeights: {
+      pnl: 0.35,          // pnlScore 權重（預設 0.35）
+      time: 0.25,         // timeScore 權重（預設 0.25）
+      tp1: 0.20,          // tp1_hit 懲罰權重（預設 0.20）
+      loss: 0.20,         // 虧損懲罰權重（預設 0.20）
+    },
+    tp1ProximityRatio: 0.97,    // 接近 tp1 判定比例（預設 0.97 = 距離 TP1 3%內）
+    requoteDeviationMax: 0.05,  // 重掛 entry 偏離容忍（預設 0.05 = 5%，超過棄單）
+    requoteDiscount: 0.985,     // 重掛新 entry 折扣（預設 0.985 = 下修 1.5%）
+    requoteStopFallback: 0.92,  // ml_stop_loss 缺失時回退係數（預設 0.92 = entry × 0.92）
   },
   screener: {
     minPrice: 15,
@@ -186,6 +297,62 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     lowerPctCap: 0.03,
     maxDays: 20,
   },
+  // ── Sprint 3 P0-4: Hybrid Ranking ─────────────────────────────────────────
+  ranking: {
+    enabled: true,          // default ON（解 0-signal 問題）
+    topK: 3,
+    alpha: 0.40,
+    beta: 0.40,
+    gamma: 0.20,
+    screenerDenominator: 60,
+    promoteMinConf: 0.60,
+  },
+  // ── 2026-04-07 NEW: Optuna #2 destination ─────────────────────────────────
+  signal: {
+    strongSignalScore: 0.72,
+    buySignalScore: 0.52,
+    holdSignalScore: 0.36,
+    consensusThreshold: 0.60,
+  },
+  // ── 2026-04-07 NEW: Optuna #3 destination ─────────────────────────────────
+  sltp: {
+    slMultBase: 2.0,
+    tpMultBase: 1.5,
+    trailSwitch3pct: 0.03,
+    trailSwitch8pct: 0.08,
+    volThresholdLow: 0.015,
+    volThresholdHigh: 0.03,
+  },
+  // ── 2026-04-07 NEW: L2 daily formula 內部係數 ─────────────────────────────
+  L2_formula: {
+    confidence_risk_mult: 0.15,
+    confidence_perf_mult: 0.20,
+    confidence_delta_clip_lo: -0.10,
+    confidence_delta_clip_hi: 0.20,
+    confidence_effective_clip_lo: 0.45,
+    confidence_effective_clip_hi: 0.75,
+    sltp_add_orange_sl: 0.3,
+    sltp_add_orange_tp: 0.3,
+    sltp_add_red_sl: 0.5,
+    sltp_add_red_tp: 0.5,
+    sltp_add_black_sl: 1.0,
+    sltp_add_black_tp: 0.5,
+    bandit_loss_thresh_high: 0.6,
+    bandit_loss_thresh_med: 0.4,
+    bandit_max_mult_high: 1.5,
+    bandit_max_mult_med: 2.0,
+    bandit_max_mult_low: 2.5,
+    pf_quality_30d_weight: 0.7,
+    pf_quality_90d_weight: 0.3,
+    pf_quality_clip_lo: 0.3,
+    pf_quality_clip_hi: 1.8,
+    // Sprint 4-1
+    night_drop_severe_pct: -1.5,
+    night_drop_mild_pct: -0.8,
+    night_drop_severe_adjust: 0.98,
+    night_drop_mild_adjust: 0.99,
+    medium_risk_scale: 0.5,
+  },
 }
 
 // ─── KV 讀取（300s cache）──────────────────────────────────────────────────
@@ -199,14 +366,26 @@ let _cachedAt = 0
 /** Deep merge: KV 值覆蓋 defaults，缺失欄位自動 fallback */
 function mergeConfig(partial: Partial<any>): TradingConfig {
   const d = DEFAULT_TRADING_CONFIG
+  // position 有 2 層 nested sub-object（kelly + swapWeights），需要深層 merge
+  const mergedPosition = {
+    ...d.position,
+    ...partial.position,
+    kelly: { ...d.position.kelly, ...(partial.position?.kelly ?? {}) },
+    swapWeights: { ...d.position.swapWeights, ...(partial.position?.swapWeights ?? {}) },
+  }
   return {
     fees: { ...d.fees, ...partial.fees },
     circuit: { ...d.circuit, ...partial.circuit },
     exit: { ...d.exit, ...partial.exit },
-    position: { ...d.position, ...partial.position },
+    position: mergedPosition,
     screener: { ...d.screener, ...partial.screener },
     rrg: { ...d.rrg, ...partial.rrg },
     barrier: { ...d.barrier, ...partial.barrier },
+    ranking: { ...d.ranking, ...partial.ranking },
+    // 2026-04-07 added:
+    signal: { ...d.signal, ...partial.signal },
+    sltp: { ...d.sltp, ...partial.sltp },
+    L2_formula: { ...d.L2_formula, ...partial.L2_formula },
   }
 }
 

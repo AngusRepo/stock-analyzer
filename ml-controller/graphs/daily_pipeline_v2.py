@@ -1,0 +1,367 @@
+"""
+daily_pipeline_v2.py — Real LangGraph StateGraph for daily prediction pipeline
+2026-04-07 LangGraph A+B refactor
+
+Replaces graphs/daily_pipeline.py which was a "fake LangGraph" — fire-and-forget
+HTTP shell where state held only step_status, not domain data.
+
+Real LangGraph this time:
+  - State is typed schema with full domain data (active_stocks, payloads, predictions, etc.)
+  - Nodes are pure functions reading & writing state
+  - All D1/ML calls done by ml-controller directly (no fire-and-forget to worker)
+  - SqliteSaver checkpointer for resume support
+  - Linear edges screener_load → market_env → payloads → ml_predict → recommend → llm_reasons → write_d1
+"""
+from __future__ import annotations
+import asyncio
+import logging
+import operator
+from datetime import datetime, timezone
+from typing import Annotated, Any, TypedDict
+
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from services import d1_client, kv_client
+from services.payload_builder import (
+    PredictPayload,
+    load_active_stocks,
+    load_market_env,
+    build_payloads,
+)
+from services.modal_client import batch_predict
+from services.recommendation_service import (
+    filter_and_score_recommendations,
+    hybrid_ranking_promotion,
+    write_predictions_to_d1,
+    update_recommendations_in_d1,
+    delete_filtered_recommendations,
+    re_rank_recommendations,
+    merge_llm_reasons_into_recommendations,
+)
+from services.llm_reason import generate_recommendation_reasons
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# State schema — typed, contains domain data (not just step_status)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PipelineStateV2(TypedDict, total=False):
+    """
+    Full pipeline state. Each node reads relevant fields and returns an update dict.
+    LangGraph reducer merges updates back into state automatically.
+    """
+    run_date: str
+
+    # Loaded inputs
+    active_stocks: list[dict]              # from D1 stocks WHERE is_active=1
+    screener_recs: list[dict]              # from D1 daily_recommendations (existing chip+tech)
+    market_env: dict                        # market_risk + twii + breadth + us + history
+    adaptive_params: dict                   # from KV ml:adaptive_params
+    barrier_params: dict                    # from KV trading:config.barrier
+    lifecycle_weights: dict                 # from D1 model_lifecycle_state
+
+    # Computed
+    payloads: list[dict]                    # PredictPayload as dict
+    predictions: dict                       # symbol → ml result
+    final_recommendations: list[dict]       # after filter + scoring + ranking
+    sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
+    llm_reasons: dict                       # symbol → {reason, watchPoints}
+
+    # Outputs
+    metrics: dict                           # timing, counts
+    errors: Annotated[list[str], operator.add]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nodes
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def node_load_inputs(state: PipelineStateV2) -> dict:
+    """
+    Load active_stocks + existing screener_recs from D1.
+    """
+    logger.info("[Pipeline V2] node_load_inputs")
+    run_date = state["run_date"]
+
+    active_stocks = load_active_stocks()
+    screener_recs = d1_client.query(
+        "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
+        [run_date],
+    )
+
+    logger.info(
+        f"[Pipeline V2] Loaded {len(active_stocks)} active stocks, "
+        f"{len(screener_recs)} existing screener_recs"
+    )
+    return {
+        "active_stocks": active_stocks,
+        "screener_recs": screener_recs,
+    }
+
+
+async def node_load_market_env(state: PipelineStateV2) -> dict:
+    """
+    Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
+    """
+    logger.info("[Pipeline V2] node_load_market_env")
+    market_env, adaptive, barrier, lifecycle = load_market_env(state["run_date"])
+    return {
+        "market_env": _to_dict(market_env),
+        "adaptive_params": adaptive,
+        "barrier_params": barrier,
+        "lifecycle_weights": lifecycle,
+    }
+
+
+async def node_build_payloads(state: PipelineStateV2) -> dict:
+    """
+    Build PredictPayload list for all active stocks (bulk D1 reads).
+    """
+    logger.info("[Pipeline V2] node_build_payloads")
+    from services.payload_builder import MarketEnv
+
+    # Reconstruct MarketEnv from dict
+    me_dict = state["market_env"]
+    market_env = MarketEnv(**{k: v for k, v in me_dict.items() if k in MarketEnv.__dataclass_fields__})
+
+    payloads = build_payloads(
+        active_stocks=state["active_stocks"],
+        market_env=market_env,
+        adaptive_params=state.get("adaptive_params") or {},
+        barrier_params=state.get("barrier_params") or {},
+        lifecycle_weights=state.get("lifecycle_weights") or {},
+    )
+    payloads_dict = [_to_dict(p) for p in payloads]
+    return {"payloads": payloads_dict}
+
+
+async def node_ml_predict(state: PipelineStateV2) -> dict:
+    """
+    Single batch_predict call — modal.map() (or httpx parallel concurrency=20).
+    No serial sub-batching: all stocks at once, controller-side parallel.
+    """
+    payloads = state["payloads"]
+    n = len(payloads)
+    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (single batch, parallel)")
+
+    if not payloads:
+        return {"predictions": {}}
+
+    results = await batch_predict(payloads)
+    pred_map: dict[str, dict] = {}
+    for r in results:
+        sym = r.get("symbol")
+        if sym and not r.get("error"):
+            pred_map[sym] = r
+
+    error_count = sum(1 for r in results if r.get("error"))
+    logger.info(
+        f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
+        f"{error_count} errors"
+    )
+    return {"predictions": pred_map}
+
+
+async def node_recommend(state: PipelineStateV2) -> dict:
+    """
+    Filter SELL, compute ml_score, hybrid ranking promotion.
+    """
+    logger.info("[Pipeline V2] node_recommend")
+    final, sell_count = filter_and_score_recommendations(
+        state["screener_recs"],
+        state["predictions"],
+        state["payloads"],
+    )
+
+    # Hybrid ranking from KV trading:config.ranking
+    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
+                                              "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
+                                              "screenerDenominator": 60.0, "promoteMinConf": 0.60})
+    final = hybrid_ranking_promotion(final, ranking_cfg)
+
+    # Track which symbols were filtered out (for D1 delete in write_d1)
+    final_syms = {r["symbol"] for r in final}
+    filtered_syms = [r["symbol"] for r in state["screener_recs"] if r["symbol"] not in final_syms]
+
+    logger.info(
+        f"[Pipeline V2] Recommend done: {len(final)} kept, {sell_count} SELL filtered"
+    )
+    return {
+        "final_recommendations": final,
+        "sell_filtered_symbols": filtered_syms,
+    }
+
+
+async def node_llm_reasons(state: PipelineStateV2) -> dict:
+    """
+    Generate LLM reasons via Anthropic API (non-blocking, fallback empty on fail).
+    """
+    logger.info("[Pipeline V2] node_llm_reasons")
+    candidates = state["final_recommendations"]
+    if not candidates:
+        return {"llm_reasons": {}}
+
+    # Top themes from market_env (if available)
+    top_themes = []
+    me = state.get("market_env") or {}
+    history = me.get("history") or {}
+    # Simple heuristic — top themes optional for prompt context
+    # (worker version reads from sector_flow, we skip for V2 simplicity)
+
+    try:
+        reasons = await generate_recommendation_reasons(candidates, top_themes=top_themes)
+        return {"llm_reasons": reasons}
+    except Exception as e:
+        logger.error(f"[Pipeline V2] LLM reasons failed: {e}")
+        return {"llm_reasons": {}, "errors": [f"llm_reasons: {e}"]}
+
+
+async def node_write_d1(state: PipelineStateV2) -> dict:
+    """
+    Write predictions + update recommendations + delete SELL-filtered + re-rank.
+    All in D1 batch_execute for atomicity.
+    """
+    logger.info("[Pipeline V2] node_write_d1")
+    run_date = state["run_date"]
+
+    # 1. Predictions
+    stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
+    predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map)
+
+    # 2. Merge LLM reasons into recommendations (overwrite template)
+    final = state["final_recommendations"]
+    merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})
+
+    # 3. Update daily_recommendations
+    rec_updated = update_recommendations_in_d1(final, run_date)
+
+    # 4. Delete SELL-filtered rows
+    sell_deleted = delete_filtered_recommendations(state.get("sell_filtered_symbols") or [], run_date)
+
+    # 5. Re-rank
+    re_rank_recommendations(run_date)
+
+    metrics = {
+        "predictions_written": predictions_written,
+        "recommendations_updated": rec_updated,
+        "sell_deleted": sell_deleted,
+        "llm_reasons_count": len(state.get("llm_reasons") or {}),
+    }
+    logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
+    return {"metrics": metrics}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _to_dict(obj: Any) -> dict:
+    """Convert dataclass or dict to plain dict (for state serialization)."""
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "__dataclass_fields__"):
+        from dataclasses import asdict
+        return asdict(obj)
+    return dict(obj) if obj else {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build graph
+# ─────────────────────────────────────────────────────────────────────────────
+
+_graph_singleton: Any = None
+
+
+def build_graph():
+    """Build and compile the LangGraph StateGraph."""
+    g = StateGraph(PipelineStateV2)
+
+    g.add_node("load_inputs",     node_load_inputs)
+    g.add_node("load_market_env", node_load_market_env)
+    g.add_node("build_payloads",  node_build_payloads)
+    g.add_node("ml_predict",      node_ml_predict)
+    g.add_node("recommend",       node_recommend)
+    g.add_node("gen_llm_reasons", node_llm_reasons)
+    g.add_node("write_d1",        node_write_d1)
+
+    g.set_entry_point("load_inputs")
+    g.add_edge("load_inputs",     "load_market_env")
+    g.add_edge("load_market_env", "build_payloads")
+    g.add_edge("build_payloads",  "ml_predict")
+    g.add_edge("ml_predict",      "recommend")
+    g.add_edge("recommend",       "gen_llm_reasons")
+    g.add_edge("gen_llm_reasons", "write_d1")
+    g.add_edge("write_d1",        END)
+
+    # Checkpointer disabled for now:
+    # - SqliteSaver doesn't support async (raises NotImplementedError on ainvoke)
+    # - AsyncSqliteSaver requires aiosqlite + extra setup
+    # - Cloud Run /tmp is ephemeral so checkpoint loses across restarts anyway
+    # Phase 2 future: D1-backed AsyncSqliteSaver subclass for true resume support
+    compiled = g.compile()
+    logger.info("[Pipeline V2] Compiled without checkpointer (Cloud Run ephemeral /tmp)")
+    return compiled
+
+
+def get_graph():
+    """Lazy singleton — build once per Cloud Run container."""
+    global _graph_singleton
+    if _graph_singleton is None:
+        _graph_singleton = build_graph()
+    return _graph_singleton
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_pipeline_v2(run_date: str = "") -> dict:
+    """
+    Execute the full pipeline V2.
+
+    Args:
+        run_date: TW date YYYY-MM-DD (default: today TW)
+
+    Returns:
+        {status, run_date, metrics, errors}
+    """
+    if not run_date:
+        from datetime import datetime, timezone, timedelta
+        tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+        run_date = tw_now.strftime("%Y-%m-%d")
+
+    initial_state: PipelineStateV2 = {
+        "run_date": run_date,
+        "errors": [],
+        "metrics": {},
+    }
+
+    logger.info(f"[Pipeline V2] Starting for {run_date}")
+    t0 = asyncio.get_event_loop().time()
+
+    graph = get_graph()
+    try:
+        # No checkpointer → no config needed
+        final_state = await graph.ainvoke(initial_state)
+        elapsed = asyncio.get_event_loop().time() - t0
+        logger.info(f"[Pipeline V2] Completed in {elapsed:.1f}s: {final_state.get('metrics', {})}")
+        return {
+            "status": "completed",
+            "run_date": run_date,
+            "elapsed_s": round(elapsed, 1),
+            "metrics": final_state.get("metrics", {}),
+            "errors": final_state.get("errors", []),
+        }
+    except Exception as e:
+        elapsed = asyncio.get_event_loop().time() - t0
+        logger.exception(f"[Pipeline V2] Failed after {elapsed:.1f}s")
+        return {
+            "status": "error",
+            "run_date": run_date,
+            "elapsed_s": round(elapsed, 1),
+            "error": str(e),
+        }

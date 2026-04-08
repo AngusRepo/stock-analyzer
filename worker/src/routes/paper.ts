@@ -152,13 +152,45 @@ interface CircuitBreakerState {
   sellConfThreshold: number      // 0.65 正常，0.70 低準確率時提高
 }
 
-async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig): Promise<CircuitBreakerState> {
+async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVNamespace): Promise<CircuitBreakerState> {
   const cc = cfg.circuit
+
+  // Phase 2 (2026-04-07): baseline + delta + clip 三層讀取
+  // Layer 1: trading:config.signal.buySignalScore (Optuna #2 月搜的 baseline)
+  // Layer 2: ml:adaptive_params.confidence_delta (T+1 daily delta)
+  // Layer 3: trading:config.L2_formula.confidence_effective_clip_* (KV-driven clip range)
+  // Phase A bandage 讀的 absolute confidence_threshold 已被新公式取代
+  let buyConfBase = cfg.signal?.buySignalScore ?? cc.buyConfThreshold
+  let sellConfBase = cfg.signal?.buySignalScore ?? cc.sellConfThreshold  // sell 用同一 baseline
+  let confidenceDelta = 0
+  const L2 = cfg.L2_formula
+  const clipLo = L2?.confidence_effective_clip_lo ?? 0.45
+  const clipHi = L2?.confidence_effective_clip_hi ?? 0.75
+
+  if (kv) {
+    try {
+      const { getAdaptiveParams } = await import('../lib/adaptiveConfig')
+      const adaptive = await getAdaptiveParams(kv)
+      // 新 schema: confidence_delta（純 delta）
+      if (adaptive?.confidence_delta != null) {
+        confidenceDelta = adaptive.confidence_delta
+      } else if (adaptive?.confidence_threshold != null) {
+        // legacy fallback: 把 absolute 反推為 delta
+        confidenceDelta = adaptive.confidence_threshold - 0.60
+      }
+    } catch (e) { console.warn('[CircuitBreaker] adaptive params load failed:', e) }
+  }
+
+  const effectiveBuy  = Math.max(clipLo, Math.min(clipHi, buyConfBase + confidenceDelta))
+  const effectiveSell = Math.max(clipLo, Math.min(clipHi, sellConfBase + confidenceDelta))
+
+  console.log(`[CircuitBreaker] confidence: baseline=${buyConfBase.toFixed(3)} delta=${confidenceDelta >= 0 ? '+' : ''}${confidenceDelta.toFixed(3)} → effective=${effectiveBuy.toFixed(3)} (clip ${clipLo}-${clipHi})`)
+
   const defaults: CircuitBreakerState = {
     halt: false,
     maxPositionPct: cc.maxPositionPct,
-    buyConfThreshold: cc.buyConfThreshold,
-    sellConfThreshold: cc.sellConfThreshold,
+    buyConfThreshold: effectiveBuy,
+    sellConfThreshold: effectiveSell,
   }
 
   // Layer 1: 30 日滾動回撤 > drawdownHalt → 暫停自動交易
@@ -178,31 +210,55 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig): Promise
     // 效果：MDD 增加 → 逐步縮減 maxPositionPct，接近上限時幾乎清倉
     if (drawdown > cc.drawdownHalt) {
       console.warn(`[CircuitBreaker] Layer1 HALT: drawdown ${(drawdown * 100).toFixed(1)}% > ${(cc.drawdownHalt * 100).toFixed(0)}%`)
-      return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: cc.drawdownRaisedConf, sellConfThreshold: cc.drawdownRaisedConf }
-    } else if (drawdown > 0.03) {
-      // 連續調控：drawdown 3%~15% 之間逐步縮減部位
-      const mddMultiplier = Math.max(0.2, (cc.drawdownHalt - drawdown) / (1 - drawdown))
+      // Phase 2: 用 effective threshold 而非 hardcode raised conf
+      const haltConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
+      return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: haltConf, sellConfThreshold: haltConf }
+    } else if (drawdown > cc.drawdownScaleStart) {
+      // 連續調控：drawdown drawdownScaleStart ~ drawdownHalt 之間逐步縮減部位（Sprint 4-1 wire）
+      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (1 - drawdown))
       const adjustedPosPct = cc.maxPositionPct * mddMultiplier
+      // Phase 2: SCALE 階段也用 effective baseline+delta，drawdown 過半才額外加嚴
       const adjustedConf = drawdown > cc.drawdownHalt * 0.5
-        ? cc.drawdownRaisedConf  // 回撤超過一半上限 → 提高信心門檻
-        : cc.buyConfThreshold
+        ? Math.max(cc.drawdownRaisedConf, effectiveBuy)
+        : effectiveBuy
       console.log(`[CircuitBreaker] Layer1 SCALE: drawdown ${(drawdown * 100).toFixed(1)}% → posPct ${(adjustedPosPct * 100).toFixed(1)}% (mult=${mddMultiplier.toFixed(2)})`)
       return { ...defaults, maxPositionPct: adjustedPosPct, buyConfThreshold: adjustedConf, reason: `MDD ${(drawdown * 100).toFixed(1)}% 動態縮減` }
     }
   }
 
   // Layer 2: 模型近期準確率 < lowAccuracyThreshold → 提高信心門檻
-  const accuracyRow = await db.prepare(`
-    SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
-    FROM predictions
-    WHERE generated_at >= datetime('now', '-20 days')
-    AND direction_correct IS NOT NULL
-  `).first<any>()
-
-  const recentAcc = accuracyRow?.acc ?? 0.5
+  // Phase 2 fix: 改讀 ml:adaptive_params.recent_accuracy_30d (single source of truth)
+  // 之前自己 SQL 算 over 20 days 算出 18.6%，跟 adaptive 60% 差距大
+  let recentAcc = 0.5
+  if (kv) {
+    try {
+      const { getAdaptiveParams } = await import('../lib/adaptiveConfig')
+      const adaptive = await getAdaptiveParams(kv)
+      if (adaptive?.recent_accuracy_30d != null) {
+        recentAcc = adaptive.recent_accuracy_30d
+      }
+    } catch { /* fallback to local SQL */ }
+  }
+  if (recentAcc === 0.5) {
+    // adaptive_params 沒值 → fallback 到本地 SQL（保持 backwards compat）
+    // Sprint 4-3 root cause fix (2026-04-07):
+    // 之前 WHERE direction_correct IS NOT NULL 會納入 -1 (neutral HOLD/NO_SIGNAL)
+    // 把 HOLD 當 wrong 拉低 accuracy 到 18.6% (D1 實測: 161/865)
+    // 正確語意應該對齊 model_accuracy 表的 filter: direction_correct IN (0, 1)
+    // 新結果 161/292 = 55.1% (對齊 adaptive path)
+    const accuracyRow = await db.prepare(`
+      SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
+      FROM predictions
+      WHERE generated_at >= datetime('now', '-20 days')
+      AND direction_correct IN (0, 1)
+    `).first<any>()
+    recentAcc = accuracyRow?.acc ?? 0.5
+  }
   if (recentAcc < cc.lowAccuracyThreshold) {
     console.warn(`[CircuitBreaker] Layer2: model accuracy ${(recentAcc * 100).toFixed(1)}% < ${(cc.lowAccuracyThreshold * 100).toFixed(0)}%, raising threshold`)
-    return { ...defaults, buyConfThreshold: cc.drawdownRaisedConf, sellConfThreshold: cc.drawdownRaisedConf, reason: `模型近期準確率 ${(recentAcc * 100).toFixed(1)}%` }
+    // Phase 2: raised conf 也是相對 effective baseline
+    const raisedConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
+    return { ...defaults, buyConfThreshold: raisedConf, sellConfThreshold: raisedConf, reason: `模型近期準確率 ${(recentAcc * 100).toFixed(1)}%` }
   }
 
   // Layer 3: 大盤風險 HIGH/VERY_HIGH → 縮減最大部位
@@ -268,7 +324,9 @@ interface ExitDecision {
   moveStopToEntry?: boolean  // TP1 後止損移到 entry
 }
 
-function checkExitConditions(
+// Exported for Sprint 6a.7 parity test (see /api/admin/test/exit-cascade endpoint)
+// DO NOT call from production code outside paper.ts — exported for diagnostic only.
+export function checkExitConditions(
   pos: {
     symbol: string; shares: number; avg_cost: number;
     entry_price: number | null; initial_stop: number | null;
@@ -346,10 +404,15 @@ function checkExitConditions(
   // ── Hold：更新 trailing stop + highest ──────────────────────────────────
   const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
 
+  // Phase 2 (2026-04-07): profit-lock 門檻從 trading:config.sltp 讀（Optuna #3 月搜結果）
+  // 之前 0.08/0.03 是 hardcode，跟 Optuna 跑出來的 trail_switch_3pct/8pct 脫鉤
+  const trailSwitch3 = cfg.sltp?.trailSwitch3pct ?? 0.03
+  const trailSwitch8 = cfg.sltp?.trailSwitch8pct ?? 0.08
+
   // Profit-lock: 獲利越多 trailing 越緊
   let trailMult = ex.trailMultDefault
-  if (pnlPct > 0.08) trailMult = ex.trailMultAt8pct
-  else if (pnlPct > 0.03) trailMult = ex.trailMultAt3pct
+  if (pnlPct > trailSwitch8) trailMult = ex.trailMultAt8pct
+  else if (pnlPct > trailSwitch3) trailMult = ex.trailMultAt3pct
 
   const effectiveAtr = atr14 > 0 ? atr14 : currentPrice * ex.fallbackAtrPct
   const newTrailing = highestSoFar - effectiveAtr * trailMult
@@ -1004,11 +1067,64 @@ function calcRiskPct(signal: string, confidence: number, debateVerdict?: string)
   return base
 }
 
+// ─── Sprint 3 P0-1: Kelly / Half-Kelly Position Sizing ──────────────────────
+// Why: hardcode 0.015 risk pct + risk-parity budget formula 會讓高 R:R trade
+//      (e.g. 3162 fullKelly ≈ 13%) 被嚴重 under-sized，alpha 漏 8x
+// How: p=confidence (clip [0.5, 0.75] 防 ML over-confident)
+//      b=(target1-entry)/(entry-stop)  ← ML 自己的 R:R
+//      fullKelly = (p*b - q) / b
+//      halfKelly * 0.5 預設（保守），上限 cap 15% hard
+// Feature flag: position.kelly.enabled (預設 false，KV 手動開啟)
+function calcKellyPct(
+  confidence: number,
+  entryPrice: number,
+  stopLoss: number | null,
+  target1: number | null,
+  kellyCfg: { enabled: boolean; halfKelly: boolean; confClipLo: number; confClipHi: number; maxKellyPct: number },
+): { pct: number; info: string } | null {
+  if (!kellyCfg.enabled) return null
+  if (!stopLoss || !target1) return null
+  if (stopLoss >= entryPrice || target1 <= entryPrice) return null
+
+  const p = Math.max(kellyCfg.confClipLo, Math.min(kellyCfg.confClipHi, confidence))
+  const q = 1 - p
+  const winR = (target1 - entryPrice) / entryPrice
+  const lossR = (entryPrice - stopLoss) / entryPrice
+  if (winR <= 0 || lossR <= 0) return null
+  const b = winR / lossR
+
+  const fullKelly = (p * b - q) / b
+  if (fullKelly <= 0) return null  // 負 edge，不進場
+
+  const kelly = kellyCfg.halfKelly ? fullKelly * 0.5 : fullKelly
+  const capped = Math.min(kelly, kellyCfg.maxKellyPct)
+  return {
+    pct: capped,
+    info: `p=${p.toFixed(2)} b=${b.toFixed(2)} fullK=${(fullKelly * 100).toFixed(1)}% → ${kellyCfg.halfKelly ? 'half' : 'full'}Kelly=${(capped * 100).toFixed(1)}%`,
+  }
+}
+
 // ─── 前一交易日查詢 ──────────────────────────────────────────────────────
-async function getPrevTradingDay(db: D1Database): Promise<string> {
+async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promise<string> {
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  // Fix 2026-04-07: 跳過國定假日 + 週末（KV holiday:YYYY-MM-DD）
+  // 之前直接讀 daily_recommendations 最新 date < today，但若 stale 寫入了假日 row 會抓錯
+  if (kv) {
+    const dt = new Date(today + 'T00:00:00Z')
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(dt.getTime() - i * 86400000)
+      const dayOfWeek = d.getUTCDay()
+      const dateStr = d.toISOString().slice(0, 10)
+      if (dayOfWeek === 0 || dayOfWeek === 6) continue // 週末
+      const isHoliday = await kv.get(`holiday:${dateStr}`)
+      if (isHoliday) continue
+      return dateStr
+    }
+  }
+  // Fallback: 舊邏輯（無 KV 或 14 天內找不到）
   const row = await db.prepare(
     "SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1"
-  ).bind(new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)).first<{ date: string }>()
+  ).bind(today).first<{ date: string }>()
   return row?.date ?? new Date(Date.now() + 8 * 3600_000 - 86400000).toISOString().slice(0, 10)
 }
 
@@ -1025,6 +1141,7 @@ interface PendingBuy {
   reason: string
   debate_verdict: string
   risk_pct: number
+  kelly_pct: number | null  // Sprint 3 P0-1: Kelly allocation; null = fallback to risk-parity
   chip_score: number | null
   tech_score: number | null
   ml_score: number | null
@@ -1039,13 +1156,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   console.log('[MorningSetup] Starting...')
   const cfg = await getTradingConfig(env.KV)
 
-  const cb = await checkCircuitBreakers(env.DB, cfg)
+  const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
+  console.log(`[MorningSetup-DEBUG] CB result: halt=${cb.halt} buyConfThreshold=${cb.buyConfThreshold} maxPositionPct=${cb.maxPositionPct} reason=${cb.reason ?? 'none'}`)
   if (cb.halt) {
     console.warn(`[MorningSetup] HALTED by circuit breaker: ${cb.reason}`)
     return
   }
 
-  const prevDay = await getPrevTradingDay(env.DB)
+  const prevDay = await getPrevTradingDay(env.DB, env.KV)
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   console.log(`[MorningSetup] 讀取 ${prevDay} 推薦，掛單日期 ${today}`)
 
@@ -1063,8 +1181,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     LIMIT 3
   `).bind(prevDay, cb.buyConfThreshold).all<any>()
 
+  console.log(`[MorningSetup-DEBUG] SQL returned ${buyRecs?.length ?? 0} rows (date=${prevDay}, has_buy_signal=1, conf>=${cb.buyConfThreshold})`)
+  if (buyRecs && buyRecs.length > 0) {
+    for (const r of buyRecs) {
+      console.log(`[MorningSetup-DEBUG]   candidate: ${r.symbol} ${r.name} signal=${r.signal} conf=${r.confidence} score=${r.score} ml_entry=${r.ml_entry_price} ml_stop=${r.ml_stop_loss} ml_t1=${r.ml_target1} ml_t2=${r.ml_target2}`)
+    }
+  }
   if (!buyRecs || buyRecs.length === 0) {
-    console.log('[MorningSetup] 無 BUY 推薦，跳過')
+    console.log('[MorningSetup] 無 BUY 推薦，跳過 (SQL 0 rows)')
     await env.KV.put(`paper:pending_buys:${today}`, '[]', { expirationTtl: 86400 })
     return
   }
@@ -1161,8 +1285,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   // Debate 篩選（含 T2 Quadrant Filter）
   const pendingBuys: PendingBuy[] = []
   for (const rec of buyRecs) {
+    console.log(`[MorningSetup-DEBUG] === Processing ${rec.symbol} ${rec.name} ===`)
     if (punishedSet.has(rec.symbol)) {
-      console.log(`[MorningSetup] ${rec.symbol} 處置股，跳過`)
+      console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: 處置股`)
       continue
     }
 
@@ -1238,14 +1363,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         }
       }
       if (debateVerdict === 'REJECT') {
-        console.log(`[MorningSetup] ${rec.symbol} REJECTED by debate`)
+        console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT`)
         continue
       }
       if (debateVerdict === 'DOWNGRADE') riskPct *= 0.5
     }
+    console.log(`[MorningSetup-DEBUG] ${rec.symbol} post-debate verdict=${debateVerdict} riskPct=${riskPct}`)
 
     if (!rec.ml_entry_price || rec.ml_entry_price <= 0) {
-      console.log(`[MorningSetup] ${rec.symbol} 無 ML entry_price，跳過`)
+      console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: no ml_entry_price (value=${rec.ml_entry_price})`)
       continue
     }
 
@@ -1253,22 +1379,75 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     // Why: 盤前 ML 設的 entry_price 沒考慮隔夜期貨市場變化
     let adjustedEntry = rec.ml_entry_price
     let adjustedStop = rec.ml_stop_loss
+    let skipDueToGap = false
     const originalEntry = rec.ml_entry_price
 
     // 夜盤大跌 + conviction 不高 → 下修 entry_price（要求更低價才買）
+    // Sprint 4-1 wire: 門檻 / 調整係數從 cfg.L2_formula 讀
     const nightDropPct = taifex ? taifex.changePct : 0
-    if (nightDropPct < -1.5 && debateVerdict === 'DOWNGRADE') {
-      // 夜盤跌 >1.5% + DOWNGRADE → entry 下修 2%
-      adjustedEntry = Math.round(rec.ml_entry_price * 0.98 * 100) / 100
-      adjustedStop = Math.round(rec.ml_stop_loss * 0.98 * 100) / 100
+    const L2 = cfg.L2_formula
+    if (nightDropPct < L2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
+      // 夜盤嚴重跌 + DOWNGRADE → entry 大幅下修
+      adjustedEntry = Math.round(rec.ml_entry_price * L2.night_drop_severe_adjust * 100) / 100
+      adjustedStop = Math.round(rec.ml_stop_loss * L2.night_drop_severe_adjust * 100) / 100
       console.log(`[RiskGate] ${rec.symbol} 夜盤 ${nightDropPct.toFixed(1)}% + DOWNGRADE → entry ${rec.ml_entry_price} → ${adjustedEntry}`)
-    } else if (nightDropPct < -0.8 && debateVerdict !== 'APPROVE') {
-      // 夜盤跌 >0.8% + 非 APPROVE → entry 下修 1%
-      adjustedEntry = Math.round(rec.ml_entry_price * 0.99 * 100) / 100
-      adjustedStop = Math.round(rec.ml_stop_loss * 0.99 * 100) / 100
+    } else if (nightDropPct < L2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
+      // 夜盤中度跌 + 非 APPROVE → entry 小幅下修
+      adjustedEntry = Math.round(rec.ml_entry_price * L2.night_drop_mild_adjust * 100) / 100
+      adjustedStop = Math.round(rec.ml_stop_loss * L2.night_drop_mild_adjust * 100) / 100
       console.log(`[RiskGate] ${rec.symbol} 夜盤 ${nightDropPct.toFixed(1)}% → entry ${rec.ml_entry_price} → ${adjustedEntry}`)
     }
 
+    // ── Sprint 3 P0-2: Gap-aware entry adjustment（長假後 gap up 修法）──
+    // Why: 3162 case (2026-04-02→04-07 清明連假 gap up +7%)，原 ml_entry_price 58.8 永遠 reach 不到
+    // Proxy: 台指期夜盤 changePct 當作大盤 gap 預期，個股跟隨調整 entry 追價
+    // Logic: 長假 (>=3 日曆日) + taifex gap up > +1% → 追價 entry；gap > +5% → skip
+    const prevDayTs = new Date(prevDay + 'T00:00:00Z').getTime()
+    const todayTs = new Date(today + 'T00:00:00Z').getTime()
+    const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
+    if (holidayGapDays >= 3 && nightDropPct > 1.0) {
+      const impliedGap = nightDropPct / 100
+      if (impliedGap > 0.05) {
+        // 隔夜 gap 超過 5% → 太極端，不追
+        console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% 過大，SKIP`)
+        skipDueToGap = true
+      } else {
+        // 追價 (gap × 0.995 留 0.5% 緩衝)，cap 至 ml_entry_price × 1.05
+        const chasePct = Math.min(impliedGap, 0.05)
+        const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * 0.995 * 100) / 100
+        if (newEntry > adjustedEntry) {
+          console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% → entry ${adjustedEntry} → ${newEntry}`)
+          adjustedEntry = newEntry
+          // Stop loss 同步上調（維持 R:R 比例）
+          if (adjustedStop) {
+            adjustedStop = Math.round(adjustedStop * (1 + chasePct) * 100) / 100
+          }
+        }
+      }
+    }
+
+    if (skipDueToGap) {
+      console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: gap-aware skip (holidayGapDays=${holidayGapDays}, nightDropPct=${nightDropPct})`)
+      continue
+    }
+
+    // ── Sprint 3 P0-1: Kelly Position Sizing ──
+    // Why: 用 ML 自己的 R:R 算 Kelly，避免 3162 case (fullKelly 13% vs hardcode 1.5%) alpha 漏
+    // 注意：Kelly 計算基於 adjustedEntry/adjustedStop (含 Gap-aware + RiskGate 調整後)
+    const kellyResult = calcKellyPct(
+      rec.confidence,
+      adjustedEntry,
+      adjustedStop,
+      rec.ml_target1,
+      cfg.position.kelly,
+    )
+    if (kellyResult) {
+      console.log(`[Kelly] ${rec.symbol} ${kellyResult.info}`)
+    } else if (cfg.position.kelly.enabled) {
+      console.log(`[Kelly] ${rec.symbol} fallback to risk-parity (invalid stop/target 或 negative edge)`)
+    }
+
+    console.log(`[MorningSetup-DEBUG] ${rec.symbol} PUSH to pendingBuys (entry=${adjustedEntry} stop=${adjustedStop} verdict=${debateVerdict})`)
     pendingBuys.push({
       symbol: rec.symbol,
       name: rec.name ?? rec.symbol,
@@ -1281,6 +1460,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       reason: rec.reason ?? '',
       debate_verdict: debateVerdict,
       risk_pct: riskPct,
+      kelly_pct: kellyResult?.pct ?? null,
       chip_score: rec.chip_score ?? null,
       tech_score: rec.tech_score ?? null,
       ml_score: rec.ml_score ?? null,
@@ -1288,6 +1468,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     })
   }
 
+  console.log(`[MorningSetup-DEBUG] === Loop done. pendingBuys.length=${pendingBuys.length} ===`)
   await env.KV.put(`paper:pending_buys:${today}`, JSON.stringify(pendingBuys), { expirationTtl: 86400 })
 
   // T2 Quadrant filter log（Bot Dashboard 顯示用）
@@ -1407,9 +1588,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const timeRatio = Math.min(1, daysHeld / (cfg.exit.timeStopDays ?? 20))
 
       // Weakness = weighted sum (higher = weaker)
+      // Sprint 4-1 wire: 四個權重從 cfg.position.swapWeights 讀
+      const sw = cfg.position.swapWeights
       const pnlScore = Math.max(0, -pnlPct * 100)   // more loss = weaker (0-12 range for -12%)
       const timeScore = timeRatio * 100               // closer to time stop = weaker
-      const score = pnlScore * 0.35 + timeScore * 0.25 + (1 - (pos.tp1_hit ? 0.5 : 0)) * 40 * 0.20 + (pnlPct < 0 ? 20 : 0) * 0.20
+      const score = pnlScore * sw.pnl + timeScore * sw.time + (1 - (pos.tp1_hit ? 0.5 : 0)) * 40 * sw.tp1 + (pnlPct < 0 ? 20 : 0) * sw.loss
       weaknessScores.push({ symbol: pos.symbol, score })
     }
     weaknessScores.sort((a, b) => b.score - a.score) // weakest first
@@ -1437,7 +1620,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       // Check if new stock is meaningfully better
       // newScore = quality (higher = better), weakest.score = weakness (higher = weaker)
       // Swap if: new quality is high AND weakest is sufficiently weak
-      const newQuality = (pending.confidence ?? 0.6) * 100
+      // Sprint 4-1 wire: confidence fallback 改讀 cfg.signal.buySignalScore
+      const newQuality = (pending.confidence ?? cfg.signal.buySignalScore) * 100
       const weaknessThreshold = 100 / swapThreshold  // e.g. 1.15 → ~87: weakness must exceed this
       if (weakest.score < weaknessThreshold || newQuality < 55) {
         console.log(`[Swap] ${weakest.symbol}(weakness=${weakest.score.toFixed(0)}) not weak enough (need>${weaknessThreshold.toFixed(0)}) or ${pending.symbol}(quality=${newQuality.toFixed(0)}) not strong enough, skip`)
@@ -1445,8 +1629,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
 
       // Near TP1 check: don't swap out if close to profit target
+      // Sprint 4-1 wire: proximity ratio 從 cfg.position.tp1ProximityRatio 讀
       const weakPx = posValueMap.get(weakest.symbol) ?? weakPos.avg_cost
-      if (weakPos.tp1_price && weakPx >= weakPos.tp1_price * 0.97) {
+      if (weakPos.tp1_price && weakPx >= weakPos.tp1_price * cfg.position.tp1ProximityRatio) {
         console.log(`[Swap] ${weakest.symbol} near TP1 (${weakPx}/${weakPos.tp1_price}), skip swap`)
         continue
       }
@@ -1600,10 +1785,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         continue
       }
 
+      // Sprint 4-1 wire: 重掛 deviation / discount / stop fallback 全部從 cfg.position 讀
+      const requoteMax = cfg.position.requoteDeviationMax
+      const requoteDiscount = cfg.position.requoteDiscount
+      const stopFallback = cfg.position.requoteStopFallback
+
       const deviationPct = Math.abs(pending.ml_entry_price - originalEntry) / originalEntry
-      if (deviationPct > 0.05) {
-        // 偏離原始 ML 價 > 5% → 放棄
-        console.log(`[RiskGate] 🚫 ${pending.symbol} 偏離 ${(deviationPct * 100).toFixed(1)}% > 5%，本日放棄`)
+      if (deviationPct > requoteMax) {
+        // 偏離原始 ML 價超過容忍 → 放棄
+        console.log(`[RiskGate] 🚫 ${pending.symbol} 偏離 ${(deviationPct * 100).toFixed(1)}% > ${(requoteMax * 100).toFixed(1)}%，本日放棄`)
         void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
           `🚫 **Risk Gate 放棄** ${pending.symbol} ${pending.name}：entry 已偏離原始 ML 價 ${(deviationPct * 100).toFixed(1)}%`)
         pendingBuys = pendingBuys.filter(b => b.symbol !== pending.symbol)
@@ -1611,8 +1801,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         continue
       }
 
-      // 下修 entry_price 1.5%
-      const newEntry = Math.round(pending.ml_entry_price * 0.985 * 100) / 100
+      // 下修 entry_price 依 cfg.position.requoteDiscount
+      const newEntry = Math.round(pending.ml_entry_price * requoteDiscount * 100) / 100
       console.log(`[RiskGate] ⚠️ ${pending.symbol} 大盤高風險 → entry ${pending.ml_entry_price} → ${newEntry}（重試 ${retryCount + 1}/3）`)
       void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
         `⚠️ **Risk Gate** ${pending.symbol} ${pending.name}：大盤 ${marketRisk.change_rate ?? 0}%，entry 下修 $${pending.ml_entry_price} → $${newEntry}（重試 ${retryCount + 1}/3）`)
@@ -1623,7 +1813,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         (pendingBuys[idx] as any).original_entry = originalEntry
         ;(pendingBuys[idx] as any).retry_count = retryCount + 1
         pendingBuys[idx].ml_entry_price = newEntry
-        pendingBuys[idx].ml_stop_loss = Math.round((pending.ml_stop_loss ?? newEntry * 0.92) * 0.985 * 100) / 100
+        pendingBuys[idx].ml_stop_loss = Math.round((pending.ml_stop_loss ?? newEntry * stopFallback) * requoteDiscount * 100) / 100
       }
       filled = true
       continue  // 本輪不買，等下次 cron 用新 entry 重新判斷
@@ -1664,12 +1854,33 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
 
     // Position sizing（medium risk → 倉位減半）
-    const riskPctAdj = marketRisk.risk_level === 'medium' ? pending.risk_pct * 0.5 : pending.risk_pct
     const atr14 = atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct
-    const stopPct = Math.max(cfg.position.minStopPct, (atr14 * 2) / price)
-    const riskBudget = totalPortfolio * riskPctAdj / stopPct
     const dailyRemaining = DAILY_BUY_LIMIT - dailyBuyTotal
-    const budget = Math.min(riskBudget, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+    // Sprint 4-1 wire: medium risk scale 從 cfg.L2_formula 讀
+    const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
+    const stopPct = Math.max(cfg.position.minStopPct, (atr14 * 2) / price)
+
+    let budget: number
+    let sizingMode: 'kelly' | 'risk_parity'
+    if (pending.kelly_pct != null && pending.kelly_pct > 0) {
+      // Sprint 3 P0-1: Kelly direct-allocation path
+      const kellyAdj = pending.kelly_pct * mediumRiskDampen
+      const kellyBudget = totalPortfolio * kellyAdj
+      budget = Math.min(
+        kellyBudget,
+        totalPortfolio * cfg.position.maxPctOfPortfolio,
+        acc.cash * cfg.position.maxPctOfCash,
+        dailyRemaining,
+      )
+      sizingMode = 'kelly'
+      console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% → budget ${budget.toFixed(0)}`)
+    } else {
+      // Legacy risk-parity path（Kelly disabled 或 invalid stop/target fallback）
+      const riskPctAdj = pending.risk_pct * mediumRiskDampen
+      const riskBudget = totalPortfolio * riskPctAdj / stopPct
+      budget = Math.min(riskBudget, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      sizingMode = 'risk_parity'
+    }
 
     // 滑價模擬：買到偏貴 +1 tick（更真實的 paper trade）
     const fillPrice = applySlippage(price, 'buy', 1)
@@ -1688,11 +1899,21 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue
 
     // 出場參數（基於 fillPrice — 含滑價）
+    // Phase 2 (2026-04-07): 從 trading:config.sltp 讀（Optuna #3 月搜結果）
+    // 之前 hardcode 1.5/2.0/2.5/1.5/3.0，現在從 KV 讀 baseline
     const volPct = atr14 / fillPrice
-    const slMult = volPct < 0.015 ? 1.5 : volPct < 0.03 ? 2.0 : 2.5
+    const sltp = cfg.sltp
+    const volLow  = sltp?.volThresholdLow  ?? 0.015
+    const volHigh = sltp?.volThresholdHigh ?? 0.03
+    const slBase  = sltp?.slMultBase ?? 2.0
+    const tpBase  = sltp?.tpMultBase ?? 1.5
+    // 三段 SL multiplier：低波 = base × 0.75，中波 = base，高波 = base × 1.25
+    const slMult = volPct < volLow ? slBase * 0.75
+                 : volPct < volHigh ? slBase
+                 : slBase * 1.25
     const initialStop = fillPrice - atr14 * slMult
-    const tp1Price = fillPrice + atr14 * 1.5
-    const tp2Price = fillPrice + atr14 * 3.0
+    const tp1Price = fillPrice + atr14 * tpBase
+    const tp2Price = fillPrice + atr14 * tpBase * 2  // TP2 = 2×TP1 距離
 
     const existing = await env.DB.prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?'
@@ -1727,6 +1948,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
                 ml_t1: pending.ml_target1,
                 ml_t2: pending.ml_target2,
                 risk_pct: pending.risk_pct,
+                kelly_pct: pending.kelly_pct,   // Sprint 3 P0-1
+                sizing_mode: sizingMode,        // Sprint 3 P0-1
                 stop_pct: stopPct,
                 atr14,
                 budget: Math.round(budget),
@@ -1867,8 +2090,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const exitAtrMap = await batchGetATR(env.DB, exitSymbols)
 
   // ML SELL signals（讀前一交易日推薦）
-  const prevDay = await getPrevTradingDay(env.DB)
-  const cb = await checkCircuitBreakers(env.DB, cfg)
+  const prevDay = await getPrevTradingDay(env.DB, env.KV)
+  const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
   let sellRecMap = new Map<string, any>()
   if (exitSymbols.length > 0) {
     const placeholders = exitSymbols.map(() => '?').join(',')

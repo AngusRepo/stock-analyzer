@@ -90,10 +90,20 @@ async def _http_post_one(client: httpx.AsyncClient, url: str, payload: dict) -> 
         }
 
 
-async def _http_batch(endpoint: str, payloads: list[dict], concurrency: int = 4) -> list[dict]:
+async def _http_batch(
+    endpoint: str,
+    payloads: list[dict],
+    concurrency: int = 20,            # 2026-04-07 F2: 4→20，配合 ml-service Cloud Run max_containers=20
+    per_request_timeout: float = 90.0  # 單股 timeout (Modal cold start ~30s + 11 model ensemble ~30s + buffer)
+) -> list[dict]:
     """
     httpx 並行呼叫 Cloud Run ML Service。
-    concurrency: 同時最多幾個請求（Cloud Run maxScale × ~2）
+    concurrency: 同時最多幾個請求（Cloud Run max_containers=20，並行度對齊）
+    per_request_timeout: 單股 HTTP timeout（包含 cold start + model load + ensemble）
+
+    2026-04-07 F2 fix: 之前 concurrency=4 是 524 timeout 真因。
+    20 stocks 序列 × 4 並行 = 5 round × ~25s = 125s > Cloudflare 100s edge timeout。
+    現在 concurrency=20 → 1 round 全部並行 → ~50-70s。
     """
     url = f"{_ML_SERVICE_URL}{endpoint}"
     sem = asyncio.Semaphore(concurrency)
@@ -103,7 +113,9 @@ async def _http_batch(endpoint: str, payloads: list[dict], concurrency: int = 4)
         async with sem:
             results[idx] = await _http_post_one(client, url, p)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(per_request_timeout, connect=15.0)
+    ) as client:
         tasks = [run(i, p) for i, p in enumerate(payloads)]
         await asyncio.gather(*tasks)
 

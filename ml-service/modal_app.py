@@ -14,8 +14,9 @@ import modal
 from pathlib import Path
 
 # ── 本機路徑（deploy 時 Modal 會自動上傳到 container）───────────────────────
-_LOCAL_APP_DIR = Path(__file__).parent / "app"
-_LOCAL_REQ     = Path(__file__).parent / "requirements.txt"
+_LOCAL_APP_DIR     = Path(__file__).parent / "app"
+_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # 2026-04-07: optuna_routes 需要 import scripts/optuna_*.py
+_LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 
 # ── Image 定義（Modal v1.x API）──────────────────────────────────────────────
 image = (
@@ -27,17 +28,32 @@ image = (
         "ChronosPipeline.from_pretrained('amazon/chronos-t5-tiny', device_map='cpu')"
         "\" || echo 'Chronos pre-download skipped (not installed)'",
     )
+    .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
-# ── Secret：GCS 憑證 ──────────────────────────────────────────────────────────
+# ── Secret：GCS 憑證 + Cloudflare API（D1+KV，2026-04-07 Phase 1）─────────
 gcs_secret = modal.Secret.from_name("gcs-credentials")
+
+# stockvision-cf 必須先 manual 建立：
+#   modal secret create stockvision-cf \
+#     CF_API_TOKEN=cfut_DzJ8hr6iRf4Sapft9EhfC9fgMNpUaS22PWrGm2Yw780682bf \
+#     CF_ACCOUNT_ID=619a83ac9f20847d9e2f2920823b727d \
+#     CF_D1_DB_ID=6401a5f6-5767-4fa8-a1a7-ec8d4739ac79 \
+#     STOCKVISION_AUTH_TOKEN=d34fc95104048741f086442bddb3d552caf1d21ab5a6fdeaabfe09b13b6c68a0 \
+#     STOCKVISION_WORKER_URL=https://stockvision-worker.angus-solo-dev.workers.dev
+# 若 secret 不存在，from_name 會報錯 → fallback 用空 secret
+try:
+    cf_secret = modal.Secret.from_name("stockvision-cf")
+except Exception:
+    print("[modal_app] stockvision-cf secret not found, Optuna routes will fail")
+    cf_secret = modal.Secret.from_dict({})
 
 # ── App 定義 ──────────────────────────────────────────────────────────────────
 app = modal.App(
     name="stockvision-ml",
     image=image,
-    secrets=[gcs_secret],
+    secrets=[gcs_secret, cf_secret],
 )
 
 # ── 共用：GCS 憑證注入 + sys.path 設定 ───────────────────────────────────────
@@ -129,16 +145,16 @@ def update_arf_reward(payload: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.function(
-    cpu=1,
-    memory=2048,
-    timeout=300,
+    cpu=2,            # 2026-04-07 bumped: Optuna 200 trials needs CPU
+    memory=4096,      # 2026-04-07 bumped: Optuna 載入 paper_orders + predictions 較大
+    timeout=1800,     # 2026-04-07 bumped 300→1800: optuna_signal/sltp 200 trials 可達 5-15 min
     scaledown_window=60,
     max_containers=2,
 )
 @modal.concurrent(max_inputs=4)
 @modal.asgi_app()
 def fastapi_app():
-    """ASGI endpoint — Worker warmup cron + IC audit 用。predict 已走 Controller。"""
+    """ASGI endpoint — Worker warmup cron + IC audit + Optuna routes。"""
     _setup_env()
     from app.main import app as fastapi_application
     return fastapi_application

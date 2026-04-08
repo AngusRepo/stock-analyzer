@@ -33,196 +33,148 @@ export interface FMChip {
 }
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 
-// ── TWSE/TPEx 官方開放資料 API（免費、無限制、不需 token）─────────────────────
-
-/** 抓 TWSE 上市全市場當日收盤（回傳 FMStockPrice 格式） */
-async function fetchTWSEAllPrices(dateStr: string): Promise<FMStockPrice[]> {
-  // dateStr: "2026-03-24" → TWSE 要 "20260324"
-  const d = dateStr.replace(/-/g, '')
-  // 用 STOCK_DAY_ALL — 格式穩定、回傳乾淨 JSON
-  const url = `https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json&date=${d}`
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-  if (!res.ok) throw new Error(`TWSE STOCK_DAY_ALL HTTP ${res.status}`)
-  const json = await res.json() as any
-  if (json.stat !== 'OK' || !json.data?.length) return []
-
-  // fields: [證券代號, 證券名稱, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數]
-  const results: FMStockPrice[] = []
-  for (const row of json.data) {
-    const symbol = String(row[0]).trim()
-    if (!/^\d{4}$/.test(symbol)) continue
-    const parse = (s: string) => parseFloat(String(s).replace(/,/g, ''))
-    const parseInt2 = (s: string) => parseInt(String(s).replace(/,/g, ''), 10) || 0
-    const close = parse(row[7])
-    if (isNaN(close) || close <= 0) continue
-    results.push({
-      date: dateStr,
-      stock_id: symbol,
-      Trading_Volume: parseInt2(row[2]),
-      Trading_money: parseInt2(row[3]),
-      open: parse(row[4]),
-      max: parse(row[5]),
-      min: parse(row[6]),
-      close,
-      spread: parse(row[8]) || 0,
-      Trading_turnover: parseInt2(row[9]),
-    })
-  }
-  return results
-}
-
-/** 抓 TPEx 上櫃全市場當日收盤 */
-async function fetchTPExAllPrices(dateStr: string): Promise<FMStockPrice[]> {
-  // TPEx 用民國年: "2026-03-24" → "115/03/24"
-  const parts = dateStr.split('-')
-  const rocYear = parseInt(parts[0]) - 1911
-  const rocDate = `${rocYear}/${parts[1]}/${parts[2]}`
-  const url = `https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&d=${rocDate}&se=EW`
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-  if (!res.ok) return []
-  const json = await res.json() as any
-  // 格式: { tables: [{ data: [[代號, 名稱, 收盤, 漲跌, 開盤, 最高, 最低, 成交股數, ...], ...] }] }
-  const rows = json.tables?.[0]?.data ?? json.aaData ?? []
-  if (!rows.length) return []
-
-  const results: FMStockPrice[] = []
-  for (const row of rows) {
-    const symbol = String(row[0]).trim()
-    if (!/^\d{4}$/.test(symbol)) continue
-    const parse = (s: string) => parseFloat(String(s).replace(/,/g, ''))
-    const close = parse(row[2])
-    const open = parse(row[4])
-    const high = parse(row[5])
-    const low = parse(row[6])
-    const volume = parseInt(String(row[7]).replace(/,/g, ''), 10) || 0
-    const spread = parse(row[3]) || 0
-    if (isNaN(close) || close <= 0) continue
-    results.push({
-      date: dateStr,
-      stock_id: symbol,
-      Trading_Volume: volume,
-      Trading_money: parseInt(String(row[8]).replace(/,/g, ''), 10) || 0,
-      open, max: high, min: low, close, spread,
-      Trading_turnover: parseInt(String(row[9]).replace(/,/g, ''), 10) || 0,
-    })
-  }
-  return results
-}
-
-/** 抓 TWSE 三大法人買賣超（全市場） */
-async function fetchTWSEInstitutional(dateStr: string): Promise<FMChip[]> {
-  const d = dateStr.replace(/-/g, '')
-  const url = `https://www.twse.com.tw/fund/T86?response=json&date=${d}&selectType=ALLBUT0999`
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-  if (!res.ok) return []
-  const json = await res.json() as any
-  if (json.stat !== 'OK' || !json.data?.length) return []
-
-  // fields: [證券代號(0), 證券名稱(1),
-  //   外陸資買進(2), 外陸資賣出(3), 外陸資買賣超(4),
-  //   外資自營商買(5), 外資自營商賣(6), 外資自營商超(7),
-  //   投信買(8), 投信賣(9), 投信超(10),
-  //   自營商超(11), 自營商買(自行)(12), 自營商賣(自行)(13), 自營商超(自行)(14),
-  //   自營商買(避險)(15), 自營商賣(避險)(16), 自營商超(避險)(17),
-  //   三大法人超(18)]
-  const results: FMChip[] = []
-  for (const row of json.data) {
-    const symbol = String(row[0]).trim()
-    if (!/^\d{4}$/.test(symbol)) continue
-    const parse = (s: string) => parseInt(String(s).replace(/,/g, ''), 10) || 0
-    results.push({ date: dateStr, stock_id: symbol, name: '外資', buy: parse(row[2]), sell: parse(row[3]) })
-    results.push({ date: dateStr, stock_id: symbol, name: '投信', buy: parse(row[8]), sell: parse(row[9]) })
-    results.push({ date: dateStr, stock_id: symbol, name: '自營商', buy: parse(row[12]) + parse(row[15]), sell: parse(row[13]) + parse(row[16]) })
-  }
-  return results
-}
-
-/** 抓 TPEx 上櫃三大法人買賣超 */
-async function fetchTPExInstitutional(dateStr: string): Promise<FMChip[]> {
-  const parts = dateStr.split('-')
-  const rocYear = parseInt(parts[0]) - 1911
-  const rocDate = `${rocYear}/${parts[1]}/${parts[2]}`
-  const url = `https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&d=${rocDate}&se=EW&t=D`
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-  if (!res.ok) return []
-  const json = await res.json() as any
-  const rows = json.tables?.[0]?.data ?? []
-  if (!rows.length) return []
-
-  // TPEx fields: [0]代號 [1]名稱
-  // [2-4] 外資(不含自營) buy/sell/net  [5-7] 外資自營  [8-10] 外資合計
-  // [11-13] 投信 buy/sell/net  [14-16] 自營商(自行)  [17-19] 自營商(避險)  [20-22] 自營商合計
-  const results: FMChip[] = []
-  const parse = (s: string) => parseInt(String(s).replace(/,/g, ''), 10) || 0
-  for (const row of rows) {
-    const symbol = String(row[0]).trim()
-    if (!/^\d{4}$/.test(symbol)) continue
-    results.push({ date: dateStr, stock_id: symbol, name: '外資', buy: parse(row[2]), sell: parse(row[3]) })
-    results.push({ date: dateStr, stock_id: symbol, name: '投信', buy: parse(row[11]), sell: parse(row[12]) })
-    results.push({ date: dateStr, stock_id: symbol, name: '自營商', buy: parse(row[14]) + parse(row[17]), sell: parse(row[15]) + parse(row[18]) })
-  }
-  return results
-}
-
+// ─────────────────────────────────────────────────────────────────────────────
+// D1 Reader — Source of truth (取代舊 TWSE/TPEx in-memory fetcher)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 背景：原本 marketScreener 自己對 TWSE/TPEx fetch 20 天歷史，與 bulkFetch 寫
+// 進 D1 的資料完全脫鉤，導致：
+//   1. stale fallback 污染（fetchTwseStockDayAll 對假日呼叫返回 stale data）
+//   2. screener / paper.ts / backtest_engine 三個元件用三套不同的歷史資料
+//   3. Sprint 5 Optuna 搜出來的參數對不上 production
+//
+// 重構後 (2026-04-07)：唯一 source = D1 (bulkFetchAndStorePrices 寫入)。
+// 詳見 memory/project_screener_d1_decoupling.md
+//
 /**
- * 取最近 N 個交易日的全市場資料（TWSE + TPEx）
- * 用重試機制跳過假日（TWSE 假日會回傳空資料）
+ * 從 D1 讀全市場最近 N 個交易日的 prices + chips。
+ * 取代 fetchMultiDayMarketData() — source-of-truth 統一為 D1。
+ *
+ * @param env - Cloudflare Worker bindings
+ * @param priceDays - 抓幾個交易日的 prices（default 20）
+ * @param chipDays - 抓幾個交易日的 chips（default 5）
+ * @returns 跟 fetchMultiDayMarketData 相同 shape，方便 buildStockData 直接吃
  */
-async function fetchMultiDayMarketData(days: number): Promise<{
+async function loadMarketDataFromD1(
+  env: Bindings,
+  priceDays: number = 20,
+  chipDays: number = 5,
+): Promise<{
   allPrices: FMStockPrice[]
   allChips: FMChip[]
   tpexSymbols: Set<string>
 }> {
-  const allPrices: FMStockPrice[] = []
-  const allChips: FMChip[] = []
-  const tpexSymbols = new Set<string>()
-  const tw = new Date(Date.now() + 8 * 3600_000)
-  let fetched = 0
-  let attempts = 0
+  // 用「日曆天 ≈ 交易日 × 1.5 + 緩衝」抓夠範圍，後面用 DISTINCT date 取最近 N 個交易日
+  const lookbackDays = Math.ceil(priceDays * 1.5) + 7
+  const chipLookback = Math.ceil(chipDays * 1.5) + 5
 
-  while (fetched < days && attempts < days * 2) {
-    const dateStr = tw.toISOString().slice(0, 10)
-    attempts++
-    tw.setDate(tw.getDate() - 1)
-
-    // 跳過週末
-    const dow = new Date(dateStr).getDay()
-    if (dow === 0 || dow === 6) continue
-
-    try {
-      // TWSE 優先，TPEx 可能被 Cloudflare IP 擋（redirect loop）→ 降級只用上市
-      let twse: FMStockPrice[] = []
-      let tpex: FMStockPrice[] = []
-      try { twse = await fetchTWSEAllPrices(dateStr) } catch (e) { console.warn(`[Screener] TWSE ${dateStr} failed:`, e) }
-      try { tpex = await fetchTPExAllPrices(dateStr) } catch { /* TPEx 失敗不影響 */ }
-      if (twse.length === 0 && tpex.length === 0) continue  // 假日
-
-      allPrices.push(...twse, ...tpex)
-      for (const p of tpex) tpexSymbols.add(p.stock_id)
-
-      // Chips：TWSE（上市）+ TPEx（上櫃）法人資料
-      if (fetched < 5) {
-        try {
-          const [twseChips, tpexChips] = await Promise.all([
-            fetchTWSEInstitutional(dateStr).catch(() => [] as FMChip[]),
-            fetchTPExInstitutional(dateStr).catch(() => [] as FMChip[]),
-          ])
-          allChips.push(...twseChips, ...tpexChips)
-        } catch { /* chips 非必要 */ }
-      }
-
-      fetched++
-      console.log(`[Screener] Day ${fetched}/${days}: ${dateStr} → ${twse.length + tpex.length} stocks`)
-    } catch (e) {
-      console.warn(`[Screener] Failed to fetch ${dateStr}:`, e)
-    }
-
-    // TWSE 有 rate limit，間隔 3 秒
-    if (fetched < days) await new Promise(r => setTimeout(r, 3000))
+  // ── 1. 取最近 priceDays 個有資料的交易日 ──
+  const { results: dateRows } = await env.DB.prepare(
+    `SELECT DISTINCT date FROM stock_prices
+     WHERE date >= date('now', '-${lookbackDays} days')
+     ORDER BY date DESC LIMIT ?`
+  ).bind(priceDays).all<{ date: string }>()
+  const tradingDates = (dateRows ?? []).map(r => r.date).sort()
+  if (!tradingDates.length) {
+    console.warn('[Screener D1] No trading dates in D1 stock_prices')
+    return { allPrices: [], allChips: [], tpexSymbols: new Set() }
   }
+  const minDate = tradingDates[0]
+  const maxDate = tradingDates[tradingDates.length - 1]
+
+  // ── 2. 全市場 prices JOIN stocks（含 market 標記） ──
+  // 預估 ~2300 stocks × 20 days = 46k rows，安全在 D1 100k limit 內
+  const { results: priceRows } = await env.DB.prepare(
+    `SELECT s.symbol, s.market, sp.date,
+            sp.open, sp.high, sp.low, sp.close,
+            sp.volume, sp.avg_price
+     FROM stock_prices sp
+     JOIN stocks s ON sp.stock_id = s.id
+     WHERE sp.date >= ? AND sp.date <= ?
+     ORDER BY s.symbol, sp.date`
+  ).bind(minDate, maxDate)
+   .all<{ symbol: string; market: string | null; date: string;
+          open: number; high: number; low: number; close: number;
+          volume: number; avg_price: number | null }>()
+
+  const allPrices: FMStockPrice[] = []
+  const tpexSymbols = new Set<string>()
+  for (const r of (priceRows ?? [])) {
+    if (!r.close || r.close <= 0) continue
+    if (r.market === 'OTC') tpexSymbols.add(r.symbol)
+    allPrices.push({
+      date: r.date,
+      stock_id: r.symbol,
+      Trading_Volume: r.volume ?? 0,
+      Trading_money: Math.round((r.avg_price ?? r.close) * (r.volume ?? 0)),
+      open: r.open,
+      max: r.high,
+      min: r.low,
+      close: r.close,
+      spread: 0,            // unused by scoreMultiFactor
+      Trading_turnover: 0,  // unused
+    })
+  }
+
+  // ── 3. 全市場 chips（最近 chipDays 個交易日） ──
+  // chip_data 用 symbol 欄位，不需 JOIN stocks
+  const { results: chipDateRows } = await env.DB.prepare(
+    `SELECT DISTINCT date FROM chip_data
+     WHERE date >= date('now', '-${chipLookback} days')
+     ORDER BY date DESC LIMIT ?`
+  ).bind(chipDays).all<{ date: string }>()
+  const chipDates = (chipDateRows ?? []).map(r => r.date).sort()
+
+  const allChips: FMChip[] = []
+  if (chipDates.length) {
+    const minChipDate = chipDates[0]
+    const maxChipDate = chipDates[chipDates.length - 1]
+    const { results: chipRows } = await env.DB.prepare(
+      `SELECT symbol, date, foreign_buy, foreign_sell,
+              trust_buy, trust_sell
+       FROM chip_data
+       WHERE date >= ? AND date <= ?`
+    ).bind(minChipDate, maxChipDate)
+     .all<{ symbol: string; date: string;
+            foreign_buy: number | null; foreign_sell: number | null;
+            trust_buy: number | null; trust_sell: number | null }>()
+
+    // 轉換成 marketScreener 內部 FMChip 格式（每股每日 2 筆：外資 + 投信）
+    // buildStockData (line ~330) 只看 name='外資'/'投信' 的 net = buy - sell
+    // 不寫 '自營商' 因為 buildStockData 沒在用
+    for (const r of (chipRows ?? [])) {
+      if (r.foreign_buy != null || r.foreign_sell != null) {
+        allChips.push({
+          date: r.date, stock_id: r.symbol, name: '外資',
+          buy: r.foreign_buy ?? 0, sell: r.foreign_sell ?? 0,
+        })
+      }
+      if (r.trust_buy != null || r.trust_sell != null) {
+        allChips.push({
+          date: r.date, stock_id: r.symbol, name: '投信',
+          buy: r.trust_buy ?? 0, sell: r.trust_sell ?? 0,
+        })
+      }
+    }
+  }
+
+  console.log(
+    `[Screener D1] Loaded ${allPrices.length} price rows ` +
+    `(${tradingDates.length} trading days, ${minDate}~${maxDate}) + ` +
+    `${allChips.length} chip rows (${chipDates.length} days, ${tpexSymbols.size} OTC)`
+  )
 
   return { allPrices, allChips, tpexSymbols }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [REMOVED 2026-04-07] 5 個 in-memory fetcher 已刪除：
+//   fetchTWSEAllPrices / fetchTPExAllPrices /
+//   fetchTWSEInstitutional / fetchTPExInstitutional /
+//   fetchMultiDayMarketData
+// 由 loadMarketDataFromD1() 取代，source-of-truth 統一為 D1 (bulkFetch 寫入)。
+// 詳見 memory/project_screener_d1_decoupling.md
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -818,8 +770,9 @@ async function calcIndustryRRG(
       industryReturns.get(industry)!.push(ret)
     }
   } catch (e) {
-    console.warn('[RRG] D1 stock_prices query failed, fallback to API data:', e)
-    // Fallback: 用 API 即時資料
+    // D1 query 失敗 → fallback 用 in-memory data.prices（也是 D1 來源，但已被 buildStockData 處理過）
+    // 兩條 path 同源，fallback 主要 cover D1 timeout / retry edge cases
+    console.warn('[RRG] D1 stock_prices direct query failed, fallback to in-memory data:', e)
     for (const [stockId, prices] of data.prices) {
       const industry = industryMap.get(stockId)
       if (!industry) continue
@@ -1042,7 +995,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz] = await Promise.all([
-      fetchMultiDayMarketData(20),
+      loadMarketDataFromD1(env, 20, 5),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
@@ -1161,57 +1114,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] D1 marketReturn 查詢失敗，fallback API:', e)
   }
 
-  // ── Step 0.5: D1 stock_prices 補充 API 資料（確保假日/手動重跑時資料完整）──
-  try {
-    const { results: d1Prices } = await env.DB.prepare(`
-      SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
-      FROM stock_prices sp
-      JOIN stocks s ON sp.stock_id = s.id
-      WHERE sp.date >= date('now', '-30 days')
-      ORDER BY s.symbol, sp.date
-    `).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
-
-    if (d1Prices?.length) {
-      // 合併：D1 資料優先（更完整），API 資料補充最新日
-      const d1BySymbol = new Map<string, FMStockPrice[]>()
-      for (const r of d1Prices) {
-        if (!d1BySymbol.has(r.symbol)) d1BySymbol.set(r.symbol, [])
-        d1BySymbol.get(r.symbol)!.push({
-          date: r.date, stock_id: r.symbol,
-          open: r.open, max: r.high, min: r.low, close: r.close,
-          Trading_Volume: r.volume ?? 0, Trading_money: 0, spread: 0, Trading_turnover: 0,
-        })
-      }
-
-      let merged = 0
-      for (const [symbol, d1Arr] of d1BySymbol) {
-        const apiArr = data.prices.get(symbol)
-        if (!apiArr || apiArr.length < 15) {
-          // API 資料不足 15 天 → 用 D1 替代
-          const d1Dates = new Set(d1Arr.map(p => p.date))
-          // 合併 API 獨有的日期（可能有比 D1 更新的當日資料）
-          if (apiArr) {
-            for (const p of apiArr) {
-              if (!d1Dates.has(p.date)) d1Arr.push(p)
-            }
-          }
-          d1Arr.sort((a, b) => a.date.localeCompare(b.date))
-          data.prices.set(symbol, d1Arr)
-          merged++
-        }
-      }
-      // 補充 API 完全沒有的股票（D1 有但 API 假日沒抓到）
-      for (const [symbol, d1Arr] of d1BySymbol) {
-        if (!data.prices.has(symbol)) {
-          data.prices.set(symbol, d1Arr)
-          merged++
-        }
-      }
-      if (merged > 0) console.log(`[Screener v2] D1 補充 ${merged} 支股票的價格資料`)
-    }
-  } catch (e) {
-    console.warn('[Screener v2] D1 stock_prices 補充失敗:', e)
-  }
+  // [REMOVED 2026-04-07] Step 0.5「D1 stock_prices 補充」邏輯已刪除：
+  // 重構後 loadMarketDataFromD1 是 primary source，不再需要 API + D1 merge。
+  // 詳見 memory/project_screener_d1_decoupling.md
 
   // ── Step 1: Universe hard filter ──
   console.log('[Screener v2] Step 1: Universe filtering...')

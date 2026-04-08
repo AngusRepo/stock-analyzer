@@ -104,12 +104,196 @@ app.put('/api/admin/config', async (c) => {
     screener: { ...current.screener, ...body.screener },
     rrg: { ...current.rrg, ...body.rrg },
     barrier: { ...current.barrier, ...body.barrier },
+    ranking: { ...current.ranking, ...body.ranking },  // Sprint 3 P0-4
+    // 2026-04-07 added: Optuna #2/#3 + L2 destinations
+    signal: { ...current.signal, ...body.signal },
+    sltp: { ...current.sltp, ...body.sltp },
+    L2_formula: { ...current.L2_formula, ...body.L2_formula },
   }
   // C4: Validate bounds before persisting
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
+})
+
+// ─── Admin: Optuna Push (2026-04-07) ───────────────────────────────────────
+// 統一閘門：所有 Optuna script 跑完透過此 endpoint 寫 KV
+// 取代「local JSON → 人工 wrangler kv put」流程
+//
+// Body: { source: "barrier"|"signal"|"sltp"|"conformal"|"feature_window"|"risk_params"|"rrg"|"regime",
+//         params: { ... },
+//         meta?: { n_trials, best_score, run_id, ... } }
+//
+// 各 source 對應的目標 KV：
+//   barrier        → trading:config.barrier
+//   signal         → trading:config.signal
+//   sltp           → trading:config.sltp + trading:config.exit (trail mults overlap)
+//   conformal      → trading:config.L2_formula (conformal_*)
+//   feature_window → trading:config.L2_formula (feature_*)
+//   risk_params    → trading:config.circuit/exit (drawdown/trail/risk_pct)
+//   rrg            → trading:config.rrg
+//   regime         → trading:config.* per-regime（Phase B 後支援）
+app.post('/api/admin/optuna-push', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !body.source || !body.params)
+    return c.json({ error: 'Body must be { source, params, meta? }' }, 400)
+
+  const { source, params, meta } = body
+
+  const { getTradingConfig, setTradingConfig, validateTradingConfig } = await import('./lib/tradingConfig')
+  const current = await getTradingConfig(c.env.KV)
+
+  // 各 source 的 schema mapping + validation
+  let merged: any = current
+  let updatedFields: string[] = []
+
+  switch (source) {
+    case 'barrier': {
+      // params: { upper_mult, lower_mult, upper_pct_cap, lower_pct_cap, max_days }
+      const b = {
+        upperMult:    Number(params.upper_mult ?? params.upperMult ?? current.barrier.upperMult),
+        lowerMult:    Number(params.lower_mult ?? params.lowerMult ?? current.barrier.lowerMult),
+        upperPctCap:  Number(params.upper_pct_cap ?? params.upperPctCap ?? current.barrier.upperPctCap),
+        lowerPctCap:  Number(params.lower_pct_cap ?? params.lowerPctCap ?? current.barrier.lowerPctCap),
+        maxDays:      Number(params.max_days ?? params.maxDays ?? current.barrier.maxDays),
+      }
+      merged = { ...current, barrier: b }
+      updatedFields = Object.keys(b).map(k => `barrier.${k}`)
+      break
+    }
+    case 'signal': {
+      // params: { strong_signal_score, buy_signal_score, hold_signal_score, consensus_threshold, confidence_threshold? }
+      const s = {
+        strongSignalScore:   Number(params.strong_signal_score ?? current.signal.strongSignalScore),
+        buySignalScore:      Number(params.buy_signal_score ?? current.signal.buySignalScore),
+        holdSignalScore:     Number(params.hold_signal_score ?? current.signal.holdSignalScore),
+        consensusThreshold:  Number(params.consensus_threshold ?? current.signal.consensusThreshold),
+      }
+      merged = { ...current, signal: s }
+      updatedFields = Object.keys(s).map(k => `signal.${k}`)
+      break
+    }
+    case 'sltp': {
+      // params: { sl_mult, tp_mult, trailMultDefault, trailMultAt3pct, trailMultAt8pct,
+      //          trail_switch_3pct, trail_switch_8pct, tp1SellRatio, timeStopDays, hardStopPct }
+      const sltp = {
+        slMultBase:        Number(params.sl_mult ?? params.slMultBase ?? current.sltp.slMultBase),
+        tpMultBase:        Number(params.tp_mult ?? params.tpMultBase ?? current.sltp.tpMultBase),
+        trailSwitch3pct:   Number(params.trail_switch_3pct ?? params.trailSwitch3pct ?? current.sltp.trailSwitch3pct),
+        trailSwitch8pct:   Number(params.trail_switch_8pct ?? params.trailSwitch8pct ?? current.sltp.trailSwitch8pct),
+        volThresholdLow:   Number(params.vol_threshold_low ?? params.volThresholdLow ?? current.sltp.volThresholdLow),
+        volThresholdHigh:  Number(params.vol_threshold_high ?? params.volThresholdHigh ?? current.sltp.volThresholdHigh),
+      }
+      // exit section 也跟著更新（trailMult 跟 sltp 跨 section）
+      const exit = {
+        ...current.exit,
+        trailMultDefault:  Number(params.trailMultDefault ?? current.exit.trailMultDefault),
+        trailMultAt3pct:   Number(params.trailMultAt3pct ?? current.exit.trailMultAt3pct),
+        trailMultAt8pct:   Number(params.trailMultAt8pct ?? current.exit.trailMultAt8pct),
+        tp1SellRatio:      Number(params.tp1SellRatio ?? current.exit.tp1SellRatio),
+        timeStopDays:      Number(params.timeStopDays ?? current.exit.timeStopDays),
+        hardStopPct:       Number(params.hardStopPct ?? current.exit.hardStopPct),
+      }
+      merged = { ...current, sltp, exit }
+      updatedFields = [...Object.keys(sltp).map(k => `sltp.${k}`), 'exit.trailMult*', 'exit.tp1SellRatio', 'exit.timeStopDays', 'exit.hardStopPct']
+      break
+    }
+    case 'conformal': {
+      // params: { coverage, min_calibration_size, max_residuals }
+      // 寫進 L2_formula 的 conformal sub-fields（schema 已預留欄位 name 以 conformal_ 開頭）
+      const L2 = {
+        ...current.L2_formula,
+        ...(params.coverage             != null && { conformal_coverage: Number(params.coverage) } as any),
+        ...(params.min_calibration_size != null && { conformal_min_cal: Number(params.min_calibration_size) } as any),
+        ...(params.max_residuals        != null && { conformal_max_residuals: Number(params.max_residuals) } as any),
+      }
+      merged = { ...current, L2_formula: L2 }
+      updatedFields = ['L2_formula.conformal_*']
+      break
+    }
+    case 'risk_params': {
+      // params: { drawdown_halt, max_position_pct, trail_switch_1, trail_switch_2,
+      //          trail_mult_1/2/3, risk_pct, min_hold_days }
+      const circuit = {
+        ...current.circuit,
+        ...(params.drawdown_halt    != null && { drawdownHalt: Number(params.drawdown_halt) }),
+        ...(params.max_position_pct != null && { maxPositionPct: Number(params.max_position_pct) }),
+      }
+      const exit = {
+        ...current.exit,
+        ...(params.trail_mult_1 != null && { trailMultDefault: Number(params.trail_mult_1) }),
+        ...(params.trail_mult_2 != null && { trailMultAt3pct: Number(params.trail_mult_2) }),
+        ...(params.trail_mult_3 != null && { trailMultAt8pct: Number(params.trail_mult_3) }),
+      }
+      const sltp = {
+        ...current.sltp,
+        ...(params.trail_switch_1 != null && { trailSwitch3pct: Number(params.trail_switch_1) }),
+        ...(params.trail_switch_2 != null && { trailSwitch8pct: Number(params.trail_switch_2) }),
+      }
+      const position = {
+        ...current.position,
+        ...(params.risk_pct      != null && { riskPctPerTrade: Number(params.risk_pct) }),
+        ...(params.min_hold_days != null && { swapMinHoldDays: Number(params.min_hold_days) }),
+      }
+      merged = { ...current, circuit, exit, sltp, position }
+      updatedFields = ['circuit.drawdownHalt/maxPositionPct', 'exit.trailMult*', 'sltp.trailSwitch*', 'position.risk_pct/min_hold_days']
+      break
+    }
+    case 'rrg': {
+      // params: { leadingBonus, improvingBonus, weakeningBonus, laggingPenalty }
+      const rrg = {
+        leadingBonus:    Number(params.leadingBonus ?? params.leading_bonus ?? current.rrg.leadingBonus),
+        improvingBonus:  Number(params.improvingBonus ?? params.improving_bonus ?? current.rrg.improvingBonus),
+        weakeningBonus:  Number(params.weakeningBonus ?? params.weakening_bonus ?? current.rrg.weakeningBonus),
+        laggingPenalty:  Number(params.laggingPenalty ?? params.lagging_penalty ?? current.rrg.laggingPenalty),
+      }
+      merged = { ...current, rrg }
+      updatedFields = Object.keys(rrg).map(k => `rrg.${k}`)
+      break
+    }
+    case 'feature_window':
+    case 'regime': {
+      // Phase B/C 後實作；目前先記錄但不寫 KV
+      console.warn(`[OptunaPush] source=${source} not yet wired (deferred to Phase B/C)`)
+      return c.json({
+        success: false,
+        message: `source '${source}' not yet wired`,
+        deferred_to: 'Phase B/C',
+      }, 501)
+    }
+    default:
+      return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','conformal','risk_params','rrg','feature_window','regime'] }, 400)
+  }
+
+  const errors = validateTradingConfig(merged)
+  if (errors.length > 0) {
+    return c.json({ error: 'Schema validation failed', errors, source, updatedFields }, 400)
+  }
+
+  await setTradingConfig(c.env.KV, merged)
+
+  // Audit log
+  const auditKey = `audit:optuna-push:${source}:${twToday()}`
+  await c.env.KV.put(auditKey, JSON.stringify({
+    source,
+    params,
+    meta: meta ?? null,
+    updatedFields,
+    pushed_at: new Date().toISOString(),
+  }), { expirationTtl: 30 * 86400 })  // 30 day audit retention
+
+  return c.json({
+    success: true,
+    source,
+    updatedFields,
+    audit_key: auditKey,
+    message: `Optuna ${source} pushed to trading:config (${updatedFields.length} fields updated)`,
+  })
 })
 
 // ─── Admin: Cron 執行日誌 ────────────────────────────────────────────────────
@@ -257,6 +441,67 @@ app.get('/api/cron/schedule', (c) => {
   return c.json({ schedule })
 })
 
+// ─── Admin: Sprint 6a.7 parity test endpoint ────────────────────────────────
+// Used by ml-controller tests/test_cascade_parity.py to verify that
+// backtest_engine.py step_position_one_bar() returns identical decisions to
+// paper.ts checkExitConditions() for the same inputs. Stateless — no D1/KV writes.
+// See memory/project_backtest_engine_design_rationale.md section 4.
+app.post('/api/admin/test/exit-cascade', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !body.position || body.currentPrice == null || body.atr14 == null) {
+    return c.json({
+      error: 'Body must be { position, currentPrice, atr14, hasMlSell?, isEOD?, cfg? }',
+    }, 400)
+  }
+
+  const { checkExitConditions } = await import('./routes/paper')
+  const { getTradingConfig } = await import('./lib/tradingConfig')
+
+  // Allow caller to supply partial cfg override; fall back to KV production cfg
+  const baseCfg = await getTradingConfig(c.env.KV)
+  const cfg = body.cfg ? { ...baseCfg, ...body.cfg } : baseCfg
+
+  try {
+    const decision = checkExitConditions(
+      body.position,
+      Number(body.currentPrice),
+      Number(body.atr14),
+      Boolean(body.hasMlSell ?? false),
+      Boolean(body.isEOD ?? true),
+      cfg,
+    )
+    // Normalize for parity comparison: return a stable shape
+    return c.json({
+      action: decision.action,
+      reason: decision.reason,
+      reason_category: _categorizeExitReason(decision.reason),
+      sellShares: decision.sellShares ?? null,
+      newTrailingStop: decision.newTrailingStop ?? null,
+      newHighest: decision.newHighest ?? null,
+      moveStopToEntry: decision.moveStopToEntry ?? false,
+    })
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e) }, 500)
+  }
+})
+
+// Local helper to categorize reasons for parity comparison (matches Python _exit_category)
+function _categorizeExitReason(reason: string): string {
+  if (reason.includes('硬上限') || reason.includes('HardStop')) return 'HardStop'
+  if (reason.includes('ATR 初始止損') || reason.includes('InitStop')) return 'InitStop'
+  if (reason.includes('Trailing Stop') || reason.includes('TrailStop')) return 'TrailStop'
+  if (reason.includes('ML SELL')) return 'ML_SELL'
+  if (reason.includes('TP2')) return 'TP2'
+  if (reason.includes('TP1')) return 'TP1'
+  if (reason.includes('時間止損') || reason.includes('TimeStop')) return 'TimeStop'
+  if (reason.includes('trailing update')) return 'HoldTrailingUpdate'
+  return 'HoldNoTrigger'
+}
+
 // ─── Admin: 手動觸發 cron 任務（STOCKVISION_AUTH_TOKEN 驗證 + Rate Limit）───
 app.post('/api/admin/trigger/:task', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -284,24 +529,11 @@ app.post('/api/admin/trigger/:task', async (c) => {
     }
   }
 
-  /** 等待 Queue 消費完畢（輪詢 stock_prices 更新數量） */
-  const waitForQueue = async (table: string, dateCol: string, minExpected: number, timeoutMs = 300_000) => {
-    const twTodayStr = twToday()
-    const start = Date.now()
-    while (Date.now() - start < timeoutMs) {
-      const row = await c.env.DB.prepare(
-        `SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol} = ?`
-      ).bind(twTodayStr).first<{ cnt: number }>()
-      if ((row?.cnt ?? 0) >= minExpected) return row?.cnt
-      await new Promise(r => setTimeout(r, 10_000)) // 10 秒輪詢一次
-    }
-    throw new Error(`Queue timeout: ${table} only has ${(await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol}=?`).bind(twTodayStr).first<any>())?.cnt ?? 0} rows after ${timeoutMs / 1000}s`)
-  }
-
   const taskMap: Record<string, () => Promise<any>> = {
     screener:      () => runMarketScreener(c.env),
     update:        () => runDailyUpdate(c.env, !!c.req.query('force')),
-    ml:            () => runMLAndRisk(c.env),
+    ml:            () => runMLAndRiskV2(c.env),
+    'ml-legacy':   () => runMLAndRisk(c.env),  // 2026-04-07 LangGraph A+B 重構前舊版，保留 fallback 1 週
     recommendation:() => runDailyRecommendation(c.env),
     'paper-trade': () => runPaperAutoTrade(c.env),
     'morning-setup': () => setupMorningPendingBuys(c.env),
@@ -344,36 +576,8 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
     'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
     'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
-    // ── 完整 Pipeline：依序等待每步完成 ──
-    pipeline: async () => {
-      const steps: string[] = []
-
-      // 1. Bulk Fetch（全市場 prices+chips → D1）
-      await runBulkFetch(c.env)
-      steps.push('bulk-fetch')
-
-      // 2. Screener T1+T2（D1 資料齊全後篩選）
-      const result = await runMarketScreener(c.env)
-      steps.push(`screener(${result.candidates?.length ?? 0} candidates)`)
-
-      const activeCount = (await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1").first<any>())?.cnt ?? 60
-
-      // 3. Queue Update（篩後候選股 Yahoo+指標+新聞）
-      await runQueueUpdate(c.env)
-      const updated = await waitForQueue('stock_prices', 'date', Math.floor(activeCount * 0.8))
-      steps.push(`queue-update(${updated} prices)`)
-
-      // 4. ML predict
-      await runMLAndRisk(c.env)
-      const predicted = await waitForQueue('predictions', "date(generated_at)", Math.floor(activeCount * 0.5))
-      steps.push(`ml-predict(${predicted} predictions)`)
-
-      // 5. Recommendation（評分，T2 已在 Screener 完成）
-      await runDailyRecommendation(c.env)
-      steps.push('recommendation')
-
-      return { steps, message: '完整 pipeline 完成' }
-    },
+    // ── 完整 Pipeline：依序等待每步完成（呼叫模組級 runFullPipeline 共用 helper）──
+    pipeline: () => runFullPipeline(c.env),
     backtest: () => runWeeklyBacktest(c.env),
     'monte-carlo': () => runWeeklyMonteCarlo(c.env),
     pbo: () => runWeeklyPBO(c.env),
@@ -383,8 +587,33 @@ app.post('/api/admin/trigger/:task', async (c) => {
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
 
-  // 同步執行 + 寫 cron log（讓 Dashboard 能顯示最新狀態）
   const { logCronResult } = await import('./lib/cronLogger')
+
+  // Fix 2026-04-07: long-running tasks 用 executionCtx.waitUntil 在背景跑
+  // 避免 CF Worker fetch handler ~5 分鐘 wall-clock limit 把 ML predict 砍掉
+  // Caller 改為 poll D1（predictions / daily_recommendations）或 KV cron log 確認完成
+  //
+  // Bug fix 2026-04-07 (M5): waitUntil 預算 ~30 sec，real long-running 跑不完。
+  // 加 ?sync=1 走 sync mode：caller 等 fetch handler runtime（wall clock 數十分鐘
+  // 都 OK，只要中間都在 await fetch 不是 CPU bound），用於手動補資料場景。
+  const syncMode = c.req.query('sync') === '1'
+  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna'])
+  if (LONG_RUNNING.has(task) && !syncMode) {
+    const t0 = Date.now()
+    await logCronResult(c.env.KV, task, { status: 'success', summary: 'started (background)', duration_ms: 0 })
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const result = await fn()
+        const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+        await logCronResult(c.env.KV, task, { status: 'success', summary, duration_ms: Date.now() - t0 })
+      } catch (e: any) {
+        await logCronResult(c.env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) })
+      }
+    })())
+    return c.json({ success: true, message: `${task} 已啟動（背景執行，poll cron log）`, triggered_at: new Date().toISOString(), mode: 'async' })
+  }
+
+  // 短任務同步執行 + 寫 cron log
   const t0 = Date.now()
   try {
     const result = await fn()
@@ -475,7 +704,14 @@ async function runBulkFetch(env: Bindings, force = false) {
       bulkFetchAndStorePrices(env.DB, twDate),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+    // Bug fix 2026-04-07: 0 row 不寫 lock，避免下次 cron 早退（assumes done）
+    // 真實案例：早 cron 在 TWSE 釋出 4/7 收盤前跑 → priceCount=0 → 寫 lock →
+    // 17:30 pipeline cron 看到 lock 直接 skip → pipeline error "stock_prices 0 rows"
+    if (priceCount === 0) {
+      console.warn(`[Cron] priceCount=0 for ${twDate} → NOT writing lock (will retry next trigger)`)
+    } else {
+      await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+    }
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
   }
@@ -493,10 +729,16 @@ async function runQueueUpdate(env: Bindings) {
     console.log(`[Cron] Queue update already triggered today, skipping.`)
     return
   }
-  await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
 
+  // Bug fix 2026-04-07: lock 只在 send 成功後寫，避免 send 失敗仍 lock 整天
   console.log('[Cron] Kicking off Queue update for screened candidates...')
-  await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
+  try {
+    await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
+    await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+  } catch (e) {
+    console.warn('[Cron] Queue update send failed, NOT writing lock:', e)
+    throw e
+  }
 }
 
 // ─── Legacy wrapper（admin trigger 用）────────────────────────────────────────
@@ -727,12 +969,14 @@ async function processUpdateBatch(
 // ─── Cron 2：每日 15:30 — 計算大盤風險 + Controller 並行 ML 預測 ─────────────
 async function runMLAndRisk(env: Bindings) {
   // C3: KV lock — prevent concurrent ML predict runs (cron + event-driven overlap)
+  // Fix 2026-04-07: TTL 600→120s（防 wall-clock kill 時 lock 殘留 10 分鐘）+ try/finally cleanup
   const twDate = twToday()
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) { console.log('[ML] Already running, skip'); return 'LOCKED' }
-  await env.KV.put(lockKey, '1', { expirationTtl: 600 })
+  await env.KV.put(lockKey, '1', { expirationTtl: 120 })
 
+  try {
   console.log(`[Cron] Starting market risk + ML batch predict... (controller=${env.ML_CONTROLLER_URL ? 'SET' : 'NOT_SET'}, mlService=${env.ML_SERVICE_URL ? 'SET' : 'NOT_SET'})`)
 
   // 1. 大盤風險（直接執行，速度快）
@@ -934,25 +1178,20 @@ async function runMLAndRisk(env: Bindings) {
     return
   }
 
-  // ── 2c. Controller 分批推論（避免 CF Worker 100s subrequest timeout）─────
+  // ── 2c. Controller 一次性推論 ──────────────────────────────────────────────
+  // 2026-04-07 F3: 砍掉 BATCH_SIZE=20 序列分批
+  // 之前序列分批是「worker 端排程」，但 worker await 每批 = 序列等待
+  // 改成一次扔全部 stocks 給 controller，讓 modal.map() 內部真並行（max_containers=20）
+  // 預期 33 stocks: ~50-70s vs 之前 169s+524 timeout
   const t0 = Date.now()
   const results: any[] = []
-  const BATCH_SIZE = 12  // 12 stocks/batch ≈ 60-80s（含 Modal cold start）
-  console.log(`[ML] Sending ${payloads.length} stocks in batches of ${BATCH_SIZE}...`)
-
-  for (let i = 0; i < payloads.length; i += BATCH_SIZE) {
-    const batch = payloads.slice(i, i + BATCH_SIZE)
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1
-    const totalBatches = Math.ceil(payloads.length / BATCH_SIZE)
-    try {
-      console.log(`[ML] Batch ${batchNum}/${totalBatches}: ${batch.length} stocks...`)
-      const batchResult = await postController(env, '/batch-predict', { stocks: batch }, 90_000) as any
-      results.push(...(batchResult.results ?? []))
-      console.log(`[ML] Batch ${batchNum} done: ${(batchResult.results ?? []).length} results`)
-    } catch (e: any) {
-      console.error(`[ML] Batch ${batchNum} failed: ${e.message}`)
-      // 繼續下一批，不中斷整個 pipeline
-    }
+  console.log(`[ML] Sending ${payloads.length} stocks (single batch, controller-side parallel)`)
+  try {
+    const batchResult = await postController(env, '/batch-predict', { stocks: payloads }, 600_000) as any
+    results.push(...(batchResult.results ?? []))
+    console.log(`[ML] All done: ${results.length}/${payloads.length}`)
+  } catch (e: any) {
+    console.error(`[ML] Batch predict failed: ${e.message}`)
   }
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
@@ -1031,6 +1270,81 @@ async function runMLAndRisk(env: Bindings) {
   } catch (e) {
     console.warn('[ML] Event-driven recommendation trigger failed (cron fallback still active):', e)
   }
+  } finally {
+    // Fix 2026-04-07: 確保 lock 不論 success/error/throw 都會清除
+    await env.KV.delete(lockKey).catch(() => {})
+  }
+}
+
+// ─── 2026-04-07 LangGraph A+B Refactor: runMLAndRiskV2 ─────────────────────
+// thin trigger — 把 ML business logic 整段交給 ml-controller LangGraph V2
+// Worker 只負責: market_risk 計算 (~5s) + 觸發 controller /pipeline/v2/run + lock 管理
+//
+// 之前的 runMLAndRisk (上面 ~300 行) 違反 MVC：worker 做了 ML payload build /
+// batch dispatch / D1 predictions 寫入 / hybrid ranking / LLM reasons，
+// 都應該是 ml-controller 的責任。完整 audit 見 memory/project_langgraph_real_refactor.md
+//
+// runMLAndRisk 舊版保留 1 週做 rollback safety，2026-04-14 後砍。
+async function runMLAndRiskV2(env: Bindings) {
+  const twDate = twToday()
+  const lockKey = `lock:ml-predict:${twDate}`
+  const existing = await env.KV.get(lockKey)
+  if (existing) { console.log('[ML V2] Already running, skip'); return 'LOCKED' }
+  await env.KV.put(lockKey, '1', { expirationTtl: 600 })  // 10 min TTL
+
+  try {
+    if (!env.ML_CONTROLLER_URL) {
+      console.warn('[ML V2] ML_CONTROLLER_URL not set, falling back to legacy runMLAndRisk')
+      return await runMLAndRisk(env)
+    }
+
+    // 1. Market risk (~5 sec) — 仍在 worker 做，因為 marketRisk.ts 邏輯複雜不值得搬
+    try {
+      const { calcMarketRisk } = await import('./lib/marketRisk')
+      const risk = await calcMarketRisk(
+        env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET
+      )
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO market_risk
+          (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
+           foreign_consecutive_sell, foreign_net_5d, margin_ratio,
+           limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        risk.date, risk.vix, risk.vixLevel, risk.twiiClose, risk.twiiVol20,
+        risk.twiiMa20, risk.twiiBias, risk.foreignConsecutiveSell,
+        risk.foreignNet5d, risk.marginRatio, risk.limitDownCount, risk.limitDownPct,
+        risk.riskScore, risk.riskLevel, risk.riskSummary,
+      ).run()
+      await env.KV.delete('market:risk:latest')
+      console.log(`[ML V2] Market risk: ${risk.riskLevel} (${risk.riskScore}/100)`)
+    } catch (e) {
+      console.error('[ML V2] Market risk failed (non-blocking):', e)
+    }
+
+    // 2. Trigger ml-controller LangGraph V2 — sync wait
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+    console.log('[ML V2] Calling ml-controller /pipeline/v2/run (sync)...')
+    const t0 = Date.now()
+    const res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(900_000),  // 15 min Cloud Run budget
+    })
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`Pipeline V2 HTTP ${res.status}: ${text.slice(0, 300)}`)
+    }
+    const result = await res.json() as any
+    console.log(`[ML V2] Pipeline complete in ${elapsed}s: ${JSON.stringify(result.metrics ?? result)}`)
+  } finally {
+    await env.KV.delete(lockKey).catch(() => {})
+  }
 }
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
@@ -1064,36 +1378,34 @@ async function runWeeklyAudit(env: Bindings) {
 
 // ─── Cron: Monthly Optuna Parameter Re-search ────────────────────────────────
 async function runMonthlyOptunaResearch(env: Bindings) {
-  const ML_URL = env.ML_SERVICE_URL
-  if (!ML_URL) return 'skipped (no ML_SERVICE_URL)'
-  console.log('[Monthly] Starting Optuna parameter re-search (P0#1-3)...')
+  // Phase 1.6 (2026-04-07): 改 call Controller (Cloud Run) 而非 Modal
+  // 原因：Modal web function 150s response timeout 限制，且 Optuna 不需要 ML inference 環境
+  // Controller 自己會 push KV，Worker 不用做轉發
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no ML_CONTROLLER_URL)'
+  console.log('[Monthly] Starting Optuna parameter re-search (Cloud Run)...')
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (env.ML_SERVICE_SECRET) headers['X-Service-Token'] = env.ML_SERVICE_SECRET
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
+  const sources = ['barrier', 'signal', 'sltp', 'conformal', 'risk_params', 'rrg', 'feature_window'] as const
   const results: string[] = []
 
-  // P0#1: Triple Barrier
-  try {
-    const r = await fetch(`${ML_URL}/optuna/barrier`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
-    results.push(`barrier:${r.ok ? 'OK' : 'FAIL'}`)
-  } catch { results.push('barrier:ERROR') }
-
-  // P0#2: Signal + Screener Weight
-  try {
-    const r = await fetch(`${ML_URL}/optuna/signal`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
-    results.push(`signal:${r.ok ? 'OK' : 'FAIL'}`)
-  } catch { results.push('signal:ERROR') }
-
-  // P0#3: SL/TP + Trailing
-  try {
-    const r = await fetch(`${ML_URL}/optuna/sltp`, { method: 'POST', headers, signal: AbortSignal.timeout(600_000) })
-    results.push(`sltp:${r.ok ? 'OK' : 'FAIL'}`)
-  } catch { results.push('sltp:ERROR') }
+  for (const src of sources) {
+    try {
+      const r = await fetch(`${CTRL_URL}/optuna/${src}`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ n_trials: 200, push_kv: true, dry_run: false }),
+        signal: AbortSignal.timeout(900_000),  // 15 min per source（Cloud Run 不像 Modal 有 150s 限制）
+      })
+      results.push(`${src}:${r.ok ? 'OK' : `HTTP${r.status}`}`)
+    } catch (e: any) {
+      results.push(`${src}:ERROR(${e?.message?.slice(0, 30) ?? 'unknown'})`)
+    }
+  }
 
   const summary = results.join(', ')
   console.log(`[Monthly] Optuna re-search: ${summary}`)
 
-  // Push notification
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./lib/notify')
     await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
@@ -1615,6 +1927,56 @@ async function runMarketScreener(env: Bindings) {
   return runBottomUpScreener(env)
 }
 
+// ─── 完整 Pipeline：bulk-fetch → screener → queue-update → ml → recommendation ──
+// LangGraph 修復（2026-04-07）：取代 Controller /pipeline/run 繞路
+// 原架構：Worker → Controller → Worker (ML) → Modal → Controller → Worker (4-5 層 HTTP)
+// 新架構：Worker → Modal (1 層 HTTP)，消除 300s timeout 壓力
+async function runFullPipeline(env: Bindings): Promise<{ steps: string[]; message: string }> {
+  const waitForQueue = async (table: string, dateCol: string, minExpected: number, timeoutMs = 300_000) => {
+    const twTodayStr = twToday()
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol} = ?`
+      ).bind(twTodayStr).first<{ cnt: number }>()
+      if ((row?.cnt ?? 0) >= minExpected) return row?.cnt ?? 0
+      await new Promise(r => setTimeout(r, 10_000))
+    }
+    const final = (await env.DB.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${dateCol}=?`).bind(twTodayStr).first<any>())?.cnt ?? 0
+    throw new Error(`Queue timeout: ${table} only has ${final} rows after ${timeoutMs / 1000}s`)
+  }
+
+  const steps: string[] = []
+
+  // 1. Bulk Fetch（全市場 prices+chips → D1）
+  await runBulkFetch(env)
+  steps.push('bulk-fetch')
+
+  // 2. Screener T1+T2
+  const result: any = await runMarketScreener(env)
+  steps.push(`screener(${result?.candidates?.length ?? 0} candidates)`)
+
+  const activeCount = (await env.DB.prepare("SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1").first<any>())?.cnt ?? 60
+
+  // 3. Queue Update（候選股 Yahoo+指標+新聞）
+  await runQueueUpdate(env)
+  const updated = await waitForQueue('stock_prices', 'date', Math.floor(activeCount * 0.8))
+  steps.push(`queue-update(${updated} prices)`)
+
+  // 4. ML predict (LangGraph V2 — controller-side, includes recommendation + LLM reasons)
+  // 2026-04-07 重構：runMLAndRiskV2 thin trigger 把整段 ML/recommendation 交給 ml-controller
+  await runMLAndRiskV2(env)
+  const predicted = await waitForQueue('predictions', "date(generated_at)", Math.floor(activeCount * 0.5))
+  steps.push(`ml-predict-v2(${predicted} predictions)`)
+
+  // 5. Recommendation（評分，T2 已在 Screener 完成）
+  // V2 已在 controller 內整合 recommendation + LLM reasons，這裡保留 fallback skip
+  await runDailyRecommendation(env)
+  steps.push('recommendation')
+
+  return { steps, message: '完整 pipeline 完成' }
+}
+
 export default {
   fetch: app.fetch,
 
@@ -1672,22 +2034,16 @@ export default {
         return '跳過（ML_SERVICE_URL 未設定）'
       })
     } else if (cron === '30 9 * * 1-5') {
-      // H5: 17:30 TW → Single pipeline trigger (Controller LangGraph with await gates)
-      // Replaces 5 individual crons: bulk-fetch → screener → ml → recommendation → verify
-      // Individual tasks still available via /admin/trigger/:task as fallback
+      // 17:30 TW → Single pipeline trigger
+      // LangGraph 修復（2026-04-07）：Worker 內建 await gates，取代 Controller /pipeline/run 繞路
+      // 原：Worker → Controller → Worker(ML) → Modal → Controller → Worker（4-5 層 HTTP, >300s timeout）
+      // 新：Worker → Modal（1 層 HTTP），預算 < 300s
+      // Individual tasks 仍可透過 /admin/trigger/:task 手動觸發
       runWithLog('pipeline', async () => {
-        if (!env.ML_CONTROLLER_URL) {
-          // Fallback: run inline pipeline if Controller not configured
-          console.warn('[Pipeline] ML_CONTROLLER_URL not set — running inline pipeline fallback')
-          await runBulkFetch(env)
-          await runMarketScreener(env)
-          await runMLAndRisk(env)
-          // recommendation is triggered by runMLAndRisk event chain
-          await runPredictionVerification(env)
-          return 'Inline pipeline fallback 完成'
-        }
-        const result = await postController(env, '/pipeline/run', { date: twToday() }, 600_000)
-        return typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 300) ?? 'done'
+        const { steps, message } = await runFullPipeline(env)
+        // 追加驗證（非阻擋，不影響 pipeline 成敗）
+        runPredictionVerification(env).catch(e => console.warn('[Pipeline] verify failed:', e))
+        return `${message} (${steps.join(' → ')})`
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {
@@ -1764,7 +2120,8 @@ export default {
           method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return await res.json()
+        const json = await res.json()
+        return typeof json === 'string' ? json : JSON.stringify(json).slice(0, 300)
       })
     } else if (cron === '30 10 * * 5') {
       // 週五 18:30 TW → P2#16 Weekly AI Audit Report

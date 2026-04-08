@@ -16,6 +16,7 @@
 
 import type { Bindings } from '../types'
 import { generateRecommendationReasons, type RecommendationCandidate } from './llm'
+import { getTradingConfig } from './tradingConfig'
 
 interface SectorSummary {
   sector: string
@@ -629,6 +630,72 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
 
     recommendations = finalRecs ?? []
     console.log(`[Recommendation] ML 補分完成: ${recommendations.length} 支推薦 (過濾 ${sellCount} SELL)`)
+
+    // ── Sprint 3 P0-4: Architecture C Hybrid Ranking ──────────────────────────
+    // Why: 解 "filter 後 0 BUY signal" — 即使 ML 全 HOLD 也要保證 top K 進 paper trading
+    // How: combined_score = α*screener_norm + β*ml_confidence + γ*signal_tier
+    //      若 has_buy_signal 數量 < topK，用 combined_score 排序 promote 到 has_buy_signal=1
+    //      同時覆寫 confidence = max(current, promoteMinConf) 讓 paper.ts filter 通過
+    try {
+      const cfg = await getTradingConfig(env.KV)
+      const rk = cfg.ranking
+      if (rk.enabled) {
+        const { results: allRecs } = await env.DB.prepare(
+          `SELECT symbol, signal, has_buy_signal, confidence, chip_score, tech_score, ml_score, score
+           FROM daily_recommendations WHERE date = ? ORDER BY score DESC`
+        ).bind(today).all<any>()
+
+        const signalTier = (sig: string | null): number => {
+          if (!sig) return 0.20  // null ML → 中性底分
+          const s = sig.toUpperCase()
+          if (s.includes('STRONG_BUY')) return 1.00
+          if (s.includes('BUY')) return 0.70
+          if (s === 'HOLD') return 0.35
+          return 0  // SELL/NO_SIGNAL（已被刪掉，理論上不會到這）
+        }
+
+        // 1) 算每支 combined_score
+        const scored = (allRecs ?? []).map((r: any) => {
+          const screenerNorm = Math.min(1, ((r.chip_score ?? 0) + (r.tech_score ?? 0)) / rk.screenerDenominator)
+          const mlConf = Math.max(0, Math.min(1, r.confidence ?? 0))
+          const tier = signalTier(r.signal)
+          const combined = rk.alpha * screenerNorm + rk.beta * mlConf + rk.gamma * tier
+          return { ...r, combined_score: combined }
+        })
+
+        // 2) 現在有幾支 has_buy_signal=1
+        const currentBuyCount = scored.filter((r: any) => r.has_buy_signal === 1).length
+
+        if (currentBuyCount < rk.topK) {
+          const needPromote = rk.topK - currentBuyCount
+          // 3) 從 has_buy_signal=0 的 pool 挑 top-N by combined_score
+          const pool = scored
+            .filter((r: any) => r.has_buy_signal === 0)
+            .sort((a: any, b: any) => b.combined_score - a.combined_score)
+            .slice(0, needPromote)
+
+          if (pool.length > 0) {
+            const promoteBatch = pool.map((r: any) => {
+              const promotedConf = Math.max(r.confidence ?? 0, rk.promoteMinConf)
+              return env.DB.prepare(
+                `UPDATE daily_recommendations
+                 SET has_buy_signal = 1, confidence = ?
+                 WHERE date = ? AND symbol = ?`
+              ).bind(promotedConf, today, r.symbol)
+            })
+            await env.DB.batch(promoteBatch)
+            const promotedSyms = pool.map((r: any) => `${r.symbol}(${r.combined_score.toFixed(3)})`).join(', ')
+            console.log(`[Ranking] Promoted ${pool.length} rows to has_buy_signal=1 (current=${currentBuyCount} < topK=${rk.topK}): ${promotedSyms}`)
+          } else {
+            console.log(`[Ranking] Need promote ${needPromote} but no candidates in pool (all already has_buy_signal=1 or empty)`)
+          }
+        } else {
+          console.log(`[Ranking] has_buy_signal count ${currentBuyCount} >= topK ${rk.topK}, no promotion needed`)
+        }
+      }
+    } catch (e) {
+      console.error('[Ranking] Hybrid Ranking failed (non-fatal):', e)
+    }
 
     // ── LLM 推薦理由（覆寫 template reason，失敗時保留 template）──
     if (recommendations.length && env.ANTHROPIC_API_KEY) {

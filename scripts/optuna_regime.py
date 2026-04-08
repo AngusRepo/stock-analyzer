@@ -2,6 +2,24 @@
 """
 optuna_regime.py — P3#32 Per-Regime Optuna Parameter Search
 
+⚠️ DEPRECATED (2026-04-07) — 不要再跑這個 script
+
+原因:
+  1. 本 script 是 quantile-based 本地 HMM labelling + 本地 Optuna 搜 SL/TP，
+     寫 KV `ml:regime_config`。
+  2. 正確的 single source of truth 是 `ml-service/app/regime.py` (GaussianHMM)，
+     見 CLAUDE.md KV/Optuna/Hardcode 規則。
+  3. 未來 per-regime Optuna search 會走:
+     - Sprint 6 backtest engine `engine.replay_per_regime(...)`
+     - Sprint 7+ Robust Optimization (per-regime min)
+     - 統一透過 `ml-controller/routers` + Worker `/api/admin/optuna-push`
+  4. 本 script 直接寫本地 JSON + 人工 wrangler kv put，
+     違反「Optuna script 必須直接 push KV (透過統一閘門)」的 CLAUDE.md 規則。
+
+遷移計畫: 見 memory/project_regime_pipeline_broken.md
+
+── 以下為原始 doc，保留供 Sprint 6+ 參考 ──
+
 Uses HMM to label each trading day with a regime (0-3),
 then searches optimal SL/TP/signal thresholds per regime.
 
@@ -11,6 +29,10 @@ Output: scripts/data/regime_params.json → push to KV ml:regime_config
 Usage:
   python3 scripts/optuna_regime.py
 """
+import sys as _sys
+print("⚠️ DEPRECATED — 見 docstring。Sprint 6+ 會改走 ml-controller 統一閘門。", file=_sys.stderr)
+print("   現階段執行中斷以避免誤污染 KV ml:regime_config。若要手動強制跑，移除此 exit。", file=_sys.stderr)
+_sys.exit(1)
 import os, sys, json, time
 sys.stdout.reconfigure(line_buffering=True)
 

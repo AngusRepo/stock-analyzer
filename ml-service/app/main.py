@@ -41,6 +41,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── 2026-04-07 Phase 1: Optuna routes（自動 push KV，取代 local JSON）──────
+try:
+    from .optuna_routes import router as optuna_router
+    app.include_router(optuna_router)
+except Exception as _e:  # noqa: BLE001
+    import logging
+    logging.getLogger(__name__).warning(f"[main] optuna_routes not loaded: {_e}")
+
 # ─── 服務間驗證（從環境變數讀取，部署時設定）────────────────────────────────
 _SERVICE_TOKEN = os.environ.get("ML_SERVICE_SECRET", "")
 

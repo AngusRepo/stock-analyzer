@@ -274,13 +274,16 @@ export async function generateRecommendationReasons(
   const result = new Map<string, { reason: string; watchPoints: string[] }>()
   if (!candidates.length) return result
 
-  const system = `你是台灣股市資深分析師，負責為每日推薦清單撰寫簡潔推薦理由。
+  const system = `你是台灣股市資深分析師，負責為每日推薦清單撰寫具資訊量的推薦理由。
 規則：
 - 每支股票的 reason 限 120 字以內，需整合籌碼、技術、ML 三面向的重點
-- watchPoints 給 2-3 條觀察重點（每條 30 字以內）
+- watchPoints 給 3 條具體觀察重點，每條 60-100 字，必須含具體數字（價位/百分比/天數）
+  例：「留意 58.8 月線支撐能否守住，跌破則 ATR 停損 56.08；上方 63.59 為 ML target1」
+  例：「RSI 39 雖未進超賣，但連續 3 日量縮，需確認量能放大才轉強訊號」
+  例：「外資 5 日淨買超 0.3 億偏弱，須觀察下週是否回補；投信若同步買進可加速推升」
 - 語氣專業簡潔，不用「建議」「推薦」等字眼，改用「留意」「觀察」
 - 若 ML 信心高(>0.6)，可強調模型共識；若低(<0.5)，強調需確認
-- 必須回傳 JSON array，格式：[{"symbol":"2330","reason":"...","watchPoints":["...","..."]}]
+- 必須回傳 JSON array，格式：[{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
 - 長度必須和輸入股票數量完全一致`
 
   const stockList = candidates.map((c, i) => {
@@ -295,7 +298,7 @@ export async function generateRecommendationReasons(
       apiKey,
       system,
       `請為以下 ${candidates.length} 支推薦股票各寫一段推薦理由：\n${stockList}${themeHint}`,
-      Math.min(4096, candidates.length * 250),
+      Math.min(8192, candidates.length * 500),  // 2026-04-07: bump from 250→500，allowing richer watchPoints (3 × 100 chars + reason)
       'sonnet',
       true,
     )

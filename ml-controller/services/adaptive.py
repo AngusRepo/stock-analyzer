@@ -25,26 +25,62 @@ def _tw_now() -> str:
 
 def compute_confidence_threshold(risk_score: float, accuracy_30d: float) -> float:
     """
-    risk_score: 0~100（越高越危險）
-    accuracy_30d: 0~1（ensemble 全局 30d 準確率）
-    returns: 0.55~0.75（越高越嚴格）
+    @deprecated 用 compute_confidence_delta 取代
+
+    Legacy: 回傳 absolute (0.55~0.75)
+    保留供 backwards compat 期間使用，Phase 2 後移除
     """
     base     = 0.60
-    risk_adj = (risk_score / 100) * 0.15      # 風險越高門檻越嚴
-    perf_adj = (0.6 - accuracy_30d) * 0.20    # 準確率越低門檻越嚴
+    risk_adj = (risk_score / 100) * 0.15
+    perf_adj = (0.6 - accuracy_30d) * 0.20
     return round(_clip(base + risk_adj + perf_adj, 0.55, 0.75), 4)
+
+
+def compute_confidence_delta(
+    risk_score: float,
+    accuracy_30d: float,
+    L2_formula: dict | None = None,
+) -> float:
+    """
+    Phase A: 回傳純 delta（不是 absolute）
+
+    Args:
+        L2_formula: 從 trading:config.L2_formula 讀的常數 dict，None 時用 hardcoded fallback
+
+    delta = risk * risk_mult + (0.6 - acc) * perf_mult
+    bounded by [delta_clip_lo, delta_clip_hi]
+
+    Paper.ts 端應用：effective = clip(baseline + delta, effective_clip_lo, effective_clip_hi)
+    """
+    L2 = L2_formula or {}
+    risk_mult    = float(L2.get("confidence_risk_mult", 0.15))
+    perf_mult    = float(L2.get("confidence_perf_mult", 0.20))
+    delta_lo     = float(L2.get("confidence_delta_clip_lo", -0.10))
+    delta_hi     = float(L2.get("confidence_delta_clip_hi", 0.20))
+    risk_adj = (risk_score / 100) * risk_mult
+    perf_adj = (0.6 - accuracy_30d) * perf_mult
+    return round(_clip(risk_adj + perf_adj, delta_lo, delta_hi), 4)
 
 
 # ── 2. PF 品質權重自適應 ───────────────────────────────────────────────────────
 
 def compute_pf_quality_mults(
-    rows_30d: list[dict],   # [{model_name, profit_factor, total_count}]
-    rows_90d: list[dict],   # [{model_name, profit_factor}]
+    rows_30d: list[dict],
+    rows_90d: list[dict],
+    L2_formula: dict | None = None,
 ) -> dict[str, float]:
     """
-    各模型 PF 加權乘數（30d 70% + 90d 30%，避免近因偏差）。
+    Phase A: 從 L2_formula 讀 30d/90d weights + clip range
+
+    各模型 PF 加權乘數（30d weight + 90d weight，避免近因偏差）。
     樣本不足 (<10) 或 PF 為 null → 使用預設 1.0。
     """
+    L2 = L2_formula or {}
+    w30 = float(L2.get("pf_quality_30d_weight", 0.7))
+    w90 = float(L2.get("pf_quality_90d_weight", 0.3))
+    lo  = float(L2.get("pf_quality_clip_lo", 0.3))
+    hi  = float(L2.get("pf_quality_clip_hi", 1.8))
+
     pf_90_map: dict[str, float] = {
         r["model_name"]: r["profit_factor"]
         for r in rows_90d
@@ -57,41 +93,55 @@ def compute_pf_quality_mults(
         if r.get("total_count", 0) < 10 or r.get("profit_factor") is None:
             result[name] = 1.0
             continue
-        pf30 = _clip(r["profit_factor"], 0.3, 1.8)
-        pf90 = _clip(pf_90_map.get(name, pf30), 0.3, 1.8)
-        result[name] = round(_clip(pf30 * 0.7 + pf90 * 0.3, 0.3, 1.8), 4)
+        pf30 = _clip(r["profit_factor"], lo, hi)
+        pf90 = _clip(pf_90_map.get(name, pf30), lo, hi)
+        result[name] = round(_clip(pf30 * w30 + pf90 * w90, lo, hi), 4)
     return result
 
 
 # ── 3. SL/TP Regime 調整 ─────────────────────────────────────────────────────
 
-def compute_sltp_override(risk_level: str) -> Optional[dict]:
+def compute_sltp_override(risk_level: str, L2_formula: dict | None = None) -> Optional[dict]:
     """
+    Phase A: 從 L2_formula 讀對應 risk_level 的加碼，不再 hardcode
+
     orange/red/black 市況下擴大 SL+TP buffer（點數 %）。
     green/yellow → None（不調整）。
     """
-    mapping = {
-        "orange": {"sl_add": 0.3, "tp_add": 0.3},
-        "red":    {"sl_add": 0.5, "tp_add": 0.5},
-        "black":  {"sl_add": 1.0, "tp_add": 0.5},
-    }
-    return mapping.get(risk_level)
+    L2 = L2_formula or {}
+    if risk_level == "orange":
+        return {"sl_add": float(L2.get("sltp_add_orange_sl", 0.3)),
+                "tp_add": float(L2.get("sltp_add_orange_tp", 0.3))}
+    if risk_level == "red":
+        return {"sl_add": float(L2.get("sltp_add_red_sl", 0.5)),
+                "tp_add": float(L2.get("sltp_add_red_tp", 0.5))}
+    if risk_level == "black":
+        return {"sl_add": float(L2.get("sltp_add_black_sl", 1.0)),
+                "tp_add": float(L2.get("sltp_add_black_tp", 0.5))}
+    return None
 
 
 # ── 4. LinUCB Feedback Loop 防護 ──────────────────────────────────────────────
 
-def compute_bandit_protection(losses_5d: int, total_5d: int) -> dict:
+def compute_bandit_protection(losses_5d: int, total_5d: int, L2_formula: dict | None = None) -> dict:
     """
-    近 5 日紙盤虧損比例決定 LinUCB bandit 的安全參數：
-    - 虧損率 > 60% → 強制探索，限制最大乘數
-    - 虧損率 > 40% → 適度收斂
+    Phase A: 從 L2_formula 讀 thresholds + max_mults
+
+    近 5 日紙盤虧損比例決定 LinUCB bandit 的安全參數
     """
+    L2 = L2_formula or {}
+    thresh_high = float(L2.get("bandit_loss_thresh_high", 0.6))
+    thresh_med  = float(L2.get("bandit_loss_thresh_med", 0.4))
+    mult_high   = float(L2.get("bandit_max_mult_high", 1.5))
+    mult_med    = float(L2.get("bandit_max_mult_med", 2.0))
+    mult_low    = float(L2.get("bandit_max_mult_low", 2.5))
+
     if total_5d == 0:
-        return {"bandit_max_mult": 2.5, "bandit_force_explore": False}
+        return {"bandit_max_mult": mult_low, "bandit_force_explore": False}
     loss_rate = losses_5d / total_5d
-    if   loss_rate > 0.6: return {"bandit_max_mult": 1.5, "bandit_force_explore": True}
-    elif loss_rate > 0.4: return {"bandit_max_mult": 2.0, "bandit_force_explore": False}
-    return {"bandit_max_mult": 2.5, "bandit_force_explore": False}
+    if loss_rate > thresh_high: return {"bandit_max_mult": mult_high, "bandit_force_explore": True}
+    if loss_rate > thresh_med:  return {"bandit_max_mult": mult_med,  "bandit_force_explore": False}
+    return {"bandit_max_mult": mult_low, "bandit_force_explore": False}
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -105,33 +155,48 @@ def compute_adaptive_params(
     losses_5d: int,
     total_5d: int,
     current_version: int = 0,
+    L2_formula: dict | None = None,
+    baseline_buy_signal_score: float | None = None,
 ) -> dict:
     """
     計算完整的自適應參數字典（可直接寫入 KV ml:adaptive_params）。
 
+    Phase A 改造：
+    - 全部 compute function 從 L2_formula 讀係數（不再 hardcode）
+    - 回傳 confidence_delta 而非 absolute confidence_threshold
+    - 同時回傳 legacy confidence_threshold = baseline + delta + clip（backwards compat）
+
     Args:
-        risk_score:       0~100，市場風險分數
-        risk_level:       "green" | "yellow" | "orange" | "red" | "black"
-        accuracy_30d:     全局 ensemble 30d 平均準確率（0~1）
-        rows_30d:         model_accuracy 30d rows（含 model_name/profit_factor/total_count）
-        rows_90d:         model_accuracy 90d rows（含 model_name/profit_factor）
-        losses_5d:        近 5 天紙盤虧損筆數
-        total_5d:         近 5 天紙盤總出場筆數
-        current_version:  現有版本號（+1 後寫入）
+        L2_formula: trading:config.L2_formula dict（從 Worker KV 讀後 POST 過來），None 用 hardcoded fallback
+        baseline_buy_signal_score: trading:config.signal.buySignalScore（Optuna #2 baseline），None 用 0.52
     """
-    conf_threshold  = compute_confidence_threshold(risk_score, accuracy_30d)
-    pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d)
-    sl_tp_override  = compute_sltp_override(risk_level)
-    bandit          = compute_bandit_protection(losses_5d, total_5d)
+    L2 = L2_formula or {}
+    baseline_buy = baseline_buy_signal_score if baseline_buy_signal_score is not None else 0.52
+
+    conf_delta      = compute_confidence_delta(risk_score, accuracy_30d, L2)
+    pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
+    sl_tp_add       = compute_sltp_override(risk_level, L2)
+    bandit          = compute_bandit_protection(losses_5d, total_5d, L2)
+
+    # legacy backwards compat: 計算 effective absolute confidence threshold
+    eff_lo = float(L2.get("confidence_effective_clip_lo", 0.45))
+    eff_hi = float(L2.get("confidence_effective_clip_hi", 0.75))
+    legacy_conf_threshold = round(_clip(baseline_buy + conf_delta, eff_lo, eff_hi), 4)
 
     return {
-        "confidence_threshold":  conf_threshold,
+        # 新 schema (delta-based)
+        "confidence_delta":      conf_delta,
+        "position_pct_delta":    0.0,  # Phase 補齊
+        "sltp_add":              sl_tp_add,
         "pf_quality_mult":       pf_quality_mult,
-        "sl_tp_override":        sl_tp_override,
         "bandit_max_mult":       bandit["bandit_max_mult"],
         "bandit_force_explore":  bandit["bandit_force_explore"],
         "computed_at":           _tw_now(),
         "market_risk_score":     risk_score,
         "recent_accuracy_30d":   round(accuracy_30d, 2),
         "version":               current_version + 1,
+
+        # legacy fields (Phase 2 後移除)
+        "confidence_threshold":  legacy_conf_threshold,
+        "sl_tp_override":        sl_tp_add,
     }

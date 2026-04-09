@@ -10,6 +10,7 @@ import re
 import logging
 import httpx
 from datetime import datetime, timedelta
+from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -47,6 +48,36 @@ class SectorFlowResponse(BaseModel):
 
 class TpexProxyRequest(BaseModel):
     date: str | None = None
+
+
+class RrgBackfillRequest(BaseModel):
+    """
+    Phase 6.5 of 4/8 audit — RRG backfill request.
+    Either provide a single `date` or a `dates` list for batch backfill.
+    """
+    date: str | None = None
+    dates: list[str] | None = None
+
+
+class TagRefreshRequest(BaseModel):
+    """
+    Bulk refresh tag pool for one tag_type from a manually-curated JSON source.
+
+    `tag_type`: one of 'concept' | 'subindustry' | 'industry'
+    `source`: free-text source label, e.g. 'manual_curated_2026_04_08'
+    `tags`: dict of {tag_name: [stock_symbols]}
+    `replace_mode`: how to handle existing rows of the same (tag_type, source-prefix)
+       - 'replace_type': delete ALL existing rows of this tag_type then insert
+       - 'replace_source': delete only rows matching the source label then insert
+       - 'merge': INSERT OR REPLACE per-row, do not delete (default)
+    `archive_old_source`: optional source label to mark as 'archived' before
+       inserting (preserves rollback capability via UPDATE source).
+    """
+    tag_type: Literal["concept", "subindustry", "industry"]
+    source: str
+    tags: dict[str, list[str]]
+    replace_mode: Literal["replace_type", "replace_source", "merge"] = "merge"
+    archive_old_source: str | None = None
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -105,6 +136,148 @@ async def compute_sector_flow(req: SectorFlowRequest):
         stock_count=matched,
         sector_count=len(sectors),
     )
+
+
+# ─── Tag pool refresh (bulk import from curated JSON) ───────────────────────
+
+@router.post("/sector-flow/refresh-tags")
+async def refresh_tags(req: TagRefreshRequest):
+    """
+    Bulk refresh stock_tags pool for one tag_type from a curated JSON source.
+
+    Use case: operator pastes manually-curated tag→symbols JSON, this endpoint
+    DELETEs old rows and bulk INSERTs the new pool. A separate backfill
+    endpoint then re-computes sector_flow RRG for the new pool.
+
+    Body example:
+    {
+      "tag_type": "concept",
+      "source": "manual_curated_2026_04_08",
+      "tags": {
+        "GB200": ["2330","2382","2376"],
+        "HBM":   ["2330","2454"]
+      },
+      "replace_mode": "replace_type",
+      "archive_old_source": "goodinfo"
+    }
+    """
+    from services import d1_client
+
+    if not req.tags:
+        return {"error": "tags dict is empty"}
+
+    statements: list[tuple[str, list]] = []
+
+    # Step 1: archive old (rename source label) if requested
+    if req.archive_old_source:
+        statements.append((
+            "UPDATE stock_tags SET source = ? WHERE tag_type = ? AND source = ?",
+            [f"{req.archive_old_source}_archived", req.tag_type, req.archive_old_source],
+        ))
+
+    # Step 2: optional delete based on replace_mode
+    if req.replace_mode == "replace_type":
+        statements.append((
+            "DELETE FROM stock_tags WHERE tag_type = ?",
+            [req.tag_type],
+        ))
+    elif req.replace_mode == "replace_source":
+        statements.append((
+            "DELETE FROM stock_tags WHERE tag_type = ? AND source = ?",
+            [req.tag_type, req.source],
+        ))
+    # 'merge' mode: no delete, rely on INSERT OR REPLACE
+
+    # Step 3: build bulk INSERT statements
+    insert_count = 0
+    for tag_name, symbols in req.tags.items():
+        tag_clean = tag_name.strip()
+        if not tag_clean:
+            continue
+        for sym in symbols:
+            sym_clean = str(sym).strip()
+            if not sym_clean:
+                continue
+            statements.append((
+                """
+                INSERT INTO stock_tags (symbol, tag, source, weight, tag_type, updated_at)
+                VALUES (?, ?, ?, 1.0, ?, datetime('now'))
+                ON CONFLICT(symbol, tag) DO UPDATE SET
+                  source = excluded.source,
+                  weight = excluded.weight,
+                  tag_type = excluded.tag_type,
+                  updated_at = excluded.updated_at
+                """.strip(),
+                [sym_clean, tag_clean, req.source, req.tag_type],
+            ))
+            insert_count += 1
+
+    if not statements:
+        return {"error": "no valid statements generated"}
+
+    # Step 4: execute in batches (D1 limits per-call statement count)
+    BATCH = 80
+    total_executed = 0
+    for i in range(0, len(statements), BATCH):
+        chunk = statements[i:i + BATCH]
+        try:
+            result = await asyncio.to_thread(d1_client.batch_execute, chunk)
+            total_executed += result.get("total", 0)
+        except Exception as e:
+            logger.error(f"refresh_tags batch {i//BATCH} failed: {e}")
+            return {
+                "error": f"batch {i//BATCH} failed: {e}",
+                "executed_before_error": total_executed,
+                "total_statements": len(statements),
+            }
+
+    logger.info(
+        f"[refresh_tags] tag_type={req.tag_type} source={req.source} "
+        f"tags={len(req.tags)} insert_count={insert_count} executed={total_executed}"
+    )
+    return {
+        "tag_type": req.tag_type,
+        "source": req.source,
+        "tag_count": len(req.tags),
+        "row_count": insert_count,
+        "executed_statements": total_executed,
+    }
+
+
+# ─── Phase 6.5 of 4/8 audit — RRG backfill via new sector_flow_service ───────
+
+@router.post("/sector-flow/rrg/backfill")
+async def backfill_rrg(req: RrgBackfillRequest):
+    """
+    Backfill sector_flow RRG fields for one or more dates using the vs-TWII
+    benchmark formula in ml-controller/services/sector_flow_service.py.
+
+    Replaces the old worker `backfill-rrg` trigger (Z-score, removed in 6.6).
+
+    Body:
+      {"date": "2026-04-07"}              # single date
+      {"dates": ["2026-04-07","2026-04-06"]}  # batch
+
+    Writes sector_flow rows via UPSERT — RRG fields (rs_ratio/rs_momentum/
+    quadrant/stock_count) overwritten; chip-flow fields (foreign_net etc.)
+    untouched on conflict.
+    """
+    from services.sector_flow_service import run_sector_flow_pipeline
+
+    if req.date and req.dates:
+        return {"error": "Provide either `date` or `dates`, not both"}
+    targets = req.dates or ([req.date] if req.date else [_today_tw()])
+
+    results = []
+    for d in targets:
+        try:
+            summary = await asyncio.to_thread(run_sector_flow_pipeline, d)
+            results.append(summary)
+        except Exception as e:
+            logger.error(f"RRG backfill failed for {d}: {e}")
+            results.append({"as_of_date": d, "error": str(e)})
+
+    return {"backfilled": len(results), "results": results}
 
 
 # ─── TPEX Proxy: Worker 無法直接呼叫 TPEX（被擋），透過 Controller 代理 ────────

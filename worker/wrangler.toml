@@ -61,9 +61,10 @@ crons = [
   # H5: 5 個獨立 cron 已合併為單一 pipeline trigger（Controller LangGraph await gates）
   # 舊的 bulk-fetch/screener/ml/recommendation/verify 仍可透過 /admin/trigger/:task 手動觸發
   "20 6 * * 1-5",    # 14:20 TW → Daily Snapshot（收盤後立即算 PnL，不需 chip）
+  "15 9 * * 1-5",    # 17:15 TW → ML 預熱（2026-04-08 P0-a fix: 從 17:50 移到 pipeline 前 15 分鐘）
   "30 9 * * 1-5",    # 17:30 TW → Pipeline trigger（Controller LangGraph: fetch→screen→ml→rec→verify）
-  "50 9 * * 1-5",    # 17:50 TW → ML 預熱（喚醒 Cloud Run，pipeline 前暖機）
   "20 10 * * 1-5",   # 18:20 TW → Adaptive Engine
+  "0 11 * * 1-5",    # 19:00 TW → D-2 Verify Pipeline V2 (ml-controller LangGraph)
   "25 10 * * 1-5",   # 18:25 TW → 收盤報告推送 Discord
   "40 10 * * 1-5",   # 18:40 TW → Obsidian daily notes + progress.md sync
   "30 10 * * 5",     # 18:30 TW (Fri) → P2#16 Weekly AI Audit Report

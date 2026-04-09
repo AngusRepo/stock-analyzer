@@ -35,10 +35,37 @@ def _lookup(fn_name: str):
 
 
 async def _modal_batch_predict(payloads: list[dict]) -> list[dict]:
+    """
+    2026-04-08 P1 fix: use return_exceptions=True so one task timeout (e.g.
+    Modal 300s per-input limit) doesn't kill the whole batch. Exception items
+    are converted into error dicts downstream consumers already handle
+    (graphs/daily_pipeline_v2.py:node_ml_predict filters r.get("error")).
+
+    Before: 1 slow task → FunctionTimeoutError → fn.map.aio raises → whole
+    pipeline dies at ~212s → Worker 524. See memory/project_session_2026_04_08_part5.md.
+    """
     fn = _lookup("predict_single_stock")
-    results = []
-    async for r in fn.map.aio(payloads, order_outputs=True):
-        results.append(r)
+    results: list[dict] = []
+    idx = 0
+    async for r in fn.map.aio(payloads, order_outputs=True, return_exceptions=True):
+        if isinstance(r, BaseException):
+            p = payloads[idx] if idx < len(payloads) else {}
+            exc_type = type(r).__name__
+            logger.warning(
+                f"[modal_client] predict task failed "
+                f"symbol={p.get('symbol','?')} exc={exc_type}: {r}"
+            )
+            results.append({
+                "stock_id": p.get("stock_id", 0),
+                "symbol": p.get("symbol", "?"),
+                "error": f"{exc_type}: {r}",
+                "signal": "NO_SIGNAL",
+                "direction": "neutral",
+                "confidence": 0.0,
+            })
+        else:
+            results.append(r)
+        idx += 1
     return results
 
 
@@ -133,7 +160,9 @@ async def batch_predict(payloads: list[dict]) -> list[dict]:
         return await _modal_batch_predict(payloads)
     if _ML_SERVICE_URL:
         logger.info(f"[ml_client] HTTP parallel predict × {len(payloads)} → {_ML_SERVICE_URL}")
-        return await _http_batch("/predict", payloads, concurrency=4)
+        # B11 fix (2026-04-08 audit): concurrency 4→20，覆蓋 Part 6 F2 fix 默認值
+        # 信號池天生小，concurrency 4 進一步壓縮高 conf 候選數量，疊加 Layer 2 後幾乎過不了
+        return await _http_batch("/predict", payloads, concurrency=20)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 

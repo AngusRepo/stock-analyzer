@@ -3,10 +3,10 @@
 ## Session {{ date }}
 
 ### Portfolio
-- Total: ${{ total_value | int }}{% if total_return is defined %} ({{ total_return | round(2) }}%){% endif %}
+- Total: ${{ ((total_value or 0) | int) }}{% if total_return is defined and total_return is not none %} ({{ (total_return | round(2)) }}%){% endif %}
 
-- Positions: {{ positions_count }} | Cash: ${{ cash | default(0) | int }}
-- MDD: {{ mdd | default(0) | round(1) }}% | Sharpe(30d): {{ sharpe | default('N/A') }}
+- Positions: {{ positions_count }} | Cash: ${{ ((cash or 0) | int) }}
+- MDD: {{ ((mdd or 0) | round(1)) }}% | Sharpe(30d): {{ sharpe if sharpe is not none else 'N/A' }}
 
 ### Today's Pipeline
 - Screener: {{ screener_count }} → ML BUY: {{ ml_buy_count }} → T2: {{ t2_count }} orders
@@ -14,7 +14,7 @@
 
 ### Positions
 {% for p in positions %}
-{{ p.symbol }} {{ p.shares }}shares cost:{{ p.avg_cost | default(p.entry_price) | round(1) }} now:{{ p.current_price | default('?') }} {{ p.unrealized_pnl_pct | default(0) | round(1) }}%
+{{ p.symbol }} {{ p.shares }}shares cost:{{ ((p.avg_cost or p.entry_price or 0) | round(1)) }} now:{{ p.current_price | default('?') }} {{ ((p.unrealized_pnl_pct or 0) | round(1)) }}%
 {% endfor %}
 {% if not positions %}
 No positions.

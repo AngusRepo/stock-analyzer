@@ -160,8 +160,10 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   // Layer 2: ml:adaptive_params.confidence_delta (T+1 daily delta)
   // Layer 3: trading:config.L2_formula.confidence_effective_clip_* (KV-driven clip range)
   // Phase A bandage 讀的 absolute confidence_threshold 已被新公式取代
-  let buyConfBase = cfg.signal?.buySignalScore ?? cc.buyConfThreshold
-  let sellConfBase = cfg.signal?.buySignalScore ?? cc.sellConfThreshold  // sell 用同一 baseline
+  // B1 fix (2026-04-08 audit): buyConfBase 應讀 cc.buyConfThreshold (circuit breaker baseline)
+  // 不是 signal.buySignalScore (那是 ml-controller 訊號分類的 score floor，職責不同)
+  let buyConfBase = cc.buyConfThreshold
+  let sellConfBase = cc.sellConfThreshold
   let confidenceDelta = 0
   const L2 = cfg.L2_formula
   const clipLo = L2?.confidence_effective_clip_lo ?? 0.45

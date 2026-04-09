@@ -79,6 +79,7 @@ class PredictRequest(BaseModel):
     market_env: dict | None = None
     model_stats: dict[str, dict] = {}
     adaptive_params: dict = {}   # 來自 KV ml:adaptive_params（T+1 自適應，向後相容）
+    trading_config: dict = {}    # 來自 KV trading:config（Optuna baseline，含 sltp/signal/circuit etc.）
     barrier_params: dict = {}   # 來自 KV trading:config.barrier（Optuna #1 搜尋，零 deploy）
     lifecycle_weights: dict[str, float] = {}  # P1#8: per-model lifecycle weight overrides
     weak_features: list[str] = []             # P1#9: IC audit 無效特徵（retrain 時排除）
@@ -384,6 +385,7 @@ def predict_stock(req: PredictRequest) -> dict:
         garch_vol=garch_vol,
         bandit_multipliers=bandit_multipliers,
         adaptive_params=req.adaptive_params,   # T+1 自適應（信心門檻/PF/SL_TP）
+        trading_config=req.trading_config,      # B12 fix: Optuna baseline (含 sltp)
         anomaly_score=anomaly_score,            # soft penalty，不再 hard gate
         lifecycle_weights=req.lifecycle_weights, # P1#8: model lifecycle 降權
     )

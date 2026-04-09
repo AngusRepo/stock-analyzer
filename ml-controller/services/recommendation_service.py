@@ -15,6 +15,12 @@ import logging
 from typing import Any, Optional
 
 from services import d1_client
+from services._predictions_schema import (
+    COL_STOCK_ID,
+    COL_MODEL_NAME,
+    COL_GENERATED_AT,
+    INSERT_PREDICTIONS_SQL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,16 +387,12 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
 
         # H2: delete stale before insert
         statements.append((
-            "DELETE FROM predictions WHERE stock_id=? AND model_name='ensemble' "
-            "AND date(generated_at)=date('now')",
+            f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}='ensemble' "
+            f"AND date({COL_GENERATED_AT})=date('now')",
             [stock_id],
         ))
         statements.append((
-            "INSERT INTO predictions "
-            "(stock_id, model_name, generated_at, horizon, direction_accuracy, "
-            " forecast_data, entry_price, stop_loss, target1, target2, "
-            " trade_signal, feature_version, signal_raw) "
-            "VALUES (?, 'ensemble', datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            INSERT_PREDICTIONS_SQL,
             [
                 stock_id,
                 14,

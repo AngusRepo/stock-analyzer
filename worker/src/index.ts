@@ -94,27 +94,87 @@ app.put('/api/admin/config', async (c) => {
   const body = await c.req.json<any>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
   const { setTradingConfig, getTradingConfig, validateTradingConfig } = await import('./lib/tradingConfig')
-  // Merge: 讀取現有 config，覆蓋傳入的欄位
+  // 2026-04-09 fix: position 有 nested sub-object (kelly + swapWeights)，原本的淺層 spread
+  // 會把 `{position: {kelly: {enabled: true}}}` 整個 swapWeights 打掉。改深層 merge。
   const current = await getTradingConfig(c.env.KV)
+  const mergedPosition = {
+    ...current.position,
+    ...(body.position ?? {}),
+    kelly:       { ...current.position.kelly,       ...(body.position?.kelly ?? {}) },
+    swapWeights: { ...current.position.swapWeights, ...(body.position?.swapWeights ?? {}) },
+  }
   const merged = {
-    fees: { ...current.fees, ...body.fees },
-    circuit: { ...current.circuit, ...body.circuit },
-    exit: { ...current.exit, ...body.exit },
-    position: { ...current.position, ...body.position },
-    screener: { ...current.screener, ...body.screener },
-    rrg: { ...current.rrg, ...body.rrg },
-    barrier: { ...current.barrier, ...body.barrier },
-    ranking: { ...current.ranking, ...body.ranking },  // Sprint 3 P0-4
-    // 2026-04-07 added: Optuna #2/#3 + L2 destinations
-    signal: { ...current.signal, ...body.signal },
-    sltp: { ...current.sltp, ...body.sltp },
+    fees:       { ...current.fees,       ...body.fees },
+    circuit:    { ...current.circuit,    ...body.circuit },
+    exit:       { ...current.exit,       ...body.exit },
+    position:   mergedPosition,
+    screener:   { ...current.screener,   ...body.screener },
+    rrg:        { ...current.rrg,        ...body.rrg },
+    barrier:    { ...current.barrier,    ...body.barrier },
+    ranking:    { ...current.ranking,    ...body.ranking },
+    signal:     { ...current.signal,     ...body.signal },
+    sltp:       { ...current.sltp,       ...body.sltp },
     L2_formula: { ...current.L2_formula, ...body.L2_formula },
   }
-  // C4: Validate bounds before persisting
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
+})
+
+// ─── Admin: Push schema defaults into KV（僅補缺失 subsection） ─────────────
+// 2026-04-09: 用途是補 Sprint 3+4 新加的 subsection（ranking/position.kelly/
+// position.swapWeights 等）到已存在的 trading:config。不會覆蓋已存在的值。
+// 使用：curl -X POST -H 'Authorization: Bearer $TOKEN' .../api/admin/config/push-defaults
+app.post('/api/admin/config/push-defaults', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+  const { getTradingConfig, setTradingConfig, DEFAULT_TRADING_CONFIG } = await import('./lib/tradingConfig')
+  const current = await getTradingConfig(c.env.KV)
+  const d = DEFAULT_TRADING_CONFIG
+  // 深層 merge：defaults 當底、current 覆蓋在上（已存在欄位保留原值）
+  const filled = {
+    fees:       { ...d.fees,       ...current.fees },
+    circuit:    { ...d.circuit,    ...current.circuit },
+    exit:       { ...d.exit,       ...current.exit },
+    position: {
+      ...d.position,
+      ...current.position,
+      kelly:       { ...d.position.kelly,       ...(current.position?.kelly ?? {}) },
+      swapWeights: { ...d.position.swapWeights, ...(current.position?.swapWeights ?? {}) },
+    },
+    screener:   { ...d.screener,   ...current.screener },
+    rrg:        { ...d.rrg,        ...current.rrg },
+    barrier:    { ...d.barrier,    ...current.barrier },
+    ranking:    { ...d.ranking,    ...current.ranking },
+    signal:     { ...d.signal,     ...current.signal },
+    sltp:       { ...d.sltp,       ...current.sltp },
+    L2_formula: { ...d.L2_formula, ...current.L2_formula },
+  }
+  await setTradingConfig(c.env.KV, filled as any)
+  return c.json({
+    success: true,
+    message: 'Schema defaults merged into KV (existing values preserved)',
+    config: filled,
+  })
+})
+
+// ─── Admin: KV 讀取（debug 用，繞過 wrangler 的 Windows UV_HANDLE_CLOSING bug）──
+// 2026-04-09: wrangler kv key get 在本機 Node 17+ Windows 下會 assertion fail crash，
+// 開這條路讓 debug/audit 能直接讀 KV。僅 GET、唯讀、auth required。
+app.get('/api/admin/kv-get', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+  const key = c.req.query('key')
+  if (!key) return c.json({ error: 'Missing ?key= param' }, 400)
+  const type = (c.req.query('type') ?? 'text').toLowerCase()
+  const value = type === 'json'
+    ? await c.env.KV.get(key, 'json')
+    : await c.env.KV.get(key, 'text')
+  if (value === null) return c.json({ key, value: null, exists: false }, 404)
+  return c.json({ key, value, exists: true })
 })
 
 // ─── Admin: Optuna Push (2026-04-07) ───────────────────────────────────────
@@ -180,7 +240,8 @@ app.post('/api/admin/optuna-push', async (c) => {
     }
     case 'sltp': {
       // params: { sl_mult, tp_mult, trailMultDefault, trailMultAt3pct, trailMultAt8pct,
-      //          trail_switch_3pct, trail_switch_8pct, tp1SellRatio, timeStopDays, hardStopPct }
+      //          trail_switch_3pct, trail_switch_8pct, tp1SellRatio, timeStopDays, hardStopPct,
+      //          slMultLow, tpMultLow, slMultHigh, tpMultHigh, volSkipThreshold }  ← Sprint 5.1
       const sltp = {
         slMultBase:        Number(params.sl_mult ?? params.slMultBase ?? current.sltp.slMultBase),
         tpMultBase:        Number(params.tp_mult ?? params.tpMultBase ?? current.sltp.tpMultBase),
@@ -188,6 +249,13 @@ app.post('/api/admin/optuna-push', async (c) => {
         trailSwitch8pct:   Number(params.trail_switch_8pct ?? params.trailSwitch8pct ?? current.sltp.trailSwitch8pct),
         volThresholdLow:   Number(params.vol_threshold_low ?? params.volThresholdLow ?? current.sltp.volThresholdLow),
         volThresholdHigh:  Number(params.vol_threshold_high ?? params.volThresholdHigh ?? current.sltp.volThresholdHigh),
+        // Sprint 5.1 Phase 7 Layer B: per-vol-branch multipliers
+        slMultLow:         Number(params.sl_mult_low ?? params.slMultLow ?? current.sltp.slMultLow),
+        tpMultLow:         Number(params.tp_mult_low ?? params.tpMultLow ?? current.sltp.tpMultLow),
+        slMultHigh:        Number(params.sl_mult_high ?? params.slMultHigh ?? current.sltp.slMultHigh),
+        tpMultHigh:        Number(params.tp_mult_high ?? params.tpMultHigh ?? current.sltp.tpMultHigh),
+        // Sprint 5.1 Phase 7 Layer C: extreme low vol skip
+        volSkipThreshold:  Number(params.vol_skip_threshold ?? params.volSkipThreshold ?? current.sltp.volSkipThreshold),
       }
       // exit section 也跟著更新（trailMult 跟 sltp 跨 section）
       const exit = {
@@ -309,6 +377,43 @@ app.get('/api/admin/cron-logs', async (c) => {
   const { getCronLogs } = await import('./lib/cronLogger')
   const logs = await getCronLogs(c.env.KV, date)
   return c.json({ date, logs })
+})
+
+// ─── 2026-04-08 Part 5 Option A: cron-callback endpoint ──────────────────────
+// ml-controller posts here when a fire-and-forget pipeline finishes so the
+// final cron:log:pipeline status reflects ml-controller's actual completion
+// rather than Worker's CF-edge-truncated view (~144s subrequest timeout).
+//
+// Auth: Bearer token = STOCKVISION_AUTH_TOKEN (same secret both directions).
+// Body: { task: string, status: 'success'|'error', summary: string,
+//         duration_ms: number, error?: string, run_id?: string }
+app.post('/api/admin/cron-callback', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || typeof body.task !== 'string' || typeof body.status !== 'string') {
+    return c.json({
+      error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
+    }, 400)
+  }
+  if (body.status !== 'success' && body.status !== 'error') {
+    return c.json({ error: 'status must be "success" or "error"' }, 400)
+  }
+
+  const { logCronResult } = await import('./lib/cronLogger')
+  await logCronResult(c.env.KV, String(body.task), {
+    status: body.status,
+    summary: String(body.summary ?? ''),
+    duration_ms: Number(body.duration_ms ?? 0),
+    error: body.error != null ? String(body.error) : undefined,
+  })
+  console.log(
+    `[cron-callback] ${body.task} ${body.status} ` +
+    `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`
+  )
+  return c.json({ ok: true, task: body.task, status: body.status })
 })
 
 // ─── Backtest Results（最新回測結果，Dashboard 用）─────────────────────────────
@@ -502,6 +607,84 @@ function _categorizeExitReason(reason: string): string {
   return 'HoldNoTrigger'
 }
 
+// Phase 5.2 (2026-04-08 audit): simulateTrade parity test endpoint
+// Body: { direction: 'up'|'down', entry, stop, target1, target2, bars: [{open,high,low,close}] }
+app.post('/api/admin/test/simulate-trade', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !body.direction || body.entry == null || body.stop == null
+      || body.target1 == null || body.target2 == null || !Array.isArray(body.bars)) {
+    return c.json({
+      error: 'Body must be { direction: "up"|"down", entry, stop, target1, target2, bars: [...] }',
+    }, 400)
+  }
+
+  try {
+    const { simulateTrade } = await import('./lib/predictionVerifier')
+    const result = simulateTrade(
+      body.direction,
+      Number(body.entry),
+      Number(body.stop),
+      Number(body.target1),
+      Number(body.target2),
+      body.bars,
+    )
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e) }, 500)
+  }
+})
+
+// Sprint 6a.7b (2026-04-08): scoreMultiFactor parity test endpoint
+// Body: { prices: FMStockPrice[], chips: [{date, foreign, trust}], marketReturn5d, cfg?: Partial<TradingConfig> }
+// Returns { base_score, chip_score, tech_score, momentum_score, reasons }
+app.post('/api/admin/test/score-multi-factor', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !Array.isArray(body.prices) || body.marketReturn5d == null) {
+    return c.json({
+      error: 'Body must be { prices: FMStockPrice[], chips?: [{date,foreign,trust}], marketReturn5d, cfg? }',
+    }, 400)
+  }
+
+  try {
+    const { scoreMultiFactor } = await import('./lib/marketScreener')
+    const { getTradingConfig } = await import('./lib/tradingConfig')
+
+    const baseCfg = await getTradingConfig(c.env.KV)
+    const cfg = body.cfg ? { ...baseCfg, ...body.cfg, screener: { ...baseCfg.screener, ...(body.cfg.screener ?? {}) } } : baseCfg
+
+    // Build chipDates map (same shape as internal loadMarketDataFromD1 output)
+    let chipDates: Map<string, { foreign: number; trust: number }> | undefined
+    if (Array.isArray(body.chips) && body.chips.length > 0) {
+      chipDates = new Map()
+      for (const c of body.chips) {
+        chipDates.set(String(c.date), { foreign: Number(c.foreign ?? 0), trust: Number(c.trust ?? 0) })
+      }
+    }
+
+    const prices = body.prices as any[]
+    const latestClose = Number(prices[prices.length - 1]?.close ?? 0)
+
+    const result = scoreMultiFactor(
+      prices as any,
+      chipDates,
+      Number(body.marketReturn5d),
+      latestClose,
+      cfg,
+    )
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e) }, 500)
+  }
+})
+
 // ─── Admin: 手動觸發 cron 任務（STOCKVISION_AUTH_TOKEN 驗證 + Rate Limit）───
 app.post('/api/admin/trigger/:task', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -571,9 +754,25 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
     'adapt':            async () => { const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine'); return runAdaptiveUpdate(c.env) },
+    // Phase 5.5 (2026-04-08 audit): V1 verify kept as manual backup during dual-run
+    'verify':           async () => { await runPredictionVerification(c.env); return 'V1 verify 完成' },
+    // Phase 5.5 V2: trigger ml-controller LangGraph verify pipeline manually
+    'verify-v2':        async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/verify/run`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ lookback_days: 5, limit: 200 }),
+        signal: AbortSignal.timeout(280_000),
+      })
+      if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
+      return await res.json()
+    },
     'reclassify-tags':  async () => { const { reclassifyTags } = await import('./lib/tagReclassifier'); return reclassifyTags(c.env) },
     'sync-industries':  async () => { const { syncIndustryTags } = await import('./lib/twseApi'); return syncIndustryTags(c.env.DB, c.env.KV) },
-    'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
+    // 'backfill-rrg' trigger removed in Phase 6.6 of 4/8 audit along with
+    // marketScreener's Z-score RRG. Backfill now lives in ml-controller.
     'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
     'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
     // ── 完整 Pipeline：依序等待每步完成（呼叫模組級 runFullPipeline 共用 helper）──
@@ -1285,17 +1484,20 @@ async function runMLAndRisk(env: Bindings) {
 // 都應該是 ml-controller 的責任。完整 audit 見 memory/project_langgraph_real_refactor.md
 //
 // runMLAndRisk 舊版保留 1 週做 rollback safety，2026-04-14 後砍。
-async function runMLAndRiskV2(env: Bindings) {
+async function runMLAndRiskV2(env: Bindings): Promise<string> {
   const twDate = twToday()
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) { console.log('[ML V2] Already running, skip'); return 'LOCKED' }
-  await env.KV.put(lockKey, '1', { expirationTtl: 600 })  // 10 min TTL
+  // 2026-04-08 Part 5 Option A: TTL bumped 600→1800 so background pipeline on
+  // ml-controller has headroom to finish before lock expires. ml-controller
+  // callback does not clear this lock; TTL cleanup only.
+  await env.KV.put(lockKey, '1', { expirationTtl: 1800 })  // 30 min TTL
 
   try {
     if (!env.ML_CONTROLLER_URL) {
       console.warn('[ML V2] ML_CONTROLLER_URL not set, falling back to legacy runMLAndRisk')
-      return await runMLAndRisk(env)
+      return await runMLAndRisk(env) as any
     }
 
     // 1. Market risk (~5 sec) — 仍在 worker 做，因為 marketRisk.ts 邏輯複雜不值得搬
@@ -1322,29 +1524,45 @@ async function runMLAndRiskV2(env: Bindings) {
       console.error('[ML V2] Market risk failed (non-blocking):', e)
     }
 
-    // 2. Trigger ml-controller LangGraph V2 — sync wait
+    // 2. Trigger ml-controller LangGraph V2 — fire-and-forget (Option A)
+    // ml-controller returns 202 immediately with a run_id; pipeline runs in
+    // background. ml-controller posts /api/admin/cron-callback when done, so
+    // cron:log:* gets overwritten with real completion status.
+    // Worker no longer waits for pipeline body — CF edge ~144s subrequest
+    // timeout was truncating fetch and falsely reporting errors.
+    // See project_session_2026_04_08_part5.md for rationale.
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
-    console.log('[ML V2] Calling ml-controller /pipeline/v2/run (sync)...')
+    console.log('[ML V2] Triggering ml-controller /pipeline/v2/run (async, expect 202)...')
     const t0 = Date.now()
     const res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({}),
-      signal: AbortSignal.timeout(900_000),  // 15 min Cloud Run budget
+      signal: AbortSignal.timeout(30_000),  // 30s is plenty to receive 202
     })
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
 
-    if (!res.ok) {
+    if (res.status !== 202 && !res.ok) {
       const text = await res.text().catch(() => '')
-      throw new Error(`Pipeline V2 HTTP ${res.status}: ${text.slice(0, 300)}`)
+      throw new Error(`Pipeline V2 trigger HTTP ${res.status}: ${text.slice(0, 300)}`)
     }
-    const result = await res.json() as any
-    console.log(`[ML V2] Pipeline complete in ${elapsed}s: ${JSON.stringify(result.metrics ?? result)}`)
-  } finally {
+    let runId = 'unknown'
+    try {
+      const body = await res.json() as any
+      runId = String(body?.run_id ?? 'unknown')
+    } catch { /* body may be empty */ }
+    console.log(`[ML V2] Triggered in ${elapsed}s, run_id=${runId} (awaiting callback for final status)`)
+    return `triggered run_id=${runId}, callback expected`
+  } catch (e: any) {
+    // Trigger-phase failure (unreachable / auth / 30s timeout) — clear lock
+    // so next attempt can retry; ml-controller callback will not arrive.
     await env.KV.delete(lockKey).catch(() => {})
+    throw e
   }
+  // Note: on success, lockKey is NOT cleared here. It expires via TTL (1800s).
+  // ml-controller callback does not touch it.
 }
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
@@ -2023,7 +2241,7 @@ export default {
         const count = pending ? JSON.parse(pending).length : 0
         return `預熱完成，掛單 ${count} 支`
       })
-    } else if (cron === '50 9 * * 1-5') {
+    } else if (cron === '15 9 * * 1-5') {
       runWithLog('ml-warmup', async () => {
         if (env.ML_SERVICE_URL) {
           const h: Record<string, string> = {}
@@ -2041,14 +2259,32 @@ export default {
       // Individual tasks 仍可透過 /admin/trigger/:task 手動觸發
       runWithLog('pipeline', async () => {
         const { steps, message } = await runFullPipeline(env)
-        // 追加驗證（非阻擋，不影響 pipeline 成敗）
-        runPredictionVerification(env).catch(e => console.warn('[Pipeline] verify failed:', e))
+        // Phase 5.5 (2026-04-08 audit): B6 fire-and-forget removed.
+        // Verify now runs in its own cron at 19:00 TW (V2 via ml-controller LangGraph).
+        // Old V1 runPredictionVerification kept as manual backup via /admin/trigger/verify.
         return `${message} (${steps.join(' → ')})`
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
+      })
+    } else if (cron === '0 11 * * 1-5') {
+      // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2
+      // Calls ml-controller /verify/run (LangGraph) — replaces worker silently-failing V1.
+      runWithLog('verify-v2', async () => {
+        const controllerUrl = env.ML_CONTROLLER_URL
+        if (!controllerUrl) return '跳過（ML_CONTROLLER_URL 未設定）'
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        const res = await fetch(`${controllerUrl}/verify/run`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ lookback_days: 5, limit: 200 }),
+          signal: AbortSignal.timeout(280_000),
+        })
+        if (!res.ok) throw new Error(`Controller /verify/run HTTP ${res.status}`)
+        const data = await res.json() as any
+        return `verified ${data.verified}/${data.pending} correct ${data.correct} pnl ${(data.total_pnl_pct * 100).toFixed(1)}% arf ${data.arf_updated}`
       })
     } else if (cron === '25 5 * * 1-5') {
       runWithLog('eod-exit', async () => {

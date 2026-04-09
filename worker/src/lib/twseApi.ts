@@ -869,18 +869,40 @@ export interface StockDayAllRow {
 }
 
 /** TWSE 全市場今日收盤（含量）。非交易日或盤後未公布時回 []。*/
-export async function fetchTwseStockDayAll(date: string): Promise<StockDayAllRow[]> {
+/**
+ * 2026-04-09: return shape 從 `StockDayAllRow[]` 改 `{ reportDate, rows }`，解決 M3
+ * stale data bug — TWSE 對盤前/假日 query 會回最近一個交易日的資料且 body.date 會帶正確
+ * 的 report date。caller 原本把 request date 硬壓進 stock_prices 造成髒資料。
+ * 現在 caller 必須用 reportDate（response 回的真實 date）做 INSERT 的 date 欄位。
+ * body.date 格式是 "YYYYMMDD"，轉成 "YYYY-MM-DD"。
+ */
+export async function fetchTwseStockDayAll(
+  date: string,
+): Promise<{ reportDate: string | null; rows: StockDayAllRow[] }> {
   // 不帶 date → TWSE 回最新交易日；帶 date 指定特定日期
   const url = `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date=${twseDate(date)}&response=json`
   const res = await fetchWithRetry(url, {
     headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
   }, { label: 'TWSE_STOCK_DAY_ALL' })
-  if (!res.ok) return []
+  if (!res.ok) return { reportDate: null, rows: [] }
   const body = await res.json() as any
-  if (body.stat !== 'OK' || !body.data) return []
+  if (body.stat !== 'OK' || !body.data) return { reportDate: null, rows: [] }
+
+  // Parse body.date "YYYYMMDD" → "YYYY-MM-DD"
+  let reportDate: string | null = null
+  if (typeof body.date === 'string' && /^\d{8}$/.test(body.date)) {
+    reportDate = `${body.date.slice(0, 4)}-${body.date.slice(4, 6)}-${body.date.slice(6, 8)}`
+    if (reportDate !== date) {
+      console.warn(
+        `[TWSE_STOCK_DAY_ALL] stale redirect: requested ${date} → got ${reportDate} ` +
+        `(TWSE 通常對非交易日回最近一個交易日)`
+      )
+    }
+  }
+
   // fields: [代號, 名稱, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數]
-  return body.data
+  const rows = body.data
     .filter((r: string[]) => isStockCode(r[0]))
     .map((r: string[]) => ({
       symbol: r[0].trim(),
@@ -890,6 +912,7 @@ export async function fetchTwseStockDayAll(date: string): Promise<StockDayAllRow
       close:  r[7] && r[7] !== '--' ? parseFloat(r[7].replace(/,/g, '')) || null : null,
       volume: r[2] ? parseTwNum(r[2]) : null,
     }))
+  return { reportDate, rows }
 }
 
 /** TPEX 全市場今日收盤（openapi）*/
@@ -958,18 +981,31 @@ export async function bulkFetchAndStorePrices(
   db: D1Database,
   date: string,
 ): Promise<number> {
-  const [twseRows, tpexRows, emergingRows] = await Promise.allSettled([
+  const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
     fetchTwseStockDayAll(date),
     fetchTpexStockDayAll(),
     fetchEmergingStockDayAll(),
   ])
 
+  // 2026-04-09 M3 fix: TWSE 會對盤前/假日 redirect 到最近一個交易日。
+  // 改用 reportDate（response 回的真實 date）做 INSERT 的 date，避免把 stale data
+  // 硬壓成 request date 造成 stock_prices 髒資料。見 mistake.md M3。
+  const twseRows = twseResult.status === 'fulfilled' ? twseResult.value.rows : []
+  const twseReportDate = twseResult.status === 'fulfilled' ? twseResult.value.reportDate : null
+  const effectiveDate = twseReportDate ?? date
+  if (twseReportDate && twseReportDate !== date) {
+    console.warn(
+      `[BulkPrice] TWSE report date ${twseReportDate} ≠ requested ${date}; ` +
+      `writing to stock_prices.date=${effectiveDate} to avoid stale pollution (M3)`
+    )
+  }
+
   const allRows: StockDayAllRow[] = [
-    ...(twseRows.status === 'fulfilled' ? twseRows.value : []),
+    ...twseRows,
     ...(tpexRows.status === 'fulfilled' ? tpexRows.value : []),
     ...(emergingRows.status === 'fulfilled' ? emergingRows.value : []),
   ]
-  if (twseRows.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseRows.reason)
+  if (twseResult.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseResult.reason)
   if (tpexRows.status === 'rejected') console.warn('[BulkPrice] TPEX DayAll failed:', tpexRows.reason)
   if (emergingRows.status === 'rejected') console.warn('[BulkPrice] Emerging DayAll failed:', emergingRows.reason)
 
@@ -989,7 +1025,7 @@ export async function bulkFetchAndStorePrices(
       .map(r => db.prepare(
         `INSERT OR REPLACE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
          VALUES (?,?,?,?,?,?,?,?,?)`
-      ).bind(idMap.get(r.symbol)!, date, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
+      ).bind(idMap.get(r.symbol)!, effectiveDate, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
     if (stmts.length) {
       await db.batch(stmts)
       count += stmts.length
@@ -1011,7 +1047,7 @@ export async function bulkFetchAndStorePrices(
     console.log(`[BulkPrice] Marked ${emergingSymbols.length} emerging stocks`)
   }
 
-  console.log(`[BulkPrice] Written: ${count} stock_prices rows (TWSE ${twseRows.status === 'fulfilled' ? twseRows.value.length : 0} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
+  console.log(`[BulkPrice] Written: ${count} stock_prices rows to date=${effectiveDate} (TWSE ${twseRows.length} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
   return count
 }
 

@@ -1,57 +1,75 @@
 # Progress — StockVision
 
-## Session 2026-04-07 (compacted, new session 即將開始)
+## Session 2026-04-08 Part 2（已結束，進 new session）
 
 ### 最後狀態
-- 5-agent audit 完成（chaos/code/arch/ML/finance）
-- C1-C4 + H1-H9 + M1-M2 全部修完並部署
-- Worker `twToday2` 初始化 bug 已修（刪除 duplicate `const twDate`）
-- Holiday KV 已驗證 7 個邊界（含 4/4 清明、10/10、12/25、2/15）
-- Obsidian Second Brain 已上線（AngusRepo/Angus-brain）
-- 47 hardcode params → KV migration done
-- SHAP (#31) / Regime Optuna (#32) / RL Shadow (#29) / GNN Shadow (#28) 都完成
+- **audit Phase 0-4 救急快修完成**（commit 35 files + push + 253 rows DELETE + B1/B11/B12 四 bug fix）
+- **Phase 5.1-5.5 D-2 verify pipeline 完整 port 到 ml-controller LangGraph**
+- **Token drift P1 bug 修復**：Worker/ml-controller/Modal/settings.json/modal_app.py 五處全部同步為 `sv-stockvision-2026-prod`
+- 15/15 cross-runtime parity（Python `_trade_simulator.py` vs Worker `simulateTrade`）
+- B6 fire-and-forget bug fix：`runPredictionVerification(env).catch(...)` 從 pipeline cron 移除
+- 新 cron `0 11 * * 1-5`（19:00 TW）→ ml-controller `/verify/run` LangGraph pipeline
 
-### 🔴 待繼續（next session 第一件事）
-**LangGraph 架構問題** — User 已說 `go`，還沒執行：
+### Deployments（本 session 最新）
+- **Worker**: `fa21a98c-bdc3-43e3-b5ac-06faf1df2d01`（Phase 5.5 cron + trigger + B1 + B6 + simulateTrade export + /api/admin/test/simulate-trade）
+- **ml-controller**: `ml-controller-00043-mlk`（Phase 5 verify pipeline + B11 + B12 + token env 同步）
+- **ml-service (Modal)**: redeployed 2 次（B12 + 新 token secret pickup）
 
-根本原因：Controller 繞 Controller→Worker→Controller→Modal 4 層 HTTP，每層加延遲 → 超過 Cloud Run 300s timeout，被迫加到 600s 會增加成本。
+### 🚧 待繼續（next session 起手）
+**Phase 5.6 Dual-run 5 個交易日觀察** — 每天 ~5 min:
+- 4/9（週三）19:00 TW = V2 cron 首次自動跑
+- 手動 trigger `verify`（V1）對照 V2 cron
+- 5 個交易日（4/9-4/15）0 diff → Phase 5.7 砍 V1（593 行 predictionVerifier.ts）
 
-修復計畫（改動很小）：
-1. `worker/src/index.ts` line 1674 `cron === '30 9 * * 1-5'` 分支
-   - 現在：line 1689 `postController(env, '/pipeline/run', ...)` 600_000ms timeout
-   - 改成：直接跑 Worker 內建 `pipeline` task（taskMap line ~348，已有 await gate）
-2. `gcloud run services update ml-controller --region=asia-east1 --timeout=300` 還原 timeout
-3. （選配）在 Worker pipeline 加 KV checkpoint pattern
-4. Deploy Worker + verify
-
-Worker 自己跑只有 1 層 HTTP（ML predict → Modal），快很多。
+**接續任務 Option A**（推薦）:
+1. Phase 5.6 daily check（並行，每天 5 min）
+2. **Phase 6 Path 5 RRG vs-benchmark 統一**（~5 hr, 6 sub-phase）
+3. 6a.7b screener parity test（~2-3 hr）
+4. Sprint 5.1 + audit Phase 7 Layer B/C（~5-7 hr）
+5. 6a.8 profile + targeted opt → Sprint 5.2 / 5.3 / 6b / 4-2 revisit / 7+
 
 ### Portfolio
-- 無 active positions
-- Paper trading running
+- 3045 台灣大 1000 股 @109（4/8 10:23 TW 手動 trigger morning-setup 成交，9 天來第一單，DOWNGRADE 半倉）
+- R:R ≈ 0.5（S1 策略問題活案例，vol_pct 0.66% 極窄）
 
-### Deployments
-- Worker: latest（twToday2 bug 已修）
-- ML (Modal): deployed（FTTransformer 已還原）
-- Controller (Cloud Run): timeout 600s（待還原 300s）
-- Obsidian: AngusRepo/Angus-brain 運行中
-
-### Cron Schedule（當前，待改）
+### Cron Schedule（Phase 5.5 新加 19:00）
 ```
-17:30 Controller /pipeline/run  ← 要改成 Worker 自己跑
-18:40 Obsidian daily push
-07:15 morning-setup
+17:30 Worker runFullPipeline (fetch → screener → ml → rec)  [B6 fire-and-forget 移除]
+18:20 Adaptive Engine
+19:00 ⭐ NEW: D-2 Verify Pipeline V2 (Worker → ml-controller /verify/run LangGraph)
+18:25 Daily Report Discord
+18:40 Obsidian daily
+07:15 Morning Setup
 ```
 
-### Key Files
-- `worker/src/index.ts` line 1674, 1689（cron handler）
-- `worker/src/lib/dateUtils.ts`（twToday/twNow/twDaysAgo）
-- `worker/src/lib/tradingConfig.ts`（47 KV params）
-- `ml-service/app/features/__init__.py`（C1 ATR raw）
-- `ml-service/app/models.py`（SHAP + FTTransformer restored）
-- `ml-controller/services/obsidian_writer.py`
+### Key Files（本 session 新增/修改）
+**新增 (6)**:
+- `ml-controller/services/_predictions_schema.py`
+- `ml-controller/services/_trade_simulator.py`
+- `ml-controller/services/verify_service.py` (~460 行)
+- `ml-controller/graphs/verify_pipeline.py`
+- `ml-controller/tests/test_simulate_parity.py`
+- `worker/src/lib/_predictionsSchema.ts`
 
-### Action Items
-- [ ] 改 cron 17:30 → Worker 內建 pipeline task
-- [ ] Cloud Run timeout 600s → 300s
-- [ ] Deploy + verify <300s
+**修改 (10)**:
+- `worker/src/routes/paper.ts` (B1)
+- `worker/src/lib/predictionVerifier.ts` (export)
+- `worker/src/index.ts` (+6 處: test endpoint/verify-v2 trigger/19:00 cron/B6 removal)
+- `worker/wrangler.toml` (新 cron)
+- `ml-controller/services/modal_client.py` (B11)
+- `ml-controller/services/payload_builder.py` (B12)
+- `ml-controller/graphs/daily_pipeline_v2.py` (B12)
+- `ml-controller/routers/verify.py` (新 /verify/run)
+- `ml-service/app/ensemble.py` + `ml-service/app/main.py` (B12)
+- `ml-service/modal_app.py` (token 註解)
+
+### Action Items（下 session）
+- [ ] Phase 5.6 dual-run daily check × 5 天
+- [ ] Phase 6 Path 5 RRG vs-benchmark 統一
+- [ ] 6a.7b screener parity test
+- [ ] Sprint 5.1 + audit Phase 7 L2/SLTP Optuna
+
+### 待解決 tech debt / known issues
+- `_predictions_schema.py` constants 尚未接線到 `recommendation_service.py` / `paper.ts`（refactor 時順便）
+- ml-service Cloud Run maxScale=2，B11 concurrency=20 可能 inference bottleneck（clean run 後觀察）
+- Python 3.14 `asyncio.WindowsSelectorEventLoopPolicy` deprecation（3.16 會壞）

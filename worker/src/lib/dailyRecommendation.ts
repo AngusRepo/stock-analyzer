@@ -68,8 +68,11 @@ async function queryChipAndPrice(db: D1Database) {
 // ─── Theme 級別：D1 chip_data + stock_tags 概念標籤 ──────────────────────────
 async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[]; stockDetails: ThemeStockDetail[] }> {
   try {
+    // Phase 6.6 follow-up: filter to concept-only.
+    // Without this, industry/subindustry tags pollute themeSectors aggregation
+    // and end up written to sector_flow as classification='theme'.
     const { results: tagRows } = await env.DB.prepare(
-      'SELECT symbol, tag, weight FROM stock_tags ORDER BY symbol, weight DESC'
+      "SELECT symbol, tag, weight FROM stock_tags WHERE tag_type='concept' ORDER BY symbol, weight DESC"
     ).all<{ symbol: string; tag: string; weight: number }>()
     if (!tagRows?.length) return { sectors: [], stockDetails: [] }
 
@@ -138,111 +141,15 @@ async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[];
     }
 
     // ── RRG 四象限計算 ────────────────────────────────────────────────────────
-    // RS-Ratio = (概念成分股平均 5 日報酬 / 大盤 5 日報酬) × 100
-    // RS-Momentum = 今日 RS-Ratio - 5 日前 RS-Ratio（需歷史 sector_flow）
-    try {
-      // 1. 每個概念成分股的平均 5 日報酬
-      const { results: returnRows } = await env.DB.prepare(`
-        SELECT s.symbol,
-          (SELECT sp2.close FROM stock_prices sp2 WHERE sp2.stock_id = s.id ORDER BY sp2.date DESC LIMIT 1) as close_now,
-          (SELECT sp3.close FROM stock_prices sp3 WHERE sp3.stock_id = s.id ORDER BY sp3.date DESC LIMIT 1 OFFSET 5) as close_5d
-        FROM stocks s WHERE s.is_active = 1
-      `).all<any>()
-      const returnMap = new Map<string, number>()
-      for (const r of returnRows ?? []) {
-        if (r.close_now && r.close_5d && r.close_5d > 0) {
-          returnMap.set(r.symbol, (r.close_now - r.close_5d) / r.close_5d)
-        }
-      }
-
-      // 2. 大盤 5 日報酬（TWII）
-      const { results: twiiRows } = await env.DB.prepare(
-        'SELECT twii_close FROM market_risk ORDER BY date DESC LIMIT 6'
-      ).all<any>()
-      let twiiReturn = 0
-      if (twiiRows && twiiRows.length >= 2) {
-        const latest = twiiRows[0]?.twii_close as number
-        const prev5  = twiiRows[Math.min(5, twiiRows.length - 1)]?.twii_close as number
-        if (latest && prev5 && prev5 > 0) twiiReturn = (latest - prev5) / prev5
-      }
-
-      // 3. 每個概念的 RS-Ratio
-      for (const [tag, members] of tagSymbols) {
-        const s = agg.get(tag)
-        if (!s) continue
-        const returns = [...members].map(sym => returnMap.get(sym)).filter((r): r is number => r != null)
-        if (returns.length < 3) continue // 成分股太少，不計算
-        const themeReturn = returns.reduce((a, b) => a + b, 0) / returns.length
-        // RS-Ratio: theme vs market, normalized to 100
-        s.rs_ratio = twiiReturn !== 0
-          ? Math.round(((1 + themeReturn) / (1 + twiiReturn)) * 100 * 100) / 100
-          : themeReturn > 0 ? 105 : themeReturn < 0 ? 95 : 100
-      }
-
-      // 4. RS-Momentum: 需要歷史 sector_flow 的 rs_ratio
-      const { results: histRs } = await env.DB.prepare(
-        `SELECT sector, rs_ratio FROM sector_flow
-         WHERE classification = 'theme' AND rs_ratio IS NOT NULL
-           AND date = (SELECT date FROM sector_flow WHERE classification = 'theme' AND rs_ratio IS NOT NULL ORDER BY date DESC LIMIT 1 OFFSET 4)
-         ORDER BY sector`
-      ).all<any>()
-      const histRsMap = new Map<string, number>()
-      for (const r of histRs ?? []) histRsMap.set(r.sector, r.rs_ratio as number)
-
-      // 5. 計算 Momentum + Quadrant
-      for (const s of agg.values()) {
-        if (s.rs_ratio == null) continue
-        const prevRs = histRsMap.get(s.sector)
-        s.rs_momentum = prevRs != null ? Math.round((s.rs_ratio - prevRs) * 100) / 100 : null
-
-        // Quadrant 分類
-        const mom = s.rs_momentum ?? 0
-        if (s.rs_ratio >= 100 && mom >= 0) s.quadrant = 'Leading'
-        else if (s.rs_ratio >= 100 && mom < 0) s.quadrant = 'Weakening'
-        else if (s.rs_ratio < 100 && mom < 0) s.quadrant = 'Lagging'
-        else s.quadrant = 'Improving'
-      }
-
-      // 5b. RS-Momentum 方向一致性（Direction Consistency）
-      // 查最近 5 天的 rs_momentum，連續 3 天正值 = 穩定轉強 → 提升象限權重
-      try {
-        const { results: momHistory } = await env.DB.prepare(
-          `SELECT sector, rs_momentum FROM sector_flow
-           WHERE classification = 'theme' AND rs_momentum IS NOT NULL
-             AND date IN (SELECT DISTINCT date FROM sector_flow WHERE classification = 'theme' AND rs_momentum IS NOT NULL ORDER BY date DESC LIMIT 5)
-           ORDER BY sector, date DESC`
-        ).all<any>()
-        const momBySector = new Map<string, number[]>()
-        for (const r of momHistory ?? []) {
-          if (!momBySector.has(r.sector)) momBySector.set(r.sector, [])
-          momBySector.get(r.sector)!.push(r.rs_momentum)
-        }
-        for (const s of agg.values()) {
-          const hist = momBySector.get(s.sector)
-          if (!hist || hist.length < 3) continue
-          const recent3 = hist.slice(0, 3) // 最近 3 天（已按 date DESC）
-          const allPositive = recent3.every(m => m > 0)
-          const allNegative = recent3.every(m => m < 0)
-          if (allPositive && s.quadrant === 'Improving') {
-            // 穩定轉強 → 升級為 Leading（動能已確認）
-            s.quadrant = 'Leading'
-            console.log(`[RRG] ${s.sector} Improving→Leading（momentum 連續 3 天正值）`)
-          } else if (allNegative && s.quadrant === 'Leading') {
-            // 穩定轉弱 → 降級為 Weakening（動能已確認衰退）
-            s.quadrant = 'Weakening'
-            console.log(`[RRG] ${s.sector} Leading→Weakening（momentum 連續 3 天負值）`)
-          }
-        }
-      } catch (e) {
-        console.warn('[RRG] Direction consistency check failed (non-fatal):', e)
-      }
-
-      const qCounts = { Leading: 0, Weakening: 0, Lagging: 0, Improving: 0 } as Record<string, number>
-      for (const s of agg.values()) { if (s.quadrant) qCounts[s.quadrant] = (qCounts[s.quadrant] ?? 0) + 1 }
-      console.log(`[RRG] Quadrant: L=${qCounts.Leading} W=${qCounts.Weakening} Lag=${qCounts.Lagging} I=${qCounts.Improving}, twii5d=${(twiiReturn * 100).toFixed(2)}%`)
-    } catch (e) {
-      console.warn('[RRG] Quadrant calc failed (non-fatal):', e)
-    }
+    // Phase 6.6 of 4/8 audit — moved to ml-controller sector_flow_service.py
+    // (V2 LangGraph node_compute_sector_flow).
+    //
+    // The old block here had the correct vs-TWII formula but with a bug: the
+    // `WHERE s.is_active = 1` filter (line 149) restricted member returns to ~33
+    // active stocks, making most themes uncomputable. The new V2 service reads
+    // ALL stock_prices without that filter. s.rs_ratio / rs_momentum / quadrant
+    // below stay null here — they are written separately by V2 and preserved
+    // via the INSERT SET clause (which no longer touches RRG fields).
 
     // per-theme top 5 + dark_horse
     // 計算每個 theme 的 total_net，決定排序方向
@@ -767,11 +674,16 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
   // 不再用 INSERT OR REPLACE 覆寫（舊 Controller 殘留已移除）
   // T2 debate 在 morning-setup（paper.ts）執行，不在此處
 
-  // 5. 寫入 sector_flow（theme only，industry 由 screener 寫）
+  // 5. 寫入 sector_flow chip-flow 欄位（theme only）
+  // Phase 6.6 of 4/8 audit:
+  // - Removed `DELETE FROM sector_flow` — previously wiped V2-written RRG rows
+  // - ON CONFLICT SET no longer updates rs_ratio/rs_momentum/quadrant, so V2
+  //   RRG values written by ml-controller sector_flow_service are preserved.
+  // - On cold-start (no prior V2 write) the VALUES clause seeds RRG fields as
+  //   null; next pipeline run will populate them.
   {
     const batch = themeSectors.slice(0, 50)
     if (batch.length) {
-      await env.DB.prepare("DELETE FROM sector_flow WHERE date = ? AND classification = 'theme'").bind(today).run()
       const stmts = batch.map(s =>
         env.DB.prepare(`
           INSERT INTO sector_flow
@@ -783,14 +695,14 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
             foreign_net=excluded.foreign_net, trust_net=excluded.trust_net,
             total_net=excluded.total_net, avg_rsi=excluded.avg_rsi,
             avg_momentum_5d=excluded.avg_momentum_5d, stock_count=excluded.stock_count,
-            up_count=excluded.up_count, classification=excluded.classification,
+            up_count=excluded.up_count,
             llm_summary=COALESCE(excluded.llm_summary, sector_flow.llm_summary)
         `).bind(today, s.sector, s.foreign_net, s.trust_net, s.total_net,
                 s.avg_rsi, s.avg_momentum_5d, s.stock_count, s.up_count, 'theme',
                 s.rs_ratio, s.rs_momentum, s.quadrant)
       )
       await env.DB.batch(stmts)
-      console.log(`[SectorFlow:theme] 寫入 ${batch.length} 筆`)
+      console.log(`[SectorFlow:theme] 寫入 ${batch.length} 筆 chip-flow（RRG 由 V2 寫）`)
     }
   }
 

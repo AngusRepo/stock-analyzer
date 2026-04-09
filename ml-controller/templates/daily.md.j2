@@ -4,8 +4,8 @@ type: daily
 market_risk: {{ risk.risk_level | default('N/A') }}
 risk_score: {{ risk.risk_score | default(0) }}
 portfolio_value: {{ snapshot.total_value | default(0) | int }}
-daily_pnl: {{ snapshot.pnl | default(0) | round(0) | int }}
-daily_pnl_pct: {{ snapshot.pnl_pct | default(0) | round(2) }}
+daily_pnl: {{ ((snapshot.pnl or 0) | round(0) | int) }}
+daily_pnl_pct: {{ ((snapshot.pnl_pct or 0) | round(2)) }}
 positions_count: {{ positions | length }}
 trades_count: {{ orders | length }}
 tags: [daily, auto-generated]
@@ -49,16 +49,16 @@ No trades today.
 | Symbol | Name | Shares | Cost | Current | Unrealized | % |
 |--------|------|--------|------|---------|------------|---|
 {% for p in positions %}
-| {{ p.symbol }} | {{ p.name | default('') }} | {{ p.shares }} | ${{ p.avg_cost | default(p.entry_price) | round(2) }} | ${{ p.current_price | default('?') }} | {{ p.unrealized_pnl | default(0) | int }} | {{ p.unrealized_pnl_pct | default(0) | round(1) }}% |
+| {{ p.symbol }} | {{ p.name | default('') }} | {{ p.shares }} | ${{ ((p.avg_cost or p.entry_price or 0) | round(2)) }} | ${{ p.current_price | default('?') }} | {{ ((p.unrealized_pnl or 0) | int) }} | {{ ((p.unrealized_pnl_pct or 0) | round(1)) }}% |
 {% endfor %}
 {% else %}
 No positions.
 {% endif %}
 
 ## Portfolio
-- Total Assets: ${{ snapshot.total_value | default(0) | int | replace(",", "") }}
-- Daily P&L: {{ snapshot.pnl | default(0) | round(0) | int }} ({{ snapshot.pnl_pct | default(0) | round(2) }}%)
-- MDD: {{ (snapshot.max_drawdown_to_date | default(0) * 100) | round(1) }}%
+- Total Assets: ${{ ((snapshot.total_value or 0) | int) }}
+- Daily P&L: {{ ((snapshot.pnl or 0) | round(0) | int) }} ({{ ((snapshot.pnl_pct or 0) | round(2)) }}%)
+- MDD: {{ (((snapshot.max_drawdown_to_date or 0) * 100) | round(1)) }}%
 - Sharpe(30d): {{ snapshot.sharpe_30d | default('N/A') }}
 - Sortino(30d): {{ snapshot.sortino_30d | default('N/A') }}
 

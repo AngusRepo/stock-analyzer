@@ -62,6 +62,7 @@ class PredictPayload:
     market: str = "TW"
     market_env: dict = field(default_factory=dict)
     adaptive_params: dict = field(default_factory=dict)
+    trading_config: dict = field(default_factory=dict)  # B12 fix (2026-04-08): Optuna baseline (sltp/signal/circuit)
     lifecycle_weights: dict[str, float] = field(default_factory=dict)
     barrier_params: dict = field(default_factory=dict)
 
@@ -70,12 +71,12 @@ class PredictPayload:
 # Shared market env loader (one-shot, all stocks share)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, float]]:
+def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, float], dict]:
     """
-    Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
+    Load shared market data + adaptive_params + barrier_params + lifecycle_weights + trading_config.
 
     Returns:
-        (market_env, adaptive_params, barrier_params, lifecycle_weights)
+        (market_env, adaptive_params, barrier_params, lifecycle_weights, trading_config)
 
     Maps to worker/src/index.ts:1013-1075.
     """
@@ -177,7 +178,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         bull_alignment_pct=latest_breadth.get("bull_alignment_pct"),
     )
 
-    return market_env, adaptive_params, barrier_params, lifecycle_weights
+    return market_env, adaptive_params, barrier_params, lifecycle_weights, trading_cfg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -425,6 +426,7 @@ def build_payloads(
     adaptive_params: dict,
     barrier_params: dict,
     lifecycle_weights: dict[str, float],
+    trading_config: dict | None = None,
 ) -> list[PredictPayload]:
     """
     Build PredictPayload list for all active stocks.
@@ -478,6 +480,7 @@ def build_payloads(
             market=stock.get("market") or "TW",
             market_env=env_for_stock,
             adaptive_params=adaptive_params,
+            trading_config=trading_config or {},
             lifecycle_weights=lifecycle_weights,
             barrier_params=barrier_params,
         ))

@@ -1,5 +1,8 @@
 """
-routers/verify.py — POST /verify
+routers/verify.py — verify endpoints
+
+  POST /verify       → legacy ARF feedback receiver (called by worker v1)
+  POST /verify/run   → full verify pipeline V2 (LangGraph, Phase 5.5)
 """
 import logging
 from fastapi import APIRouter
@@ -10,6 +13,41 @@ from services.modal_client import batch_update_arf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class VerifyRunRequest(BaseModel):
+    run_date: Optional[str] = None
+    lookback_days: int = 5
+    limit: int = 200
+
+
+@router.post("/verify/run")
+async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
+    """
+    Phase 5.5 (2026-04-08 audit): D-2 verify pipeline V2 trigger.
+
+    Runs the full LangGraph verify_pipeline:
+      load_pending → verify each → write_back → update_model_accuracy
+      → update_trade_performance → arf_feedback → END
+
+    Replaces worker predictionVerifier.ts silently-failing fire-and-forget path.
+    """
+    from graphs.verify_pipeline import run_verify_v2
+
+    logger.info(
+        f"[verify/run] lookback_days={req.lookback_days} limit={req.limit} "
+        f"run_date={req.run_date}"
+    )
+    try:
+        result = await run_verify_v2(
+            run_date=req.run_date or "",
+            lookback_days=req.lookback_days,
+            limit=req.limit,
+        )
+        return result
+    except Exception as e:
+        logger.exception("[verify/run] Pipeline failed")
+        return {"status": "error", "error": str(e)}
 
 
 class VerifyRecord(BaseModel):

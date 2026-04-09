@@ -146,6 +146,15 @@ export interface TradingConfig {
     trailSwitch8pct: number      // profit-lock 第二階觸發 (預設 0.08)
     volThresholdLow: number      // 低波動定義 (預設 0.015)
     volThresholdHigh: number     // 高波動定義 (預設 0.03)
+    // ── Sprint 5.1 Phase 7 Layer B (2026-04-09): per-vol-branch multipliers ──
+    // 原本 ensemble.py 內部 hardcode 0.75/0.67/1.25/1.33，從沒進 Optuna search space
+    // 預設值等同原 hardcode，behaviour 不變；進 Optuna 後可 tune
+    slMultLow: number            // 低波動 SL 倍率相對 base（預設 0.75）
+    tpMultLow: number            // 低波動 TP 倍率相對 base（預設 0.67）
+    slMultHigh: number           // 高波動 SL 倍率相對 base（預設 1.25）
+    tpMultHigh: number           // 高波動 TP 倍率相對 base（預設 1.33）
+    // ── Sprint 5.1 Phase 7 Layer C (2026-04-09): extreme low vol skip ───────
+    volSkipThreshold: number     // vol_pct < threshold → NO_SIGNAL (預設 0.005)
   }
   // ── 2026-04-07 added: L2 daily formula 內部係數（adaptive.py 用） ──────────
   // 把 hardcoded formula 常數搬到 KV，讓未來 Optuna 可搜
@@ -322,6 +331,13 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     trailSwitch8pct: 0.08,
     volThresholdLow: 0.015,
     volThresholdHigh: 0.03,
+    // Sprint 5.1 Phase 7 Layer B defaults match pre-2026-04-09 ensemble.py hardcode
+    slMultLow: 0.75,
+    tpMultLow: 0.67,
+    slMultHigh: 1.25,
+    tpMultHigh: 1.33,
+    // Sprint 5.1 Phase 7 Layer C default: 0.5% daily vol skip
+    volSkipThreshold: 0.005,
   },
   // ── 2026-04-07 NEW: L2 daily formula 內部係數 ─────────────────────────────
   L2_formula: {

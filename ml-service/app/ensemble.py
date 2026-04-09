@@ -58,6 +58,7 @@ def weighted_vote(
     garch_vol: float | None = None,           # 來自 run_garch_volatility()，price 單位
     bandit_multipliers: dict[str, float] | None = None,  # 來自 LinUCB bandit（第11模型）
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
+    trading_config: dict | None = None,       # B12 fix (2026-04-08): KV trading:config（Optuna baseline）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
     lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
 ) -> EnsembleResult:
@@ -75,6 +76,7 @@ def weighted_vote(
     real_acc    = real_accuracies or {}
     stats       = model_stats or {}
     _adaptive   = adaptive_params or {}  # adaptive KV params（T+1，safe fallback to {}）
+    _trading_cfg = trading_config or {}  # B12 fix: KV trading:config baseline
 
     # ── Regime 乘數 ───────────────────────────────────────────────────────────
     regime_mults           = {}
@@ -267,17 +269,36 @@ def weighted_vote(
     vol_pct = effective_vol / current_price
     vol_source = "GARCH" if (garch_vol and garch_vol > 0) else "ATR"
 
-    # SL/TP base multipliers 從 KV 讀取（Optuna #3 可搜尋）
-    _sl_base = float(_adaptive.get("sl_mult_base", 2.0))
-    _tp_base = float(_adaptive.get("tp_mult_base", 1.5))
-    _vol_low = float(_adaptive.get("vol_threshold_low", 0.015))
-    _vol_high = float(_adaptive.get("vol_threshold_high", 0.03))
+    # B12 fix (2026-04-08 audit): SL/TP base multipliers 改讀 trading:config.sltp (Optuna #3 結果)
+    # Sprint 5.1 Phase 7 Layer B (2026-04-09): per-vol-branch multipliers 也從 KV 讀
+    # 原本 0.75/0.67/1.25/1.33 是 hardcode，從沒進 Optuna search space；現在 schema
+    # 已加 slMultLow/tpMultLow/slMultHigh/tpMultHigh 欄位，defaults 等同原 hardcode。
+    _sltp = _trading_cfg.get("sltp", {}) if isinstance(_trading_cfg, dict) else {}
+    _sl_base = float(_sltp.get("slMultBase", _adaptive.get("sl_mult_base", 2.0)))
+    _tp_base = float(_sltp.get("tpMultBase", _adaptive.get("tp_mult_base", 1.5)))
+    _vol_low = float(_sltp.get("volThresholdLow", _adaptive.get("vol_threshold_low", 0.015)))
+    _vol_high = float(_sltp.get("volThresholdHigh", _adaptive.get("vol_threshold_high", 0.03)))
+    _sl_mult_low  = float(_sltp.get("slMultLow", 0.75))
+    _tp_mult_low  = float(_sltp.get("tpMultLow", 0.67))
+    _sl_mult_high = float(_sltp.get("slMultHigh", 1.25))
+    _tp_mult_high = float(_sltp.get("tpMultHigh", 1.33))
+
+    # Sprint 5.1 Phase 7 Layer C (2026-04-09): extreme low vol skip
+    # 極低波動股（vol_pct < 0.5% 預設）的 R:R 幾乎必然超差（SL/TP 距離 current_price 太近），
+    # 直接 NO_SIGNAL 省得下游算白工 + 壓 fill_rate 統計
+    _vol_skip = float(_sltp.get("volSkipThreshold", 0.005))
+    if vol_pct < _vol_skip:
+        return _no_signal(
+            current_price, atr,
+            f"vol_pct={vol_pct:.4f} < {_vol_skip} (extreme low vol, 無法產出合理 R:R)"
+        )
+
     if vol_pct < _vol_low:      # 低波動：收緊
-        sl_mult, tp_mult = _sl_base * 0.75, _tp_base * 0.67
+        sl_mult, tp_mult = _sl_base * _sl_mult_low, _tp_base * _tp_mult_low
     elif vol_pct < _vol_high:     # 正常
         sl_mult, tp_mult = _sl_base, _tp_base
     else:                    # 高波動：放寬
-        sl_mult, tp_mult = _sl_base * 1.25, _tp_base * 1.33
+        sl_mult, tp_mult = _sl_base * _sl_mult_high, _tp_base * _tp_mult_high
 
     # Adaptive SL/TP override（高風險 regime 加寬，避免被洗）
     sl_tp_override = _adaptive.get("sl_tp_override")

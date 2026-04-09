@@ -55,12 +55,18 @@ async def generate_recommendation_reasons(
     candidates: list[dict],
     top_themes: Optional[list[str]] = None,
     timeout: float = 60.0,
+    max_attempts: int = 3,
 ) -> dict[str, dict]:
     """
     Generate LLM reasons for N candidates in 1 Claude API call.
 
     Returns: {symbol: {"reason": str, "watchPoints": list[str]}}
     Falls back to empty dict on any error (template will be used instead).
+
+    2026-04-08 Part 5 Bug A fix: retry up to `max_attempts` times on network
+    errors (connect timeout / read timeout / DNS) with exponential backoff,
+    and log detailed exception info (type name + request URL) so silent
+    `[llm_reason] Network error:` blank lines stop showing up.
     """
     if not candidates:
         return {}
@@ -92,9 +98,42 @@ async def generate_recommendation_reasons(
         "messages": [{"role": "user", "content": user_prompt}],
     }
 
+    import asyncio
+
+    resp = None
+    last_network_err: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(ANTHROPIC_BASE, headers=headers, json=body)
+            break  # got a response (even if non-200) — exit retry loop
+        except httpx.RequestError as e:
+            # Verbose error: include type name and repr so empty-message exceptions
+            # (e.g., ConnectTimeout('')) still leave a breadcrumb.
+            exc_type = type(e).__name__
+            url = getattr(getattr(e, "request", None), "url", "?")
+            last_network_err = f"{exc_type} url={url} repr={e!r}"
+            if attempt < max_attempts:
+                backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                logger.warning(
+                    f"[llm_reason] Network error attempt {attempt}/{max_attempts}, "
+                    f"retrying in {backoff}s: {last_network_err}"
+                )
+                await asyncio.sleep(backoff)
+                continue
+            logger.error(
+                f"[llm_reason] Network error after {max_attempts} attempts: "
+                f"{last_network_err}"
+            )
+            return {}
+        except Exception as e:
+            logger.error(f"[llm_reason] Unexpected error: {type(e).__name__}: {e!r}")
+            return {}
+
+    if resp is None:
+        return {}  # defensive — should be unreachable
+
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(ANTHROPIC_BASE, headers=headers, json=body)
         if resp.status_code != 200:
             logger.error(
                 f"[llm_reason] Anthropic API HTTP {resp.status_code}: {resp.text[:300]}"
@@ -126,12 +165,12 @@ async def generate_recommendation_reasons(
                     "watchPoints": (item.get("watchPoints") or [])[:3],
                 }
 
-        logger.info(f"[llm_reason] Generated {len(result)}/{len(candidates)} reasons")
+        logger.info(
+            f"[llm_reason] Generated {len(result)}/{len(candidates)} reasons "
+            f"(attempts={attempt})"
+        )
         return result
 
-    except httpx.RequestError as e:
-        logger.error(f"[llm_reason] Network error: {e}")
-        return {}
     except Exception as e:
-        logger.error(f"[llm_reason] Unexpected error: {e}")
+        logger.error(f"[llm_reason] Post-response parsing error: {type(e).__name__}: {e!r}")
         return {}

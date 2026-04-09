@@ -70,6 +70,8 @@ function computePFQualityMults(
   const hi = L2.pf_quality_clip_hi
   const w30 = L2.pf_quality_30d_weight
   const w90 = L2.pf_quality_90d_weight
+  // min_sample_size=10 here: per-model aggregated across all stocks, easy to pass.
+  // Anti-noise guard, not an Optuna target — PF 小樣本 noisy，避免亂調 pf_quality_mult。
   for (const r of rows30d) {
     if (r.total_count < 10 || r.profit_factor == null) { result[r.model_name] = 1.0; continue }
     const pf30 = clip(r.profit_factor, lo, hi)
@@ -86,18 +88,35 @@ async function queryAdaptiveInputs(env: { DB: D1Database; KV: KVNamespace }) {
     'SELECT risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 1'
   ).first<{ risk_score: number; risk_level: string }>()
 
+  // 2026-04-09 fix: 全市場 30d 準確率改用加權平均 SUM(correct)/SUM(total)
+  // 原本 AVG(accuracy) + total_count>=10 會被單檔 outlier 主導（當時只有 1 檔過門檻且 acc=0）
+  // min_sample_size=3 是純 anti-noise 守門員，不是交易參數所以 hardcode 不進 KV
   const accGlobal = await env.DB.prepare(`
-    SELECT AVG(accuracy) as avg_acc FROM model_accuracy WHERE period='30d' AND total_count >= 10
+    SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS avg_acc
+    FROM model_accuracy WHERE period='30d' AND total_count >= 3
   `).first<{ avg_acc: number | null }>()
 
+  // 2026-04-09 fix: updated_at → last_updated (實際欄位名)；
+  // 舊 HAVING MAX(updated_at) 是無效語法，會 runtime 錯被 catch 吞成空陣列，
+  // rows30d/90d 變空 → computePFQualityMults 全 fallback 1.0。
+  // 改成 model_name 維度加權 profit_factor（跨 stock），符合原本消費端語意。
   const { results: rows30d } = await env.DB.prepare(`
-    SELECT model_name, profit_factor, total_count FROM model_accuracy
-    WHERE period='30d' GROUP BY model_name HAVING MAX(updated_at)
+    SELECT model_name,
+           SUM(total_count) AS total_count,
+           CASE WHEN SUM(total_count) > 0 AND SUM(CASE WHEN profit_factor IS NOT NULL THEN total_count ELSE 0 END) > 0
+                THEN SUM(COALESCE(profit_factor, 0) * total_count) / SUM(CASE WHEN profit_factor IS NOT NULL THEN total_count ELSE 0 END)
+                ELSE NULL END AS profit_factor
+    FROM model_accuracy WHERE period='30d'
+    GROUP BY model_name
   `).all<any>().catch(() => ({ results: [] as any[] }))
 
   const { results: rows90d } = await env.DB.prepare(`
-    SELECT model_name, profit_factor FROM model_accuracy
-    WHERE period='90d' GROUP BY model_name HAVING MAX(updated_at)
+    SELECT model_name,
+           CASE WHEN SUM(CASE WHEN profit_factor IS NOT NULL THEN total_count ELSE 0 END) > 0
+                THEN SUM(COALESCE(profit_factor, 0) * total_count) / SUM(CASE WHEN profit_factor IS NOT NULL THEN total_count ELSE 0 END)
+                ELSE NULL END AS profit_factor
+    FROM model_accuracy WHERE period='90d'
+    GROUP BY model_name
   `).all<any>().catch(() => ({ results: [] as any[] }))
 
   const fiveDaysAgo = new Date(Date.now() + 8 * 3600_000 - 5 * 86400_000).toISOString().slice(0, 10)

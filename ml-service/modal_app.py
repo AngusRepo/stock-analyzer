@@ -40,7 +40,7 @@ gcs_secret = modal.Secret.from_name("gcs-credentials")
 #     CF_API_TOKEN=cfut_DzJ8hr6iRf4Sapft9EhfC9fgMNpUaS22PWrGm2Yw780682bf \
 #     CF_ACCOUNT_ID=619a83ac9f20847d9e2f2920823b727d \
 #     CF_D1_DB_ID=6401a5f6-5767-4fa8-a1a7-ec8d4739ac79 \
-#     STOCKVISION_AUTH_TOKEN=d34fc95104048741f086442bddb3d552caf1d21ab5a6fdeaabfe09b13b6c68a0 \
+#     STOCKVISION_AUTH_TOKEN=sv-stockvision-2026-prod \
 #     STOCKVISION_WORKER_URL=https://stockvision-worker.angus-solo-dev.workers.dev
 # 若 secret 不存在，from_name 會報錯 → fallback 用空 secret
 try:
@@ -77,9 +77,9 @@ def _setup_env():
 @app.function(
     cpu=1,                       # 1 CPU 足夠（10 models 已用 ThreadPoolExecutor 內部並行）
     memory=2048,                 # 2GB 足夠（torch CPU 模式不需 4GB）
-    timeout=180,
-    min_containers=0,            # Starter Plan 省 idle 成本（靠 Worker 15:25 warmup）
-    scaledown_window=300,        # 5 min idle 才回收（同一批 .map 間不會 cold start）
+    timeout=300,                 # 2026-04-08 P0-b: 180→300 buffer for tail inference + cold start
+    min_containers=0,            # Starter Plan 省 idle 成本（靠 Worker 17:15 warmup 預熱）
+    scaledown_window=900,        # 2026-04-08: 300→900 so 17:15 warmup keeps containers alive until 17:30 pipeline
     max_containers=20,           # Starter 100 上限 → 限制最多 20 並發（77 stocks 分 4 波）
 )
 def predict_single_stock(payload: dict) -> dict:

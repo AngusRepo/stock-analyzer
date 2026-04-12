@@ -845,9 +845,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     X_train, y_train, dates_train, X_test, y_test, dates_test = purged_train_test_split(
         X, y, dates_arr,
         test_ratio=0.2,
-        embargo_days=15,  # triple-barrier max_days=20, 15d embargo is conservative
+        embargo_days=10,  # ~1.3%T per De Prado AFML Ch.7 (was 15, reduced to save training data)
     )
-    print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=15d")
+    print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=10d")
 
     # ── 3. Train 5 feature models ────────────────────────────────────────────
     results = {}
@@ -1093,6 +1093,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         if oos_ic <= 0:
             circuit_breaker_triggered = True
             print(f"[IC-熔斷] ⚠️ {model_name} OOS IC={oos_ic:.4f} ≤ 0 → 熔斷！沿用舊 model")
+        elif oos_ic < 0.02:
+            print(f"[IC-Warning] ⚠️ {model_name} OOS IC={oos_ic:.4f} < 0.02 → 通過但接近雜訊，留意 drift")
 
     # Save IC tracking to GCS
     try:
@@ -1143,7 +1145,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "train_samples": len(X_train),
         "test_samples": len(X_test),
         "feature_count": len(feature_names),
-        "embargo_days": 15,
+        "embargo_days": 10,
         "elapsed_s": elapsed,
         "results": results,
         "ic_tracking": ic_tracking,

@@ -82,7 +82,7 @@ def _setup_env():
 @app.function(
     cpu=1,
     memory=1024,
-    timeout=14400,              # 240 min — selection (~60min) + train (~120min) + SHAP (~30min) + buffer
+    timeout=18000,              # 300 min — selection (~70min) + train (~140min) + SHAP (~30min) + buffer (regime 900d worst case)
     scaledown_window=60,
     max_containers=1,
 )

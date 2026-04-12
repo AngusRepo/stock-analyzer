@@ -13,7 +13,7 @@ References:
 Architecture:
   - dates array (per-sample) → sorted unique dates → n_splits folds
   - 每個 fold: train = [0, cutoff), embargo = [cutoff, cutoff+embargo), test = [cutoff+embargo, end)
-  - embargo 天數: 10-20 (可配置, default=15, 對應 triple-barrier max_days=20)
+  - embargo 天數: 10-20 (可配置, default=10, 對應 triple-barrier max_days=20)
 """
 import numpy as np
 from typing import Iterator
@@ -37,7 +37,7 @@ class PurgedTimeSeriesCV:
     def __init__(
         self,
         n_splits: int = 5,
-        embargo_days: int = 15,
+        embargo_days: int = 10,
         min_train_ratio: float = 0.3,
     ):
         self.n_splits = n_splits
@@ -127,7 +127,7 @@ def purged_train_test_split(
     y: np.ndarray,
     dates: np.ndarray,
     test_ratio: float = 0.2,
-    embargo_days: int = 15,
+    embargo_days: int = 10,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Single purged train/test split (for final model training).
 

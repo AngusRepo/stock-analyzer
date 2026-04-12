@@ -222,6 +222,22 @@ async def trigger_universal_retrain(
     # ── 2. Shared market env ────────────────────────────────────────────────
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
+    # ── 2a. B-lite regime-conditional training window ────────────────────────
+    # VIX + TWII bias proxy → decide prices lookback.
+    # 後續 #7 HMM→KV 完成後改讀 kv_get("ml:regime")（改 1 行）。
+    vix = getattr(market_env, "us_vix", 18) or 18
+    twii_bias = getattr(market_env, "twii_bias", 0) or 0
+    if vix > 25 or twii_bias < -0.05:
+        regime = "bear"
+        prices_lookback = 252    # 1 year — structure shifts fast, old data is toxic
+    elif vix < 18 and twii_bias > 0.02:
+        regime = "bull"
+        prices_lookback = 900    # 3.5 years — long trend, more data helps
+    else:
+        regime = "sideways"
+        prices_lookback = 500    # 2 years — middle ground
+    logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) → prices_lookback={prices_lookback}d")
+
     # ── 2b. Monthly detection + feature pool for prep filtering ──
     # 2.0 Flow B: feature selection 在 Modal orchestrator 裡 await 完成（不再 fire-and-forget）
     # Cloud Run 這邊只讀既有 feature_pool.json 給 prep 用
@@ -245,8 +261,8 @@ async def trigger_universal_retrain(
     except Exception as e:
         logger.warning(f"[retrain/universal] Failed to load feature pool (using all): {e}")
 
-    # ── 3. Bulk load per-stock data (chunked — D1 placeholder limit ~100) ──
-    D1_CHUNK = 80
+    # ── 3. Bulk load per-stock data (chunked — SQLite var limit is 999+) ──
+    D1_CHUNK = 500
     prices_map: dict = {}
     indicators_map: dict = {}
     chips_map: dict = {}
@@ -254,10 +270,10 @@ async def trigger_universal_retrain(
     for ci in range(0, len(stock_ids), D1_CHUNK):
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         chunk_syms = [id_to_sym[sid] for sid in chunk_ids]
-        prices_map.update(_bulk_load_prices(chunk_ids, limit=750))
-        indicators_map.update(_bulk_load_indicators(chunk_ids, limit=750))
-        chips_map.update(_bulk_load_chips(chunk_syms, limit=300))
-        sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=90))
+        prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback))
+        indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback))
+        chips_map.update(_bulk_load_chips(chunk_syms, limit=252))
+        sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45))
     logger.info(f"[retrain/universal] D1 bulk load done: {len(prices_map)} prices")
 
     # ── 3b. Bulk load per-stock time-series for Wave 3 features ────────────
@@ -449,9 +465,9 @@ async def trigger_universal_retrain(
     total_rows = sum(r.get("rows", 0) for r in prep_results)
     logger.info(f"[retrain/universal] Prep done: {batch_count} batches, {total_rows} total rows")
 
-    if total_rows < 1000:
+    if total_rows < 10000:
         return {
-            "error": f"Total prep rows {total_rows} < 1000, aborting train",
+            "error": f"Total prep rows {total_rows} < 10000, aborting train",
             "prep_results": prep_results,
         }
 

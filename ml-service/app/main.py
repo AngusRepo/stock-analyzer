@@ -485,6 +485,147 @@ async def predict_endpoint(req: PredictRequest, request: Request):
     return predict_stock(req)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.0 Predict Path — regression models + IC-weighted rank_to_signal
+# ══════════════════════════════════════════════════════════════════════════════
+# TODO: 穩定後砍 predict_stock() 和 models.py 裡的 run_xgboost/catboost/etc
+
+_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+
+
+def predict_stock_v2(req: PredictRequest) -> dict:
+    """2.0 predict: load regression models from GCS → .predict(X_latest) → rank_to_signal().
+
+    Differences from predict_stock (1.0):
+      - target_col="target_rank" (not "target_dir")
+      - Loads universal regression models (stock_id=0), not per-stock classifiers
+      - .predict() returns rank 0~1, not .predict_proba()
+      - IC-weighted ensemble via rank_to_signal() (not weighted_vote())
+      - No per-stock retrain fallback (universal model only)
+    """
+    import torch
+    from .model_store import load_model
+    from .ensemble import rank_to_signal, load_ic_weights
+    from .features import get_features
+
+    if len(req.prices) < 60:
+        raise ValueError("需要至少 60 天的股價數據")
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(
+        req.prices, req.indicators, chips_input,
+        req.sentiment_scores, req.market_env,
+        barrier_params=req.barrier_params or None,
+        stock_meta=getattr(req, "stock_meta", None),
+    )
+
+    prices_arr = np.array([float(p["close"]) for p in req.prices])
+    current_price = float(prices_arr[-1])
+    atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
+
+    # Feature extraction — 2.0 uses target_rank (continuous 0~1)
+    X, y, feature_names = get_features(df, target_col="target_rank")
+    if len(X) == 0:
+        raise ValueError(f"Feature matrix empty for {req.symbol}")
+    X_latest = X[-1].reshape(1, -1)
+
+    # Load IC weights for Grinold-Kahn ensemble
+    ic_weights = load_ic_weights()
+
+    # Predict with each model
+    rank_scores: dict[str, float] = {}
+    model_errors: list[str] = []
+
+    for model_name in _MODEL_NAMES_V2:
+        try:
+            model_obj, meta = load_model(0, model_name)  # stock_id=0 = universal
+            if model_obj is None:
+                model_errors.append(f"{model_name}: not found in GCS")
+                continue
+
+            if model_name == "FT-Transformer":
+                # FT-T needs StandardScaler + torch inference
+                bundle = model_obj  # joblib saved the whole bundle dict
+                state_dict = bundle["state_dict"]
+                scaler = bundle["scaler"]
+                valid_cols = bundle.get("valid_cols_mask")
+                n_feat = bundle.get("n_features", X_latest.shape[1])
+
+                # Scale
+                X_scaled = scaler.transform(X_latest).astype(np.float32)
+                X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # Rebuild model architecture (must match training)
+                import torch.nn as nn
+                class _FTT(nn.Module):
+                    def __init__(self, n_f, d_model=128, n_heads=8, n_layers=3):
+                        super().__init__()
+                        self.feat_embed = nn.Linear(1, d_model, bias=True)
+                        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+                        enc_layer = nn.TransformerEncoderLayer(
+                            d_model=d_model, nhead=n_heads,
+                            dim_feedforward=int(d_model * 4 / 3),
+                            dropout=0.1, batch_first=True,
+                        )
+                        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+                        self.head = nn.Linear(d_model, 1)
+                    def forward(self, x):
+                        B = x.shape[0]
+                        tokens = self.feat_embed(x.unsqueeze(-1))
+                        cls = self.cls_token.expand(B, -1, -1)
+                        tokens = torch.cat([cls, tokens], dim=1)
+                        out = self.encoder(tokens)
+                        return self.head(out[:, 0, :]).squeeze(-1)
+
+                ftt = _FTT(n_feat)
+                ftt.load_state_dict(state_dict)
+                ftt.eval()
+                with torch.no_grad():
+                    pred = ftt(torch.tensor(X_scaled)).item()
+                rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
+            else:
+                # Tree models: .predict() returns rank 0~1 directly
+                pred = model_obj.predict(X_latest)
+                rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
+
+        except Exception as e:
+            model_errors.append(f"{model_name}: {e}")
+
+    if not rank_scores:
+        raise ValueError(f"All models failed for {req.symbol}: {model_errors}")
+
+    # IC-weighted ensemble → EnsembleResult
+    result = rank_to_signal(
+        rank_scores=rank_scores,
+        current_price=current_price,
+        atr=atr,
+        ic_weights=ic_weights if ic_weights else None,
+    )
+
+    return {
+        "stock_id": req.stock_id, "symbol": req.symbol,
+        "current_price": current_price,
+        "signal": result.signal, "direction": result.direction,
+        "confidence": result.confidence, "consensus": result.consensus,
+        "forecast_pct": result.forecast_pct, "forecast_range": result.forecast_range,
+        "signal_strength": result.signal_strength, "reasoning": result.reasoning,
+        "entry_price": result.entry_price, "stop_loss": result.stop_loss,
+        "target1": result.target1, "target2": result.target2,
+        "models": result.models,
+        "features_used": feature_names,
+        "feature_version": "v2_universal_regression",
+        "model_errors": model_errors if model_errors else None,
+        "ic_weights": {k: round(v, 4) for k, v in ic_weights.items()} if ic_weights else None,
+    }
+
+
+@app.post("/predict/v2")
+async def predict_v2_endpoint(req: PredictRequest, request: Request):
+    """2.0 predict endpoint — regression models + IC-weighted ensemble."""
+    await verify_service_token(request)
+    return predict_stock_v2(req)
+
+
 def retrain_stock(req: PredictRequest) -> dict:
     """Core retrain logic — no auth, callable by Modal @function or HTTP endpoint."""
     if len(req.prices) < 60:

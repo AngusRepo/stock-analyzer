@@ -201,21 +201,30 @@ def retrain_orchestrator(payload: dict) -> dict:
     max_containers=20,           # Starter 100 上限 → 限制最多 20 並發（77 stocks 分 4 波）
 )
 def predict_single_stock(payload: dict) -> dict:
-    """單股推論 — Pure Compute。"""
+    """單股推論 — 2.0: regression models + IC-weighted rank_to_signal.
+    Fallback to 1.0 predict_stock if v2 fails (e.g. universal model not yet trained).
+    """
     _setup_env()
-    from app.main import predict_stock, PredictRequest
+    from app.main import predict_stock_v2, predict_stock, PredictRequest
     try:
         req = PredictRequest(**payload)
-        return predict_stock(req)
-    except Exception as e:
-        return {
-            "stock_id": payload.get("stock_id", 0),
-            "symbol": payload.get("symbol", "?"),
-            "error": str(e),
-            "signal": "NO_SIGNAL",
-            "direction": "neutral",
-            "confidence": 0.0,
-        }
+        return predict_stock_v2(req)
+    except Exception as e_v2:
+        # Fallback to 1.0 if v2 fails (e.g. model not found)
+        try:
+            req = PredictRequest(**payload)
+            result = predict_stock(req)
+            result["_fallback"] = f"v2 failed: {e_v2}"
+            return result
+        except Exception as e_v1:
+            return {
+                "stock_id": payload.get("stock_id", 0),
+                "symbol": payload.get("symbol", "?"),
+                "error": f"v2: {e_v2} | v1: {e_v1}",
+                "signal": "NO_SIGNAL",
+                "direction": "neutral",
+                "confidence": 0.0,
+            }
 
 
 @app.function(

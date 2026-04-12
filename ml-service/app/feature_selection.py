@@ -224,7 +224,7 @@ def target_permutation(
         actual_rounds = perm_i + 1
 
         # ── K-S auto-stop check ──────────────────────────────────────────────
-        if actual_rounds >= 20 and actual_rounds % ks_check_interval == 0:
+        if actual_rounds >= 50 and actual_rounds % ks_check_interval == 0:
             null_arr = np.array(null_importances)  # (rounds, n_features)
             half = actual_rounds // 2
             first_half = null_arr[:half]

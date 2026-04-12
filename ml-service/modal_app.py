@@ -21,7 +21,7 @@ _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 # ── Image 定義（Modal v1.x API）──────────────────────────────────────────────
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("libgomp1", "ocl-icd-libopencl1", "nvidia-opencl-icd")  # OpenCL runtime for LightGBM GPU
+    .apt_install("libgomp1")  # OpenMP runtime; LightGBM GPU deferred to future (needs CUDA toolkit in image)
     .pip_install_from_requirements(str(_LOCAL_REQ))
     .run_commands(
         "python -c \""

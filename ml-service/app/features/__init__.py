@@ -202,8 +202,9 @@ def build_feature_matrix(
     回傳 Polars DataFrame，含 features + target_5d + target_dir。
     """
     # ── 1. Prices base frame ─────────────────────────────────────────────────
+    # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
     df = (
-        pl.DataFrame(prices)
+        pl.DataFrame(prices, infer_schema_length=None)
         .with_columns(pl.col("date").cast(pl.Date))
         .sort("date")
     )
@@ -218,7 +219,7 @@ def build_feature_matrix(
     # ── 2. Technical indicators join ─────────────────────────────────────────
     if indicators:
         df_ind = (
-            pl.DataFrame(indicators)
+            pl.DataFrame(indicators, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
         )
         ind_num_cols = [c for c in df_ind.columns if c != "date"]
@@ -290,7 +291,7 @@ def build_feature_matrix(
     # ── 3. Chips features ────────────────────────────────────────────────────
     if chips:
         df_chip = (
-            pl.DataFrame(chips)
+            pl.DataFrame(chips, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
         )
         chip_cols = ["foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance"]
@@ -361,7 +362,7 @@ def build_feature_matrix(
     # ── 4. Sentiment features ────────────────────────────────────────────────
     if sentiment_scores:
         df_sent = (
-            pl.DataFrame(sentiment_scores)
+            pl.DataFrame(sentiment_scores, infer_schema_length=None)
             .with_columns([
                 pl.col("date").cast(pl.Date),
                 pl.col("score").cast(pl.Float64, strict=False).alias("sentiment"),
@@ -480,7 +481,7 @@ def build_feature_matrix(
             mh_records.append(rec)
 
         mh_df = (
-            pl.DataFrame(mh_records)
+            pl.DataFrame(mh_records, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
             .sort("date")
         )
@@ -704,7 +705,7 @@ def build_feature_matrix(
             ps_records.append(rec)
         if ps_records:
             ps_df = (
-                pl.DataFrame(ps_records)
+                pl.DataFrame(ps_records, infer_schema_length=None)
                 .with_columns(pl.col("date").cast(pl.Date))
                 .sort("date")
             )

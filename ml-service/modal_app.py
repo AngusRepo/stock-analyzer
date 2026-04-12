@@ -128,24 +128,59 @@ def retrain_orchestrator(payload: dict) -> dict:
         print("[Orchestrator] Non-monthly → skip feature selection")
         result["stages"]["feature_selection"] = {"status": "skipped"}
 
-    # ── Stage 2: Train (reads feature_pool.json from GCS) ────────────────────
-    print(f"[Orchestrator] Training from {batch_count} GCS batches...")
+    # ── Stage 2: Train — 2-container parallel (tree CPU + FT-T GPU) ──────────
+    print(f"[Orchestrator] Training from {batch_count} GCS batches (2-container parallel)...")
+    train_payload = {"batch_count": batch_count}
     try:
-        train_payload = {"batch_count": batch_count, "auto_audit": True}
-        train_result = train_universal_from_gcs.remote(train_payload)
+        # Spawn both containers in parallel
+        tree_handle = train_tree_models.spawn(train_payload)
+        ftt_handle = train_ftt_model.spawn(train_payload)
+        print("[Orchestrator] Spawned: tree_models (CPU) + ftt_model (L4 GPU)")
+
+        # Wait for both
+        tree_result = tree_handle.get()
+        ftt_result = ftt_handle.get()
+        print(f"[Orchestrator] Tree done: {tree_result.get('elapsed_s', '?')}s / FTT done: {ftt_result.get('elapsed_s', '?')}s")
+
+        # Merge results + IC tracking from both containers
+        merged_results = {}
+        merged_ic = {}
+        circuit_breaker = False
+        total_samples = 0
+
+        for partial in [tree_result, ftt_result]:
+            if partial.get("error"):
+                print(f"[Orchestrator] ⚠️ Partial train error: {partial['error']}")
+                continue
+            total_samples = max(total_samples, partial.get("total_samples", 0))
+            for name, r in partial.get("results", {}).items():
+                if not r.get("skipped"):
+                    merged_results[name] = r
+            for name, ic in partial.get("ic_tracking", {}).items():
+                merged_ic[name] = ic
+                if not ic.get("passed", True):
+                    circuit_breaker = True
+
         result["stages"]["train"] = {
-            "status": "ok" if "error" not in train_result else "error",
-            "total_samples": train_result.get("total_samples", 0),
-            "ic_tracking": train_result.get("ic_tracking", {}),
-            "circuit_breaker": train_result.get("circuit_breaker", False),
+            "status": "ok",
+            "total_samples": total_samples,
+            "ic_tracking": merged_ic,
+            "circuit_breaker": circuit_breaker,
+            "tree_elapsed_s": tree_result.get("elapsed_s"),
+            "ftt_elapsed_s": ftt_result.get("elapsed_s"),
         }
-        if train_result.get("circuit_breaker"):
+        if circuit_breaker:
             print("[Orchestrator] ⚠️ Circuit breaker triggered — old models preserved")
-        # SHAP is already auto-triggered inside train_universal_from_gcs
-        if "shap_result" in train_result:
+
+        # SHAP (runs after both containers done)
+        try:
+            print("[Orchestrator] Auto-triggering SHAP audit...")
+            shap_result = shap_feature_audit.remote({"shap_samples": 10000})
             result["stages"]["shap"] = {"status": "ok"}
-        elif "shap_error" in train_result:
-            result["stages"]["shap"] = {"status": "error", "error": train_result["shap_error"]}
+        except Exception as e:
+            print(f"[Orchestrator] SHAP failed (non-blocking): {e}")
+            result["stages"]["shap"] = {"status": "error", "error": str(e)}
+
     except Exception as e:
         print(f"[Orchestrator] Train failed: {e}")
         result["stages"]["train"] = {"status": "error", "error": str(e)}
@@ -230,7 +265,9 @@ def prep_universal_batch(payload: dict) -> dict:
     max_containers=1,
 )
 def train_universal_from_gcs(payload: dict) -> dict:
-    """從 GCS 讀 prep npz → concat → 訓練 5 models → 自動觸發 SHAP + Permutation。"""
+    """從 GCS 讀 prep npz → concat → 訓練 5 models → 自動觸發 SHAP + Permutation。
+    Legacy single-container path. Kept for backwards compat.
+    """
     _setup_env()
     from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
@@ -252,6 +289,48 @@ def train_universal_from_gcs(payload: dict) -> dict:
             train_result["shap_error"] = str(e)
 
     return train_result
+
+
+# ── 2-container split: tree models (CPU) + FT-T (GPU) ─────────────────────
+# Saves ~30 min GPU idle time + enables parallel training.
+# Orchestrator spawns both, waits for both, then merges results for IC gate.
+
+@app.function(
+    cpu=2,
+    memory=4096,
+    timeout=5400,                # 90 min — 4 tree models sequential on CPU
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_tree_models(payload: dict) -> dict:
+    """CPU-only: XGBoost + CatBoost + ExtraTrees + LightGBM."""
+    _setup_env()
+    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        payload["models_filter"] = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+        req = UniversalTrainRequest(**payload)
+        return _train(req)
+    except Exception as e:
+        return {"error": str(e), "type": "tree_models"}
+
+
+@app.function(
+    gpu="L4",
+    memory=4096,
+    timeout=10800,               # 180 min — FT-T on 1.3M samples
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_ftt_model(payload: dict) -> dict:
+    """GPU L4: FT-Transformer only."""
+    _setup_env()
+    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        payload["models_filter"] = ["FT-Transformer"]
+        req = UniversalTrainRequest(**payload)
+        return _train(req)
+    except Exception as e:
+        return {"error": str(e), "type": "ftt_model"}
 
 
 @app.function(

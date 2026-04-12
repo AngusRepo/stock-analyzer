@@ -666,6 +666,7 @@ class UniversalPrepRequest(BaseModel):
 class UniversalTrainRequest(BaseModel):
     """觸發 train — 不帶資料，從 GCS 讀 prep 結果。"""
     batch_count: int = 5  # 預期幾個 batch npz
+    models_filter: list[str] | None = None  # None=all, or ["XGBoost","CatBoost",...] subset
 
 
 class UniversalRetrainRequest(BaseModel):
@@ -849,9 +850,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     )
     print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=10d")
 
-    # ── 3. Train 5 feature models ────────────────────────────────────────────
+    # ── 3. Train models (filtered by models_filter if set) ──────────────────
     results = {}
     trained_models: dict[str, object] = {}  # model_name → trained model (for IC tracking)
+    _filter = set(req.models_filter) if req.models_filter else None
+    def _should_train(name: str) -> bool:
+        return _filter is None or name in _filter
+    class _SkipModel(Exception):
+        pass
 
     # ── Helper: compute OOS Spearman IC ────────────────────────────────────────
     from scipy.stats import spearmanr as _spearmanr
@@ -864,6 +870,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     # 3a: XGBoost (regression)
     try:
+        if not _should_train("XGBoost"):
+            raise _SkipModel()
         from xgboost import XGBRegressor
         xgb = XGBRegressor(
             n_estimators=300, max_depth=6, learning_rate=0.03,
@@ -878,11 +886,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         trained_models["XGBoost"] = xgb
         results["XGBoost"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
         print(f"[TrainUniversal] XGBoost IC={ic:.4f}")
+    except _SkipModel:
+        results["XGBoost"] = {"skipped": True}
     except Exception as e:
         results["XGBoost"] = {"error": str(e)}
 
     # 3b: CatBoost (regression)
     try:
+        if not _should_train("CatBoost"):
+            raise _SkipModel()
         from catboost import CatBoostRegressor
         cat = CatBoostRegressor(
             iterations=400, depth=6, learning_rate=0.03,
@@ -895,11 +907,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         trained_models["CatBoost"] = cat
         results["CatBoost"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
         print(f"[TrainUniversal] CatBoost IC={ic:.4f}")
+    except _SkipModel:
+        results["CatBoost"] = {"skipped": True}
     except Exception as e:
         results["CatBoost"] = {"error": str(e)}
 
     # 3c: ExtraTrees (regression)
     try:
+        if not _should_train("ExtraTrees"):
+            raise _SkipModel()
         from sklearn.ensemble import ExtraTreesRegressor
         et = ExtraTreesRegressor(
             n_estimators=300, max_depth=8,
@@ -913,11 +929,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         trained_models["ExtraTrees"] = et
         results["ExtraTrees"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
         print(f"[TrainUniversal] ExtraTrees IC={ic:.4f}")
+    except _SkipModel:
+        results["ExtraTrees"] = {"skipped": True}
     except Exception as e:
         results["ExtraTrees"] = {"error": str(e)}
 
     # 3d: LightGBM (regression)
     try:
+        if not _should_train("LightGBM"):
+            raise _SkipModel()
         import lightgbm as lgb
         lgbm = lgb.LGBMRegressor(
             n_estimators=300, max_depth=6, learning_rate=0.03,
@@ -932,12 +952,16 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         trained_models["LightGBM"] = lgbm
         results["LightGBM"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
         print(f"[TrainUniversal] LightGBM IC={ic:.4f}")
+    except _SkipModel:
+        results["LightGBM"] = {"skipped": True}
     except Exception as e:
         results["LightGBM"] = {"error": str(e)}
 
     # 3e: FT-Transformer (regression, GPU L4 + AMP + early stopping)
     # Ref: Gorishniy et al. NeurIPS 2021 "Revisiting Deep Learning Models for Tabular Data"
     try:
+        if not _should_train("FT-Transformer"):
+            raise _SkipModel()
         import torch
         import torch.nn as nn
 
@@ -1065,6 +1089,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "device": str(device), "saved": True,
         }
         print(f"[TrainUniversal] FT-Transformer IC={ic:.4f} stopped={stopped_epoch} device={device}")
+    except _SkipModel:
+        results["FT-Transformer"] = {"skipped": True}
     except Exception as e:
         results["FT-Transformer"] = {"error": str(e)}
 

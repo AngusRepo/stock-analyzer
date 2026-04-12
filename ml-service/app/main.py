@@ -1172,13 +1172,32 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
         model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
         opt = torch.optim.Adam(model_ftt.parameters(), lr=LR, weight_decay=1e-5)
-        # 2.0: ListNet ranking loss (Xia et al. ICML 2008)
-        # MSE causes collapse to mean on rank labels; ListNet optimizes relative ordering
-        def _listnet_loss(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-            p_pred = torch.softmax(preds, dim=0)
-            p_label = torch.softmax(labels, dim=0)
-            return -torch.sum(p_label * torch.log(p_pred + 1e-10))
-        crit = _listnet_loss
+        # 2.0: Pairwise Margin Ranking Loss (CIKM 2025: best Sharpe 0.7529)
+        # ListNet softmax unstable with unbounded FT-T output (caused IC=0 collapse)
+        # Margin loss: per-pair, only cares about relative order, unbounded OK
+        _margin_loss = nn.MarginRankingLoss(margin=0.1)
+        _n_pairs = 256  # sampled pairs per batch (O(B) not O(B²))
+
+        def crit(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+            B = preds.shape[0]
+            if B < 2:
+                return torch.tensor(0.0, device=preds.device)
+            # Sample random pairs
+            n = min(_n_pairs, B * (B - 1) // 2)
+            idx_i = torch.randint(0, B, (n,), device=preds.device)
+            idx_j = torch.randint(0, B, (n,), device=preds.device)
+            # Avoid same-index pairs
+            mask = idx_i != idx_j
+            idx_i, idx_j = idx_i[mask], idx_j[mask]
+            if len(idx_i) == 0:
+                return torch.tensor(0.0, device=preds.device)
+            # target: +1 if label_i > label_j, -1 otherwise
+            target = torch.sign(labels[idx_i] - labels[idx_j])
+            # skip ties
+            non_tie = target != 0
+            if non_tie.sum() == 0:
+                return torch.tensor(0.0, device=preds.device)
+            return _margin_loss(preds[idx_i[non_tie]], preds[idx_j[non_tie]], target[non_tie])
 
         use_amp = device.type == "cuda"
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16

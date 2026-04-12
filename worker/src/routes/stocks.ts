@@ -20,7 +20,7 @@ const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 // ─── GET /api/stocks  →  list all active stocks ───────────────────────────────
 stocks.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM stocks WHERE is_active=1 ORDER BY symbol'
+    'SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY symbol'
   ).all()
   return c.json(results)
 })
@@ -30,7 +30,7 @@ stocks.get('/search', async (c) => {
   const q     = c.req.query('q') ?? ''
   const limit = parsePosInt(c.req.query('limit'), 20)
   const { results } = await c.env.DB.prepare(
-    `SELECT * FROM stocks WHERE (symbol LIKE ? OR name LIKE ?) ORDER BY is_active DESC, symbol LIMIT ?`
+    `SELECT * FROM stocks WHERE (symbol LIKE ? OR name LIKE ?) ORDER BY in_current_watchlist DESC, symbol LIMIT ?`
   ).bind(`%${q}%`, `%${q}%`, limit).all()
   return c.json(results)
 })
@@ -66,13 +66,13 @@ stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, as
 
   const sym = symbol.toUpperCase()
   const existing = await c.env.DB.prepare(
-    'SELECT id, is_active FROM stocks WHERE symbol=?'
-  ).bind(sym).first<{ id: number; is_active: number }>()
+    'SELECT id, in_current_watchlist FROM stocks WHERE symbol=?'
+  ).bind(sym).first<{ id: number; in_current_watchlist: number }>()
 
-  if (existing?.is_active) return c.json({ error: '股票已存在' }, 409)
+  if (existing?.in_current_watchlist) return c.json({ error: '股票已存在' }, 409)
 
   if (existing) {
-    await c.env.DB.prepare('UPDATE stocks SET is_active=1, name=?, sector=? WHERE id=?')
+    await c.env.DB.prepare('UPDATE stocks SET in_current_watchlist=1, name=?, sector=? WHERE id=?')
       .bind(name, sector ?? null, existing.id).run()
     const row = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(existing.id).first()
     return c.json(row, 201)
@@ -93,7 +93,7 @@ stocks.post('/', rateLimitMiddleware('api'), authMiddleware, adminMiddleware, as
 stocks.delete('/:id', authMiddleware, adminMiddleware, async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  await c.env.DB.prepare('UPDATE stocks SET is_active=0 WHERE id=?').bind(id).run()
+  await c.env.DB.prepare('UPDATE stocks SET in_current_watchlist=0 WHERE id=?').bind(id).run()
   return c.json({ success: true })
 })
 

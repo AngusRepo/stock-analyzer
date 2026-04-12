@@ -69,15 +69,11 @@ def export_ohlcv():
     """Export all active + watchlist stocks' OHLCV to Freqtrade JSON."""
     print('📊 Fetching stock list...')
 
-    # Active stocks + watchlist stocks (M5: watchlist 也要匯出)
+    # D10 fix: export all tradable stocks (not just watchlist)
     stocks = d1_query("""
         SELECT DISTINCT s.id, s.symbol, s.name
         FROM stocks s
-        WHERE s.is_active = 1
-        UNION
-        SELECT DISTINCT s.id, s.symbol, s.name
-        FROM stocks s
-        JOIN watchlist w ON w.stock_id = s.id
+        WHERE s.delisted_date IS NULL
     """)
 
     if not stocks:

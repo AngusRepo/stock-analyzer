@@ -6,10 +6,12 @@ modal==1.4.0
 numpy==1.26.4
 Jinja2==3.1.4
 # 2026-04-07 Phase 1.6: Optuna routes moved from Modal → Cloud Run
-pandas==2.2.3
+# 2026-04-12 Phase 2: pandas removed — all DataFrames migrated to Polars
+polars>=1.0.0
 optuna>=3.6.0
 scipy>=1.10.0  # optuna_feature_window 需要
 # 2026-04-07 LangGraph A+B refactor: real StateGraph + LLM reason in controller
 langgraph==0.2.74
 langgraph-checkpoint-sqlite==2.0.10  # >=2.0.0 to satisfy langgraph 0.2.74's checkpoint constraint
 anthropic==0.40.0
+google-cloud-storage>=2.14.0

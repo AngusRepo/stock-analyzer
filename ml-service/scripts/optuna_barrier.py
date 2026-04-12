@@ -20,7 +20,7 @@ import argparse
 import json
 import sys
 import numpy as np
-import pandas as pd
+import polars as pl
 
 try:
     import optuna
@@ -34,26 +34,24 @@ from app.features import compute_triple_barrier_labels
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
-def load_prices_from_csv(csv_path: str) -> pd.DataFrame:
+def load_prices_from_csv(csv_path: str) -> pl.DataFrame:
     """Load OHLCV from local CSV (for testing)."""
-    df = pd.read_csv(csv_path, parse_dates=["date"])
-    df = df.sort_values("date").reset_index(drop=True)
+    df = pl.read_csv(csv_path, try_parse_dates=True)
+    df = df.sort("date")
     return df
 
 
-def load_prices_from_d1(db_url: str, token: str, min_rows: int = 200) -> pd.DataFrame:
+def load_prices_from_d1(db_url: str, token: str, min_rows: int = 200) -> pl.DataFrame:
     """Load prices from D1 REST API (production)."""
     import httpx
 
-    # 找資料最多的 active 股票們
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # 取 top 10 active stocks by price count
     resp = httpx.post(f"{db_url}/query", headers=headers, json={
         "sql": """
             SELECT s.id, s.symbol, COUNT(*) as cnt
             FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-            WHERE s.is_active = 1
+            WHERE s.delisted_date IS NULL
             GROUP BY s.id HAVING cnt >= ?
             ORDER BY cnt DESC LIMIT 10
         """,
@@ -63,7 +61,7 @@ def load_prices_from_d1(db_url: str, token: str, min_rows: int = 200) -> pd.Data
 
     if not stocks:
         print(f"WARNING: No stocks with >= {min_rows} price rows found")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     all_dfs = []
     for stock in stocks:
@@ -74,35 +72,40 @@ def load_prices_from_d1(db_url: str, token: str, min_rows: int = 200) -> pd.Data
         if resp.status_code == 200:
             rows = resp.json().get("results", [])
             if len(rows) >= min_rows:
-                df = pd.DataFrame(rows)
-                df["date"] = pd.to_datetime(df["date"])
-                df["symbol"] = stock["symbol"]
+                df = pl.DataFrame(rows).with_columns([
+                    pl.col("date").cast(pl.Date),
+                    pl.lit(stock["symbol"]).alias("symbol"),
+                ])
                 all_dfs.append(df)
 
     if not all_dfs:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
-    combined = pd.concat(all_dfs, ignore_index=True)
+    combined = pl.concat(all_dfs)
     print(f"Loaded {len(all_dfs)} stocks, {len(combined)} total rows")
     return combined
 
 
 # ── ATR Calculation ──────────────────────────────────────────────────────────
 
-def calc_atr14(df: pd.DataFrame) -> pd.Series:
-    """Calculate 14-day ATR from OHLC data."""
-    tr = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - df["close"].shift(1)).abs(),
-        (df["low"] - df["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    return tr.rolling(14).mean()
+def calc_atr14(df: pl.DataFrame) -> np.ndarray:
+    """Calculate 14-day ATR from OHLC data. Returns numpy array."""
+    h = df["high"].to_numpy().astype(np.float64)
+    l = df["low"].to_numpy().astype(np.float64)
+    c = df["close"].to_numpy().astype(np.float64)
+    c_prev = np.roll(c, 1)
+    c_prev[0] = c[0]
+    tr = np.maximum(h - l, np.maximum(np.abs(h - c_prev), np.abs(l - c_prev)))
+    # Simple rolling mean for ATR
+    atr = np.convolve(tr, np.ones(14) / 14, mode='full')[:len(tr)]
+    atr[:13] = np.nan
+    return atr
 
 
 # ── Objective Function ───────────────────────────────────────────────────────
 
 def evaluate_barrier_params(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     upper_mult: float,
     lower_mult: float,
     upper_pct_cap: float,
@@ -117,9 +120,9 @@ def evaluate_barrier_params(
     atr14 = calc_atr14(df)
 
     labels = compute_triple_barrier_labels(
-        close=df["close"],
-        high=df["high"],
-        low=df["low"],
+        close=df["close"].to_numpy().astype(np.float64),
+        high=df["high"].to_numpy().astype(np.float64),
+        low=df["low"].to_numpy().astype(np.float64),
         atr14=atr14,
         upper_atr_mult=upper_mult,
         lower_atr_mult=lower_mult,
@@ -128,7 +131,7 @@ def evaluate_barrier_params(
         max_days=max_days,
     )
 
-    valid_mask = labels.notna()
+    valid_mask = ~np.isnan(labels)
     valid_labels = labels[valid_mask]
     total_labels = len(valid_labels)
 
@@ -136,33 +139,23 @@ def evaluate_barrier_params(
         return {"oos_accuracy": 0, "oos_count": 0, "is_ratio": 0, "total_labels": total_labels}
 
     # Train/OOS split (time-based, not random)
-    split_idx = int(len(valid_labels) * (1 - oos_ratio))
-    is_labels = valid_labels.iloc[:split_idx]
-    oos_labels = valid_labels.iloc[split_idx:]
+    split_idx = int(total_labels * (1 - oos_ratio))
+    is_labels = valid_labels[:split_idx]
+    oos_labels = valid_labels[split_idx:]
 
     if len(oos_labels) < 10:
         return {"oos_accuracy": 0, "oos_count": len(oos_labels), "is_ratio": 0, "total_labels": total_labels}
 
-    # IS metrics (for reference, not used in objective)
-    is_win_rate = is_labels.mean() if len(is_labels) > 0 else 0
+    is_win_rate = float(is_labels.mean()) if len(is_labels) > 0 else 0.0
+    oos_win_rate = float(oos_labels.mean())
 
-    # OOS metrics (this is what we optimize)
-    oos_win_rate = oos_labels.mean()
-
-    # Label balance: ratio of 1s to total (ideally 0.4-0.6)
     balance = oos_win_rate
     balance_penalty = 0 if 0.35 <= balance <= 0.65 else abs(balance - 0.5) * 0.5
-
-    # Label coverage: ratio of non-NaN labels to total rows
     coverage = total_labels / len(df)
-    coverage_penalty = max(0, 0.5 - coverage) * 0.3  # penalize if < 50% coverage
-
-    # OOS "accuracy" proxy: how balanced + how many labels we get
-    # We want: balanced labels (close to 50/50) + high coverage + stable IS→OOS
+    coverage_penalty = max(0, 0.5 - coverage) * 0.3
     is_oos_gap = abs(is_win_rate - oos_win_rate)
     stability_penalty = is_oos_gap * 0.3
 
-    # Composite score (higher = better)
     score = coverage - balance_penalty - coverage_penalty - stability_penalty
 
     return {
@@ -176,7 +169,7 @@ def evaluate_barrier_params(
     }
 
 
-def create_objective(all_data: dict[str, pd.DataFrame]):
+def create_objective(all_data: dict[str, pl.DataFrame]):
     """Create Optuna objective that evaluates across multiple stocks."""
 
     def objective(trial: optuna.Trial) -> float:
@@ -186,7 +179,6 @@ def create_objective(all_data: dict[str, pd.DataFrame]):
         lower_pct_cap = trial.suggest_float("lower_pct_cap", 0.02, 0.06, step=0.005)
         max_days = trial.suggest_int("max_days", 10, 30, step=5)
 
-        # Constraint: upper_pct_cap > lower_pct_cap
         if upper_pct_cap <= lower_pct_cap:
             return -1.0
 
@@ -209,7 +201,7 @@ def create_objective(all_data: dict[str, pd.DataFrame]):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def run_optuna_search(
-    all_data: dict[str, pd.DataFrame],
+    all_data: dict[str, pl.DataFrame],
     n_trials: int = 200,
     n_jobs: int = 1,
 ) -> dict:
@@ -228,7 +220,6 @@ def run_optuna_search(
     print(f"  max_days:      {best.params['max_days']}")
     print(f"{'='*60}")
 
-    # Evaluate best params in detail
     detailed = {}
     for symbol, df in all_data.items():
         result = evaluate_barrier_params(
@@ -245,7 +236,6 @@ def run_optuna_search(
               f"OOS_wr={result.get('oos_win_rate', 0):.2f} "
               f"gap={result.get('is_oos_gap', 0):.3f}")
 
-    # Compare with current defaults
     print(f"\n--- Current defaults comparison ---")
     for symbol, df in list(all_data.items())[:3]:
         default_result = evaluate_barrier_params(df, 3.0, 2.0, 0.07, 0.03, 20)
@@ -272,33 +262,33 @@ def main():
     parser.add_argument("--output", help="Output JSON path", default="optuna_barrier_results.json")
     args = parser.parse_args()
 
-    # Load data
     if args.csv:
         raw = load_prices_from_csv(args.csv)
-        if raw.empty:
+        if len(raw) == 0:
             print("ERROR: No data loaded from CSV")
             sys.exit(1)
         if "symbol" in raw.columns:
-            all_data = {sym: grp.reset_index(drop=True) for sym, grp in raw.groupby("symbol")}
+            all_data = {}
+            for (sym,), group in raw.group_by("symbol"):
+                all_data[sym] = group.sort("date")
         else:
             all_data = {"default": raw}
     elif args.db_url and args.token:
         raw = load_prices_from_d1(args.db_url, args.token)
-        if raw.empty:
+        if len(raw) == 0:
             print("ERROR: No data loaded from D1")
             sys.exit(1)
-        all_data = {sym: grp.reset_index(drop=True) for sym, grp in raw.groupby("symbol")}
+        all_data = {}
+        for (sym,), group in raw.group_by("symbol"):
+            all_data[sym] = group.sort("date")
     else:
         print("ERROR: Provide --csv or --db-url + --token")
         sys.exit(1)
 
     print(f"Loaded {len(all_data)} stocks for optimization")
 
-    # Run search
     results = run_optuna_search(all_data, n_trials=args.n_trials)
 
-    # Save results
-    # Convert numpy types for JSON serialization
     def convert(obj):
         if isinstance(obj, (np.integer,)): return int(obj)
         if isinstance(obj, (np.floating,)): return float(obj)

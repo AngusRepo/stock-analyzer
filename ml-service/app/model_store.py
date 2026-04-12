@@ -77,8 +77,9 @@ def save_model(stock_id: int, model_name: str, model: Any, feature_names: list[s
         joblib.dump(model, buf)
         buf.seek(0)
 
-        # 上傳最新版本
-        blob_path = f"{stock_id}/{model_name.lower()}.joblib"
+        # 上傳最新版本 (stock_id=0 → universal model path)
+        prefix = "universal" if stock_id == 0 else str(stock_id)
+        blob_path = f"{prefix}/{model_name.lower()}.joblib"
         blob = bucket.blob(blob_path)
         blob.upload_from_file(buf, content_type="application/octet-stream")
 
@@ -90,12 +91,12 @@ def save_model(stock_id: int, model_name: str, model: Any, feature_names: list[s
             "sample_count": sample_count,
             "trained_at": datetime.now(timezone.utc).isoformat(),
         }
-        meta_blob = bucket.blob(f"{stock_id}/metadata_{model_name.lower()}.json")
+        meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         meta_blob.upload_from_string(json.dumps(meta, ensure_ascii=False), content_type="application/json")
 
         # 每週備份（方便回溯）
         week_key = datetime.now(timezone.utc).strftime("%Y-W%W")
-        weekly_blob = bucket.blob(f"{stock_id}/weekly/{week_key}/{model_name.lower()}.joblib")
+        weekly_blob = bucket.blob(f"{prefix}/weekly/{week_key}/{model_name.lower()}.joblib")
         buf.seek(0)
         weekly_blob.upload_from_file(buf, content_type="application/octet-stream")
 
@@ -120,7 +121,8 @@ def load_model(stock_id: int, model_name: str) -> tuple[Any | None, dict | None]
     try:
         import joblib
 
-        blob_path = f"{stock_id}/{model_name.lower()}.joblib"
+        prefix = "universal" if stock_id == 0 else str(stock_id)
+        blob_path = f"{prefix}/{model_name.lower()}.joblib"
         blob = bucket.blob(blob_path)
 
         if not blob.exists():
@@ -133,7 +135,7 @@ def load_model(stock_id: int, model_name: str) -> tuple[Any | None, dict | None]
         model = joblib.load(buf)
 
         # 載入 metadata
-        meta_blob = bucket.blob(f"{stock_id}/metadata_{model_name.lower()}.json")
+        meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
 
         logger.info(f"[ModelStore] Loaded {model_name} for stock {stock_id}")

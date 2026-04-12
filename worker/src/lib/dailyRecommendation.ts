@@ -145,8 +145,8 @@ async function calcThemeFlow(env: Bindings): Promise<{ sectors: SectorSummary[];
     // (V2 LangGraph node_compute_sector_flow).
     //
     // The old block here had the correct vs-TWII formula but with a bug: the
-    // `WHERE s.is_active = 1` filter (line 149) restricted member returns to ~33
-    // active stocks, making most themes uncomputable. The new V2 service reads
+    // `WHERE s.in_current_watchlist = 1` filter restricted member returns to ~33
+    // watchlist stocks, making most themes uncomputable. The new V2 service reads
     // ALL stock_prices without that filter. s.rs_ratio / rs_momentum / quadrant
     // below stay null here — they are written separately by V2 and preserved
     // via the INSERT SET clause (which no longer touches RRG fields).
@@ -235,7 +235,7 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
     FROM stocks s
     LEFT JOIN technical_indicators ti ON ti.stock_id = s.id
       AND ti.date = (SELECT MAX(date) FROM technical_indicators ti2 WHERE ti2.stock_id = s.id)
-    WHERE s.is_active = 1
+    WHERE s.in_current_watchlist = 1
       OR s.symbol IN (SELECT symbol FROM daily_recommendations WHERE date = (SELECT MAX(date) FROM daily_recommendations))
   `).all<any>()
   const tiMap = new Map(tiRows?.map((r: any) => [r.stock_id, r]) ?? [])
@@ -273,7 +273,7 @@ async function buildStockPayloads(db: D1Database): Promise<any[]> {
 
   const { results: stocks } = await db.prepare(
     `SELECT id, symbol, name, sector FROM stocks
-     WHERE is_active=1 OR symbol IN (SELECT symbol FROM daily_recommendations WHERE date = (SELECT MAX(date) FROM daily_recommendations))`
+     WHERE in_current_watchlist=1 OR symbol IN (SELECT symbol FROM daily_recommendations WHERE date = (SELECT MAX(date) FROM daily_recommendations))`
   ).all<any>()
   if (!stocks?.length) return []
 
@@ -637,30 +637,14 @@ export async function runDailyRecommendation(env: Bindings): Promise<void> {
           })
 
           const topThemes = themeSectors.slice(0, 5).map(s => s.sector)
-          const llmReasons = await generateRecommendationReasons(env.ANTHROPIC_API_KEY, llmCandidates, topThemes)
-
-          if (llmReasons.size > 0) {
-            const llmUpdateBatch = []
-            for (const [symbol, { reason, watchPoints }] of llmReasons) {
-              // watch_points 只在 LLM 回傳非空時才覆寫（保護 template 的注意事項）
-              if (watchPoints.length > 0) {
-                llmUpdateBatch.push(env.DB.prepare(
-                  "UPDATE daily_recommendations SET reason = ?, watch_points = ? WHERE date = ? AND symbol = ?"
-                ).bind(reason, JSON.stringify(watchPoints), today, symbol))
-              } else {
-                llmUpdateBatch.push(env.DB.prepare(
-                  "UPDATE daily_recommendations SET reason = ? WHERE date = ? AND symbol = ?"
-                ).bind(reason, today, symbol))
-              }
-            }
-            for (let b = 0; b < llmUpdateBatch.length; b += 50) {
-              await env.DB.batch(llmUpdateBatch.slice(b, b + 50))
-            }
-            console.log(`[Recommendation] LLM 理由覆寫完成：${llmReasons.size} 支`)
-          }
+          // 2026-04-10: W4 LLM 呼叫已移除。
+          // C1 (ml-controller LangGraph V2, llm_reason.py, Sonnet) 已在 pipeline step 4 寫入 D1。
+          // W4 用 Haiku 覆寫 = 浪費 $4.5/月 + 品質降級。
+          // Template fallback 仍有效（C1 失敗時 template reason 不會被清掉）。
+          console.log(`[Recommendation] LLM 理由由 ml-controller C1 處理，Worker 不再重複呼叫`)
         }
       } catch (e) {
-        console.error('[Recommendation] LLM 理由失敗（保留 template）:', e)
+        console.error('[Recommendation] LLM check failed (non-fatal):', e)
       }
     }
   }

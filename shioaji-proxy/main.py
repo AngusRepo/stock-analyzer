@@ -19,6 +19,7 @@ Endpoints：
 import os
 import time
 import threading
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
@@ -36,6 +37,8 @@ api = None
 connected = False
 last_ticks: dict[str, dict] = {}   # symbol → latest tick data
 subscribed: set[str] = set()
+# F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
+_price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -84,6 +87,11 @@ def init_shioaji():
                 "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
                 "updated_at": datetime.now(TW_TZ).isoformat(),
             }
+            # F4: Append to rolling buffer (deduped to ~1 entry per minute)
+            buf = _price_buffer[symbol]
+            now_ts = time.time()
+            if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
+                buf.append((now_ts, tick.close))
 
     except Exception as e:
         print(f"[Shioaji] Init failed: {e}")
@@ -247,6 +255,34 @@ def snapshot_endpoint(symbol: str, authorization: str | None = None):
     if snap:
         return {"status": "ok", "data": snap}
     raise HTTPException(404, f"No snapshot for {symbol}")
+
+
+# ── F4: Trend endpoint（買入二次確認用）────────────────────────────────────
+@app.get("/trend/{symbol}")
+def trend(symbol: str, minutes: int = 5, authorization: str | None = None):
+    """回傳近 N 分鐘價格趨勢（slope + prices），用於買入二次確認。"""
+    verify_token(authorization)
+    symbol = symbol.upper().strip()
+    buf = _price_buffer.get(symbol, deque())
+    cutoff = time.time() - minutes * 60
+    recent = [(ts, px) for ts, px in buf if ts >= cutoff]
+
+    if len(recent) >= 2:
+        slope_5min = (recent[-1][1] - recent[0][1]) / recent[0][1]  # 5 min return
+    elif symbol in last_ticks:
+        # 沒有 rolling buffer 但有 tick → 用 snapshot fallback
+        snap = get_snapshot(symbol)
+        slope_5min = snap["change_rate"] / 100 if snap and snap.get("change_rate") is not None else 0
+    else:
+        slope_5min = 0
+
+    return {
+        "symbol": symbol,
+        "slope_5min": round(slope_5min, 6),
+        "prices": [px for _, px in recent],
+        "count": len(recent),
+        "minutes": minutes,
+    }
 
 
 # ── Market Risk：盤中即時大盤風險 ──────────────────────────────────────────

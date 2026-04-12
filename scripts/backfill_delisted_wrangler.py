@@ -210,12 +210,12 @@ def main():
 
         # INSERT stock
         sql_lines.append(
-            f"INSERT OR IGNORE INTO stocks (symbol, name, market, is_active, delisted_date, added_at, updated_at) "
+            f"INSERT OR IGNORE INTO stocks (symbol, name, market, in_current_watchlist, delisted_date, added_at, updated_at) "
             f"VALUES ('{sym}', '{name}', '{market}', 0, '{delisted}', datetime('now'), datetime('now'));"
         )
         # UPDATE if exists
         sql_lines.append(
-            f"UPDATE stocks SET delisted_date = '{delisted}', is_active = 0 WHERE symbol = '{sym}';"
+            f"UPDATE stocks SET delisted_date = '{delisted}', in_current_watchlist = 0 WHERE symbol = '{sym}';"
         )
 
         # Fetch OHLCV

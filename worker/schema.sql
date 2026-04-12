@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS stocks (
   name       TEXT NOT NULL,
   market     TEXT NOT NULL DEFAULT 'TWSE' CHECK(market IN ('TWSE','OTC','US')),
   sector     TEXT,
-  is_active  INTEGER NOT NULL DEFAULT 1,
+  in_current_watchlist  INTEGER NOT NULL DEFAULT 1,
   added_at   TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

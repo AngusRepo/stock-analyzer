@@ -320,26 +320,26 @@ async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandi
   // source='screener' 且非 pinned → 全部先停用，再由 Step 2 重新啟用本輪候選
   // pinned=1（使用者手動加的）永遠不被 screener 輪換影響
   if (!candidates.length) {
-    await db.prepare("UPDATE stocks SET is_active=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
+    await db.prepare("UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
     return
   }
 
   const placeholders = candidateSymbols.map(() => '?').join(',')
   await db.prepare(
-    `UPDATE stocks SET is_active=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
+    `UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
   ).bind(...candidateSymbols).run()
 
   // ── Step 2: Upsert 候選股票 ────────────────────────────────────────────
-  // pinned 股票：只更新 is_active=1、sector，不動 source
+  // pinned 股票：只更新 in_current_watchlist=1、sector，不動 source
   // 非 pinned 股票：source 設為 screener，下一輪可被正確輪換
   const batch = candidates.map(c => {
     // 根據資料來源判斷市場：TPEX API 來的是 OTC，其餘為 TWSE
     const market = tpexSymbolSet.has(c.symbol) ? 'OTC' : 'TWSE'
     return db.prepare(`
-      INSERT INTO stocks (symbol, name, market, sector, is_active, source)
+      INSERT INTO stocks (symbol, name, market, sector, in_current_watchlist, source)
       VALUES (?, ?, ?, ?, 1, 'screener')
       ON CONFLICT(symbol) DO UPDATE SET
-        is_active=1,
+        in_current_watchlist=1,
         market=excluded.market,
         source=CASE WHEN COALESCE(stocks.pinned,0)=1 THEN stocks.source ELSE 'screener' END,
         sector=COALESCE(excluded.sector, stocks.sector),
@@ -1398,9 +1398,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       await env.DB.batch(recBatch.slice(b, b + BATCH))
     }
 
-    // 保證所有候選都 is_active=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
+    // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
     await env.DB.prepare(
-      "UPDATE stocks SET is_active=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
+      "UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
     ).bind(endDate).run()
 
     console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
@@ -1410,7 +1410,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       const { computeAndStoreIndicators } = await import('../routes/stocks')
       const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
-        WHERE s.is_active = 1
+        WHERE s.in_current_watchlist = 1
           AND NOT EXISTS (SELECT 1 FROM technical_indicators ti WHERE ti.stock_id = s.id AND ti.date >= date('now', '-3 days'))
           AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
       `).all<{ id: number; symbol: string }>()

@@ -1,4 +1,4 @@
-INSERT OR IGNORE INTO stocks (symbol, name, market, sector, is_active) VALUES
+INSERT OR IGNORE INTO stocks (symbol, name, market, sector, in_current_watchlist) VALUES
 ('5481', '新華', 'OTC', '電子零組件業', 1),
 ('3629', '地心引力', 'OTC', '光電業', 1),
 ('3687', '歐買尬', 'OTC', '文化創意業', 1),

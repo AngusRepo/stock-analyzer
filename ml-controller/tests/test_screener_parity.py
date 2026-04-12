@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pandas as pd  # noqa: E402
+import polars as pl  # noqa: E402
 
 from services.backtest_engine import ScreenerParams, score_multi_factor  # noqa: E402
 
@@ -77,12 +77,9 @@ def make_bars(closes: list[float], volumes: list[float] | None = None,
     return bars
 
 
-def bars_to_python_df(bars: list[dict]) -> pd.DataFrame:
-    """Convert canonical bar list → DataFrame expected by score_multi_factor()."""
-    df = pd.DataFrame(bars)
-    df = df.set_index("date")
-    # Columns: open, high, low, close, volume (in this order)
-    return df[["open", "high", "low", "close", "volume"]]
+def bars_to_python_df(bars: list[dict]) -> pl.DataFrame:
+    """Convert canonical bar list → Polars DataFrame expected by score_multi_factor()."""
+    return pl.DataFrame(bars).select(["date", "open", "high", "low", "close", "volume"])
 
 
 def bars_to_worker_json(bars: list[dict]) -> list[dict]:
@@ -104,14 +101,12 @@ def bars_to_worker_json(bars: list[dict]) -> list[dict]:
     return out
 
 
-def chips_to_python_df(chips: list[dict]) -> pd.DataFrame:
-    """Convert canonical chip list → DataFrame with foreign_net/trust_net columns."""
+def chips_to_python_df(chips: list[dict]) -> pl.DataFrame:
+    """Convert canonical chip list → Polars DataFrame with foreign_net/trust_net columns."""
     if not chips:
-        return pd.DataFrame(columns=["foreign_net", "trust_net"])
-    df = pd.DataFrame(chips)
-    df = df.rename(columns={"foreign": "foreign_net", "trust": "trust_net"})
-    df = df.set_index("date")
-    return df[["foreign_net", "trust_net"]]
+        return pl.DataFrame(schema={"date": pl.Utf8, "foreign_net": pl.Float64, "trust_net": pl.Float64})
+    df = pl.DataFrame(chips).rename({"foreign": "foreign_net", "trust": "trust_net"})
+    return df.select(["date", "foreign_net", "trust_net"])
 
 
 def chips_to_worker_json(chips: list[dict]) -> list[dict]:
@@ -361,7 +356,7 @@ def _compare_result(
 # Runners
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_py_inputs(fixture: dict) -> tuple[pd.DataFrame, pd.DataFrame, float]:
+def _build_py_inputs(fixture: dict) -> tuple[pl.DataFrame, pl.DataFrame, float]:
     prices_df = bars_to_python_df(fixture["bars"])
     chip_df = chips_to_python_df(fixture["chips"])
     return prices_df, chip_df, float(fixture["marketReturn5d"])

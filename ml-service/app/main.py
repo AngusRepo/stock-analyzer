@@ -7,7 +7,7 @@ main.py — FastAPI ML 服務（v14）
 """
 import os
 import numpy as np
-import pandas as pd
+import polars as pl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -134,24 +134,28 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
     """
     await verify_service_token(request)
     from .features import build_feature_matrix, get_features, FEATURE_COLS
-    from .factor_monitor import compute_factor_ic
+    from .feature_selection import ic_icir_check
 
     df = build_feature_matrix(req.prices, req.indicators, req.chips,
                               req.sentiment_scores, req.market_env)
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
 
     if len(X) < 60:
         return {"error": "需要至少 60 天資料", "features": []}
 
-    # 把 X/y 組回 DataFrame 做 IC
-    df_ic = pd.DataFrame(X, columns=feature_names)
-    df_ic["target_5d"] = y  # target_dir 的值（0/1）
+    # IC/ICIR per-feature (pure NumPy, no Pandas)
+    # For per-stock IC audit, dates are implicit (sequential rows = sequential days)
+    dates_seq = np.arange(len(X)).astype(str)  # sequential pseudo-dates
+    ic_results_dict = ic_icir_check(X, y, dates_seq, feature_names, min_ic=0.0, min_icir=0.0)
 
-    ic_results = compute_factor_ic(df_ic, feature_names, target_col="target_5d")
-    results = ic_results.to_dict(orient="records") if not ic_results.empty else []
+    results = [
+        {"feature": name, "ic": v["ic"], "icir": v["icir"],
+         "effective": v["stable"], "n_dates": v["n_dates"]}
+        for name, v in ic_results_dict.items()
+    ]
 
-    weak = [r["feature"] for r in results if not r.get("effective", True)]
-    strong = [r["feature"] for r in results if r.get("effective", False)]
+    weak = [r["feature"] for r in results if not r["effective"]]
+    strong = [r["feature"] for r in results if r["effective"]]
 
     print(f"[IC Audit] {len(strong)} effective / {len(weak)} weak out of {len(results)} features")
     return {
@@ -221,29 +225,33 @@ def predict_stock(req: PredictRequest) -> dict:
     today_str = datetime.now().strftime("%Y-%m-%d")
     ns = req.night_session
     if ns and ns.date and ns.date == today_str:
-        df["taifex_night_change_pct"] = np.clip(ns.change_pct, -10, 10)
-        df["taifex_night_range_pct"] = np.clip(ns.range_pct, 0, 15)
-        df["taifex_night_available"] = 1.0
+        df = df.with_columns([
+            pl.lit(float(np.clip(ns.change_pct, -10, 10))).alias("taifex_night_change_pct"),
+            pl.lit(float(np.clip(ns.range_pct, 0, 15))).alias("taifex_night_range_pct"),
+            pl.lit(1.0).alias("taifex_night_available"),
+        ])
         print(f"[Predict] {req.symbol} night_session: {ns.change_pct:.2f}% (date={ns.date})")
     else:
-        df["taifex_night_change_pct"] = 0.0
-        df["taifex_night_range_pct"] = 0.0
-        df["taifex_night_available"] = 0.0
+        df = df.with_columns([
+            pl.lit(0.0).alias("taifex_night_change_pct"),
+            pl.lit(0.0).alias("taifex_night_range_pct"),
+            pl.lit(0.0).alias("taifex_night_available"),
+        ])
         if ns and ns.date and ns.date != today_str:
             print(f"[Predict] {req.symbol} stale night_session ({ns.date} != {today_str}), zeroed")
 
     # ── 五檔報價特徵（盤中由 Worker 傳入，盤前/盤後填 0）──────────────────
-    # 目前 /predict 是盤後批次呼叫，orderbook 不可用，全填 0
-    # 未來盤中 re-predict 可傳入 orderbook features
-    df["orderbook_imbalance"] = 0.0
-    df["orderbook_spread_pct"] = 0.0
-    df["orderbook_available"] = 0.0
+    df = df.with_columns([
+        pl.lit(0.0).alias("orderbook_imbalance"),
+        pl.lit(0.0).alias("orderbook_spread_pct"),
+        pl.lit(0.0).alias("orderbook_available"),
+    ])
 
     # #5 Price model input diversity：準備 adj_close 和 log(adj_close) 序列
     adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
     log_adj_prices_arr = np.log(np.maximum(adj_prices_arr, 1e-8))
 
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
     X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
 
     # RobustScaler for scale-sensitive models (DLinear, PatchTST, FT-Transformer)
@@ -257,7 +265,7 @@ def predict_stock(req: PredictRequest) -> dict:
         X_scaled, X_scaled_latest = X, X_latest
 
     # #6 Feature model input diversity：CatBoost 滯後特徵 + LightGBM rank transform
-    X_cb, y_cb, cb_names = get_catboost_features(df)
+    X_cb, y_cb, cb_names = get_catboost_features(df, target_col="target_dir")
     X_cb_latest = X_cb[-1] if len(X_cb) > 0 else np.zeros(max(len(cb_names), 1))
     X_lgbm = get_lgbm_features(X) if len(X) > 0 else X
     X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
@@ -486,15 +494,17 @@ def retrain_stock(req: PredictRequest) -> dict:
     df          = build_feature_matrix(req.prices, req.indicators, chips_input,
                                         req.sentiment_scores, req.market_env)
     # retrain 時 optional features 填 0（歷史資料暫無，收集後再回填）
-    df["taifex_night_change_pct"] = 0.0
-    df["taifex_night_range_pct"] = 0.0
-    df["taifex_night_available"] = 0.0
-    df["orderbook_imbalance"] = 0.0
-    df["orderbook_spread_pct"] = 0.0
-    df["orderbook_available"] = 0.0
+    df = df.with_columns([
+        pl.lit(0.0).alias("taifex_night_change_pct"),
+        pl.lit(0.0).alias("taifex_night_range_pct"),
+        pl.lit(0.0).alias("taifex_night_available"),
+        pl.lit(0.0).alias("orderbook_imbalance"),
+        pl.lit(0.0).alias("orderbook_spread_pct"),
+        pl.lit(0.0).alias("orderbook_available"),
+    ])
 
     prices_arr  = np.array([float(p["close"]) for p in req.prices])
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
 
     # P1#9: Filter out weak features identified by IC audit
     if req.weak_features:
@@ -533,26 +543,27 @@ def retrain_stock(req: PredictRequest) -> dict:
     et_p  = optuna_params.get("ExtraTrees", {})
 
     _specs = [
-        ("XGBoost",    lambda: __import__("xgboost", fromlist=["XGBClassifier"]).XGBClassifier(
+        ("XGBoost",    lambda: __import__("xgboost", fromlist=["XGBRegressor"]).XGBRegressor(
                            n_estimators=xgb_p.get("n_estimators", 150),
                            max_depth=xgb_p.get("max_depth", 4),
                            learning_rate=xgb_p.get("learning_rate", 0.05),
+                           objective="reg:squarederror",
                            subsample=xgb_p.get("subsample", 0.9),
                            colsample_bytree=xgb_p.get("colsample_bytree", 0.9),
-                           use_label_encoder=False, eval_metric="logloss",
+                           eval_metric="rmse",
                            random_state=42, verbosity=0)),
-        ("CatBoost",   lambda: __import__("catboost", fromlist=["CatBoostClassifier"]).CatBoostClassifier(
+        ("CatBoost",   lambda: __import__("catboost", fromlist=["CatBoostRegressor"]).CatBoostRegressor(
                            iterations=cat_p.get("iterations", 200),
                            depth=cat_p.get("depth", 5),
                            learning_rate=cat_p.get("learning_rate", 0.05),
                            l2_leaf_reg=cat_p.get("l2_leaf_reg", 3.0),
-                           loss_function="Logloss", random_seed=42, verbose=0)),
-        ("ExtraTrees", lambda: __import__("sklearn.ensemble", fromlist=["ExtraTreesClassifier"]).ExtraTreesClassifier(
+                           loss_function="RMSE", random_seed=42, verbose=0)),
+        ("ExtraTrees", lambda: __import__("sklearn.ensemble", fromlist=["ExtraTreesRegressor"]).ExtraTreesRegressor(
                            n_estimators=et_p.get("n_estimators", 200),
                            max_depth=et_p.get("max_depth", 6),
                            min_samples_split=et_p.get("min_samples_split", 5),
                            min_samples_leaf=et_p.get("min_samples_leaf", 3),
-                           max_features="sqrt", class_weight="balanced", bootstrap=True,
+                           max_features="sqrt", bootstrap=True,
                            random_state=42, n_jobs=-1)),
         ("LightGBM",   lambda: None),         # 特殊處理（直接呼叫 run_lightgbm）
         ("FT-Transformer", lambda: None),     # 特殊處理（PyTorch + scaler bundle）
@@ -631,6 +642,979 @@ async def retrain_endpoint(req: PredictRequest, request: Request):
     """HTTP endpoint wrapper — adds auth then delegates to retrain_stock()."""
     await verify_service_token(request)
     return retrain_stock(req)
+
+
+# ── Universal Model Retrain (Batch approach) ────────────────────────────────
+#
+# 流程：
+#   1. prep_universal_batch(payloads) × N 批 → 存 GCS universal/prep/batch_{i}.npz
+#   2. train_universal_from_gcs() → 讀全部 npz → concat → 訓練 5 models → 存 GCS
+#
+
+class UniversalPrepRequest(BaseModel):
+    """單批 prep request — ml-controller 分批送 ~500 stocks。"""
+    payloads: list[dict]
+    barrier_params: dict = {}
+    batch_index: int = 0
+    # Batch-level shared data (avoid duplicating in every payload)
+    shared_market_history: dict = {}    # {date: {risk_score, us_vix, ...}} — same for all stocks
+    per_stock_ts_map: dict = {}         # {stock_id_str: {date: {revenue_yoy, margin_balance, ...}}}
+    # V2 Feature Pool: only keep these features in the output (None = keep all)
+    active_features: list[str] | None = None
+
+
+class UniversalTrainRequest(BaseModel):
+    """觸發 train — 不帶資料，從 GCS 讀 prep 結果。"""
+    batch_count: int = 5  # 預期幾個 batch npz
+
+
+class UniversalRetrainRequest(BaseModel):
+    """向後相容：單次全量 retrain（小規模測試用）。"""
+    payloads: list[dict]
+    barrier_params: dict = {}
+
+
+def prep_universal_batch(req: UniversalPrepRequest) -> dict:
+    """單批 feature engineering — build_feature_matrix × N stocks → 存 GCS npz。
+
+    ml-controller 分 5 批各 ~500 stocks 呼叫此函數。
+    結果存 GCS universal/prep/batch_{i}.npz (X, y, dates, feature_names)。
+    """
+    import time, io, json
+    t0 = time.time()
+    payloads = req.payloads
+
+    from .features import build_feature_matrix, get_features, FEATURE_COLS
+    from .model_store import _get_bucket
+
+    # Batch-level shared data — inject into each stock's market_env at prep time
+    shared_history = req.shared_market_history or {}
+    ps_ts_map = req.per_stock_ts_map or {}
+
+    all_dfs = []
+    skipped = 0
+    for payload in payloads:
+        prices_data = payload.get("prices", [])
+        if len(prices_data) < 60:
+            skipped += 1
+            continue
+        try:
+            chips_input = payload.get("chips", [])
+            market_upper = payload.get("market", "TW").upper()
+            if market_upper in ("US", "NYSE", "NASDAQ"):
+                chips_input = []
+            # Inject batch-level shared data into market_env
+            me = payload.get("market_env") or {}
+            if shared_history and "history" not in me:
+                me["history"] = shared_history
+            stock_id_str = str(payload.get("stock_id", ""))
+            if ps_ts_map and stock_id_str in ps_ts_map:
+                me["per_stock_ts"] = ps_ts_map[stock_id_str]
+            df = build_feature_matrix(
+                prices_data,
+                payload.get("indicators", []),
+                chips_input,
+                payload.get("sentiment_scores", []),
+                me,
+                req.barrier_params or None,
+                payload.get("stock_meta"),
+            )
+            # 保留 date 供時間基 split
+            if "date" not in df.columns and len(prices_data) > 0:
+                dates = [p.get("date", "") for p in prices_data]
+                date_list = dates[-len(df):] if len(dates) >= len(df) else dates + [""] * (len(df) - len(dates))
+                df = df.with_columns(pl.Series("_date", date_list))
+            elif "date" in df.columns:
+                df = df.with_columns(pl.col("date").cast(pl.Utf8).alias("_date"))
+            else:
+                df = df.with_columns(pl.lit("").alias("_date"))
+            all_dfs.append(df)
+        except Exception as e:
+            skipped += 1
+            print(f"[PrepBatch] Skip stock: {e}")
+
+    if not all_dfs:
+        return {"batch_index": req.batch_index, "rows": 0, "skipped": skipped, "error": "no valid stocks"}
+
+    pooled = pl.concat(all_dfs, how="diagonal_relaxed")
+
+    # 2.0: Cross-sectional rank label — per-date rank of target_5d (0~1)
+    from .features import compute_cross_sectional_rank
+    pooled = compute_cross_sectional_rank(pooled, return_col="target_5d", date_col="_date")
+    rank_stats = pooled["target_rank"].describe()
+    print(f"[PrepBatch] Cross-sectional rank: mean={pooled['target_rank'].mean():.3f}, "
+          f"nulls={pooled['target_rank'].null_count()}")
+
+    # V2 Feature Pool: filter to active features only (if provided)
+    active_filter = req.active_features
+    if active_filter:
+        keep_cols = [c for c in active_filter if c in pooled.columns]
+        drop_cols = [c for c in FEATURE_COLS if c in pooled.columns and c not in keep_cols]
+        if drop_cols:
+            pooled = pooled.drop(drop_cols)
+            print(f"[PrepBatch] Feature pool filter: kept {len(keep_cols)}, dropped {len(drop_cols)}")
+
+    # get_features uses target_rank (regression) by default
+    X, y, feature_names = get_features(pooled, target_col="target_rank")
+
+    # 取 dates（同步 drop_nulls filter）
+    available = [c for c in FEATURE_COLS if c in pooled.columns]
+    target_cols_to_keep = ["target_5d", "_date"]
+    if "target_rank" in pooled.columns:
+        target_cols_to_keep.append("target_rank")
+    if "target_dir" in pooled.columns:
+        target_cols_to_keep.append("target_dir")
+    df_clean = pooled.select(available + target_cols_to_keep).drop_nulls()
+    dates_arr = df_clean["_date"].to_numpy()
+
+    # 存 GCS npz
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS bucket not available")
+
+    buf = io.BytesIO()
+    np.savez_compressed(buf, X=X, y=y, dates=dates_arr)
+    buf.seek(0)
+    blob = bucket.blob(f"universal/prep/batch_{req.batch_index}.npz")
+    blob.upload_from_file(buf, content_type="application/octet-stream")
+
+    # feature_names 只需存一次（每批都一樣），batch_0 存
+    if req.batch_index == 0:
+        meta_blob = bucket.blob("universal/prep/feature_names.json")
+        meta_blob.upload_from_string(json.dumps(feature_names), content_type="application/json")
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"[PrepBatch] batch_{req.batch_index}: {len(all_dfs)} stocks → {len(X)} rows, "
+          f"skipped {skipped}, {elapsed}s")
+
+    return {
+        "batch_index": req.batch_index,
+        "stocks_pooled": len(all_dfs),
+        "rows": len(X),
+        "features": len(feature_names),
+        "skipped": skipped,
+        "elapsed_s": elapsed,
+    }
+
+
+def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
+    """從 GCS 讀全部 prep npz → concat → 時間基 split → 訓練 5 models → 存 GCS。"""
+    import time, io, json
+    t0 = time.time()
+
+    from .model_store import _get_bucket, save_model
+
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS bucket not available")
+
+    # ── 1. Load all batch npz ────────────────────────────────────────────────
+    all_X, all_y, all_dates = [], [], []
+    for i in range(req.batch_count):
+        blob = bucket.blob(f"universal/prep/batch_{i}.npz")
+        if not blob.exists():
+            print(f"[TrainUniversal] batch_{i}.npz not found, skipping")
+            continue
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        data = np.load(buf, allow_pickle=True)
+        all_X.append(data["X"])
+        all_y.append(data["y"])
+        all_dates.append(data["dates"])
+        print(f"[TrainUniversal] batch_{i}: {len(data['X'])} rows loaded")
+
+    if not all_X:
+        raise ValueError("No prep batches found in GCS")
+
+    X = np.concatenate(all_X, axis=0)
+    y = np.concatenate(all_y, axis=0)
+    dates_arr = np.concatenate(all_dates, axis=0)
+
+    # Load feature names
+    fn_blob = bucket.blob("universal/prep/feature_names.json")
+    feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
+
+    print(f"[TrainUniversal] Total: {len(X)} rows × {len(feature_names)} features")
+
+    if len(X) < 1000:
+        raise ValueError(f"Pooled 樣本不足 1000 ({len(X)})")
+
+    # ── 2. Purged time-based split (2.0: embargo gap to prevent label leakage) ──
+    from .purged_cv import purged_train_test_split
+    X_train, y_train, dates_train, X_test, y_test, dates_test = purged_train_test_split(
+        X, y, dates_arr,
+        test_ratio=0.2,
+        embargo_days=15,  # triple-barrier max_days=20, 15d embargo is conservative
+    )
+    print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=15d")
+
+    # ── 3. Train 5 feature models ────────────────────────────────────────────
+    results = {}
+    trained_models: dict[str, object] = {}  # model_name → trained model (for IC tracking)
+
+    # ── Helper: compute OOS Spearman IC ────────────────────────────────────────
+    from scipy.stats import spearmanr as _spearmanr
+
+    def _oos_ic(preds: np.ndarray, y_actual: np.ndarray) -> float:
+        if len(preds) < 10 or np.std(preds) < 1e-10 or np.std(y_actual) < 1e-10:
+            return 0.0
+        rho, _ = _spearmanr(preds, y_actual)
+        return float(rho) if not np.isnan(rho) else 0.0
+
+    # 3a: XGBoost (regression)
+    try:
+        from xgboost import XGBRegressor
+        xgb = XGBRegressor(
+            n_estimators=300, max_depth=6, learning_rate=0.03,
+            objective="reg:squarederror",
+            subsample=0.8, colsample_bytree=0.8,
+            eval_metric="rmse",
+            random_state=42, verbosity=0, n_jobs=-1,
+        )
+        xgb.fit(X_train, y_train)
+        preds = xgb.predict(X_test)
+        ic = _oos_ic(preds, y_test)
+        trained_models["XGBoost"] = xgb
+        results["XGBoost"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
+        print(f"[TrainUniversal] XGBoost IC={ic:.4f}")
+    except Exception as e:
+        results["XGBoost"] = {"error": str(e)}
+
+    # 3b: CatBoost (regression)
+    try:
+        from catboost import CatBoostRegressor
+        cat = CatBoostRegressor(
+            iterations=400, depth=6, learning_rate=0.03,
+            l2_leaf_reg=3.0, loss_function="RMSE",
+            random_seed=42, verbose=0, thread_count=-1,
+        )
+        cat.fit(X_train, y_train)
+        preds = cat.predict(X_test)
+        ic = _oos_ic(preds, y_test)
+        trained_models["CatBoost"] = cat
+        results["CatBoost"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
+        print(f"[TrainUniversal] CatBoost IC={ic:.4f}")
+    except Exception as e:
+        results["CatBoost"] = {"error": str(e)}
+
+    # 3c: ExtraTrees (regression)
+    try:
+        from sklearn.ensemble import ExtraTreesRegressor
+        et = ExtraTreesRegressor(
+            n_estimators=300, max_depth=8,
+            min_samples_split=10, min_samples_leaf=5,
+            max_features="sqrt",
+            bootstrap=True, random_state=42, n_jobs=-1,
+        )
+        et.fit(X_train, y_train)
+        preds = et.predict(X_test)
+        ic = _oos_ic(preds, y_test)
+        trained_models["ExtraTrees"] = et
+        results["ExtraTrees"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
+        print(f"[TrainUniversal] ExtraTrees IC={ic:.4f}")
+    except Exception as e:
+        results["ExtraTrees"] = {"error": str(e)}
+
+    # 3d: LightGBM (regression)
+    try:
+        import lightgbm as lgb
+        lgbm = lgb.LGBMRegressor(
+            n_estimators=300, max_depth=6, learning_rate=0.03,
+            objective="regression",
+            num_leaves=63, subsample=0.8, colsample_bytree=0.8,
+            min_child_samples=20,
+            random_state=42, verbose=-1, n_jobs=-1,
+        )
+        lgbm.fit(X_train, y_train)
+        preds = lgbm.predict(X_test)
+        ic = _oos_ic(preds, y_test)
+        trained_models["LightGBM"] = lgbm
+        results["LightGBM"] = {"oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test), "saved": True}
+        print(f"[TrainUniversal] LightGBM IC={ic:.4f}")
+    except Exception as e:
+        results["LightGBM"] = {"error": str(e)}
+
+    # 3e: FT-Transformer (regression, GPU L4 + AMP + early stopping)
+    # Ref: Gorishniy et al. NeurIPS 2021 "Revisiting Deep Learning Models for Tabular Data"
+    try:
+        import torch
+        import torch.nn as nn
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[TrainUniversal] FT-T device={device}")
+
+        n_features = X_train.shape[1]
+        D_MODEL, N_HEADS, N_LAYERS = 128, 8, 3
+        MAX_EPOCHS, LR, PATIENCE = 200, 2e-4, 16
+        BATCH_SIZE = 512
+
+        class _FTT(nn.Module):
+            def __init__(self, n_feat, d_model, n_heads, n_layers):
+                super().__init__()
+                self.feat_embed = nn.Linear(1, d_model, bias=True)
+                self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=d_model, nhead=n_heads,
+                    dim_feedforward=int(d_model * 4 / 3),
+                    dropout=0.1, batch_first=True,
+                )
+                self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+                self.head = nn.Linear(d_model, 1)  # 2.0: regression output (single scalar)
+
+            def forward(self, x):
+                B = x.shape[0]
+                tokens = self.feat_embed(x.unsqueeze(-1))
+                cls = self.cls_token.expand(B, -1, -1)
+                tokens = torch.cat([cls, tokens], dim=1)
+                out = self.encoder(tokens)
+                return self.head(out[:, 0, :]).squeeze(-1)  # (B,) scalar predictions
+
+        from sklearn.preprocessing import StandardScaler
+        feat_scaler = StandardScaler()
+        Xt = feat_scaler.fit_transform(X_train).astype(np.float32)
+        valid_cols_mask = feat_scaler.scale_ > 1e-10
+        Xt = np.nan_to_num(Xt, nan=0.0, posinf=0.0, neginf=0.0)
+        yt = y_train.astype(np.float32)  # 2.0: regression target (rank 0~1)
+        print(f"[TrainUniversal] FT-T scaler: {valid_cols_mask.sum()}/{len(valid_cols_mask)} columns with variance")
+        print(f"[TrainUniversal] FT-T using all {len(Xt)} samples (L4 24GB + batched val)")
+
+        val_size = max(int(len(Xt) * 0.2), 256)
+        Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
+        Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
+
+        model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
+        opt = torch.optim.Adam(model_ftt.parameters(), lr=LR, weight_decay=1e-5)
+        crit = nn.MSELoss()  # 2.0: regression loss
+
+        use_amp = device.type == "cuda"
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        grad_scaler = torch.amp.GradScaler(enabled=(use_amp and amp_dtype == torch.float16))
+        print(f"[TrainUniversal] AMP={'ON' if use_amp else 'OFF'} dtype={amp_dtype if use_amp else 'fp32'}")
+
+        best_val_loss = float("inf")
+        best_state = None
+        no_improve = 0
+
+        for epoch in range(MAX_EPOCHS):
+            model_ftt.train()
+            perm = np.random.permutation(len(Xt_trn))
+            for s in range(0, len(Xt_trn), BATCH_SIZE):
+                bi = perm[s:s + BATCH_SIZE]
+                xb = torch.tensor(Xt_trn[bi], device=device)
+                yb = torch.tensor(yt_trn[bi], device=device)
+                with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+                    loss = crit(model_ftt(xb), yb)
+                opt.zero_grad()
+                grad_scaler.scale(loss).backward()
+                grad_scaler.step(opt)
+                grad_scaler.update()
+
+            model_ftt.eval()
+            with torch.no_grad():
+                val_losses = []
+                for vs in range(0, len(Xt_val), BATCH_SIZE):
+                    xvb = torch.tensor(Xt_val[vs:vs + BATCH_SIZE], device=device)
+                    yvb = torch.tensor(yt_val[vs:vs + BATCH_SIZE], device=device)
+                    with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+                        vl = crit(model_ftt(xvb), yvb).item()
+                    val_losses.append(vl * len(xvb))
+                val_loss = sum(val_losses) / len(Xt_val)
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.cpu().clone() for k, v in model_ftt.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (epoch + 1) % 10 == 0:
+                print(f"[TrainUniversal] FT-T epoch {epoch+1} val_mse={val_loss:.6f} best={best_val_loss:.6f} patience={no_improve}/{PATIENCE}")
+
+            if no_improve >= PATIENCE:
+                print(f"[TrainUniversal] FT-T early stop at epoch {epoch+1}")
+                break
+
+        if best_state is not None:
+            model_ftt.load_state_dict(best_state)
+        model_ftt.to("cpu").eval()
+
+        # OOS IC
+        Xt_test = feat_scaler.transform(X_test).astype(np.float32)
+        Xt_test = np.nan_to_num(Xt_test, nan=0.0, posinf=0.0, neginf=0.0)
+        all_preds = []
+        with torch.no_grad():
+            for ts in range(0, len(Xt_test), BATCH_SIZE):
+                xb = torch.tensor(Xt_test[ts:ts + BATCH_SIZE])
+                all_preds.append(model_ftt(xb).numpy())  # (B,) scalar
+        preds = np.concatenate(all_preds)
+        ic = _oos_ic(preds, y_test)
+
+        stopped_epoch = epoch + 1
+        bundle = {
+            "state_dict": model_ftt.state_dict(),
+            "scaler": feat_scaler,
+            "valid_cols_mask": valid_cols_mask,
+            "n_features": n_features,
+            "model_type": "regression",  # 2.0 flag
+        }
+        trained_models["FT-Transformer"] = (model_ftt, feat_scaler, valid_cols_mask, bundle)
+        results["FT-Transformer"] = {
+            "oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test),
+            "stopped_epoch": stopped_epoch, "best_val_mse": round(best_val_loss, 6),
+            "device": str(device), "saved": True,
+        }
+        print(f"[TrainUniversal] FT-Transformer IC={ic:.4f} stopped={stopped_epoch} device={device}")
+    except Exception as e:
+        results["FT-Transformer"] = {"error": str(e)}
+
+    # ── 4. Prep data 保留（SHAP audit 需要）──────────────────────────────────
+    # 2026-04-10: 不再自動清 prep/，讓 SHAP audit 跑完後再清
+    # 或下次 retrain 的 prep 會自動覆蓋
+    print(f"[TrainUniversal] Prep data preserved for SHAP audit")
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"[TrainUniversal] Done in {elapsed}s — {len(results)} models")
+
+    # ── 5. IC tracking + 熔斷 (2.0) ────────────────────────────────────────────
+    # IC already computed inline during training (results[name]["oos_ic"])
+    ic_tracking = {}
+    circuit_breaker_triggered = False
+
+    for model_name, model_result in results.items():
+        if model_result.get("error"):
+            continue
+        oos_ic = model_result.get("oos_ic", 0.0)
+        ic_tracking[model_name] = {
+            "oos_ic": oos_ic,
+            "oos_samples": len(X_test),
+            "passed": oos_ic > 0,
+        }
+        if oos_ic <= 0:
+            circuit_breaker_triggered = True
+            print(f"[IC-熔斷] ⚠️ {model_name} OOS IC={oos_ic:.4f} ≤ 0 → 熔斷！沿用舊 model")
+
+    # Save IC tracking to GCS
+    try:
+        from datetime import datetime
+        ic_record = {
+            "computed_at": datetime.utcnow().isoformat() + "Z",
+            "models": ic_tracking,
+            "circuit_breaker": circuit_breaker_triggered,
+            "train_samples": len(X_train),
+            "test_samples": len(X_test),
+        }
+        ic_json = json.dumps(ic_record, indent=2)
+        bucket.blob("universal/ic_tracking.json").upload_from_string(
+            ic_json, content_type="application/json"
+        )
+        # History
+        month = datetime.utcnow().strftime("%Y-%m")
+        bucket.blob(f"universal/ic_history/{month}.json").upload_from_string(
+            ic_json, content_type="application/json"
+        )
+        print(f"[IC-Track] Saved ic_tracking.json (breaker={'ON' if circuit_breaker_triggered else 'OFF'})")
+    except Exception as e:
+        print(f"[IC-Track] GCS save failed: {e}")
+
+    # ── 6. Save models to GCS (ONLY if IC gate passes) ─────────────────────────
+    if circuit_breaker_triggered:
+        print(f"[IC-熔斷] ⚠️ 至少一個 model OOS IC ≤ 0，本次 models 不存 GCS。"
+              f"舊 models 繼續使用直到下次 retrain pass IC gate。")
+    else:
+        # All models passed IC → safe to overwrite GCS
+        for model_name, model_obj in trained_models.items():
+            try:
+                if model_name == "FT-Transformer":
+                    _, _, _, ftt_bundle = model_obj  # (model, scaler, valid_cols, bundle)
+                    save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train))
+                else:
+                    save_model(0, model_name, model_obj, feature_names, len(X_train))
+                print(f"[TrainUniversal] Saved {model_name} to GCS ✅")
+            except Exception as e:
+                print(f"[TrainUniversal] Failed to save {model_name}: {e}")
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"[TrainUniversal] Done in {elapsed}s — {len(results)} models")
+
+    return {
+        "type": "universal",
+        "total_samples": len(X),
+        "train_samples": len(X_train),
+        "test_samples": len(X_test),
+        "feature_count": len(feature_names),
+        "embargo_days": 15,
+        "elapsed_s": elapsed,
+        "results": results,
+        "ic_tracking": ic_tracking,
+        "circuit_breaker": circuit_breaker_triggered,
+    }
+
+
+@app.post("/retrain/universal/prep")
+async def prep_universal_endpoint(req: UniversalPrepRequest, request: Request):
+    await verify_service_token(request)
+    return prep_universal_batch(req)
+
+
+@app.post("/retrain/universal/train")
+async def train_universal_endpoint(req: UniversalTrainRequest, request: Request):
+    await verify_service_token(request)
+    return train_universal_from_gcs(req)
+
+
+# ── SHAP Feature Importance Audit ────────────────────────────────────────────
+# 2026-04-10: 用 SHAP 跨 5 個 model 評估 106 features 的重要性
+# TreeExplainer for tree models (GPU accelerated), GradientExplainer for FT-T
+
+def run_shap_audit(shap_samples: int = 5000) -> dict:
+    """從 GCS 讀 5 個 universal models + test data → 跑 SHAP → 回傳 feature importance 排名。"""
+    import time, io, json, joblib
+    t0 = time.time()
+
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+
+    # ── 1. Load test data from prep npz ──────────────────────────────────────
+    prep_blobs = sorted(
+        [b for b in bucket.list_blobs(prefix="universal/prep/") if b.name.endswith(".npz")],
+        key=lambda b: b.name,
+    )
+    if not prep_blobs:
+        return {"error": "No prep data in GCS. Run retrain first."}
+
+    all_X, all_y, all_dates = [], [], []
+    for blob in prep_blobs:
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        data = np.load(buf, allow_pickle=True)
+        all_X.append(data["X"])
+        all_y.append(data["y"])
+        all_dates.append(data["dates"])
+    X = np.vstack(all_X)
+    y = np.concatenate(all_y)
+    dates = np.concatenate(all_dates)
+
+    # Feature names
+    fn_blob = bucket.blob("universal/prep/feature_names.json")
+    import json as _json
+    feature_names = _json.loads(fn_blob.download_as_text())
+    n_features = len(feature_names)
+    print(f"[SHAP] Loaded {len(X)} samples, {n_features} features")
+
+    # Time-based split (same as training: 80/20)
+    sorted_dates = np.sort(np.unique(dates))
+    cutoff_idx = int(len(sorted_dates) * 0.8)
+    cutoff_date = sorted_dates[cutoff_idx]
+    test_mask = dates > cutoff_date
+    X_test = X[test_mask]
+    y_test = y[test_mask]
+    print(f"[SHAP] Test set: {len(X_test)} samples (cutoff={cutoff_date})")
+
+    # Subsample for SHAP (speed)
+    if len(X_test) > shap_samples:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(X_test), shap_samples, replace=False)
+        idx.sort()
+        X_shap = X_test[idx]
+    else:
+        X_shap = X_test
+    print(f"[SHAP] Using {len(X_shap)} samples for SHAP computation")
+
+    import shap
+
+    model_importance = {}  # model_name → np.array of shape (n_features,)
+
+    # ── 2. Tree models: TreeExplainer ────────────────────────────────────────
+    tree_models = ["xgboost", "catboost", "extratrees", "lightgbm"]
+    for name in tree_models:
+        try:
+            blob = bucket.blob(f"universal/{name}.joblib")
+            buf = io.BytesIO()
+            blob.download_to_file(buf)
+            buf.seek(0)
+            model = joblib.load(buf)
+            print(f"[SHAP] Computing TreeExplainer for {name}...")
+            t1 = time.time()
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_shap)
+            # shap_values: list of 2 arrays (binary) | ndarray (n_samples, n_features) | ndarray (n_samples, n_features, n_classes)
+            if isinstance(shap_values, list):
+                sv = np.abs(shap_values[1])  # class 1 (UP)
+            elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+                sv = np.abs(shap_values[:, :, 1])  # class 1 for 3D array
+            else:
+                sv = np.abs(shap_values)
+            print(f"[SHAP] {name} sv.shape={sv.shape}")
+            importance = sv.mean(axis=0)  # mean |SHAP| per feature
+            # Force 1D — some models return 2D importance
+            if importance.ndim > 1:
+                importance = importance.ravel()[:n_features]
+            importance = importance.astype(np.float64)
+            # Normalize to sum=1
+            total = importance.sum()
+            if total > 0:
+                importance = importance / total
+            model_importance[name] = importance
+            print(f"[SHAP] {name} done in {time.time()-t1:.1f}s, importance.shape={importance.shape}, top feature: {feature_names[importance.argmax()]} ({importance.max():.4f})")
+        except Exception as e:
+            print(f"[SHAP] {name} failed: {e}")
+            model_importance[name] = np.zeros(n_features)
+
+    # ── 3. FT-Transformer: GradientExplainer ─────────────────────────────────
+    try:
+        import torch
+        import torch.nn as nn
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        blob = bucket.blob("universal/ft-transformer.joblib")
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        bundle = joblib.load(buf)
+
+        class _FTT(nn.Module):
+            def __init__(self, n_feat, d_model=128, n_heads=8, n_layers=3):
+                super().__init__()
+                self.feat_embed = nn.Linear(1, d_model, bias=True)
+                self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=d_model, nhead=n_heads,
+                    dim_feedforward=int(d_model * 4 / 3),
+                    dropout=0.1, batch_first=True,
+                )
+                self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+                self.head = nn.Linear(d_model, 2)
+            def forward(self, x):
+                B = x.shape[0]
+                tokens = self.feat_embed(x.unsqueeze(-1))
+                cls = self.cls_token.expand(B, -1, -1)
+                tokens = torch.cat([cls, tokens], dim=1)
+                out = self.encoder(tokens)
+                return self.head(out[:, 0, :])
+
+        model_ftt = _FTT(n_features, d_model=128, n_heads=8, n_layers=3)
+        model_ftt.load_state_dict(bundle["state_dict"])
+        model_ftt.to(device).eval()
+        ftt_scaler = bundle.get("scaler")
+        ftt_valid_cols = bundle.get("valid_cols_mask")
+
+        if ftt_scaler and ftt_valid_cols is not None:
+            X_shap_scaled = X_shap.copy().astype(np.float32)
+            X_shap_scaled[:, ftt_valid_cols] = ftt_scaler.transform(X_shap)[:, ftt_valid_cols].astype(np.float32)
+        elif ftt_scaler:
+            X_shap_scaled = ftt_scaler.transform(X_shap).astype(np.float32)
+            X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+        else:
+            X_shap_scaled = X_shap.astype(np.float32)
+        # Background for GradientExplainer (small subset)
+        bg_size = min(500, len(X_shap_scaled))
+        bg = torch.tensor(X_shap_scaled[:bg_size], device=device)
+        data_tensor = torch.tensor(X_shap_scaled, device=device)
+
+        print(f"[SHAP] Computing GradientExplainer for FT-Transformer on {device}...")
+        t1 = time.time()
+        explainer = shap.GradientExplainer(model_ftt, bg)
+        shap_values = explainer.shap_values(data_tensor)
+        # shap_values: list of 2 arrays (class 0, class 1), each shape (n_samples, n_features)
+        if isinstance(shap_values, list):
+            sv = np.abs(shap_values[1])
+        elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+            sv = np.abs(shap_values[:, :, 1])
+        else:
+            sv = np.abs(shap_values)
+        print(f"[SHAP] ft-transformer sv.shape={sv.shape}")
+        importance = sv.mean(axis=0)
+        if importance.ndim > 1:
+            importance = importance.ravel()[:n_features]
+        importance = importance.astype(np.float64)
+        total = importance.sum()
+        if total > 0:
+            importance = importance / total
+        model_importance["ft-transformer"] = importance
+        print(f"[SHAP] FT-Transformer done in {time.time()-t1:.1f}s, top feature: {feature_names[importance.argmax()]} ({importance.max():.4f})")
+    except Exception as e:
+        print(f"[SHAP] FT-Transformer failed: {e}")
+        model_importance["ft-transformer"] = np.zeros(n_features)
+
+    # ── 4. Average across models → rank → flag <1% ───────────────────────────
+    valid_models = [v.ravel() for v in model_importance.values() if v.sum() > 0]
+    if not valid_models:
+        return {"error": "All models failed SHAP computation"}
+
+    avg_importance = np.mean(np.stack(valid_models), axis=0)
+    # Re-normalize
+    total = avg_importance.sum()
+    if total > 0:
+        avg_importance = avg_importance / total
+
+    ranked = sorted(
+        [(feature_names[i], float(avg_importance[i]), {k: float(model_importance[k][i]) for k in model_importance})
+         for i in range(n_features)],
+        key=lambda x: x[1], reverse=True,
+    )
+
+    features_result = []
+    for rank, (fname, avg_imp, per_model) in enumerate(ranked, 1):
+        below_1pct_all = all(v < 0.01 for v in per_model.values() if v > 0)  # all models agree <1%
+        features_result.append({
+            "rank": rank,
+            "feature": fname,
+            "avg_importance": round(avg_imp, 6),
+            "per_model": {k: round(v, 6) for k, v in per_model.items()},
+            "below_1pct_all_models": below_1pct_all,
+        })
+
+    n_below = sum(1 for f in features_result if f["below_1pct_all_models"])
+    elapsed = round(time.time() - t0, 1)
+
+    result = {
+        "total_features": n_features,
+        "shap_samples": len(X_shap),
+        "models_computed": list(model_importance.keys()),
+        "models_success": [k for k, v in model_importance.items() if v.sum() > 0],
+        "below_1pct_count": n_below,
+        "keep_count": n_features - n_below,
+        "elapsed_s": elapsed,
+        "features": features_result,
+    }
+
+    # Save to GCS
+    try:
+        result_json = _json.dumps(result, ensure_ascii=False, indent=2)
+        bucket.blob("universal/shap_audit.json").upload_from_string(result_json, content_type="application/json")
+        print(f"[SHAP] Saved to GCS universal/shap_audit.json")
+    except Exception as e:
+        print(f"[SHAP] Failed to save to GCS: {e}")
+
+    print(f"\n[SHAP] === RESULTS ({elapsed}s) ===")
+    print(f"[SHAP] Models: {result['models_success']}")
+    print(f"[SHAP] Features: {n_features} total, {n_below} below 1% (all models agree), {n_features - n_below} keep")
+    print(f"\n[SHAP] Top 20:")
+    for f in features_result[:20]:
+        print(f"  #{f['rank']:3d} {f['feature']:30s} avg={f['avg_importance']:.4f}")
+    print(f"\n[SHAP] Bottom 20 (candidates to cut):")
+    for f in features_result[-20:]:
+        flag = " *** CUT" if f["below_1pct_all_models"] else ""
+        print(f"  #{f['rank']:3d} {f['feature']:30s} avg={f['avg_importance']:.4f}{flag}")
+
+    return result
+
+
+@app.post("/audit/shap")
+async def shap_audit_endpoint(request: Request):
+    await verify_service_token(request)
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    shap_samples = body.get("shap_samples", 5000)
+    return run_shap_audit(shap_samples=shap_samples)
+
+
+def _deprecated_run_permutation_importance(n_repeats: int = 5, max_samples: int = 50000) -> dict:
+    """DEPRECATED — replaced by V2 Grouped Powershap (feature_selection.py).
+
+    Original Permutation Importance: shuffle each feature, measure accuracy drop on OOS test set.
+    - accuracy_drop > 0 → feature helps prediction (Active)
+    - accuracy_drop ≈ 0 → feature is noise (Reserve)
+    - accuracy_drop < 0 → feature hurts prediction (Cut)
+
+    Runs on already-trained models from GCS. No retrain needed.
+    """
+    import time, io, json as _json, joblib
+    from sklearn.metrics import accuracy_score
+    t0 = time.time()
+
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+
+    # ── 1. Load test data ────────────────────────────────────────────────────
+    prep_blobs = sorted(
+        [b for b in bucket.list_blobs(prefix="universal/prep/") if b.name.endswith(".npz")],
+        key=lambda b: b.name,
+    )
+    if not prep_blobs:
+        return {"error": "No prep data in GCS. Run retrain first."}
+
+    all_X, all_y, all_dates = [], [], []
+    for blob in prep_blobs:
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        data = np.load(buf, allow_pickle=True)
+        all_X.append(data["X"])
+        all_y.append(data["y"])
+        all_dates.append(data["dates"])
+    X = np.vstack(all_X)
+    y = np.concatenate(all_y)
+    dates = np.concatenate(all_dates)
+
+    fn_blob = bucket.blob("universal/prep/feature_names.json")
+    feature_names = _json.loads(fn_blob.download_as_text())
+    n_features = len(feature_names)
+
+    # Time-based split (same as training)
+    sorted_dates = np.sort(np.unique(dates))
+    cutoff_idx = int(len(sorted_dates) * 0.8)
+    cutoff_date = sorted_dates[cutoff_idx]
+    test_mask = dates > cutoff_date
+    X_test = X[test_mask]
+    y_test = y[test_mask]
+
+    # Subsample if too large (permutation is O(n_features × n_repeats × n_samples))
+    if len(X_test) > max_samples:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(X_test), max_samples, replace=False)
+        idx.sort()
+        X_test = X_test[idx]
+        y_test = y_test[idx]
+
+    print(f"[PermImp] {len(X_test)} test samples, {n_features} features, {n_repeats} repeats")
+
+    # ── 2. Load models ───────────────────────────────────────────────────────
+    model_names = ["xgboost", "catboost", "extratrees", "lightgbm"]
+    models = {}
+    for name in model_names:
+        try:
+            blob = bucket.blob(f"universal/{name}.joblib")
+            buf = io.BytesIO()
+            blob.download_to_file(buf)
+            buf.seek(0)
+            models[name] = joblib.load(buf)
+        except Exception as e:
+            print(f"[PermImp] {name} load failed: {e}")
+
+    if not models:
+        return {"error": "No models loaded"}
+
+    # ── 3. Compute permutation importance per model ──────────────────────────
+    rng = np.random.RandomState(42)
+    model_results = {}  # model_name → {feature_name: accuracy_drop}
+
+    for model_name, model in models.items():
+        try:
+            # Replace inf/nan for prediction safety
+            X_clean = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
+            base_pred = model.predict(X_clean)
+            base_acc = accuracy_score(y_test, base_pred)
+            print(f"[PermImp] {model_name} baseline acc={base_acc:.4f}")
+
+            drops_mean = np.zeros(n_features)
+            drops_std = np.zeros(n_features)
+            for fi in range(n_features):
+                fi_drops = []
+                for _ in range(n_repeats):
+                    X_perm = X_clean.copy()
+                    X_perm[:, fi] = rng.permutation(X_perm[:, fi])
+                    perm_pred = model.predict(X_perm)
+                    perm_acc = accuracy_score(y_test, perm_pred)
+                    fi_drops.append(base_acc - perm_acc)
+                drops_mean[fi] = np.mean(fi_drops)
+                drops_std[fi] = np.std(fi_drops)
+
+            model_results[model_name] = {
+                "baseline_acc": base_acc,
+                "drops": drops_mean,
+                "drops_std": drops_std,
+            }
+            top_fi = feature_names[np.argmax(drops_mean)]
+            print(f"[PermImp] {model_name} done, top feature: {top_fi} (drop={drops_mean.max():.4f})")
+        except Exception as e:
+            print(f"[PermImp] {model_name} failed: {e}")
+
+    if not model_results:
+        return {"error": "All models failed permutation importance"}
+
+    # ── 4. Average across models → classify by sklearn convention ─────────────
+    # sklearn: keep if mean - 2*std > 0 (95% CI lower bound > 0)
+    all_drops = np.stack([r["drops"] for r in model_results.values()])
+    all_stds = np.stack([r["drops_std"] for r in model_results.values()])
+    avg_drops = np.mean(all_drops, axis=0)
+    # Pooled std: combine across models via root-mean-square of per-model stds
+    pooled_std = np.sqrt(np.mean(all_stds ** 2, axis=0))
+
+    features_result = []
+    for fi in range(n_features):
+        per_model = {}
+        for mname, mresult in model_results.items():
+            per_model[mname] = round(float(mresult["drops"][fi]), 6)
+
+        avg_drop = float(avg_drops[fi])
+        std = float(pooled_std[fi])
+        ci_lower = avg_drop - 2 * std  # 95% CI lower bound
+
+        # sklearn convention: Active if CI lower bound > 0, Cut if CI upper bound < 0
+        if ci_lower > 0:
+            category = "active"
+        elif avg_drop + 2 * std < 0:
+            category = "cut"
+        else:
+            category = "reserve"
+
+        features_result.append({
+            "feature": feature_names[fi],
+            "avg_accuracy_drop": round(avg_drop, 6),
+            "std": round(std, 6),
+            "ci_lower": round(ci_lower, 6),
+            "category": category,
+            "per_model": per_model,
+        })
+
+    # Sort by accuracy drop (most important first)
+    features_result.sort(key=lambda x: x["avg_accuracy_drop"], reverse=True)
+    for i, f in enumerate(features_result):
+        f["rank"] = i + 1
+
+    n_active = sum(1 for f in features_result if f["category"] == "active")
+    n_reserve = sum(1 for f in features_result if f["category"] == "reserve")
+    n_cut = sum(1 for f in features_result if f["category"] == "cut")
+    elapsed = round(time.time() - t0, 1)
+
+    result = {
+        "total_features": n_features,
+        "test_samples": len(X_test),
+        "n_repeats": n_repeats,
+        "models_used": list(model_results.keys()),
+        "baseline_acc": {k: round(v["baseline_acc"], 4) for k, v in model_results.items()},
+        "active_count": n_active,
+        "reserve_count": n_reserve,
+        "cut_count": n_cut,
+        "elapsed_s": elapsed,
+        "features": features_result,
+    }
+
+    # Save to GCS
+    try:
+        result_json = _json.dumps(result, ensure_ascii=False, indent=2)
+        bucket.blob("universal/permutation_importance.json").upload_from_string(
+            result_json, content_type="application/json"
+        )
+        print(f"[PermImp] Saved to GCS universal/permutation_importance.json")
+    except Exception as e:
+        print(f"[PermImp] Failed to save to GCS: {e}")
+
+    print(f"\n[PermImp] === RESULTS ({elapsed}s) ===")
+    print(f"[PermImp] Active: {n_active}, Reserve: {n_reserve}, Cut: {n_cut}")
+    print(f"\n[PermImp] Top 20 (most impactful):")
+    for f in features_result[:20]:
+        print(f"  #{f['rank']:3d} {f['feature']:30s} drop={f['avg_accuracy_drop']:.4f} [{f['category']}]")
+    print(f"\n[PermImp] Bottom 20 (candidates to cut):")
+    for f in features_result[-20:]:
+        print(f"  #{f['rank']:3d} {f['feature']:30s} drop={f['avg_accuracy_drop']:.4f} [{f['category']}]")
+
+    return result
+
+
+@app.post("/audit/feature-selection")
+async def feature_selection_endpoint(request: Request):
+    """V2 Feature Selection: Silhouette → Grouped Powershap → Feature Pool update."""
+    await verify_service_token(request)
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    from .feature_selection import run_feature_selection_pipeline
+    return run_feature_selection_pipeline(
+        max_rounds=body.get("max_rounds", 100),
+        alpha=body.get("alpha", 0.01),
+        required_power=body.get("required_power", 0.99),
+    )
 
 
 # ── ARF Reward Update（驗證後由 Cron 呼叫）────────────────────────────────────
@@ -813,9 +1797,9 @@ def predict_all_models(req: PredictRequest):
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df          = build_feature_matrix(req.prices, req.indicators, chips_input,
                                         req.sentiment_scores, req.market_env)
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
     X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
-    X_cb, y_cb, cb_names = get_catboost_features(df)
+    X_cb, y_cb, cb_names = get_catboost_features(df, target_col="target_dir")
     X_cb_latest = X_cb[-1] if len(X_cb) > 0 else np.zeros(max(len(cb_names), 1))
     X_lgbm = get_lgbm_features(X) if len(X) > 0 else X
     X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
@@ -870,21 +1854,33 @@ async def factor_ic(req: PredictRequest, request: Request):
     供 weekly retrain 時呼叫，結果可存入 D1 或 GCS。
     """
     await verify_service_token(request)
-    from .factor_monitor import compute_factor_ic, filter_effective_features, compute_feature_weights_from_ic
+    from .feature_selection import ic_icir_check
     from .features import FEATURE_COLS
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df = build_feature_matrix(req.prices, req.indicators, chips_input,
                                req.sentiment_scores, req.market_env)
 
-    ic_df = compute_factor_ic(df, FEATURE_COLS, target_col="target_5d")
-    effective = filter_effective_features(ic_df, FEATURE_COLS)
-    weights = compute_feature_weights_from_ic(ic_df, FEATURE_COLS)
+    X, y, feature_names = get_features(df, target_col="target_dir")
+    dates_seq = np.arange(len(X)).astype(str)
+    ic_results_dict = ic_icir_check(X, y, dates_seq, feature_names)
+
+    effective = [name for name, v in ic_results_dict.items() if v["stable"]]
+    # IC-weighted feature weights (normalized |IC|)
+    ic_abs = {name: abs(v["ic"]) for name, v in ic_results_dict.items()}
+    total_ic = sum(ic_abs.values()) or 1.0
+    weights = {name: round(v / total_ic, 6) for name, v in ic_abs.items()}
+
+    ic_table = [
+        {"feature": name, "ic": v["ic"], "icir": v["icir"],
+         "effective": v["stable"], "n_dates": v["n_dates"]}
+        for name, v in ic_results_dict.items()
+    ]
 
     return {
         "stock_id": req.stock_id,
         "symbol": req.symbol,
-        "ic_table": ic_df.to_dict(orient="records") if not ic_df.empty else [],
+        "ic_table": ic_table,
         "effective_features": effective,
         "feature_weights": weights,
         "total_features": len(FEATURE_COLS),
@@ -901,7 +1897,6 @@ async def feature_drift(req: PredictRequest, request: Request):
     Drifted features 應降低權重或觸發 retrain。
     """
     await verify_service_token(request)
-    from .factor_monitor import detect_feature_drift
     from .features import FEATURE_COLS
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
@@ -912,10 +1907,27 @@ async def feature_drift(req: PredictRequest, request: Request):
         return {"error": "insufficient data for drift detection", "sample_count": len(df)}
 
     split_idx = int(len(df) * 0.8)
-    df_train = df.iloc[:split_idx]
-    df_recent = df.iloc[split_idx:]
-
-    drift_results = detect_feature_drift(df_train, df_recent, FEATURE_COLS)
+    # Drift detection: quantile shift (pure Polars + NumPy, no Pandas)
+    drift_results = []
+    threshold = 0.15
+    for feat in FEATURE_COLS:
+        if feat not in df.columns:
+            continue
+        col_vals = df[feat].to_numpy().astype(np.float64)
+        train_vals = col_vals[:split_idx]
+        recent_vals = col_vals[split_idx:]
+        train_vals = train_vals[~np.isnan(train_vals)]
+        recent_vals = recent_vals[~np.isnan(recent_vals)]
+        if len(train_vals) < 10 or len(recent_vals) < 5:
+            continue
+        shifts = {}
+        for q_label, q_val in [("q25", 0.25), ("q50", 0.50), ("q75", 0.75)]:
+            train_q = float(np.quantile(train_vals, q_val))
+            recent_q = float(np.quantile(recent_vals, q_val))
+            denom = abs(train_q) if abs(train_q) > 1e-6 else 1.0
+            shifts[f"{q_label}_shift"] = round((recent_q - train_q) / denom, 4)
+        drifted = any(abs(v) > threshold for v in shifts.values())
+        drift_results.append({"feature": feat, **shifts, "drifted": drifted})
     drifted_count = sum(1 for r in drift_results if r["drifted"])
 
     return {
@@ -974,7 +1986,7 @@ async def feature_audit_endpoint(req: PredictRequest, request: Request):
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df = build_feature_matrix(req.prices, req.indicators, chips_input,
                                req.sentiment_scores, req.market_env)
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
 
     if len(X) < 50:
         return {"error": "insufficient data for audit", "sample_count": len(X)}

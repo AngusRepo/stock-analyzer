@@ -5,7 +5,7 @@ Single source of truth for RS ratio / momentum / quadrant computation.
 1:1 port of worker/src/lib/dailyRecommendation.ts:170-204 (V1 formula).
 
 Phase 6.1 of 4/8 audit — replaces:
-- V1 dailyRecommendation.ts theme RRG (correct formula, wrong filter: is_active=1)
+- V1 dailyRecommendation.ts theme RRG (correct formula, wrong filter: in_current_watchlist=1)
 - V1 marketScreener.ts:calcIndustryRRG (wrong formula: Z-score, not RRG)
 
 Formula (Julius de Kempenaer original):

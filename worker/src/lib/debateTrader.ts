@@ -62,7 +62,8 @@ export interface StockProfile {
 interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
-  ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort)
+  GEMINI_API_KEY?: string     // Gemini 3.1 Flash Lite (primary cheap+fast)
+  ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort fallback)
   KV?: KVNamespace            // 讀 ml:config.debate_model（可 runtime 換模型）
 }
 
@@ -99,10 +100,10 @@ async function callLLM(
   env: LLMEnv,
   systemPrompt: string,
   userPrompt: string,
+  temperature: number = 0.4,
 ): Promise<{ text: string; source: string }> {
 
   // ── Layer 1: 本地 Tunnel (Claude Opus) ──────────────────────────────────
-  // Opus 品質的辯論才有意義；8B 等弱模型辯論品質不足，不如不跑
   if (env.LOCAL_TUNNEL_URL) {
     try {
       const health = await fetch(`${env.LOCAL_TUNNEL_URL}/health`, {
@@ -112,7 +113,7 @@ async function callLLM(
         const res = await fetch(`${env.LOCAL_TUNNEL_URL}/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ system: systemPrompt, user: userPrompt, max_tokens: 512 }),
+          body: JSON.stringify({ system: systemPrompt, user: userPrompt, max_tokens: 512, temperature }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {
@@ -122,31 +123,39 @@ async function callLLM(
         }
       }
     } catch {
-      // Tunnel 不通 → 跳過辯論
+      // Tunnel 不通 → 下一層
     }
   }
 
-  // ── Layer 2: Workers AI (Llama 3.3 70B) — Max Plan 免費 ─────────────────
-  if (env.AI) {
+  // ── Layer 2: Gemini 3.1 Flash Lite — 主力（便宜+快速+中文好）──────────
+  if (env.GEMINI_API_KEY) {
     try {
-      const result = await (env.AI as any).run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        max_tokens: 512,
-      }) as any
-      const text = result?.response ?? ''
-      if (text) return { text, source: 'workers_ai' }
+      const geminiModel = 'gemini-3.1-flash-lite-preview'
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            generationConfig: { temperature, maxOutputTokens: 512 },
+          }),
+        }
+      )
+      if (res.ok) {
+        const json = await res.json() as any
+        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+        if (text) return { text, source: 'gemini_api' }
+      }
     } catch (e) {
-      console.warn('[Debate] Workers AI failed:', e)
+      console.warn('[Debate] Gemini API failed:', e)
     }
   }
 
-  // ── Layer 3: Anthropic API (Haiku) — 最後手段 ───────────────────────────
+  // ── Layer 3: Anthropic API (Haiku) — 最後手段 fallback ─────────────────
   if (env.ANTHROPIC_API_KEY) {
     try {
-      // 模型名稱從 KV ml:config.debate_model 讀取，允許 runtime 升級
       const debateModel = env.KV
         ? (await getMlConfig(env.KV)).debate_model ?? 'claude-haiku-4-5-20251001'
         : 'claude-haiku-4-5-20251001'
@@ -160,6 +169,7 @@ async function callLLM(
         body: JSON.stringify({
           model: debateModel,
           max_tokens: 512,
+          temperature,
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         }),
@@ -201,11 +211,10 @@ export async function runBuyDebate(
   stockProfile?: StockProfile,
   taifexContext?: string,
 ): Promise<DebateResult> {
-  // ── Round 1 (Bull): Format ML ensemble reasoning as the bull case ─────────
+  // ── Context: 組裝 ML data + stock profile 作為共用 input ──────────────────
   const profileLines: string[] = []
   if (stockProfile) {
     if (stockProfile.business_desc) {
-      // 取前 250 字，去除 markdown 加粗符號
       const desc = stockProfile.business_desc.replace(/\*\*/g, '').slice(0, 250)
       profileLines.push(`【公司概況】${desc}`)
     }
@@ -215,7 +224,7 @@ export async function runBuyDebate(
     if (suppliers) profileLines.push(`【主要供應商】${suppliers.replace(/\*\*/g, '').slice(0, 150)}`)
   }
 
-  const bullCase = [
+  const mlContext = [
     `Stock: ${symbol} (${stockName})`,
     `Signal: ${signal} | Confidence: ${(confidence * 100).toFixed(1)}%`,
     ...(usContext ? [`【美股前夜】${usContext}`] : []),
@@ -225,80 +234,103 @@ export async function runBuyDebate(
     reasoning,
   ].join('\n')
 
-  // ── Round 2 (Bear): Challenge the bull case ──────────────────────────────
-  const bearSystemPrompt = [
-    '你是一位兼具「價值投資」與「逆向操作」風格的風控分析師（模仿 Charlie Munger + Michael Burry）。',
-    '你的任務是從以下角度挑戰這個 BUY 推薦，找出多頭忽略的風險：',
+  // ── Round 1 (Zealot): 極度看多 — LLM rewrite ML data 為敘事體 ──────────
+  // Apex Quant 設計：Zealot 跟 Reaper 都用 LLM 生成散文，消除 narrative bias
+  const zealotSystemPrompt = [
+    '你是 Zealot — 一位極度樂觀的多頭交易員。',
+    '你的信念：每一支被 ML 模型選中的股票都有獨到的買入理由。',
+    '你的任務：根據以下 ML 數據和公司資訊，寫出 3-5 個強力看多理由。',
     '',
-    '【價值面】',
-    '1. 估值合理性 — P/E、P/B 是否偏高？營收成長能否支撐當前價格？',
-    '2. 護城河 — 這家公司有什麼不可替代的競爭優勢？還是純粹概念炒作？',
-    '',
-    '【動能面】',
-    '3. 技術疲態 — RSI 是否超買？量價是否背離？均線支撐還在嗎？',
-    '4. 追高風險 — 此時進場是在趨勢中段還是末段？',
-    '',
-    '【宏觀面】',
-    '5. 總經/地緣 — 有哪些看不到的尾部風險？（美中關係、央行政策、產業鏈轉移）',
-    '',
-    '提出 3-5 個具體挑戰。簡潔有力，最多 300 字。用繁體中文回答。',
+    '規則：',
+    '- 不准說「但是」「不過」「風險」「需要注意」，你是死多頭',
+    '- 把 ML 信號、技術面、籌碼面的正面訊號放大解讀',
+    '- 簡潔有力，最多 300 字。用繁體中文回答。',
   ].join('\n')
 
-  let bearCase = ''
+  let zealotCase = ''
   let llmSource = 'unknown'
   try {
-    const bearResult = await callLLM(env, bearSystemPrompt, `Challenge this BUY case:\n\n${bullCase}`)
-    bearCase = bearResult.text
-    llmSource = bearResult.source
+    const zealotResult = await callLLM(env, zealotSystemPrompt, `Write the bull case:\n\n${mlContext}`, 0.5)
+    zealotCase = zealotResult.text
+    llmSource = zealotResult.source
+    console.log(`[Debate] Zealot done for ${symbol} via ${zealotResult.source}`)
   } catch (e) {
-    console.warn(`[Debate] Bear round failed for ${symbol}: ${e}`)
-    return { verdict: 'APPROVE', rounds: 1, summary: `Bull only (LLM error): ${bullCase}`.slice(0, 500), llmSource: 'none', convictionScore: 60 }
+    console.warn(`[Debate] Zealot round failed for ${symbol}: ${e}`)
+    // Fallback: 用原始 ML data 作為 zealot case（降級但不放棄）
+    zealotCase = mlContext
   }
 
-  // ── Round 3 (Judge): Evaluate both cases and decide ──────────────────────
-  const judgeSystemPrompt = [
-    '你是一位公正的交易裁判。審閱以下多空雙方論點後，做出判決。',
+  // ── Round 2 (Reaper): 極度看空 — 找致命缺陷 ────────────────────────────
+  const reaperSystemPrompt = [
+    '你是 Reaper — 一位極度悲觀的空頭風控分析師（融合 Charlie Munger + Michael Burry）。',
+    '你的信念：任何看起來完美的交易都藏著致命缺陷。',
+    '你的任務：從以下角度挑戰這個 BUY 推薦，找出多頭忽略的風險：',
+    '',
+    '【價值面】估值合理性、護城河是否真實',
+    '【動能面】技術疲態、追高風險、量價背離',
+    '【宏觀面】總經/地緣尾部風險',
+    '',
+    '規則：',
+    '- 不准說「優點是」「看好」「值得買入」，你是死空頭',
+    '- 每個挑戰都要具體，不要空泛警告',
+    '- 提出 3-5 個致命挑戰。最多 300 字。用繁體中文回答。',
+  ].join('\n')
+
+  let reaperCase = ''
+  try {
+    const reaperResult = await callLLM(env, reaperSystemPrompt, `Challenge this BUY case:\n\n${mlContext}`, 0.7)
+    reaperCase = reaperResult.text
+    llmSource = reaperResult.source
+    console.log(`[Debate] Reaper done for ${symbol} via ${reaperResult.source}`)
+  } catch (e) {
+    console.warn(`[Debate] Reaper round failed for ${symbol}: ${e}`)
+    return { verdict: 'APPROVE', rounds: 1, summary: `Zealot only (Reaper LLM error): ${zealotCase}`.slice(0, 500), llmSource, convictionScore: 60 }
+  }
+
+  // ── Round 3 (Fulcrum): 冷靜裁決 — 低 temperature 穩定判決 ──────────────
+  const fulcrumSystemPrompt = [
+    '你是 Fulcrum — 一位冷靜公正的交易裁決者。你只看證據，不被情緒左右。',
     '',
     '第一行輸出格式（嚴格遵守）：',
     'VERDICT: <APPROVE|DOWNGRADE|REJECT> CONVICTION: <0-100>',
     '',
     '判決標準：',
-    'APPROVE — 風險可控，多方論點有力，全倉進場（conviction >= 70）',
+    'APPROVE — 風險可控，Zealot 論點有力（conviction >= 70）',
     'DOWNGRADE — 有合理疑慮，減半倉位（conviction 40-69）',
-    'REJECT — 關鍵風險無法忽視，放棄交易（conviction < 40）',
+    'REJECT — Reaper 指出的風險無法忽視（conviction < 40）',
     '',
-    'conviction score 代表你對此交易的信念程度（0=完全不信 100=極度看好）。',
+    'conviction score = 你對此交易的信念程度（0=完全不信 100=極度看好）。',
     '',
     '第二行起用繁體中文寫 1-2 句判決理由。不要有其他格式。',
   ].join('\n')
 
-  const judgeUserPrompt = [
-    '=== BULL CASE ===',
-    bullCase,
+  const fulcrumUserPrompt = [
+    '=== ZEALOT CASE (極度看多) ===',
+    zealotCase,
     '',
-    '=== BEAR CASE ===',
-    bearCase,
+    '=== REAPER CASE (極度看空) ===',
+    reaperCase,
     '',
     'Your verdict (APPROVE / DOWNGRADE / REJECT):',
   ].join('\n')
 
-  let judgeResponse = ''
+  let fulcrumResponse = ''
   try {
-    const judgeResult = await callLLM(env, judgeSystemPrompt, judgeUserPrompt)
-    judgeResponse = judgeResult.text
-    // 以 judge 的 source 為準（兩 round 可能用不同 layer）
-    llmSource = judgeResult.source
+    const fulcrumResult = await callLLM(env, fulcrumSystemPrompt, fulcrumUserPrompt, 0.2)
+    fulcrumResponse = fulcrumResult.text
+    llmSource = fulcrumResult.source
+    console.log(`[Debate] Fulcrum done for ${symbol} via ${fulcrumResult.source}`)
   } catch (e) {
-    console.warn(`[Debate] Judge round failed for ${symbol}: ${e}`)
+    console.warn(`[Debate] Fulcrum round failed for ${symbol}: ${e}`)
     return {
       verdict: 'APPROVE', rounds: 2,
-      summary: `Bull+Bear done (Judge error). Bull: ${bullCase.slice(0, 200)} | Bear: ${bearCase.slice(0, 200)}`.slice(0, 500),
+      summary: `Zealot+Reaper done (Fulcrum error). Zealot: ${zealotCase.slice(0, 200)} | Reaper: ${reaperCase.slice(0, 200)}`.slice(0, 500),
       llmSource, convictionScore: 60,
     }
   }
 
-  // P1#14: Prompt injection detection — only scan bear + judge (not bull, which is ML's own reasoning)
-  const injectionCheck = checkInjection([bearCase, judgeResponse].join('\n'))
+  // P1#14: Prompt injection detection — scan Reaper + Fulcrum (not Zealot, which is LLM rewrite of ML data)
+  const injectionCheck = checkInjection([reaperCase, fulcrumResponse].join('\n'))
   if (injectionCheck.action === 'reject') {
     console.warn(`[Debate] INJECTION DETECTED for ${symbol}: ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`)
     return {
@@ -308,8 +340,8 @@ export async function runBuyDebate(
     }
   }
 
-  let verdict = parseVerdict(judgeResponse)
-  const convictionScore = parseConviction(judgeResponse)
+  let verdict = parseVerdict(fulcrumResponse)
+  const convictionScore = parseConviction(fulcrumResponse)
 
   // P1#14: Downgrade if medium/high injection detected
   if (injectionCheck.action === 'downgrade' && verdict === 'APPROVE') {
@@ -320,8 +352,8 @@ export async function runBuyDebate(
   const summary = [
     `[${verdict}|conv:${convictionScore}|${llmSource}] `,
     injectionCheck.action !== 'pass' ? `[INJ:${injectionCheck.severity}] ` : '',
-    `Bear: ${bearCase.slice(0, 120)} | `,
-    `Judge: ${judgeResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
+    `Reaper: ${reaperCase.slice(0, 120)} | `,
+    `Fulcrum: ${fulcrumResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)
 
   return { verdict, rounds: 3, summary, llmSource, convictionScore }

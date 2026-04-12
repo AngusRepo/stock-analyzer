@@ -9,17 +9,17 @@ factor_monitor.py — Factor IC 監控
   |IC| < 0.01 或 IC 持續下降 → 失效因子
 """
 import numpy as np
-import pandas as pd
+import polars as pl
 from scipy.stats import spearmanr
 from typing import Optional
 
 
 def compute_factor_ic(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_cols: list[str],
     target_col: str = "target_5d",
     rolling_window: int = 60,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     計算每個特徵的 Rank IC（Spearman 相關性）
 
@@ -36,11 +36,11 @@ def compute_factor_ic(
 
     available = [c for c in feature_cols if c in df.columns]
     if target_col not in df.columns:
-        return pd.DataFrame(results)
+        return pl.DataFrame(results)
 
     for feat in available:
-        sub = df[[feat, target_col]].dropna()
-        if len(sub) < rolling_window:
+        sub = df.select([feat, target_col]).drop_nulls()
+        if sub.height < rolling_window:
             results.append({
                 "feature": feat,
                 "ic_mean": 0.0,
@@ -49,16 +49,18 @@ def compute_factor_ic(
                 "ic_positive_pct": 0.5,
                 "ic_trend": "insufficient_data",
                 "effective": False,
-                "sample_count": len(sub),
+                "sample_count": sub.height,
             })
             continue
 
         # 滾動 IC：每 rolling_window 天計算一次 Spearman
+        feat_arr = sub[feat].to_numpy()
+        target_arr = sub[target_col].to_numpy()
         ic_series = []
         step = max(1, rolling_window // 4)  # 每 15 天計算一次
-        for start in range(0, len(sub) - rolling_window + 1, step):
-            window = sub.iloc[start:start + rolling_window]
-            corr, _ = spearmanr(window[feat], window[target_col])
+        for start in range(0, len(feat_arr) - rolling_window + 1, step):
+            end = start + rolling_window
+            corr, _ = spearmanr(feat_arr[start:end], target_arr[start:end])
             if not np.isnan(corr):
                 ic_series.append(corr)
 
@@ -67,7 +69,7 @@ def compute_factor_ic(
                 "feature": feat,
                 "ic_mean": 0.0, "ic_std": 1.0, "icir": 0.0,
                 "ic_positive_pct": 0.5, "ic_trend": "insufficient_data",
-                "effective": False, "sample_count": len(sub),
+                "effective": False, "sample_count": sub.height,
             })
             continue
 
@@ -103,14 +105,14 @@ def compute_factor_ic(
             "ic_positive_pct": round(ic_pos_pct, 4),
             "ic_trend": trend,
             "effective": effective,
-            "sample_count": len(sub),
+            "sample_count": sub.height,
         })
 
-    return pd.DataFrame(results)
+    return pl.DataFrame(results)
 
 
 def filter_effective_features(
-    ic_df: pd.DataFrame,
+    ic_df: pl.DataFrame,
     feature_cols: list[str],
     min_ic: float = 0.01,
 ) -> list[str]:
@@ -120,26 +122,28 @@ def filter_effective_features(
     Returns:
         有效的 feature_cols 子集（保持原始順序）
     """
-    if ic_df.empty:
+    if ic_df.height == 0:
         return feature_cols  # 無 IC 資料時全保留
 
     effective_set = set(
-        ic_df[ic_df["effective"] == True]["feature"].tolist()
+        ic_df.filter(pl.col("effective") == True)["feature"].to_list()
     )
 
     # 至少保留一半特徵，避免過度剔除
     filtered = [c for c in feature_cols if c in effective_set]
     if len(filtered) < len(feature_cols) // 2:
         # fallback: 按 |IC mean| 排序取前半
-        ic_df_sorted = ic_df.sort_values("ic_mean", key=abs, ascending=False)
-        top_half = set(ic_df_sorted.head(len(feature_cols) // 2)["feature"].tolist())
+        ic_df_sorted = ic_df.with_columns(
+            pl.col("ic_mean").abs().alias("_abs_ic")
+        ).sort("_abs_ic", descending=True)
+        top_half = set(ic_df_sorted.head(len(feature_cols) // 2)["feature"].to_list())
         filtered = [c for c in feature_cols if c in top_half]
 
     return filtered if filtered else feature_cols
 
 
 def compute_feature_weights_from_ic(
-    ic_df: pd.DataFrame,
+    ic_df: pl.DataFrame,
     feature_cols: list[str],
 ) -> dict[str, float]:
     """
@@ -148,20 +152,20 @@ def compute_feature_weights_from_ic(
     Returns:
         {feature_name: weight}，weights 總和 = 1.0
     """
-    if ic_df.empty:
+    if ic_df.height == 0:
         # 等權重
         n = len(feature_cols)
         return {c: 1.0 / n for c in feature_cols}
 
     weights = {}
     for feat in feature_cols:
-        row = ic_df[ic_df["feature"] == feat]
-        if row.empty:
+        row = ic_df.filter(pl.col("feature") == feat)
+        if row.height == 0:
             weights[feat] = 0.5  # 無 IC 資料的特徵給中等權重
         else:
             # 權重 = |ICIR| × (1 if effective else 0.3)
-            icir = abs(row.iloc[0]["icir"])
-            eff = row.iloc[0]["effective"]
+            icir = abs(row.row(0, named=True)["icir"])
+            eff = row.row(0, named=True)["effective"]
             weights[feat] = icir * (1.0 if eff else 0.3)
 
     # 歸一化
@@ -178,7 +182,7 @@ def compute_feature_weights_from_ic(
 # ── Alpha Quintile Test ──────────────────────────────────────────────────────
 
 def compute_quintile_returns(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     score_col: str,
     return_col: str = "target_5d",
     n_quantiles: int = 5,
@@ -192,15 +196,27 @@ def compute_quintile_returns(
     Returns:
         {"quintile_returns": [...], "alpha": float, "monotonic": bool}
     """
-    valid = df[[score_col, return_col]].dropna()
-    if len(valid) < n_quantiles * 10:
-        return {"error": "insufficient data", "sample_count": len(valid)}
+    valid = df.select([score_col, return_col]).drop_nulls()
+    if valid.height < n_quantiles * 10:
+        return {"error": "insufficient data", "sample_count": valid.height}
 
-    valid["quantile"] = pd.qcut(valid[score_col], n_quantiles, labels=False, duplicates="drop")
-    q_returns = valid.groupby("quantile")[return_col].mean()
+    # Manual quantile binning (polars has no qcut)
+    score_arr = valid[score_col].to_numpy()
+    quantile_edges = np.quantile(score_arr, np.linspace(0, 1, n_quantiles + 1))
+    # Assign quantile labels
+    labels = np.digitize(score_arr, quantile_edges[1:-1])  # 0-based bins
+    valid = valid.with_columns(pl.Series("quantile", labels))
 
-    quintile_list = [{"quintile": int(q), "mean_return": round(float(r), 6)}
-                     for q, r in q_returns.items()]
+    q_stats = (
+        valid.group_by("quantile")
+        .agg(pl.col(return_col).mean().alias("mean_return"))
+        .sort("quantile")
+    )
+
+    quintile_list = [
+        {"quintile": int(row["quantile"]), "mean_return": round(float(row["mean_return"]), 6)}
+        for row in q_stats.iter_rows(named=True)
+    ]
 
     # Monotonicity check: higher quintile → higher return
     rets = [r["mean_return"] for r in quintile_list]
@@ -214,15 +230,15 @@ def compute_quintile_returns(
         "monotonic": monotonic,
         "top_quintile_return": round(rets[-1], 6) if rets else None,
         "bottom_quintile_return": round(rets[0], 6) if rets else None,
-        "sample_count": len(valid),
+        "sample_count": valid.height,
     }
 
 
 # ── Feature Drift Detection ──────────────────────────────────────────────────
 
 def detect_feature_drift(
-    df_train: pd.DataFrame,
-    df_recent: pd.DataFrame,
+    df_train: pl.DataFrame,
+    df_recent: pl.DataFrame,
     feature_cols: list[str],
     threshold: float = 0.15,
 ) -> list[dict]:
@@ -239,9 +255,9 @@ def detect_feature_drift(
     for feat in feature_cols:
         if feat not in df_train.columns or feat not in df_recent.columns:
             continue
-        train_vals = df_train[feat].dropna()
-        recent_vals = df_recent[feat].dropna()
-        if len(train_vals) < 10 or len(recent_vals) < 5:
+        train_vals = df_train[feat].drop_nulls()
+        recent_vals = df_recent[feat].drop_nulls()
+        if train_vals.len() < 10 or recent_vals.len() < 5:
             continue
 
         shifts = {}

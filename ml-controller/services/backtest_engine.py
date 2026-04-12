@@ -30,7 +30,7 @@ Parameterized primitive for Optuna objective + robust optimization.
 
 Scope (Sprint 6a, Mode A rule-based replay):
   - Data loader: D1 stock_prices / technical_indicators / chip_data / market_risk
-    → in-memory pandas frames, point-in-time correct universe
+    → in-memory Polars frames, point-in-time correct universe
   - Daily replay: screener → ranking → entry → exit (no ML predictions dep)
   - Parameterized: accepts full (L1 + L2 + L3) params dict matching trading:config shape
   - Metrics: Sharpe / Sortino / Calmar / MaxDD / ProfitFactor / fill_rate + per_regime
@@ -59,7 +59,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from services import d1_client
 
@@ -75,11 +75,11 @@ class BacktestDataset:
     """
     In-memory snapshot of all D1 data needed to replay a date range.
 
-    Layout:
-      - prices:      MultiIndex (symbol, date) → open/high/low/close/volume/avg_price
-      - indicators:  MultiIndex (symbol, date) → ma5/10/20/60 + rsi14 + macd* + atr14 + bb_*
-      - chips:       MultiIndex (symbol, date) → foreign/trust/dealer net + margin + short
-      - market_risk: index date → vix/twii_* + risk_score/level + adl + bull_alignment
+    Layout (Phase 2: flat Polars DataFrames, no MultiIndex):
+      - prices:      columns: symbol, date, open, high, low, close, volume, avg_price
+      - indicators:  columns: symbol, date, ma5/10/20/60 + rsi14 + macd* + atr14 + bb_*
+      - chips:       columns: symbol, date, foreign/trust/dealer net + margin + short
+      - market_risk: columns: date, vix/twii_* + risk_score/level + adl + bull_alignment
       - universe:    dict[date_str, set[symbol]] — point-in-time tradable symbols
 
     Memory estimate for full D1 (2,346 stocks × 580 days):
@@ -89,11 +89,11 @@ class BacktestDataset:
       - market_risk: ~580 rows × 20 cols × 8 bytes ≈ 93 KB (trivial)
       Total: ~440 MB → fits in Cloud Run mem=2GB with headroom for replay state.
     """
-    prices: pd.DataFrame
-    indicators: pd.DataFrame
-    chips: pd.DataFrame
-    market_risk: pd.DataFrame
-    stocks: pd.DataFrame           # symbol metadata: sector, listed/delisted dates
+    prices: pl.DataFrame
+    indicators: pl.DataFrame
+    chips: pl.DataFrame
+    market_risk: pl.DataFrame
+    stocks: pl.DataFrame           # symbol metadata: sector, listed/delisted dates
     trading_days: list[str]        # sorted unique dates that have price data
     start_date: str
     end_date: str
@@ -116,8 +116,8 @@ class BacktestDataset:
     #   zero-copy numpy views instead of new DataFrame objects. Profile before
     #   A1: 13k × get_price_history = 8s. After A1 (DataFrame cache): 2.8s.
     #   After A1 (numpy cache + fast scorer): target <0.5s.
-    _price_cache: dict[str, pd.DataFrame] = field(default_factory=dict, repr=False)
-    _chip_cache: dict[str, pd.DataFrame] = field(default_factory=dict, repr=False)
+    _price_cache: dict[str, pl.DataFrame] = field(default_factory=dict, repr=False)
+    _chip_cache: dict[str, pl.DataFrame] = field(default_factory=dict, repr=False)
     # Numpy fast-path cache: {symbol: {"dates": np.ndarray[str],
     #                                  "open"/"high"/"low"/"close"/"volume": np.ndarray[float]}}
     _price_np: dict[str, dict] = field(default_factory=dict, repr=False)
@@ -150,30 +150,30 @@ class BacktestDataset:
         logger.info(f"[BacktestEngine] Loading D1 data {start_date}~{end_date}...")
 
         stocks_df = cls._load_stocks(symbols, start_date)
-        if stocks_df.empty:
+        if stocks_df.is_empty():
             raise RuntimeError("No stocks matched filter")
 
-        stock_ids = stocks_df["id"].tolist()
-        symbol_map = dict(zip(stocks_df["id"], stocks_df["symbol"]))
+        stock_ids = stocks_df.get_column("id").to_list()
+        symbol_map = dict(zip(stocks_df.get_column("id").to_list(), stocks_df.get_column("symbol").to_list()))
         logger.info(f"[BacktestEngine]   Universe: {len(stock_ids)} stocks")
 
         prices_df = cls._load_prices(stock_ids, symbol_map, start_date, end_date)
         logger.info(f"[BacktestEngine]   Prices: {len(prices_df)} rows")
 
-        if prices_df.empty:
+        if prices_df.is_empty():
             raise RuntimeError(f"No prices in range {start_date}~{end_date}")
 
         indicators_df = cls._load_indicators(stock_ids, symbol_map, start_date, end_date)
         logger.info(f"[BacktestEngine]   Indicators: {len(indicators_df)} rows")
 
-        chip_symbols = stocks_df["symbol"].tolist()
+        chip_symbols = stocks_df.get_column("symbol").to_list()
         chips_df = cls._load_chips(chip_symbols, start_date, end_date)
         logger.info(f"[BacktestEngine]   Chips: {len(chips_df)} rows")
 
         risk_df = cls._load_market_risk(start_date, end_date)
         logger.info(f"[BacktestEngine]   Market risk: {len(risk_df)} rows")
 
-        trading_days = sorted(prices_df.index.get_level_values("date").unique().tolist())
+        trading_days = sorted(prices_df.get_column("date").unique().to_list())
         logger.info(f"[BacktestEngine]   Trading days: {len(trading_days)}")
 
         ds = cls(
@@ -198,7 +198,7 @@ class BacktestDataset:
         """
         Two-layer cache build (see _price_cache / _price_np docstring above).
 
-        Layer 1 (DataFrame): for backwards-compatible `get_price_history`.
+        Layer 1 (Polars DataFrame): for backwards-compatible `get_price_history`.
         Layer 2 (Numpy arrays): for zero-copy fast path `get_price_history_np`.
 
         Cost: ~1s at load_from_d1 tail for ~250 symbols.
@@ -206,36 +206,39 @@ class BacktestDataset:
         import time as _time
         t0 = _time.perf_counter()
 
-        # Layer 1: DataFrame cache (legacy API)
-        if not self.prices.empty:
-            for sym, grp in self.prices.groupby(level="symbol", sort=False):
-                df = grp.droplevel("symbol").sort_index()
+        # Layer 1: Polars DataFrame cache + Layer 2: Numpy snapshot
+        # M14: sorted(keys) for deterministic iteration
+        if not self.prices.is_empty():
+            partitions = self.prices.partition_by("symbol", as_dict=True)
+            for sym in sorted(partitions.keys()):
+                grp = partitions[sym]
+                df = grp.drop("symbol").sort("date")
                 self._price_cache[sym] = df
-                # Layer 2: Numpy snapshot — extract columns to contiguous arrays.
-                # We use .astype() to coerce to float64 so downstream numpy math
-                # never hits dtype-upcasting cost mid-loop.
+                dates_arr = df.get_column("date").to_numpy().astype("U10")
                 self._price_np[sym] = {
-                    "dates":  df.index.values.astype("U10"),  # 'YYYY-MM-DD' string, sortable
-                    "open":   df["open"].to_numpy(dtype=np.float64, copy=True),
-                    "high":   df["high"].to_numpy(dtype=np.float64, copy=True),
-                    "low":    df["low"].to_numpy(dtype=np.float64, copy=True),
-                    "close":  df["close"].to_numpy(dtype=np.float64, copy=True),
-                    "volume": df["volume"].to_numpy(dtype=np.float64, copy=True),
+                    "dates":  dates_arr,
+                    "open":   df.get_column("open").to_numpy().astype(np.float64).copy(),
+                    "high":   df.get_column("high").to_numpy().astype(np.float64).copy(),
+                    "low":    df.get_column("low").to_numpy().astype(np.float64).copy(),
+                    "close":  df.get_column("close").to_numpy().astype(np.float64).copy(),
+                    "volume": df.get_column("volume").to_numpy().astype(np.float64).copy(),
                 }
 
-        if not self.chips.empty:
-            for sym, grp in self.chips.groupby(level="symbol", sort=False):
-                df = grp.droplevel("symbol").sort_index()
+        if not self.chips.is_empty():
+            partitions = self.chips.partition_by("symbol", as_dict=True)
+            for sym in sorted(partitions.keys()):
+                grp = partitions[sym]
+                df = grp.drop("symbol").sort("date")
                 self._chip_cache[sym] = df
-                # Chip numpy cache — only foreign/trust needed by scorer
-                fn_col = df["foreign_net"] if "foreign_net" in df.columns else None
-                tn_col = df["trust_net"] if "trust_net" in df.columns else None
+                dates_arr = df.get_column("date").to_numpy().astype("U10")
+                has_fn = "foreign_net" in df.columns
+                has_tn = "trust_net" in df.columns
                 self._chip_np[sym] = {
-                    "dates":       df.index.values.astype("U10"),
-                    "foreign_net": (fn_col.to_numpy(dtype=np.float64, copy=True)
-                                    if fn_col is not None else np.zeros(len(df), dtype=np.float64)),
-                    "trust_net":   (tn_col.to_numpy(dtype=np.float64, copy=True)
-                                    if tn_col is not None else np.zeros(len(df), dtype=np.float64)),
+                    "dates":       dates_arr,
+                    "foreign_net": (df.get_column("foreign_net").to_numpy().astype(np.float64).copy()
+                                    if has_fn else np.zeros(len(df), dtype=np.float64)),
+                    "trust_net":   (df.get_column("trust_net").to_numpy().astype(np.float64).copy()
+                                    if has_tn else np.zeros(len(df), dtype=np.float64)),
                 }
 
         elapsed = _time.perf_counter() - t0
@@ -306,18 +309,18 @@ class BacktestDataset:
     @staticmethod
     def _load_stocks(
         symbols: Optional[list[str]], start_date: str
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
         Load stock metadata with point-in-time universe filter.
         Include delisted stocks whose delisted_date >= start_date (C1 fix).
 
-        NOTE (2026-04-09 F1 fix): 不濾 is_active=1。is_active 是 ML 運算成本
-        收束（每週 ~33 檔進 Modal），不是 tradable universe 定義。SLTP/L2
-        Optuna 需要 vol-branched full universe 樣本。真正的 tradability 是
-        listed_date <= start_date AND (delisted_date IS NULL OR >= start_date)。
+        NOTE (2026-04-09 F1 fix): 不濾 in_current_watchlist=1。in_current_watchlist
+        是 ML 運算成本收束（每週 ~33 檔進 Modal），不是 tradable universe 定義。
+        SLTP/L2 Optuna 需要 vol-branched full universe 樣本。真正的 tradability
+        是 listed_date <= start_date AND (delisted_date IS NULL OR >= start_date)。
 
         D1 SQLite 變數上限 ~100，若 symbols > 80 改用「無 IN filter 拉全宇宙 +
-        pandas 後過濾」避免 too-many-variables。
+        Polars 後過濾」避免 too-many-variables。
         """
         base_where = [
             "(delisted_date IS NULL OR delisted_date >= ?)",
@@ -325,24 +328,24 @@ class BacktestDataset:
         ]
         base_params: list = [start_date, start_date]
 
-        # Small subset → inline SQL IN; large subset → pandas post-filter
+        # Small subset → inline SQL IN; large subset → Polars post-filter
         if symbols and len(symbols) <= 80:
             placeholders = ",".join("?" * len(symbols))
             base_where.append(f"symbol IN ({placeholders})")
             base_params.extend(symbols)
 
         sql = f"""
-            SELECT id, symbol, name, market, sector, is_active,
+            SELECT id, symbol, name, market, sector, in_current_watchlist,
                    listed_date, delisted_date
             FROM stocks
             WHERE {' AND '.join(base_where)}
         """
         rows = d1_client.query(sql, base_params)
-        df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        df = pl.DataFrame(rows) if rows else pl.DataFrame()
 
-        # Large subset path: filter in pandas after fetching full tradable universe
-        if symbols and len(symbols) > 80 and not df.empty:
-            df = df[df["symbol"].isin(set(symbols))].reset_index(drop=True)
+        # Large subset path: filter in Polars after fetching full tradable universe
+        if symbols and len(symbols) > 80 and not df.is_empty():
+            df = df.filter(pl.col("symbol").is_in(set(symbols)))
 
         return df
 
@@ -352,15 +355,14 @@ class BacktestDataset:
         symbol_map: dict[int, str],
         start_date: str,
         end_date: str,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
         Load OHLCV for given stock_ids, date range.
 
         D1 has ~1.67M total rows — for full-range backtest we hit row limits
         (D1 HTTP API caps at ~100k rows per response). Chunk by date window.
         """
-        chunks: list[pd.DataFrame] = []
-        # 60-day chunks × 2346 stocks ≈ 140k rows/chunk — safe under D1 limits
+        chunks: list[pl.DataFrame] = []
         chunk_start = start_date
         while chunk_start <= end_date:
             chunk_end = _date_add(chunk_start, 60)
@@ -375,10 +377,10 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pd.DataFrame(rows)
-                # Map stock_id → symbol
-                df["symbol"] = df["stock_id"].map(symbol_map)
-                df = df.dropna(subset=["symbol"])
+                df = pl.DataFrame(rows)
+                # Map stock_id → symbol via join
+                map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
+                df = df.join(map_df, on="stock_id", how="inner")
                 chunks.append(df)
 
             if chunk_end == end_date:
@@ -386,11 +388,11 @@ class BacktestDataset:
             chunk_start = _date_add(chunk_end, 1)
 
         if not chunks:
-            return _empty_multiindex_df()
+            return _empty_flat_df()
 
-        df = pd.concat(chunks, ignore_index=True)
-        df = df.drop(columns=["stock_id"], errors="ignore")
-        df = df.set_index(["symbol", "date"]).sort_index()
+        df = pl.concat(chunks)
+        df = df.drop("stock_id", strict=False)
+        df = df.sort(["symbol", "date"])
         return df
 
     @staticmethod
@@ -399,9 +401,9 @@ class BacktestDataset:
         symbol_map: dict[int, str],
         start_date: str,
         end_date: str,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """Load technical indicators, same chunking strategy as prices."""
-        chunks: list[pd.DataFrame] = []
+        chunks: list[pl.DataFrame] = []
         chunk_start = start_date
         while chunk_start <= end_date:
             chunk_end = _date_add(chunk_start, 60)
@@ -417,9 +419,9 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pd.DataFrame(rows)
-                df["symbol"] = df["stock_id"].map(symbol_map)
-                df = df.dropna(subset=["symbol"])
+                df = pl.DataFrame(rows)
+                map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
+                df = df.join(map_df, on="stock_id", how="inner")
                 chunks.append(df)
 
             if chunk_end == end_date:
@@ -427,22 +429,22 @@ class BacktestDataset:
             chunk_start = _date_add(chunk_end, 1)
 
         if not chunks:
-            return _empty_multiindex_df()
+            return _empty_flat_df()
 
-        df = pd.concat(chunks, ignore_index=True)
-        df = df.drop(columns=["stock_id"], errors="ignore")
-        df = df.set_index(["symbol", "date"]).sort_index()
+        df = pl.concat(chunks)
+        df = df.drop("stock_id", strict=False)
+        df = df.sort(["symbol", "date"])
         return df
 
     @staticmethod
     def _load_chips(
         symbols: list[str], start_date: str, end_date: str
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
         Load chip data. Note: chip_data uses `symbol` directly (not stock_id).
         Chunk by date to stay under D1 row limit.
         """
-        chunks: list[pd.DataFrame] = []
+        chunks: list[pl.DataFrame] = []
         chunk_start = start_date
         while chunk_start <= end_date:
             chunk_end = _date_add(chunk_start, 60)
@@ -460,21 +462,21 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                chunks.append(pd.DataFrame(rows))
+                chunks.append(pl.DataFrame(rows))
 
             if chunk_end == end_date:
                 break
             chunk_start = _date_add(chunk_end, 1)
 
         if not chunks:
-            return _empty_multiindex_df()
+            return _empty_flat_df()
 
-        df = pd.concat(chunks, ignore_index=True)
-        df = df.set_index(["symbol", "date"]).sort_index()
+        df = pl.concat(chunks)
+        df = df.sort(["symbol", "date"])
         return df
 
     @staticmethod
-    def _load_market_risk(start_date: str, end_date: str) -> pd.DataFrame:
+    def _load_market_risk(start_date: str, end_date: str) -> pl.DataFrame:
         """Load market-wide risk metrics (~580 rows total — no chunking needed)."""
         sql = """
             SELECT date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
@@ -489,9 +491,9 @@ class BacktestDataset:
         """
         rows = d1_client.query(sql, [start_date, end_date])
         if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        df = df.set_index("date").sort_index()
+            return pl.DataFrame()
+        df = pl.DataFrame(rows)
+        df = df.sort("date")
         return df
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -510,115 +512,101 @@ class BacktestDataset:
             return self._universe_cache[date]
 
         # Symbols with a price bar on this date
-        try:
-            bars_today = self.prices.xs(date, level="date")
-            has_bar = set(bars_today.index.tolist())
-        except KeyError:
-            has_bar = set()
+        bars_today = self.prices.filter(pl.col("date") == date)
+        has_bar = set(bars_today.get_column("symbol").to_list()) if not bars_today.is_empty() else set()
 
         # Filter by listed/delisted dates
-        active = self.stocks[
-            ((self.stocks["listed_date"].isna()) | (self.stocks["listed_date"] <= date))
-            & (
-                (self.stocks["delisted_date"].isna())
-                | (self.stocks["delisted_date"] > date)
-            )
-        ]["symbol"].tolist()
+        active_df = self.stocks.filter(
+            ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= date))
+            & ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") > date))
+        )
+        active = set(active_df.get_column("symbol").to_list())
 
-        universe = has_bar & set(active)
+        universe = has_bar & active
         self._universe_cache[date] = universe
         return universe
 
     def get_bar(self, symbol: str, date: str) -> Optional[dict]:
         """Get OHLCV bar for (symbol, date). Returns None if missing."""
-        try:
-            row = self.prices.loc[(symbol, date)]
-            return row.to_dict()
-        except KeyError:
+        result = self.prices.filter(
+            (pl.col("symbol") == symbol) & (pl.col("date") == date)
+        )
+        if result.is_empty():
             return None
+        return result.row(0, named=True)
 
     def get_indicator(self, symbol: str, date: str) -> Optional[dict]:
         """Get technical indicator snapshot for (symbol, date)."""
-        try:
-            row = self.indicators.loc[(symbol, date)]
-            return row.to_dict()
-        except KeyError:
+        result = self.indicators.filter(
+            (pl.col("symbol") == symbol) & (pl.col("date") == date)
+        )
+        if result.is_empty():
             return None
+        return result.row(0, named=True)
 
     def get_chip(self, symbol: str, date: str) -> Optional[dict]:
         """Get chip data for (symbol, date)."""
-        try:
-            row = self.chips.loc[(symbol, date)]
-            return row.to_dict()
-        except KeyError:
+        result = self.chips.filter(
+            (pl.col("symbol") == symbol) & (pl.col("date") == date)
+        )
+        if result.is_empty():
             return None
+        return result.row(0, named=True)
 
     def get_market_risk(self, date: str) -> Optional[dict]:
         """Get market risk row for a date."""
-        try:
-            row = self.market_risk.loc[date]
-            return row.to_dict()
-        except KeyError:
+        result = self.market_risk.filter(pl.col("date") == date)
+        if result.is_empty():
             return None
+        return result.row(0, named=True)
 
     def get_price_history(
         self, symbol: str, end_date: str, lookback_days: int
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
         Get trailing N trading bars for a symbol up to (and including) end_date.
         Used by screener for momentum / volatility / ATR calcs.
 
         A1 fast path (2026-04-09 Sprint 6a.8):
           Uses `_price_cache` if built (normal load_from_d1 path). Falls back to
-          MultiIndex .xs() if cache is absent (e.g. manual construction in tests).
+          filter on main DataFrame if cache is absent (e.g. manual construction in tests).
         """
         cached = self._price_cache.get(symbol)
         if cached is not None:
-            # Single-index sorted DataFrame: .loc[:end_date] is a binary-search slice.
-            return cached.loc[:end_date].tail(lookback_days)
-        # Fallback: legacy path for datasets built without _build_hot_caches
-        try:
-            all_bars = self.prices.xs(symbol, level="symbol")
-        except KeyError:
-            return pd.DataFrame()
-        mask = all_bars.index <= end_date
-        return all_bars.loc[mask].tail(lookback_days)
+            return cached.filter(pl.col("date") <= end_date).tail(lookback_days)
+        # Fallback: filter main DataFrame
+        all_bars = self.prices.filter(pl.col("symbol") == symbol)
+        if all_bars.is_empty():
+            return pl.DataFrame()
+        return all_bars.filter(pl.col("date") <= end_date).tail(lookback_days)
 
     def get_chip_history(
         self, symbol: str, end_date: str, lookback_days: int = 5
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
         Get trailing N chip rows for a symbol up to (and including) end_date.
         Returns empty DataFrame if no chip data for this symbol.
 
         A1 fast path (2026-04-09 Sprint 6a.8):
-          Same design as `get_price_history` — cache-first, fallback to .xs().
-          replay_screener_for_date previously inlined `chips.xs(...).loc[...].tail(5)`
-          which was a hot spot in the profile. Moving it behind this method lets
-          the cache replace it on every call.
+          Same design as `get_price_history` — cache-first, fallback to filter.
         """
         cached = self._chip_cache.get(symbol)
         if cached is not None:
-            return cached.loc[:end_date].tail(lookback_days)
+            return cached.filter(pl.col("date") <= end_date).tail(lookback_days)
         # Fallback
-        try:
-            hist = self.chips.xs(symbol, level="symbol")
-        except KeyError:
-            return pd.DataFrame()
-        return hist.loc[hist.index <= end_date].tail(lookback_days)
+        hist = self.chips.filter(pl.col("symbol") == symbol)
+        if hist.is_empty():
+            return pl.DataFrame()
+        return hist.filter(pl.col("date") <= end_date).tail(lookback_days)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Utilities
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _empty_multiindex_df() -> pd.DataFrame:
-    """
-    Return an empty DataFrame with a (symbol, date) MultiIndex skeleton so that
-    downstream `.xs(level=...)` calls don't crash on cold / no-result backtests.
-    """
-    idx = pd.MultiIndex.from_arrays([[], []], names=["symbol", "date"])
-    return pd.DataFrame(index=idx)
+def _empty_flat_df() -> pl.DataFrame:
+    """Return an empty DataFrame with symbol + date columns for no-result backtests."""
+    return pl.DataFrame(schema={"symbol": pl.Utf8, "date": pl.Utf8})
 
 
 def _date_add(date_str: str, days: int) -> str:
@@ -982,8 +970,8 @@ def score_multi_factor_np(
 
 
 def score_multi_factor(
-    prices: pd.DataFrame,        # trailing bars for one symbol, sorted by date ascending
-    chip_history: pd.DataFrame,  # trailing chip rows for same symbol (or empty)
+    prices: pl.DataFrame,        # trailing bars for one symbol, sorted by date ascending
+    chip_history: pl.DataFrame,  # trailing chip rows for same symbol (or empty)
     market_return_5d: float,
     sc: ScreenerParams,
 ) -> tuple[float, float, float, float, list[str]]:
@@ -993,9 +981,9 @@ def score_multi_factor(
     Returns (base_score, chip_score, tech_score, momentum_score, reasons).
 
     Inputs:
-      prices: DataFrame indexed by date with columns open/high/low/close/volume.
+      prices: Polars DataFrame with columns date/open/high/low/close/volume.
               Must have at least 3 rows; 20+ rows recommended for full scoring.
-      chip_history: DataFrame with foreign_net, trust_net columns (last 5 days used).
+      chip_history: Polars DataFrame with foreign_net, trust_net columns (last 5 days).
                     Pass empty DataFrame if no chip data.
       market_return_5d: 5-day return of market benchmark (0050 ETF close).
       sc: ScreenerParams instance.
@@ -1005,20 +993,20 @@ def score_multi_factor(
     if n < 3:
         return 0.0, 0.0, 0.0, 0.0, reasons
 
-    latest_close = float(prices["close"].iloc[-1])
-    closes = prices["close"].values
-    volumes = prices["volume"].values
+    closes = prices.get_column("close").to_numpy().astype(np.float64)
+    volumes = prices.get_column("volume").to_numpy().astype(np.float64)
+    latest_close = float(closes[-1])
 
     # ── P0-1: Chip score (0-40) ─────────────────────────────────────────────
     chip_score = 0.0
-    if not chip_history.empty:
+    if not chip_history.is_empty():
         # Last 5 days of chip data
-        recent = chip_history.tail(5).sort_index()
+        recent = chip_history.tail(5).sort("date")
         net_buy_shares = 0
         consec_buy_days = 0
         counting_consec = True
         for i in range(len(recent) - 1, -1, -1):
-            row = recent.iloc[i]
+            row = recent.row(i, named=True)
             day_net = (row.get("foreign_net") or 0) + (row.get("trust_net") or 0)
             net_buy_shares += day_net
             if counting_consec:
@@ -1108,8 +1096,8 @@ def score_multi_factor(
 
     # ATR14 + NATR + Keltner
     if n >= 14:
-        highs = prices["high"].values
-        lows = prices["low"].values
+        highs = prices.get_column("high").to_numpy().astype(np.float64)
+        lows = prices.get_column("low").to_numpy().astype(np.float64)
         trs = []
         for i in range(max(1, n - 14), n):
             tr = max(
@@ -1203,37 +1191,39 @@ def _calc_market_return_5d(dataset: BacktestDataset, date: str) -> float:
     try:
         hist = dataset.get_price_history("0050", date, 6)
         if len(hist) >= 6:
-            latest = float(hist["close"].iloc[-1])
-            old = float(hist["close"].iloc[0])
+            close_arr = hist.get_column("close").to_numpy()
+            latest = float(close_arr[-1])
+            old = float(close_arr[0])
             if old > 0:
                 return (latest - old) / old
     except Exception:
         pass
 
     # Fallback: cross-section median return from 5 trading days ago to date
-    try:
-        all_today = dataset.prices.xs(date, level="date")
-    except KeyError:
+    all_today = dataset.prices.filter(pl.col("date") == date)
+    if all_today.is_empty():
         return 0.0
-    # Find date 5 trading days ago from dataset.trading_days
     if date not in dataset.trading_days:
         return 0.0
     idx = dataset.trading_days.index(date)
     if idx < 5:
         return 0.0
     old_date = dataset.trading_days[idx - 5]
-    try:
-        all_old = dataset.prices.xs(old_date, level="date")
-    except KeyError:
+    all_old = dataset.prices.filter(pl.col("date") == old_date)
+    if all_old.is_empty():
         return 0.0
-    common = all_today.index.intersection(all_old.index)
-    if common.empty:
+    # Join on symbol to get common symbols, compute returns
+    joined = all_today.select(["symbol", pl.col("close").alias("close_today")]).join(
+        all_old.select(["symbol", pl.col("close").alias("close_old")]),
+        on="symbol",
+        how="inner",
+    )
+    if joined.is_empty():
         return 0.0
-    rets = (
-        all_today.loc[common, "close"] - all_old.loc[common, "close"]
-    ) / all_old.loc[common, "close"]
-    rets = rets.replace([np.inf, -np.inf], np.nan).dropna()
-    return float(rets.median()) if len(rets) > 0 else 0.0
+    rets = ((joined.get_column("close_today") - joined.get_column("close_old"))
+            / joined.get_column("close_old")).to_numpy()
+    rets = rets[np.isfinite(rets)]
+    return float(np.median(rets)) if len(rets) > 0 else 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1280,7 +1270,10 @@ def replay_screener_for_date(
     scored: list[Candidate] = []
 
     # Preload stocks sector lookup
-    sector_map = dict(zip(dataset.stocks["symbol"], dataset.stocks["sector"].fillna("其他")))
+    sector_map = dict(zip(
+        dataset.stocks.get_column("symbol").to_list(),
+        dataset.stocks.get_column("sector").fill_null("其他").to_list(),
+    ))
 
     for symbol in universe_symbols:
         # A1 fast path (Sprint 6a.8, 2026-04-09):
@@ -1485,6 +1478,16 @@ class FeeParams:
 
 
 @dataclass
+class PendingSettlement:
+    """T+2 settlement record — buy locks cash, sell releases cash after T+2."""
+    trade_date: str
+    settlement_date: str
+    side: str       # 'buy' | 'sell'
+    amount: float   # positive value
+    symbol: str
+
+
+@dataclass
 class AccountState:
     """Mutable portfolio state tracked across backtest days."""
     cash: float
@@ -1492,6 +1495,7 @@ class AccountState:
     positions: dict[str, "OpenPosition"] = field(default_factory=dict)
     daily_buy_total: float = 0.0
     daily_buy_date: str = ""   # date that daily_buy_total was last reset
+    pending_settlements: list[PendingSettlement] = field(default_factory=list)
 
     @property
     def total_portfolio(self) -> float:
@@ -1500,6 +1504,27 @@ class AccountState:
         'cost basis' since OpenPosition tracks entry_price (post-slippage fill)."""
         pos_value = sum(p.shares * p.entry_price for p in self.positions.values())
         return self.cash + pos_value
+
+    @property
+    def available_cash(self) -> float:
+        """T+2: settled cash - pending buys + same-settlement-date sell offsets."""
+        pending_buy = sum(s.amount for s in self.pending_settlements if s.side == "buy")
+        buy_settle_dates = {s.settlement_date for s in self.pending_settlements if s.side == "buy"}
+        sell_offset = sum(
+            s.amount for s in self.pending_settlements
+            if s.side == "sell" and s.settlement_date in buy_settle_dates
+        )
+        return self.cash - pending_buy + sell_offset
+
+    def settle_matured(self, current_date: str) -> None:
+        """Process settlements that have matured (settlement_date <= current_date)."""
+        matured = [s for s in self.pending_settlements if s.settlement_date <= current_date]
+        for s in matured:
+            if s.side == "buy":
+                self.cash -= s.amount
+            else:
+                self.cash += s.amount
+        self.pending_settlements = [s for s in self.pending_settlements if s.settlement_date > current_date]
 
     def reset_daily(self, date: str) -> None:
         if self.daily_buy_date != date:
@@ -1709,6 +1734,7 @@ def simulate_entries_for_date(
     sltp: SLTPParams,
     fees: FeeParams,
     ml_conf_placeholder: float = 0.60,
+    replay_days: list[str] | None = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1766,7 +1792,7 @@ def simulate_entries_for_date(
             ))
             continue
 
-        if account.cash < pos.min_cash_to_trade:
+        if account.available_cash < pos.min_cash_to_trade:
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="skipped_cash", adjusted_entry=cand.close,
@@ -1830,7 +1856,7 @@ def simulate_entries_for_date(
             budget = min(
                 kelly_budget,
                 total_portfolio * pos.max_pct_of_portfolio,
-                account.cash * pos.max_pct_of_cash,
+                account.available_cash * pos.max_pct_of_cash,
                 daily_remaining,
             )
             sizing_mode = "kelly"
@@ -1839,7 +1865,7 @@ def simulate_entries_for_date(
             budget = min(
                 risk_budget,
                 total_portfolio * pos.max_pct_of_portfolio,
-                account.cash * pos.max_pct_of_cash,
+                account.available_cash * pos.max_pct_of_cash,
                 daily_remaining,
             )
             sizing_mode = "risk_parity"
@@ -1913,7 +1939,7 @@ def simulate_entries_for_date(
         commission = calc_commission(tx_value, fees)
         total_cost = tx_value + commission
 
-        if total_cost > account.cash:
+        if total_cost > account.available_cash:
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="skipped_cash", adjusted_entry=adjusted_entry,
@@ -1942,8 +1968,12 @@ def simulate_entries_for_date(
         tp1_price = fill_price + atr14 * sltp.tp_mult_base
         tp2_price = fill_price + atr14 * sltp.tp_mult_base * 2
 
-        # Mutate account
-        account.cash -= total_cost
+        # T+2: create pending settlement instead of immediate cash deduction
+        settle_date = _get_settlement_date(entry_date, replay_days or [])
+        account.pending_settlements.append(PendingSettlement(
+            trade_date=entry_date, settlement_date=settle_date,
+            side="buy", amount=total_cost, symbol=cand.symbol,
+        ))
         account.daily_buy_total += total_cost
         account.positions[cand.symbol] = OpenPosition(
             symbol=cand.symbol,
@@ -2496,10 +2526,11 @@ def step_all_positions(
     bar_date: str,
     exit_p: ExitParams,
     fees: FeeParams,
+    replay_days: list[str] | None = None,
 ) -> list[Trade]:
     """
     Apply one day's bars to every open position in `account`.
-    Mutates account (removes closed positions, credits cash on fills).
+    Mutates account (removes closed positions, creates sell settlements).
     Returns list of Trade records realized today.
     """
     all_trades: list[Trade] = []
@@ -2516,12 +2547,16 @@ def step_all_positions(
         trades, closed = step_position_one_bar(pos, bar, bar_date, exit_p, fees)
 
         for t in trades:
-            # Credit cash: sell_gross - commission - tax (already in profit_amount)
-            # Simpler: cash += exit_price * shares - fees
+            # T+2: create pending settlement instead of immediate cash credit
             sell_gross = t.exit_price * t.shares
             sell_commission = max(sell_gross * fees.commission, fees.min_commission)
             sell_tax = sell_gross * fees.tax
-            account.cash += sell_gross - sell_commission - sell_tax
+            sell_proceeds = sell_gross - sell_commission - sell_tax
+            settle_date = _get_settlement_date(bar_date, replay_days or [])
+            account.pending_settlements.append(PendingSettlement(
+                trade_date=bar_date, settlement_date=settle_date,
+                side="sell", amount=sell_proceeds, symbol=symbol,
+            ))
 
         all_trades.extend(trades)
 
@@ -2875,11 +2910,11 @@ def build_regime_map(dataset: BacktestDataset) -> dict[str, str]:
     Used as Mode A regime proxy (Sprint 4-2 revisit will replace with HMM).
     """
     out: dict[str, str] = {}
-    if dataset.market_risk.empty:
+    if dataset.market_risk.is_empty():
         return out
-    for date, row in dataset.market_risk.iterrows():
+    for row in dataset.market_risk.iter_rows(named=True):
         level = row.get("risk_level") or "unknown"
-        out[str(date)] = str(level)
+        out[str(row["date"])] = str(level)
     return out
 
 
@@ -3134,6 +3169,20 @@ def _mark_to_market(account: AccountState, dataset: BacktestDataset, date: str) 
     return total
 
 
+def _get_settlement_date(trade_date: str, trading_days: list[str]) -> str:
+    """T+2 using the trading_days list (already excludes weekends/holidays)."""
+    try:
+        idx = trading_days.index(trade_date)
+        if idx + 2 < len(trading_days):
+            return trading_days[idx + 2]
+    except ValueError:
+        pass
+    # Fallback: +4 calendar days (conservative)
+    from datetime import datetime, timedelta
+    d = datetime.strptime(trade_date, "%Y-%m-%d") + timedelta(days=4)
+    return d.strftime("%Y-%m-%d")
+
+
 def replay_period(
     dataset: BacktestDataset,
     start_date: str,
@@ -3217,8 +3266,11 @@ def replay_period(
 
     # ── Main daily loop ────────────────────────────────────────────────────
     for i, day in enumerate(replay_days):
+        # Step 0: T+2 settle matured settlements
+        account.settle_matured(day)
+
         # Step 1: exit sweep on existing positions
-        trades_today = step_all_positions(account, dataset, day, exit_p, fees_p)
+        trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)
         all_trades.extend(trades_today)
 
         # Step 2: attempt entries from prev day's candidates (T-1 → T fill)
@@ -3232,6 +3284,7 @@ def replay_period(
                 pos=pos_p,
                 sltp=sltp_p,
                 fees=fees_p,
+                replay_days=replay_days,
             )
             all_attempts.extend(attempts)
 
@@ -3291,8 +3344,11 @@ def replay_period(
             sell_gross = sell_px * pos.shares
             sell_commission = max(sell_gross * fees_p.commission, fees_p.min_commission)
             sell_tax = sell_gross * fees_p.tax
-            account.cash += sell_gross - sell_commission - sell_tax
+            account.cash += sell_gross - sell_commission - sell_tax  # direct settle at backtest end
             del account.positions[symbol]
+
+        # Settle all remaining pending settlements at backtest end
+        account.settle_matured("9999-12-31")
 
         # Update final equity snapshot post-force-close
         if equity_curve:

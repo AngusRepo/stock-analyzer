@@ -382,3 +382,120 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
         reasoning=f"訊號不明，建議觀望。原因：{reason}",
         signal_strength=0,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.0 Rank → Signal 翻譯層
+# ══════════════════════════════════════════════════════════════════════════════
+
+def rank_to_signal(
+    rank_scores: dict[str, float],
+    current_price: float,
+    atr: float,
+    top_n: int = 5,
+    strong_buy_threshold: float = 0.85,
+    buy_threshold: float = 0.70,
+    sell_threshold: float = 0.30,
+    strong_sell_threshold: float = 0.15,
+) -> EnsembleResult:
+    """2.0 翻譯層：regression rank scores → EnsembleResult。
+
+    Args:
+        rank_scores: {model_name: rank_score (0~1)} from 5 regression models
+        current_price: latest close
+        atr: ATR for stop/target calculation
+        top_n: cross-sectional top N filter (applied by caller, not here)
+        strong_buy_threshold: rank above this → STRONG_BUY
+        buy_threshold: rank above this → BUY
+        sell_threshold: rank below this → SELL
+        strong_sell_threshold: rank below this → STRONG_SELL
+
+    Returns:
+        EnsembleResult with signal/direction/confidence translated from rank
+    """
+    if not rank_scores:
+        return _no_signal(current_price, atr, "No rank scores")
+
+    # Ensemble: simple mean of all model rank scores
+    scores = list(rank_scores.values())
+    avg_rank = float(np.mean(scores))
+    rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
+
+    # Consensus: fraction of models agreeing on dominant direction (symmetric)
+    n_bullish = sum(1 for s in scores if s > 0.5)
+    n_bearish = len(scores) - n_bullish
+    consensus = max(n_bullish, n_bearish) / len(scores)
+
+    # Signal translation
+    if avg_rank >= strong_buy_threshold:
+        signal = "STRONG_BUY"
+        direction = "up"
+    elif avg_rank >= buy_threshold:
+        signal = "BUY"
+        direction = "up"
+    elif avg_rank <= strong_sell_threshold:
+        signal = "STRONG_SELL"
+        direction = "down"
+    elif avg_rank <= sell_threshold:
+        signal = "SELL"
+        direction = "down"
+    else:
+        signal = "HOLD"
+        direction = "neutral"
+
+    # Confidence: use rank directly (0~1) — higher rank = more confident bullish
+    confidence = round(avg_rank, 3)
+
+    # Signal strength: 1~5 stars based on rank percentile
+    if avg_rank >= 0.90:
+        strength = 5
+    elif avg_rank >= 0.80:
+        strength = 4
+    elif avg_rank >= 0.70:
+        strength = 3
+    elif avg_rank >= 0.50:
+        strength = 2
+    else:
+        strength = 1
+
+    # Forecast: approximate from rank position
+    # rank 0.8 → top 20% → historically ~3-5% above market
+    forecast_pct = round((avg_rank - 0.5) * 0.10, 4)  # linear approx
+
+    atr_val = max(atr, current_price * 0.01)
+
+    # Model details for downstream
+    model_details = [
+        {"name": name, "model_name": name, "rank_score": round(score, 4),
+         "direction": "up" if score > 0.5 else "down",
+         "confidence": round(score, 3)}
+        for name, score in rank_scores.items()
+    ]
+
+    reasoning_parts = []
+    if avg_rank >= 0.70:
+        reasoning_parts.append(f"排名前 {round((1-avg_rank)*100)}%")
+    if consensus >= 0.8:
+        reasoning_parts.append(f"{len(scores)} 個模型中 {n_bullish} 個看多")
+    if rank_std < 0.1:
+        reasoning_parts.append("模型共識高")
+    reasoning = "；".join(reasoning_parts) if reasoning_parts else "排名中等，建議觀望"
+
+    return EnsembleResult(
+        signal=signal,
+        direction=direction,
+        confidence=confidence,
+        consensus=round(consensus, 2),
+        forecast_pct=forecast_pct,
+        forecast_range={
+            "low": round(current_price * (1 + forecast_pct - 0.02), 2),
+            "high": round(current_price * (1 + forecast_pct + 0.02), 2),
+        },
+        models=model_details,
+        entry_price=round(current_price, 2),
+        stop_loss=round(current_price - atr_val * 2, 2),
+        target1=round(current_price + atr_val * 1.5, 2),
+        target2=round(current_price + atr_val * 2.5, 2),
+        reasoning=reasoning,
+        signal_strength=strength,
+    )

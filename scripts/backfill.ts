@@ -13,7 +13,7 @@
  *   CLOUDFLARE_API_TOKEN=xxx   （需要 D1:Edit 權限）
  *
  * 執行步驟：
- *   1. 從 D1 讀取所有 is_active=1 的股票清單
+ *   1. 從 D1 讀取所有 in_current_watchlist=1 的股票清單
  *   2. 對每支股票從 FinMind 回抓 500 天 OHLCV + 籌碼 + 技術指標
  *   3. 回抓 TWII 大盤資料寫入 market_risk（供 HMM 訓練）
  *   4. 呼叫 ML /retrain 對每支股票訓練所有模型
@@ -247,7 +247,8 @@ function computeIndicators(
 // STEP 1：讀取股票清單
 // ═══════════════════════════════════════════════════════════════════════════
 async function getActiveStocks(): Promise<Array<{ id: number; symbol: string; market: string; name: string }>> {
-  return d1Query('SELECT id, symbol, market, name FROM stocks WHERE is_active=1 ORDER BY symbol')
+  // D3 fix: backfill all tradable stocks (not just watchlist) for backtest universe coverage
+  return d1Query('SELECT id, symbol, market, name FROM stocks WHERE delisted_date IS NULL ORDER BY symbol')
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -569,7 +570,7 @@ async function main() {
   log('📋', '讀取股票清單...')
   const stocks = await getActiveStocks()
   if (!stocks.length) {
-    console.error('❌  D1 中沒有 is_active=1 的股票，請先到前端新增股票')
+    console.error('❌  D1 中沒有可交易的股票')
     process.exit(1)
   }
   log('✅', `找到 ${stocks.length} 支股票：${stocks.map(s => s.symbol).join('  ')}`)

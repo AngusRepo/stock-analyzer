@@ -2,10 +2,10 @@
 sector_flow_service.py — Compute + write sector_flow RRG (Phase 6.2+6.3)
 
 Replaces:
-- V1 dailyRecommendation.ts:170-204 theme RRG (correct formula, wrong is_active=1 filter)
+- V1 dailyRecommendation.ts:170-204 theme RRG (correct formula, wrong in_current_watchlist=1 filter)
 - V1 marketScreener.ts:calcIndustryRRG (wrong Z-score formula)
 
-Drops B8 bug: `is_active=1` filter (only 33 stocks) — now reads ALL stocks.
+Drops B8 bug: `in_current_watchlist=1` filter (only 33 stocks) — now reads ALL stocks.
 Fixes B9 bug: uses `tag_type` filter to separate concept vs industry.
 
 Mapping:
@@ -35,7 +35,7 @@ def _tag_type_to_classification(tag_type: TagType) -> Classification:
 
 def _load_member_returns_5d(as_of_date: str) -> dict[str, float]:
     """
-    Load 5-trading-day returns for ALL stocks (NO is_active filter — Bug B8 fix).
+    Load 5-trading-day returns for ALL stocks (NO in_current_watchlist filter — Bug B8 fix).
 
     Returns {symbol: return_5d} where return_5d = (close_now - close_5d_ago) / close_5d_ago.
     Uses last 6 price points per stock (most recent is "now", 6th is "5 days ago").

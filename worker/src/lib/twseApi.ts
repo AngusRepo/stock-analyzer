@@ -1190,6 +1190,27 @@ export async function syncIndustryTags(db: D1Database, kv?: KVNamespace): Promis
     return { synced: 0 }
   }
 
+  // ── D9 (M10 fix): collision check — detect tags that exist under a different tag_type ──
+  const uniqueTags = [...new Set(allData.map(d => d.industry))]
+  if (uniqueTags.length) {
+    const ph = uniqueTags.map(() => '?').join(',')
+    const { results: collisions } = await db.prepare(
+      `SELECT DISTINCT tag, tag_type FROM stock_tags WHERE tag IN (${ph}) AND tag_type != 'industry'`
+    ).bind(...uniqueTags).all<{ tag: string; tag_type: string }>()
+    if (collisions?.length) {
+      console.warn(`[IndustrySync] ⚠️ Tag name collision detected! ${collisions.length} tags exist under different tag_type:`)
+      for (const c of collisions) {
+        console.warn(`  "${c.tag}" already exists as tag_type="${c.tag_type}" — skipping to avoid M10 clobber`)
+      }
+      const collisionSet = new Set(collisions.map(c => c.tag))
+      const before = allData.length
+      const filtered = allData.filter(d => !collisionSet.has(d.industry))
+      console.warn(`[IndustrySync] Filtered ${before - filtered.length} rows with colliding tags`)
+      allData.length = 0
+      allData.push(...filtered)
+    }
+  }
+
   // ── Batch upsert into stock_tags ──
   const BATCH = 50
   let synced = 0

@@ -26,7 +26,7 @@ import argparse
 import json
 import sys
 import numpy as np
-import pandas as pd
+import polars as pl
 
 try:
     import optuna
@@ -38,14 +38,16 @@ except ImportError:
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
-def load_from_csvs(orders_csv: str, predictions_csv: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_from_csvs(orders_csv: str, predictions_csv: str) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Load paper_orders and predictions from CSV."""
-    orders = pd.read_csv(orders_csv, parse_dates=["created_at"])
-    predictions = pd.read_csv(predictions_csv, parse_dates=["generated_at"])
+    orders = pl.read_csv(orders_csv)
+    orders = orders.with_columns(pl.col("created_at").str.to_datetime())
+    predictions = pl.read_csv(predictions_csv)
+    predictions = predictions.with_columns(pl.col("generated_at").str.to_datetime())
     return orders, predictions
 
 
-def load_from_d1(db_url: str, token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_from_d1(db_url: str, token: str) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Load from D1 REST API."""
     import httpx
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -53,14 +55,14 @@ def load_from_d1(db_url: str, token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     orders_resp = httpx.post(f"{db_url}/query", headers=headers, json={
         "sql": "SELECT * FROM paper_orders ORDER BY created_at DESC LIMIT 500"
     }, timeout=30)
-    orders = pd.DataFrame(orders_resp.json().get("results", []))
+    orders = pl.DataFrame(orders_resp.json().get("results", []))
 
     preds_resp = httpx.post(f"{db_url}/query", headers=headers, json={
         "sql": """SELECT stock_id, generated_at, direction_accuracy as confidence,
                   signal_raw, forecast_data FROM predictions
                   WHERE model_name='ensemble' ORDER BY generated_at DESC LIMIT 2000"""
     }, timeout=30)
-    predictions = pd.DataFrame(preds_resp.json().get("results", []))
+    predictions = pl.DataFrame(preds_resp.json().get("results", []))
 
     return orders, predictions
 
@@ -68,16 +70,16 @@ def load_from_d1(db_url: str, token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
 def simulate_signals(
-    predictions: pd.DataFrame,
+    predictions: pl.DataFrame,
     confidence_threshold: float,
     consensus_threshold: float,
     strong_score: float,
     buy_score: float,
     hold_score: float,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Re-classify signals with new thresholds."""
     results = []
-    for _, row in predictions.iterrows():
+    for row in predictions.iter_rows(named=True):
         conf = row.get("confidence", 0) or 0
         signal_raw = row.get("signal_raw", "NO_SIGNAL") or "NO_SIGNAL"
 
@@ -126,12 +128,12 @@ def simulate_signals(
             "consensus": consensus,
         })
 
-    return pd.DataFrame(results)
+    return pl.DataFrame(results)
 
 
 def evaluate_thresholds(
-    predictions: pd.DataFrame,
-    orders: pd.DataFrame,
+    predictions: pl.DataFrame,
+    orders: pl.DataFrame,
     confidence_threshold: float,
     consensus_threshold: float,
     strong_score: float,
@@ -144,14 +146,14 @@ def evaluate_thresholds(
         strong_score, buy_score, hold_score
     )
 
-    if simulated.empty:
+    if simulated.height == 0:
         return {"score": -1.0}
 
-    total = len(simulated)
-    no_signal_count = (simulated["new_signal"] == "NO_SIGNAL").sum()
-    buy_count = simulated["new_signal"].isin(["BUY", "STRONG_BUY"]).sum()
-    sell_count = simulated["new_signal"].isin(["SELL", "STRONG_SELL"]).sum()
-    hold_count = (simulated["new_signal"] == "HOLD").sum()
+    total = simulated.height
+    no_signal_count = simulated.filter(pl.col("new_signal") == "NO_SIGNAL").height
+    buy_count = simulated.filter(pl.col("new_signal").is_in(["BUY", "STRONG_BUY"])).height
+    sell_count = simulated.filter(pl.col("new_signal").is_in(["SELL", "STRONG_SELL"])).height
+    hold_count = simulated.filter(pl.col("new_signal") == "HOLD").height
 
     no_signal_pct = no_signal_count / max(total, 1)
     buy_pct = buy_count / max(total, 1)
@@ -165,10 +167,16 @@ def evaluate_thresholds(
     actionable_bonus = min(0.3, actionable_pct * 0.5)
 
     # 3. Match with actual trades: did BUY signals lead to profitable trades?
-    if not orders.empty and "symbol" in orders.columns:
-        buy_symbols = set(simulated[simulated["new_signal"].isin(["BUY", "STRONG_BUY"])]["stock_id"].unique())
+    if orders.height > 0 and "symbol" in orders.columns:
+        buy_symbols = set(
+            simulated.filter(pl.col("new_signal").is_in(["BUY", "STRONG_BUY"]))["stock_id"]
+            .unique().to_list()
+        )
         # Check how many actual buys matched our signals
-        actual_buys = set(orders[orders["side"] == "buy"]["symbol"].unique()) if "side" in orders.columns else set()
+        if "side" in orders.columns:
+            actual_buys = set(orders.filter(pl.col("side") == "buy")["symbol"].unique().to_list())
+        else:
+            actual_buys = set()
         if buy_symbols and actual_buys:
             overlap = len(buy_symbols & actual_buys) / max(len(buy_symbols), 1)
         else:
@@ -178,7 +186,7 @@ def evaluate_thresholds(
         trade_match_bonus = 0
 
     # 4. Signal diversity (not all same signal)
-    signal_diversity = len(simulated["new_signal"].unique()) / 5  # max 5 signal types
+    signal_diversity = simulated["new_signal"].n_unique() / 5  # max 5 signal types
     diversity_bonus = signal_diversity * 0.1
 
     score = actionable_bonus + trade_match_bonus + diversity_bonus - no_signal_penalty
@@ -198,7 +206,7 @@ def evaluate_thresholds(
 
 # ── Optuna ───────────────────────────────────────────────────────────────────
 
-def create_objective(predictions: pd.DataFrame, orders: pd.DataFrame):
+def create_objective(predictions: pl.DataFrame, orders: pl.DataFrame):
     def objective(trial: optuna.Trial) -> float:
         conf_thr = trial.suggest_float("confidence_threshold", 0.50, 0.70, step=0.05)
         cons_thr = trial.suggest_float("consensus_threshold", 0.50, 0.72, step=0.02)
@@ -216,7 +224,7 @@ def create_objective(predictions: pd.DataFrame, orders: pd.DataFrame):
     return objective
 
 
-def run_search(predictions: pd.DataFrame, orders: pd.DataFrame, n_trials: int = 200) -> dict:
+def run_search(predictions: pl.DataFrame, orders: pl.DataFrame, n_trials: int = 200) -> dict:
     study = optuna.create_study(direction="maximize", study_name="signal_thresholds")
     study.optimize(create_objective(predictions, orders), n_trials=n_trials)
 

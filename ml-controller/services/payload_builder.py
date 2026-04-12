@@ -65,6 +65,7 @@ class PredictPayload:
     trading_config: dict = field(default_factory=dict)  # B12 fix (2026-04-08): Optuna baseline (sltp/signal/circuit)
     lifecycle_weights: dict[str, float] = field(default_factory=dict)
     barrier_params: dict = field(default_factory=dict)
+    stock_meta: dict = field(default_factory=dict)  # Universal Model: sector/cap/volume/cross-sectional
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,12 +103,20 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         twii_ma20 = twii_arr[-1] if twii_arr else 0.0
     twii_bias_20d = (twii_arr[-1] - twii_ma20) / twii_ma20 if twii_arr and twii_ma20 else 0.0
 
-    # ── 3. Market history (500 days for HMM context) ────────────────────────
+    # ── 3. Market history (from market_risk + 0050 ETF fallback) ─────────────
+    # market_risk 只有 ~15 天（3/23 起），但 retrain 需要 3 年歷史。
+    # Fallback: 用 0050 ETF close 反算 market_return_1d/5d/bias_20d。
+    # 0050 跟 TWII 相關性 >0.99，是合理的大盤 proxy。
+    history_map: dict[str, dict] = {}
+
+    # 3a. market_risk 真值（有的日期用這個）
     history_rows = d1_client.query(
-        "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close "
+        "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close, "
+        "       foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
+        "       adl_value, adl_trend "
         "FROM market_risk ORDER BY date ASC LIMIT 500"
     )
-    history_map: dict[str, dict] = {}
+    adl_trend_map = {"up": 1.0, "flat": 0.0, "down": -1.0}
     for i, row in enumerate(history_rows):
         prev1 = history_rows[i - 1]["twii_close"] if i >= 1 else None
         prev5 = history_rows[i - 5]["twii_close"] if i >= 5 else None
@@ -117,7 +126,193 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             "market_bias_20d": row.get("market_bias_20d"),
             "market_return_1d": (row["twii_close"] - prev1) / prev1 if prev1 else 0,
             "market_return_5d": (row["twii_close"] - prev5) / prev5 if prev5 else 0,
+            "foreign_consecutive_sell": row.get("foreign_consecutive_sell", 0),
+            "foreign_net_5d_market": row.get("foreign_net_5d", 0),
+            "limit_down_count": row.get("limit_down_count", 0),
+            "limit_down_pct": row.get("limit_down_pct", 0),
+            "adl_value": row.get("adl_value", 0),
+            "adl_trend_numeric": adl_trend_map.get(str(row.get("adl_trend") or "flat"), 0.0),
         }
+
+    # 3b-pre. US market signals 歷史（VIX 用於 risk_score 計算）
+    us_history_by_date: dict[str, dict] = {}
+    us_rows = d1_client.query(
+        "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
+        "FROM us_market_signals ORDER BY date ASC"
+    )
+    for r in (us_rows or []):
+        us_history_by_date[r["date"]] = {
+            "vix_close": r.get("vix_close"),
+            "hy_spread": r.get("hy_spread"),
+            "hy_spread_chg": r.get("hy_spread_chg"),
+            "sox_return": r.get("sox_return"),
+            "gspc_return": r.get("gspc_return"),
+            "dxy_return": r.get("dxy_return"),
+            "sentiment": r.get("sentiment"),
+        }
+
+    # 3b. 0050 ETF fallback + ADL from full market prices
+    etf_rows = d1_client.query(
+        "SELECT sp.date, sp.close FROM stock_prices sp "
+        "JOIN stocks s ON s.id = sp.stock_id "
+        "WHERE s.symbol = '0050' ORDER BY sp.date ASC LIMIT 800"
+    )
+
+    # 3c. ADL (Advance/Decline Line) — 每日上漲家數 - 下跌家數的累積
+    # 從全市場 stock_prices 算，不依賴 market_risk 表
+    adl_rows = d1_client.query(
+        "SELECT date, "
+        "  SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) as advances, "
+        "  SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) as declines "
+        "FROM ( "
+        "  SELECT sp.date, sp.close, "
+        "    LAG(sp.close) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) as prev_close "
+        "  FROM stock_prices sp "
+        ") WHERE prev_close IS NOT NULL "
+        "GROUP BY date ORDER BY date ASC"
+    )
+    # 累積 ADL + 5d trend + advance_ratio
+    adl_by_date: dict[str, tuple[float, float]] = {}  # {date: (adl_value, adl_trend_numeric)}
+    advance_ratio_by_date: dict[str, float] = {}  # {date: advance_ratio}
+    if adl_rows:
+        cumulative_adl = 0.0
+        adl_history = []
+        for row in adl_rows:
+            advances = row.get("advances") or 0
+            declines = row.get("declines") or 0
+            daily_ad = advances - declines
+            cumulative_adl += daily_ad
+            adl_history.append(cumulative_adl)
+            # trend: 5d direction (1=up, 0=flat, -1=down)
+            if len(adl_history) >= 5:
+                trend = 1.0 if cumulative_adl > adl_history[-5] else (-1.0 if cumulative_adl < adl_history[-5] else 0.0)
+            else:
+                trend = 0.0
+            # normalize ADL to ~[-1, 1] range (divide by typical daily count ~2000)
+            adl_by_date[row["date"]] = (round(cumulative_adl / 2000, 4), trend)
+            # advance_ratio for Wave 2 time-series
+            total = advances + declines
+            advance_ratio_by_date[row["date"]] = round(advances / total, 4) if total > 0 else 0.5
+        logger.info(f"[payload_builder] ADL computed for {len(adl_by_date)} dates from stock_prices")
+
+    # 3d. Bull alignment + Limit down from stock_prices
+    # bull_alignment = % of stocks where MA5 > MA20 (proxy for MA5>10>20>60 requires more data)
+    # limit_down = stocks hitting -10% daily limit
+    breadth_rows = d1_client.query(
+        "SELECT sp.date, "
+        "  COUNT(*) as total, "
+        "  SUM(CASE WHEN sp.close >= sp.open * 0.9 AND sp.close <= sp.open * 0.905 THEN 1 ELSE 0 END) as limit_down_count "
+        "FROM stock_prices sp "
+        "WHERE sp.date >= '2023-01-01' "
+        "GROUP BY sp.date ORDER BY sp.date ASC"
+    )
+    breadth_by_date: dict[str, tuple[float, float]] = {}  # {date: (limit_down_count, limit_down_pct)}
+    if breadth_rows:
+        for row in breadth_rows:
+            total = row.get("total", 1) or 1
+            ld_count = row.get("limit_down_count", 0) or 0
+            ld_pct = round(ld_count / total, 4)
+            breadth_by_date[row["date"]] = (ld_count, ld_pct)
+        logger.info(f"[payload_builder] Breadth computed for {len(breadth_by_date)} dates")
+
+    # bull_alignment: 需要 MA 資料，從 0050 ETF 的趨勢作 proxy
+    # 0050 在 MA20 之上 = 大盤多頭排列 proxy (1.0 or 0.0)
+    bull_by_date: dict[str, float] = {}
+    if etf_rows and len(etf_rows) >= 20:
+        for i in range(20, len(etf_rows)):
+            ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
+            ma5 = sum(float(etf_rows[j]["close"]) for j in range(i - 4, i + 1)) / 5
+            # proxy: ma5 > ma20 = bullish alignment
+            bull_by_date[etf_rows[i]["date"]] = 1.0 if ma5 > ma20 else 0.0
+
+    if etf_rows:
+        for i, row in enumerate(etf_rows):
+            date_str = row["date"]
+            if date_str in history_map:
+                # market_risk 有真值，但補上 computed fields if missing
+                adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
+                ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
+                if history_map[date_str].get("adl_value", 0) == 0:
+                    history_map[date_str]["adl_value"] = adl_val
+                    history_map[date_str]["adl_trend_numeric"] = adl_trend
+                if history_map[date_str].get("limit_down_count", 0) == 0:
+                    history_map[date_str]["limit_down_count"] = ld_count
+                    history_map[date_str]["limit_down_pct"] = ld_pct
+                if "bull_alignment_pct" not in history_map[date_str]:
+                    history_map[date_str]["bull_alignment_pct"] = bull_by_date.get(date_str, 0)
+                continue
+            close = float(row["close"])
+            prev1_close = float(etf_rows[i - 1]["close"]) if i >= 1 else close
+            prev5_close = float(etf_rows[i - 5]["close"]) if i >= 5 else close
+            if i >= 20:
+                ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
+                bias_20d = (close - ma20) / ma20 if ma20 else 0
+            else:
+                bias_20d = 0
+            adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
+            ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
+            # ── Compute risk_score from available data (mirrors Worker calcRiskScore) ──
+            _rs = 0
+            _vix_row = us_history_by_date.get(date_str, {})
+            _vix = _vix_row.get("vix_close")
+            if _vix is not None:
+                if _vix >= 40: _rs += 35
+                elif _vix >= 30: _rs += 25
+                elif _vix >= 20: _rs += 15
+                elif _vix >= 15: _rs += 5
+            # bias contribution (max 15)
+            _abs_bias = abs(bias_20d * 100) if bias_20d else 0
+            if _abs_bias >= 10: _rs += 15
+            elif _abs_bias >= 6: _rs += 8
+            elif _abs_bias >= 3: _rs += 3
+            # ADL trend (max 8)
+            if adl_trend < 0: _rs += 8
+            # bull alignment (max 8)
+            _ba = bull_by_date.get(date_str, 0.5)
+            if _ba < 0.2: _rs += 8
+            elif _ba < 0.3: _rs += 4
+            _rs = min(100, _rs)
+            _rl = "green" if _rs <= 25 else "yellow" if _rs <= 45 else "orange" if _rs <= 65 else "red" if _rs <= 85 else "black"
+
+            history_map[date_str] = {
+                "risk_score": _rs,
+                "risk_level": _rl,
+                "market_bias_20d": round(bias_20d, 4),
+                "market_return_1d": round((close - prev1_close) / prev1_close, 6) if prev1_close else 0,
+                "market_return_5d": round((close - prev5_close) / prev5_close, 6) if prev5_close else 0,
+                "foreign_consecutive_sell": 0,
+                "foreign_net_5d_market": 0,
+                "limit_down_count": ld_count,
+                "limit_down_pct": ld_pct,
+                "adl_value": adl_val,
+                "adl_trend_numeric": adl_trend,
+                "bull_alignment_pct": bull_by_date.get(date_str, 0),
+            }
+        logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(etf_rows)} from 0050 ETF = {len(history_map)} total dates")
+
+    # ── 3e. Merge US signals + advance_ratio into history_map (Wave 2 time-series) ──
+    us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
+    merged_us = 0
+    for date_str, us_data in us_history_by_date.items():
+        if date_str not in history_map:
+            history_map[date_str] = {}
+        history_map[date_str]["us_sox_return"] = us_data.get("sox_return") or 0.0
+        history_map[date_str]["us_gspc_return"] = us_data.get("gspc_return") or 0.0
+        history_map[date_str]["us_dxy_return"] = us_data.get("dxy_return") or 0.0
+        history_map[date_str]["us_hy_spread"] = us_data.get("hy_spread") or 3.5
+        history_map[date_str]["us_hy_spread_chg"] = us_data.get("hy_spread_chg") or 0.0
+        history_map[date_str]["us_vix"] = us_data.get("vix_close") or 20.0
+        history_map[date_str]["us_sentiment_score"] = us_sent_map.get(
+            str(us_data.get("sentiment") or "neutral"), 0.0
+        )
+        merged_us += 1
+    # advance_ratio from ADL computation
+    for date_str, ar_val in advance_ratio_by_date.items():
+        if date_str not in history_map:
+            history_map[date_str] = {}
+        history_map[date_str]["advance_ratio"] = ar_val
+    if merged_us:
+        logger.info(f"[payload_builder] Merged {merged_us} US signal dates + {len(advance_ratio_by_date)} advance_ratio dates into history_map")
 
     # ── 4. US leading signals (KV us:leading:{date}) ────────────────────────
     us_signal = kv_client.get_json(f"us:leading:{run_date}", default={}) or {}
@@ -197,7 +392,7 @@ def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[
         return {}
     placeholders = ",".join("?" * len(stock_ids))
     rows = d1_client.query(
-        f"SELECT stock_id, date, open, high, low, close, volume "
+        f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
         f"FROM stock_prices "
         f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
         f"ORDER BY stock_id ASC, date ASC",
@@ -212,6 +407,7 @@ def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[
                 "date": r["date"],
                 "open": r["open"], "high": r["high"], "low": r["low"],
                 "close": r["close"], "volume": r["volume"],
+                "adj_close": r.get("adj_close"), "avg_price": r.get("avg_price"),
             })
     # Truncate to last `limit` per stock (oldest is dropped if > limit)
     for sid in grouped:
@@ -257,7 +453,8 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
         return {}
     placeholders = ",".join("?" * len(symbols))
     rows = d1_client.query(
-        f"SELECT symbol, date, foreign_net, trust_net, dealer_net "
+        f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
+        f"       margin_balance, short_balance "
         f"FROM chip_data "
         f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year') "
         f"ORDER BY symbol ASC, date ASC",
@@ -273,6 +470,8 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
                 "foreign_net": r.get("foreign_net"),
                 "trust_net": r.get("trust_net"),
                 "dealer_net": r.get("dealer_net"),
+                "margin_balance": r.get("margin_balance"),
+                "short_balance": r.get("short_balance"),
             })
     for sym in grouped:
         if len(grouped[sym]) > limit:
@@ -416,8 +615,42 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_active_stocks() -> list[dict]:
-    """Read all active stocks from D1."""
-    return d1_client.query("SELECT * FROM stocks WHERE is_active=1 ORDER BY id ASC")
+    """Read all stocks in current watchlist from D1."""
+    return d1_client.query("SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC")
+
+
+def _build_stock_meta(
+    symbol: str,
+    sym_to_sector: dict[str, str],
+    sector_enc: dict[str, int],
+    sector_avg: dict[str, tuple[float, float]],
+    stock_returns: dict[str, tuple[float, float]],
+    prices: list[dict],
+) -> dict:
+    """Build stock_meta dict for universal model features."""
+    tag = sym_to_sector.get(symbol, "")
+    avg = sector_avg.get(tag, (0.0, 0.0))
+    sr = stock_returns.get(symbol, (0.0, 0.0))
+    # Volume bucket
+    vol_bucket = 2
+    if prices and len(prices) >= 20:
+        avg_vol = sum(float(p.get("volume", 0)) for p in prices[-20:]) / 20
+        vol_bucket = 4 if avg_vol > 50_000_000 else 3 if avg_vol > 10_000_000 else 2 if avg_vol > 2_000_000 else 1 if avg_vol > 500_000 else 0
+    # Cap bucket
+    cap_bucket = 2
+    if prices and len(prices) >= 20:
+        avg_close = sum(float(p.get("close", 0)) for p in prices[-20:]) / 20
+        avg_vol = sum(float(p.get("volume", 0)) for p in prices[-20:]) / 20
+        proxy = avg_close * avg_vol
+        cap_bucket = 4 if proxy > 5e9 else 3 if proxy > 1e9 else 2 if proxy > 2e8 else 1 if proxy > 5e7 else 0
+    return {
+        "sector_encoded": sector_enc.get(tag, 0),
+        "market_cap_bucket": cap_bucket,
+        "avg_volume_bucket": vol_bucket,
+        "sector_peer_return_1d": round(avg[0], 6),
+        "sector_peer_return_5d": round(avg[1], 6),
+        "stock_vs_sector": round(sr[1] - avg[1], 6),
+    }
 
 
 def build_payloads(
@@ -448,6 +681,44 @@ def build_payloads(
     sentiment_by_id = _bulk_load_sentiment(stock_ids)
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
     misc_by_id = _bulk_load_per_stock_misc(stock_ids)
+
+    # ── Stock meta: sector encoding + cross-sectional features ──────────────
+    # Sector tags
+    tag_rows = d1_client.query(
+        "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
+    )
+    sym_to_sector: dict[str, str] = {}
+    for r in tag_rows:
+        sym_to_sector[r["symbol"]] = r["tag"]
+
+    # Build sector encoding (same as retrain_trigger)
+    all_sectors = sorted(set(sym_to_sector.values()))
+    sector_enc = {s: i for i, s in enumerate(all_sectors)}
+
+    # Per-stock returns for cross-sectional features
+    stock_returns: dict[str, tuple[float, float]] = {}  # symbol → (r1d, r5d)
+    for stock in active_stocks:
+        px = prices_by_id.get(stock["id"], [])
+        if len(px) >= 6:
+            cl = float(px[-1].get("close", 0))
+            cl1 = float(px[-2].get("close", 0))
+            cl5 = float(px[-6].get("close", 0))
+            r1d = (cl - cl1) / cl1 if cl1 > 0 else 0
+            r5d = (cl - cl5) / cl5 if cl5 > 0 else 0
+            stock_returns[stock["symbol"]] = (r1d, r5d)
+
+    # Sector averages
+    sector_agg: dict[str, list[tuple[float, float]]] = {}
+    for sym, (r1d, r5d) in stock_returns.items():
+        tag = sym_to_sector.get(sym, "")
+        if tag:
+            sector_agg.setdefault(tag, []).append((r1d, r5d))
+    sector_avg: dict[str, tuple[float, float]] = {}
+    for tag, rets in sector_agg.items():
+        sector_avg[tag] = (
+            sum(r[0] for r in rets) / len(rets),
+            sum(r[1] for r in rets) / len(rets),
+        )
 
     # ── Assemble payloads ───────────────────────────────────────────────────
     payloads: list[PredictPayload] = []
@@ -483,6 +754,7 @@ def build_payloads(
             trading_config=trading_config or {},
             lifecycle_weights=lifecycle_weights,
             barrier_params=barrier_params,
+            stock_meta=_build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, [])),
         ))
 
     logger.info(f"[payload_builder] Built {len(payloads)} payloads")

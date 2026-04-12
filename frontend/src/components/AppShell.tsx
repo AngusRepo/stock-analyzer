@@ -20,13 +20,14 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import {
   LayoutDashboard, Bot, Menu,
-  Bell, Search, LogIn, LogOut,
+  Bell, Search, LogIn, LogOut, Clock,
 } from 'lucide-react'
 
 // ── Nav items ─────────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
   { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
   { label: 'Bot Trading', icon: Bot, href: '/bot' },
+  { label: 'Scheduler', icon: Clock, href: '/scheduler', adminOnly: true },
 ] as const
 
 // ── Market Ticker ─────────────────────────────────────────────────────────────
@@ -62,6 +63,8 @@ function MarketTicker() {
 
 // ── Sidebar Content ──────────────────────────────────────────────────────────
 function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNavigate: (href: string) => void }) {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   return (
     <div className="flex flex-col h-full">
       {/* Logo */}
@@ -76,7 +79,7 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
 
       {/* Nav Items */}
       <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-1">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter(item => !('adminOnly' in item && item.adminOnly) || isAdmin).map((item) => {
           const Icon = item.icon
           const active = item.href === currentPath
           return (

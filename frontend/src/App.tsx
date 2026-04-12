@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
 const StockReportPage = lazy(() => import('./pages/StockReportPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
+const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 
 export default function App() {
   return (
@@ -28,6 +29,11 @@ export default function App() {
         <Route path="/pipeline">
           <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Pipeline...</div>}>
             <PipelinePage />
+          </Suspense>
+        </Route>
+        <Route path="/scheduler">
+          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Scheduler...</div>}>
+            <SchedulerPage />
           </Suspense>
         </Route>
         <Route>

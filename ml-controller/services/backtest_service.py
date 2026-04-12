@@ -472,19 +472,15 @@ async def run_full_backtest() -> dict:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
-        # ── Step 1: Fetch stocks (point-in-time universe, C1 fix) ──
-        # Include delisted stocks that were tradable during the backtest period
-        logger.info("[Backtest] Fetching point-in-time stock universe from D1...")
+        # ── Step 1: Fetch stocks (point-in-time tradable universe) ──
+        # D2 fix: aligned with backtest_engine._load_stocks — no in_current_watchlist filter.
+        # Include all non-delisted + delisted-after-2023 stocks (same as backtest_engine).
+        logger.info("[Backtest] Fetching tradable universe from D1...")
         stocks = await _d1_query(client, """
             SELECT DISTINCT s.id, s.symbol, s.name
             FROM stocks s
-            WHERE (s.is_active = 1
-                   OR (s.delisted_date IS NOT NULL AND s.delisted_date >= '2023-01-01'))
+            WHERE (s.delisted_date IS NULL OR s.delisted_date >= '2023-01-01')
               AND (s.listed_date IS NULL OR s.listed_date <= date('now'))
-            UNION
-            SELECT DISTINCT s.id, s.symbol, s.name
-            FROM stocks s
-            JOIN watchlist w ON w.stock_id = s.id
         """)
 
         if not stocks:

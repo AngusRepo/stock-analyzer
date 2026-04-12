@@ -290,7 +290,7 @@ def backfill_stock(stock: dict) -> int:
     else:
         # Insert new stock
         d1_exec(
-            """INSERT INTO stocks (symbol, name, market, is_active, listed_date, delisted_date, delist_reason, added_at, updated_at)
+            """INSERT INTO stocks (symbol, name, market, in_current_watchlist, listed_date, delisted_date, delist_reason, added_at, updated_at)
                VALUES (?, ?, ?, 0, '2020-01-01', ?, ?, datetime('now'), datetime('now'))""",
             [symbol, name, stock.get("market", "TWSE"), stock["delisted_date"], stock["delist_reason"]],
         )

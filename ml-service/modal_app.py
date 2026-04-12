@@ -74,6 +74,88 @@ def _setup_env():
 # Modal Functions（Cloud Run Controller 透過 .map() 呼叫）
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.0 Flow B Orchestrator — Modal 內部 chain
+# Cloud Run 只觸發此函數，後續 selection → train → SHAP 全在 Modal 內完成
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.function(
+    cpu=1,
+    memory=1024,
+    timeout=14400,              # 240 min — selection (~60min) + train (~120min) + SHAP (~30min) + buffer
+    scaledown_window=60,
+    max_containers=1,
+)
+def retrain_orchestrator(payload: dict) -> dict:
+    """2.0 Flow B: prep 已完成 → [月度: await selection] → await train → await SHAP.
+
+    Cloud Run 呼叫此函數（一次），整條 chain 在 Modal 內完成。
+    Cloud Run 不需要等（fire-and-forget 或 await 都可以）。
+
+    payload:
+        batch_count: int — prep 產生的 batch 數量
+        is_monthly: bool — 是否月度（day 1-7）
+        selection_params: dict — {max_rounds, alpha, required_power}（月度才用）
+    """
+    _setup_env()
+    import time
+    t0 = time.time()
+
+    batch_count = payload.get("batch_count", 5)
+    is_monthly = payload.get("is_monthly", False)
+    selection_params = payload.get("selection_params", {
+        "max_rounds": 100, "alpha": 0.01, "required_power": 0.99,
+    })
+
+    result = {"stages": {}}
+
+    # ── Stage 1: Feature Selection (月度 only) ────────────────────────────────
+    if is_monthly:
+        print(f"[Orchestrator] Monthly → running feature selection (max {selection_params.get('max_rounds', 100)} rounds)")
+        try:
+            fs_result = feature_selection_pipeline.remote(selection_params)
+            result["stages"]["feature_selection"] = {
+                "status": "ok" if "error" not in fs_result else "error",
+                "active_count": len(fs_result.get("feature_pool", {}).get("active", [])),
+                "elapsed_s": fs_result.get("elapsed_s", 0),
+            }
+            if "error" in fs_result:
+                print(f"[Orchestrator] Feature selection error: {fs_result['error']}")
+        except Exception as e:
+            print(f"[Orchestrator] Feature selection failed: {e}")
+            result["stages"]["feature_selection"] = {"status": "error", "error": str(e)}
+    else:
+        print("[Orchestrator] Non-monthly → skip feature selection")
+        result["stages"]["feature_selection"] = {"status": "skipped"}
+
+    # ── Stage 2: Train (reads feature_pool.json from GCS) ────────────────────
+    print(f"[Orchestrator] Training from {batch_count} GCS batches...")
+    try:
+        train_payload = {"batch_count": batch_count, "auto_audit": True}
+        train_result = train_universal_from_gcs.remote(train_payload)
+        result["stages"]["train"] = {
+            "status": "ok" if "error" not in train_result else "error",
+            "total_samples": train_result.get("total_samples", 0),
+            "ic_tracking": train_result.get("ic_tracking", {}),
+            "circuit_breaker": train_result.get("circuit_breaker", False),
+        }
+        if train_result.get("circuit_breaker"):
+            print("[Orchestrator] ⚠️ Circuit breaker triggered — old models preserved")
+        # SHAP is already auto-triggered inside train_universal_from_gcs
+        if "shap_result" in train_result:
+            result["stages"]["shap"] = {"status": "ok"}
+        elif "shap_error" in train_result:
+            result["stages"]["shap"] = {"status": "error", "error": train_result["shap_error"]}
+    except Exception as e:
+        print(f"[Orchestrator] Train failed: {e}")
+        result["stages"]["train"] = {"status": "error", "error": str(e)}
+
+    elapsed = round(time.time() - t0, 1)
+    result["total_elapsed_s"] = elapsed
+    print(f"[Orchestrator] Flow B complete in {elapsed}s")
+    return result
+
+
 @app.function(
     cpu=1,                       # 1 CPU 足夠（10 models 已用 ThreadPoolExecutor 內部並行）
     memory=2048,                 # 2GB 足夠（torch CPU 模式不需 4GB）
@@ -120,6 +202,96 @@ def retrain_single_stock(payload: dict) -> dict:
             "symbol": payload.get("symbol", "?"),
             "error": str(e),
         }
+
+
+@app.function(
+    cpu=1,
+    memory=2048,                 # prep: build_feature_matrix × ~500 stocks ≈ 1GB peak
+    timeout=600,                 # 10 min per batch
+    scaledown_window=60,
+    max_containers=3,            # 可並行 prep 多批
+)
+def prep_universal_batch(payload: dict) -> dict:
+    """單批 feature engineering → 存 GCS npz。"""
+    _setup_env()
+    from app.main import prep_universal_batch as _prep, UniversalPrepRequest
+    try:
+        req = UniversalPrepRequest(**payload)
+        return _prep(req)
+    except Exception as e:
+        return {"error": str(e), "batch_index": payload.get("batch_index", -1)}
+
+
+@app.function(
+    gpu="L4",                    # FT-Transformer needs GPU; L4 24GB for 631K full samples
+    memory=4096,                 # 631K samples × 106 features ≈ 500MB + tree training overhead
+    timeout=7200,                # 120 min — tree models ~5 min + FT-T GPU 631K ~90 min
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_universal_from_gcs(payload: dict) -> dict:
+    """從 GCS 讀 prep npz → concat → 訓練 5 models → 自動觸發 SHAP + Permutation。"""
+    _setup_env()
+    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        req = UniversalTrainRequest(**payload)
+        train_result = _train(req)
+    except Exception as e:
+        return {"error": str(e), "type": "universal"}
+
+    # Auto-trigger SHAP dashboard (Modal internal, no Cloud Run dependency)
+    auto_audit = payload.get("auto_audit", True)
+    if auto_audit and "error" not in train_result:
+        try:
+            print("[TrainUniversal] Auto-triggering SHAP dashboard audit...")
+            shap_result = shap_feature_audit.remote({"shap_samples": 10000})
+            train_result["shap_result"] = shap_result
+            print(f"[TrainUniversal] SHAP done: {shap_result.get('keep_count', '?')} features kept")
+        except Exception as e:
+            print(f"[TrainUniversal] SHAP auto-trigger failed (non-blocking): {e}")
+            train_result["shap_error"] = str(e)
+
+    return train_result
+
+
+@app.function(
+    gpu="L4",
+    memory=4096,
+    timeout=1800,                # 30 min — SHAP on 5 models × 5K samples
+    scaledown_window=60,
+    max_containers=1,
+)
+def shap_feature_audit(payload: dict) -> dict:
+    """SHAP Feature Importance Audit — 跨 5 個 model 評估 feature 重要性。"""
+    _setup_env()
+    from app.main import run_shap_audit
+    try:
+        shap_samples = payload.get("shap_samples", 5000)
+        return run_shap_audit(shap_samples=shap_samples)
+    except Exception as e:
+        return {"error": str(e), "type": "shap_audit"}
+
+
+@app.function(
+    gpu="L4",                    # LightGBM GPU mode for Target Permutation
+    memory=4096,
+    timeout=3600,                # 60 min — 100 permutations × ~30-60s each, K-S auto-stop ~30-50 rounds
+    scaledown_window=60,
+    max_containers=1,
+)
+def feature_selection_pipeline(payload: dict) -> dict:
+    """2.0 Feature Selection: Silhouette → Target Permutation (Y-shuffle) → IC/ICIR → Elbow → Diversity Guard."""
+    _setup_env()
+    from app.feature_selection import run_feature_selection_pipeline
+    try:
+        return run_feature_selection_pipeline(
+            max_rounds=payload.get("max_rounds", 100),
+            alpha=payload.get("alpha", 0.01),
+            required_power=payload.get("required_power", 0.99),
+            dry_run=payload.get("dry_run", False),
+        )
+    except Exception as e:
+        return {"error": str(e), "type": "feature_selection"}
 
 
 @app.function(

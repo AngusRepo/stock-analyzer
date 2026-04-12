@@ -888,7 +888,7 @@ system.get('/status', async (c) => {
     db.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
     db.prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
     db.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
-    db.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1').first<any>(),
+    db.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
     db.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
     db.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>().catch(() => null),
   ])

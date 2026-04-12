@@ -57,6 +57,12 @@ crons = [
   "* 1-5 * * 1-5",   # 盤中每分鐘：限價買入 + 止損停利巡檢
   "25 5 * * 1-5",    # 13:25 TW → EOD 收盤前出場檢查
 
+  # ── 盤中 ML Re-score（Sprint 5.2+: 利用 ml-controller idle capacity）──
+  "0 2 * * 1-5",     # 10:00 TW (=UTC 02:00) → Intraday ML Re-score #1
+  "0 3 * * 1-5",     # 11:00 TW (=UTC 03:00) → Intraday ML Re-score #2
+  "0 4 * * 1-5",     # 12:00 TW (=UTC 04:00) → Intraday ML Re-score #3
+  "30 4 * * 1-5",    # 12:30 TW (=UTC 04:30) → Intraday ML Re-score #4 (收盤前1hr)
+
   # ── 收盤後 Pipeline（TW 14:20 + 17:30 single trigger）──
   # H5: 5 個獨立 cron 已合併為單一 pipeline trigger（Controller LangGraph await gates）
   # 舊的 bulk-fetch/screener/ml/recommendation/verify 仍可透過 /admin/trigger/:task 手動觸發
@@ -74,6 +80,7 @@ crons = [
   "30 22 * * SUN-THU",   # 06:30 TW (=UTC Sun-Thu 22:30) → 美股先行指標
   "15 23 * * SUN-THU",   # 07:15 TW (=UTC Sun-Thu 23:15) → Morning Setup（Debate + 掛單）
   "50 23 * * SUN-THU",   # 07:50 TW (=UTC Sun-Thu 23:50) → 盤前攻略 Discord
+  "50 0 * * 1-5",        # 08:50 TW (=UTC Mon-Fri 00:50) → 盤前 warmup（ML + Shioaji Proxy）
 
   # ── 週末維護 ──
   "0 20 * * 6",      # 週日 04:00 TW (=UTC Sat 20:00) → D1 清理 + Retrain + IC Audit

@@ -192,6 +192,23 @@ export interface TradingConfig {
     night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
     medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
   }
+  // ── Sprint 5.2+: Intraday Re-score 安控 ───────────────────────────────────
+  // 盤中 10:00/12:00 call ml-controller /intraday/rescore，對持倉 confidence 衰減
+  // 隔夜持倉可自動出場；當日持倉只能 WARN（當沖白名單限制）
+  // See memory/project_instance_scaling_brainstorm.md Part A
+  intraday: {
+    rescoreEnabled: boolean              // feature flag（預設 true）
+    rescoreExitThreshold: number         // confidence 低於此值 → EXIT（預設 0.40）
+    rescoreWarnThreshold: number         // confidence 低於此值 → WARN（預設 0.55）
+    rescoreDecaySensitivity: number      // 每 1% 反向價格變動的 confidence 衰減倍數（預設 5.0）
+    rescoreCooldownMin: number           // 同一檔 re-score 觸發後 N 分鐘內不再觸發（預設 60）
+    maxRescoreExitsPerDay: number        // 每日最多 re-score 觸發出場次數（預設 2）
+  }
+  // ── F4: Intraday Momentum Confirmation（買入二次確認）─────────────────────
+  momentum: {
+    minVolumeRatio: number               // 最低 volume ratio vs 20d avg（預設 0.8）
+    minRangePosition: number             // 最低 day range position（預設 0.3 = 30%）
+  }
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -369,6 +386,18 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     night_drop_mild_adjust: 0.99,
     medium_risk_scale: 0.5,
   },
+  intraday: {
+    rescoreEnabled: true,
+    rescoreExitThreshold: 0.40,
+    rescoreWarnThreshold: 0.55,
+    rescoreDecaySensitivity: 5.0,
+    rescoreCooldownMin: 60,
+    maxRescoreExitsPerDay: 2,
+  },
+  momentum: {
+    minVolumeRatio: 0.8,
+    minRangePosition: 0.3,
+  },
 }
 
 // ─── KV 讀取（300s cache）──────────────────────────────────────────────────
@@ -402,6 +431,8 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     signal: { ...d.signal, ...partial.signal },
     sltp: { ...d.sltp, ...partial.sltp },
     L2_formula: { ...d.L2_formula, ...partial.L2_formula },
+    intraday: { ...d.intraday, ...partial.intraday },
+    momentum: { ...d.momentum, ...partial.momentum },
   }
 }
 

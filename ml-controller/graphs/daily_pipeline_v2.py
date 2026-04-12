@@ -58,7 +58,7 @@ class PipelineStateV2(TypedDict, total=False):
     run_date: str
 
     # Loaded inputs
-    active_stocks: list[dict]              # from D1 stocks WHERE is_active=1
+    active_stocks: list[dict]              # from D1 stocks WHERE in_current_watchlist=1
     screener_recs: list[dict]              # from D1 daily_recommendations (existing chip+tech)
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params

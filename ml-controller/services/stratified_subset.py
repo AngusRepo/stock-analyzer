@@ -20,10 +20,10 @@ Why:
 回傳：sorted list[str] (symbol)。
 
 NOTE (2026-04-09 F1 fix):
-  這裡刻意不濾 `is_active=1`。`is_active` 是 ML 運算成本收束（每週 ~33 檔進
-  Modal ensemble），不是 tradable universe 定義。SLTP/L2 是 vol-branched exit
-  params (slMultLow/slMultHigh 依 vol_pct 切換)，需要涵蓋 low/mid/high 三個
-  vol 分支的樣本才能正確 fit。只搜 is_active 會嚴重 under-sample 且 overfit
+  這裡刻意不濾 `in_current_watchlist=1`。`in_current_watchlist` 是 ML 運算成本
+  收束（每週 ~33 檔進 Modal ensemble），不是 tradable universe 定義。SLTP/L2
+  是 vol-branched exit params (slMultLow/slMultHigh 依 vol_pct 切換)，需要涵蓋
+  low/mid/high 三個 vol 分支的樣本才能正確 fit。只搜 in_current_watchlist 會嚴重 under-sample 且 overfit
   當週 screener 偏好。正確的 tradability filter 是 `delisted_date IS NULL`。
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def select_stratified_subset(
     ).date().isoformat()
 
     # ── Step 1: candidate rows + avg_volume (單一 JOIN query) ──────────────
-    # F1 fix (2026-04-09): 移除 is_active=1 — 見檔頭 NOTE。
+    # F1 fix (2026-04-09): 移除 in_current_watchlist=1 — 見檔頭 NOTE。
     # 只保留真正的 tradability filter: delisted_date IS NULL + sector + liquidity。
     sql = """
         SELECT s.symbol, s.sector, AVG(sp.volume) AS avg_vol

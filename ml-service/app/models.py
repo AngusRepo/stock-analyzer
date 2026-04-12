@@ -13,7 +13,7 @@ models.py — 10 模型預測引擎 (v13)
   - FT-Transformer：特徵 tokenization + Transformer encoder，捕捉特徵交互效應
 """
 import numpy as np
-import pandas as pd
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Literal
 import warnings
@@ -64,10 +64,10 @@ def _direction_accuracy(actual: np.ndarray, predicted: np.ndarray) -> float:
     return correct / n
 
 
-def _add_trading_days(last_date: pd.Timestamp, n: int) -> list[str]:
+def _add_trading_days(last_date: datetime, n: int) -> list[str]:
     dates, d = [], last_date
     while len(dates) < n:
-        d += pd.Timedelta(days=1)
+        d += timedelta(days=1)
         if d.weekday() < 5:
             dates.append(d.strftime("%Y-%m-%d"))
     return dates
@@ -91,7 +91,7 @@ def _fallback_model(name: str, prices: np.ndarray, horizon: int, reason: str) ->
     """所有模型的 fallback：用最後價格 + 零預測"""
     last = float(prices[-1]) if len(prices) > 0 else 100.0
     std  = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else last * 0.015
-    last_date = pd.Timestamp("today")
+    last_date = datetime.now()
     dates     = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points([last] * horizon, std, dates)
     print(f"[{name}] fallback due to: {reason}")
@@ -165,7 +165,7 @@ def run_kalman_filter(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) 
     std        = sigma_obs
     confidence = min(0.88, max(0.35, dir_acc * (1.0 + abs(pct) * 5)))
 
-    last_date = pd.Timestamp("today")
+    last_date = datetime.now()
     dates     = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
@@ -242,7 +242,7 @@ def run_dlinear(prices: np.ndarray, horizon: int = 14) -> ModelPrediction:
     std        = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
     confidence = min(0.88, max(0.35, dir_acc * (1 + abs(pct) * 4)))
 
-    last_date = pd.Timestamp("today")
+    last_date = datetime.now()
     dates     = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
@@ -361,7 +361,7 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
         std = float(np.std(np.diff(prices[-20:]))) if n >= 21 else last_price * 0.015
         confidence = min(0.88, max(0.35, dir_acc * (1 + direction_strength * 2)))
 
-        last_date = pd.Timestamp("today")
+        last_date = datetime.now()
         dates = _add_trading_days(last_date, horizon)
         forecasts = _make_forecast_points(forecast_prices, std, dates)
 
@@ -398,7 +398,7 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
     forecast_vals = [last_price * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
     std = float(np.std(np.diff(prices[-20:]))) if n >= 21 else last_price * 0.015
 
-    last_date = pd.Timestamp("today")
+    last_date = datetime.now()
     dates = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
@@ -501,7 +501,7 @@ def run_patchtst(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> Mo
     confidence    = max(up_prob, 1 - up_prob)
     confidence    = min(0.87, max(0.35, dir_acc * (1 + abs(pct) * 4)))
 
-    last_date = pd.Timestamp("today")
+    last_date = datetime.now()
     dates     = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
@@ -565,7 +565,7 @@ def run_chronos(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> Mod
         spread = float(np.std(samples[:, 4]))
         confidence = min(0.85, max(0.35, max(up_prob, 1 - up_prob) * (1 - spread / (prices[-1] * 0.05 + 1e-8) * 0.1)))
 
-        last_date = pd.Timestamp("today")
+        last_date = datetime.now()
         dates     = _add_trading_days(last_date, horizon)
         # Use sample quantiles for confidence intervals
         lower80 = np.percentile(samples, 10, axis=0)
@@ -645,13 +645,15 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         X_test, y_test = X[split:], y[split:]
 
         model = None
-        if stock_id > 0:
-            stored_model, meta = load_model(stock_id, "XGBoost")
+        # Universal model first (stock_id=0), then per-stock fallback
+        for sid in [0, stock_id] if stock_id > 0 else [0]:
+            stored_model, meta = load_model(sid, "XGBoost")
             if (stored_model is not None
                     and is_model_fresh(meta)
                     and feature_names_match(meta, feature_names)):
                 model = stored_model
-                print(f"[XGBoost] Loaded from GCS for stock {stock_id}")
+                print(f"[XGBoost] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
+                break
 
         if model is None:
             model = XGBClassifier(
@@ -673,7 +675,7 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
         std           = float(np.std(np.diff(prices[-20:])))
-        last_date     = pd.Timestamp("today")
+        last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
@@ -707,12 +709,14 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         X_test, y_test = X[split:], y[split:]
 
         model = None
-        if stock_id > 0:
-            stored_model, meta = load_model(stock_id, "CatBoost")
+        for sid in [0, stock_id] if stock_id > 0 else [0]:
+            stored_model, meta = load_model(sid, "CatBoost")
             if (stored_model is not None
                     and is_model_fresh(meta)
                     and feature_names_match(meta, feature_names)):
                 model = stored_model
+                print(f"[CatBoost] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
+                break
 
         if model is None:
             model = CatBoostClassifier(
@@ -733,7 +737,7 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
         std           = float(np.std(np.diff(prices[-20:])))
-        last_date     = pd.Timestamp("today")
+        last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
@@ -768,13 +772,14 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         X_test, y_test = X[split:], y[split:]
 
         model = None
-        if stock_id > 0:
-            stored_model, meta = load_model(stock_id, "ExtraTrees")
+        for sid in [0, stock_id] if stock_id > 0 else [0]:
+            stored_model, meta = load_model(sid, "ExtraTrees")
             if (stored_model is not None
                     and is_model_fresh(meta)
                     and feature_names_match(meta, feature_names)):
                 model = stored_model
-                print(f"[ExtraTrees] Loaded from GCS for stock {stock_id}")
+                print(f"[ExtraTrees] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
+                break
 
         if model is None:
             model = ExtraTreesClassifier(
@@ -796,7 +801,7 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
         std           = float(np.std(np.diff(prices[-20:])))
-        last_date     = pd.Timestamp("today")
+        last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
@@ -839,13 +844,14 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         X_test, y_test = X[split:], y[split:]
 
         model = None
-        if stock_id > 0:
-            stored_model, meta = load_model(stock_id, "LightGBM")
+        for sid in [0, stock_id] if stock_id > 0 else [0]:
+            stored_model, meta = load_model(sid, "LightGBM")
             if (stored_model is not None
                     and is_model_fresh(meta)
                     and feature_names_match(meta, feature_names)):
                 model = stored_model
-                print(f"[LightGBM] Loaded from GCS for stock {stock_id}")
+                print(f"[LightGBM] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
+                break
 
         if model is None:
             model = lgb.LGBMClassifier(
@@ -873,7 +879,7 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
         std           = float(np.std(np.diff(prices[-20:])))
-        last_date     = pd.Timestamp("today")
+        last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
 
@@ -963,11 +969,11 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
     split          = int(len(X) * 0.8)
     X_test, y_test = X[split:], y[split:]
 
-    # ── 嘗試載入 GCS ─────────────────────────────────────────────────────────
+    # ── 嘗試載入 GCS（universal first, per-stock fallback）────────────────────
     model  = None
     scaler = None
-    if stock_id > 0:
-        stored, meta = load_model(stock_id, "FT-Transformer")
+    for sid in [0, stock_id] if stock_id > 0 else [0]:
+        stored, meta = load_model(sid, "FT-Transformer")
         if (stored is not None
                 and is_model_fresh(meta)
                 and feature_names_match(meta, feature_names)):
@@ -979,7 +985,8 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                     m.load_state_dict(stored["state_dict"])
                     m.eval()
                     model = m
-                    print(f"[FT-Transformer] Loaded from GCS for stock {stock_id}")
+                    print(f"[FT-Transformer] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
+                    break
                 except Exception:
                     model = None
 
@@ -1033,7 +1040,7 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
     pct           = (up_prob - 0.5) * 2 * 0.05
     forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
     std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
-    last_date     = pd.Timestamp("today")
+    last_date     = datetime.now()
     dates         = _add_trading_days(last_date, horizon)
     forecasts     = _make_forecast_points(forecast_vals, std, dates)
 

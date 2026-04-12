@@ -977,6 +977,28 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     fn_blob = bucket.blob("universal/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
 
+    # ── 1b. Filter to active features from feature_pool.json ─────────────────
+    # Feature selection 產出 pool → train 只用 active features（降維 + 避免 noise）
+    try:
+        pool_blob = bucket.blob("universal/feature_pool.json")
+        if pool_blob.exists():
+            pool = json.loads(pool_blob.download_as_text())
+            active = pool.get("active", [])
+            if active:
+                keep_idx = [i for i, name in enumerate(feature_names) if name in set(active)]
+                if keep_idx:
+                    X = X[:, keep_idx]
+                    feature_names = [feature_names[i] for i in keep_idx]
+                    print(f"[TrainUniversal] Feature pool filter: {len(keep_idx)} active (from {X.shape[1]+len(feature_names)-len(keep_idx)} total)")
+                else:
+                    print(f"[TrainUniversal] Feature pool has {len(active)} active but none match prep columns, using all")
+            else:
+                print("[TrainUniversal] Feature pool empty, using all features")
+        else:
+            print("[TrainUniversal] No feature_pool.json, using all features")
+    except Exception as e:
+        print(f"[TrainUniversal] Feature pool load failed (using all): {e}")
+
     print(f"[TrainUniversal] Total: {len(X)} rows × {len(feature_names)} features")
 
     if len(X) < 1000:

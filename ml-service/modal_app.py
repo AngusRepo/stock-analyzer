@@ -171,7 +171,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             "ftt_elapsed_s": ftt_result.get("elapsed_s"),
         }
         if circuit_breaker:
-            print("[Orchestrator] ⚠️ Circuit breaker triggered — old models preserved")
+            print("[Orchestrator] ⚠️ Circuit breaker: some models IC≤0 — ensemble will auto-zero-weight them")
 
         # SHAP (runs after both containers done)
         try:

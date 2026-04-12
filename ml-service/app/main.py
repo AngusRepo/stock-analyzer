@@ -1009,7 +1009,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
         model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
         opt = torch.optim.Adam(model_ftt.parameters(), lr=LR, weight_decay=1e-5)
-        crit = nn.MSELoss()  # 2.0: regression loss
+        # 2.0: ListNet ranking loss (Xia et al. ICML 2008)
+        # MSE causes collapse to mean on rank labels; ListNet optimizes relative ordering
+        def _listnet_loss(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+            p_pred = torch.softmax(preds, dim=0)
+            p_label = torch.softmax(labels, dim=0)
+            return -torch.sum(p_label * torch.log(p_pred + 1e-10))
+        crit = _listnet_loss
 
         use_amp = device.type == "cuda"
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -1145,22 +1151,19 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     except Exception as e:
         print(f"[IC-Track] GCS save failed: {e}")
 
-    # ── 6. Save models to GCS (ONLY if IC gate passes) ─────────────────────────
+    # ── 6. Save ALL models to GCS (IC-weighted ensemble handles quality at predict time) ──
     if circuit_breaker_triggered:
-        print(f"[IC-熔斷] ⚠️ 至少一個 model OOS IC ≤ 0，本次 models 不存 GCS。"
-              f"舊 models 繼續使用直到下次 retrain pass IC gate。")
-    else:
-        # All models passed IC → safe to overwrite GCS
-        for model_name, model_obj in trained_models.items():
-            try:
-                if model_name == "FT-Transformer":
-                    _, _, _, ftt_bundle = model_obj  # (model, scaler, valid_cols, bundle)
-                    save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train))
-                else:
-                    save_model(0, model_name, model_obj, feature_names, len(X_train))
-                print(f"[TrainUniversal] Saved {model_name} to GCS ✅")
-            except Exception as e:
-                print(f"[TrainUniversal] Failed to save {model_name}: {e}")
+        print(f"[IC-熔斷] ⚠️ 至少一個 model OOS IC ≤ 0 — ensemble 會自動零權重排除，但 model 仍存 GCS")
+    for model_name, model_obj in trained_models.items():
+        try:
+            if model_name == "FT-Transformer":
+                _, _, _, ftt_bundle = model_obj
+                save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train))
+            else:
+                save_model(0, model_name, model_obj, feature_names, len(X_train))
+            print(f"[TrainUniversal] Saved {model_name} to GCS ✅")
+        except Exception as e:
+            print(f"[TrainUniversal] Failed to save {model_name}: {e}")
 
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s — {len(results)} models")

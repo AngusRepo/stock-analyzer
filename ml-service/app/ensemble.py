@@ -388,10 +388,33 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # 2.0 Rank → Signal 翻譯層
 # ══════════════════════════════════════════════════════════════════════════════
 
+def load_ic_weights() -> dict[str, float]:
+    """從 GCS 讀 ic_tracking.json，回傳 {model_name: IC} for IC-weighted ensemble。
+    Grinold-Kahn: each signal's contribution ∝ its IC.
+    """
+    try:
+        from .model_store import _get_bucket
+        import json
+        bucket = _get_bucket()
+        if bucket is None:
+            return {}
+        blob = bucket.blob("universal/ic_tracking.json")
+        if not blob.exists():
+            return {}
+        data = json.loads(blob.download_as_text())
+        return {
+            name: info.get("oos_ic", 0.0)
+            for name, info in data.get("models", {}).items()
+        }
+    except Exception:
+        return {}
+
+
 def rank_to_signal(
     rank_scores: dict[str, float],
     current_price: float,
     atr: float,
+    ic_weights: dict[str, float] | None = None,
     top_n: int = 5,
     strong_buy_threshold: float = 0.85,
     buy_threshold: float = 0.70,
@@ -404,6 +427,8 @@ def rank_to_signal(
         rank_scores: {model_name: rank_score (0~1)} from 5 regression models
         current_price: latest close
         atr: ATR for stop/target calculation
+        ic_weights: {model_name: IC} — IC-weighted avg (Grinold-Kahn).
+                    None → fallback to equal weight.
         top_n: cross-sectional top N filter (applied by caller, not here)
         strong_buy_threshold: rank above this → STRONG_BUY
         buy_threshold: rank above this → BUY
@@ -416,9 +441,17 @@ def rank_to_signal(
     if not rank_scores:
         return _no_signal(current_price, atr, "No rank scores")
 
-    # Ensemble: simple mean of all model rank scores
-    scores = list(rank_scores.values())
-    avg_rank = float(np.mean(scores))
+    # IC-weighted ensemble (Grinold-Kahn: contribution ∝ IC)
+    if ic_weights:
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for name, score in rank_scores.items():
+            w = max(0.0, ic_weights.get(name, 0.0))
+            weighted_sum += score * w
+            weight_total += w
+        avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
+    else:
+        avg_rank = float(np.mean(list(rank_scores.values())))
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
 
     # Consensus: fraction of models agreeing on dominant direction (symmetric)

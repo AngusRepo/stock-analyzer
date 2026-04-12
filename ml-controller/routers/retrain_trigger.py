@@ -39,6 +39,7 @@ class RetrainTriggerRequest(BaseModel):
 
 class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks (全市場)
+    force_monthly: bool = False  # 強制跑月度流程（含 feature selection）
 
 
 @router.post("/trigger")
@@ -243,7 +244,7 @@ async def trigger_universal_retrain(
     # Cloud Run 這邊只讀既有 feature_pool.json 給 prep 用
     import json as _json
     from google.cloud import storage as _gcs
-    is_monthly = tw_now.day <= 7
+    is_monthly = req.force_monthly or tw_now.day <= 7
     if is_monthly:
         logger.info("[retrain/universal] Monthly detected (day 1-7) — selection will run in Modal orchestrator")
 

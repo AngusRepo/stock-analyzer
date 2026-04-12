@@ -143,24 +143,8 @@ def _train_lgbm_regression(X_train: np.ndarray, y_train: np.ndarray,
         "verbose": -1,
         "n_jobs": -1,
     }
-    # GPU if available — detect at training time, not import time
-    # Try OpenCL (device="gpu") first, then CUDA (device="cuda")
-    import lightgbm as _lgb
-    _gpu_ok = False
-    for _dev in ["gpu", "cuda"]:
-        try:
-            _test_lgb = _lgb.LGBMRegressor(device=_dev, n_estimators=1, verbose=-1)
-            _test_lgb.fit(np.zeros((10, 2)), np.zeros(10))
-            params["device"] = _dev
-            if _dev == "gpu":
-                params["gpu_use_dp"] = False
-            _gpu_ok = True
-            print(f"[TargetPerm] LightGBM GPU mode: device={_dev}")
-            break
-        except Exception as _e:
-            print(f"[TargetPerm] LightGBM device={_dev} failed: {_e}")
-    if not _gpu_ok:
-        print("[TargetPerm] LightGBM GPU not available, using CPU")
+    # LightGBM: CPU mode (GPU needs source rebuild with USE_CUDA=ON, deferred)
+    # See memory/feedback_lightgbm_gpu_modal.md
 
     dtrain = lgb.Dataset(X_train, label=y_train)
     dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)

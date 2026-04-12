@@ -248,19 +248,24 @@ async def trigger_universal_retrain(
     if is_monthly:
         logger.info("[retrain/universal] Monthly detected (day 1-7) — selection will run in Modal orchestrator")
 
-    # Read feature_pool.json from GCS for prep column filtering
+    # Read feature_pool.json for prep column filtering
+    # 月度: 不過濾 — selection 需要看全量 features 才能重新評估
+    # 非月度: 用 pool 過濾 — 只訓練 active features 即可
     active_features = None
-    try:
-        _bucket = _gcs.Client().bucket("stockvision-models")
-        _pool_blob = _bucket.blob("universal/feature_pool.json")
-        if _pool_blob.exists():
-            _pool = _json.loads(_pool_blob.download_as_text())
-            active_features = _pool.get("active")
-            logger.info(f"[retrain/universal] Feature pool loaded: {len(active_features)} active features")
-        else:
-            logger.info("[retrain/universal] No feature_pool.json found, using all features")
-    except Exception as e:
-        logger.warning(f"[retrain/universal] Failed to load feature pool (using all): {e}")
+    if is_monthly:
+        logger.info("[retrain/universal] Monthly → skip feature pool filter (selection needs full 106 features)")
+    else:
+        try:
+            _bucket = _gcs.Client().bucket("stockvision-models")
+            _pool_blob = _bucket.blob("universal/feature_pool.json")
+            if _pool_blob.exists():
+                _pool = _json.loads(_pool_blob.download_as_text())
+                active_features = _pool.get("active")
+                logger.info(f"[retrain/universal] Feature pool loaded: {len(active_features)} active features")
+            else:
+                logger.info("[retrain/universal] No feature_pool.json found, using all features")
+        except Exception as e:
+            logger.warning(f"[retrain/universal] Failed to load feature pool (using all): {e}")
 
     # ── 3. Bulk load per-stock data (chunked — CF D1 REST API binding limit ~100) ──
     D1_CHUNK = 80

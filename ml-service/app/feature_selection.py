@@ -560,7 +560,7 @@ def run_feature_selection_pipeline(
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     # ── 2. Purged time-based split: 70 / embargo / 10(val) / embargo / 20(test) ──
-    embargo_days = 15  # match triple-barrier max_days=20
+    embargo_days = 10  # ~1.3%T per De Prado AFML Ch.7 (aligned with main.py)
     sorted_dates = np.sort(np.unique(dates))
     n_dates = len(sorted_dates)
 

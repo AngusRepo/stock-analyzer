@@ -262,8 +262,8 @@ async def trigger_universal_retrain(
     except Exception as e:
         logger.warning(f"[retrain/universal] Failed to load feature pool (using all): {e}")
 
-    # ── 3. Bulk load per-stock data (chunked — SQLite var limit is 999+) ──
-    D1_CHUNK = 500
+    # ── 3. Bulk load per-stock data (chunked — CF D1 REST API binding limit ~100) ──
+    D1_CHUNK = 80
     prices_map: dict = {}
     indicators_map: dict = {}
     chips_map: dict = {}

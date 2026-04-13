@@ -133,9 +133,11 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
     if len(X) < 60:
         return {"error": "需要至少 60 天資料", "features": []}
 
-    # 把 X/y 組回 DataFrame 做 IC
+    # 把 X 組回 DataFrame 做 IC — 必須用 continuous target (5d return)，不能用 binary target_dir
     df_ic = pd.DataFrame(X, columns=feature_names)
-    df_ic["target_5d"] = y  # target_dir 的值（0/1）
+    # 從原始 df 取 target_5d（連續報酬率），對齊 get_features dropna 後的 index
+    df_clean = df[feature_names + ["target_5d", "target_dir"]].dropna()
+    df_ic["target_5d"] = df_clean["target_5d"].values[:len(X)]
 
     ic_results = compute_factor_ic(df_ic, feature_names, target_col="target_5d")
     results = ic_results.to_dict(orient="records") if not ic_results.empty else []

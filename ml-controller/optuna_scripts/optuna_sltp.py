@@ -27,6 +27,7 @@ optuna_sltp.py — Sprint 5.1 version: L2/SLTP Optuna search via backtest_engine
 Objective (Sprint 3 P0-3: Multi-Objective Pareto via NSGA-II):
   Obj 1: BacktestMetrics.sharpe       (maximize)
   Obj 2: BacktestMetrics.max_drawdown (minimize)
+  Obj 3: BacktestMetrics.sortino      (maximize) — downside deviation only
 
 Key change from Sprint 3 version (2026-04-09):
   原本 objective 讀 D1 `paper_orders` + simulate_trades_with_exit() — 因為 paper
@@ -60,7 +61,8 @@ from services.stratified_subset import select_stratified_subset  # noqa: E402
 logger = logging.getLogger(__name__)
 
 # Sprint 3 P0-3: PENALTY tuple for infeasible trials (Pareto "worst corner")
-PENALTY = (-1e9, 1.0)
+# 3-objective: (sharpe↑, max_dd↓, sortino↑)
+PENALTY = (-1e9, 1.0, -1e9)
 
 # Sanity flag substrings that trigger trial rejection
 _REJECT_FLAG_KEYWORDS = ("overfit", "unrealistically", "No trading days")
@@ -195,11 +197,13 @@ def create_objective(dataset: BacktestDataset, start_date: str, end_date: str, b
         # Valid trial — report to Optuna
         sharpe = float(metrics.sharpe or 0.0)
         max_dd = float(metrics.max_drawdown or 1.0)
+        sortino = float(metrics.sortino or 0.0)
         trial.set_user_attr("n_trades", metrics.total_trades)
         trial.set_user_attr("win_rate", float(metrics.win_rate or 0.0))
         trial.set_user_attr("profit_factor", float(metrics.profit_factor or 0.0))
         trial.set_user_attr("fill_rate", float(metrics.fill_rate or 0.0))
-        return sharpe, max_dd
+        trial.set_user_attr("sortino", sortino)
+        return sharpe, max_dd, sortino
 
     return objective
 
@@ -253,7 +257,7 @@ def run_search(
 
     # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
     study = optuna.create_study(
-        directions=["maximize", "minimize"],  # sharpe↑, max_dd↓
+        directions=["maximize", "minimize", "maximize"],  # sharpe↑, max_dd↓, sortino↑
         sampler=NSGAIISampler(seed=42),
         study_name="sltp_trailing_pareto_s51",
     )
@@ -267,14 +271,16 @@ def run_search(
             "check dataset quality / sanity constraints / search space bounds"
         )
 
-    chosen = max(pareto_trials, key=lambda t: t.values[0])
-    best_sharpe, best_max_dd = chosen.values
+    # Select best trial: sort by sharpe (primary) + sortino (tiebreaker)
+    # values = (sharpe, max_dd, sortino) — index 0=sharpe, 2=sortino
+    chosen = max(pareto_trials, key=lambda t: (t.values[0], t.values[2]))
+    best_sharpe, best_max_dd, best_sortino = chosen.values
 
     logger.info("=" * 60)
     logger.info(f"[optuna_sltp] Pareto front size: {len(pareto_trials)}/{n_trials}")
     logger.info(
         f"[optuna_sltp] chosen trial #{chosen.number}: "
-        f"sharpe={best_sharpe:.3f} max_dd={best_max_dd:.3%} "
+        f"sharpe={best_sharpe:.3f} max_dd={best_max_dd:.3%} sortino={best_sortino:.3f} "
         f"n_trades={chosen.user_attrs.get('n_trades')} "
         f"win_rate={chosen.user_attrs.get('win_rate', 0):.1%} "
         f"pf={chosen.user_attrs.get('profit_factor', 0):.2f}"
@@ -290,6 +296,7 @@ def run_search(
                 "trial_number": t.number,
                 "sharpe": float(t.values[0]),
                 "max_dd": float(t.values[1]),
+                "sortino": float(t.values[2]),
                 "n_trades": t.user_attrs.get("n_trades"),
                 "win_rate": t.user_attrs.get("win_rate"),
                 "profit_factor": t.user_attrs.get("profit_factor"),
@@ -297,7 +304,7 @@ def run_search(
             }
             for t in pareto_trials
         ],
-        key=lambda x: x["sharpe"],
+        key=lambda x: (x["sharpe"], x["sortino"]),
         reverse=True,
     )
 
@@ -305,6 +312,7 @@ def run_search(
         "best_params": chosen.params,
         "best_sharpe": float(best_sharpe),
         "best_max_dd": float(best_max_dd),
+        "best_sortino": float(best_sortino),
         "best_n_trades": chosen.user_attrs.get("n_trades"),
         "best_win_rate": chosen.user_attrs.get("win_rate"),
         "best_profit_factor": chosen.user_attrs.get("profit_factor"),

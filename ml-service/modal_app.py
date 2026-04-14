@@ -108,6 +108,27 @@ def retrain_orchestrator(payload: dict) -> dict:
         "max_rounds": 100, "alpha": 0.01, "required_power": 0.99,
     })
 
+    # ── P0-3: Defensive GCS batch count validation ────────────────────────────
+    # Cloud Run may pass stale/wrong batch_count (e.g. "1" when actual prep wrote 5).
+    # Check actual .npz files in GCS and use the larger value.
+    try:
+        from google.cloud import storage as _gcs_chk
+        _bucket_chk = _gcs_chk.Client().bucket("stockvision-models")
+        actual_batch_count = sum(
+            1 for i in range(20)  # cap at 20 to avoid excessive API calls
+            if _bucket_chk.blob(f"universal/prep/batch_{i}.npz").exists()
+        )
+        if actual_batch_count > 0 and actual_batch_count != batch_count:
+            print(
+                f"[Orchestrator] ⚠️ P0-3 batch_count mismatch: "
+                f"payload={batch_count} vs GCS={actual_batch_count} → using max"
+            )
+            batch_count = max(batch_count, actual_batch_count)
+        else:
+            print(f"[Orchestrator] GCS batch count verified: {actual_batch_count} batches")
+    except Exception as _e:
+        print(f"[Orchestrator] GCS batch count check failed (using payload value {batch_count}): {_e}")
+
     result = {"stages": {}}
 
     # ── Stage 1: Feature Selection (月度 only) ────────────────────────────────
@@ -172,6 +193,31 @@ def retrain_orchestrator(payload: dict) -> dict:
         }
         if circuit_breaker:
             print("[Orchestrator] ⚠️ Circuit breaker: some models IC≤0 — ensemble will auto-zero-weight them")
+
+        # Write merged ic_tracking.json to GCS (both containers skip GCS write when models_filter set)
+        try:
+            from google.cloud import storage as _gcs
+            import json as _json
+            from datetime import datetime as _dt
+            _bucket = _gcs.Client().bucket("stockvision-models")
+            _ic_record = {
+                "computed_at": _dt.utcnow().isoformat() + "Z",
+                "models": merged_ic,
+                "circuit_breaker": circuit_breaker,
+                "total_samples": total_samples,
+                "source": "orchestrator_merged",
+            }
+            _ic_json = _json.dumps(_ic_record, indent=2)
+            _bucket.blob("universal/ic_tracking.json").upload_from_string(
+                _ic_json, content_type="application/json"
+            )
+            _month = _dt.utcnow().strftime("%Y-%m")
+            _bucket.blob(f"universal/ic_history/{_month}.json").upload_from_string(
+                _ic_json, content_type="application/json"
+            )
+            print(f"[Orchestrator] IC tracking saved (breaker={'ON' if circuit_breaker else 'OFF'}, {len(merged_ic)} models)")
+        except Exception as e:
+            print(f"[Orchestrator] IC tracking GCS save failed: {e}")
 
         # SHAP (runs after both containers done)
         try:
@@ -332,11 +378,12 @@ def train_tree_models(payload: dict) -> dict:
     max_containers=1,
 )
 def train_ftt_model(payload: dict) -> dict:
-    """GPU L4: FT-Transformer only."""
+    """GPU L4: FT-Transformer only (uses all features, skip_feature_pool=True)."""
     _setup_env()
     from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         payload["models_filter"] = ["FT-Transformer"]
+        payload["skip_feature_pool"] = True  # FT-T benefits from full 106 features
         req = UniversalTrainRequest(**payload)
         return _train(req)
     except Exception as e:
@@ -359,28 +406,6 @@ def shap_feature_audit(payload: dict) -> dict:
         return run_shap_audit(shap_samples=shap_samples)
     except Exception as e:
         return {"error": str(e), "type": "shap_audit"}
-
-
-@app.function(
-    gpu="L4",                    # LightGBM GPU mode for Target Permutation
-    memory=4096,
-    timeout=3600,                # 60 min — 100 permutations × ~30-60s each, K-S auto-stop ~30-50 rounds
-    scaledown_window=60,
-    max_containers=1,
-)
-def feature_selection_pipeline(payload: dict) -> dict:
-    """2.0 Feature Selection: Silhouette → Target Permutation (Y-shuffle) → IC/ICIR → Elbow → Diversity Guard."""
-    _setup_env()
-    from app.feature_selection import run_feature_selection_pipeline
-    try:
-        return run_feature_selection_pipeline(
-            max_rounds=payload.get("max_rounds", 100),
-            alpha=payload.get("alpha", 0.01),
-            required_power=payload.get("required_power", 0.99),
-            dry_run=payload.get("dry_run", False),
-        )
-    except Exception as e:
-        return {"error": str(e), "type": "feature_selection"}
 
 
 @app.function(

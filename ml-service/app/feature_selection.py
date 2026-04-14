@@ -281,6 +281,69 @@ def target_permutation(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Step 2b: Signal Sanity Gate (new in 2.0)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def signal_sanity_gate(
+    X_train: np.ndarray, y_train: np.ndarray,
+    X_val: np.ndarray, y_val: np.ndarray,
+    n_permutations: int = 30,
+    alpha: float = 0.05,
+) -> dict:
+    """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
+
+    Empirical p-value < alpha (0.05) → signal is detectable → PASS.
+    If FAIL, feature selection should not proceed (no real signal in data).
+
+    Returns:
+        {"passed": bool, "p_value": float, "real_ic": float, "null_ic_mean": float, ...}
+    """
+    from scipy.stats import spearmanr
+    t0 = time.time()
+
+    # Real model IC on validation
+    real_model = _train_lgbm_regression(X_train, y_train, X_val, y_val, seed=42)
+    real_preds = real_model.predict(X_val)
+    if len(real_preds) < 10 or np.std(real_preds) < 1e-10 or np.std(y_val) < 1e-10:
+        real_ic = 0.0
+    else:
+        rho, _ = spearmanr(real_preds, y_val)
+        real_ic = float(rho) if not np.isnan(rho) else 0.0
+
+    # Null distribution: shuffle Y, retrain, compute IC
+    rng = np.random.RandomState(99)
+    null_ics = []
+    for i in range(n_permutations):
+        y_shuf = rng.permutation(y_train)
+        null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
+        null_preds = null_model.predict(X_val)
+        if np.std(null_preds) < 1e-10:
+            null_ics.append(0.0)
+        else:
+            rho, _ = spearmanr(null_preds, y_val)
+            null_ics.append(float(rho) if not np.isnan(rho) else 0.0)
+
+    null_arr = np.array(null_ics)
+    # Empirical p-value: fraction of null ICs >= real IC
+    p_value = float((null_arr >= real_ic).sum() / len(null_arr))
+    passed = p_value < alpha
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"[SanityGate] real_IC={real_ic:.4f}, null_mean={null_arr.mean():.4f}, "
+          f"p_value={p_value:.4f} → {'PASS ✅' if passed else 'FAIL ❌'} ({elapsed}s)")
+
+    return {
+        "passed": passed,
+        "p_value": round(p_value, 6),
+        "real_ic": round(real_ic, 6),
+        "null_ic_mean": round(float(null_arr.mean()), 6),
+        "null_ic_std": round(float(null_arr.std()), 6),
+        "n_permutations": n_permutations,
+        "elapsed_s": elapsed,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Step 3: IC/ICIR Stability Check
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -392,6 +455,131 @@ def elbow_detection(per_feature: dict[str, dict], score_key: str = "score") -> d
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Step 4b: Optuna K Sweep (replaces elbow_detection in 2.0 pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def optuna_k_sweep(
+    per_feature: dict[str, dict],
+    X_train: np.ndarray, y_train: np.ndarray,
+    X_val: np.ndarray, y_val: np.ndarray,
+    feature_names: list[str],
+    n_trials: int = 50,
+    score_key: str = "score",
+    pareto_ic_ratio: float = 0.95,  # Pareto front: IC >= ratio × max_IC → pick min K
+) -> dict:
+    """Optuna K sweep: multi-objective Pareto (maximize IC, minimize K).
+
+    Replaces single-objective maximize IC with Pareto front to avoid overfitting K.
+    From the Pareto front, select the trial with IC >= 0.95 × max_IC and smallest K.
+
+    Returns same format as elbow_detection for backward compat:
+        {"active": [...], "reserve": [...], "threshold": float, "knee_index": int,
+         "best_k": int, "best_ic": float, "sweep_results": [(k, ic), ...]}
+    """
+    import optuna
+    from scipy.stats import spearmanr
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    t0 = time.time()
+
+    # Sort features by score descending
+    sorted_features = sorted(per_feature.items(), key=lambda x: -x[1].get(score_key, 0))
+    sorted_names = [n for n, _ in sorted_features]
+    name_to_idx = {n: i for i, n in enumerate(feature_names)}
+    n_max = len(sorted_names)
+
+    if n_max < 5:
+        return {
+            "threshold": 0, "knee_index": n_max,
+            "active": sorted_names, "reserve": [],
+            "best_k": n_max, "best_ic": 0.0,
+            "sweep_results": [],
+        }
+
+    def objective(trial):
+        k = trial.suggest_int("k", 5, n_max)
+        top_k = sorted_names[:k]
+        indices = [name_to_idx[n] for n in top_k if n in name_to_idx]
+        if len(indices) < 5:
+            return 0.0, k  # (IC, K) — Pareto: maximize IC, minimize K
+        Xtr = X_train[:, indices]
+        Xvl = X_val[:, indices]
+        try:
+            booster = _train_lgbm_regression(Xtr, y_train, Xvl, y_val, seed=42)
+            preds = booster.predict(Xvl)
+            if np.std(preds) < 1e-10 or np.std(y_val) < 1e-10:
+                ic = 0.0
+            else:
+                rho, _ = spearmanr(preds, y_val)
+                ic = float(rho) if not np.isnan(rho) else 0.0
+        except Exception:
+            ic = 0.0
+        return ic, k  # Pareto: (maximize IC, minimize K)
+
+    # Multi-objective study: maximize IC, minimize K
+    # NSGAIISampler required — TPESampler does not support multi-objective
+    study = optuna.create_study(
+        directions=["maximize", "minimize"],
+        sampler=optuna.samplers.NSGAIISampler(seed=42),
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    # Collect all (k, ic) pairs from all trials
+    sweep_results = []
+    for trial in study.trials:
+        if trial.values is not None and len(trial.values) == 2:
+            ic_val, k_val = trial.values
+            sweep_results.append({"k": int(trial.params["k"]), "ic": round(float(ic_val), 6)})
+
+    # Select best trial from Pareto front:
+    # IC >= 0.95 × max_IC → pick the one with minimum K
+    pareto_trials = study.best_trials  # Pareto-optimal trials
+    if not pareto_trials:
+        # Fallback: use all trials
+        pareto_trials = [t for t in study.trials if t.values is not None]
+
+    max_ic = max((t.values[0] for t in pareto_trials if t.values), default=0.0)
+    ic_threshold = pareto_ic_ratio * max_ic
+
+    candidates = [
+        t for t in pareto_trials
+        if t.values and t.values[0] >= ic_threshold
+    ]
+    if not candidates:
+        candidates = pareto_trials  # fallback: all Pareto trials
+
+    # Pick minimum K among candidates
+    best_trial = min(candidates, key=lambda t: t.params.get("k", n_max))
+    best_k = best_trial.params["k"]
+    best_ic = best_trial.values[0] if best_trial.values else 0.0
+
+    active = sorted_names[:best_k]
+    reserve = sorted_names[best_k:]
+    threshold = per_feature.get(sorted_names[best_k - 1], {}).get(score_key, 0) if best_k > 0 else 0
+
+    elapsed = round(time.time() - t0, 1)
+    print(f"[OptunaKSweep] Pareto best K={best_k}/{n_max} (IC={best_ic:.4f}, threshold={ic_threshold:.4f}), "
+          f"active={len(active)}, reserve={len(reserve)}, {elapsed}s")
+
+    pareto_front = [
+        {"k": int(t.params["k"]), "ic": round(float(t.values[0]), 6)}
+        for t in pareto_trials
+        if t.values
+    ]
+
+    return {
+        "threshold": round(float(threshold), 6),
+        "knee_index": best_k,
+        "active": active,
+        "reserve": reserve,
+        "best_k": best_k,
+        "best_ic": round(float(best_ic), 6),
+        "sweep_results": sweep_results,   # all trial (k, ic) pairs sorted by k
+        "pareto_front": pareto_front,     # Pareto-optimal trials only
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Step 5: Diversity Guard (P4 — interface defined here, full logic in P4)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -437,8 +625,15 @@ def update_feature_pool(
     cluster_result: dict,
     tp_stats: dict,
     ic_results: dict | None = None,
+    all_feature_names: list[str] | None = None,  # for ft_active (full 106 features)
+    k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
 ) -> dict:
-    """Build feature_pool.json structure."""
+    """Build feature_pool.json structure with dual pool output.
+
+    tree_active: filtered features for tree models (XGBoost/CatBoost/ExtraTrees/LightGBM)
+    ft_active:   all feature names for FT-Transformer (skip_feature_pool=True path)
+    active:      backward-compat alias for tree_active
+    """
     from datetime import datetime
 
     dropped = cluster_result.get("dropped_features", [])
@@ -447,7 +642,9 @@ def update_feature_pool(
     pool = {
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "method": "target_permutation_2.0",
-        "active": sorted(active),
+        "active": sorted(active),           # backward compat
+        "tree_active": sorted(active),      # explicit: tree models use this
+        "ft_active": sorted(all_feature_names) if all_feature_names else sorted(active),  # FT-T uses all features
         "reserve": reserve,
         "candidate": [],
         "cluster_info": {
@@ -463,6 +660,12 @@ def update_feature_pool(
             "stable_count": sum(1 for v in (ic_results or {}).values() if v.get("stable")),
             "total": len(ic_results or {}),
         },
+        "k_sweep": {
+            "best_k": (k_sweep_result or {}).get("best_k"),
+            "best_ic": (k_sweep_result or {}).get("best_ic"),
+            "sweep_results": (k_sweep_result or {}).get("sweep_results", []),
+            "pareto_front": (k_sweep_result or {}).get("pareto_front", []),
+        } if k_sweep_result else {},
     }
     return pool
 
@@ -506,7 +709,8 @@ def run_feature_selection_pipeline(
     **_kwargs,  # absorb legacy params (required_power etc.)
 ) -> dict:
     """Full 2.0 pipeline:
-    Load prep data → Silhouette → Target Permutation → IC/ICIR → Elbow → Diversity Guard → Save.
+    Load prep data → Signal Sanity Gate → Silhouette → Target Permutation →
+    IC/ICIR → Optuna K sweep (Pareto) → Diversity Guard → Save dual pool.
 
     Reads training data from GCS prep npz (same format as retrain).
     """
@@ -568,6 +772,15 @@ def run_feature_selection_pipeline(
     print(f"[FeatureSelection] Purged split: train={len(X_train)}, val={len(X_val)}, "
           f"test={len(X_test)}, embargo={embargo_days}d")
 
+    # ── 2b. Signal Sanity Gate (P0-6) ───────────────────────────────────────
+    print(f"[FeatureSelection] Running signal sanity gate (30 permutations)...")
+    gate_result = signal_sanity_gate(X_train, y_train, X_val, y_val, n_permutations=30, alpha=alpha)
+    if not gate_result.get("passed", False):
+        print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
+              f"no learnable signal in data. Aborting (keeping previous pool).")
+        return {"error": "signal_gate_failed", "gate": gate_result}
+    print(f"[FeatureSelection] ✅ Signal sanity gate passed (p={gate_result.get('p_value')})")
+
     # ── 3. Silhouette clustering ─────────────────────────────────────────────
     cluster_result = cluster_features(X, feature_names)
 
@@ -587,17 +800,13 @@ def run_feature_selection_pipeline(
     dates_test = dates[test_mask]
     ic_results = ic_icir_check(X_test, y_test, dates_test, feature_names)
 
-    # ── 6. Elbow detection ───────────────────────────────────────────────────
-    # Combine TP score + IC stability into final score
+    # ── 6. Combine TP score + IC stability into final score ─────────────────
     combined_scores = {}
     for name in feature_names:
         tp_score = tp_result["per_feature"].get(name, {}).get("score", 0)
         ic_info = ic_results.get(name, {})
         ic_stable = 1.0 if ic_info.get("stable", False) else 0.0
         icir = ic_info.get("icir", 0)
-
-        # Final score: TP score (importance) + IC bonus (stability)
-        # TP score is dominant, IC/ICIR is a tiebreaker/filter
         combined_scores[name] = {
             "score": round(tp_score + icir * 0.1, 4),
             "tp_score": tp_score,
@@ -605,16 +814,25 @@ def run_feature_selection_pipeline(
             "ic_stable": bool(ic_stable),
         }
 
-    elbow_result = elbow_detection(combined_scores)
+    # ── 7. K selection: Optuna Pareto sweep (P0-2) ──────────────────────────
+    try:
+        k_sweep_result = optuna_k_sweep(
+            combined_scores, X_train, y_train, X_val, y_val,
+            feature_names=feature_names, n_trials=50,
+        )
+        print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
+              f"best_ic={k_sweep_result.get('best_ic')}")
+    except Exception as e:
+        print(f"[FeatureSelection] Optuna K sweep failed ({e}), falling back to elbow_detection")
+        k_sweep_result = elbow_detection(combined_scores)
 
-    # ── 7. Diversity Guard ───────────────────────────────────────────────────
-    # Sort active by score so diversity_guard rescues the "best" from each extinct group
+    # ── 8. Diversity Guard ───────────────────────────────────────────────────
     active_sorted = sorted(
-        elbow_result["active"],
+        k_sweep_result["active"],
         key=lambda n: combined_scores.get(n, {}).get("score", 0),
         reverse=True,
     )
-    reserve_sorted = elbow_result["reserve"]
+    reserve_sorted = k_sweep_result["reserve"]
 
     active_final, reserve_final = diversity_guard(
         active_sorted, reserve_sorted,
@@ -622,14 +840,18 @@ def run_feature_selection_pipeline(
         cluster_result["feature_to_group"],
     )
 
-    # ── 8. Build and save feature pool ───────────────────────────────────────
+    # ── 9. Build and save feature pool (dual pool: tree_active + ft_active) ──
     pool = update_feature_pool(
-        active_final, reserve_final, cluster_result,
+        active_final, reserve_final,
+        all_feature_names=feature_names,
+        cluster_result=cluster_result,
         tp_stats={
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
         },
         ic_results=ic_results,
+        gate_result=gate_result,
+        k_sweep_result=k_sweep_result,
     )
 
     if not dry_run:
@@ -637,7 +859,7 @@ def run_feature_selection_pipeline(
     else:
         print("[FeatureSelection] DRY RUN — skipping GCS save")
 
-    # ── 9. SHAP baseline comparison (if shap_audit.json exists) ──────────────
+    # ── 10. SHAP baseline comparison (if shap_audit.json exists) ─────────────
     shap_overlap = None
     try:
         shap_blob = bucket.blob("universal/shap_audit.json")
@@ -677,9 +899,10 @@ def run_feature_selection_pipeline(
             "stable_count": sum(1 for v in ic_results.values() if v["stable"]),
             "total": len(ic_results),
         },
-        "elbow": {
-            "threshold": elbow_result["threshold"],
-            "knee_index": elbow_result["knee_index"],
+        "signal_gate": gate_result,
+        "k_sweep": {
+            "best_k": k_sweep_result.get("best_k"),
+            "best_ic": k_sweep_result.get("best_ic"),
         },
         "shap_comparison": shap_overlap,
         "elapsed_s": elapsed,

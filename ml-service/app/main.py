@@ -543,16 +543,36 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 model_errors.append(f"{model_name}: not found in GCS")
                 continue
 
+            # Name-based feature alignment: align predict features to training features
+            training_features = (meta or {}).get("feature_names", [])
+            if training_features and training_features != feature_names:
+                _pred_name_to_idx = {n: i for i, n in enumerate(feature_names)}
+                _X_aligned = np.zeros((1, len(training_features)), dtype=np.float32)
+                for _j, _fname in enumerate(training_features):
+                    if _fname in _pred_name_to_idx:
+                        _X_aligned[0, _j] = float(X_latest[0, _pred_name_to_idx[_fname]])
+                X_to_predict = _X_aligned
+                _missing = len([f for f in training_features if f not in _pred_name_to_idx])
+                if _missing > 0:
+                    print(f"[PredictV2] {model_name}: {_missing}/{len(training_features)} features missing, filled with 0")
+            else:
+                X_to_predict = X_latest
+
             if model_name == "FT-Transformer":
                 # FT-T needs StandardScaler + torch inference
                 bundle = model_obj  # joblib saved the whole bundle dict
                 state_dict = bundle["state_dict"]
                 scaler = bundle["scaler"]
                 valid_cols = bundle.get("valid_cols_mask")
-                n_feat = bundle.get("n_features", X_latest.shape[1])
+                n_feat = bundle.get("n_features", X_to_predict.shape[1])
+
+                # Dimension mismatch guard: skip instead of crash
+                if X_to_predict.shape[1] != n_feat:
+                    model_errors.append(f"{model_name}: dim mismatch (predict={X_to_predict.shape[1]}, train={n_feat}), skipped")
+                    continue
 
                 # Scale
-                X_scaled = scaler.transform(X_latest).astype(np.float32)
+                X_scaled = scaler.transform(X_to_predict).astype(np.float32)
                 X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
 
                 # Rebuild model architecture (must match training)
@@ -585,7 +605,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
             else:
                 # Tree models: .predict() returns rank 0~1 directly
-                pred = model_obj.predict(X_latest)
+                pred = model_obj.predict(X_to_predict)
                 rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
 
         except Exception as e:
@@ -808,6 +828,7 @@ class UniversalTrainRequest(BaseModel):
     """觸發 train — 不帶資料，從 GCS 讀 prep 結果。"""
     batch_count: int = 5  # 預期幾個 batch npz
     models_filter: list[str] | None = None  # None=all, or ["XGBoost","CatBoost",...] subset
+    skip_feature_pool: bool = False  # True = FT-T mode: use all features, skip pool filter
 
 
 class UniversalRetrainRequest(BaseModel):
@@ -979,25 +1000,31 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     # ── 1b. Filter to active features from feature_pool.json ─────────────────
     # Feature selection 產出 pool → train 只用 active features（降維 + 避免 noise）
-    try:
-        pool_blob = bucket.blob("universal/feature_pool.json")
-        if pool_blob.exists():
-            pool = json.loads(pool_blob.download_as_text())
-            active = pool.get("active", [])
-            if active:
-                keep_idx = [i for i, name in enumerate(feature_names) if name in set(active)]
-                if keep_idx:
-                    X = X[:, keep_idx]
-                    feature_names = [feature_names[i] for i in keep_idx]
-                    print(f"[TrainUniversal] Feature pool filter: {len(keep_idx)} active (from {X.shape[1]+len(feature_names)-len(keep_idx)} total)")
+    # skip_feature_pool=True (FT-T mode): use all 106 features, bypass pool filter
+    if req.skip_feature_pool:
+        print(f"[TrainUniversal] skip_feature_pool=True → using all {len(feature_names)} features (FT-T mode)")
+    else:
+        try:
+            pool_blob = bucket.blob("universal/feature_pool.json")
+            if pool_blob.exists():
+                pool = json.loads(pool_blob.download_as_text())
+                # Prefer tree_active (dual-pool output), fallback to active (backward compat)
+                active = pool.get("tree_active") or pool.get("active", [])
+                if active:
+                    keep_idx = [i for i, name in enumerate(feature_names) if name in set(active)]
+                    if keep_idx:
+                        orig_count = len(feature_names)
+                        X = X[:, keep_idx]
+                        feature_names = [feature_names[i] for i in keep_idx]
+                        print(f"[TrainUniversal] Feature pool filter: {len(keep_idx)} active (from {orig_count} total)")
+                    else:
+                        print(f"[TrainUniversal] Feature pool has {len(active)} active but none match prep columns, using all")
                 else:
-                    print(f"[TrainUniversal] Feature pool has {len(active)} active but none match prep columns, using all")
+                    print("[TrainUniversal] Feature pool empty, using all features")
             else:
-                print("[TrainUniversal] Feature pool empty, using all features")
-        else:
-            print("[TrainUniversal] No feature_pool.json, using all features")
-    except Exception as e:
-        print(f"[TrainUniversal] Feature pool load failed (using all): {e}")
+                print("[TrainUniversal] No feature_pool.json, using all features")
+        except Exception as e:
+            print(f"[TrainUniversal] Feature pool load failed (using all): {e}")
 
     print(f"[TrainUniversal] Total: {len(X)} rows × {len(feature_names)} features")
 
@@ -1133,8 +1160,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
         n_features = X_train.shape[1]
         D_MODEL, N_HEADS, N_LAYERS = 128, 8, 3
-        MAX_EPOCHS, LR, PATIENCE = 200, 2e-4, 16
-        BATCH_SIZE = 512
+        MAX_EPOCHS, LR, PATIENCE = 120, 2e-4, 12  # P0-5e: 200→120, 16→12
+        BATCH_SIZE = 1024                           # P0-5e: 512→1024
 
         class _FTT(nn.Module):
             def __init__(self, n_feat, d_model, n_heads, n_layers):
@@ -1144,7 +1171,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 encoder_layer = nn.TransformerEncoderLayer(
                     d_model=d_model, nhead=n_heads,
                     dim_feedforward=int(d_model * 4 / 3),
-                    dropout=0.1, batch_first=True,
+                    dropout=0.12, batch_first=True,  # P0-5d: 0.1→0.12 (attn=0.10/FFN=0.15/resid=0.05 weighted avg)
                 )
                 self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
                 self.head = nn.Linear(d_model, 1)  # 2.0: regression output (single scalar)
@@ -1166,17 +1193,53 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         print(f"[TrainUniversal] FT-T scaler: {valid_cols_mask.sum()}/{len(valid_cols_mask)} columns with variance")
         print(f"[TrainUniversal] FT-T using all {len(Xt)} samples (L4 24GB + batched val)")
 
-        val_size = max(int(len(Xt) * 0.2), 256)
-        Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
-        Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
+        # Val split with 5-day embargo (De Prado AFML: prevent label leakage)
+        # Fallback to simple split if train data < 1000 rows
+        if len(Xt) >= 1000:
+            _unique_td = np.sort(np.unique(np.array([str(d) for d in dates_train])))
+            _n_td = len(_unique_td)
+            _val_start_idx = int(_n_td * 0.8)
+            _embargo_end_idx = min(_val_start_idx + 5, _n_td)
+            _trn_date_set = set(_unique_td[:_val_start_idx].tolist())
+            _val_date_set = set(_unique_td[_embargo_end_idx:].tolist())
+            _dates_str = np.array([str(d) for d in dates_train])
+            _trn_mask = np.array([d in _trn_date_set for d in _dates_str])
+            _val_mask = np.array([d in _val_date_set for d in _dates_str])
+            Xt_trn, yt_trn = Xt[_trn_mask], yt[_trn_mask]
+            Xt_val, yt_val = Xt[_val_mask], yt[_val_mask]
+            print(f"[TrainUniversal] FT-T embargo split: trn={_trn_mask.sum()}, val={_val_mask.sum()}, embargo=5d")
+            if len(Xt_val) == 0:
+                # Fallback if embargo ate all val data
+                val_size = max(int(len(Xt) * 0.2), 256)
+                Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
+                Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
+                print("[TrainUniversal] FT-T embargo fallback: not enough val dates, using simple split")
+        else:
+            val_size = max(int(len(Xt) * 0.2), 256)
+            Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
+            Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
+            print(f"[TrainUniversal] FT-T simple split (data < 1000): trn={len(Xt_trn)}, val={len(Xt_val)}")
 
         model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
-        opt = torch.optim.Adam(model_ftt.parameters(), lr=LR, weight_decay=1e-5)
+        # P0-5a: Adam → AdamW, weight_decay 1e-5 → 5e-5
+        opt = torch.optim.AdamW(model_ftt.parameters(), lr=LR, weight_decay=5e-5)
+        # P0-5b: cosine annealing with linear warmup (warmup_ratio=0.05)
+        import math as _math
+        _total_steps = (len(Xt_trn) // BATCH_SIZE + 1) * MAX_EPOCHS
+        _warmup_steps = int(_total_steps * 0.05)
+        def _lr_lambda(step: int) -> float:
+            if step < _warmup_steps:
+                return step / max(1, _warmup_steps)
+            progress = (step - _warmup_steps) / max(1, _total_steps - _warmup_steps)
+            return max(0.0, 0.5 * (1.0 + _math.cos(_math.pi * progress)))
+        from torch.optim.lr_scheduler import LambdaLR as _LambdaLR
+        scheduler = _LambdaLR(opt, _lr_lambda)
+        _global_step = 0
         # 2.0: Pairwise Margin Ranking Loss (CIKM 2025: best Sharpe 0.7529)
         # ListNet softmax unstable with unbounded FT-T output (caused IC=0 collapse)
         # Margin loss: per-pair, only cares about relative order, unbounded OK
         _margin_loss = nn.MarginRankingLoss(margin=0.1)
-        _n_pairs = 256  # sampled pairs per batch (O(B) not O(B²))
+        _n_pairs = 1024  # P0-5e: 256→1024 (larger batch → more pairs available)
 
         def crit(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
             B = preds.shape[0]
@@ -1204,48 +1267,85 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         grad_scaler = torch.amp.GradScaler(enabled=(use_amp and amp_dtype == torch.float16))
         print(f"[TrainUniversal] AMP={'ON' if use_amp else 'OFF'} dtype={amp_dtype if use_amp else 'fp32'}")
 
-        best_val_loss = float("inf")
+        from scipy.stats import spearmanr as _spearmanr  # P0-5c: val IC early stop
+
+        # P0-5c: monitor val Spearman IC (not val_loss) — maximise rank correlation
+        best_val_ic = -float("inf")
         best_state = None
         no_improve = 0
 
-        for epoch in range(MAX_EPOCHS):
-            model_ftt.train()
-            perm = np.random.permutation(len(Xt_trn))
-            for s in range(0, len(Xt_trn), BATCH_SIZE):
-                bi = perm[s:s + BATCH_SIZE]
-                xb = torch.tensor(Xt_trn[bi], device=device)
-                yb = torch.tensor(yt_trn[bi], device=device)
-                with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    loss = crit(model_ftt(xb), yb)
+        def _run_ftt_training(batch_sz: int, grad_accum: int = 1) -> None:
+            """Inner training loop (factored out for OOM fallback). Modifies outer scope vars."""
+            nonlocal best_val_ic, best_state, no_improve, _global_step
+
+            for epoch in range(MAX_EPOCHS):
+                model_ftt.train()
+                perm = np.random.permutation(len(Xt_trn))
+                step_loss = 0.0
                 opt.zero_grad()
-                grad_scaler.scale(loss).backward()
-                grad_scaler.step(opt)
-                grad_scaler.update()
-
-            model_ftt.eval()
-            with torch.no_grad():
-                val_losses = []
-                for vs in range(0, len(Xt_val), BATCH_SIZE):
-                    xvb = torch.tensor(Xt_val[vs:vs + BATCH_SIZE], device=device)
-                    yvb = torch.tensor(yt_val[vs:vs + BATCH_SIZE], device=device)
+                mini_step = 0
+                for s in range(0, len(Xt_trn), batch_sz):
+                    bi = perm[s:s + batch_sz]
+                    xb = torch.tensor(Xt_trn[bi], device=device)
+                    yb = torch.tensor(yt_trn[bi], device=device)
                     with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                        vl = crit(model_ftt(xvb), yvb).item()
-                    val_losses.append(vl * len(xvb))
-                val_loss = sum(val_losses) / len(Xt_val)
+                        loss = crit(model_ftt(xb), yb) / grad_accum
+                    grad_scaler.scale(loss).backward()
+                    step_loss += loss.item()
+                    mini_step += 1
+                    if mini_step % grad_accum == 0:
+                        grad_scaler.step(opt)
+                        grad_scaler.update()
+                        scheduler.step()
+                        opt.zero_grad()
+                        _global_step += 1
+                # flush remaining gradient
+                if mini_step % grad_accum != 0:
+                    grad_scaler.step(opt)
+                    grad_scaler.update()
+                    scheduler.step()
+                    opt.zero_grad()
+                    _global_step += 1
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_state = {k: v.cpu().clone() for k, v in model_ftt.state_dict().items()}
-                no_improve = 0
-            else:
-                no_improve += 1
+                # P0-5c: val Spearman IC (model must be in eval mode, no grad)
+                model_ftt.eval()
+                with torch.no_grad():
+                    val_preds = []
+                    for vs in range(0, len(Xt_val), batch_sz):
+                        xvb = torch.tensor(Xt_val[vs:vs + batch_sz], device=device)
+                        with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+                            val_preds.append(model_ftt(xvb).float().cpu().numpy())  # .float() bfloat16→fp32 before numpy
+                    val_preds_arr = np.concatenate(val_preds)
+                val_ic = 0.0
+                if np.std(val_preds_arr) > 1e-10 and np.std(yt_val) > 1e-10:
+                    rho, _ = _spearmanr(val_preds_arr, yt_val)
+                    val_ic = float(rho) if not np.isnan(rho) else 0.0
 
-            if (epoch + 1) % 10 == 0:
-                print(f"[TrainUniversal] FT-T epoch {epoch+1} val_mse={val_loss:.6f} best={best_val_loss:.6f} patience={no_improve}/{PATIENCE}")
+                if val_ic > best_val_ic:
+                    best_val_ic = val_ic
+                    best_state = {k: v.cpu().clone() for k, v in model_ftt.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
 
-            if no_improve >= PATIENCE:
-                print(f"[TrainUniversal] FT-T early stop at epoch {epoch+1}")
-                break
+                if (epoch + 1) % 10 == 0:
+                    print(f"[TrainUniversal] FT-T epoch {epoch+1} val_IC={val_ic:.6f} best={best_val_ic:.6f} patience={no_improve}/{PATIENCE}")
+
+                if no_improve >= PATIENCE:
+                    print(f"[TrainUniversal] FT-T early stop at epoch {epoch+1} (val_IC={best_val_ic:.6f})")
+                    break
+
+        # P0-5f: OOM protection — fallback to BATCH_SIZE=512 + grad_accum=2
+        try:
+            _run_ftt_training(BATCH_SIZE, grad_accum=1)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            print("[TrainUniversal] FT-T OOM with BATCH_SIZE=1024, retrying BATCH_SIZE=512 + grad_accum=2")
+            best_val_ic = -float("inf")
+            best_state = None
+            no_improve = 0
+            _global_step = 0
+            _run_ftt_training(512, grad_accum=2)
 
         if best_state is not None:
             model_ftt.load_state_dict(best_state)
@@ -1273,7 +1373,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         trained_models["FT-Transformer"] = (model_ftt, feat_scaler, valid_cols_mask, bundle)
         results["FT-Transformer"] = {
             "oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test),
-            "stopped_epoch": stopped_epoch, "best_val_mse": round(best_val_loss, 6),
+            "stopped_epoch": stopped_epoch, "best_val_ic": round(best_val_ic, 6),
             "device": str(device), "saved": True,
         }
         print(f"[TrainUniversal] FT-Transformer IC={ic:.4f} stopped={stopped_epoch} device={device}")
@@ -1298,6 +1398,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     for model_name, model_result in results.items():
         if model_result.get("error"):
             continue
+        if model_result.get("skipped"):
+            # models_filter excluded this model — don't write to ic_tracking (orchestrator merges)
+            continue
         oos_ic = model_result.get("oos_ic", 0.0)
         ic_tracking[model_name] = {
             "oos_ic": oos_ic,
@@ -1311,27 +1414,31 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             print(f"[IC-Warning] ⚠️ {model_name} OOS IC={oos_ic:.4f} < 0.02 → 通過但接近雜訊，留意 drift")
 
     # Save IC tracking to GCS
-    try:
-        from datetime import datetime
-        ic_record = {
-            "computed_at": datetime.utcnow().isoformat() + "Z",
-            "models": ic_tracking,
-            "circuit_breaker": circuit_breaker_triggered,
-            "train_samples": len(X_train),
-            "test_samples": len(X_test),
-        }
-        ic_json = json.dumps(ic_record, indent=2)
-        bucket.blob("universal/ic_tracking.json").upload_from_string(
-            ic_json, content_type="application/json"
-        )
-        # History
-        month = datetime.utcnow().strftime("%Y-%m")
-        bucket.blob(f"universal/ic_history/{month}.json").upload_from_string(
-            ic_json, content_type="application/json"
-        )
-        print(f"[IC-Track] Saved ic_tracking.json (breaker={'ON' if circuit_breaker_triggered else 'OFF'})")
-    except Exception as e:
-        print(f"[IC-Track] GCS save failed: {e}")
+    # When models_filter is set (partial train), skip GCS write — orchestrator merges and writes
+    if req.models_filter is not None:
+        print(f"[IC-Track] models_filter={req.models_filter} → skip GCS write (orchestrator will merge)")
+    else:
+        try:
+            from datetime import datetime
+            ic_record = {
+                "computed_at": datetime.utcnow().isoformat() + "Z",
+                "models": ic_tracking,
+                "circuit_breaker": circuit_breaker_triggered,
+                "train_samples": len(X_train),
+                "test_samples": len(X_test),
+            }
+            ic_json = json.dumps(ic_record, indent=2)
+            bucket.blob("universal/ic_tracking.json").upload_from_string(
+                ic_json, content_type="application/json"
+            )
+            # History
+            month = datetime.utcnow().strftime("%Y-%m")
+            bucket.blob(f"universal/ic_history/{month}.json").upload_from_string(
+                ic_json, content_type="application/json"
+            )
+            print(f"[IC-Track] Saved ic_tracking.json (breaker={'ON' if circuit_breaker_triggered else 'OFF'})")
+        except Exception as e:
+            print(f"[IC-Track] GCS save failed: {e}")
 
     # ── 6. Save ALL models to GCS (IC-weighted ensemble handles quality at predict time) ──
     if circuit_breaker_triggered:
@@ -1448,29 +1555,52 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
             blob.download_to_file(buf)
             buf.seek(0)
             model = joblib.load(buf)
-            print(f"[SHAP] Computing TreeExplainer for {name}...")
+
+            # Name-based feature alignment: model may be trained on filtered pool features
+            # (predict_stock_v2 同樣邏輯 — 讀 metadata_{name}.json 的 feature_names)
+            name_to_idx = {n: i for i, n in enumerate(feature_names)}
+            model_keep_idx = list(range(n_features))  # default: all features
+            try:
+                meta_blob = bucket.blob(f"universal/metadata_{name}.json")
+                if meta_blob.exists():
+                    model_meta = _json.loads(meta_blob.download_as_text())
+                    model_fnames = model_meta.get("feature_names", [])
+                    if model_fnames and model_fnames != feature_names:
+                        model_keep_idx = [name_to_idx[n] for n in model_fnames if n in name_to_idx]
+                        print(f"[SHAP] {name} feature align: {len(model_keep_idx)}/{n_features} features")
+            except Exception as me:
+                print(f"[SHAP] {name} meta load failed (using all features): {me}")
+
+            X_shap_model = X_shap[:, model_keep_idx] if len(model_keep_idx) < n_features else X_shap
+
+            print(f"[SHAP] Computing TreeExplainer for {name} ({X_shap_model.shape[1]} features)...")
             t1 = time.time()
             explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_shap)
-            # shap_values: list of 2 arrays (binary) | ndarray (n_samples, n_features) | ndarray (n_samples, n_features, n_classes)
+            shap_values = explainer.shap_values(X_shap_model)
+            # regression models: ndarray (n_samples, n_model_features)
             if isinstance(shap_values, list):
-                sv = np.abs(shap_values[1])  # class 1 (UP)
+                sv = np.abs(shap_values[0])  # regression: single output at index 0
             elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
-                sv = np.abs(shap_values[:, :, 1])  # class 1 for 3D array
+                sv = np.abs(shap_values[:, :, 0])
             else:
                 sv = np.abs(shap_values)
             print(f"[SHAP] {name} sv.shape={sv.shape}")
-            importance = sv.mean(axis=0)  # mean |SHAP| per feature
-            # Force 1D — some models return 2D importance
-            if importance.ndim > 1:
-                importance = importance.ravel()[:n_features]
-            importance = importance.astype(np.float64)
-            # Normalize to sum=1
-            total = importance.sum()
+            local_importance = sv.mean(axis=0)  # (n_model_features,)
+            if local_importance.ndim > 1:
+                local_importance = local_importance.ravel()
+            local_importance = local_importance.astype(np.float64)
+
+            # Map back to global feature space (zero-fill missing features)
+            full_importance = np.zeros(n_features, dtype=np.float64)
+            for local_i, global_i in enumerate(model_keep_idx):
+                if local_i < len(local_importance):
+                    full_importance[global_i] = local_importance[local_i]
+            total = full_importance.sum()
             if total > 0:
-                importance = importance / total
-            model_importance[name] = importance
-            print(f"[SHAP] {name} done in {time.time()-t1:.1f}s, importance.shape={importance.shape}, top feature: {feature_names[importance.argmax()]} ({importance.max():.4f})")
+                full_importance = full_importance / total
+            model_importance[name] = full_importance
+            top_idx = int(full_importance.argmax())
+            print(f"[SHAP] {name} done in {time.time()-t1:.1f}s, top feature: {feature_names[top_idx]} ({full_importance[top_idx]:.4f})")
         except Exception as e:
             print(f"[SHAP] {name} failed: {e}")
             model_importance[name] = np.zeros(n_features)
@@ -1487,6 +1617,9 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
         buf.seek(0)
         bundle = joblib.load(buf)
 
+        # 2.0: regression head (1 output) — must match train_universal_from_gcs _FTT
+        ftt_n_features = bundle.get("n_features", n_features)
+
         class _FTT(nn.Module):
             def __init__(self, n_feat, d_model=128, n_heads=8, n_layers=3):
                 super().__init__()
@@ -1498,55 +1631,82 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
                     dropout=0.1, batch_first=True,
                 )
                 self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-                self.head = nn.Linear(d_model, 2)
+                self.head = nn.Linear(d_model, 1)  # 2.0: regression output (single scalar)
             def forward(self, x):
                 B = x.shape[0]
                 tokens = self.feat_embed(x.unsqueeze(-1))
                 cls = self.cls_token.expand(B, -1, -1)
                 tokens = torch.cat([cls, tokens], dim=1)
                 out = self.encoder(tokens)
-                return self.head(out[:, 0, :])
+                return self.head(out[:, 0, :]).squeeze(-1)  # (B,) scalar
 
-        model_ftt = _FTT(n_features, d_model=128, n_heads=8, n_layers=3)
+        model_ftt = _FTT(ftt_n_features, d_model=128, n_heads=8, n_layers=3)
         model_ftt.load_state_dict(bundle["state_dict"])
         model_ftt.to(device).eval()
         ftt_scaler = bundle.get("scaler")
         ftt_valid_cols = bundle.get("valid_cols_mask")
 
+        # Feature alignment: FT-T uses all features (skip_feature_pool=True), but guard mismatch
+        X_shap_ftt = X_shap
+        ftt_keep_idx = list(range(n_features))
+        if ftt_n_features != n_features:
+            try:
+                ftt_meta_blob = bucket.blob("universal/metadata_ft-transformer.json")
+                if ftt_meta_blob.exists():
+                    ftt_meta = _json.loads(ftt_meta_blob.download_as_text())
+                    ftt_fnames = ftt_meta.get("feature_names", [])
+                    name_to_idx_ftt = {n: i for i, n in enumerate(feature_names)}
+                    ftt_keep_idx = [name_to_idx_ftt[n] for n in ftt_fnames if n in name_to_idx_ftt]
+                    X_shap_ftt = X_shap[:, ftt_keep_idx]
+                    print(f"[SHAP] FT-T feature align: {len(ftt_keep_idx)} features (model={ftt_n_features}, prep={n_features})")
+            except Exception as fe:
+                print(f"[SHAP] FT-T meta load failed: {fe}")
+                X_shap_ftt = X_shap[:, :ftt_n_features]
+                ftt_keep_idx = list(range(ftt_n_features))
+
         if ftt_scaler and ftt_valid_cols is not None:
-            X_shap_scaled = X_shap.copy().astype(np.float32)
-            X_shap_scaled[:, ftt_valid_cols] = ftt_scaler.transform(X_shap)[:, ftt_valid_cols].astype(np.float32)
+            X_shap_scaled = X_shap_ftt.copy().astype(np.float32)
+            vc = ftt_valid_cols if ftt_valid_cols.shape[0] == X_shap_ftt.shape[1] else ftt_valid_cols[:X_shap_ftt.shape[1]]
+            X_shap_scaled[:, vc] = ftt_scaler.transform(X_shap_ftt)[:, vc].astype(np.float32)
         elif ftt_scaler:
-            X_shap_scaled = ftt_scaler.transform(X_shap).astype(np.float32)
+            X_shap_scaled = ftt_scaler.transform(X_shap_ftt).astype(np.float32)
             X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)
         else:
-            X_shap_scaled = X_shap.astype(np.float32)
+            X_shap_scaled = X_shap_ftt.astype(np.float32)
+
         # Background for GradientExplainer (small subset)
         bg_size = min(500, len(X_shap_scaled))
         bg = torch.tensor(X_shap_scaled[:bg_size], device=device)
         data_tensor = torch.tensor(X_shap_scaled, device=device)
 
-        print(f"[SHAP] Computing GradientExplainer for FT-Transformer on {device}...")
+        print(f"[SHAP] Computing GradientExplainer for FT-Transformer on {device} ({ftt_n_features} features)...")
         t1 = time.time()
         explainer = shap.GradientExplainer(model_ftt, bg)
         shap_values = explainer.shap_values(data_tensor)
-        # shap_values: list of 2 arrays (class 0, class 1), each shape (n_samples, n_features)
+        # 2.0 regression: shap_values is ndarray (n_samples, n_ftt_features), or list of 1 array
         if isinstance(shap_values, list):
-            sv = np.abs(shap_values[1])
+            sv = np.abs(shap_values[0])  # regression: single output at index 0
         elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
-            sv = np.abs(shap_values[:, :, 1])
+            sv = np.abs(shap_values[:, :, 0])
         else:
-            sv = np.abs(shap_values)
+            sv = np.abs(shap_values)  # (n_samples, n_ftt_features)
         print(f"[SHAP] ft-transformer sv.shape={sv.shape}")
-        importance = sv.mean(axis=0)
-        if importance.ndim > 1:
-            importance = importance.ravel()[:n_features]
-        importance = importance.astype(np.float64)
-        total = importance.sum()
+        local_importance = sv.mean(axis=0)
+        if local_importance.ndim > 1:
+            local_importance = local_importance.ravel()
+        local_importance = local_importance.astype(np.float64)
+
+        # Map back to global feature space
+        full_importance = np.zeros(n_features, dtype=np.float64)
+        for local_i, global_i in enumerate(ftt_keep_idx):
+            if local_i < len(local_importance):
+                full_importance[global_i] = local_importance[local_i]
+        total = full_importance.sum()
         if total > 0:
-            importance = importance / total
-        model_importance["ft-transformer"] = importance
-        print(f"[SHAP] FT-Transformer done in {time.time()-t1:.1f}s, top feature: {feature_names[importance.argmax()]} ({importance.max():.4f})")
+            full_importance = full_importance / total
+        model_importance["ft-transformer"] = full_importance
+        top_idx = int(full_importance.argmax())
+        print(f"[SHAP] FT-Transformer done in {time.time()-t1:.1f}s, top feature: {feature_names[top_idx]} ({full_importance[top_idx]:.4f})")
     except Exception as e:
         print(f"[SHAP] FT-Transformer failed: {e}")
         model_importance["ft-transformer"] = np.zeros(n_features)
@@ -2000,208 +2160,4 @@ async def bandit_stats(request: Request):
         out["arf"] = _arf.stats_summary()
     except Exception as e:
         out["arf"] = {"error": str(e)}
-    return out
-
-
-@app.post("/predict/models")
-def predict_all_models(req: PredictRequest):
-    prices_arr  = np.array([float(p["close"]) for p in req.prices])
-    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df          = build_feature_matrix(req.prices, req.indicators, chips_input,
-                                        req.sentiment_scores, req.market_env)
-    X, y, feature_names = get_features(df, target_col="target_dir")
-    X_latest = X[-1] if len(X) > 0 else np.zeros(max(len(feature_names), 1))
-    X_cb, y_cb, cb_names = get_catboost_features(df, target_col="target_dir")
-    X_cb_latest = X_cb[-1] if len(X_cb) > 0 else np.zeros(max(len(cb_names), 1))
-    X_lgbm = get_lgbm_features(X) if len(X) > 0 else X
-    X_lgbm_latest = X_lgbm[-1] if len(X_lgbm) > 0 else X_latest
-    stock_id = req.stock_id
-
-    results = {}
-    specs = [
-        # 價格族 — 與 /predict 完全對齊（input diversity + stock_id）
-        ("KalmanFilter",    lambda: run_kalman_filter(prices_arr, req.horizon, stock_id),           False),
-        ("DLinear",         lambda: run_dlinear(adj_prices_arr, req.horizon),                        False),
-        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, stock_id),     False),
-        ("PatchTST",        lambda: run_patchtst(prices_arr, req.horizon, stock_id),                False),
-        ("Chronos",         lambda: run_chronos(adj_prices_arr, req.horizon, stock_id),             False),
-        # 特徵族 — input diversity: CatBoost 滯後特徵, LightGBM rank transform
-        ("XGBoost",         lambda: run_xgboost(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),              True),
-        ("CatBoost",        lambda: run_catboost(X_cb, y_cb, X_cb_latest, prices_arr, req.horizon, stock_id, cb_names),         True),
-        ("ExtraTrees",      lambda: run_extra_trees(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),          True),
-        ("LightGBM",        lambda: run_lightgbm(X_lgbm, y, X_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names),  True),
-        ("FT-Transformer",  lambda: run_ft_transformer(X, y, X_latest, prices_arr, req.horizon, stock_id, feature_names),       True),
-    ]
-    import time as _time
-    model_timings = {}
-    for name, fn, needs_feat in specs:
-        if needs_feat and len(X) < 20:
-            results[name] = {"error": "insufficient feature samples"}
-            continue
-        try:
-            t0 = _time.monotonic()
-            p = fn()
-            elapsed_ms = round((_time.monotonic() - t0) * 1000)
-            model_timings[name] = elapsed_ms
-            results[name] = {
-                "direction": p.direction, "confidence": p.confidence,
-                "forecast_pct": p.forecast_pct, "direction_accuracy": p.direction_accuracy,
-                "forecasts": p.forecasts,
-            }
-        except Exception as e:
-            results[name] = {"error": str(e)}
-
-    garch_vol = run_garch_volatility(prices_arr, horizon=5)
-    return {"stock_id": req.stock_id, "symbol": req.symbol,
-            "models": results, "garch_vol": round(garch_vol, 4) if garch_vol else None,
-            "model_timings_ms": model_timings,
-            "feature_count": len(X)}
-
-
-# ── Phase 3: Factor IC 監控 endpoint ────────────────────────────────────────
-@app.post("/factor-ic")
-async def factor_ic(req: PredictRequest, request: Request):
-    """
-    計算所有特徵的 Rank IC，回傳 IC 表 + 有效特徵列表。
-    供 weekly retrain 時呼叫，結果可存入 D1 或 GCS。
-    """
-    await verify_service_token(request)
-    from .feature_selection import ic_icir_check
-    from .features import FEATURE_COLS
-
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df = build_feature_matrix(req.prices, req.indicators, chips_input,
-                               req.sentiment_scores, req.market_env)
-
-    X, y, feature_names = get_features(df, target_col="target_dir")
-    dates_seq = np.arange(len(X)).astype(str)
-    ic_results_dict = ic_icir_check(X, y, dates_seq, feature_names)
-
-    effective = [name for name, v in ic_results_dict.items() if v["stable"]]
-    # IC-weighted feature weights (normalized |IC|)
-    ic_abs = {name: abs(v["ic"]) for name, v in ic_results_dict.items()}
-    total_ic = sum(ic_abs.values()) or 1.0
-    weights = {name: round(v / total_ic, 6) for name, v in ic_abs.items()}
-
-    ic_table = [
-        {"feature": name, "ic": v["ic"], "icir": v["icir"],
-         "effective": v["stable"], "n_dates": v["n_dates"]}
-        for name, v in ic_results_dict.items()
-    ]
-
-    return {
-        "stock_id": req.stock_id,
-        "symbol": req.symbol,
-        "ic_table": ic_table,
-        "effective_features": effective,
-        "feature_weights": weights,
-        "total_features": len(FEATURE_COLS),
-        "effective_count": len(effective),
-        "dropped_count": len(FEATURE_COLS) - len(effective),
-    }
-
-
-# ── Feature Drift Detection endpoint ──────────────────────────────────────────
-@app.post("/feature-drift")
-async def feature_drift(req: PredictRequest, request: Request):
-    """
-    偵測特徵分佈漂移：比較訓練期（前 80%）vs 近期（後 20%）的 quantile shift。
-    Drifted features 應降低權重或觸發 retrain。
-    """
-    await verify_service_token(request)
-    from .features import FEATURE_COLS
-
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df = build_feature_matrix(req.prices, req.indicators, chips_input,
-                               req.sentiment_scores, req.market_env)
-
-    if len(df) < 30:
-        return {"error": "insufficient data for drift detection", "sample_count": len(df)}
-
-    split_idx = int(len(df) * 0.8)
-    # Drift detection: quantile shift (pure Polars + NumPy, no Pandas)
-    drift_results = []
-    threshold = 0.15
-    for feat in FEATURE_COLS:
-        if feat not in df.columns:
-            continue
-        col_vals = df[feat].to_numpy().astype(np.float64)
-        train_vals = col_vals[:split_idx]
-        recent_vals = col_vals[split_idx:]
-        train_vals = train_vals[~np.isnan(train_vals)]
-        recent_vals = recent_vals[~np.isnan(recent_vals)]
-        if len(train_vals) < 10 or len(recent_vals) < 5:
-            continue
-        shifts = {}
-        for q_label, q_val in [("q25", 0.25), ("q50", 0.50), ("q75", 0.75)]:
-            train_q = float(np.quantile(train_vals, q_val))
-            recent_q = float(np.quantile(recent_vals, q_val))
-            denom = abs(train_q) if abs(train_q) > 1e-6 else 1.0
-            shifts[f"{q_label}_shift"] = round((recent_q - train_q) / denom, 4)
-        drifted = any(abs(v) > threshold for v in shifts.values())
-        drift_results.append({"feature": feat, **shifts, "drifted": drifted})
-    drifted_count = sum(1 for r in drift_results if r["drifted"])
-
-    return {
-        "stock_id": req.stock_id,
-        "symbol": req.symbol,
-        "drift_results": drift_results,
-        "drifted_count": drifted_count,
-        "total_features": len(drift_results),
-        "needs_retrain": drifted_count > len(drift_results) * 0.3,
-    }
-
-
-# ── Phase 4: MAE/MFE 分群 endpoint ──────────────────────────────────────────
-class TradeClusterRequest(BaseModel):
-    trades: list[dict]
-    feature_cols: list[str] = []
-
-@app.post("/trade-cluster")
-async def trade_cluster(req: TradeClusterRequest, request: Request):
-    """
-    對歷史交易做 MAE/MFE KMeans 分群 + DecisionTree 規則學習。
-    供 weekly retrain 或 screener 呼叫。
-    """
-    await verify_service_token(request)
-    from .trade_clustering import cluster_trades, learn_trade_quality_rules
-    from .features import FEATURE_COLS
-
-    cluster_result = cluster_trades(req.trades, n_clusters=3)
-    if "error" in cluster_result:
-        return cluster_result
-
-    feat_cols = req.feature_cols if req.feature_cols else FEATURE_COLS
-    tree_result = learn_trade_quality_rules(req.trades, feat_cols, cluster_result)
-
-    return {
-        "clusters": cluster_result["cluster_stats"],
-        "good_cluster_id": cluster_result["good_cluster_id"],
-        "bad_cluster_id": cluster_result["bad_cluster_id"],
-        "quality_rules": tree_result.get("rules", []),
-        "feature_importance": tree_result.get("feature_importance", {}),
-        "tree_accuracy": tree_result.get("tree_accuracy"),
-    }
-
-
-# ── Feature Audit endpoint（Weekly pipeline）──────────────────────────────────
-@app.post("/feature-audit")
-async def feature_audit_endpoint(req: PredictRequest, request: Request):
-    """
-    特徵重要性審計 + LinUCB arm weight 週報。
-    結果由 Worker 存入 D1 feature_importance / model_weights_weekly。
-    """
-    await verify_service_token(request)
-    from .feature_audit import run_feature_audit
-    from .features import FEATURE_COLS
-
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df = build_feature_matrix(req.prices, req.indicators, chips_input,
-                               req.sentiment_scores, req.market_env)
-    X, y, feature_names = get_features(df, target_col="target_dir")
-
-    if len(X) < 50:
-        return {"error": "insufficient data for audit", "sample_count": len(X)}
-
-    return run_feature_audit(X, y, feature_names)
+    retu

@@ -246,7 +246,7 @@ async def retrain_orchestrator(payload: dict, fire_and_forget: bool = True) -> d
         fn = _lookup("retrain_orchestrator")
         if fire_and_forget:
             logger.info(f"[ml_client] Modal.spawn retrain_orchestrator (monthly={payload.get('is_monthly')})")
-            fn.spawn(payload)
+            await fn.spawn.aio(payload)
             return {"status": "spawned", "is_monthly": payload.get("is_monthly")}
         else:
             logger.info(f"[ml_client] Modal.remote retrain_orchestrator (await, monthly={payload.get('is_monthly')})")
@@ -264,7 +264,7 @@ async def feature_selection(payload: dict | None = None, fire_and_forget: bool =
         fn = _lookup("feature_selection_pipeline")
         if fire_and_forget:
             logger.info("[ml_client] Modal.spawn feature_selection_pipeline (fire-and-forget)")
-            fn.spawn(payload)
+            await fn.spawn.aio(payload)
             return {"status": "spawned", "message": "Feature selection running in background"}
         logger.info("[ml_client] Modal.remote feature_selection_pipeline")
         return await fn.remote.aio(payload)

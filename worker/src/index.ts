@@ -822,6 +822,20 @@ app.post('/api/admin/trigger/:task', async (c) => {
     pbo: () => runWeeklyPBO(c.env),
     lifecycle: () => runWeeklyLifecycleCheck(c.env),
     'monthly-optuna': () => runMonthlyOptunaResearch(c.env),
+    // force_monthly=true 觸發完整月度 retrain（含 feature selection）
+    // fire-and-forget：postController 在 background 跑，不等 ~14min prep 回應
+    retrain: async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const force = c.req.query('monthly') === '1'
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      // fire-and-forget — no timeout, Cloud Run prep takes ~14min
+      fetch(`${c.env.ML_CONTROLLER_URL}/retrain/universal`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ limit: 2500, force_monthly: force }),
+      }).catch(e => console.error('[retrain] fire-and-forget error:', e))
+      return `retrain triggered (force_monthly=${force}) — check Modal dashboard for progress`
+    },
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -836,7 +850,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
   // 加 ?sync=1 走 sync mode：caller 等 fetch handler runtime（wall clock 數十分鐘
   // 都 OK，只要中間都在 await fetch 不是 CPU bound），用於手動補資料場景。
   const syncMode = c.req.query('sync') === '1'
-  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna'])
+  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna', 'retrain'])
   if (LONG_RUNNING.has(task) && !syncMode) {
     const t0 = Date.now()
     await logCronResult(c.env.KV, task, { status: 'success', summary: 'started (background)', duration_ms: 0 })

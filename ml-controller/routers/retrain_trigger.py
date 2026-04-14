@@ -31,6 +31,12 @@ from services.modal_client import batch_retrain, prep_universal_batch, train_uni
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
+# ── Idempotency lock (P0-4) ──────────────────────────────────────────────────
+# 防止 cron 重複觸發（13:37 + 13:47 各觸發一次 → 第二次 skip）
+# in-memory dict: {date_key: triggered_at_epoch}
+_RETRAIN_LOCK: dict[str, float] = {}
+_LOCK_TTL_SECONDS = 600  # 10 分鐘
+
 
 class RetrainTriggerRequest(BaseModel):
     use_optuna: bool = True
@@ -201,7 +207,25 @@ async def trigger_universal_retrain(
     """
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+
+    # ── Idempotency check (P0-4) ─────────────────────────────────────────────
     run_date = tw_now.date().isoformat()
+    lock_key = f"retrain:{run_date}"
+    now_epoch = t0
+    if lock_key in _RETRAIN_LOCK:
+        elapsed_since = now_epoch - _RETRAIN_LOCK[lock_key]
+        if elapsed_since < _LOCK_TTL_SECONDS:
+            logger.info(
+                f"[retrain/universal] Already triggered {elapsed_since:.0f}s ago "
+                f"(lock TTL={_LOCK_TTL_SECONDS}s) — skip duplicate trigger"
+            )
+            return {
+                "status": "skipped",
+                "reason": f"Already triggered {elapsed_since:.0f}s ago (idempotency lock)",
+                "lock_key": lock_key,
+            }
+        else:
+            logger.info(f"[retrain/universal] Lock expired ({elapsed_since:.0f}s > {_LOCK_TTL_SECONDS}s) — re-allowing")
 
     # ── 1. All stocks (universal covers inactive too for training diversity) ──
     stock_rows = d1_client.query(
@@ -442,6 +466,13 @@ async def trigger_universal_retrain(
         for i in range(0, len(per_stock_payloads), BATCH_SIZE)
     ]
     batch_count = len(batches)
+    # P0-3: guard log — batch_count < 2 is unexpected for full-market retrain (should be 4-5)
+    if batch_count < 2:
+        logger.warning(
+            f"[retrain/universal] ⚠️ batch_count={batch_count} unexpectedly low "
+            f"(payloads={len(per_stock_payloads)}, skipped={len(skipped)}, limit={req.limit}). "
+            f"Verify D1 prices availability."
+        )
     prep_results = []
 
     # Shared data: pass once per batch, not per stock (saves ~2.5GB memory)
@@ -490,6 +521,11 @@ async def trigger_universal_retrain(
         },
         fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
     )
+
+    # ── P0-4: Write idempotency lock AFTER orchestrator spawn succeeds ───────
+    # Lock 在 spawn 成功後才寫，失敗時不寫（讓下次 retry）
+    _RETRAIN_LOCK[lock_key] = now_epoch
+    logger.info(f"[retrain/universal] Idempotency lock written: {lock_key} @ {now_epoch:.0f}")
 
     elapsed = round(time.time() - t0, 2)
     logger.info(f"[retrain/universal] Done in {elapsed}s")

@@ -1,50 +1,54 @@
 """
-features/__init__.py — 特徵工程
-整合：技術指標 + 籌碼面 + 情感分數 + 大盤環境特徵
-Triple Barrier Label (Prado 2018) 取代固定 N 日方向標籤
+features/__init__.py — 特徵工程 (StockVision 2.0)
+
+零 Pandas 原則：全面使用 Polars → NumPy 直接對接。
+Triple Barrier Label (Prado 2018) 保留作為 SLTP 執行層使用。
+2.0 新增：Cross-sectional rank label 在 P1 實作。
 """
+import os
 import numpy as np
-import pandas as pd
+import polars as pl
 from typing import Optional
+
+# ── Thread 控制（避免與 NumPy/torch 搶 CPU）──────────────────────────────────
+# Modal container CPU 配置：prep=1 CPU, train=L4 GPU (~4 CPU), selection=L4 (~4 CPU)
+# 策略：Polars 和 NumPy 各拿一半 CPU，避免超訂
+_cpu_count = os.cpu_count() or 2
+_threads_per_lib = max(1, _cpu_count // 2)
+os.environ.setdefault("POLARS_MAX_THREADS", str(_threads_per_lib))
+os.environ.setdefault("OMP_NUM_THREADS", str(_threads_per_lib))
+os.environ.setdefault("MKL_NUM_THREADS", str(_threads_per_lib))
 
 
 # ── Triple Barrier Label (Prado 2018) ────────────────────────────────────────
 def compute_triple_barrier_labels(
-    close: pd.Series,
-    high: pd.Series,
-    low: pd.Series,
-    atr14: pd.Series,
+    close: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    atr14: np.ndarray,
     upper_atr_mult: float = 3.0,
     lower_atr_mult: float = 2.0,
-    upper_pct_cap: float = 0.07,   # 停利上限 7%
-    lower_pct_cap: float = 0.03,   # 停損上限 3%
+    upper_pct_cap: float = 0.07,
+    lower_pct_cap: float = 0.03,
     max_days: int = 20,
-) -> pd.Series:
+) -> np.ndarray:
     """
-    三重屏障標籤：
+    三重屏障標籤（純 NumPy 版）：
       1 = 先觸及上界（停利）→ 賺錢交易
       0 = 先觸及下界（停損）→ 虧錢交易
-      NaN = 到期平倉（max_days 內未觸碰任一邊界）或資料不足
+      NaN = 到期平倉或資料不足
 
-    參數使用 ATR 動態計算邊界，並以百分比封頂：
-      upper = min(ATR × upper_mult, close × upper_pct_cap)
-      lower = min(ATR × lower_mult, close × lower_pct_cap)
+    Input 必須是 np.ndarray（零 Pandas 原則）。
     """
     n = len(close)
-    labels = pd.Series(np.nan, index=close.index, dtype=float)
-
-    close_arr = close.values
-    high_arr = high.values
-    low_arr = low.values
-    atr_arr = atr14.values
+    labels = np.full(n, np.nan, dtype=np.float64)
 
     for i in range(n - 1):
-        price = close_arr[i]
+        price = close[i]
         if np.isnan(price) or price <= 0:
             continue
 
-        atr = atr_arr[i] if not np.isnan(atr_arr[i]) else price * 0.02
-        # 動態邊界 + 百分比封頂
+        atr = atr14[i] if not np.isnan(atr14[i]) else price * 0.02
         upper_barrier = price + min(atr * upper_atr_mult, price * upper_pct_cap)
         lower_barrier = price - min(atr * lower_atr_mult, price * lower_pct_cap)
 
@@ -52,31 +56,138 @@ def compute_triple_barrier_labels(
         if end_idx <= i:
             continue
 
-        # 掃描未來 max_days 內的 high/low，找第一個觸碰的邊界
         for j in range(i + 1, end_idx + 1):
-            h = high_arr[j]
-            lo = low_arr[j]
+            h = high[j]
+            lo = low[j]
             if np.isnan(h) or np.isnan(lo):
                 continue
-            # 同日觸碰兩邊 → 用 close 判定
             hit_upper = h >= upper_barrier
             hit_lower = lo <= lower_barrier
             if hit_upper and hit_lower:
-                c_j = close_arr[j] if not np.isnan(close_arr[j]) else price
-                labels.iloc[i] = 1.0 if c_j >= price else 0.0
+                c_j = close[j] if not np.isnan(close[j]) else price
+                labels[i] = 1.0 if c_j >= price else 0.0
                 break
             elif hit_upper:
-                labels.iloc[i] = 1.0
+                labels[i] = 1.0
                 break
             elif hit_lower:
-                labels.iloc[i] = 0.0
+                labels[i] = 0.0
                 break
-
-        # 未觸碰任一邊界 → NaN（到期平倉，dropna 時排除）
 
     return labels
 
 
+# ── Helper: safe division ────────────────────────────────────────────────────
+def _safe_div(num: pl.Expr, den: pl.Expr, default: float = 0.0) -> pl.Expr:
+    """Safe division: replace inf/NaN with default."""
+    return (
+        pl.when(den != 0)
+        .then(num / den)
+        .otherwise(pl.lit(default))
+        .fill_nan(default)
+        .fill_null(default)
+    )
+
+
+# ── Cross-sectional Rank Label (2.0) ─────────────────────────────────────────
+def compute_cross_sectional_rank(
+    pooled: pl.DataFrame,
+    return_col: str = "target_5d",
+    date_col: str = "_date",
+) -> pl.DataFrame:
+    """
+    Cross-sectional rank label: 每天所有股票的 forward return 排名 → 0~1 percentile。
+
+    為什麼用 rank 不用 binary:
+      - Binary label 在牛市 70% 標 UP，model 學的是「市場漲」不是「誰比較強」
+      - Rank 每天都有 0~1 分佈，消除 beta，model 學的是「相對強度」
+      - IC 0.03 vs 0.05 可區分好壞，accuracy 0.51 vs 0.54 看不出差異
+
+    參數:
+      pooled: 已 concat 所有股票的 Polars DataFrame（需含 return_col + date_col）
+      return_col: 用來排名的欄位（default: target_5d = 未來 5 日報酬率）
+      date_col: 日期欄位（default: _date）
+
+    回傳:
+      新增 target_rank 欄位的 DataFrame（0 = 當日最弱，1 = 當日最強）
+    """
+    if return_col not in pooled.columns or date_col not in pooled.columns:
+        # Fallback: 無法 rank，填 0.5（中性）
+        return pooled.with_columns(pl.lit(0.5).alias("target_rank"))
+
+    # per-date rank: 同一天的所有股票排名 → 除以當天總數 → [0, 1]
+    return pooled.with_columns(
+        pl.col(return_col)
+        .rank(method="average")
+        .over(date_col)
+        .truediv(
+            pl.col(return_col).count().over(date_col)
+        )
+        .alias("target_rank")
+    )
+
+
+def _clip_expr(expr: pl.Expr, lo: float, hi: float) -> pl.Expr:
+    """Clip expression to [lo, hi]."""
+    return expr.clip(lo, hi)
+
+
+# ── Trend Quality (pure NumPy, reused across timeframes) ─────────────────────
+def _trend_quality(arr: np.ndarray) -> tuple[float, float, float]:
+    """Return (slope/mean, r2, residual/mean) for a price array."""
+    n = len(arr)
+    x = np.arange(n, dtype=np.float64)
+    y = arr.astype(np.float64)
+    mean_y = y.mean()
+    if mean_y == 0 or np.isnan(mean_y):
+        return 0.0, 0.0, 0.0
+    x_mean = x.mean()
+    ss_xy = ((x - x_mean) * (y - mean_y)).sum()
+    ss_xx = ((x - x_mean) ** 2).sum()
+    if ss_xx == 0:
+        return 0.0, 0.0, 0.0
+    slope = ss_xy / ss_xx
+    intercept = mean_y - slope * x_mean
+    y_pred = slope * x + intercept
+    ss_res = ((y - y_pred) ** 2).sum()
+    ss_tot = ((y - mean_y) ** 2).sum()
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    residual = (y[-1] - y_pred[-1]) / mean_y
+    return slope / mean_y, r2, residual
+
+
+def _compute_trend_arrays(close_vals: np.ndarray, window: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute BETA/RSQR/RESI arrays for a given window."""
+    beta = np.zeros(n, dtype=np.float64)
+    rsqr = np.zeros(n, dtype=np.float64)
+    resi = np.zeros(n, dtype=np.float64)
+    for i in range(window - 1, n):
+        b, r2, res = _trend_quality(close_vals[i - window + 1: i + 1])
+        beta[i] = b
+        rsqr[i] = r2
+        resi[i] = res
+    return (
+        np.clip(beta, -0.1, 0.1),
+        np.clip(rsqr, 0, 1),
+        np.clip(resi, -0.2, 0.2),
+    )
+
+
+def _imax_imin_numpy(high_vals: np.ndarray, low_vals: np.ndarray, window: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Compute IMAX/IMIN (time-cycle extremes) via NumPy — Polars has no rolling argmax."""
+    imax = np.full(n, 0.5, dtype=np.float64)
+    imin = np.full(n, 0.5, dtype=np.float64)
+    for i in range(window - 1, n):
+        h_win = high_vals[i - window + 1: i + 1]
+        l_win = low_vals[i - window + 1: i + 1]
+        imax[i] = (window - 1 - np.argmax(h_win)) / window
+        imin[i] = (window - 1 - np.argmin(l_win)) / window
+    return imax, imin
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# build_feature_matrix — 核心特徵工程 (Polars 版)
+# ══════════════════════════════════════════════════════════════════════════════
 def build_feature_matrix(
     prices: list[dict],
     indicators: list[dict],
@@ -84,249 +195,578 @@ def build_feature_matrix(
     sentiment_scores: list[dict],
     market_env: dict | None = None,
     barrier_params: dict | None = None,
-) -> pd.DataFrame:
+    stock_meta: dict | None = None,
+) -> pl.DataFrame:
     """
-    整合所有資料來源，建立特徵矩陣
-    prices:           [{date, close, high, low, open, volume}, ...]
-    indicators:       [{date, ma5, ma10, ma20, ma60, rsi14, macdHist, bb_upper, bb_lower, atr14}, ...]
-    chips:            [{date, foreign_net, trust_net, dealer_net}, ...]
-    sentiment_scores: [{date, score}, ...]  # -1~+1
-    market_env:       {risk_score, risk_level, twii_return_1d, twii_return_5d,
-                       twii_bias_20d, vix_equivalent}  # 大盤環境（單一數值，非時序）
+    整合所有資料來源，建立特徵矩陣。
+    回傳 Polars DataFrame，含 features + target_5d + target_dir。
     """
-    df_price = pd.DataFrame(prices).set_index("date")
-    df_price.index = pd.to_datetime(df_price.index)
-    df_price = df_price.sort_index()
+    # ── 1. Prices base frame ─────────────────────────────────────────────────
+    # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
+    df = (
+        pl.DataFrame(prices, infer_schema_length=None)
+        .with_columns(pl.col("date").cast(pl.Date))
+        .sort("date")
+    )
+    num_cols = ["close", "high", "low", "open", "volume", "adj_close"]
+    for col in num_cols:
+        if col in df.columns:
+            df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
 
-    for col in ["close", "high", "low", "open", "volume", "adj_close"]:
-        if col in df_price.columns:
-            df_price[col] = pd.to_numeric(df_price[col], errors="coerce")
-
-    df = df_price.copy()
-
-    # adj_close fallback：若無調整後收盤價則沿用 close
     if "adj_close" not in df.columns:
-        df["adj_close"] = df["close"]
+        df = df.with_columns(pl.col("close").alias("adj_close"))
 
-    # ── 技術指標特徵 ──────────────────────────────────────────────────────────
+    # ── 2. Technical indicators join ─────────────────────────────────────────
     if indicators:
-        df_ind = pd.DataFrame(indicators).set_index("date")
-        df_ind.index = pd.to_datetime(df_ind.index)
-        for col in df_ind.columns:
-            df_ind[col] = pd.to_numeric(df_ind[col], errors="coerce")
-        df = df.join(df_ind, how="left")
-
-    # ── 籌碼面特徵（台股獨特優勢）────────────────────────────────────────────
-    if chips:
-        df_chip = pd.DataFrame(chips).set_index("date")
-        df_chip.index = pd.to_datetime(df_chip.index)
-        for col in ["foreign_net", "trust_net", "dealer_net"]:
-            if col in df_chip.columns:
-                df_chip[col] = pd.to_numeric(df_chip[col], errors="coerce")
-        df = df.join(df_chip[["foreign_net", "trust_net", "dealer_net"]], how="left")
-
-        df["institutional_net"] = (
-            df.get("foreign_net", 0).fillna(0)
-            + df.get("trust_net", 0).fillna(0)
-            + df.get("dealer_net", 0).fillna(0)
+        df_ind = (
+            pl.DataFrame(indicators, infer_schema_length=None)
+            .with_columns(pl.col("date").cast(pl.Date))
         )
-        df["chip_5d"]    = df["institutional_net"].rolling(5).sum()
-        df["foreign_5d"] = df.get("foreign_net", pd.Series(0, index=df.index)).rolling(5).sum()
+        ind_num_cols = [c for c in df_ind.columns if c != "date"]
+        for col in ind_num_cols:
+            df_ind = df_ind.with_columns(pl.col(col).cast(pl.Float64, strict=False))
+        df = df.join(df_ind, on="date", how="left", suffix="_ind")
 
-    # ── 情感分數特徵 ──────────────────────────────────────────────────────────
-    if sentiment_scores:
-        df_sent = pd.DataFrame(sentiment_scores).set_index("date")
-        df_sent.index = pd.to_datetime(df_sent.index)
-        df_sent["score"] = pd.to_numeric(df_sent["score"], errors="coerce")
-        df = df.join(df_sent[["score"]].rename(columns={"score": "sentiment"}), how="left")
-        # #8 Sentiment 清洗：ffill 最多 5 天延續上次情緒
-        # has_sentiment: 讓模型區分「無情緒資料」vs「情緒中性(0)」
-        df["sentiment"]     = df["sentiment"].ffill(limit=5)
-        df["has_sentiment"] = df["sentiment"].notna().astype(float)
-        df["sentiment"]     = df["sentiment"].fillna(0)  # 最後才填 0，模型靠 has_sentiment 區分
-        df["sentiment_3d"]  = df["sentiment"].rolling(3, min_periods=1).mean()
-    else:
-        df["sentiment"]     = 0.0
-        df["has_sentiment"] = 0.0
-        df["sentiment_3d"]  = 0.0
-
-    # ── 衍生價格特徵 ──────────────────────────────────────────────────────────
     close = df["close"]
-    # #2 adj_close：用除權息調整後收盤價計算 return，防止除息日假跌訊號
-    adj = df["adj_close"]
-    df["return_1d"]  = adj.pct_change(1)
-    df["return_3d"]  = adj.pct_change(3)
-    df["return_5d"]  = adj.pct_change(5)
-    df["return_10d"] = adj.pct_change(10)
+    high = df["high"] if "high" in df.columns else close
+    low = df["low"] if "low" in df.columns else close
 
-    df["volatility_5d"]  = df["return_1d"].rolling(5).std()
-    df["volatility_20d"] = df["return_1d"].rolling(20).std()
+    # Fallback: 從 prices 計算缺失指標
+    if "ma5" not in df.columns or df["ma5"].is_null().all():
+        df = df.with_columns(pl.col("close").rolling_mean(5).alias("ma5"))
+    if "ma10" not in df.columns or df["ma10"].is_null().all():
+        df = df.with_columns(pl.col("close").rolling_mean(10).alias("ma10"))
+    if "ma20" not in df.columns or df["ma20"].is_null().all():
+        df = df.with_columns(pl.col("close").rolling_mean(20).alias("ma20"))
+    if "ma60" not in df.columns or df["ma60"].is_null().all():
+        df = df.with_columns(pl.col("close").rolling_mean(60).alias("ma60"))
+
+    if "rsi14" not in df.columns or df["rsi14"].is_null().all():
+        delta = pl.col("close").diff()
+        gain = delta.clip(0, None).rolling_mean(14)
+        loss = (-delta.clip(None, 0)).rolling_mean(14)
+        df = df.with_columns(
+            (pl.lit(100.0) - pl.lit(100.0) / (pl.lit(1.0) + _safe_div(gain, loss, 1.0)))
+            .alias("rsi14")
+        )
+
+    if "macd_hist" not in df.columns or df["macd_hist"].is_null().all():
+        df = df.with_columns([
+            pl.col("close").ewm_mean(span=12, adjust=False).alias("_ema12"),
+            pl.col("close").ewm_mean(span=26, adjust=False).alias("_ema26"),
+        ])
+        df = df.with_columns(
+            (pl.col("_ema12") - pl.col("_ema26")).alias("macd")
+        )
+        df = df.with_columns(
+            pl.col("macd").ewm_mean(span=9, adjust=False).alias("macd_signal")
+        )
+        df = df.with_columns(
+            (pl.col("macd") - pl.col("macd_signal")).alias("macd_hist")
+        )
+        df = df.drop(["_ema12", "_ema26"])
+    if "macdHist" not in df.columns and "macd_hist" in df.columns:
+        df = df.with_columns(pl.col("macd_hist").alias("macdHist"))
+
+    if "atr14" not in df.columns or df["atr14"].is_null().all():
+        df = df.with_columns(
+            pl.max_horizontal(
+                pl.col("high") - pl.col("low"),
+                (pl.col("high") - pl.col("close").shift(1)).abs(),
+                (pl.col("low") - pl.col("close").shift(1)).abs(),
+            ).rolling_mean(14).alias("atr14")
+        )
+
+    if "bb_upper" not in df.columns or df["bb_upper"].is_null().all():
+        df = df.with_columns([
+            pl.col("close").rolling_mean(20).alias("bb_mid"),
+            pl.col("close").rolling_std(20).alias("_bb_std"),
+        ])
+        df = df.with_columns([
+            (pl.col("bb_mid") + 2 * pl.col("_bb_std")).alias("bb_upper"),
+            (pl.col("bb_mid") - 2 * pl.col("_bb_std")).alias("bb_lower"),
+        ])
+        df = df.drop("_bb_std")
+
+    # ── 3. Chips features ────────────────────────────────────────────────────
+    if chips:
+        df_chip = (
+            pl.DataFrame(chips, infer_schema_length=None)
+            .with_columns(pl.col("date").cast(pl.Date))
+        )
+        chip_cols = ["foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance"]
+        for col in chip_cols:
+            if col in df_chip.columns:
+                df_chip = df_chip.with_columns(pl.col(col).cast(pl.Float64, strict=False))
+        avail_chip = [c for c in chip_cols if c in df_chip.columns]
+        df = df.join(df_chip.select(["date"] + avail_chip), on="date", how="left", suffix="_chip")
+
+        # institutional_net = foreign + trust + dealer
+        fn = pl.col("foreign_net").fill_null(0.0) if "foreign_net" in df.columns else pl.lit(0.0)
+        tn = pl.col("trust_net").fill_null(0.0) if "trust_net" in df.columns else pl.lit(0.0)
+        dn = pl.col("dealer_net").fill_null(0.0) if "dealer_net" in df.columns else pl.lit(0.0)
+        df = df.with_columns((fn + tn + dn).alias("institutional_net"))
+        df = df.with_columns([
+            pl.col("institutional_net").rolling_sum(5).alias("chip_5d"),
+            (pl.col("foreign_net").fill_null(0.0) if "foreign_net" in df.columns else pl.lit(0.0))
+            .rolling_sum(5).alias("foreign_5d"),
+        ])
+
+        # Tier 0: dealer features
+        dealer = pl.col("dealer_net").fill_null(0.0) if "dealer_net" in df.columns else pl.lit(0.0)
+        df = df.with_columns(dealer.rolling_sum(5).alias("dealer_5d"))
+        df = df.with_columns(
+            _clip_expr(
+                _safe_div(pl.col("dealer_5d"), pl.col("chip_5d")),
+                -5.0, 5.0
+            ).alias("dealer_ratio_5d")
+        )
+
+        # margin_balance time-series features
+        if "margin_balance" in df.columns:
+            df = df.with_columns(pl.col("margin_balance").forward_fill().alias("margin_balance"))
+            vol_close = pl.col("volume").fill_null(1.0) * pl.col("close").fill_null(1.0)
+            df = df.with_columns(
+                _clip_expr(_safe_div(pl.col("margin_balance"), vol_close), 0.0, 10.0)
+                .alias("margin_ratio")
+            )
+            df = df.with_columns(
+                _clip_expr(
+                    _safe_div(
+                        pl.col("margin_balance") - pl.col("margin_balance").shift(5),
+                        pl.col("margin_balance").shift(5),
+                    ),
+                    -1.0, 1.0
+                ).alias("margin_change_5d_ts")
+            )
+
+        if "short_balance" in df.columns:
+            df = df.with_columns(pl.col("short_balance").forward_fill().alias("short_balance"))
+            df = df.with_columns(
+                _clip_expr(
+                    _safe_div(
+                        pl.col("short_balance") - pl.col("short_balance").shift(5),
+                        pl.col("short_balance").shift(5),
+                    ),
+                    -1.0, 1.0
+                ).alias("short_change_5d")
+            )
+            # short_squeeze_proxy
+            ret_5d_expr = _safe_div(
+                pl.col("close") - pl.col("close").shift(5),
+                pl.col("close").shift(5),
+            ).clip(0.0, None)
+            short_incr = pl.when(pl.col("short_balance") > pl.col("short_balance").shift(5)).then(1.0).otherwise(0.0)
+            df = df.with_columns((ret_5d_expr * short_incr).clip(0.0, 1.0).alias("short_squeeze_proxy"))
+
+    # ── 4. Sentiment features ────────────────────────────────────────────────
+    if sentiment_scores:
+        df_sent = (
+            pl.DataFrame(sentiment_scores, infer_schema_length=None)
+            .with_columns([
+                pl.col("date").cast(pl.Date),
+                pl.col("score").cast(pl.Float64, strict=False).alias("sentiment"),
+            ])
+            .select(["date", "sentiment"])
+        )
+        df = df.join(df_sent, on="date", how="left", suffix="_sent")
+        df = df.with_columns([
+            pl.col("sentiment").forward_fill(limit=5).alias("sentiment"),
+        ])
+        df = df.with_columns([
+            pl.col("sentiment").is_not_null().cast(pl.Float64).alias("has_sentiment"),
+            pl.col("sentiment").fill_null(0.0).alias("sentiment"),
+        ])
+        df = df.with_columns(
+            pl.col("sentiment").rolling_mean(3).fill_null(0.0).alias("sentiment_3d")
+        )
+    else:
+        df = df.with_columns([
+            pl.lit(0.0).alias("sentiment"),
+            pl.lit(0.0).alias("has_sentiment"),
+            pl.lit(0.0).alias("sentiment_3d"),
+        ])
+
+    # ── 5. VWAP features ────────────────────────────────────────────────────
+    if "avg_price" in df.columns and df["avg_price"].cast(pl.Float64, strict=False).is_not_null().sum() > len(df) * 0.1:
+        df = df.with_columns(pl.col("avg_price").cast(pl.Float64, strict=False).forward_fill().alias("_avg_p"))
+    else:
+        df = df.with_columns(
+            ((pl.col("high").fill_null(pl.col("close")) + pl.col("low").fill_null(pl.col("close")) + pl.col("close")) / 3.0)
+            .alias("_avg_p")
+        )
+    df = df.with_columns([
+        _clip_expr(_safe_div(pl.col("close") - pl.col("_avg_p"), pl.col("_avg_p")), -0.5, 0.5).alias("vwap_bias"),
+        pl.col("_avg_p").rolling_mean(5).alias("vwap_5d"),
+    ])
+    df = df.with_columns(
+        _clip_expr(
+            _safe_div(pl.col("close") - pl.col("vwap_5d"), pl.col("vwap_5d")),
+            -0.5, 0.5
+        ).alias("vwap_bias_5d")
+    )
+    df = df.drop("_avg_p")
+
+    # ── 6. Derived price features ────────────────────────────────────────────
+    adj = pl.col("adj_close")
+    df = df.with_columns([
+        _safe_div(adj - adj.shift(1), adj.shift(1)).alias("return_1d"),
+        _safe_div(adj - adj.shift(3), adj.shift(3)).alias("return_3d"),
+        _safe_div(adj - adj.shift(5), adj.shift(5)).alias("return_5d"),
+        _safe_div(adj - adj.shift(10), adj.shift(10)).alias("return_10d"),
+    ])
+    df = df.with_columns([
+        pl.col("return_1d").rolling_std(5).alias("volatility_5d"),
+        pl.col("return_1d").rolling_std(20).alias("volatility_20d"),
+    ])
 
     if "bb_upper" in df.columns and "bb_lower" in df.columns:
-        bb_range = df["bb_upper"] - df["bb_lower"]
-        df["bb_position"] = (close - df["bb_lower"]) / bb_range.replace(0, np.nan)
+        bb_range = pl.col("bb_upper") - pl.col("bb_lower")
+        df = df.with_columns(
+            _safe_div(pl.col("close") - pl.col("bb_lower"), bb_range).alias("bb_position")
+        )
 
     if "volume" in df.columns:
-        vol_ma5  = df["volume"].rolling(5).mean().replace(0, np.nan)
-        vol_ma20 = df["volume"].rolling(20).mean().replace(0, np.nan)
-        df["vol_ratio_5d"]  = (df["volume"] / vol_ma5).replace([np.inf, -np.inf], np.nan).clip(0.1, 10)
-        df["vol_ratio_20d"] = (df["volume"] / vol_ma20).replace([np.inf, -np.inf], np.nan).clip(0.1, 10)
+        df = df.with_columns([
+            _clip_expr(
+                _safe_div(pl.col("volume"), pl.col("volume").rolling_mean(5)),
+                0.1, 10.0
+            ).alias("vol_ratio_5d"),
+            _clip_expr(
+                _safe_div(pl.col("volume"), pl.col("volume").rolling_mean(20)),
+                0.1, 10.0
+            ).alias("vol_ratio_20d"),
+        ])
 
     if "ma20" in df.columns:
-        df["ma20_bias"] = ((close - df["ma20"]) / df["ma20"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+        df = df.with_columns(
+            _safe_div(pl.col("close") - pl.col("ma20"), pl.col("ma20")).alias("ma20_bias")
+        )
     if "ma60" in df.columns:
-        df["ma60_bias"] = ((close - df["ma60"]) / df["ma60"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+        df = df.with_columns(
+            _safe_div(pl.col("close") - pl.col("ma60"), pl.col("ma60")).alias("ma60_bias")
+        )
 
-    # ── 大盤環境特徵（時序對齊版，修復 Data Leakage）────────────────────────
+    # Tier 0.5: raw bias
+    if "ma5" in df.columns:
+        df = df.with_columns(
+            _safe_div(pl.col("close") - pl.col("ma5"), pl.col("ma5")).alias("ma5_bias")
+        )
+    if "ma10" in df.columns:
+        df = df.with_columns(
+            _safe_div(pl.col("close") - pl.col("ma10"), pl.col("ma10")).alias("ma10_bias")
+        )
+    if "bb_upper" in df.columns:
+        df = df.with_columns(pl.col("bb_upper").alias("bb_upper_raw"))
+    if "bb_lower" in df.columns:
+        df = df.with_columns(pl.col("bb_lower").alias("bb_lower_raw"))
+
+    # ── 7. Market env history join (Wave 1+2) ────────────────────────────────
     risk_map = {"low": 0.0, "medium": 0.5, "high": 1.0, "extreme": 1.5}
-
     market_history: dict = market_env.get("history", {}) if market_env else {}
 
     if market_history:
-        mh_df = pd.DataFrame.from_dict(market_history, orient="index")
-        mh_df.index = pd.to_datetime(mh_df.index)
-        mh_df = mh_df.sort_index()
-        if "risk_score" in mh_df.columns:
-            mh_df["market_risk_score"] = mh_df["risk_score"].astype(float) / 100.0
-        if "risk_level" in mh_df.columns:
-            mh_df["market_risk_level"] = mh_df["risk_level"].map(risk_map).fillna(0.5)
-        for col in ["market_return_1d", "market_return_5d", "market_bias_20d"]:
-            if col in mh_df.columns:
-                mh_df[col] = mh_df[col].astype(float)
-        # 只 join 實際存在的欄位（Worker 可能未傳 market_return_1d/5d）
-        join_cols = [c for c in ["market_risk_score", "market_risk_level",
-                                  "market_return_1d", "market_return_5d",
-                                  "market_bias_20d"] if c in mh_df.columns]
-        if join_cols:
-            df = df.join(mh_df[join_cols], how="left")
-        # 缺失的欄位補中性值
-        df["market_risk_score"]  = df.get("market_risk_score", pd.Series(0.5, index=df.index)).fillna(0.5)
-        df["market_risk_level"]  = df.get("market_risk_level", pd.Series(0.5, index=df.index)).fillna(0.5)
-        df["market_return_1d"]   = df.get("market_return_1d", pd.Series(0.0, index=df.index)).fillna(0.0)
-        df["market_return_5d"]   = df.get("market_return_5d", pd.Series(0.0, index=df.index)).fillna(0.0)
-        df["market_bias_20d"]    = df.get("market_bias_20d", pd.Series(0.0, index=df.index)).fillna(0.0)
-    elif market_env:
-        neutral_score = 0.5
-        neutral_level = 0.5
-        risk_score_now = float(market_env.get("risk_score") or 50) / 100.0
-        risk_level_now = risk_map.get(str(market_env.get("risk_level") or "medium").lower(), 0.5)
-        twii_1d = float(market_env.get("twii_return_1d") or 0)
-        twii_5d = float(market_env.get("twii_return_5d") or 0)
-        twii_bias = float(market_env.get("twii_bias_20d") or 0)
+        mh_records = []
+        for date_str, row in market_history.items():
+            rec = {"date": date_str}
+            rec["market_risk_score"] = float(row.get("risk_score", 50) or 50) / 100.0
+            rec["market_risk_level"] = risk_map.get(str(row.get("risk_level", "medium")).lower(), 0.5)
+            for col in ["market_return_1d", "market_return_5d", "market_bias_20d",
+                        "foreign_consecutive_sell", "foreign_net_5d_market",
+                        "limit_down_count", "limit_down_pct", "adl_value", "adl_trend_numeric",
+                        "us_sox_return", "us_gspc_return", "us_dxy_return",
+                        "us_hy_spread", "us_hy_spread_chg", "us_vix",
+                        "us_sentiment_score", "advance_ratio", "bull_alignment_pct"]:
+                rec[col] = float(row.get(col, 0) or 0)
+            mh_records.append(rec)
 
-        df["market_risk_score"] = neutral_score
-        df["market_risk_level"] = neutral_level
-        df["market_return_1d"]  = 0.0
-        df["market_return_5d"]  = 0.0
-        df["market_bias_20d"]   = 0.0
-        # C2 fix: only fill the LATEST row with current values.
-        # Historical rows keep neutral defaults to avoid leaking future market info during training.
-        df.iloc[-1, df.columns.get_loc("market_risk_score")] = risk_score_now
-        df.iloc[-1, df.columns.get_loc("market_risk_level")] = risk_level_now
-        df.iloc[-1, df.columns.get_loc("market_return_1d")]  = twii_1d
-        df.iloc[-1, df.columns.get_loc("market_return_5d")]  = twii_5d
-        df.iloc[-1, df.columns.get_loc("market_bias_20d")]   = twii_bias
-    else:
-        df["market_risk_score"]  = 0.5
-        df["market_risk_level"]  = 0.5
-        df["market_return_1d"]   = 0.0
-        df["market_return_5d"]   = 0.0
-        df["market_bias_20d"]    = 0.0
+        mh_df = (
+            pl.DataFrame(mh_records, infer_schema_length=None)
+            .with_columns(pl.col("date").cast(pl.Date))
+            .sort("date")
+        )
+        # Only join columns that exist
+        mh_join_cols = [c for c in mh_df.columns if c != "date" and c not in df.columns]
+        if mh_join_cols:
+            df = df.join(mh_df.select(["date"] + mh_join_cols), on="date", how="left")
 
-    # stock_vs_market：用個股 vs 大盤的相對強弱（時序計算，無 leakage）
-    twii_5d_series = df["market_return_5d"] if "market_return_5d" in df.columns else pd.Series(0.0, index=df.index)
-    stock_5d_series = close.pct_change(5)
-    df["stock_vs_market"] = stock_5d_series / twii_5d_series.abs().replace(0, np.nan)
-    df["stock_vs_market"] = df["stock_vs_market"].fillna(0.0).clip(-5, 5)
+    # Fill defaults for market env columns
+    market_defaults = {
+        "market_risk_score": 0.5, "market_risk_level": 0.5,
+        "market_return_1d": 0.0, "market_return_5d": 0.0, "market_bias_20d": 0.0,
+        "foreign_consecutive_sell": 0.0, "foreign_net_5d_market": 0.0,
+        "limit_down_count": 0.0, "limit_down_pct": 0.0,
+        "adl_value": 0.0, "adl_trend_numeric": 0.0,
+    }
+    for col, default in market_defaults.items():
+        if col not in df.columns:
+            df = df.with_columns(pl.lit(default).alias(col))
+        else:
+            df = df.with_columns(pl.col(col).fill_null(default))
 
-    # ── FinLab 策略因子（Phase 6: 價格意圖 + RSI 鈍化 + 肯特納通道）──────────
+    # stock_vs_market
+    df = df.with_columns(
+        _clip_expr(
+            _safe_div(
+                _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(5), pl.col("adj_close").shift(5)),
+                pl.col("market_return_5d").abs().clip(1e-8, None),
+            ),
+            -5.0, 5.0
+        ).alias("stock_vs_market")
+    )
 
-    # ① 價格意圖因子 (LinearFactor)
-    # = 60日報酬 / 60日每日|報酬|總和 / 60日均量
-    # 本質：risk-adjusted momentum per unit volume — 穩定上漲+放量 = 高分
+    # ── 8. FinLab factors ────────────────────────────────────────────────────
+    # linear_factor: risk-adjusted momentum / volume
     if "volume" in df.columns:
-        ret_60d = adj.pct_change(60)
-        abs_ret_sum_60d = df["return_1d"].abs().rolling(60).sum()
-        vol_avg_60d = df["volume"].rolling(60).mean()
-        raw_intent = ret_60d / abs_ret_sum_60d.replace(0, np.nan) / vol_avg_60d.replace(0, np.nan)
-        # 標準化到合理範圍（原始值極小），rank-based normalize
-        df["linear_factor"] = raw_intent.rank(pct=True).fillna(0.5)
+        ret_60d = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(60), pl.col("adj_close").shift(60))
+        abs_ret_sum = pl.col("return_1d").abs().rolling_sum(60)
+        vol_avg = pl.col("volume").rolling_mean(60)
+        raw_intent = _safe_div(ret_60d, abs_ret_sum) / vol_avg.clip(1.0, None)
+        # Rolling rank: only use past data (no lookahead). Per-stock time-sorted → Polars rank() is positional.
+        df = df.with_columns(
+            (raw_intent.fill_null(0.0).fill_nan(0.0).rank() / pl.lit(float(len(df))))
+            .fill_null(0.5).alias("linear_factor")
+        )
     else:
-        df["linear_factor"] = 0.5
+        df = df.with_columns(pl.lit(0.5).alias("linear_factor"))
 
-    # ② RSI 鈍化 (RSI Dulling)
-    # RSI(5) > 80 連續 N 天 → 強勢動量信號（FinLab 發現比黃金交叉更有效）
-    if "close" in df.columns:
-        # 計算 RSI(5)
-        delta_5 = close.diff()
-        gain_5 = delta_5.clip(lower=0).rolling(5).mean()
-        loss_5 = (-delta_5.clip(upper=0)).rolling(5).mean()
-        rs_5 = gain_5 / loss_5.replace(0, np.nan)
-        rsi_5 = 100 - 100 / (1 + rs_5)
-        rsi_5 = rsi_5.fillna(50)
-        # 連續 > 80 的天數
-        above_80 = (rsi_5 > 80).astype(int)
-        consec_above_80 = above_80.groupby((above_80 != above_80.shift()).cumsum()).cumsum()
-        df["rsi5_dulling"] = consec_above_80.clip(0, 10) / 10.0  # 歸一化到 [0, 1]
-    else:
-        df["rsi5_dulling"] = 0.0
+    # rsi5_dulling: consecutive RSI(5) > 80
+    delta_5 = pl.col("close").diff()
+    gain_5 = delta_5.clip(0, None).rolling_mean(5)
+    loss_5 = (-delta_5.clip(None, 0)).rolling_mean(5)
+    rsi_5_expr = pl.lit(100.0) - pl.lit(100.0) / (pl.lit(1.0) + _safe_div(gain_5, loss_5, 1.0))
+    df = df.with_columns(rsi_5_expr.fill_null(50.0).alias("_rsi5"))
+    # Consecutive > 80 count (compute in numpy — Polars has no cumsum-reset)
+    rsi5_vals = df["_rsi5"].to_numpy()
+    above_80 = (rsi5_vals > 80).astype(int)
+    consec = np.zeros(len(above_80), dtype=int)
+    for i in range(len(above_80)):
+        if above_80[i]:
+            consec[i] = consec[i - 1] + 1 if i > 0 else 1
+        else:
+            consec[i] = 0
+    df = df.with_columns(
+        pl.Series("rsi5_dulling", np.clip(consec, 0, 10) / 10.0, dtype=pl.Float64)
+    )
+    df = df.drop("_rsi5")
 
-    # ③ 肯特納通道位置 (Keltner Channel Position)
-    # = (close - EMA20) / (1.5 * ATR14)
-    # > 1 = 突破上軌（趨勢強勢），< -1 = 跌破下軌
+    # keltner_position
     if "ma20" in df.columns and "atr14" in df.columns:
-        atr_band = df["atr14"] * 1.5
-        df["keltner_position"] = ((close - df["ma20"]) / atr_band.replace(0, np.nan)).fillna(0).clip(-3, 3)
+        df = df.with_columns(
+            _clip_expr(
+                _safe_div(pl.col("close") - pl.col("ma20"), pl.col("atr14") * 1.5),
+                -3.0, 3.0
+            ).alias("keltner_position")
+        )
     else:
-        df["keltner_position"] = 0.0
+        df = df.with_columns(pl.lit(0.0).alias("keltner_position"))
 
-    # ── Wave 2: 美股先行 + 大盤廣度 + 月營收（market_env 直傳）─────────────
+    # ── 9. Alpha158 Core (Tier A) ────────────────────────────────────────────
+    o = pl.col("open") if "open" in df.columns else pl.col("close")
+    h_expr = pl.col("high") if "high" in df.columns else pl.col("close")
+    l_expr = pl.col("low") if "low" in df.columns else pl.col("close")
 
-    # 這些是 scalar 值（不隨日期變化，只有最新值），填入最後 30 日
-    for wave2_col, default_val in [
-        ("us_sox_return", 0.0), ("us_gspc_return", 0.0), ("us_dxy_return", 0.0),
-        ("us_hy_spread", 3.5), ("us_hy_spread_chg", 0.0), ("us_vix", 20.0),
-        ("advance_ratio", 0.5), ("bull_alignment_pct", 50.0), ("revenue_yoy", 0.0),
-    ]:
-        val = float(market_env.get(wave2_col) or default_val) if market_env else default_val
-        df[wave2_col] = default_val
-        if len(df) >= 30:
-            df.iloc[-30:, df.columns.get_loc(wave2_col)] = val
-        else:
-            df[wave2_col] = val
+    df = df.with_columns([
+        _clip_expr(_safe_div(pl.col("close") - o, o), -0.2, 0.2).alias("KMID"),
+        _clip_expr(_safe_div(h_expr - l_expr, o), 0.0, 0.3).alias("KLEN"),
+        _clip_expr(_safe_div(pl.col("close") - o, h_expr - l_expr), -1.0, 1.0).alias("KMID2"),
+        _clip_expr(_safe_div(h_expr - pl.max_horizontal(o, pl.col("close")), o), 0.0, 0.2).alias("KUP"),
+        _clip_expr(_safe_div(h_expr - pl.max_horizontal(o, pl.col("close")), h_expr - l_expr), 0.0, 1.0).alias("KUP2"),
+        _clip_expr(_safe_div(pl.min_horizontal(o, pl.col("close")) - l_expr, o), 0.0, 0.2).alias("KLOW"),
+        _clip_expr(_safe_div(pl.min_horizontal(o, pl.col("close")) - l_expr, h_expr - l_expr), 0.0, 1.0).alias("KLOW2"),
+        _clip_expr(_safe_div(2 * pl.col("close") - h_expr - l_expr, o), -0.2, 0.2).alias("KSFT"),
+        _clip_expr(_safe_div(2 * pl.col("close") - h_expr - l_expr, h_expr - l_expr), -1.0, 1.0).alias("KSFT2"),
+    ])
 
-    # Wave 3: 融資融券 + 集保（per stock scalar）
-    for w3_col, w3_default in [
-        ("margin_balance", 0.0), ("short_ratio", 0.0),
-        ("margin_change_5d", 0.0), ("retail_pct", 50.0),
-    ]:
-        val = float(market_env.get(w3_col) or w3_default) if market_env else w3_default
-        df[w3_col] = w3_default
-        if len(df) >= 30:
-            df.iloc[-30:, df.columns.get_loc(w3_col)] = val
-        else:
-            df[w3_col] = val
+    # Time-Cycle + Trend Quality → NumPy (no rolling argmax/custom fn in Polars)
+    n = len(df)
+    close_np = df["close"].to_numpy().astype(np.float64)
+    high_np = df["high"].to_numpy().astype(np.float64) if "high" in df.columns else close_np
+    low_np = df["low"].to_numpy().astype(np.float64) if "low" in df.columns else close_np
 
-    # us_sentiment 數值化：bullish=1, neutral=0, bearish=-1
-    us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
-    us_sent_val = us_sent_map.get(str(market_env.get("us_sentiment") or "neutral"), 0.0) if market_env else 0.0
-    df["us_sentiment_score"] = 0.0
-    if len(df) >= 30:
-        df.iloc[-30:, df.columns.get_loc("us_sentiment_score")] = us_sent_val
+    # IMAX/IMIN-20
+    if n >= 20:
+        imax_20, imin_20 = _imax_imin_numpy(high_np, low_np, 20, n)
+        df = df.with_columns([
+            pl.Series("IMAX_20", imax_20),
+            pl.Series("IMIN_20", imin_20),
+            pl.Series("IMXD_20", imax_20 - imin_20),
+        ])
     else:
-        df["us_sentiment_score"] = us_sent_val
+        df = df.with_columns([
+            pl.lit(0.5).alias("IMAX_20"),
+            pl.lit(0.5).alias("IMIN_20"),
+            pl.lit(0.0).alias("IMXD_20"),
+        ])
 
-    # ── #6 CatBoost 滯後特徵（input diversity）────────────────────────────────
+    # Trend Quality: BETA/RSQR/RESI × {5, 10, 20, 60}
+    for tf in [5, 10, 20, 60]:
+        if n >= tf:
+            beta, rsqr, resi = _compute_trend_arrays(close_np, tf, n)
+            df = df.with_columns([
+                pl.Series(f"BETA_{tf}", beta),
+                pl.Series(f"RSQR_{tf}", rsqr),
+                pl.Series(f"RESI_{tf}", resi),
+            ])
+        else:
+            df = df.with_columns([
+                pl.lit(0.0).alias(f"BETA_{tf}"),
+                pl.lit(0.0).alias(f"RSQR_{tf}"),
+                pl.lit(0.0).alias(f"RESI_{tf}"),
+            ])
+
+    # CNTP/CNTN/CNTD × {5, 10, 20}
+    df = df.with_columns([
+        (pl.col("close") > pl.col("close").shift(1)).cast(pl.Float64).alias("_up"),
+        (pl.col("close") < pl.col("close").shift(1)).cast(pl.Float64).alias("_down"),
+    ])
+    for tf in [5, 10, 20]:
+        df = df.with_columns([
+            (pl.col("_up").rolling_sum(tf).fill_null(0.0) / tf).alias(f"CNTP_{tf}"),
+            (pl.col("_down").rolling_sum(tf).fill_null(0.0) / tf).alias(f"CNTN_{tf}"),
+        ])
+        df = df.with_columns(
+            (pl.col(f"CNTP_{tf}") - pl.col(f"CNTN_{tf}")).alias(f"CNTD_{tf}")
+        )
+    df = df.drop(["_up", "_down"])
+
+    # VSTD/WVMA
+    if "volume" in df.columns:
+        df = df.with_columns([
+            pl.col("volume").rolling_std(10).fill_null(0.0).alias("VSTD_10"),
+            pl.col("volume").rolling_std(20).fill_null(0.0).alias("VSTD_20"),
+        ])
+        # WVMA: volume-weighted MA of close
+        df = df.with_columns(
+            _safe_div(
+                (pl.col("close") * pl.col("volume")).rolling_sum(10),
+                pl.col("volume").rolling_sum(10),
+            ).fill_null(pl.col("close")).alias("WVMA")
+        )
+    else:
+        df = df.with_columns([
+            pl.lit(0.0).alias("VSTD_10"),
+            pl.lit(0.0).alias("VSTD_20"),
+            pl.col("close").alias("WVMA"),
+        ])
+
+    # CORR/CORD — Polars pl.rolling_corr() 原生支援
+    if n >= 10 and "volume" in df.columns:
+        # CORR_10: close vs volume 的 10 日 rolling Pearson 相關（量價背離偵測）
+        df = df.with_columns(
+            pl.rolling_corr(pl.col("close"), pl.col("volume"), window_size=10)
+            .fill_null(0.0).fill_nan(0.0).clip(-1.0, 1.0)
+            .alias("CORR_10")
+        )
+        # CORD_10: return_1d vs volume_change 的 10 日 rolling 相關
+        df = df.with_columns(
+            _safe_div(
+                pl.col("volume") - pl.col("volume").shift(1),
+                pl.col("volume").shift(1),
+            ).clip(-10.0, 10.0).alias("_vol_chg")
+        )
+        df = df.with_columns(
+            pl.rolling_corr(pl.col("return_1d").fill_null(0.0), pl.col("_vol_chg").fill_null(0.0), window_size=10)
+            .fill_null(0.0).fill_nan(0.0).clip(-1.0, 1.0)
+            .alias("CORD_10")
+        )
+        df = df.drop("_vol_chg")
+    else:
+        df = df.with_columns([
+            pl.lit(0.0).alias("CORR_10"),
+            pl.lit(0.0).alias("CORD_10"),
+        ])
+
+    # ── 10. Wave 2/3 defaults + per_stock_ts join ────────────────────────────
+    wave2_defaults = {
+        "us_sox_return": 0.0, "us_gspc_return": 0.0, "us_dxy_return": 0.0,
+        "us_hy_spread": 3.5, "us_hy_spread_chg": 0.0, "us_vix": 20.0,
+        "advance_ratio": 0.5, "bull_alignment_pct": 50.0,
+        "us_sentiment_score": 0.0,
+    }
+    for col, default in wave2_defaults.items():
+        if col not in df.columns:
+            df = df.with_columns(pl.lit(default).alias(col))
+        else:
+            df = df.with_columns(pl.col(col).fill_null(default).fill_nan(default))
+
+    # Wave 3: per-stock time-series
+    wave3_defaults = {
+        "margin_balance": 0.0, "short_ratio": 0.0,
+        "margin_change_5d": 0.0, "retail_pct": 50.0,
+        "revenue_yoy": 0.0,
+    }
+    per_stock_ts: dict = market_env.get("per_stock_ts", {}) if market_env else {}
+    if per_stock_ts:
+        ps_records = []
+        for date_str, vals in per_stock_ts.items():
+            rec = {"date": date_str}
+            rec.update(vals)
+            ps_records.append(rec)
+        if ps_records:
+            ps_df = (
+                pl.DataFrame(ps_records, infer_schema_length=None)
+                .with_columns(pl.col("date").cast(pl.Date))
+                .sort("date")
+            )
+            # forward-fill monthly/weekly features
+            for ffill_col in ["revenue_yoy", "retail_pct"]:
+                if ffill_col in ps_df.columns:
+                    ps_df = ps_df.with_columns(pl.col(ffill_col).cast(pl.Float64, strict=False).forward_fill())
+            # margin_change_5d from margin_balance
+            if "margin_balance" in ps_df.columns and "margin_change_5d" not in ps_df.columns:
+                mb = pl.col("margin_balance").cast(pl.Float64, strict=False).forward_fill()
+                ps_df = ps_df.with_columns(
+                    _clip_expr(_safe_div(mb - mb.shift(5), mb.shift(5)), -1.0, 1.0)
+                    .alias("margin_change_5d")
+                )
+            ps_join_cols = [c for c in wave3_defaults if c in ps_df.columns and c not in df.columns]
+            if ps_join_cols:
+                df = df.join(ps_df.select(["date"] + ps_join_cols), on="date", how="left")
+
+    for col, default in wave3_defaults.items():
+        if col not in df.columns:
+            df = df.with_columns(pl.lit(default).alias(col))
+        else:
+            df = df.with_columns(pl.col(col).fill_null(default).fill_nan(default))
+
+    # ── 11. Lag features ─────────────────────────────────────────────────────
     for lag_col in ["rsi14", "macdHist", "vol_ratio_5d"]:
         if lag_col in df.columns:
-            df[f"{lag_col}_lag1"] = df[lag_col].shift(1)
-            df[f"{lag_col}_lag3"] = df[lag_col].shift(3)
+            df = df.with_columns([
+                pl.col(lag_col).shift(1).alias(f"{lag_col}_lag1"),
+                pl.col(lag_col).shift(3).alias(f"{lag_col}_lag3"),
+            ])
     if "chip_5d" in df.columns:
-        df["chip_5d_lag1"] = df["chip_5d"].shift(1)
+        df = df.with_columns(pl.col("chip_5d").shift(1).alias("chip_5d_lag1"))
 
-    # ── Rolling Z-score normalization（在 ffill 之前，用 raw data 計算）─────
-    # 消除 regime 偏差：牛市/熊市的 feature 分佈不同，用 rolling 60d 標準化
-    # 必須在 ffill 之前做，避免 forward-fill 的重複值污染 rolling mean/std
+    # Tier C lags
+    for tier_c_col in ["margin_ratio", "short_change_5d", "vwap_bias",
+                        "KMID", "KLEN", "BETA_20", "RSQR_20"]:
+        if tier_c_col in df.columns:
+            df = df.with_columns(pl.col(tier_c_col).shift(1).alias(f"{tier_c_col}_lag1"))
+
+    # ── 12. Stock-level features ─────────────────────────────────────────────
+    if stock_meta:
+        df = df.with_columns([
+            pl.lit(float(stock_meta.get("sector_encoded", 0))).alias("sector_encoded"),
+            pl.lit(float(stock_meta.get("market_cap_bucket", 2))).alias("market_cap_bucket"),
+            pl.lit(float(stock_meta.get("avg_volume_bucket", 2))).alias("avg_volume_bucket"),
+            pl.lit(float(stock_meta.get("sector_peer_return_1d", 0))).alias("sector_peer_return_1d"),
+            pl.lit(float(stock_meta.get("sector_peer_return_5d", 0))).alias("sector_peer_return_5d"),
+            pl.lit(float(stock_meta.get("stock_vs_sector", 0))).alias("stock_vs_sector"),
+        ])
+    else:
+        df = df.with_columns([
+            pl.lit(0.0).alias("sector_encoded"),
+            pl.lit(2.0).alias("market_cap_bucket"),
+            pl.lit(2.0).alias("avg_volume_bucket"),
+            pl.lit(0.0).alias("sector_peer_return_1d"),
+            pl.lit(0.0).alias("sector_peer_return_5d"),
+            pl.lit(0.0).alias("stock_vs_sector"),
+        ])
+
+    # ── 13. Rolling Z-score normalization ────────────────────────────────────
     ZSCORE_COLS = [
         "return_1d", "return_3d", "return_5d", "return_10d",
         "volatility_5d", "volatility_20d",
@@ -334,56 +774,63 @@ def build_feature_matrix(
         "institutional_net", "chip_5d", "foreign_5d",
         "ma20_bias", "ma60_bias",
     ]
-    # C1 Fix: 保存原始 ATR（Z-score 前），用於 Triple Barrier label 計算
-    atr14_raw = df["atr14"].copy() if "atr14" in df.columns else None
+    # Save raw ATR before Z-score for triple barrier
+    atr14_raw = df["atr14"].to_numpy().astype(np.float64) if "atr14" in df.columns else None
 
     for col in ZSCORE_COLS:
         if col in df.columns:
-            roll_mean = df[col].rolling(60, min_periods=20).mean()
-            roll_std  = df[col].rolling(60, min_periods=20).std().clip(lower=1e-8)
-            df[col] = ((df[col] - roll_mean) / roll_std).clip(-5, 5)
-            # NaN 由下面的 ffill 處理，不在這裡 fillna
+            roll_mean = pl.col(col).rolling_mean(60)
+            roll_std = pl.col(col).rolling_std(60).clip(1e-8, None)
+            df = df.with_columns(
+                ((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0).alias(col)
+            )
 
-    # ── #1 Fix: ffill 只作用於 feature columns，不汙染 target ──────────────
+    # ── 14. Forward-fill + fill null (features only, not targets) ────────────
     target_cols = ["target_5d", "target_dir"]
-    non_target = df.columns.difference(target_cols, sort=False)
-    df[non_target] = df[non_target].ffill().fillna(0)
+    feature_cols = [c for c in df.columns if c not in target_cols and c != "date"]
+    # Single-pass forward_fill + fill_null for all feature columns
+    df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
+    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_null(0.0))
+    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_nan(0.0))
 
-    # ── 目標變數（必須在 ffill 之後，確保 close 已填補）─────────────────────
-    df["target_5d"]  = close.shift(-5) / close - 1
-
-    # ── Triple Barrier Label (Prado 2018) ─────────────────────────────────────
-    # 取代舊版固定 5 日方向 + dead zone，改用動態停利/停損邊界
-    # 1=觸及停利（賺）, 0=觸及停損（虧）, NaN=到期或資料不足 → dropna 排除
-    # C1 Fix: 用 Z-score 前的原始 ATR，不是被 Z-score 後的值
-    if atr14_raw is not None:
-        atr_series = atr14_raw
-    elif "atr14" in df.columns:
-        # fallback: 用 14 日 ATR 近似
-        tr = pd.concat([
-            df["high"] - df["low"],
-            (df["high"] - close.shift(1)).abs(),
-            (df["low"] - close.shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        atr_series = tr.rolling(14).mean()
-
-    df["target_dir"] = compute_triple_barrier_labels(
-        close=close,
-        high=df["high"] if "high" in df.columns else close,
-        low=df["low"] if "low" in df.columns else close,
-        atr14=atr_series,
-        upper_atr_mult=barrier_params.get("upper_mult", 3.0) if barrier_params else 3.0,
-        lower_atr_mult=barrier_params.get("lower_mult", 2.0) if barrier_params else 2.0,
-        upper_pct_cap=barrier_params.get("upper_pct_cap", 0.07) if barrier_params else 0.07,
-        lower_pct_cap=barrier_params.get("lower_pct_cap", 0.03) if barrier_params else 0.03,
-        max_days=barrier_params.get("max_days", 20) if barrier_params else 20,
+    # ── 15. Target variables ─────────────────────────────────────────────────
+    df = df.with_columns(
+        (_safe_div(pl.col("close").shift(-5), pl.col("close")) - 1.0).alias("target_5d")
     )
+
+    # Triple Barrier Label (using raw ATR, not Z-scored)
+    close_np = df["close"].to_numpy().astype(np.float64)
+    high_np = df["high"].to_numpy().astype(np.float64) if "high" in df.columns else close_np
+    low_np = df["low"].to_numpy().astype(np.float64) if "low" in df.columns else close_np
+    if atr14_raw is None:
+        # Compute raw ATR from scratch
+        h_arr = high_np
+        l_arr = low_np
+        c_arr = close_np
+        tr = np.maximum(h_arr - l_arr, np.maximum(np.abs(h_arr - np.roll(c_arr, 1)), np.abs(l_arr - np.roll(c_arr, 1))))
+        tr[0] = h_arr[0] - l_arr[0]
+        # Simple rolling mean
+        atr14_raw = np.convolve(tr, np.ones(14)/14, mode='full')[:len(tr)]
+        atr14_raw[:13] = np.nan
+
+    bp = barrier_params or {}
+    target_dir = compute_triple_barrier_labels(
+        close=close_np,
+        high=high_np,
+        low=low_np,
+        atr14=atr14_raw,
+        upper_atr_mult=bp.get("upper_mult", 3.0),
+        lower_atr_mult=bp.get("lower_mult", 2.0),
+        upper_pct_cap=bp.get("upper_pct_cap", 0.07),
+        lower_pct_cap=bp.get("lower_pct_cap", 0.03),
+        max_days=bp.get("max_days", 20),
+    )
+    df = df.with_columns(pl.Series("target_dir", target_dir))
 
     return df
 
 
-# 大盤環境特徵新增 6 個
-# ── 夜盤 / 五檔 optional 特徵（有資料時注入，無資料時填 0）──────────────────
+# ── Feature column definitions ───────────────────────────────────────────────
 NIGHT_SESSION_COLS = ["taifex_night_change_pct", "taifex_night_range_pct", "taifex_night_available"]
 ORDERBOOK_COLS = ["orderbook_imbalance", "orderbook_spread_pct", "orderbook_available"]
 OPTIONAL_FEATURE_COLS = NIGHT_SESSION_COLS + ORDERBOOK_COLS
@@ -405,49 +852,104 @@ FEATURE_COLS = [
     "sentiment", "sentiment_3d", "has_sentiment",
     # 波動
     "atr14",
-    # ── 大盤環境特徵 ──────────────────────────────────────────────────────────
-    "market_risk_score",   # 系統性風險程度 0~1
-    "market_risk_level",   # 風險等級數值化
-    "market_return_1d",    # 大盤昨日漲跌
-    "market_return_5d",    # 大盤近 5 日漲跌
-    "market_bias_20d",     # 大盤 20 日乖離率（過熱/過冷指標）
-    "stock_vs_market",     # 個股相對大盤強弱
-    # ── Phase 5: 主力波動指標 ─────────────────────────────────────────────────
-    # "broker_vol_index",  # TODO: 需串接 FinMind broker order flow API，目前無資料源，暫時停用
-    # ── Phase 6: FinLab 策略因子 ─────────────────────────────────────────────
-    "linear_factor",       # 價格意圖因子（risk-adjusted momentum / volume）
-    "rsi5_dulling",        # RSI(5) 鈍化天數（連續 >80 的歸一化天數）
-    "keltner_position",    # 肯特納通道位置（突破上軌 >1 = 強勢）
-    # ── Wave 2: 美股先行 + 大盤廣度 + 月營收 ──────────────────────────────────
-    "us_sox_return",       # 費半前日漲跌 %
-    "us_gspc_return",      # S&P 500 前日漲跌 %
-    "us_dxy_return",       # 美元指數日變化 %
-    "us_hy_spread",        # HY 信用利差 (bps)
-    "us_hy_spread_chg",    # HY 利差日變化
-    "us_vix",              # VIX 收盤
-    "us_sentiment_score",  # 美股綜合情緒 (-1/0/+1)
-    "advance_ratio",       # 台股上漲家數比
-    "bull_alignment_pct",  # 多頭排列比例 %
-    "revenue_yoy",         # 月營收年增率 %
-    # ── Wave 3: 融資融券 + 集保 ──────────────────────────────────────────────
-    "margin_balance",      # 融資餘額（張）
-    "short_ratio",         # 券資比（融券/融資）
-    "margin_change_5d",    # 融資 5 日增減率
-    "retail_pct",          # 散戶持股占比 %（<50張）
-    # ── 夜盤 / 五檔（optional，無資料時 0）───────────────────────────────────
-    *NIGHT_SESSION_COLS,
-    *ORDERBOOK_COLS,
+    # 大盤環境
+    "market_risk_score", "market_risk_level",
+    "market_return_1d", "market_return_5d", "market_bias_20d",
+    "stock_vs_market",
+    # FinLab 策略因子
+    "linear_factor", "rsi5_dulling", "keltner_position",
+    # Wave 2
+    "us_sox_return", "us_gspc_return", "us_dxy_return",
+    "us_hy_spread", "us_hy_spread_chg", "us_vix",
+    "us_sentiment_score", "advance_ratio", "bull_alignment_pct",
+    "revenue_yoy",
+    # Wave 3
+    "margin_balance", "short_ratio", "margin_change_5d", "retail_pct",
+    # Tier 0
+    "margin_ratio", "margin_change_5d_ts", "short_change_5d", "short_squeeze_proxy",
+    "vwap_bias", "vwap_5d", "vwap_bias_5d",
+    "dealer_5d", "dealer_ratio_5d",
+    # Tier 0.5
+    "foreign_consecutive_sell", "foreign_net_5d_market",
+    "limit_down_count", "limit_down_pct",
+    "adl_value", "adl_trend_numeric",
+    "ma5_bias", "ma10_bias", "bb_upper_raw", "bb_lower_raw",
+    # Tier A: Alpha158
+    "KMID", "KLEN", "KMID2", "KUP", "KUP2", "KLOW", "KLOW2", "KSFT", "KSFT2",
+    "IMAX_20", "IMIN_20", "IMXD_20",
+    "BETA_20", "RSQR_20", "RESI_20",
+    "CORR_10", "CORD_10",
+    # Tier B
+    "BETA_5", "RSQR_5", "RESI_5",
+    "BETA_10", "RSQR_10", "RESI_10",
+    "BETA_60", "RSQR_60", "RESI_60",
+    "CNTP_5", "CNTN_5", "CNTD_5",
+    "CNTP_10", "CNTN_10", "CNTD_10",
+    "CNTP_20", "CNTN_20", "CNTD_20",
+    "VSTD_10", "VSTD_20", "WVMA",
+    # Universal model
+    "sector_encoded", "market_cap_bucket", "avg_volume_bucket",
+    "sector_peer_return_1d", "sector_peer_return_5d", "stock_vs_sector",
+]
+
+CATBOOST_EXTRA_COLS = [
+    "rsi14_lag1", "rsi14_lag3",
+    "macdHist_lag1", "macdHist_lag3",
+    "vol_ratio_5d_lag1", "vol_ratio_5d_lag3",
+    "chip_5d_lag1",
+    "margin_ratio_lag1", "short_change_5d_lag1", "vwap_bias_lag1",
+    "KMID_lag1", "KLEN_lag1", "BETA_20_lag1", "RSQR_20_lag1",
 ]
 
 
-def get_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """取得可用的特徵欄位，回傳 (X, y, feature_names)"""
-    available = [c for c in FEATURE_COLS if c in df.columns]
-    df_clean = df[available + ["target_5d", "target_dir"]].dropna()
+def get_features(
+    df: pl.DataFrame,
+    target_col: str = "target_rank",
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """取得可用的特徵欄位，回傳 (X, y, feature_names)。
 
-    X = df_clean[available].values
-    y = df_clean["target_dir"].values
+    target_col:
+      - "target_rank": cross-sectional rank 0~1 (regression, batch training)
+      - "target_dir": binary triple-barrier (per-stock predict/retrain)
+    Caller 必須顯式傳 target_col，不做 fallback。
+    """
+    available = [c for c in FEATURE_COLS if c in df.columns]
+    if target_col not in df.columns:
+        raise ValueError(f"target_col '{target_col}' not found in DataFrame. "
+                         f"Available: {[c for c in df.columns if c.startswith('target')]}")
+    select_cols = available + [target_col]
+    # 加 target_5d 供 drop_nulls 同步過濾
+    if "target_5d" in df.columns and "target_5d" not in select_cols:
+        select_cols = select_cols + ["target_5d"]
+    df_clean = df.select(select_cols).drop_nulls()
+    X = df_clean.select(available).to_numpy()
+    y = df_clean[target_col].to_numpy()
     return X, y, available
+
+
+def get_catboost_features(
+    df: pl.DataFrame,
+    target_col: str = "target_rank",
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """CatBoost 專用：原始特徵 + 滯後特徵"""
+    base = [c for c in FEATURE_COLS if c in df.columns]
+    extra = [c for c in CATBOOST_EXTRA_COLS if c in df.columns]
+    all_cols = base + extra
+    if target_col not in df.columns:
+        raise ValueError(f"target_col '{target_col}' not found in DataFrame.")
+    select_cols = all_cols + [target_col]
+    if "target_5d" in df.columns and "target_5d" not in select_cols:
+        select_cols = select_cols + ["target_5d"]
+    df_clean = df.select(select_cols).drop_nulls()
+    X = df_clean.select(all_cols).to_numpy()
+    y = df_clean[target_col].to_numpy()
+    return X, y, all_cols
+
+
+def get_lgbm_features(X: np.ndarray) -> np.ndarray:
+    """LightGBM 專用：rank transform"""
+    from scipy.stats import rankdata
+    return np.apply_along_axis(lambda col: rankdata(col) / len(col), axis=0, arr=X)
 
 
 def mask_night_session_features(
@@ -456,53 +958,23 @@ def mask_night_session_features(
     mask_ratio: float = 0.5,
     seed: int = 42,
 ) -> np.ndarray:
-    """Training 時隨機 mask 夜盤特徵（模擬 15:30 無夜盤資料的情況）"""
+    """Training 時隨機 mask 夜盤特徵"""
     night_indices = [i for i, name in enumerate(feature_names) if name in OPTIONAL_FEATURE_COLS]
     if not night_indices:
         return X
-
     X_masked = X.copy()
     rng = np.random.RandomState(seed)
     mask = rng.random(len(X_masked)) < mask_ratio
     for idx in night_indices:
         X_masked[mask, idx] = 0.0
-    print(f"[NightMask] Masked {mask.sum()}/{len(X)} samples ({mask_ratio*100:.0f}%) for night session features")
     return X_masked
 
 
-# ── #6 CatBoost 滯後特徵（input diversity）─────────────────────────────────
-CATBOOST_EXTRA_COLS = [
-    "rsi14_lag1", "rsi14_lag3",
-    "macdHist_lag1", "macdHist_lag3",
-    "vol_ratio_5d_lag1", "vol_ratio_5d_lag3",
-    "chip_5d_lag1",
-]
-
-
-def get_catboost_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """CatBoost 專用：原始特徵 + 滯後特徵 (~32 維)"""
-    base = [c for c in FEATURE_COLS if c in df.columns]
-    extra = [c for c in CATBOOST_EXTRA_COLS if c in df.columns]
-    all_cols = base + extra
-    df_clean = df[all_cols + ["target_5d", "target_dir"]].dropna()
-
-    X = df_clean[all_cols].values
-    y = df_clean["target_dir"].values
-    return X, y, all_cols
-
-
-def get_lgbm_features(X: np.ndarray) -> np.ndarray:
-    """LightGBM 專用：rank transform（每欄轉為百分位排名）"""
-    from scipy.stats import rankdata
-    return np.apply_along_axis(lambda col: rankdata(col) / len(col), axis=0, arr=X)
-
-
-# ── RobustScaler（DLinear/PatchTST/FT-Transformer 需要）──────────────────────
+# ── RobustScaler（純 NumPy）─────────────────────────────────────────────────
 _robust_scaler_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 
 def fit_robust_scaler(X: np.ndarray, stock_id: str = "default") -> tuple[np.ndarray, np.ndarray]:
-    """RobustScaler：用 median 和 IQR 做標準化，比 StandardScaler 抗離群值。"""
     median = np.median(X, axis=0)
     q75 = np.percentile(X, 75, axis=0)
     q25 = np.percentile(X, 25, axis=0)
@@ -515,11 +987,10 @@ def fit_robust_scaler(X: np.ndarray, stock_id: str = "default") -> tuple[np.ndar
 def apply_robust_scaler(X: np.ndarray, stock_id: str = "default",
                         median: Optional[np.ndarray] = None,
                         iqr: Optional[np.ndarray] = None) -> np.ndarray:
-    """對 X 做 RobustScaler 轉換。若未提供 median/iqr，從 cache 取。"""
     if median is None or iqr is None:
         cached = _robust_scaler_cache.get(stock_id)
         if cached is None:
             median, iqr = fit_robust_scaler(X, stock_id)
         else:
             median, iqr = cached
-    return (X - median) / iqr
+    return np.clip((X - median) / iqr, -5, 5)

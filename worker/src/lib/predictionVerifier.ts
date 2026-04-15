@@ -207,7 +207,8 @@ export async function runPredictionVerification(envOrDb: D1DB | VerifyEnv): Prom
 
 
 // ── 交易模擬引擎 ──────────────────────────────────────────────────────────────
-function simulateTrade(
+// Phase 5.2 (2026-04-08): exported for parity test against Python port
+export function simulateTrade(
   direction: 'up' | 'down',
   entry: number,
   stop: number,

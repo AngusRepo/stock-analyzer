@@ -5,6 +5,7 @@ export type Bindings = {
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
   ANTHROPIC_API_KEY: string
+  GEMINI_API_KEY: string
   FINMIND_TOKEN: string
   ML_SERVICE_URL: string
   UPDATE_QUEUE: Queue<UpdateQueueMsg>
@@ -29,6 +30,8 @@ export type Bindings = {
   LOCAL_TUNNEL_URL?: string
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
+  // FRED API Key（HY OAS 信用利差）
+  FRED_API_KEY?: string
   // Cloudflare Workers AI binding
   AI?: any
 }
@@ -59,7 +62,7 @@ export interface DbStock {
   name: string
   market: 'TWSE' | 'OTC' | 'US'
   sector: string | null
-  is_active: number
+  in_current_watchlist: number
   added_at: string
   updated_at: string
 }

@@ -1,7 +1,9 @@
 fastapi==0.115.0
 uvicorn==0.30.6
 numpy==1.26.4
-pandas==2.2.3
+polars>=1.0.0
+# pandas fully removed from ml-service (2.0). All modules use Polars + NumPy.
+# If a transitive dependency needs pandas, it will bring its own.
 scikit-learn==1.5.2
 xgboost==2.1.1
 statsmodels==0.14.4
@@ -29,3 +31,5 @@ stable-baselines3>=2.3.0
 torch-geometric>=2.5.0
 # 2026-04-07 Phase 1: Optuna routes (auto-search + push KV)
 optuna>=3.6.0
+# 2.0 Feature Selection: Target Permutation elbow detection
+kneed>=0.8.0

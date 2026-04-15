@@ -35,10 +35,37 @@ def _lookup(fn_name: str):
 
 
 async def _modal_batch_predict(payloads: list[dict]) -> list[dict]:
+    """
+    2026-04-08 P1 fix: use return_exceptions=True so one task timeout (e.g.
+    Modal 300s per-input limit) doesn't kill the whole batch. Exception items
+    are converted into error dicts downstream consumers already handle
+    (graphs/daily_pipeline_v2.py:node_ml_predict filters r.get("error")).
+
+    Before: 1 slow task → FunctionTimeoutError → fn.map.aio raises → whole
+    pipeline dies at ~212s → Worker 524. See memory/project_session_2026_04_08_part5.md.
+    """
     fn = _lookup("predict_single_stock")
-    results = []
-    async for r in fn.map.aio(payloads, order_outputs=True):
-        results.append(r)
+    results: list[dict] = []
+    idx = 0
+    async for r in fn.map.aio(payloads, order_outputs=True, return_exceptions=True):
+        if isinstance(r, BaseException):
+            p = payloads[idx] if idx < len(payloads) else {}
+            exc_type = type(r).__name__
+            logger.warning(
+                f"[modal_client] predict task failed "
+                f"symbol={p.get('symbol','?')} exc={exc_type}: {r}"
+            )
+            results.append({
+                "stock_id": p.get("stock_id", 0),
+                "symbol": p.get("symbol", "?"),
+                "error": f"{exc_type}: {r}",
+                "signal": "NO_SIGNAL",
+                "direction": "neutral",
+                "confidence": 0.0,
+            })
+        else:
+            results.append(r)
+        idx += 1
     return results
 
 
@@ -48,6 +75,26 @@ async def _modal_batch_retrain(payloads: list[dict]) -> list[dict]:
     async for r in fn.map.aio(payloads, order_outputs=True):
         results.append(r)
     return results
+
+
+async def _modal_prep_universal_batch(payload: dict) -> dict:
+    fn = _lookup("prep_universal_batch")
+    return await fn.remote.aio(payload)
+
+
+async def _modal_train_universal(payload: dict) -> dict:
+    fn = _lookup("train_universal_from_gcs")
+    return await fn.remote.aio(payload)
+
+
+async def _modal_retrain_orchestrator(payload: dict) -> dict:
+    fn = _lookup("retrain_orchestrator")
+    return await fn.remote.aio(payload)
+
+
+async def _modal_shap_audit(payload: dict) -> dict:
+    fn = _lookup("shap_feature_audit")
+    return await fn.remote.aio(payload)
 
 
 async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
@@ -133,7 +180,9 @@ async def batch_predict(payloads: list[dict]) -> list[dict]:
         return await _modal_batch_predict(payloads)
     if _ML_SERVICE_URL:
         logger.info(f"[ml_client] HTTP parallel predict × {len(payloads)} → {_ML_SERVICE_URL}")
-        return await _http_batch("/predict", payloads, concurrency=4)
+        # B11 fix (2026-04-08 audit): concurrency 4→20，覆蓋 Part 6 F2 fix 默認值
+        # 信號池天生小，concurrency 4 進一步壓縮高 conf 候選數量，疊加 Layer 2 後幾乎過不了
+        return await _http_batch("/predict", payloads, concurrency=20)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 
@@ -144,6 +193,86 @@ async def batch_retrain(payloads: list[dict]) -> list[dict]:
     if _ML_SERVICE_URL:
         logger.info(f"[ml_client] HTTP parallel retrain × {len(payloads)}")
         return await _http_batch("/retrain", payloads, concurrency=2)
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def prep_universal_batch(payload: dict) -> dict:
+    """單批 prep — build_feature_matrix → 存 GCS npz。"""
+    if _USE_MODAL:
+        logger.info(f"[ml_client] Modal.remote prep_universal batch_{payload.get('batch_index', '?')}")
+        return await _modal_prep_universal_batch(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/retrain/universal/prep"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def train_universal(payload: dict) -> dict:
+    """觸發 train — 從 GCS 讀 prep 結果訓練。"""
+    if _USE_MODAL:
+        logger.info(f"[ml_client] Modal.remote train_universal ({payload.get('batch_count', '?')} batches)")
+        return await _modal_train_universal(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/retrain/universal/train"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(2700.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def shap_audit(payload: dict | None = None) -> dict:
+    """觸發 SHAP Feature Importance Audit（從 GCS prep data 跑）。"""
+    payload = payload or {}
+    if _USE_MODAL:
+        logger.info(f"[ml_client] Modal.remote shap_feature_audit (samples={payload.get('shap_samples', 5000)})")
+        return await _modal_shap_audit(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/audit/shap"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def retrain_orchestrator(payload: dict, fire_and_forget: bool = True) -> dict:
+    """2.0 Flow B: 觸發 Modal retrain_orchestrator（selection → train → SHAP 全在 Modal 完成）。
+
+    fire_and_forget=True (default): spawn，Cloud Run 立刻 return，不佔 HTTP 連線。
+    fire_and_forget=False: await 等 Modal 完成（用於手動 debug）。
+    """
+    if _USE_MODAL:
+        fn = _lookup("retrain_orchestrator")
+        if fire_and_forget:
+            logger.info(f"[ml_client] Modal.spawn retrain_orchestrator (monthly={payload.get('is_monthly')})")
+            await fn.spawn.aio(payload)
+            return {"status": "spawned", "is_monthly": payload.get("is_monthly")}
+        else:
+            logger.info(f"[ml_client] Modal.remote retrain_orchestrator (await, monthly={payload.get('is_monthly')})")
+            return await fn.remote.aio(payload)
+    raise RuntimeError("retrain_orchestrator requires Modal (no HTTP fallback)")
+
+
+async def feature_selection(payload: dict | None = None, fire_and_forget: bool = False) -> dict:
+    """觸發 V2 Feature Selection Pipeline (Silhouette → Target Permutation → Feature Pool).
+
+    fire_and_forget=True: spawn Modal function without waiting (for monthly auto-trigger).
+    """
+    payload = payload or {}
+    if _USE_MODAL:
+        fn = _lookup("feature_selection_pipeline")
+        if fire_and_forget:
+            logger.info("[ml_client] Modal.spawn feature_selection_pipeline (fire-and-forget)")
+            await fn.spawn.aio(payload)
+            return {"status": "spawned", "message": "Feature selection running in background"}
+        logger.info("[ml_client] Modal.remote feature_selection_pipeline")
+        return await fn.remote.aio(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/audit/feature-selection"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 

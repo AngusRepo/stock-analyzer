@@ -37,7 +37,7 @@
 │  Step 4c: 趨勢品質 (ADX + intent adaptive 百分位 + 流動性分級)          │
 │  Step 5: 同產業≤5 + Pearson 60d 去重 + top 25                          │
 │                                                                         │
-│  Output: daily_recommendations (chip+tech+price) + stocks is_active     │
+│  Output: daily_recommendations (chip+tech+price) + stocks watchlist      │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────────┐

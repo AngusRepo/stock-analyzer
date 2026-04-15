@@ -58,6 +58,7 @@ def weighted_vote(
     garch_vol: float | None = None,           # 來自 run_garch_volatility()，price 單位
     bandit_multipliers: dict[str, float] | None = None,  # 來自 LinUCB bandit（第11模型）
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
+    trading_config: dict | None = None,       # B12 fix (2026-04-08): KV trading:config（Optuna baseline）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
     lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
 ) -> EnsembleResult:
@@ -75,6 +76,7 @@ def weighted_vote(
     real_acc    = real_accuracies or {}
     stats       = model_stats or {}
     _adaptive   = adaptive_params or {}  # adaptive KV params（T+1，safe fallback to {}）
+    _trading_cfg = trading_config or {}  # B12 fix: KV trading:config baseline
 
     # ── Regime 乘數 ───────────────────────────────────────────────────────────
     regime_mults           = {}
@@ -267,17 +269,36 @@ def weighted_vote(
     vol_pct = effective_vol / current_price
     vol_source = "GARCH" if (garch_vol and garch_vol > 0) else "ATR"
 
-    # SL/TP base multipliers 從 KV 讀取（Optuna #3 可搜尋）
-    _sl_base = float(_adaptive.get("sl_mult_base", 2.0))
-    _tp_base = float(_adaptive.get("tp_mult_base", 1.5))
-    _vol_low = float(_adaptive.get("vol_threshold_low", 0.015))
-    _vol_high = float(_adaptive.get("vol_threshold_high", 0.03))
+    # B12 fix (2026-04-08 audit): SL/TP base multipliers 改讀 trading:config.sltp (Optuna #3 結果)
+    # Sprint 5.1 Phase 7 Layer B (2026-04-09): per-vol-branch multipliers 也從 KV 讀
+    # 原本 0.75/0.67/1.25/1.33 是 hardcode，從沒進 Optuna search space；現在 schema
+    # 已加 slMultLow/tpMultLow/slMultHigh/tpMultHigh 欄位，defaults 等同原 hardcode。
+    _sltp = _trading_cfg.get("sltp", {}) if isinstance(_trading_cfg, dict) else {}
+    _sl_base = float(_sltp.get("slMultBase", _adaptive.get("sl_mult_base", 2.0)))
+    _tp_base = float(_sltp.get("tpMultBase", _adaptive.get("tp_mult_base", 1.5)))
+    _vol_low = float(_sltp.get("volThresholdLow", _adaptive.get("vol_threshold_low", 0.015)))
+    _vol_high = float(_sltp.get("volThresholdHigh", _adaptive.get("vol_threshold_high", 0.03)))
+    _sl_mult_low  = float(_sltp.get("slMultLow", 0.75))
+    _tp_mult_low  = float(_sltp.get("tpMultLow", 0.67))
+    _sl_mult_high = float(_sltp.get("slMultHigh", 1.25))
+    _tp_mult_high = float(_sltp.get("tpMultHigh", 1.33))
+
+    # Sprint 5.1 Phase 7 Layer C (2026-04-09): extreme low vol skip
+    # 極低波動股（vol_pct < 0.5% 預設）的 R:R 幾乎必然超差（SL/TP 距離 current_price 太近），
+    # 直接 NO_SIGNAL 省得下游算白工 + 壓 fill_rate 統計
+    _vol_skip = float(_sltp.get("volSkipThreshold", 0.005))
+    if vol_pct < _vol_skip:
+        return _no_signal(
+            current_price, atr,
+            f"vol_pct={vol_pct:.4f} < {_vol_skip} (extreme low vol, 無法產出合理 R:R)"
+        )
+
     if vol_pct < _vol_low:      # 低波動：收緊
-        sl_mult, tp_mult = _sl_base * 0.75, _tp_base * 0.67
+        sl_mult, tp_mult = _sl_base * _sl_mult_low, _tp_base * _tp_mult_low
     elif vol_pct < _vol_high:     # 正常
         sl_mult, tp_mult = _sl_base, _tp_base
     else:                    # 高波動：放寬
-        sl_mult, tp_mult = _sl_base * 1.25, _tp_base * 1.33
+        sl_mult, tp_mult = _sl_base * _sl_mult_high, _tp_base * _tp_mult_high
 
     # Adaptive SL/TP override（高風險 regime 加寬，避免被洗）
     sl_tp_override = _adaptive.get("sl_tp_override")
@@ -360,4 +381,154 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
         target2=round(current_price + atr_val * 2.5, 2),
         reasoning=f"訊號不明，建議觀望。原因：{reason}",
         signal_strength=0,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.0 Rank → Signal 翻譯層
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_ic_weights() -> dict[str, float]:
+    """從 GCS 讀 ic_tracking.json，回傳 {model_name: IC} for IC-weighted ensemble。
+    Grinold-Kahn: each signal's contribution ∝ its IC.
+    """
+    try:
+        from .model_store import _get_bucket
+        import json
+        bucket = _get_bucket()
+        if bucket is None:
+            return {}
+        blob = bucket.blob("universal/ic_tracking.json")
+        if not blob.exists():
+            return {}
+        data = json.loads(blob.download_as_text())
+        return {
+            name: info.get("oos_ic", 0.0)
+            for name, info in data.get("models", {}).items()
+        }
+    except Exception:
+        return {}
+
+
+def rank_to_signal(
+    rank_scores: dict[str, float],
+    current_price: float,
+    atr: float,
+    ic_weights: dict[str, float] | None = None,
+    top_n: int = 5,
+    strong_buy_threshold: float = 0.85,
+    buy_threshold: float = 0.70,
+    sell_threshold: float = 0.30,
+    strong_sell_threshold: float = 0.15,
+) -> EnsembleResult:
+    """2.0 翻譯層：regression rank scores → EnsembleResult。
+
+    Args:
+        rank_scores: {model_name: rank_score (0~1)} from 5 regression models
+        current_price: latest close
+        atr: ATR for stop/target calculation
+        ic_weights: {model_name: IC} — IC-weighted avg (Grinold-Kahn).
+                    None → fallback to equal weight.
+        top_n: cross-sectional top N filter (applied by caller, not here)
+        strong_buy_threshold: rank above this → STRONG_BUY
+        buy_threshold: rank above this → BUY
+        sell_threshold: rank below this → SELL
+        strong_sell_threshold: rank below this → STRONG_SELL
+
+    Returns:
+        EnsembleResult with signal/direction/confidence translated from rank
+    """
+    if not rank_scores:
+        return _no_signal(current_price, atr, "No rank scores")
+
+    # IC-weighted ensemble (Grinold-Kahn: contribution ∝ IC)
+    if ic_weights:
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for name, score in rank_scores.items():
+            w = max(0.0, ic_weights.get(name, 0.0))
+            weighted_sum += score * w
+            weight_total += w
+        avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
+    else:
+        avg_rank = float(np.mean(list(rank_scores.values())))
+    rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
+
+    # Consensus: fraction of models agreeing on dominant direction (symmetric)
+    n_bullish = sum(1 for s in scores if s > 0.5)
+    n_bearish = len(scores) - n_bullish
+    consensus = max(n_bullish, n_bearish) / len(scores)
+
+    # Signal translation
+    if avg_rank >= strong_buy_threshold:
+        signal = "STRONG_BUY"
+        direction = "up"
+    elif avg_rank >= buy_threshold:
+        signal = "BUY"
+        direction = "up"
+    elif avg_rank <= strong_sell_threshold:
+        signal = "STRONG_SELL"
+        direction = "down"
+    elif avg_rank <= sell_threshold:
+        signal = "SELL"
+        direction = "down"
+    else:
+        signal = "HOLD"
+        direction = "neutral"
+
+    # Confidence: use rank directly (0~1) — higher rank = more confident bullish
+    confidence = round(avg_rank, 3)
+
+    # Signal strength: 1~5 stars based on rank percentile
+    if avg_rank >= 0.90:
+        strength = 5
+    elif avg_rank >= 0.80:
+        strength = 4
+    elif avg_rank >= 0.70:
+        strength = 3
+    elif avg_rank >= 0.50:
+        strength = 2
+    else:
+        strength = 1
+
+    # Forecast: approximate from rank position
+    # rank 0.8 → top 20% → historically ~3-5% above market
+    forecast_pct = round((avg_rank - 0.5) * 0.10, 4)  # linear approx
+
+    atr_val = max(atr, current_price * 0.01)
+
+    # Model details for downstream
+    model_details = [
+        {"name": name, "model_name": name, "rank_score": round(score, 4),
+         "direction": "up" if score > 0.5 else "down",
+         "confidence": round(score, 3)}
+        for name, score in rank_scores.items()
+    ]
+
+    reasoning_parts = []
+    if avg_rank >= 0.70:
+        reasoning_parts.append(f"排名前 {round((1-avg_rank)*100)}%")
+    if consensus >= 0.8:
+        reasoning_parts.append(f"{len(scores)} 個模型中 {n_bullish} 個看多")
+    if rank_std < 0.1:
+        reasoning_parts.append("模型共識高")
+    reasoning = "；".join(reasoning_parts) if reasoning_parts else "排名中等，建議觀望"
+
+    return EnsembleResult(
+        signal=signal,
+        direction=direction,
+        confidence=confidence,
+        consensus=round(consensus, 2),
+        forecast_pct=forecast_pct,
+        forecast_range={
+            "low": round(current_price * (1 + forecast_pct - 0.02), 2),
+            "high": round(current_price * (1 + forecast_pct + 0.02), 2),
+        },
+        models=model_details,
+        entry_price=round(current_price, 2),
+        stop_loss=round(current_price - atr_val * 2, 2),
+        target1=round(current_price + atr_val * 1.5, 2),
+        target2=round(current_price + atr_val * 2.5, 2),
+        reasoning=reasoning,
+        signal_strength=strength,
     )

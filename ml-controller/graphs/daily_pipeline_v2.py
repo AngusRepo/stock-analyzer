@@ -21,6 +21,7 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.pregel.types import RetryPolicy
 
 from services import d1_client, kv_client
 from services.payload_builder import (
@@ -40,6 +41,7 @@ from services.recommendation_service import (
     merge_llm_reasons_into_recommendations,
 )
 from services.llm_reason import generate_recommendation_reasons
+from services.sector_flow_service import run_sector_flow_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +58,13 @@ class PipelineStateV2(TypedDict, total=False):
     run_date: str
 
     # Loaded inputs
-    active_stocks: list[dict]              # from D1 stocks WHERE is_active=1
+    active_stocks: list[dict]              # from D1 stocks WHERE in_current_watchlist=1
     screener_recs: list[dict]              # from D1 daily_recommendations (existing chip+tech)
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
     lifecycle_weights: dict                 # from D1 model_lifecycle_state
+    trading_config: dict                    # B12 fix: full KV trading:config (sltp/signal/circuit)
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
@@ -71,6 +74,7 @@ class PipelineStateV2(TypedDict, total=False):
     llm_reasons: dict                       # symbol → {reason, watchPoints}
 
     # Outputs
+    sector_flow_summary: dict               # Phase 6: RRG compute result (concept + industry)
     metrics: dict                           # timing, counts
     errors: Annotated[list[str], operator.add]
 
@@ -107,12 +111,13 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
     """
     logger.info("[Pipeline V2] node_load_market_env")
-    market_env, adaptive, barrier, lifecycle = load_market_env(state["run_date"])
+    market_env, adaptive, barrier, lifecycle, trading_cfg = load_market_env(state["run_date"])
     return {
         "market_env": _to_dict(market_env),
         "adaptive_params": adaptive,
         "barrier_params": barrier,
         "lifecycle_weights": lifecycle,
+        "trading_config": trading_cfg,  # B12 fix: forward to ml_predict
     }
 
 
@@ -133,6 +138,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
         adaptive_params=state.get("adaptive_params") or {},
         barrier_params=state.get("barrier_params") or {},
         lifecycle_weights=state.get("lifecycle_weights") or {},
+        trading_config=state.get("trading_config") or {},
     )
     payloads_dict = [_to_dict(p) for p in payloads]
     return {"payloads": payloads_dict}
@@ -163,6 +169,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"{error_count} errors"
     )
     return {"predictions": pred_map}
+
+
+async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
+    """
+    Phase 6: Compute RRG (rs_ratio / rs_momentum / quadrant) for concept + industry
+    and upsert into sector_flow. Must run before node_recommend because downstream
+    hybrid ranking + paper.ts T2 quadrant filter depend on fresh sector_flow rows.
+
+    Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
+    """
+    logger.info("[Pipeline V2] node_compute_sector_flow")
+    run_date = state["run_date"]
+    try:
+        summary = await asyncio.to_thread(run_sector_flow_pipeline, run_date)
+        return {"sector_flow_summary": summary}
+    except Exception as e:
+        logger.error(f"[Pipeline V2] sector_flow failed (non-fatal): {e}")
+        return {"sector_flow_summary": {}, "errors": [f"sector_flow: {e}"]}
 
 
 async def node_recommend(state: PipelineStateV2) -> dict:
@@ -205,12 +229,12 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
     if not candidates:
         return {"llm_reasons": {}}
 
-    # Top themes from market_env (if available)
-    top_themes = []
-    me = state.get("market_env") or {}
-    history = me.get("history") or {}
-    # Simple heuristic — top themes optional for prompt context
-    # (worker version reads from sector_flow, we skip for V2 simplicity)
+    # Top themes from sector_flow_summary (Phase 6 — node_compute_sector_flow populates)
+    # Optional context for LLM prompt; empty list is acceptable fallback.
+    top_themes: list[str] = []
+    sf = state.get("sector_flow_summary") or {}
+    # Summary carries counts only; LLM prompt enhancement can read D1 directly if needed.
+    # Keep minimal for now to avoid extra D1 roundtrip in hot path.
 
     try:
         reasons = await generate_recommendation_reasons(candidates, top_themes=top_themes)
@@ -280,22 +304,35 @@ def build_graph():
     """Build and compile the LangGraph StateGraph."""
     g = StateGraph(PipelineStateV2)
 
-    g.add_node("load_inputs",     node_load_inputs)
-    g.add_node("load_market_env", node_load_market_env)
-    g.add_node("build_payloads",  node_build_payloads)
-    g.add_node("ml_predict",      node_ml_predict)
-    g.add_node("recommend",       node_recommend)
-    g.add_node("gen_llm_reasons", node_llm_reasons)
-    g.add_node("write_d1",        node_write_d1)
+    # 2026-04-08 P2: Retry policy for ml_predict — protects against transient
+    # Modal infra failures (grpc disconnect, control plane hiccup). Per-task
+    # timeouts are already caught per-item by P1 return_exceptions, so retry
+    # only fires when batch_predict itself raises (rare).
+    ml_retry = RetryPolicy(
+        max_attempts=2,
+        initial_interval=2.0,
+        backoff_factor=2.0,
+        jitter=True,
+    )
+
+    g.add_node("load_inputs",       node_load_inputs)
+    g.add_node("load_market_env",   node_load_market_env)
+    g.add_node("compute_sector_flow", node_compute_sector_flow)
+    g.add_node("build_payloads",    node_build_payloads)
+    g.add_node("ml_predict",        node_ml_predict, retry=ml_retry)
+    g.add_node("recommend",         node_recommend)
+    g.add_node("gen_llm_reasons",   node_llm_reasons)
+    g.add_node("write_d1",          node_write_d1)
 
     g.set_entry_point("load_inputs")
-    g.add_edge("load_inputs",     "load_market_env")
-    g.add_edge("load_market_env", "build_payloads")
-    g.add_edge("build_payloads",  "ml_predict")
-    g.add_edge("ml_predict",      "recommend")
-    g.add_edge("recommend",       "gen_llm_reasons")
-    g.add_edge("gen_llm_reasons", "write_d1")
-    g.add_edge("write_d1",        END)
+    g.add_edge("load_inputs",         "load_market_env")
+    g.add_edge("load_market_env",     "compute_sector_flow")
+    g.add_edge("compute_sector_flow", "build_payloads")
+    g.add_edge("build_payloads",      "ml_predict")
+    g.add_edge("ml_predict",          "recommend")
+    g.add_edge("recommend",           "gen_llm_reasons")
+    g.add_edge("gen_llm_reasons",     "write_d1")
+    g.add_edge("write_d1",            END)
 
     # Checkpointer disabled for now:
     # - SqliteSaver doesn't support async (raises NotImplementedError on ainvoke)

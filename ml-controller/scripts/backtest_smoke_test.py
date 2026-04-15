@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from services.backtest_engine import (
     BacktestDataset,
@@ -58,9 +58,20 @@ def build_mock_dataset() -> BacktestDataset:
 
     60 trading days starting 2024-01-02
     """
+    from datetime import date as _date, timedelta as _td
     rng = np.random.default_rng(seed=42)
 
-    trading_days = pd.bdate_range("2024-01-02", periods=60).strftime("%Y-%m-%d").tolist()
+    # Pure Python bdate_range replacement (no pandas dependency)
+    def _bdate_range(start: str, periods: int) -> list[str]:
+        d = _date.fromisoformat(start)
+        dates: list[str] = []
+        while len(dates) < periods:
+            if d.weekday() < 5:  # Mon-Fri
+                dates.append(d.isoformat())
+            d += _td(days=1)
+        return dates
+
+    trading_days = _bdate_range("2024-01-02", 60)
 
     def gen_path(base: float, drift: float, vol: float, n: int) -> list[float]:
         """Generate a log-normal price path."""
@@ -88,7 +99,7 @@ def build_mock_dataset() -> BacktestDataset:
             "name": symbol,
             "market": "TWSE",
             "sector": meta["sector"],
-            "is_active": 1,
+            "in_current_watchlist": 1,
             "listed_date": None,
             "delisted_date": None,
         })
@@ -177,13 +188,13 @@ def build_mock_dataset() -> BacktestDataset:
             "bull_alignment_pct": 50.0,
         })
 
-    stocks_df = pd.DataFrame(stocks_rows)
-    prices_df = pd.DataFrame(price_rows).set_index(["symbol", "date"]).sort_index()
-    indicators_df = pd.DataFrame(indicator_rows).set_index(["symbol", "date"]).sort_index()
-    chips_df = pd.DataFrame(chip_rows).set_index(["symbol", "date"]).sort_index()
-    market_risk_df = pd.DataFrame(risk_rows).set_index("date").sort_index()
+    stocks_df = pl.DataFrame(stocks_rows)
+    prices_df = pl.DataFrame(price_rows).sort(["symbol", "date"])
+    indicators_df = pl.DataFrame(indicator_rows).sort(["symbol", "date"])
+    chips_df = pl.DataFrame(chip_rows).sort(["symbol", "date"])
+    market_risk_df = pl.DataFrame(risk_rows).sort("date")
 
-    return BacktestDataset(
+    ds = BacktestDataset(
         prices=prices_df,
         indicators=indicators_df,
         chips=chips_df,
@@ -193,6 +204,8 @@ def build_mock_dataset() -> BacktestDataset:
         start_date=trading_days[0],
         end_date=trading_days[-1],
     )
+    ds._build_hot_caches()
+    return ds
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

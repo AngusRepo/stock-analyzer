@@ -16,7 +16,6 @@ import argparse
 import json
 import sys
 import numpy as np
-import pandas as pd
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -42,13 +41,14 @@ def run_walk_forward(
         print(f"Insufficient data: {len(df)} rows (need >= 180)")
         return []
 
-    X, y, feature_names = get_features(df)
+    X, y, feature_names = get_features(df, target_col="target_dir")
     if len(X) < 100:
         print(f"Insufficient features: {len(X)} samples (need >= 100)")
         return []
 
     # Build date index
-    dates = df.index if hasattr(df.index, 'date') else pd.RangeIndex(len(df))
+    # df is now Polars — extract date column or use sequential index
+    dates = df["date"].to_list() if "date" in df.columns else list(range(len(df)))
 
     results = []
     total_days = len(X)

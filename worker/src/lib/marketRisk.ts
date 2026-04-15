@@ -322,6 +322,7 @@ export async function calcMarketRisk(
   anthropicKey?: string,
   controllerUrl?: string,
   controllerSecret?: string,
+  geminiKey?: string,
 ): Promise<MarketRiskResult> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   _marginCache = null  // 清除快取
@@ -368,7 +369,7 @@ export async function calcMarketRisk(
   const level = scoreToLevel(score)
 
   // 生成文字摘要（用 AI 或 fallback 規則）
-  const summary = await generateRiskSummary(partial, score, level, triggers, anthropicKey)
+  const summary = await generateRiskSummary(partial, score, level, triggers, anthropicKey, geminiKey)
 
   return {
     ...partial,
@@ -382,7 +383,7 @@ export async function calcMarketRisk(
 // ── AI 生成風險摘要（fallback 到規則文字）────────────────────────────────────
 async function generateRiskSummary(
   data: any, score: number, level: string, triggers: string[],
-  anthropicKey?: string,
+  anthropicKey?: string, geminiKey?: string,
 ): Promise<string> {
   const levelText: Record<string, string> = {
     green:  '市場正常，可正常操作',
@@ -393,16 +394,14 @@ async function generateRiskSummary(
   }
 
   // 無 AI key 時用規則文字
-  if (!anthropicKey) {
+  if (!geminiKey && !anthropicKey) {
     const parts = [`當前大盤風險評分 ${score}/100（${levelText[level]}）。`]
     if (triggers.length) parts.push(`主要警示：${triggers.slice(0, 3).join('、')}。`)
     else parts.push('目前各項指標正常，無重大警示。')
     return parts.join('')
   }
 
-  // 有 AI key 時生成自然語言分析
-  try {
-    const prompt = `
+  const prompt = `
 當前大盤風險數據：
 - VIX 恐慌指數：${data.vix ?? 'N/A'}（${data.vixLevel}）
 - 加權指數：${data.twiiClose ?? 'N/A'}，20日均線：${data.twiiMa20 ?? 'N/A'}，乖離率：${data.twiiBias ?? 'N/A'}%
@@ -417,22 +416,49 @@ async function generateRiskSummary(
 
 請用2-3句繁體中文，給出今日大盤風險的簡要說明與操作建議。語氣客觀，不過度樂觀也不過度悲觀。`
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    const json = await res.json() as any
-    return json.content?.[0]?.text ?? levelText[level]
-  } catch {
-    return `風險評分 ${score}/100。${levelText[level]}。${triggers[0] ?? ''}`
+  // Layer 1: Gemini 3.1 Flash Lite（便宜+快速）
+  // 2026-04-10: 取代 Haiku，省 $0.2/月
+  if (geminiKey) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
+          }),
+        }
+      )
+      if (res.ok) {
+        const json = await res.json() as any
+        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+        if (text) return text
+      }
+    } catch { /* fallback to Anthropic */ }
   }
+
+  // Layer 2: Anthropic Haiku（fallback）
+  if (anthropicKey) {
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 300,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      })
+      const json = await res.json() as any
+      return json.content?.[0]?.text ?? levelText[level]
+    } catch { /* fall through */ }
+  }
+
+  return `風險評分 ${score}/100。${levelText[level]}。${triggers[0] ?? ''}`
 }

@@ -1,4 +1,4 @@
-INSERT OR IGNORE INTO stocks (symbol, name, market, sector, is_active) VALUES
+INSERT OR IGNORE INTO stocks (symbol, name, market, sector, in_current_watchlist) VALUES
 ('7610', '聯友金屬-創', 'TWSE', '綠能環保', 1),
 ('7706', '宏碁創達', 'OTC', '其他', 1),
 ('7708', '全家餐飲', 'OTC', '觀光餐旅', 1),

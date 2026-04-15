@@ -181,7 +181,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   // ── 7.5 無標籤股票偵測 ─────────────────────────────────────────────────
   const { results: untaggedStocks } = await env.DB.prepare(`
     SELECT s.symbol, s.name FROM stocks s
-    WHERE s.is_active = 1
+    WHERE s.in_current_watchlist = 1
       AND NOT EXISTS (SELECT 1 FROM stock_tags t WHERE t.symbol = s.symbol)
     ORDER BY s.symbol LIMIT 20
   `).all<any>().catch(() => ({ results: [] as any[] }))

@@ -11,7 +11,7 @@ DecisionTree 學習什麼因子區分好壞交易 → 回饋 screener 評分
   DecisionTree → 學哪些因子決定好壞
 """
 import numpy as np
-import pandas as pd
+import polars as pl
 from typing import Optional
 
 
@@ -39,30 +39,29 @@ def cluster_trades(
     if len(trades) < n_clusters * 3:
         return {"error": "insufficient_data", "min_trades_needed": n_clusters * 3}
 
-    df = pd.DataFrame(trades)
+    df = pl.DataFrame(trades)
 
     # 確認必要欄位
     required = ["max_favorable_pct", "max_adverse_pct"]
     for col in required:
         if col not in df.columns:
             return {"error": f"missing_column: {col}"}
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
 
-    df = df.dropna(subset=required)
-    if len(df) < n_clusters * 3:
+    df = df.drop_nulls(subset=required)
+    if df.height < n_clusters * 3:
         return {"error": "insufficient_valid_data"}
 
     # KMeans 分群（MFE 高 + MAE 低 = 好交易）
-    X = df[required].values
+    X = df.select(required).to_numpy()
     km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = km.fit_predict(X)
-    df["cluster"] = labels
+    df = df.with_columns(pl.Series("cluster", labels))
 
     # 每群統計
     cluster_stats = []
     for cid in range(n_clusters):
-        mask = df["cluster"] == cid
-        subset = df[mask]
+        subset = df.filter(pl.col("cluster") == cid)
         avg_mfe = float(subset["max_favorable_pct"].mean())
         avg_mae = float(subset["max_adverse_pct"].mean())
         avg_pnl = float(subset["trade_pnl_pct"].mean()) if "trade_pnl_pct" in df.columns else None
@@ -73,7 +72,7 @@ def cluster_trades(
             "avg_mfe": round(avg_mfe, 4),
             "avg_mae": round(avg_mae, 4),
             "avg_pnl": round(avg_pnl, 4) if avg_pnl is not None else None,
-            "count": int(mask.sum()),
+            "count": subset.height,
             "quality": round(quality, 4),
         })
 
@@ -109,7 +108,7 @@ def learn_trade_quality_rules(
     if "error" in cluster_result:
         return {"error": cluster_result["error"]}
 
-    df = pd.DataFrame(trades)
+    df = pl.DataFrame(trades)
     labels = cluster_result["cluster_labels"]
     good_id = cluster_result["good_cluster_id"]
 
@@ -120,7 +119,7 @@ def learn_trade_quality_rules(
     if not available:
         return {"error": "no_feature_columns_available"}
 
-    X = df[available].values
+    X = df.select(available).to_numpy()
     # 處理 NaN
     from numpy import nan_to_num
     X = nan_to_num(X, nan=0.0)

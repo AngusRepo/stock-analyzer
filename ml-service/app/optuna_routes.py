@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 
@@ -52,11 +53,11 @@ class OptunaReq(BaseModel):
 # ─── Helper: 從 D1 載入資料 ───────────────────────────────────────────────────
 
 def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
-    """For barrier search: 找資料最多的 active 股票們，回傳 [{symbol, prices: [...]}, ...]"""
+    """For barrier search: 找資料最多的 tradable 股票，回傳 [{symbol, prices: [...]}, ...]"""
     stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.is_active = 1
+        WHERE s.delisted_date IS NULL
         GROUP BY s.id HAVING cnt >= ?
         ORDER BY cnt DESC LIMIT ?
     """, [min_rows, top_n])
@@ -119,7 +120,6 @@ def run_barrier_search(req: OptunaReq = Body(default=OptunaReq())):
     _ensure_scripts_in_path()
     try:
         from optuna_barrier import run_optuna_search  # type: ignore
-        import pandas as pd
     except ImportError as e:
         # Debug: show sys.path + /root/scripts existence
         import os
@@ -140,8 +140,8 @@ def run_barrier_search(req: OptunaReq = Body(default=OptunaReq())):
 
     all_data = {}
     for s in stocks_data:
-        df = pd.DataFrame(s["rows"])
-        df["date"] = pd.to_datetime(df["date"])
+        df = pl.DataFrame(s["rows"])
+        df = df.with_columns(pl.col("date").str.to_date())
         all_data[s["symbol"]] = df
 
     logger.info(f"[Optuna/barrier] Running on {len(all_data)} stocks, {req.n_trials} trials")
@@ -174,7 +174,6 @@ def run_signal_search(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna #2: Signal thresholds (strong/buy/hold/consensus/confidence)"""
     try:
         from optuna_signal import run_search  # type: ignore
-        import pandas as pd
     except ImportError as e:
         raise HTTPException(500, f"optuna_signal import failed: {e}")
 
@@ -183,8 +182,8 @@ def run_signal_search(req: OptunaReq = Body(default=OptunaReq())):
     if len(orders_rows) < 20 or len(pred_rows) < 50:
         raise HTTPException(400, f"Insufficient data: orders={len(orders_rows)}, predictions={len(pred_rows)}")
 
-    orders = pd.DataFrame(orders_rows)
-    predictions = pd.DataFrame(pred_rows)
+    orders = pl.DataFrame(orders_rows)
+    predictions = pl.DataFrame(pred_rows)
 
     logger.info(f"[Optuna/signal] Running on {len(orders)} orders, {len(predictions)} predictions, {req.n_trials} trials")
     result = run_search(predictions, orders, n_trials=req.n_trials)
@@ -214,7 +213,6 @@ def run_sltp_search(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna #3: SL/TP + Trailing (sl_mult / tp_mult / trailMult* / trail_switch_*)"""
     try:
         from optuna_sltp import run_search  # type: ignore
-        import pandas as pd
     except ImportError as e:
         raise HTTPException(500, f"optuna_sltp import failed: {e}")
 
@@ -222,7 +220,7 @@ def run_sltp_search(req: OptunaReq = Body(default=OptunaReq())):
     if len(orders_rows) < 20:
         raise HTTPException(400, f"Insufficient orders: {len(orders_rows)}")
 
-    orders = pd.DataFrame(orders_rows)
+    orders = pl.DataFrame(orders_rows)
 
     logger.info(f"[Optuna/sltp] Running on {len(orders)} orders, {req.n_trials} trials")
     result = run_search(orders, n_trials=req.n_trials)
@@ -356,7 +354,7 @@ def run_rrg_search(req: OptunaReq = Body(default=OptunaReq())):
     top_stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.is_active = 1
+        WHERE s.delisted_date IS NULL
         GROUP BY s.id HAVING cnt >= 100
         ORDER BY cnt DESC LIMIT 10
     """)

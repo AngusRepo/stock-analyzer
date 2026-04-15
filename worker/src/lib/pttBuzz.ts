@@ -130,12 +130,14 @@ export async function loadBuzzKeywords(db: D1Database, kv?: KVNamespace): Promis
     if (cached) return cached
   }
 
-  // 從 D1 讀取所有 tags + 成員股名稱
+  // 從 D1 讀取所有 concept tags + 成員股名稱
+  // Phase 6.6 follow-up: filter to concept-only. Without this, industry +
+  // subindustry tags become buzz keywords and pollute concept_buzz counts.
   const { results: tagRows } = await db.prepare(`
     SELECT st.tag, s.name
     FROM stock_tags st
     JOIN stocks s ON s.symbol = st.symbol
-    WHERE st.weight >= 0.3
+    WHERE st.weight >= 0.3 AND st.tag_type = 'concept'
     ORDER BY st.tag, st.weight DESC
   `).all<{ tag: string; name: string }>()
 

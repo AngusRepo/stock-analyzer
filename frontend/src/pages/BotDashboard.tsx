@@ -529,31 +529,15 @@ function TradeHistory() {
 // ─── Bot Status（Live Cron Logs）─────────────────────────────────────────────
 
 function BotStatusPanel() {
-  const [expanded, setExpanded] = useState<string | null>(null)
   const { data: risk } = useQuery({
     queryKey: ['market', 'risk'],
     queryFn: marketApi.risk,
     staleTime: 5 * 60_000,
   })
-  const { data: cronData } = useQuery({
-    queryKey: ['paper', 'cronLogs'],
-    queryFn: () => paperApi.cronLogs(),
-    staleTime: 60_000,
-  })
-  const { data: scheduleData } = useQuery({
-    queryKey: ['cron', 'schedule'],
-    queryFn: cronApi.schedule,
-    staleTime: 30 * 60_000, // 排程幾乎不變，30 min cache
-  })
-  const cronTimes: Record<string, string> = Object.fromEntries(
-    (scheduleData?.schedule ?? []).map(s => [s.task, s.tw_time])
-  )
 
   const riskScore = risk?.risk_score ?? risk?.riskScore ?? 50
   const riskLevel = risk?.risk_level ?? risk?.riskLevel ?? 'medium'
   const riskColor = riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'
-
-  const logs: any[] = cronData?.logs ?? []
 
   return (
     <div className="space-y-4">
@@ -570,56 +554,9 @@ function BotStatusPanel() {
         </div>
       </div>
 
-      {/* Cron Logs */}
-      <div className="space-y-1">
-        {logs.map((log: any) => {
-          const isSuccess = log.status === 'success'
-          const isError = log.status === 'error'
-          const isPending = log.status === 'skipped'
-          const isExpanded = expanded === log.task
-          const time = cronTimes[log.task] ?? ''
-
-          return (
-            <div key={log.task}>
-              <div
-                className={`flex items-center justify-between p-2 rounded cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/40' : ''}`}
-                onClick={() => setExpanded(isExpanded ? null : log.task)}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
-                    isSuccess ? 'bg-emerald-400' : isError ? 'bg-red-400' : 'bg-muted-foreground/60'
-                  }`} />
-                  <span className="text-sm text-foreground/80 truncate">{log.task.replace(/-/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}</span>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {!isPending && (
-                    <span className="text-[10px] text-muted-foreground font-mono hidden sm:inline">
-                      {log.duration_ms > 0 ? `${(log.duration_ms / 1000).toFixed(1)}s` : ''}
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground font-mono">{time}</span>
-                </div>
-              </div>
-              {isExpanded && !isPending && (
-                <div className="ml-6 px-3 py-2 text-xs bg-muted/30 rounded-b mb-1">
-                  <div className={isError ? 'text-red-400' : 'text-muted-foreground'}>{log.summary}</div>
-                  {log.timestamp && (
-                    <div className="text-muted-foreground/60 mt-1">
-                      {new Date(new Date(log.timestamp).getTime() + 8 * 3600_000).toISOString().slice(11, 19)} TW
-                    </div>
-                  )}
-                  {log.error && <div className="text-red-500/70 mt-1 font-mono text-[10px] break-all">{log.error.slice(0, 200)}</div>}
-                </div>
-              )}
-            </div>
-          )
-        })}
-        {logs.length === 0 && (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            <Clock className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            <p>今日尚無 Cron 執行紀錄</p>
-          </div>
-        )}
+      {/* Cron Logs → moved to Scheduler Dashboard */}
+      <div className="text-center py-4 text-muted-foreground text-sm">
+        <p>Cron 排程已移至 <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
       </div>
     </div>
   )

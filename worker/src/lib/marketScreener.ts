@@ -320,26 +320,26 @@ async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandi
   // source='screener' 且非 pinned → 全部先停用，再由 Step 2 重新啟用本輪候選
   // pinned=1（使用者手動加的）永遠不被 screener 輪換影響
   if (!candidates.length) {
-    await db.prepare("UPDATE stocks SET is_active=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
+    await db.prepare("UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
     return
   }
 
   const placeholders = candidateSymbols.map(() => '?').join(',')
   await db.prepare(
-    `UPDATE stocks SET is_active=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
+    `UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
   ).bind(...candidateSymbols).run()
 
   // ── Step 2: Upsert 候選股票 ────────────────────────────────────────────
-  // pinned 股票：只更新 is_active=1、sector，不動 source
+  // pinned 股票：只更新 in_current_watchlist=1、sector，不動 source
   // 非 pinned 股票：source 設為 screener，下一輪可被正確輪換
   const batch = candidates.map(c => {
     // 根據資料來源判斷市場：TPEX API 來的是 OTC，其餘為 TWSE
     const market = tpexSymbolSet.has(c.symbol) ? 'OTC' : 'TWSE'
     return db.prepare(`
-      INSERT INTO stocks (symbol, name, market, sector, is_active, source)
+      INSERT INTO stocks (symbol, name, market, sector, in_current_watchlist, source)
       VALUES (?, ?, ?, ?, 1, 'screener')
       ON CONFLICT(symbol) DO UPDATE SET
-        is_active=1,
+        in_current_watchlist=1,
         market=excluded.market,
         source=CASE WHEN COALESCE(stocks.pinned,0)=1 THEN stocks.source ELSE 'screener' END,
         sector=COALESCE(excluded.sector, stocks.sector),
@@ -414,7 +414,9 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
  * 技術(0-30): RSI 40-80 全給分，超買不扣分（FinLab 驗證）
  * 動能(0-20): 超額報酬 + 量能比 + 價格意圖因子 + RSI 鈍化
  */
-function scoreMultiFactor(
+// Sprint 6a.7b: exported for cross-runtime parity test
+// (ml-controller/tests/test_screener_parity.py)
+export function scoreMultiFactor(
   prices: FMStockPrice[],
   chipDates: Map<string, { foreign: number; trust: number }> | undefined,
   marketReturn5d: number,
@@ -430,15 +432,22 @@ function scoreMultiFactor(
   if (chipDates) {
     let netBuyShares = 0  // 5 日淨買超股數
     let consecBuyDays = 0
+    // Sprint 6a.7b M11 fix (2026-04-08): count consecutive buy days from the
+    // most recent day going back, stopping at the first non-positive day.
+    // Previous impl zeroed consecBuyDays when hitting a negative mid-loop,
+    // which lost the count entirely — e.g. [-,+,+,+,+] returned 0 instead of 4.
+    // Python backtest_engine.score_multi_factor had this semantics already.
+    // See memory/mistake.md M11.
     const sortedDates = [...chipDates.keys()].sort().slice(-5)
+    let streakBroken = false
     for (let i = sortedDates.length - 1; i >= 0; i--) {
       const d = sortedDates[i]
       const nets = chipDates.get(d)!
       const dayNet = nets.foreign + nets.trust
       netBuyShares += dayNet
-      if (i === sortedDates.length - 1 || consecBuyDays > 0) {
+      if (!streakBroken) {
         if (dayNet > 0) consecBuyDays++
-        else if (i < sortedDates.length - 1) consecBuyDays = 0
+        else streakBroken = true
       }
     }
 
@@ -593,293 +602,13 @@ function scoreMultiFactor(
   return { base_score, chip_score, tech_score, momentum_score, reasons }
 }
 
-/** RRG 象限判定 */
-function classifyQuadrant(rsRatio: number, rsMomentum: number): string {
-  if (rsRatio > 100 && rsMomentum > 0) return 'Leading'
-  if (rsRatio <= 100 && rsMomentum > 0) return 'Improving'
-  if (rsRatio > 100 && rsMomentum <= 0) return 'Weakening'
-  return 'Lagging'
-}
+// RRG logic (classifyQuadrant / backfillRRG / calcIndustryRRG) removed in Phase 6.6
+// of 4/8 audit. The Z-score formula used here was incorrect (not Julius de Kempenaer
+// RRG). RRG is now computed by ml-controller/services/sector_flow_service.py using
+// the vs-TWII benchmark formula (1+group_ret)/(1+twii_ret)*100. V2 LangGraph
+// daily_pipeline_v2.py → node_compute_sector_flow writes sector_flow with the
+// correct formula for both concept ('theme') and industry tag_types.
 
-/**
- * 一次性回填 RRG 歷史 — 對過去 N 個交易日逐日計算 RS-Ratio/Momentum 寫入 sector_flow
- */
-export async function backfillRRG(env: Bindings): Promise<{ filled: number; dates: string[] }> {
-  const industryMap = await getIndustryMapping(env.DB, env.KV)
-  if (!industryMap.size) return { filled: 0, dates: [] }
-
-  // 取所有有 stock_prices 的交易日（近 30 天）
-  const { results: dateRows } = await env.DB.prepare(
-    "SELECT DISTINCT date FROM stock_prices WHERE date >= date('now', '-40 days') ORDER BY date"
-  ).all<{ date: string }>()
-  const tradingDates = (dateRows ?? []).map(r => r.date)
-  if (tradingDates.length < 2) return { filled: 0, dates: [] }
-
-  const rsWindow = 15  // 固定用 15 天窗口回填
-  const emaSpan = 8
-  const filledDates: string[] = []
-
-  // 逐日計算
-  for (let i = rsWindow; i < tradingDates.length; i++) {
-    const targetDate = tradingDates[i]
-    const windowStartDate = tradingDates[i - rsWindow]
-
-    // 查每支股票在 windowStartDate 和 targetDate 的收盤價
-    const { results: priceRows } = await env.DB.prepare(`
-      SELECT s.symbol,
-        (SELECT sp1.close FROM stock_prices sp1 WHERE sp1.stock_id = s.id AND sp1.date = ?) as old_close,
-        (SELECT sp2.close FROM stock_prices sp2 WHERE sp2.stock_id = s.id AND sp2.date = ?) as recent_close
-      FROM stocks s
-      WHERE EXISTS (SELECT 1 FROM stock_tags st WHERE st.symbol = s.symbol AND st.tag_type = 'industry')
-    `).bind(windowStartDate, targetDate).all<{ symbol: string; old_close: number | null; recent_close: number | null }>()
-
-    // 按產業聚合報酬
-    const industryReturns = new Map<string, number[]>()
-    for (const r of (priceRows ?? [])) {
-      if (!r.recent_close || !r.old_close || r.old_close <= 0) continue
-      const industry = industryMap.get(r.symbol)
-      if (!industry) continue
-      const ret = (r.recent_close - r.old_close) / r.old_close
-      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
-      industryReturns.get(industry)!.push(ret)
-    }
-
-    // Z-score RS-Ratio
-    const industryAvgMap = new Map<string, number>()
-    for (const [ind, rets] of industryReturns) {
-      if (rets.length >= 3) {
-        industryAvgMap.set(ind, rets.reduce((a, b) => a + b, 0) / rets.length)
-      }
-    }
-    const avgValues = [...industryAvgMap.values()]
-    if (!avgValues.length) continue
-    const mean = avgValues.reduce((a, b) => a + b, 0) / avgValues.length
-    const std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
-
-    // 讀前一天的 RS-Ratio 做 EMA
-    const prevDate = tradingDates[i - 1]
-    const { results: prevRows } = await env.DB.prepare(
-      "SELECT sector, rs_ratio FROM sector_flow WHERE date = ? AND classification = 'industry' AND rs_ratio IS NOT NULL"
-    ).bind(prevDate).all<{ sector: string; rs_ratio: number }>()
-    const prevRsMap = new Map<string, number>()
-    for (const r of (prevRows ?? [])) prevRsMap.set(r.sector, r.rs_ratio)
-
-    const k = 2 / (emaSpan + 1)
-    const batch = []
-    for (const [industry, avgRet] of industryAvgMap) {
-      const rawRs = ((avgRet - mean) / std) * 10 + 100
-      const prevRs = prevRsMap.get(industry)
-      const rsRatio = prevRs != null ? prevRs + k * (rawRs - prevRs) : rawRs
-      const rsMomentum = prevRs != null ? rsRatio - prevRs : 0
-      const quadrant = classifyQuadrant(rsRatio, rsMomentum)
-      const members = industryReturns.get(industry)?.length ?? 0
-
-      batch.push(env.DB.prepare(`
-        INSERT INTO sector_flow (date, sector, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, stock_count, up_count, classification, rs_ratio, rs_momentum, quadrant)
-        VALUES (?, ?, 0, 0, 0, NULL, 0, ?, 0, 'industry', ?, ?, ?)
-        ON CONFLICT(date, sector, classification) DO UPDATE SET
-          rs_ratio=excluded.rs_ratio, rs_momentum=excluded.rs_momentum, quadrant=excluded.quadrant,
-          stock_count=excluded.stock_count, classification='industry'
-      `).bind(targetDate, industry, members, rsRatio, rsMomentum, quadrant))
-    }
-
-    const BATCH_SIZE = 50
-    for (let b = 0; b < batch.length; b += BATCH_SIZE) {
-      await env.DB.batch(batch.slice(b, b + BATCH_SIZE))
-    }
-    filledDates.push(targetDate)
-  }
-
-  return { filled: filledDates.length, dates: filledDates }
-}
-
-/**
- * Step 3: RRG 產業輪動計算（Regime-conditioned 參數）
- *
- * 每個官方產業用等權平均報酬 vs 大盤，計算 RS-Ratio/Momentum/Quadrant
- */
-async function calcIndustryRRG(
-  data: StockDailyData,
-  industryMap: Map<string, string>,
-  env: Bindings,
-  cfg: TradingConfig,
-  endDate: string,
-): Promise<Map<string, { rsRatio: number; rsMomentum: number; quadrant: string; bonus: number }>> {
-  const result = new Map<string, { rsRatio: number; rsMomentum: number; quadrant: string; bonus: number }>()
-
-  // ── Regime detection → 決定 RRG 參數 ──
-  let rsWindow = 20, emaSpan = 10, momLookback = 10
-  try {
-    // 讀 market_risk
-    const riskRow = await env.DB.prepare(
-      'SELECT risk_level FROM market_risk ORDER BY date DESC LIMIT 1'
-    ).first<{ risk_level: string }>()
-    const riskLevel = riskRow?.risk_level ?? 'green'
-
-    // 讀 HMM regime
-    const regimeStr = await env.KV.get('ml:regime')
-    const regime = regimeStr ?? 'sideways'
-
-    // P3-11: ATR V 轉指標 — 全市場高波動股 ATR/Close > 8% = 急跌末段
-    const atrVTurn = await env.DB.prepare(`
-      SELECT AVG(ti.atr14 / sp.close * 100) as avg_natr
-      FROM technical_indicators ti
-      JOIN stock_prices sp ON ti.stock_id = sp.stock_id AND ti.date = sp.date
-      WHERE ti.date = (SELECT MAX(date) FROM technical_indicators)
-      AND ti.atr14 IS NOT NULL AND sp.close > 0
-    `).first<{ avg_natr: number }>().catch(() => null)
-    const marketNatr = atrVTurn?.avg_natr ?? 0
-    if (marketNatr > 8) {
-      console.log(`[RRG] ATR V-turn detected: market NATR=${marketNatr.toFixed(1)}% > 8% → 急跌末段`)
-    }
-
-    if (riskLevel === 'red' || riskLevel === 'black') {
-      rsWindow = 10; emaSpan = 5; momLookback = 5
-      console.log(`[RRG] High vol mode (risk=${riskLevel}): window=${rsWindow}`)
-    } else if (regime.includes('bull') || regime.includes('bear')) {
-      // Trending → 長窗口
-      rsWindow = 25; emaSpan = 12; momLookback = 12
-      console.log(`[RRG] Trending mode (regime=${regime}): window=${rsWindow}`)
-    } else {
-      // Range-bound → 標準
-      rsWindow = 15; emaSpan = 8; momLookback = 8
-      console.log(`[RRG] Range-bound mode: window=${rsWindow}`)
-    }
-  } catch (e) {
-    console.warn('[RRG] Regime detection failed, using defaults:', e)
-  }
-
-  // ── 從 D1 stock_prices 讀 N 日報酬（而非即時 API，確保假日也有完整歷史）──
-  const industryReturns = new Map<string, number[]>()
-  try {
-    // 查每支有 industry tag 的股票的 N 日前收盤 vs 最新收盤
-    const { results: returnRows } = await env.DB.prepare(`
-      SELECT s.symbol,
-        (SELECT sp1.close FROM stock_prices sp1 WHERE sp1.stock_id = s.id ORDER BY sp1.date DESC LIMIT 1) as recent_close,
-        (SELECT sp2.close FROM stock_prices sp2 WHERE sp2.stock_id = s.id ORDER BY sp2.date DESC LIMIT 1 OFFSET ?) as old_close
-      FROM stocks s
-      WHERE s.is_active = 1 OR EXISTS (SELECT 1 FROM stock_tags st WHERE st.symbol = s.symbol AND st.tag_type = 'industry')
-    `).bind(rsWindow).all<{ symbol: string; recent_close: number | null; old_close: number | null }>()
-
-    for (const r of (returnRows ?? [])) {
-      if (!r.recent_close || !r.old_close || r.old_close <= 0) continue
-      const industry = industryMap.get(r.symbol)
-      if (!industry) continue
-      const ret = (r.recent_close - r.old_close) / r.old_close
-      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
-      industryReturns.get(industry)!.push(ret)
-    }
-  } catch (e) {
-    // D1 query 失敗 → fallback 用 in-memory data.prices（也是 D1 來源，但已被 buildStockData 處理過）
-    // 兩條 path 同源，fallback 主要 cover D1 timeout / retry edge cases
-    console.warn('[RRG] D1 stock_prices direct query failed, fallback to in-memory data:', e)
-    for (const [stockId, prices] of data.prices) {
-      const industry = industryMap.get(stockId)
-      if (!industry) continue
-      if (prices.length < rsWindow) continue
-      const recent = prices[prices.length - 1].close
-      const nDaysAgo = prices[Math.max(0, prices.length - rsWindow)].close
-      if (recent <= 0 || nDaysAgo <= 0) continue
-      if (!industryReturns.has(industry)) industryReturns.set(industry, [])
-      industryReturns.get(industry)!.push((recent - nDaysAgo) / nDaysAgo)
-    }
-  }
-
-  if (!industryReturns.size) return result
-
-  // 各產業平均報酬 → Z-score 標準化 → RS-Ratio
-  // Z-score: mean=100, 每 1 std = 10 分 → 強弱分明
-  const industryAvgMap = new Map<string, number>()
-  for (const [industry, returns] of industryReturns) {
-    if (returns.length >= 3) {
-      industryAvgMap.set(industry, returns.reduce((a, b) => a + b, 0) / returns.length)
-    }
-  }
-  const avgValues = [...industryAvgMap.values()]
-  const mean = avgValues.reduce((a, b) => a + b, 0) / avgValues.length
-  let std = Math.sqrt(avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / avgValues.length) || 0.001
-
-  // ── Plateau Calibration: 偵測 RS-Ratio 壓縮，放寬 normalization ──
-  // 全市場報酬 std 太低（< 0.005 = 0.5%）→ 所有產業擠在 95-105
-  // 放大 std 使 Z-score 更離散，恢復象限分布
-  if (std < 0.005) {
-    const calibratedStd = 0.005
-    console.log(`[RRG] Plateau detected: std=${(std * 100).toFixed(3)}% < 0.5% → calibrate to ${(calibratedStd * 100).toFixed(1)}%`)
-    std = calibratedStd
-  }
-
-  // ── 計算 RS-Ratio ──
-  // 查歷史 RS-Ratio（用 sector_flow 前日資料算 momentum）
-  let prevRsMap = new Map<string, number>()
-  try {
-    const { results: prevRows } = await env.DB.prepare(
-      `SELECT sector, rs_ratio FROM sector_flow
-       WHERE classification='industry' AND rs_ratio IS NOT NULL AND date < ?
-       ORDER BY date DESC LIMIT 100`
-    ).bind(endDate).all<{ sector: string; rs_ratio: number }>()
-    // 取每個 sector 最近的一筆（已按 date DESC）
-    for (const r of (prevRows ?? [])) {
-      if (!prevRsMap.has(r.sector)) prevRsMap.set(r.sector, r.rs_ratio)
-    }
-  } catch { /* 冷啟動 OK */ }
-
-  // RRG bonus 設定（從 tradingConfig 讀，fallback defaults）
-  const rrg = (cfg as any).rrg ?? {}
-  const leadingBonus = rrg.leadingBonus ?? 10
-  const improvingBonus = rrg.improvingBonus ?? 7
-  const weakeningBonus = rrg.weakeningBonus ?? 0
-  const laggingPenalty = rrg.laggingPenalty ?? -5
-
-  const isColdStart = prevRsMap.size === 0
-
-  for (const [industry, returns] of industryReturns) {
-    if (returns.length < 3) continue  // 太少成員的產業不計
-
-    const avgReturn = industryAvgMap.get(industry)
-    if (avgReturn == null) continue
-    // RS-Ratio = Z-score × 10 + 100
-    // > 100 = 強於中位產業, < 100 = 弱於中位產業
-    // 每 1 std ≈ 10 分：110 = 強 1 std, 90 = 弱 1 std
-    const rawRs = ((avgReturn - mean) / std) * 10 + 100
-    if (industryReturns.size <= 5) {
-      console.log(`[RRG debug] ${industry}: avg=${avgReturn.toFixed(6)} mean=${mean.toFixed(6)} std=${std.toFixed(6)} rawRs=${rawRs.toFixed(2)}`)
-    }
-    // EMA 平滑：如果有前值就做 EMA，沒有就用 raw
-    const prevRs = prevRsMap.get(industry)
-    const k = 2 / (emaSpan + 1)
-    const rsRatio = prevRs != null ? prevRs + k * (rawRs - prevRs) : rawRs
-
-    // RS-Momentum：今日 - N 天前（用 prevRs 近似 N 天前）
-    const rsMomentum = prevRs != null ? rsRatio - prevRs : 0
-
-    const quadrant = classifyQuadrant(rsRatio, rsMomentum)
-    let bonus = 0
-    if (!isColdStart) {
-      // 正常模式：四象限加分
-      if (quadrant === 'Leading') bonus = leadingBonus
-      else if (quadrant === 'Improving') bonus = improvingBonus
-      else if (quadrant === 'Weakening') bonus = weakeningBonus
-      else bonus = laggingPenalty
-    } else {
-      // 冷啟動：沒有 momentum，用 rawRs 強弱排名給分
-      if (rsRatio > 105) bonus = 7       // 明顯強於大盤 → 等同 Improving
-      else if (rsRatio > 100) bonus = 3  // 略強
-      else if (rsRatio >= 95) bonus = 0  // 與大盤同步
-      else bonus = -3                    // 明顯弱於大盤
-    }
-
-    result.set(industry, { rsRatio, rsMomentum, quadrant, bonus })
-  }
-
-  // Debug: print mean, std, and sample rawRs values
-  const sampleRs = [...result.entries()].slice(0, 5).map(([k, v]) => `${k}=${v.rsRatio.toFixed(1)}`).join(', ')
-  console.log(`[RRG] cold=${isColdStart} mean=${mean.toFixed(6)} std=${std.toFixed(6)} prevRsMap.size=${prevRsMap.size} industries=${industryAvgMap.size}`)
-  console.log(`[RRG] sample: ${sampleRs}`)
-
-  // Attach debug info to result for caller to read
-  ;(result as any)._debug = `cold=${isColdStart} mean=${mean.toFixed(6)} std=${std.toFixed(6)} industries=${industryAvgMap.size} prevRs=${prevRsMap.size}`
-  return result
-}
 
 /**
  * Step 5c: 報酬率相關性去重 — Pearson correlation > threshold 的只留最高分
@@ -1186,64 +915,69 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   ]
   debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
-  // ── Step 3: RRG 產業輪動加分 ──
-  console.log('[Screener v2] Step 3: RRG industry rotation...')
-  const rrg = await calcIndustryRRG(data, industryMap, env, cfg, endDate)
-
-  // 寫 sector_flow + sector_heat
+  // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
+  // Part 5 memory 裡 cfg.rrg.*Bonus/Penalty 是 dead code：schema + optuna push 有
+  // 但沒 consumer。這裡接上：讀 ml-controller 寫的 sector_flow (classification='theme'
+  // + 最新 date + 非空 quadrant)，把每檔候選股的 top concept tag 對應到 quadrant，
+  // 然後用 cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}
+  // 調整 score。保留原本 base_score 語意不變（調整後存回 c.score）。
+  // RRG quadrant 本身的 threshold (RS=100, Mom=0) 仍由 _rrg_calculator.py hardcode，
+  // 因為是 de Kempenaer RRG 方法論的數學定義，不該 tunable。
   const sectorHeatScores: SectorHeatScore[] = []
-  for (const [industry, r] of rrg) {
-    // 每個候選加 RRG bonus
-    for (const c of scored) {
-      if (c.industry === industry) c.score += r.bonus
-    }
-    // 建 sector_heat 資料
-    const membersInUniverse = scored.filter(c => c.industry === industry)
-    sectorHeatScores.push({
-      sector: industry,
-      score: r.rsRatio,
-      components: {
-        chipFlow: r.rsRatio,
-        relativeStrength: r.rsMomentum,
-        volumeExpansion: 0,
-        momentum: r.bonus,
-      },
-      stockCount: membersInUniverse.length,
-      topStocks: membersInUniverse.sort((a, b) => b.score - a.score).slice(0, 5).map(c => c.symbol),
-    })
-  }
-  sectorHeatScores.sort((a, b) => b.score - a.score)
+  let rrgAdjustedCount = 0
+  const rrgCfg = cfg.rrg
+  if (rrgCfg && scored.length > 0) {
+    try {
+      const ph = scored.map(() => '?').join(',')
+      // (a) 每檔候選股的 top (highest weight) concept tag
+      const { results: topTagRows } = await env.DB.prepare(
+        `SELECT symbol, tag FROM stock_tags
+         WHERE tag_type='concept' AND symbol IN (${ph})
+         ORDER BY symbol, weight DESC`
+      ).bind(...scored.map(c => c.symbol)).all<{ symbol: string; tag: string }>()
+      const symbolTopTag = new Map<string, string>()
+      for (const r of topTagRows ?? []) {
+        if (!symbolTopTag.has(r.symbol)) symbolTopTag.set(r.symbol, r.tag)
+      }
+      // (b) 最新 sector_flow (theme) 的 quadrant
+      const { results: qRows } = await env.DB.prepare(
+        `SELECT sector, quadrant FROM sector_flow
+         WHERE classification='theme' AND quadrant IS NOT NULL
+           AND date = (SELECT MAX(date) FROM sector_flow
+                       WHERE classification='theme' AND quadrant IS NOT NULL)`
+      ).all<{ sector: string; quadrant: string }>()
+      const themeQuadrant = new Map<string, string>()
+      for (const r of qRows ?? []) themeQuadrant.set(r.sector, r.quadrant)
 
-  // Step 3 debug
-  const rrqSample = [...rrg.entries()].slice(0, 3).map(([k, v]) => `${k}:RS=${v.rsRatio.toFixed(2)}`).join(', ')
-  debugLog.push(`[Step 3] RRG: ${rrg.size} 產業 | ${(rrg as any)._debug ?? 'no debug'} | sample=[${rrqSample}]`)
-  const rrqQuadrants = { Leading: 0, Improving: 0, Weakening: 0, Lagging: 0 }
-  for (const [ind, r] of rrg) {
-    (rrqQuadrants as any)[r.quadrant] = ((rrqQuadrants as any)[r.quadrant] ?? 0) + 1
-  }
-  debugLog.push(`[Step 3] 象限分布: Leading=${rrqQuadrants.Leading} Improving=${rrqQuadrants.Improving} Weakening=${rrqQuadrants.Weakening} Lagging=${rrqQuadrants.Lagging}`)
-  for (const [ind, r] of [...rrg.entries()].sort((a, b) => b[1].rsRatio - a[1].rsRatio).slice(0, 10)) {
-    debugLog.push(`  ${ind}: RS=${r.rsRatio.toFixed(1)} Mom=${r.rsMomentum.toFixed(2)} ${r.quadrant} bonus=${r.bonus}`)
-  }
-
-  // 寫 sector_flow（RRG 資料）
-  try {
-    const flowBatch = [...rrg.entries()].map(([industry, r]) => {
-      const members = scored.filter(c => c.industry === industry)
-      return env.DB.prepare(`
-        INSERT INTO sector_flow (date, sector, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, stock_count, up_count, classification, rs_ratio, rs_momentum, quadrant)
-        VALUES (?, ?, 0, 0, 0, NULL, 0, ?, 0, 'industry', ?, ?, ?)
-        ON CONFLICT(date, sector, classification) DO UPDATE SET
-          rs_ratio=excluded.rs_ratio, rs_momentum=excluded.rs_momentum, quadrant=excluded.quadrant,
-          stock_count=excluded.stock_count, classification='industry'
-      `).bind(endDate, industry, members.length, r.rsRatio, r.rsMomentum, r.quadrant)
-    })
-    const BATCH = 50
-    for (let i = 0; i < flowBatch.length; i += BATCH) {
-      await env.DB.batch(flowBatch.slice(i, i + BATCH))
+      // Apply bonus to each scored candidate
+      for (const c of scored) {
+        const tag = symbolTopTag.get(c.symbol)
+        if (!tag) continue
+        const q = themeQuadrant.get(tag)
+        if (!q) continue
+        let bonus = 0
+        if (q === 'Leading')       bonus = rrgCfg.leadingBonus
+        else if (q === 'Improving') bonus = rrgCfg.improvingBonus
+        else if (q === 'Weakening') bonus = rrgCfg.weakeningBonus
+        else if (q === 'Lagging')   bonus = rrgCfg.laggingPenalty
+        if (bonus !== 0) {
+          c.score += bonus
+          const sign = bonus > 0 ? '+' : ''
+          c.reason = `[RRG ${q} ${sign}${bonus}] ${c.reason}`
+          rrgAdjustedCount++
+        }
+      }
+      debugLog.push(
+        `[Step 3] RRG quadrant bonus applied to ${rrgAdjustedCount}/${scored.length} ` +
+        `(themes loaded: ${themeQuadrant.size}, ` +
+        `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
+      )
+    } catch (e) {
+      console.warn('[Screener v2] RRG quadrant bonus failed (non-fatal):', e)
+      debugLog.push(`[Step 3] RRG quadrant bonus skipped (error): ${e}`)
     }
-  } catch (e) {
-    console.warn('[Screener v2] sector_flow write failed:', e)
+  } else {
+    debugLog.push('[Step 3] RRG quadrant bonus skipped (cfg.rrg missing or empty scored)')
   }
 
   // ── Step 4: 情緒面加分 ──
@@ -1664,9 +1398,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       await env.DB.batch(recBatch.slice(b, b + BATCH))
     }
 
-    // 保證所有候選都 is_active=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
+    // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
     await env.DB.prepare(
-      "UPDATE stocks SET is_active=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
+      "UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
     ).bind(endDate).run()
 
     console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
@@ -1676,7 +1410,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       const { computeAndStoreIndicators } = await import('../routes/stocks')
       const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
-        WHERE s.is_active = 1
+        WHERE s.in_current_watchlist = 1
           AND NOT EXISTS (SELECT 1 FROM technical_indicators ti WHERE ti.stock_id = s.id AND ti.date >= date('now', '-3 days'))
           AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
       `).all<{ id: number; symbol: string }>()
@@ -1711,7 +1445,10 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // Discord 通知
   try {
     const { sendDiscordNotification } = await import('./notify')
-    const leadingIndustries = [...rrg.entries()].filter(([, v]) => v.quadrant === 'Leading').map(([k]) => k).join(', ')
+    // Phase 6.6: RRG moved to ml-controller; screener no longer has in-memory `rrg` map.
+    // Leading industry list omitted from this notification (can be re-added by
+    // querying sector_flow table if needed).
+    const leadingIndustries = ''
     const topCands = finalCandidates.slice(0, 5).map(c => `${c.symbol}${c.name}(${c.score.toFixed(0)})`).join(' ')
     const pttTop = combinedBuzz.slice(0, 3).map(b => `${b.concept}(${b.mentionCount})`).join(', ')
     void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,

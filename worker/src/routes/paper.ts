@@ -18,6 +18,22 @@ import type { Bindings, Variables } from '../types'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// T+2 helper：賣出時不直接加 cash，建 settlement 記錄
+async function recordSellSettlement(
+  db: D1Database, kv: KVNamespace,
+  accountId: number, symbol: string, proceeds: number,
+): Promise<void> {
+  const { getSettlementDate } = await import('../lib/dateUtils')
+  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const settleDate = await getSettlementDate(todayStr, kv)
+  const lastOrder = await db.prepare(
+    "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='sell' ORDER BY id DESC LIMIT 1"
+  ).bind(accountId, symbol).first<{ id: number }>()
+  await db.prepare(
+    "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'sell', ?, ?, ?)"
+  ).bind(accountId, lastOrder?.id ?? 0, symbol, proceeds, todayStr, settleDate).run()
+}
+
 const ACCOUNT_ID = 1
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -160,8 +176,10 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   // Layer 2: ml:adaptive_params.confidence_delta (T+1 daily delta)
   // Layer 3: trading:config.L2_formula.confidence_effective_clip_* (KV-driven clip range)
   // Phase A bandage 讀的 absolute confidence_threshold 已被新公式取代
-  let buyConfBase = cfg.signal?.buySignalScore ?? cc.buyConfThreshold
-  let sellConfBase = cfg.signal?.buySignalScore ?? cc.sellConfThreshold  // sell 用同一 baseline
+  // B1 fix (2026-04-08 audit): buyConfBase 應讀 cc.buyConfThreshold (circuit breaker baseline)
+  // 不是 signal.buySignalScore (那是 ml-controller 訊號分類的 score floor，職責不同)
+  let buyConfBase = cc.buyConfThreshold
+  let sellConfBase = cc.sellConfThreshold
   let confidenceDelta = 0
   const L2 = cfg.L2_formula
   const clipLo = L2?.confidence_effective_clip_lo ?? 0.45
@@ -466,7 +484,7 @@ async function getIntradayPrice(symbol: string, env?: { SHIOAJI_PROXY_URL?: stri
   } catch { return null }
 }
 
-async function batchGetIntradayPrices(symbols: string[], env?: { SHIOAJI_PROXY_URL?: string }): Promise<Map<string, number>> {
+export async function batchGetIntradayPrices(symbols: string[], env?: { SHIOAJI_PROXY_URL?: string }): Promise<Map<string, number>> {
   const map = new Map<string, number>()
   const proxyUrl = env?.SHIOAJI_PROXY_URL
 
@@ -486,12 +504,18 @@ async function batchGetIntradayPrices(symbols: string[], env?: { SHIOAJI_PROXY_U
           const price = (quote as any)?.price
           if (price != null) map.set(sym, price)
         }
-        if (map.size > 0) return map
+        if (map.size > 0) {
+          console.log(`[Price] Shioaji OK: ${map.size} quotes (${[...map.entries()].map(([s,p]) => `${s}=$${p}`).join(', ')})`)
+          return map
+        }
       }
-    } catch { /* fallback to Yahoo */ }
+    } catch (e) {
+      console.warn(`[Price] Shioaji failed, fallback Yahoo: ${e}`)
+    }
   }
 
-  // Layer 2: Yahoo Finance fallback（逐一查）
+  // Layer 2: Yahoo Finance fallback（逐一查，15 分鐘延遲）
+  console.log(`[Price] Shioaji unavailable, using Yahoo fallback for ${symbols.length} symbols`)
   const BATCH = 5
   for (let i = 0; i < symbols.length; i += BATCH) {
     const chunk = symbols.slice(i, i + BATCH)
@@ -835,24 +859,19 @@ paper.post('/buy', async (c) => {
   const commission  = calcCommission(txValue, cfg)
   const totalCost   = txValue + commission   // 買入：支出
 
-  // 檢查資金
+  // T+2 檢查可用購買力（settled cash - pending buys + same-date sell offsets）
   const acc = await c.env.DB.prepare('SELECT cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!acc) return c.json({ error: '帳戶不存在' }, 404)
-  if (acc.cash < totalCost) {
+  const { getAvailableCash, getSettlementDate } = await import('../lib/dateUtils')
+  const availableCash = await getAvailableCash(c.env.DB, ACCOUNT_ID)
+  if (availableCash < totalCost) {
     return c.json({
-      error: `現金不足。需要 NT$${Math.round(totalCost).toLocaleString()}，可用 NT$${Math.round(acc.cash).toLocaleString()}`,
+      error: `可用購買力不足。需要 NT$${Math.round(totalCost).toLocaleString()}，可用 NT$${Math.round(availableCash).toLocaleString()}（已結算 NT$${Math.round(acc.cash).toLocaleString()}）`,
     }, 400)
   }
 
-  // H7: T+2 settlement warning (paper trading only — log, don't block)
-  // In live trading, this must block to prevent settlement violations
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const recentSells = await c.env.DB.prepare(
-    "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')"
-  ).bind(ACCOUNT_ID).first<any>()
-  if (recentSells?.unsettled > 0) {
-    console.warn(`[Paper] T+2 warning: $${recentSells.unsettled} unsettled from recent sells`)
-  }
+  const settlementDate = await getSettlementDate(todayStr, c.env.KV)
 
   // 每日買入額度檢查（防違約交割）
   const MANUAL_DAILY_LIMIT = cfg.position.manualDailyLimit
@@ -876,13 +895,15 @@ paper.post('/buy', async (c) => {
   // 攤入手續費到平均成本
   const newAvgCost = (oldShares * oldCost + txValue + commission) / newShares
 
-  await c.env.DB.batch([
-    // 更新帳戶現金
-    c.env.DB.prepare(
-      "UPDATE paper_accounts SET cash=cash-?, updated_at=datetime('now') WHERE id=?"
-    ).bind(totalCost, ACCOUNT_ID),
+  // T+2：不直接扣 cash，寫 paper_settlements 待結算
+  const orderInsert = c.env.DB.prepare(`
+    INSERT INTO paper_orders
+      (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
+    VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, ?, ?, ?, ?)
+  `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, totalCost, source, signal ?? null, confidence ?? null, note ?? null)
 
-    // Upsert 持倉
+  await c.env.DB.batch([
+    // Upsert 持倉（立即記錄，因為股票 T+0 就能賣）
     c.env.DB.prepare(`
       INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at)
       VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -893,13 +914,19 @@ paper.post('/buy', async (c) => {
         updated_at = datetime('now')
     `).bind(ACCOUNT_ID, symbol, name, newShares, newAvgCost),
 
-    // 新增委託記錄
-    c.env.DB.prepare(`
-      INSERT INTO paper_orders
-        (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
-      VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, ?, ?, ?, ?)
-    `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, totalCost, source, signal ?? null, confidence ?? null, note ?? null),
+    // 委託記錄
+    orderInsert,
   ])
+
+  // 拿 order_id 來建 settlement 記錄
+  const lastOrder = await c.env.DB.prepare(
+    "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1"
+  ).bind(ACCOUNT_ID, symbol).first<{ id: number }>()
+
+  await c.env.DB.prepare(`
+    INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date)
+    VALUES (?, ?, ?, 'buy', ?, ?, ?)
+  `).bind(ACCOUNT_ID, lastOrder?.id ?? 0, symbol, totalCost, todayStr, settlementDate).run()
 
   return c.json({
     status: 'success',
@@ -956,13 +983,19 @@ paper.post('/sell', async (c) => {
   const realizedPnl    = proceeds - costBasis
   const realizedPnlPct = costBasis > 0 ? (realizedPnl / costBasis * 100) : 0
 
-  await c.env.DB.batch([
-    // 更新帳戶現金（加回賣出所得）
-    c.env.DB.prepare(
-      "UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?"
-    ).bind(proceeds, ACCOUNT_ID),
+  // T+2：不直接加 cash，寫 paper_settlements 待結算
+  const { getSettlementDate } = await import('../lib/dateUtils')
+  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const settlementDate = await getSettlementDate(todayStr, c.env.KV)
 
-    // 更新/刪除持倉
+  const sellOrderInsert = c.env.DB.prepare(`
+    INSERT INTO paper_orders
+      (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
+    VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, note ?? null)
+
+  await c.env.DB.batch([
+    // 更新/刪除持倉（立即反映，因為已不持有）
     newShares > 0
       ? c.env.DB.prepare(
           "UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?"
@@ -971,13 +1004,19 @@ paper.post('/sell', async (c) => {
           'DELETE FROM paper_positions WHERE account_id=? AND symbol=?'
         ).bind(ACCOUNT_ID, symbol),
 
-    // 新增委託記錄（total_cost 存賣出收入正值，方便加總）
-    c.env.DB.prepare(`
-      INSERT INTO paper_orders
-        (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
-      VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, note ?? null),
+    // 委託記錄
+    sellOrderInsert,
   ])
+
+  // 拿 order_id 來建 settlement 記錄
+  const lastSellOrder = await c.env.DB.prepare(
+    "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='sell' ORDER BY id DESC LIMIT 1"
+  ).bind(ACCOUNT_ID, symbol).first<{ id: number }>()
+
+  await c.env.DB.prepare(`
+    INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date)
+    VALUES (?, ?, ?, 'sell', ?, ?, ?)
+  `).bind(ACCOUNT_ID, lastSellOrder?.id ?? 0, symbol, proceeds, todayStr, settlementDate).run()
 
   return c.json({
     status: 'success',
@@ -1543,11 +1582,31 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   // 取即時價格
   const pendingSymbols = pendingBuys.map(b => b.symbol)
   const priceMap = await batchGetIntradayPrices(pendingSymbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
+
+  // F3b: Zero-price alert — Shioaji 回 0/null 時不 silently skip，寫 KV + Discord
+  const zeroPriceSymbols = pendingSymbols.filter(s => !priceMap.has(s) || priceMap.get(s) === 0)
+  if (zeroPriceSymbols.length > 0) {
+    const errMsg = `Shioaji 零價格: ${zeroPriceSymbols.join(',')}`
+    console.error(`[Intraday] ⚠️ ${errMsg}`)
+    const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    await env.KV.put(`cron:log:intraday-error:${today}`, JSON.stringify({
+      error: errMsg, symbols: zeroPriceSymbols, timestamp: new Date().toISOString(),
+    }), { expirationTtl: 86400 })
+    if ((env as any).DISCORD_WEBHOOK_URL) {
+      void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
+        `⚠️ **Shioaji 報價異常** ${errMsg}（${zeroPriceSymbols.length}/${pendingSymbols.length} 筆）`)
+    }
+  }
   if (priceMap.size === 0) return
 
   // 帳戶 + 持倉資訊（for position sizing）
   const acc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
-  if (!acc || acc.cash < cfg.position.minCashToTrade) return
+  if (!acc) return
+  // T+2：用可用購買力（settled cash - pending buys + same-date sell offsets）
+  const { getAvailableCash: _getAvailCash } = await import('../lib/dateUtils')
+  const _availCash = await _getAvailCash(env.DB, ACCOUNT_ID)
+  ;(acc as any).cash = _availCash  // override for sizing logic downstream
+  if (_availCash < cfg.position.minCashToTrade) return
 
   const { results: positions } = await env.DB.prepare(
     'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0'
@@ -1833,6 +1892,64 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
 
+    // ── F4: Momentum Confirmation Gate（觸價後二次確認）──────────────────
+    const proxyUrl = (env as any).SHIOAJI_PROXY_URL as string | undefined
+    if (proxyUrl) {
+      try {
+        // Get snapshot for volume + day range
+        const snapRes = await fetch(`${proxyUrl}/snapshot/${pending.symbol}`, {
+          headers: { 'Authorization': `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        const snapData = snapRes.ok ? ((await snapRes.json()) as any)?.data : null
+
+        // Get 5-min trend
+        const trendRes = await fetch(`${proxyUrl}/trend/${pending.symbol}?minutes=5`, {
+          headers: { 'Authorization': `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        const trendData = trendRes.ok ? (await trendRes.json()) as any : null
+
+        if (snapData) {
+          // Filter 1: Volume ratio（量不夠不買）
+          const avgVolRow = await env.DB.prepare(
+            'SELECT AVG(sp.volume) as avg_vol FROM stock_prices sp JOIN stocks s ON s.id=sp.stock_id WHERE s.symbol=? ORDER BY sp.date DESC LIMIT 20'
+          ).bind(pending.symbol).first<any>()
+          const avgVol = avgVolRow?.avg_vol ?? 0
+          const twNow = new Date(Date.now() + 8 * 3600_000)
+          const minutesSinceOpen = Math.max(1, (twNow.getUTCHours() * 60 + twNow.getUTCMinutes()) - 9 * 60)
+          const timePct = Math.max(0.1, minutesSinceOpen / 270)
+          if (avgVol > 0) {
+            const volRatio = (snapData.total_volume ?? 0) / (avgVol * timePct)
+            const minVolRatio = cfg.momentum?.minVolumeRatio ?? 0.8
+            if (volRatio < minVolRatio) {
+              console.log(`[Momentum] ⏳ ${pending.symbol} vol_ratio=${volRatio.toFixed(2)} < ${minVolRatio}, defer`)
+              continue
+            }
+          }
+
+          // Filter 2: 5-min trend（下跌中不買）
+          if (trendData && trendData.slope_5min < 0) {
+            console.log(`[Momentum] ⏳ ${pending.symbol} 5min_slope=${(trendData.slope_5min * 100).toFixed(2)}% < 0, still falling, defer`)
+            continue
+          }
+
+          // Filter 3: Day range position（太靠近低點不買）
+          if (snapData.high > snapData.low) {
+            const rangePos = (price - snapData.low) / (snapData.high - snapData.low)
+            const minRangePos = cfg.momentum?.minRangePosition ?? 0.3
+            if (rangePos < minRangePos) {
+              console.log(`[Momentum] ⏳ ${pending.symbol} range_pos=${(rangePos * 100).toFixed(0)}% < ${(minRangePos * 100).toFixed(0)}%, defer`)
+              continue
+            }
+          }
+        }
+      } catch (e) {
+        // Momentum check is non-blocking — if proxy fails, proceed with buy
+        console.warn(`[Momentum] ${pending.symbol} check failed: ${e}, proceeding with buy`)
+      }
+    }
+
     // P1#12: Position count check (including any swaps done above)
     const currentCount = await env.DB.prepare(
       'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0'
@@ -1925,8 +2042,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       ? (oldShares * oldAvgCost + txValue + commission) / updatedShares
       : totalCost / shares
 
+    // T+2：不直接扣 cash，寫 settlement
     await env.DB.batch([
-      env.DB.prepare("UPDATE paper_accounts SET cash=cash-?, updated_at=datetime('now') WHERE id=?").bind(totalCost, ACCOUNT_ID),
       env.DB.prepare(`
         INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
           entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
@@ -1959,7 +2076,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
               })),
     ])
 
-    ;(acc as any).cash -= totalCost
+    // T+2 settlement record
+    const autoOrderId = await env.DB.prepare(
+      "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1"
+    ).bind(ACCOUNT_ID, pending.symbol).first<{ id: number }>()
+    const { getSettlementDate } = await import('../lib/dateUtils')
+    const settleDate = await getSettlementDate(today, env.KV)
+    await env.DB.prepare(
+      "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)"
+    ).bind(ACCOUNT_ID, autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
+
+    ;(acc as any).cash -= totalCost  // local tracking for sizing within same cron run
     dailyBuyTotal += totalCost
     sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
@@ -2052,7 +2179,7 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     const proceeds = txValue - commission - tax
 
     await env.DB.batch([
-      env.DB.prepare("UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?").bind(proceeds, ACCOUNT_ID),
+      // T+2: cash 結算延後到 settlement，此處不直接加 cash
       env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
       env.DB.prepare(`
         INSERT INTO paper_orders
@@ -2061,6 +2188,7 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
       `).bind(ACCOUNT_ID, pos.symbol, pos.name, shares, price, commission, tax, proceeds,
               null, JSON.stringify({ reason: `[13:25 當沖強制平倉] ${decision.reason}`, entry_price: pos.entry_price ?? pos.avg_cost, entry_date: pos.entry_date })),
     ])
+    await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
     const pnl = (price - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
     console.log(`[DayTrade] 13:25 強制平倉 ${pos.symbol} ${shares}股 @ ${price}（${(pnl * 100).toFixed(1)}%）`)
     void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
@@ -2133,7 +2261,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const proceeds = txValue - commission - tax
 
       await env.DB.batch([
-        env.DB.prepare("UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?").bind(proceeds, ACCOUNT_ID),
+        // T+2: cash 結算延後到 settlement，此處不直接加 cash
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
@@ -2144,6 +2272,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
                 JSON.stringify({ reason: decision.reason, entry_price: pos.entry_price, entry_date: pos.entry_date,
                   days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null })),
       ])
+      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
       const entryPx = pos.entry_price ?? pos.avg_cost
       const exitPnl = (currentPrice - entryPx) / entryPx
       const daysHeld = pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
@@ -2161,7 +2290,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const remainingShares = pos.shares - sellShares
 
       await env.DB.batch([
-        env.DB.prepare("UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?").bind(proceeds, ACCOUNT_ID),
+        // T+2: cash 結算延後到 settlement，此處不直接加 cash
         env.DB.prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=1,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
@@ -2174,6 +2303,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_tp1', 'TP1', ?, ?)
         `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, currentPrice, commission, tax, proceeds, null, decision.reason),
       ])
+      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
       const tp1Pnl = (currentPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
       console.log(`[EODExit] TP1 ${pos.symbol} ${sellShares}股 @ ${currentPrice}`)
       void sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
@@ -2394,7 +2524,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const proceeds = txValue - commission - tax
 
       await env.DB.batch([
-        env.DB.prepare("UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?").bind(proceeds, ACCOUNT_ID),
+        // T+2: cash 結算延後到 settlement，此處不直接加 cash
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
@@ -2403,6 +2533,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         `).bind(ACCOUNT_ID, pos.symbol, pos.name, shares, sellFillPrice, commission, tax, proceeds,
                 null, JSON.stringify({ reason: `[盤中] ${decision.reason} (市價${currentPrice} -1tick滑價)`, entry_price: pos.entry_price ?? pos.avg_cost, entry_date: pos.entry_date })),
       ])
+      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
       console.warn(`[Intraday] 出場 ${pos.symbol} ${shares}股 @ ${sellFillPrice}（市價${currentPrice}） — ${decision.reason}`)
       const intradayPnl = (sellFillPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
       void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,
@@ -2418,7 +2549,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const remainingShares = pos.shares - sellShares
 
       await env.DB.batch([
-        env.DB.prepare("UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?").bind(proceeds, ACCOUNT_ID),
+        // T+2: cash 結算延後到 settlement，此處不直接加 cash
         env.DB.prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=1,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
@@ -2432,6 +2563,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, currentPrice, commission, tax, proceeds,
                 null, JSON.stringify({ reason: `[盤中] ${decision.reason}`, entry_price: pos.entry_price ?? pos.avg_cost, entry_date: pos.entry_date })),
       ])
+      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
       console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares}股 @ ${currentPrice} — ${decision.reason}`)
       const tp1IntradayPnl = (currentPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
       void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,
@@ -2451,4 +2583,57 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   }
 
   console.log(`[Intraday] 巡檢完成，${positions.length} 持倉，${priceMap.size} 有報價`)
+}
+
+
+// ── Sprint 5.2+: Reusable sell function for intraday re-score auto-exit ──────
+// Extracted from pollIntradayStopLoss full_sell logic for use by Worker cron handler.
+// Only sells overnight positions (day-trade compliance enforced by caller).
+
+export interface RescoreSellParams {
+  symbol: string
+  shares: number
+  price: number
+  reason: string
+  source: string  // 'intraday_rescore'
+}
+
+export async function executeRescoreSell(
+  env: Bindings,
+  params: RescoreSellParams,
+): Promise<void> {
+  const { getTradingConfig } = await import('../lib/tradingConfig')
+  const cfg = await getTradingConfig(env.KV)
+  const { symbol, shares, price, reason, source } = params
+
+  const sellPrice = applySlippage(price, 'sell', 1)
+  const txValue = sellPrice * shares
+  const commission = calcCommission(txValue, cfg)
+  const tax = calcTax(txValue, cfg, false)  // NOT a day-trade (caller ensures overnight only)
+  const proceeds = txValue - commission - tax
+
+  // Read position for entry metadata
+  const pos = await env.DB.prepare(
+    'SELECT name, entry_price, entry_date, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?'
+  ).bind(ACCOUNT_ID, symbol).first<any>()
+
+  const name = pos?.name ?? symbol
+  const entryPrice = pos?.entry_price ?? pos?.avg_cost ?? price
+  const daysHeld = pos?.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
+
+  await env.DB.batch([
+    // T+2: cash 結算延後到 settlement
+    env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, symbol),
+    env.DB.prepare(`
+      INSERT INTO paper_orders
+        (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
+      VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, 'EXIT', NULL, ?)
+    `).bind(
+      ACCOUNT_ID, symbol, name, shares, sellPrice, commission, tax, proceeds, source,
+      JSON.stringify({ reason, entry_price: entryPrice, entry_date: pos?.entry_date, days_held: daysHeld }),
+    ),
+  ])
+  await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, symbol, proceeds)
+
+  console.log(`[Rescore-Sell] ${symbol} ${shares}股 @ ${sellPrice}（進${entryPrice} ${daysHeld}天）— ${reason}`)
 }

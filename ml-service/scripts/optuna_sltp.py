@@ -28,8 +28,9 @@ scripts/optuna_sltp.py — Optuna 搜尋最佳 SL/TP + Trailing 參數
 import argparse
 import json
 import sys
+from datetime import datetime
 import numpy as np
-import pandas as pd
+import polars as pl
 
 try:
     import optuna
@@ -41,26 +42,27 @@ except ImportError:
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
-def load_orders(csv_path: str) -> pd.DataFrame:
+def load_orders(csv_path: str) -> pl.DataFrame:
     """Load paper_orders from CSV."""
-    df = pd.read_csv(csv_path, parse_dates=["created_at"])
-    return df.sort_values("created_at").reset_index(drop=True)
+    df = pl.read_csv(csv_path)
+    df = df.with_columns(pl.col("created_at").str.to_datetime())
+    return df.sort("created_at")
 
 
-def load_orders_from_d1(db_url: str, token: str) -> pd.DataFrame:
+def load_orders_from_d1(db_url: str, token: str) -> pl.DataFrame:
     import httpx
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     resp = httpx.post(f"{db_url}/query", headers=headers, json={
         "sql": """SELECT symbol, side, price, shares, total_cost, confidence, signal,
                   note, created_at FROM paper_orders ORDER BY created_at ASC LIMIT 1000"""
     }, timeout=30)
-    return pd.DataFrame(resp.json().get("results", []))
+    return pl.DataFrame(resp.json().get("results", []))
 
 
 # ── Trade Simulation ─────────────────────────────────────────────────────────
 
 def simulate_trades_with_exit(
-    orders: pd.DataFrame,
+    orders: pl.DataFrame,
     sl_mult: float,
     tp_mult: float,
     trail_default: float,
@@ -77,30 +79,40 @@ def simulate_trades_with_exit(
     Uses actual buy/sell pairs from paper_orders.
     """
     # Pair buy and sell orders by symbol
-    buys = orders[orders["side"] == "buy"].copy()
-    sells = orders[orders["side"] == "sell"].copy()
+    buys = orders.filter(pl.col("side") == "buy")
+    sells = orders.filter(pl.col("side") == "sell")
 
-    if buys.empty:
+    if buys.height == 0:
         return {"profit_factor": 0, "win_rate": 0, "trade_count": 0}
 
+    # Ensure created_at is datetime
+    if buys.schema.get("created_at") == pl.Utf8:
+        buys = buys.with_columns(pl.col("created_at").str.to_datetime())
+    if sells.height > 0 and sells.schema.get("created_at") == pl.Utf8:
+        sells = sells.with_columns(pl.col("created_at").str.to_datetime())
+
     trades = []
-    for _, buy in buys.iterrows():
+    for buy in buys.iter_rows(named=True):
         symbol = buy["symbol"]
         buy_price = buy["price"]
-        buy_date = pd.to_datetime(buy["created_at"])
+        buy_date = buy["created_at"]
+        if isinstance(buy_date, str):
+            buy_date = datetime.fromisoformat(buy_date)
 
         # Find matching sell
-        matching_sells = sells[
-            (sells["symbol"] == symbol) &
-            (pd.to_datetime(sells["created_at"]) > buy_date)
-        ]
+        matching_sells = sells.filter(
+            (pl.col("symbol") == symbol) &
+            (pl.col("created_at") > buy_date)
+        )
 
-        if matching_sells.empty:
+        if matching_sells.height == 0:
             continue
 
-        sell = matching_sells.iloc[0]
+        sell = matching_sells.row(0, named=True)
         sell_price = sell["price"]
-        sell_date = pd.to_datetime(sell["created_at"])
+        sell_date = sell["created_at"]
+        if isinstance(sell_date, str):
+            sell_date = datetime.fromisoformat(sell_date)
 
         actual_pnl_pct = (sell_price - buy_price) / buy_price
         hold_days = (sell_date - buy_date).days
@@ -146,9 +158,9 @@ def simulate_trades_with_exit(
     if not trades:
         return {"profit_factor": 0, "win_rate": 0, "trade_count": 0}
 
-    df_trades = pd.DataFrame(trades)
-    wins = df_trades[df_trades["simulated_pnl_pct"] > 0]["simulated_pnl_pct"]
-    losses = df_trades[df_trades["simulated_pnl_pct"] <= 0]["simulated_pnl_pct"]
+    df_trades = pl.DataFrame(trades)
+    wins = df_trades.filter(pl.col("simulated_pnl_pct") > 0)["simulated_pnl_pct"]
+    losses = df_trades.filter(pl.col("simulated_pnl_pct") <= 0)["simulated_pnl_pct"]
 
     gross_profit = wins.sum() if len(wins) > 0 else 0
     gross_loss = abs(losses.sum()) if len(losses) > 0 else 0.001
@@ -168,7 +180,7 @@ def simulate_trades_with_exit(
 
 # ── Optuna ───────────────────────────────────────────────────────────────────
 
-def create_objective(orders: pd.DataFrame):
+def create_objective(orders: pl.DataFrame):
     def objective(trial: optuna.Trial) -> float:
         sl_mult = trial.suggest_float("sl_mult", 1.0, 3.0, step=0.25)
         tp_mult = trial.suggest_float("tp_mult", 1.0, 3.0, step=0.25)
@@ -201,7 +213,7 @@ def create_objective(orders: pd.DataFrame):
     return objective
 
 
-def run_search(orders: pd.DataFrame, n_trials: int = 200) -> dict:
+def run_search(orders: pl.DataFrame, n_trials: int = 200) -> dict:
     study = optuna.create_study(direction="maximize", study_name="sltp_trailing")
     study.optimize(create_objective(orders), n_trials=n_trials)
 

@@ -146,6 +146,15 @@ export interface TradingConfig {
     trailSwitch8pct: number      // profit-lock 第二階觸發 (預設 0.08)
     volThresholdLow: number      // 低波動定義 (預設 0.015)
     volThresholdHigh: number     // 高波動定義 (預設 0.03)
+    // ── Sprint 5.1 Phase 7 Layer B (2026-04-09): per-vol-branch multipliers ──
+    // 原本 ensemble.py 內部 hardcode 0.75/0.67/1.25/1.33，從沒進 Optuna search space
+    // 預設值等同原 hardcode，behaviour 不變；進 Optuna 後可 tune
+    slMultLow: number            // 低波動 SL 倍率相對 base（預設 0.75）
+    tpMultLow: number            // 低波動 TP 倍率相對 base（預設 0.67）
+    slMultHigh: number           // 高波動 SL 倍率相對 base（預設 1.25）
+    tpMultHigh: number           // 高波動 TP 倍率相對 base（預設 1.33）
+    // ── Sprint 5.1 Phase 7 Layer C (2026-04-09): extreme low vol skip ───────
+    volSkipThreshold: number     // vol_pct < threshold → NO_SIGNAL (預設 0.005)
   }
   // ── 2026-04-07 added: L2 daily formula 內部係數（adaptive.py 用） ──────────
   // 把 hardcoded formula 常數搬到 KV，讓未來 Optuna 可搜
@@ -182,6 +191,23 @@ export interface TradingConfig {
     night_drop_severe_adjust: number   // 嚴重跌 entry 調整（預設 0.98 = -2%）
     night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
     medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
+  }
+  // ── Sprint 5.2+: Intraday Re-score 安控 ───────────────────────────────────
+  // 盤中 10:00/12:00 call ml-controller /intraday/rescore，對持倉 confidence 衰減
+  // 隔夜持倉可自動出場；當日持倉只能 WARN（當沖白名單限制）
+  // See memory/project_instance_scaling_brainstorm.md Part A
+  intraday: {
+    rescoreEnabled: boolean              // feature flag（預設 true）
+    rescoreExitThreshold: number         // confidence 低於此值 → EXIT（預設 0.40）
+    rescoreWarnThreshold: number         // confidence 低於此值 → WARN（預設 0.55）
+    rescoreDecaySensitivity: number      // 每 1% 反向價格變動的 confidence 衰減倍數（預設 5.0）
+    rescoreCooldownMin: number           // 同一檔 re-score 觸發後 N 分鐘內不再觸發（預設 60）
+    maxRescoreExitsPerDay: number        // 每日最多 re-score 觸發出場次數（預設 2）
+  }
+  // ── F4: Intraday Momentum Confirmation（買入二次確認）─────────────────────
+  momentum: {
+    minVolumeRatio: number               // 最低 volume ratio vs 20d avg（預設 0.8）
+    minRangePosition: number             // 最低 day range position（預設 0.3 = 30%）
   }
 }
 
@@ -322,6 +348,13 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     trailSwitch8pct: 0.08,
     volThresholdLow: 0.015,
     volThresholdHigh: 0.03,
+    // Sprint 5.1 Phase 7 Layer B defaults match pre-2026-04-09 ensemble.py hardcode
+    slMultLow: 0.75,
+    tpMultLow: 0.67,
+    slMultHigh: 1.25,
+    tpMultHigh: 1.33,
+    // Sprint 5.1 Phase 7 Layer C default: 0.5% daily vol skip
+    volSkipThreshold: 0.005,
   },
   // ── 2026-04-07 NEW: L2 daily formula 內部係數 ─────────────────────────────
   L2_formula: {
@@ -352,6 +385,18 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     night_drop_severe_adjust: 0.98,
     night_drop_mild_adjust: 0.99,
     medium_risk_scale: 0.5,
+  },
+  intraday: {
+    rescoreEnabled: true,
+    rescoreExitThreshold: 0.40,
+    rescoreWarnThreshold: 0.55,
+    rescoreDecaySensitivity: 5.0,
+    rescoreCooldownMin: 60,
+    maxRescoreExitsPerDay: 2,
+  },
+  momentum: {
+    minVolumeRatio: 0.8,
+    minRangePosition: 0.3,
   },
 }
 
@@ -386,6 +431,8 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     signal: { ...d.signal, ...partial.signal },
     sltp: { ...d.sltp, ...partial.sltp },
     L2_formula: { ...d.L2_formula, ...partial.L2_formula },
+    intraday: { ...d.intraday, ...partial.intraday },
+    momentum: { ...d.momentum, ...partial.momentum },
   }
 }
 

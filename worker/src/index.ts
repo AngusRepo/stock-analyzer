@@ -94,27 +94,89 @@ app.put('/api/admin/config', async (c) => {
   const body = await c.req.json<any>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
   const { setTradingConfig, getTradingConfig, validateTradingConfig } = await import('./lib/tradingConfig')
-  // Merge: 讀取現有 config，覆蓋傳入的欄位
+  // 2026-04-09 fix: position 有 nested sub-object (kelly + swapWeights)，原本的淺層 spread
+  // 會把 `{position: {kelly: {enabled: true}}}` 整個 swapWeights 打掉。改深層 merge。
   const current = await getTradingConfig(c.env.KV)
-  const merged = {
-    fees: { ...current.fees, ...body.fees },
-    circuit: { ...current.circuit, ...body.circuit },
-    exit: { ...current.exit, ...body.exit },
-    position: { ...current.position, ...body.position },
-    screener: { ...current.screener, ...body.screener },
-    rrg: { ...current.rrg, ...body.rrg },
-    barrier: { ...current.barrier, ...body.barrier },
-    ranking: { ...current.ranking, ...body.ranking },  // Sprint 3 P0-4
-    // 2026-04-07 added: Optuna #2/#3 + L2 destinations
-    signal: { ...current.signal, ...body.signal },
-    sltp: { ...current.sltp, ...body.sltp },
-    L2_formula: { ...current.L2_formula, ...body.L2_formula },
+  const mergedPosition = {
+    ...current.position,
+    ...(body.position ?? {}),
+    kelly:       { ...current.position.kelly,       ...(body.position?.kelly ?? {}) },
+    swapWeights: { ...current.position.swapWeights, ...(body.position?.swapWeights ?? {}) },
   }
-  // C4: Validate bounds before persisting
+  const merged = {
+    fees:       { ...current.fees,       ...body.fees },
+    circuit:    { ...current.circuit,    ...body.circuit },
+    exit:       { ...current.exit,       ...body.exit },
+    position:   mergedPosition,
+    screener:   { ...current.screener,   ...body.screener },
+    rrg:        { ...current.rrg,        ...body.rrg },
+    barrier:    { ...current.barrier,    ...body.barrier },
+    ranking:    { ...current.ranking,    ...body.ranking },
+    signal:     { ...current.signal,     ...body.signal },
+    sltp:       { ...current.sltp,       ...body.sltp },
+    L2_formula: { ...current.L2_formula, ...body.L2_formula },
+    intraday:   { ...current.intraday,   ...body.intraday },
+    momentum:   { ...current.momentum,   ...body.momentum },
+  }
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
   await setTradingConfig(c.env.KV, merged)
   return c.json({ success: true, config: merged })
+})
+
+// ─── Admin: Push schema defaults into KV（僅補缺失 subsection） ─────────────
+// 2026-04-09: 用途是補 Sprint 3+4 新加的 subsection（ranking/position.kelly/
+// position.swapWeights 等）到已存在的 trading:config。不會覆蓋已存在的值。
+// 使用：curl -X POST -H 'Authorization: Bearer $TOKEN' .../api/admin/config/push-defaults
+app.post('/api/admin/config/push-defaults', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+  const { getTradingConfig, setTradingConfig, DEFAULT_TRADING_CONFIG } = await import('./lib/tradingConfig')
+  const current = await getTradingConfig(c.env.KV)
+  const d = DEFAULT_TRADING_CONFIG
+  // 深層 merge：defaults 當底、current 覆蓋在上（已存在欄位保留原值）
+  const filled = {
+    fees:       { ...d.fees,       ...current.fees },
+    circuit:    { ...d.circuit,    ...current.circuit },
+    exit:       { ...d.exit,       ...current.exit },
+    position: {
+      ...d.position,
+      ...current.position,
+      kelly:       { ...d.position.kelly,       ...(current.position?.kelly ?? {}) },
+      swapWeights: { ...d.position.swapWeights, ...(current.position?.swapWeights ?? {}) },
+    },
+    screener:   { ...d.screener,   ...current.screener },
+    rrg:        { ...d.rrg,        ...current.rrg },
+    barrier:    { ...d.barrier,    ...current.barrier },
+    ranking:    { ...d.ranking,    ...current.ranking },
+    signal:     { ...d.signal,     ...current.signal },
+    sltp:       { ...d.sltp,       ...current.sltp },
+    L2_formula: { ...d.L2_formula, ...current.L2_formula },
+  }
+  await setTradingConfig(c.env.KV, filled as any)
+  return c.json({
+    success: true,
+    message: 'Schema defaults merged into KV (existing values preserved)',
+    config: filled,
+  })
+})
+
+// ─── Admin: KV 讀取（debug 用，繞過 wrangler 的 Windows UV_HANDLE_CLOSING bug）──
+// 2026-04-09: wrangler kv key get 在本機 Node 17+ Windows 下會 assertion fail crash，
+// 開這條路讓 debug/audit 能直接讀 KV。僅 GET、唯讀、auth required。
+app.get('/api/admin/kv-get', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+  const key = c.req.query('key')
+  if (!key) return c.json({ error: 'Missing ?key= param' }, 400)
+  const type = (c.req.query('type') ?? 'text').toLowerCase()
+  const value = type === 'json'
+    ? await c.env.KV.get(key, 'json')
+    : await c.env.KV.get(key, 'text')
+  if (value === null) return c.json({ key, value: null, exists: false }, 404)
+  return c.json({ key, value, exists: true })
 })
 
 // ─── Admin: Optuna Push (2026-04-07) ───────────────────────────────────────
@@ -180,7 +242,8 @@ app.post('/api/admin/optuna-push', async (c) => {
     }
     case 'sltp': {
       // params: { sl_mult, tp_mult, trailMultDefault, trailMultAt3pct, trailMultAt8pct,
-      //          trail_switch_3pct, trail_switch_8pct, tp1SellRatio, timeStopDays, hardStopPct }
+      //          trail_switch_3pct, trail_switch_8pct, tp1SellRatio, timeStopDays, hardStopPct,
+      //          slMultLow, tpMultLow, slMultHigh, tpMultHigh, volSkipThreshold }  ← Sprint 5.1
       const sltp = {
         slMultBase:        Number(params.sl_mult ?? params.slMultBase ?? current.sltp.slMultBase),
         tpMultBase:        Number(params.tp_mult ?? params.tpMultBase ?? current.sltp.tpMultBase),
@@ -188,6 +251,13 @@ app.post('/api/admin/optuna-push', async (c) => {
         trailSwitch8pct:   Number(params.trail_switch_8pct ?? params.trailSwitch8pct ?? current.sltp.trailSwitch8pct),
         volThresholdLow:   Number(params.vol_threshold_low ?? params.volThresholdLow ?? current.sltp.volThresholdLow),
         volThresholdHigh:  Number(params.vol_threshold_high ?? params.volThresholdHigh ?? current.sltp.volThresholdHigh),
+        // Sprint 5.1 Phase 7 Layer B: per-vol-branch multipliers
+        slMultLow:         Number(params.sl_mult_low ?? params.slMultLow ?? current.sltp.slMultLow),
+        tpMultLow:         Number(params.tp_mult_low ?? params.tpMultLow ?? current.sltp.tpMultLow),
+        slMultHigh:        Number(params.sl_mult_high ?? params.slMultHigh ?? current.sltp.slMultHigh),
+        tpMultHigh:        Number(params.tp_mult_high ?? params.tpMultHigh ?? current.sltp.tpMultHigh),
+        // Sprint 5.1 Phase 7 Layer C: extreme low vol skip
+        volSkipThreshold:  Number(params.vol_skip_threshold ?? params.volSkipThreshold ?? current.sltp.volSkipThreshold),
       }
       // exit section 也跟著更新（trailMult 跟 sltp 跨 section）
       const exit = {
@@ -256,6 +326,43 @@ app.post('/api/admin/optuna-push', async (c) => {
       updatedFields = Object.keys(rrg).map(k => `rrg.${k}`)
       break
     }
+    case 'screener': {
+      // Sprint 5.2→6b: Screener factor weights + ranking weights from optuna_screener.py.
+      // Sprint 6b reverted Mode A alpha=1.0 hardcode — now includes real ranking weights.
+      const sc = {
+        ...current.screener,
+        ...(params.minPrice            != null && { minPrice:            Number(params.minPrice) }),
+        ...(params.maxPrice            != null && { maxPrice:            Number(params.maxPrice) }),
+        ...(params.minAvgVolume        != null && { minAvgVolume:        Number(params.minAvgVolume) }),
+        ...(params.minDailyTurnover    != null && { minDailyTurnover:    Number(params.minDailyTurnover) }),
+        ...(params.maxPerIndustry      != null && { maxPerIndustry:      Number(params.maxPerIndustry) }),
+        ...(params.maxCandidates       != null && { maxCandidates:       Number(params.maxCandidates) }),
+        ...(Array.isArray(params.chipScoreTiers)          && { chipScoreTiers:          params.chipScoreTiers.map(Number) }),
+        ...(Array.isArray(params.chipIntensityThresholds) && { chipIntensityThresholds: params.chipIntensityThresholds.map(Number) }),
+        ...(Array.isArray(params.consecBuyBonusTiers)     && { consecBuyBonusTiers:     params.consecBuyBonusTiers.map(Number) }),
+        ...(Array.isArray(params.consecBuyDayThresholds)  && { consecBuyDayThresholds:  params.consecBuyDayThresholds.map(Number) }),
+        ...(Array.isArray(params.rsiScoreTiers)           && { rsiScoreTiers:           params.rsiScoreTiers.map(Number) }),
+        ...(params.macdNegativeFactor  != null && { macdNegativeFactor:  Number(params.macdNegativeFactor) }),
+        ...(params.keltnerMultiplier   != null && { keltnerMultiplier:   Number(params.keltnerMultiplier) }),
+        ...(params.natrThreshold       != null && { natrThreshold:       Number(params.natrThreshold) }),
+        ...(Array.isArray(params.excessReturnRange) && { excessReturnRange: params.excessReturnRange.map(Number) }),
+        ...(Array.isArray(params.volRatioRange)     && { volRatioRange:     params.volRatioRange.map(Number) }),
+      }
+      // Sprint 6b: also merge ranking weights if present (reverted from Override #3)
+      const rk = params.ranking
+      const rankingMerge = rk ? {
+        ...current.ranking,
+        ...(rk.alpha != null && { alpha: Number(rk.alpha) }),
+        ...(rk.beta  != null && { beta:  Number(rk.beta) }),
+        ...(rk.gamma != null && { gamma: Number(rk.gamma) }),
+      } : current.ranking
+      merged = { ...current, screener: sc, ranking: rankingMerge }
+      updatedFields = [
+        ...Object.keys(sc).map(k => `screener.${k}`),
+        ...(rk ? Object.keys(rk).map(k => `ranking.${k}`) : []),
+      ]
+      break
+    }
     case 'feature_window':
     case 'regime': {
       // Phase B/C 後實作；目前先記錄但不寫 KV
@@ -267,7 +374,7 @@ app.post('/api/admin/optuna-push', async (c) => {
       }, 501)
     }
     default:
-      return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','conformal','risk_params','rrg','feature_window','regime'] }, 400)
+      return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','screener','conformal','risk_params','rrg','feature_window','regime'] }, 400)
   }
 
   const errors = validateTradingConfig(merged)
@@ -309,6 +416,43 @@ app.get('/api/admin/cron-logs', async (c) => {
   const { getCronLogs } = await import('./lib/cronLogger')
   const logs = await getCronLogs(c.env.KV, date)
   return c.json({ date, logs })
+})
+
+// ─── 2026-04-08 Part 5 Option A: cron-callback endpoint ──────────────────────
+// ml-controller posts here when a fire-and-forget pipeline finishes so the
+// final cron:log:pipeline status reflects ml-controller's actual completion
+// rather than Worker's CF-edge-truncated view (~144s subrequest timeout).
+//
+// Auth: Bearer token = STOCKVISION_AUTH_TOKEN (same secret both directions).
+// Body: { task: string, status: 'success'|'error', summary: string,
+//         duration_ms: number, error?: string, run_id?: string }
+app.post('/api/admin/cron-callback', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || typeof body.task !== 'string' || typeof body.status !== 'string') {
+    return c.json({
+      error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
+    }, 400)
+  }
+  if (body.status !== 'success' && body.status !== 'error') {
+    return c.json({ error: 'status must be "success" or "error"' }, 400)
+  }
+
+  const { logCronResult } = await import('./lib/cronLogger')
+  await logCronResult(c.env.KV, String(body.task), {
+    status: body.status,
+    summary: String(body.summary ?? ''),
+    duration_ms: Number(body.duration_ms ?? 0),
+    error: body.error != null ? String(body.error) : undefined,
+  })
+  console.log(
+    `[cron-callback] ${body.task} ${body.status} ` +
+    `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`
+  )
+  return c.json({ ok: true, task: body.task, status: body.status })
 })
 
 // ─── Backtest Results（最新回測結果，Dashboard 用）─────────────────────────────
@@ -427,6 +571,7 @@ app.get('/api/cron/schedule', (c) => {
     { task: 'us-leading',       tw_time: '06:30',       description: '美股先行指標' },
     { task: 'morning-setup',    tw_time: '07:15',       description: '預熱+掛單+Debate' },
     { task: 'morning-briefing', tw_time: '07:50',       description: '盤前攻略 Discord' },
+    { task: 'pre-market-warmup', tw_time: '08:50',    description: '盤前 warmup（ML + Shioaji Proxy）' },
     { task: 'intraday-check',   tw_time: '09:00-13:30', description: '盤中限價買入+止損停利' },
     { task: 'eod-exit',         tw_time: '13:25',       description: 'EOD 收盤前出場（13:25-13:35 TW）' },
     { task: 'daily-snapshot',   tw_time: '14:20',       description: 'PnL+Sharpe+Drawdown' },
@@ -502,6 +647,84 @@ function _categorizeExitReason(reason: string): string {
   return 'HoldNoTrigger'
 }
 
+// Phase 5.2 (2026-04-08 audit): simulateTrade parity test endpoint
+// Body: { direction: 'up'|'down', entry, stop, target1, target2, bars: [{open,high,low,close}] }
+app.post('/api/admin/test/simulate-trade', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !body.direction || body.entry == null || body.stop == null
+      || body.target1 == null || body.target2 == null || !Array.isArray(body.bars)) {
+    return c.json({
+      error: 'Body must be { direction: "up"|"down", entry, stop, target1, target2, bars: [...] }',
+    }, 400)
+  }
+
+  try {
+    const { simulateTrade } = await import('./lib/predictionVerifier')
+    const result = simulateTrade(
+      body.direction,
+      Number(body.entry),
+      Number(body.stop),
+      Number(body.target1),
+      Number(body.target2),
+      body.bars,
+    )
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e) }, 500)
+  }
+})
+
+// Sprint 6a.7b (2026-04-08): scoreMultiFactor parity test endpoint
+// Body: { prices: FMStockPrice[], chips: [{date, foreign, trust}], marketReturn5d, cfg?: Partial<TradingConfig> }
+// Returns { base_score, chip_score, tech_score, momentum_score, reasons }
+app.post('/api/admin/test/score-multi-factor', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body || !Array.isArray(body.prices) || body.marketReturn5d == null) {
+    return c.json({
+      error: 'Body must be { prices: FMStockPrice[], chips?: [{date,foreign,trust}], marketReturn5d, cfg? }',
+    }, 400)
+  }
+
+  try {
+    const { scoreMultiFactor } = await import('./lib/marketScreener')
+    const { getTradingConfig } = await import('./lib/tradingConfig')
+
+    const baseCfg = await getTradingConfig(c.env.KV)
+    const cfg = body.cfg ? { ...baseCfg, ...body.cfg, screener: { ...baseCfg.screener, ...(body.cfg.screener ?? {}) } } : baseCfg
+
+    // Build chipDates map (same shape as internal loadMarketDataFromD1 output)
+    let chipDates: Map<string, { foreign: number; trust: number }> | undefined
+    if (Array.isArray(body.chips) && body.chips.length > 0) {
+      chipDates = new Map()
+      for (const c of body.chips) {
+        chipDates.set(String(c.date), { foreign: Number(c.foreign ?? 0), trust: Number(c.trust ?? 0) })
+      }
+    }
+
+    const prices = body.prices as any[]
+    const latestClose = Number(prices[prices.length - 1]?.close ?? 0)
+
+    const result = scoreMultiFactor(
+      prices as any,
+      chipDates,
+      Number(body.marketReturn5d),
+      latestClose,
+      cfg,
+    )
+    return c.json(result)
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e) }, 500)
+  }
+})
+
 // ─── Admin: 手動觸發 cron 任務（STOCKVISION_AUTH_TOKEN 驗證 + Rate Limit）───
 app.post('/api/admin/trigger/:task', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -571,9 +794,25 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
     'adapt':            async () => { const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine'); return runAdaptiveUpdate(c.env) },
+    // Phase 5.5 (2026-04-08 audit): V1 verify kept as manual backup during dual-run
+    'verify':           async () => { await runPredictionVerification(c.env); return 'V1 verify 完成' },
+    // Phase 5.5 V2: trigger ml-controller LangGraph verify pipeline manually
+    'verify-v2':        async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/verify/run`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ lookback_days: 5, limit: 200 }),
+        signal: AbortSignal.timeout(280_000),
+      })
+      if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
+      return await res.json()
+    },
     'reclassify-tags':  async () => { const { reclassifyTags } = await import('./lib/tagReclassifier'); return reclassifyTags(c.env) },
     'sync-industries':  async () => { const { syncIndustryTags } = await import('./lib/twseApi'); return syncIndustryTags(c.env.DB, c.env.KV) },
-    'backfill-rrg':     async () => { const { backfillRRG } = await import('./lib/marketScreener'); return backfillRRG(c.env) },
+    // 'backfill-rrg' trigger removed in Phase 6.6 of 4/8 audit along with
+    // marketScreener's Z-score RRG. Backfill now lives in ml-controller.
     'factor-ic':        async () => { const { calcFactorIC } = await import('./lib/marketScreener'); return calcFactorIC(c.env) },
     'mae-analysis':     async () => { const { analyzeMAE } = await import('./lib/marketScreener'); return analyzeMAE(c.env) },
     // ── 完整 Pipeline：依序等待每步完成（呼叫模組級 runFullPipeline 共用 helper）──
@@ -583,6 +822,20 @@ app.post('/api/admin/trigger/:task', async (c) => {
     pbo: () => runWeeklyPBO(c.env),
     lifecycle: () => runWeeklyLifecycleCheck(c.env),
     'monthly-optuna': () => runMonthlyOptunaResearch(c.env),
+    // force_monthly=true 觸發完整月度 retrain（含 feature selection）
+    // fire-and-forget：postController 在 background 跑，不等 ~14min prep 回應
+    retrain: async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const force = c.req.query('monthly') === '1'
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      // fire-and-forget — no timeout, Cloud Run prep takes ~14min
+      fetch(`${c.env.ML_CONTROLLER_URL}/retrain/universal`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ limit: 2500, force_monthly: force }),
+      }).catch(e => console.error('[retrain] fire-and-forget error:', e))
+      return `retrain triggered (force_monthly=${force}) — check Modal dashboard for progress`
+    },
   }
   const fn = taskMap[task]
   if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -597,7 +850,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
   // 加 ?sync=1 走 sync mode：caller 等 fetch handler runtime（wall clock 數十分鐘
   // 都 OK，只要中間都在 await fetch 不是 CPU bound），用於手動補資料場景。
   const syncMode = c.req.query('sync') === '1'
-  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna'])
+  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna', 'retrain'])
   if (LONG_RUNNING.has(task) && !syncMode) {
     const t0 = Date.now()
     await logCronResult(c.env.KV, task, { status: 'success', summary: 'started (background)', duration_ms: 0 })
@@ -908,12 +1161,12 @@ async function processUpdateBatch(
   // [CODE-REVIEW-FIX] 2026-03-23: 改用 SQL WHERE id > ? LIMIT ? 替代 JS filter（避免 O(n) 全表掃描）
   // 先查剩餘總數（用於 log），再取本批次
   const { results: batch } = await env.DB.prepare(
-    'SELECT id, symbol, market, name FROM stocks WHERE is_active=1 AND id > ? ORDER BY id ASC LIMIT ?'
+    'SELECT id, symbol, market, name FROM stocks WHERE in_current_watchlist=1 AND id > ? ORDER BY id ASC LIMIT ?'
   ).bind(cursor, BATCH_SIZE).all<any>()
 
   // 查剩餘筆數供 log 用（不 SELECT *，只計數）
   const remainingCount = await env.DB.prepare(
-    'SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1 AND id > ?'
+    'SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1 AND id > ?'
   ).bind(cursor).first<{ cnt: number }>().then(r => r?.cnt ?? 0)
 
   if (batch.length === 0) {
@@ -982,7 +1235,7 @@ async function runMLAndRisk(env: Bindings) {
   // 1. 大盤風險（直接執行，速度快）
   try {
     const { calcMarketRisk } = await import('./lib/marketRisk')
-    const risk = await calcMarketRisk(env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET)
+    const risk = await calcMarketRisk(env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET, env.GEMINI_API_KEY)
     await env.DB.prepare(`
       INSERT OR REPLACE INTO market_risk
         (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
@@ -1077,7 +1330,7 @@ async function runMLAndRisk(env: Bindings) {
 
   // ── 2b. 逐股查詢 + 建構 payload ──────────────────────────────────────────
   const { results: allStocks } = await env.DB.prepare(
-    'SELECT * FROM stocks WHERE is_active=1 ORDER BY id ASC'
+    'SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC'
   ).all<any>()
 
   const payloads: any[] = []
@@ -1285,24 +1538,27 @@ async function runMLAndRisk(env: Bindings) {
 // 都應該是 ml-controller 的責任。完整 audit 見 memory/project_langgraph_real_refactor.md
 //
 // runMLAndRisk 舊版保留 1 週做 rollback safety，2026-04-14 後砍。
-async function runMLAndRiskV2(env: Bindings) {
+async function runMLAndRiskV2(env: Bindings): Promise<string> {
   const twDate = twToday()
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) { console.log('[ML V2] Already running, skip'); return 'LOCKED' }
-  await env.KV.put(lockKey, '1', { expirationTtl: 600 })  // 10 min TTL
+  // 2026-04-08 Part 5 Option A: TTL bumped 600→1800 so background pipeline on
+  // ml-controller has headroom to finish before lock expires. ml-controller
+  // callback does not clear this lock; TTL cleanup only.
+  await env.KV.put(lockKey, '1', { expirationTtl: 1800 })  // 30 min TTL
 
   try {
     if (!env.ML_CONTROLLER_URL) {
       console.warn('[ML V2] ML_CONTROLLER_URL not set, falling back to legacy runMLAndRisk')
-      return await runMLAndRisk(env)
+      return await runMLAndRisk(env) as any
     }
 
     // 1. Market risk (~5 sec) — 仍在 worker 做，因為 marketRisk.ts 邏輯複雜不值得搬
     try {
       const { calcMarketRisk } = await import('./lib/marketRisk')
       const risk = await calcMarketRisk(
-        env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET
+        env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET, env.GEMINI_API_KEY
       )
       await env.DB.prepare(`
         INSERT OR REPLACE INTO market_risk
@@ -1322,29 +1578,45 @@ async function runMLAndRiskV2(env: Bindings) {
       console.error('[ML V2] Market risk failed (non-blocking):', e)
     }
 
-    // 2. Trigger ml-controller LangGraph V2 — sync wait
+    // 2. Trigger ml-controller LangGraph V2 — fire-and-forget (Option A)
+    // ml-controller returns 202 immediately with a run_id; pipeline runs in
+    // background. ml-controller posts /api/admin/cron-callback when done, so
+    // cron:log:* gets overwritten with real completion status.
+    // Worker no longer waits for pipeline body — CF edge ~144s subrequest
+    // timeout was truncating fetch and falsely reporting errors.
+    // See project_session_2026_04_08_part5.md for rationale.
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
-    console.log('[ML V2] Calling ml-controller /pipeline/v2/run (sync)...')
+    console.log('[ML V2] Triggering ml-controller /pipeline/v2/run (async, expect 202)...')
     const t0 = Date.now()
     const res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({}),
-      signal: AbortSignal.timeout(900_000),  // 15 min Cloud Run budget
+      signal: AbortSignal.timeout(30_000),  // 30s is plenty to receive 202
     })
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
 
-    if (!res.ok) {
+    if (res.status !== 202 && !res.ok) {
       const text = await res.text().catch(() => '')
-      throw new Error(`Pipeline V2 HTTP ${res.status}: ${text.slice(0, 300)}`)
+      throw new Error(`Pipeline V2 trigger HTTP ${res.status}: ${text.slice(0, 300)}`)
     }
-    const result = await res.json() as any
-    console.log(`[ML V2] Pipeline complete in ${elapsed}s: ${JSON.stringify(result.metrics ?? result)}`)
-  } finally {
+    let runId = 'unknown'
+    try {
+      const body = await res.json() as any
+      runId = String(body?.run_id ?? 'unknown')
+    } catch { /* body may be empty */ }
+    console.log(`[ML V2] Triggered in ${elapsed}s, run_id=${runId} (awaiting callback for final status)`)
+    return `triggered run_id=${runId}, callback expected`
+  } catch (e: any) {
+    // Trigger-phase failure (unreachable / auth / 30s timeout) — clear lock
+    // so next attempt can retry; ml-controller callback will not arrive.
     await env.KV.delete(lockKey).catch(() => {})
+    throw e
   }
+  // Note: on success, lockKey is NOT cleared here. It expires via TTL (1800s).
+  // ml-controller callback does not touch it.
 }
 
 // processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
@@ -1387,21 +1659,26 @@ async function runMonthlyOptunaResearch(env: Bindings) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
-  const sources = ['barrier', 'signal', 'sltp', 'conformal', 'risk_params', 'rrg', 'feature_window'] as const
-  const results: string[] = []
-
-  for (const src of sources) {
-    try {
-      const r = await fetch(`${CTRL_URL}/optuna/${src}`, {
+  // Sprint 5.2+: fire all 7 sources in parallel → 5 ml-controller instances
+  // Each source is fully independent (no shared state), safe to parallelize.
+  // max-instances=5 caps concurrent instances; remaining 2 sources queue on idle instance.
+  // Speedup: ~4-7x (from sequential ~3.5hr to ~50 min max single source).
+  const sources = ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg'] as const
+  const settled = await Promise.allSettled(
+    sources.map(src =>
+      fetch(`${CTRL_URL}/optuna/${src}`, {
         method: 'POST', headers,
-        body: JSON.stringify({ n_trials: 200, push_kv: true, dry_run: false }),
-        signal: AbortSignal.timeout(900_000),  // 15 min per source（Cloud Run 不像 Modal 有 150s 限制）
-      })
-      results.push(`${src}:${r.ok ? 'OK' : `HTTP${r.status}`}`)
-    } catch (e: any) {
-      results.push(`${src}:ERROR(${e?.message?.slice(0, 30) ?? 'unknown'})`)
-    }
-  }
+        body: JSON.stringify({
+          n_trials: 200, push_kv: true, dry_run: false,
+          // screener/sltp use backtest_engine replay, need subset
+          ...(src === 'screener' || src === 'sltp' ? { subset_size: 1000 } : {}),
+        }),
+        signal: AbortSignal.timeout(3_500_000),  // 58 min per source (fit Cloud Run 3600s timeout)
+      }).then(r => `${src}:${r.ok ? 'OK' : `HTTP${r.status}`}`)
+       .catch((e: any) => `${src}:ERROR(${e?.message?.slice(0, 30) ?? 'unknown'})`)
+    )
+  )
+  const results = settled.map(s => s.status === 'fulfilled' ? s.value : `REJECTED:${s.reason}`)
 
   const summary = results.join(', ')
   console.log(`[Monthly] Optuna re-search: ${summary}`)
@@ -1541,7 +1818,7 @@ async function runWeeklyICaudit(env: Bindings) {
   const topStock = await env.DB.prepare(`
     SELECT s.id, s.symbol FROM stocks s
     JOIN stock_prices sp ON sp.stock_id=s.id
-    WHERE s.is_active=1
+    WHERE s.in_current_watchlist=1
     GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
   `).first<any>()
   if (!topStock) return
@@ -1597,7 +1874,7 @@ async function runWeeklyDriftCheck(env: Bindings) {
   const topStock = await env.DB.prepare(`
     SELECT s.id, s.symbol FROM stocks s
     JOIN stock_prices sp ON sp.stock_id=s.id
-    WHERE s.is_active=1
+    WHERE s.in_current_watchlist=1
     GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 1
   `).first<any>()
   if (!topStock) return
@@ -1635,105 +1912,32 @@ async function runWeeklyDriftCheck(env: Bindings) {
 }
 
 async function runWeeklyRetrain(env: Bindings) {
-  console.log('[WeeklyRetrain] Starting weekly model retraining...')
+  console.log('[WeeklyRetrain] Starting universal model retrain via ml-controller...')
 
-  // 讀取 barrier params（與 predict 一致）
-  const { getTradingConfig } = await import('./lib/tradingConfig')
-  const tradingCfg = await getTradingConfig(env.KV)
-
-  // 共用市況
-  const marketRiskRow = await env.DB.prepare(
-    'SELECT risk_level, risk_score FROM market_risk ORDER BY date DESC LIMIT 1'
-  ).first<any>()
-  const { results: mrHistory } = await env.DB.prepare(
-    'SELECT date, risk_score, risk_level, twii_bias as market_bias_20d FROM market_risk ORDER BY date DESC LIMIT 500'
-  ).all<any>().catch(() => ({ results: [] }))
-  const mrHistMap: Record<string, any> = {}
-  for (const row of (mrHistory ?? [])) {
-    mrHistMap[row.date] = { risk_score: row.risk_score, risk_level: row.risk_level, market_bias_20d: row.market_bias_20d }
-  }
-
-  const { results: stocks } = await env.DB.prepare(
-    "SELECT id, symbol, market FROM stocks WHERE market IN ('TW','TWO','TWSE','OTC') AND is_active=1 ORDER BY id LIMIT 50"
-  ).all<any>()
-
-  // P1#9: Read weak features from IC audit (stored by runWeeklyICaudit)
-  let weakFeatures: string[] = []
-  try {
-    const wfJson = await env.KV.get('ml:weak_features')
-    if (wfJson) {
-      weakFeatures = JSON.parse(wfJson)
-      console.log(`[WeeklyRetrain] IC audit: ${weakFeatures.length} weak features to exclude`)
-    }
-  } catch (e) { console.warn('[WeeklyRetrain] Failed reading weak features:', e) }
-
-  // 建構 payloads
-  const payloads: any[] = []
-  for (const stock of (stocks ?? [])) {
-    try {
-      const [prices, indicators, chips] = await Promise.all([
-        env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(stock.symbol).all<any>(),
-      ])
-      if ((prices.results?.length ?? 0) < 60) continue
-      payloads.push({
-        stock_id: stock.id, symbol: stock.symbol,
-        market: stock.market ?? 'TW',
-        prices: (prices.results ?? []).reverse(),
-        indicators: (indicators.results ?? []).reverse(),
-        chips: (chips.results ?? []).reverse(),
-        market_env: {
-          risk_score: marketRiskRow?.risk_score ?? 50,
-          risk_level: marketRiskRow?.risk_level ?? 'medium',
-          history: mrHistMap,
-        },
-        weak_features: weakFeatures,  // P1#9: IC audit 無效特徵
-        use_optuna: true,             // P1#9: 啟用 Optuna 超參數搜索
-        barrier_params: {
-          upper_mult: tradingCfg.barrier.upperMult,
-          lower_mult: tradingCfg.barrier.lowerMult,
-          upper_pct_cap: tradingCfg.barrier.upperPctCap,
-          lower_pct_cap: tradingCfg.barrier.lowerPctCap,
-          max_days: tradingCfg.barrier.maxDays,
-        },
-      })
-    } catch (e) {
-      console.error(`[WeeklyRetrain] Failed building payload for ${stock.symbol}:`, e)
-    }
-  }
-
-  if (!payloads.length) {
-    console.log('[WeeklyRetrain] No stocks to retrain')
+  // 全市場 universal retrain — ml-controller 負責 D1 bulk load + batch prep + train
+  if (!env.ML_CONTROLLER_URL) {
+    console.warn('[WeeklyRetrain] ML_CONTROLLER_URL not set, skipping')
     return
   }
 
-  // Controller 並行重訓
-  if (env.ML_CONTROLLER_URL) {
-    const t0 = Date.now()
-    const result = await postController(env, '/batch-retrain', { stocks: payloads }) as any
+  const t0 = Date.now()
+  try {
+    const result = await postController(env, '/retrain/universal', { limit: 2500 }) as any
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-    console.log(`[WeeklyRetrain] Done: ${result.retrained}/${payloads.length} retrained in ${elapsed}s`)
-  } else if (env.ML_SERVICE_URL) {
-    // Legacy fallback: sequential retrain via ML Service
-    let retrained = 0
-    for (const p of payloads) {
-      try {
-        const res = await fetch(`${env.ML_SERVICE_URL}/retrain`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(env.ML_SERVICE_SECRET ? { 'X-Service-Token': env.ML_SERVICE_SECRET } : {}),
-          },
-          body: JSON.stringify(p),
-          signal: AbortSignal.timeout(120_000),
-        })
-        if (res.ok) { retrained++; console.log(`[WeeklyRetrain] Retrained ${p.symbol}`) }
-      } catch (e) { console.error(`[WeeklyRetrain] Failed ${p.symbol}:`, e) }
-    }
-    console.log(`[WeeklyRetrain] Legacy done: ${retrained} retrained`)
-  } else {
-    console.warn('[WeeklyRetrain] Neither ML_CONTROLLER_URL nor ML_SERVICE_URL set')
+    const trainResult = result?.train_result ?? {}
+    console.log(
+      `[WeeklyRetrain] Universal done in ${elapsed}s: ` +
+      `${result.stocks_sent ?? 0} stocks, ${result.total_prep_rows ?? 0} rows, ` +
+      `${result.batch_count ?? 0} batches. ` +
+      `Models: ${JSON.stringify(Object.fromEntries(
+        Object.entries(trainResult.results ?? {}).map(([k, v]: [string, any]) =>
+          [k, v.accuracy ?? v.error ?? 'unknown']
+        )
+      ))}`
+    )
+  } catch (e) {
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+    console.error(`[WeeklyRetrain] Universal failed after ${elapsed}s:`, e)
   }
 }
 
@@ -1853,7 +2057,7 @@ async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
     if (!Array.isArray(body) || !body.length) { console.warn('[Wave3] TDCC empty response'); return }
 
     // 建 symbol → stock_id map
-    const { results: dbStocks } = await env.DB.prepare('SELECT id, symbol FROM stocks WHERE is_active=1').all<any>()
+    const { results: dbStocks } = await env.DB.prepare('SELECT id, symbol FROM stocks WHERE in_current_watchlist=1').all<any>()
     const idMap = new Map<string, number>()
     for (const s of dbStocks ?? []) idMap.set(s.symbol, s.id)
 
@@ -1956,7 +2160,7 @@ async function runFullPipeline(env: Bindings): Promise<{ steps: string[]; messag
   const result: any = await runMarketScreener(env)
   steps.push(`screener(${result?.candidates?.length ?? 0} candidates)`)
 
-  const activeCount = (await env.DB.prepare("SELECT COUNT(*) as cnt FROM stocks WHERE is_active=1").first<any>())?.cnt ?? 60
+  const activeCount = (await env.DB.prepare("SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1").first<any>())?.cnt ?? 60
 
   // 3. Queue Update（候選股 Yahoo+指標+新聞）
   await runQueueUpdate(env)
@@ -2015,15 +2219,60 @@ export default {
         }
       })())
 
-    if (cron === '15 23 * * SUN-THU') {
+    // ── 08:50 TW → 盤前 warmup（ML Controller + Shioaji Proxy）──
+    if (cron === '50 0 * * 1-5') {
+      runWithLog('pre-market-warmup', async () => {
+        const results: string[] = []
+        // Warm ML Controller
+        if (env.ML_CONTROLLER_URL) {
+          try {
+            const r = await fetch(`${env.ML_CONTROLLER_URL}/health`, {
+              headers: env.ML_CONTROLLER_SECRET ? { 'X-Controller-Token': env.ML_CONTROLLER_SECRET } : {},
+              signal: AbortSignal.timeout(15_000),
+            })
+            results.push(`ML-Controller: ${r.ok ? 'ok' : `fail(${r.status})`}`)
+          } catch (e: any) { results.push(`ML-Controller: error(${e.message})`) }
+        }
+        // Warm Shioaji Proxy
+        const proxyUrl = (env as any).SHIOAJI_PROXY_URL as string | undefined
+        if (proxyUrl) {
+          try {
+            const r = await fetch(`${proxyUrl}/health`, {
+              headers: { 'Authorization': `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
+              signal: AbortSignal.timeout(10_000),
+            })
+            results.push(`Shioaji: ${r.ok ? 'ok' : `fail(${r.status})`}`)
+          } catch (e: any) { results.push(`Shioaji: error(${e.message})`) }
+        }
+        return results.join(', ') || '無可 warmup 的服務'
+      })
+    } else if (cron === '15 23 * * SUN-THU') {
       runWithLog('morning-setup', async () => {
+        // T+2 settlement：結算到期的 paper_settlements
+        const { twToday } = await import('./lib/dateUtils')
+        const today = twToday()
+        const matured = await env.DB.prepare(
+          "SELECT account_id, SUM(CASE WHEN side='buy' THEN -amount ELSE amount END) as net FROM paper_settlements WHERE settled=0 AND settlement_date <= ? GROUP BY account_id"
+        ).bind(today).all<{ account_id: number; net: number }>()
+        for (const row of (matured?.results ?? [])) {
+          await env.DB.prepare(
+            "UPDATE paper_accounts SET cash=cash+?, updated_at=datetime('now') WHERE id=?"
+          ).bind(row.net, row.account_id).run()
+        }
+        if ((matured?.results?.length ?? 0) > 0) {
+          await env.DB.prepare(
+            "UPDATE paper_settlements SET settled=1, settled_at=datetime('now') WHERE settled=0 AND settlement_date <= ?"
+          ).bind(today).run()
+          console.log(`[T+2] 結算 ${matured.results.length} 筆，淨額 ${matured.results.map(r => r.net).join(',')}`)
+        }
+
         await runMorningWarmup(env)
         await setupMorningPendingBuys(env)
         const pending = await env.KV.get(`paper:pending_buys:${twTodayStr}`)
         const count = pending ? JSON.parse(pending).length : 0
         return `預熱完成，掛單 ${count} 支`
       })
-    } else if (cron === '50 9 * * 1-5') {
+    } else if (cron === '15 9 * * 1-5') {
       runWithLog('ml-warmup', async () => {
         if (env.ML_SERVICE_URL) {
           const h: Record<string, string> = {}
@@ -2041,14 +2290,32 @@ export default {
       // Individual tasks 仍可透過 /admin/trigger/:task 手動觸發
       runWithLog('pipeline', async () => {
         const { steps, message } = await runFullPipeline(env)
-        // 追加驗證（非阻擋，不影響 pipeline 成敗）
-        runPredictionVerification(env).catch(e => console.warn('[Pipeline] verify failed:', e))
+        // Phase 5.5 (2026-04-08 audit): B6 fire-and-forget removed.
+        // Verify now runs in its own cron at 19:00 TW (V2 via ml-controller LangGraph).
+        // Old V1 runPredictionVerification kept as manual backup via /admin/trigger/verify.
         return `${message} (${steps.join(' → ')})`
       })
     } else if (cron === '20 10 * * 1-5') {
       runWithLog('adapt', async () => {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
+      })
+    } else if (cron === '0 11 * * 1-5') {
+      // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2
+      // Calls ml-controller /verify/run (LangGraph) — replaces worker silently-failing V1.
+      runWithLog('verify-v2', async () => {
+        const controllerUrl = env.ML_CONTROLLER_URL
+        if (!controllerUrl) return '跳過（ML_CONTROLLER_URL 未設定）'
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        const res = await fetch(`${controllerUrl}/verify/run`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ lookback_days: 5, limit: 200 }),
+          signal: AbortSignal.timeout(280_000),
+        })
+        if (!res.ok) throw new Error(`Controller /verify/run HTTP ${res.status}`)
+        const data = await res.json() as any
+        return `verified ${data.verified}/${data.pending} correct ${data.correct} pnl ${(data.total_pnl_pct * 100).toFixed(1)}% arf ${data.arf_updated}`
       })
     } else if (cron === '25 5 * * 1-5') {
       runWithLog('eod-exit', async () => {
@@ -2093,6 +2360,152 @@ export default {
           })
         }
       })())
+    } else if (['0 2 * * 1-5', '0 3 * * 1-5', '0 4 * * 1-5', '30 4 * * 1-5'].includes(cron)) {
+      // 10:00 / 12:00 TW → Intraday ML Re-score (Sprint 5.2+: instance utilization)
+      // Calls ml-controller /intraday/rescore with current positions + real-time prices.
+      // Overnight positions (entry_date < today): auto-exit if confidence decayed below threshold.
+      // Same-day positions (entry_date = today): WARN only (day-trade rule compliance).
+      // See memory/project_instance_scaling_brainstorm.md
+      runWithLog('intraday-rescore', async () => {
+        const { getTradingConfig } = await import('./lib/tradingConfig')
+        const cfg = await getTradingConfig(env.KV)
+        if (!cfg.intraday.rescoreEnabled) return 'SKIP: rescoreEnabled=false'
+
+        const CTRL_URL = env.ML_CONTROLLER_URL
+        if (!CTRL_URL) return 'SKIP: no ML_CONTROLLER_URL'
+
+        // Check daily exit count from KV cooldown
+        const exitCountKey = `intraday:rescore-exits:${twTodayStr}`
+        const exitCount = parseInt(await env.KV.get(exitCountKey) ?? '0')
+        if (exitCount >= cfg.intraday.maxRescoreExitsPerDay) {
+          return `SKIP: daily exit limit reached (${exitCount}/${cfg.intraday.maxRescoreExitsPerDay})`
+        }
+
+        // Read current positions
+        const { results: positions } = await env.DB.prepare(
+          `SELECT symbol, name, shares, avg_cost, entry_price, entry_date,
+                  initial_stop, trailing_stop, tp1_price, tp1_hit
+           FROM paper_positions WHERE account_id=1 AND shares>0`
+        ).all<any>()
+        if (!positions || positions.length === 0) return 'No open positions'
+
+        // Get real-time prices via Shioaji proxy
+        const { batchGetIntradayPrices } = await import('./routes/paper')
+        const symbols = positions.map((p: any) => p.symbol)
+        const priceMap = await batchGetIntradayPrices(symbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
+        if (priceMap.size === 0) return 'No intraday prices available'
+
+        // Read warn history from previous day(s) for each position
+        // If a symbol was WARN'd yesterday, ml-controller uses stricter threshold
+        const prevDay = new Date(Date.now() + 8 * 3600_000 - 86400_000).toISOString().slice(0, 10)
+        const warnHistoryMap: Record<string, any> = {}
+        for (const p of positions) {
+          // Check both today (earlier checkpoint) and yesterday
+          const todayWarn = await env.KV.get(`intraday:warn:${p.symbol}:${twTodayStr}`, 'json')
+          const prevWarn = await env.KV.get(`intraday:warn:${p.symbol}:${prevDay}`, 'json')
+          if (todayWarn || prevWarn) {
+            warnHistoryMap[p.symbol] = {
+              today: todayWarn,
+              prev_day: prevWarn,
+              consecutive_warns: ((todayWarn as any)?.count ?? 0) + ((prevWarn as any)?.count ?? 0),
+            }
+          }
+        }
+
+        // Build request for ml-controller
+        const positionInputs = positions.map((p: any) => ({
+          symbol: p.symbol,
+          shares: p.shares,
+          entry_price: p.entry_price ?? p.avg_cost,
+          entry_date: p.entry_date ?? '2000-01-01',
+          current_price: priceMap.get(p.symbol) ?? p.entry_price ?? p.avg_cost,
+          ml_confidence: null,  // ml-controller will read from D1
+          warn_history: warnHistoryMap[p.symbol] ?? null,
+        }))
+
+        // Call ml-controller /intraday/rescore
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+        const res = await fetch(`${CTRL_URL}/intraday/rescore`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ positions: positionInputs, today: twTodayStr }),
+          signal: AbortSignal.timeout(60_000),
+        })
+        if (!res.ok) throw new Error(`ml-controller /intraday/rescore HTTP ${res.status}`)
+        const result = await res.json() as any
+
+        // Process EXIT recommendations (overnight positions only — same-day handled by ml-controller)
+        const exits: string[] = []
+        let newExitCount = exitCount
+
+        for (const r of (result.results ?? [])) {
+          if (r.action !== 'EXIT') continue
+          if (r.is_same_day) continue  // day-trade compliance: ml-controller already downgraded to WARN
+          if (newExitCount >= cfg.intraday.maxRescoreExitsPerDay) break
+
+          // Cooldown check
+          const cooldownKey = `intraday:rescore-cooldown:${r.symbol}:${twTodayStr}`
+          const lastTrigger = await env.KV.get(cooldownKey)
+          if (lastTrigger) continue  // still in cooldown
+
+          const pos = positions.find((p: any) => p.symbol === r.symbol)
+          if (!pos) continue
+
+          const currentPrice = priceMap.get(r.symbol)
+          if (!currentPrice) continue
+
+          // Execute sell
+          const { executeRescoreSell } = await import('./routes/paper')
+          try {
+            await executeRescoreSell(env, {
+              symbol: r.symbol,
+              shares: pos.shares,
+              price: currentPrice,
+              reason: `ML Re-score EXIT: conf ${r.original_confidence.toFixed(3)} → ${r.adjusted_confidence.toFixed(3)} | ${r.reason}`,
+              source: 'intraday_rescore',
+            })
+            exits.push(`${r.symbol} sold@${currentPrice}(conf ${r.adjusted_confidence.toFixed(2)})`)
+            newExitCount++
+
+            // Set cooldown
+            await env.KV.put(cooldownKey, new Date().toISOString(), { expirationTtl: cfg.intraday.rescoreCooldownMin * 60 })
+          } catch (e: any) {
+            console.error(`[Intraday-Rescore] Failed to sell ${r.symbol}:`, e)
+          }
+        }
+
+        // Update daily exit count
+        if (newExitCount > exitCount) {
+          await env.KV.put(exitCountKey, String(newExitCount), { expirationTtl: 86400 })
+        }
+
+        // Write WARN state to KV — next-day re-score uses stricter threshold
+        const warns = (result.results ?? []).filter((r: any) => r.action === 'WARN')
+        for (const w of warns) {
+          const warnKey = `intraday:warn:${w.symbol}:${twTodayStr}`
+          const existing = await env.KV.get(warnKey, 'json') as { count: number; first_conf: number; last_conf: number } | null
+          await env.KV.put(warnKey, JSON.stringify({
+            count: (existing?.count ?? 0) + 1,
+            first_conf: existing?.first_conf ?? w.adjusted_confidence,
+            last_conf: w.adjusted_confidence,
+            last_at: new Date().toISOString(),
+          }), { expirationTtl: 172800 })  // 48hr TTL — covers next trading day
+        }
+
+        // Discord notification for any EXIT or WARN
+        if ((exits.length > 0 || warns.length > 0) && (env as any).DISCORD_WEBHOOK_URL) {
+          const { sendDiscordNotification } = await import('./lib/notify')
+          const lines = [
+            `🔄 **盤中 ML Re-score** (${({'0 2 * * 1-5':'10:00','0 3 * * 1-5':'11:00','0 4 * * 1-5':'12:00','30 4 * * 1-5':'12:30'} as Record<string,string>)[cron] ?? cron})`,
+            ...exits.map(e => `🔴 EXIT: ${e}`),
+            ...warns.map((w: any) => `🟡 WARN: ${w.symbol} conf ${w.original_confidence.toFixed(3)} → ${w.adjusted_confidence.toFixed(3)} (${w.is_same_day ? '當日持倉-不出場' : '隔夜'})`),
+          ]
+          await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, lines.join('\n'))
+        }
+
+        return `${result.summary?.total ?? 0} positions: ${exits.length} EXIT, ${warns.length} WARN, ${(result.summary?.hold ?? 0)} HOLD`
+      })
     } else if (cron === '30 22 * * SUN-THU') {
       runWithLog('us-leading', async () => {
         const { fetchAndStoreUSLeading } = await import('./lib/usLeading')

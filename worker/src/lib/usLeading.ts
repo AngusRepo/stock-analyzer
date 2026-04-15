@@ -53,11 +53,11 @@ async function fetchYahooMA5(symbol: string): Promise<number | null> {
 
 // ─── FRED API（HY OAS 信用利差）──────────────────────────────────────────────
 
-async function fetchHYSpread(): Promise<{ value: number; prevValue: number } | null> {
+async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue: number } | null> {
   try {
     // BAMLH0A0HYM2 = ICE BofA US High Yield OAS
     const res = await fetch(
-      'https://api.stlouisfed.org/fred/series/observations?series_id=BAMLH0A0HYM2&sort_order=desc&limit=5&file_type=json&api_key=DEMO_KEY',
+      `https://api.stlouisfed.org/fred/series/observations?series_id=BAMLH0A0HYM2&sort_order=desc&limit=5&file_type=json&api_key=${apiKey}`,
       { signal: AbortSignal.timeout(10000) },
     )
     if (!res.ok) return null
@@ -82,7 +82,7 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
     fetchYahooQuote('DX-Y.NYB'),   // DXY 美元指數
     fetchYahooQuote('%5EVIX'),     // VIX
     fetchYahooMA5('%5ESOX'),       // SOX 5日均線
-    fetchHYSpread(),               // HY OAS
+    env.FRED_API_KEY ? fetchHYSpread(env.FRED_API_KEY) : Promise.resolve(null),  // HY OAS
   ])
 
   const soxReturn = sox ? (sox.close - sox.prevClose) / sox.prevClose : null

@@ -1,7 +1,6 @@
 """
 seed_concept_tags.py — 台股概念股標籤 seed 腳本
-從公開資料整理的主要概念股分類，寫入 D1 stock_tags 表
-來源：CMoney / Goodinfo / 公開 ETF 持股 交叉比對
+從多個公開財經資訊平台人工整理的概念股分類，寫入 D1 stock_tags 表
 
 執行方式：python seed_concept_tags.py > seed_tags.sql
 然後：npx wrangler d1 execute stockvision-db --remote --file=./seed_tags.sql

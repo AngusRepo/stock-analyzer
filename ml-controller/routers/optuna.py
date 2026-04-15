@@ -41,16 +41,20 @@ class OptunaReq(BaseModel):
     n_trials: int = 200
     push_kv: bool = True
     dry_run: bool = False
+    # Sprint 5.1: sltp-specific (ignored by other sources)
+    subset_size: int = 250
+    start_date: str | None = None  # defaults to end_date - 90 days
+    end_date: str | None = None    # defaults to today (TW)
 
 
 # ─── Helpers: D1 loaders ─────────────────────────────────────────────────────
 
 def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
-    """For barrier search."""
+    """For barrier search — D10 fix: use tradable universe, not just watchlist."""
     stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.is_active = 1
+        WHERE s.delisted_date IS NULL
         GROUP BY s.id HAVING cnt >= ?
         ORDER BY cnt DESC LIMIT ?
     """, [min_rows, top_n])
@@ -112,7 +116,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna #1: Triple Barrier (upper_mult / lower_mult / pct_caps / max_days)"""
     try:
         from optuna_barrier import run_optuna_search  # type: ignore
-        import pandas as pd
+        import polars as pl
     except ImportError as e:
         raise HTTPException(500, f"optuna_barrier import failed: {e}")
 
@@ -122,8 +126,9 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
 
     all_data = {}
     for s in stocks_data:
-        df = pd.DataFrame(s["rows"])
-        df["date"] = pd.to_datetime(df["date"])
+        df = pl.DataFrame(s["rows"]).with_columns(
+            pl.col("date").cast(pl.Utf8),
+        )
         all_data[s["symbol"]] = df
 
     logger.info(f"[Optuna/barrier] {len(all_data)} stocks, {req.n_trials} trials")
@@ -156,7 +161,7 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna #2: Signal thresholds"""
     try:
         from optuna_signal import run_search  # type: ignore
-        import pandas as pd
+        import polars as pl
     except ImportError as e:
         raise HTTPException(500, f"optuna_signal import failed: {e}")
 
@@ -165,8 +170,8 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
     if len(orders_rows) < 20 or len(pred_rows) < 50:
         raise HTTPException(400, f"Insufficient data: orders={len(orders_rows)}, predictions={len(pred_rows)}")
 
-    orders = pd.DataFrame(orders_rows)
-    predictions = pd.DataFrame(pred_rows)
+    orders = pl.DataFrame(orders_rows)
+    predictions = pl.DataFrame(pred_rows)
 
     logger.info(f"[Optuna/signal] {len(orders)} orders, {len(predictions)} predictions, {req.n_trials} trials")
     result = run_search(predictions, orders, n_trials=req.n_trials)
@@ -187,20 +192,32 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
 
 @router.post("/sltp")
 def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
-    """Optuna #3: SL/TP + Trailing"""
+    """Optuna #3: SL/TP + Trailing (Sprint 5.1: via backtest_engine replay)"""
     try:
         from optuna_sltp import run_search  # type: ignore
-        import pandas as pd
     except ImportError as e:
         raise HTTPException(500, f"optuna_sltp import failed: {e}")
 
-    orders_rows = _load_paper_orders(limit=500)
-    if len(orders_rows) < 20:
-        raise HTTPException(400, f"Insufficient orders: {len(orders_rows)}")
+    # Sprint 5.1: 讀當前 trading:config 當 baseline (其他 section 鎖定，只搜 sltp/exit)
+    from services.kv_client import get_json as kv_get_json
+    baseline_params = kv_get_json("trading:config", default=None)
+    if baseline_params is None:
+        logger.warning("[Optuna/sltp] trading:config KV missing, using script defaults")
 
-    orders = pd.DataFrame(orders_rows)
-    logger.info(f"[Optuna/sltp] {len(orders)} orders, {req.n_trials} trials")
-    result = run_search(orders, n_trials=req.n_trials)
+    logger.info(
+        f"[Optuna/sltp] Sprint 5.1 run: n_trials={req.n_trials} "
+        f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
+    )
+    try:
+        result = run_search(
+            n_trials=req.n_trials,
+            subset_size=req.subset_size,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            baseline_params=baseline_params,
+        )
+    except RuntimeError as e:
+        raise HTTPException(400, f"Optuna sltp failed: {e}")
     best = result.get("best_params", {})
 
     push_response = None
@@ -208,20 +225,119 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         push_response = push_optuna_result(
             source="sltp", params=best,
             meta={
-                "n_trials": req.n_trials, "n_orders": len(orders),
-                "best_pf": result.get("best_profit_factor"),
-                # Sprint 3 P0-3: Pareto metadata
+                "n_trials": req.n_trials,
+                "subset_size": result.get("subset_size"),
+                "date_window": result.get("date_window"),
+                "data_source": result.get("data_source"),
+                "mode": result.get("mode"),
                 "best_sharpe": result.get("best_sharpe"),
                 "best_max_dd": result.get("best_max_dd"),
+                "best_n_trades": result.get("best_n_trades"),
+                "best_win_rate": result.get("best_win_rate"),
+                "best_profit_factor": result.get("best_profit_factor"),
                 "pareto_size": result.get("pareto_size"),
+                "realism_note": result.get("realism_note"),
             },
         )
 
-    return {"status": "completed", "source": "sltp", "best_params": best,
-            "n_trials": req.n_trials, "push": push_response,
-            "pareto_front": result.get("pareto_front", []),
-            "best_sharpe": result.get("best_sharpe"),
-            "best_max_dd": result.get("best_max_dd")}
+    return {
+        "status": "completed", "source": "sltp", "best_params": best,
+        "n_trials": req.n_trials, "push": push_response,
+        "pareto_front": result.get("pareto_front", []),
+        "best_sharpe": result.get("best_sharpe"),
+        "best_max_dd": result.get("best_max_dd"),
+        "best_n_trades": result.get("best_n_trades"),
+        "pareto_size": result.get("pareto_size"),
+        "subset_size": result.get("subset_size"),
+        "date_window": result.get("date_window"),
+        "mode": result.get("mode"),
+        "realism_note": result.get("realism_note"),
+    }
+
+
+# ─── /optuna/screener ────────────────────────────────────────────────────────
+
+@router.post("/screener")
+def run_screener(req: OptunaReq = Body(default=OptunaReq())):
+    """Optuna Sprint 5.2→6b: Screener factor weights + ranking weights (via backtest_engine replay)
+
+    Searches 15+ dims inside score_multi_factor: chip / tech / momentum tiers
+    plus liquidity filter bounds + ranking alpha/beta/gamma.
+    NSGA-II Pareto over (sharpe↑, max_dd↓).
+
+    Sprint 6b: Mode A hardcodes reverted — ranking weights now searchable,
+    fill_rate/n_trades thresholds now KV-driven (trading:config.optuna.*).
+    """
+    try:
+        from optuna_screener import run_search  # type: ignore
+    except ImportError as e:
+        raise HTTPException(500, f"optuna_screener import failed: {e}")
+
+    from services.kv_client import get_json as kv_get_json
+    baseline_params = kv_get_json("trading:config", default=None)
+    if baseline_params is None:
+        logger.warning("[Optuna/screener] trading:config KV missing, using script defaults")
+
+    logger.info(
+        f"[Optuna/screener] Sprint 5.2 run: n_trials={req.n_trials} "
+        f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
+    )
+    try:
+        result = run_search(
+            n_trials=req.n_trials,
+            subset_size=req.subset_size,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            baseline_params=baseline_params,
+        )
+    except RuntimeError as e:
+        raise HTTPException(400, f"Optuna screener failed: {e}")
+
+    # Push payload: the resolved screener dict (fully expanded, ready for worker merge).
+    # Intentionally NOT including ranking.* — Mode A hardcode override must not leak
+    # to production KV. See memory/project_sprint_5_2_hardcode_overrides.md Override #3.
+    push_payload = result.get("resolved_screener", {})
+
+    push_response = None
+    if req.push_kv and not req.dry_run and push_payload:
+        push_response = push_optuna_result(
+            source="screener", params=push_payload,
+            meta={
+                "n_trials": req.n_trials,
+                "subset_size": result.get("subset_size"),
+                "date_window": result.get("date_window"),
+                "data_source": result.get("data_source"),
+                "mode": result.get("mode"),
+                "best_sharpe": result.get("best_sharpe"),
+                "best_max_dd": result.get("best_max_dd"),
+                "best_n_trades": result.get("best_n_trades"),
+                "best_win_rate": result.get("best_win_rate"),
+                "best_fill_rate": result.get("best_fill_rate"),
+                "best_profit_factor": result.get("best_profit_factor"),
+                "pareto_size": result.get("pareto_size"),
+                "raw_suggest_params": result.get("best_params"),
+                "realism_note": result.get("realism_note"),
+            },
+        )
+
+    return {
+        "status": "completed", "source": "screener",
+        "best_params": result.get("best_params"),
+        "resolved_screener": push_payload,
+        "n_trials": req.n_trials, "push": push_response,
+        "pareto_front": result.get("pareto_front", []),
+        "best_sharpe": result.get("best_sharpe"),
+        "best_max_dd": result.get("best_max_dd"),
+        "best_n_trades": result.get("best_n_trades"),
+        "best_fill_rate": result.get("best_fill_rate"),
+        "pareto_size": result.get("pareto_size"),
+        "reject_summary": result.get("reject_summary"),
+        "reject_details": result.get("reject_details"),
+        "subset_size": result.get("subset_size"),
+        "date_window": result.get("date_window"),
+        "mode": result.get("mode"),
+        "realism_note": result.get("realism_note"),
+    }
 
 
 # ─── /optuna/conformal ───────────────────────────────────────────────────────
@@ -317,7 +433,7 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
     top_stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.is_active = 1
+        WHERE s.delisted_date IS NULL
         GROUP BY s.id HAVING cnt >= 100
         ORDER BY cnt DESC LIMIT 10
     """)

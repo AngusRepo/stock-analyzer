@@ -51,7 +51,7 @@ Format: [Conventional Changelog](https://keepachangelog.com/)
 - 移除有害的 `INSERT OR REPLACE`（舊 Controller 殘留，覆寫 screener 分數）
 - `buildStockPayloads` 擴大查詢範圍（含 daily_recommendations 的股票）
 - `current_price` 改讀 D1 stock_prices（不依賴 technical_indicators 的舊日期）
-- `is_active` 保證：screener 寫完 recommendations 後強制 UPDATE
+- `in_current_watchlist` 保證：screener 寫完 recommendations 後強制 UPDATE
 - `sector_flow` UNIQUE 約束加入 `classification`
 - 推薦理由三面向：【籌碼】+【技術】+【ML】
 

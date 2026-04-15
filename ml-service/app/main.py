@@ -1273,10 +1273,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         best_val_ic = -float("inf")
         best_state = None
         no_improve = 0
+        last_epoch = 0  # P0-7: outer-scope epoch tracker (nonlocal in _run_ftt_training) — fix NameError
 
         def _run_ftt_training(batch_sz: int, grad_accum: int = 1) -> None:
             """Inner training loop (factored out for OOM fallback). Modifies outer scope vars."""
-            nonlocal best_val_ic, best_state, no_improve, _global_step
+            nonlocal best_val_ic, best_state, no_improve, _global_step, last_epoch
 
             for epoch in range(MAX_EPOCHS):
                 model_ftt.train()
@@ -1331,6 +1332,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 if (epoch + 1) % 10 == 0:
                     print(f"[TrainUniversal] FT-T epoch {epoch+1} val_IC={val_ic:.6f} best={best_val_ic:.6f} patience={no_improve}/{PATIENCE}")
 
+                last_epoch = epoch + 1  # P0-7: track last completed epoch in outer scope
                 if no_improve >= PATIENCE:
                     print(f"[TrainUniversal] FT-T early stop at epoch {epoch+1} (val_IC={best_val_ic:.6f})")
                     break
@@ -1362,7 +1364,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         preds = np.concatenate(all_preds)
         ic = _oos_ic(preds, y_test)
 
-        stopped_epoch = epoch + 1
+        stopped_epoch = last_epoch  # P0-7: use outer-scope tracker (epoch is local to _run_ftt_training)
         bundle = {
             "state_dict": model_ftt.state_dict(),
             "scaler": feat_scaler,

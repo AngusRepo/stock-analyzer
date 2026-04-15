@@ -408,6 +408,37 @@ def shap_feature_audit(payload: dict) -> dict:
         return {"error": str(e), "type": "shap_audit"}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# P0-8: Feature Selection Pipeline (Modal Function wrapper)
+# 月度 retrain_orchestrator 透過 .remote() 呼叫此 function (orchestrator scope name)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.function(
+    cpu=4,                       # Target Permutation × N rounds CPU-bound
+    memory=8192,                 # Spearman corr + LightGBM on full 960K samples
+    timeout=7200,                # 120 min — signal gate (~5min) + clustering + TP (~30min) + Optuna K sweep (~30min) + diversity guard
+    scaledown_window=60,
+    max_containers=1,
+)
+def feature_selection_pipeline(payload: dict) -> dict:
+    """月度 Feature Selection: Signal Gate → Silhouette → Target Permutation →
+    IC/ICIR → Optuna K Pareto sweep → Diversity Guard → 雙 Pool 輸出 (tree_active + ft_active)。
+
+    Reads prep .npz from GCS, writes feature_pool.json to GCS.
+    """
+    _setup_env()
+    from app.feature_selection import run_feature_selection_pipeline
+    try:
+        return run_feature_selection_pipeline(
+            max_rounds=payload.get("max_rounds", 100),
+            alpha=payload.get("alpha", 0.01),
+            dry_run=payload.get("dry_run", False),
+        )
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
+
+
 @app.function(
     cpu=1,
     memory=1024,

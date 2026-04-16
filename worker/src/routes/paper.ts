@@ -327,6 +327,35 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     console.warn('[CircuitBreaker] Layer6 check failed (non-fatal):', e)
   }
 
+  // Layer 7: Recent Prediction Streak（nofx-inspired 急性降載）
+  // 查最近 5 筆已驗證 predictions 的 direction_correct
+  // ≥ 4 次錯 → posPct × 0.3（非 halt，避免過度保守）
+  // 與 Layer 2（30 日準確率）互補：Layer 2 慢訊號，Layer 7 急性訊號
+  try {
+    const { results: recent } = await db.prepare(`
+      SELECT direction_correct FROM predictions
+       WHERE direction_correct IN (0, 1)
+       ORDER BY generated_at DESC LIMIT 5
+    `).all<{ direction_correct: number }>()
+    if (recent && recent.length >= 5) {
+      const wrongCount = recent.filter((r: any) => Number(r.direction_correct) === 0).length
+      if (wrongCount >= 4) {
+        const adjusted = defaults.maxPositionPct * 0.3
+        console.warn(
+          `[CircuitBreaker] Layer7 SCALE: recent streak ${wrongCount}/5 wrong ` +
+          `→ posPct ${(adjusted * 100).toFixed(1)}% (× 0.3)`
+        )
+        return {
+          ...defaults,
+          maxPositionPct: adjusted,
+          reason: `近 5 筆預測 ${wrongCount} 次錯誤（急性降載）`,
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[CircuitBreaker] Layer7 check failed (non-fatal):', e)
+  }
+
   // Layer 5: 連續虧損暫停（nofx SafetyMode）— 最近 5 筆平倉中 >= 3 筆虧損 → 暫停 1 天
   try {
     const { results: recentSells } = await db.prepare(

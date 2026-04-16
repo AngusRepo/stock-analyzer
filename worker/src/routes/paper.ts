@@ -1309,6 +1309,27 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     if (raw) punishedSet = new Set(raw)
   } catch { /* ignore */ }
 
+  // Post-exit discipline: filter out cooldowns + honor prior stop-day freeze
+  const cooldownSet = new Set<string>()
+  let stopDayFrozen = false
+  try {
+    const { isOnCooldown, isStopDayFrozen } = await import('../lib/postExit')
+    stopDayFrozen = await isStopDayFrozen(env.KV, today)
+    if (stopDayFrozen) {
+      console.warn(`[MorningSetup] Stop-day freeze active for ${today} — skip new buys.`)
+      await env.KV.put(`paper:pending_buys:${today}`, '[]', { expirationTtl: 86400 })
+      return
+    }
+    for (const rec of buyRecs) {
+      if (await isOnCooldown(env.KV, rec.symbol)) cooldownSet.add(rec.symbol)
+    }
+    if (cooldownSet.size > 0) {
+      console.log(`[MorningSetup] Cooldown-excluded: ${[...cooldownSet].join(', ')}`)
+    }
+  } catch (e) {
+    console.warn('[MorningSetup] cooldown / freeze check failed (non-fatal):', e)
+  }
+
   // ── T2 精篩：RRG Quadrant Filter ────────────────────────────────────────
   // 查每個候選股的概念 quadrant，做第二層過濾
   const quadrantFilterLog: { symbol: string; name: string; theme: string; quadrant: string; action: string; momentum_dir?: string }[] = []
@@ -1354,6 +1375,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     console.log(`[MorningSetup-DEBUG] === Processing ${rec.symbol} ${rec.name} ===`)
     if (punishedSet.has(rec.symbol)) {
       console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: 處置股`)
+      continue
+    }
+    if (cooldownSet.has(rec.symbol)) {
+      console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: cooldown (post-exit discipline)`)
       continue
     }
 
@@ -2308,6 +2333,24 @@ export async function runEODExit(env: Bindings): Promise<void> {
         formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice,
           `${decision.reason} | 進場${entryPx} 持有${daysHeld}天`, exitPnl))
 
+      // Post-exit discipline (cooldown + stop-day freeze; re-rank opt-in via cfg)
+      try {
+        const { onPostExit } = await import('../lib/postExit')
+        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        const rerankEnabled = (cfg as any).postExit?.enableRerank === true
+        const outcome = await onPostExit(
+          {
+            kv: env.KV, db: env.DB, today: twToday,
+            soldSymbol: pos.symbol, exitReason: decision.reason,
+            exitAction: 'full_sell', accountId: ACCOUNT_ID,
+          },
+          { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
+        )
+        console.log(`[EODExit] post-exit ${pos.symbol}: category=${outcome.category} cooldown=${outcome.cooldown_days}d freeze=${outcome.freeze_applied} rerank=${outcome.rerank_queued} (${outcome.reason ?? ''})`)
+      } catch (e) {
+        console.warn(`[EODExit] post-exit hook failed (non-fatal):`, e)
+      }
+
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
       const txValue = currentPrice * sellShares
@@ -2566,6 +2609,24 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice,
           `⚡盤中 ${decision.reason}`, intradayPnl))
+
+      // Post-exit discipline (cooldown + stop-day freeze; re-rank opt-in via cfg)
+      try {
+        const { onPostExit } = await import('../lib/postExit')
+        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        const rerankEnabled = (cfg as any).postExit?.enableRerank === true
+        const outcome = await onPostExit(
+          {
+            kv: env.KV, db: env.DB, today: twToday,
+            soldSymbol: pos.symbol, exitReason: decision.reason,
+            exitAction: 'full_sell', accountId: ACCOUNT_ID,
+          },
+          { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
+        )
+        console.log(`[Intraday] post-exit ${pos.symbol}: category=${outcome.category} cooldown=${outcome.cooldown_days}d freeze=${outcome.freeze_applied} rerank=${outcome.rerank_queued} (${outcome.reason ?? ''})`)
+      } catch (e) {
+        console.warn(`[Intraday] post-exit hook failed (non-fatal):`, e)
+      }
 
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares

@@ -317,13 +317,25 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute ml_score, hybrid ranking promotion.
+    Filter SELL, compute ml_score + persona_score, hybrid ranking promotion.
     """
     logger.info("[Pipeline V2] node_recommend")
+
+    # Phase 2: persona weight is KV-controllable for safe rollout
+    #   ml:persona_score_weight — float, default 1.0, 0 = disabled, 0.5 = shadow
+    try:
+        persona_weight = float(
+            kv_client.get_json("ml:persona_score_weight", default=1.0) or 1.0
+        )
+    except Exception:
+        persona_weight = 1.0
+
     final, sell_count = filter_and_score_recommendations(
         state["screener_recs"],
         state["predictions"],
         state["payloads"],
+        persona_opinions=state.get("persona_opinions") or {},
+        persona_weight=persona_weight,
     )
 
     # Hybrid ranking from KV trading:config.ranking

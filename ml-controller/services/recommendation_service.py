@@ -167,6 +167,8 @@ def filter_and_score_recommendations(
     screener_recs: list[dict],
     predictions: dict[str, dict],   # symbol → ml result from ml-service
     payloads: list[dict],            # PredictPayload as dict (for reason data)
+    persona_opinions: dict | None = None,  # symbol → {trust:{...}, retail:{...}}
+    persona_weight: float = 1.0,   # 0 = disable, 1 = default, 0.5 = shadow mode
 ) -> tuple[list[dict], int]:
     """
     Returns (final_recs, sell_filtered_count).
@@ -174,13 +176,33 @@ def filter_and_score_recommendations(
     For each screener_rec:
       1. Look up matching prediction
       2. Filter SELL/NO_SIGNAL → drop
-      3. Compute ml_score, total_score
+      3. Compute ml_score, persona_score, total_score
       4. Build template reason / watchPoints
       5. Return updated row dict
+
+    persona_score integration (Batch B):
+      - Reads persona_opinions[symbol] → {trust, retail}
+      - compute_persona_score maps to [-20, +20] scalar
+      - Multiplied by persona_weight (KV-driven dial for rollout safety)
+      - Added to chip+tech+ml to form total_score
+      - Opinion-less symbols contribute 0 (NEUTRAL default)
     """
     payload_by_sym = {p["symbol"]: p for p in payloads}
     final: list[dict] = []
     sell_count = 0
+
+    # Lazy-import persona helpers so this module stays import-safe even if
+    # persona_service has a downstream issue.
+    _persona_helpers = None
+    if persona_opinions and persona_weight != 0:
+        try:
+            from services.persona_service import (
+                TrustOpinion, RetailOpinion, compute_persona_score,
+            )
+            _persona_helpers = (TrustOpinion, RetailOpinion, compute_persona_score)
+        except Exception as e:
+            logger.warning(f"[reco] persona helpers unavailable ({e}); disabling persona_score")
+            _persona_helpers = None
 
     for rec in screener_recs:
         symbol = rec["symbol"]
@@ -196,7 +218,27 @@ def filter_and_score_recommendations(
         ml_score = calculate_ml_score(ml) if ml else 0.0
         chip_score = rec.get("chip_score") or 0
         tech_score = rec.get("tech_score") or 0
-        total_score = round((chip_score + tech_score + ml_score) * 10) / 10
+
+        # Persona score (Batch B: 投信/散戶 augmentation)
+        persona_score = 0.0
+        persona_applied = None  # for downstream reason text
+        if _persona_helpers is not None and persona_opinions:
+            TrustOp, RetailOp, compute_score = _persona_helpers
+            op = persona_opinions.get(symbol)
+            if op:
+                try:
+                    trust = TrustOp(**op.get("trust", {})) if op.get("trust") else None
+                    retail = RetailOp(**op.get("retail", {})) if op.get("retail") else None
+                    if trust and retail:
+                        persona_score = compute_score(trust, retail) * persona_weight
+                        persona_applied = {
+                            "trust_signal": trust.signal, "trust_strength": trust.strength,
+                            "retail_signal": retail.signal, "retail_strength": retail.strength,
+                        }
+                except Exception as e:
+                    logger.debug(f"[reco] persona_score failed for {symbol}: {e}")
+
+        total_score = round((chip_score + tech_score + ml_score + persona_score) * 10) / 10
 
         payload = payload_by_sym.get(symbol, {})
         env_for_stock = payload.get("market_env", {}) if payload else {}
@@ -262,6 +304,8 @@ def filter_and_score_recommendations(
             "chip_score": chip_score,
             "tech_score": tech_score,
             "ml_score": ml_score,
+            "persona_score": persona_score,
+            "persona_applied": persona_applied,  # None if no persona data
             "score": total_score,
             "signal": ml.get("signal") if ml else None,
             "confidence": ml.get("confidence") if ml else None,

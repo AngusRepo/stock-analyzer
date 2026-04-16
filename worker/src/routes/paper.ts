@@ -166,6 +166,7 @@ interface CircuitBreakerState {
   maxPositionPct: number         // 8% 正常，4% 高波動縮減
   buyConfThreshold: number       // 0.60 正常，0.70 低準確率時提高
   sellConfThreshold: number      // 0.65 正常，0.70 低準確率時提高
+  momentumZone?: 'RED' | 'YELLOW' | 'GREEN'  // Layer 6 — last applied zone (for logs/UI)
 }
 
 async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVNamespace): Promise<CircuitBreakerState> {
@@ -298,6 +299,61 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < bullAlignmentThreshold) {
     console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%, reducing position`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
+  }
+
+  // Layer 6: Momentum Crash Zone（Daniel & Moskowitz 2016）
+  // 候選池擁擠度在 36 個月分布中的 percentile rank → 縮減倉位
+  // RED (rank>P90) → posPct × 0.3；YELLOW (P70-P90) → × 0.7；GREEN → 不變
+  // 在 Layer 5 前執行（Layer 5 會 return halt，優先處理行為紀律）
+  try {
+    const { readCurrentZone, ZONE_MULTIPLIER } = await import('../lib/momentumZone')
+    const zoneInfo = await readCurrentZone(db)
+    if (zoneInfo.zone !== 'GREEN') {
+      const mult = ZONE_MULTIPLIER[zoneInfo.zone]
+      const adjusted = defaults.maxPositionPct * mult
+      console.warn(
+        `[CircuitBreaker] Layer6: momentum zone ${zoneInfo.zone} ` +
+        `(date=${zoneInfo.date}, rank=${zoneInfo.percentile_rank?.toFixed(3) ?? 'n/a'}) ` +
+        `→ posPct ${(adjusted * 100).toFixed(1)}% (× ${mult})`
+      )
+      return {
+        ...defaults,
+        maxPositionPct: adjusted,
+        momentumZone: zoneInfo.zone,
+        reason: `動能擁擠 ${zoneInfo.zone}（rank ${((zoneInfo.percentile_rank ?? 0) * 100).toFixed(0)}%）`,
+      }
+    }
+  } catch (e) {
+    console.warn('[CircuitBreaker] Layer6 check failed (non-fatal):', e)
+  }
+
+  // Layer 7: Recent Prediction Streak（nofx-inspired 急性降載）
+  // 查最近 5 筆已驗證 predictions 的 direction_correct
+  // ≥ 4 次錯 → posPct × 0.3（非 halt，避免過度保守）
+  // 與 Layer 2（30 日準確率）互補：Layer 2 慢訊號，Layer 7 急性訊號
+  try {
+    const { results: recent } = await db.prepare(`
+      SELECT direction_correct FROM predictions
+       WHERE direction_correct IN (0, 1)
+       ORDER BY generated_at DESC LIMIT 5
+    `).all<{ direction_correct: number }>()
+    if (recent && recent.length >= 5) {
+      const wrongCount = recent.filter((r: any) => Number(r.direction_correct) === 0).length
+      if (wrongCount >= 4) {
+        const adjusted = defaults.maxPositionPct * 0.3
+        console.warn(
+          `[CircuitBreaker] Layer7 SCALE: recent streak ${wrongCount}/5 wrong ` +
+          `→ posPct ${(adjusted * 100).toFixed(1)}% (× 0.3)`
+        )
+        return {
+          ...defaults,
+          maxPositionPct: adjusted,
+          reason: `近 5 筆預測 ${wrongCount} 次錯誤（急性降載）`,
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[CircuitBreaker] Layer7 check failed (non-fatal):', e)
   }
 
   // Layer 5: 連續虧損暫停（nofx SafetyMode）— 最近 5 筆平倉中 >= 3 筆虧損 → 暫停 1 天
@@ -1243,6 +1299,30 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       ].filter(Boolean).join(' | ')
     : undefined
 
+  // News Analyst report (Batch C) — enrich debate context + optionally tighten
+  // buy confidence threshold when macro bias is negative.
+  let newsReport: any = null
+  let newsContextStr: string | undefined
+  try {
+    const { readCurrentNewsReport } = await import('../lib/newsAnalyst')
+    newsReport = await readCurrentNewsReport(env.KV, today)
+    if (newsReport) {
+      const factors = (newsReport.key_factors ?? []).slice(0, 3).join(' / ')
+      newsContextStr = `【News Analyst】bias=${newsReport.bias} conf=${newsReport.confidence.toFixed(2)} | ${factors}`
+      // Negative bias with decent confidence → tighten buy threshold by 0.05
+      if (newsReport.bias === 'negative' && newsReport.confidence >= 0.5) {
+        const before = cb.buyConfThreshold
+        cb.buyConfThreshold = Math.min(0.75, cb.buyConfThreshold + 0.05)
+        console.warn(
+          `[MorningSetup] News bias=negative conf=${newsReport.confidence.toFixed(2)} ` +
+          `→ buyConfThreshold ${before.toFixed(3)} → ${cb.buyConfThreshold.toFixed(3)}`
+        )
+      }
+    }
+  } catch (e) {
+    console.warn('[MorningSetup] news analyst read failed (non-fatal):', e)
+  }
+
   // 台指期夜盤 context（07:15 時夜盤已收盤，取最後成交資料）
   const { fetchTaifexNightClose } = await import('../lib/twseApi')
   const taifex = await fetchTaifexNightClose().catch(e => {
@@ -1281,6 +1361,27 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const raw = await env.KV.get('market:punished_stocks', 'json') as string[] | null
     if (raw) punishedSet = new Set(raw)
   } catch { /* ignore */ }
+
+  // Post-exit discipline: filter out cooldowns + honor prior stop-day freeze
+  const cooldownSet = new Set<string>()
+  let stopDayFrozen = false
+  try {
+    const { isOnCooldown, isStopDayFrozen } = await import('../lib/postExit')
+    stopDayFrozen = await isStopDayFrozen(env.KV, today)
+    if (stopDayFrozen) {
+      console.warn(`[MorningSetup] Stop-day freeze active for ${today} — skip new buys.`)
+      await env.KV.put(`paper:pending_buys:${today}`, '[]', { expirationTtl: 86400 })
+      return
+    }
+    for (const rec of buyRecs) {
+      if (await isOnCooldown(env.KV, rec.symbol)) cooldownSet.add(rec.symbol)
+    }
+    if (cooldownSet.size > 0) {
+      console.log(`[MorningSetup] Cooldown-excluded: ${[...cooldownSet].join(', ')}`)
+    }
+  } catch (e) {
+    console.warn('[MorningSetup] cooldown / freeze check failed (non-fatal):', e)
+  }
 
   // ── T2 精篩：RRG Quadrant Filter ────────────────────────────────────────
   // 查每個候選股的概念 quadrant，做第二層過濾
@@ -1327,6 +1428,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     console.log(`[MorningSetup-DEBUG] === Processing ${rec.symbol} ${rec.name} ===`)
     if (punishedSet.has(rec.symbol)) {
       console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: 處置股`)
+      continue
+    }
+    if (cooldownSet.has(rec.symbol)) {
+      console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: cooldown (post-exit discipline)`)
       continue
     }
 
@@ -1380,12 +1485,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[Debate] ${rec.symbol} cached → ${debateVerdict}`)
       } else {
         try {
+          // Prepend News Analyst context to usContextStr so debate agents see it
+          const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
           const debate = await runBuyDebate(
             rec.symbol, rec.name ?? rec.symbol,
             rec.signal, adjustedConfidence,
             rec.reason ?? 'ML ensemble signal',
             { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
-            usContextStr,
+            mergedUsContext || undefined,
             profileMap.get(rec.symbol),
             taifexContextStr,
           )
@@ -2281,6 +2388,24 @@ export async function runEODExit(env: Bindings): Promise<void> {
         formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice,
           `${decision.reason} | 進場${entryPx} 持有${daysHeld}天`, exitPnl))
 
+      // Post-exit discipline (cooldown + stop-day freeze; re-rank opt-in via cfg)
+      try {
+        const { onPostExit } = await import('../lib/postExit')
+        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        const rerankEnabled = (cfg as any).postExit?.enableRerank === true
+        const outcome = await onPostExit(
+          {
+            kv: env.KV, db: env.DB, today: twToday,
+            soldSymbol: pos.symbol, exitReason: decision.reason,
+            exitAction: 'full_sell', accountId: ACCOUNT_ID,
+          },
+          { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
+        )
+        console.log(`[EODExit] post-exit ${pos.symbol}: category=${outcome.category} cooldown=${outcome.cooldown_days}d freeze=${outcome.freeze_applied} rerank=${outcome.rerank_queued} (${outcome.reason ?? ''})`)
+      } catch (e) {
+        console.warn(`[EODExit] post-exit hook failed (non-fatal):`, e)
+      }
+
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
       const txValue = currentPrice * sellShares
@@ -2539,6 +2664,24 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice,
           `⚡盤中 ${decision.reason}`, intradayPnl))
+
+      // Post-exit discipline (cooldown + stop-day freeze; re-rank opt-in via cfg)
+      try {
+        const { onPostExit } = await import('../lib/postExit')
+        const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+        const rerankEnabled = (cfg as any).postExit?.enableRerank === true
+        const outcome = await onPostExit(
+          {
+            kv: env.KV, db: env.DB, today: twToday,
+            soldSymbol: pos.symbol, exitReason: decision.reason,
+            exitAction: 'full_sell', accountId: ACCOUNT_ID,
+          },
+          { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
+        )
+        console.log(`[Intraday] post-exit ${pos.symbol}: category=${outcome.category} cooldown=${outcome.cooldown_days}d freeze=${outcome.freeze_applied} rerank=${outcome.rerank_queued} (${outcome.reason ?? ''})`)
+      } catch (e) {
+        console.warn(`[Intraday] post-exit hook failed (non-fatal):`, e)
+      }
 
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares

@@ -59,7 +59,7 @@ export interface StockProfile {
   key_suppliers?: string | null
 }
 
-interface LLMEnv {
+export interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
   GEMINI_API_KEY?: string     // Gemini 3.1 Flash Lite (primary cheap+fast)
@@ -96,7 +96,7 @@ async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
  *   2. Workers AI (Llama 3.3 70B) — $5 plan 包含
  *   3. Anthropic API (Haiku) — 花錢，最後手段
  */
-async function callLLM(
+export async function callLLM(
   env: LLMEnv,
   systemPrompt: string,
   userPrompt: string,
@@ -200,6 +200,24 @@ function parseJsonArray(raw: string | null | undefined, maxItems = 3): string {
   }
 }
 
+/**
+ * Read max_rounds from KV `ml:config.debate_max_rounds` (bounded 1..3).
+ * Default 2 (Phase 4 upgrade). Setting 1 restores pre-upgrade single-shot
+ * debate. Setting 3 gives deepest reasoning at highest LLM cost.
+ */
+async function readMaxRounds(kv?: KVNamespace): Promise<number> {
+  if (!kv) return 2
+  try {
+    const raw = await kv.get('ml:config.debate_max_rounds')
+    if (!raw) return 2
+    const n = parseInt(raw, 10)
+    if (!Number.isFinite(n)) return 2
+    return Math.max(1, Math.min(3, n))
+  } catch {
+    return 2
+  }
+}
+
 export async function runBuyDebate(
   symbol: string,
   stockName: string,
@@ -234,38 +252,36 @@ export async function runBuyDebate(
     reasoning,
   ].join('\n')
 
-  // ── Round 1 (Zealot): 極度看多 — LLM rewrite ML data 為敘事體 ──────────
-  // Apex Quant 設計：Zealot 跟 Reaper 都用 LLM 生成散文，消除 narrative bias
-  const zealotSystemPrompt = [
+  // ── Multi-round debate (Phase 4 Batch D) ─────────────────────────────────
+  // Round 1: initial bull (Zealot) + initial bear (Reaper) from mlContext
+  // Round 2..N: each side reads the OTHER side's most recent argument and rebuts
+  // After loop: Fulcrum judges the full debate history
+  //
+  // References:
+  //   - Du et al. (2023). "Improving Factuality and Reasoning in Language
+  //     Models through Multiagent Debate." arXiv:2305.14325. Shows N-round
+  //     debate among LLM agents improves factual accuracy.
+  //   - TauricResearch/TradingAgents (GitHub): organizational-realism multi-
+  //     agent trading framework inspired this upgrade.
+
+  const maxRounds = await readMaxRounds(env.KV)
+  console.log(`[Debate] ${symbol} max_rounds=${maxRounds}`)
+
+  const zealotSystemPromptBase = [
     '你是 Zealot — 一位極度樂觀的多頭交易員。',
     '你的信念：每一支被 ML 模型選中的股票都有獨到的買入理由。',
-    '你的任務：根據以下 ML 數據和公司資訊，寫出 3-5 個強力看多理由。',
     '',
     '規則：',
     '- 不准說「但是」「不過」「風險」「需要注意」，你是死多頭',
     '- 把 ML 信號、技術面、籌碼面的正面訊號放大解讀',
-    '- 簡潔有力，最多 300 字。用繁體中文回答。',
+    '- 簡潔有力，用繁體中文回答。',
   ].join('\n')
 
-  let zealotCase = ''
-  let llmSource = 'unknown'
-  try {
-    const zealotResult = await callLLM(env, zealotSystemPrompt, `Write the bull case:\n\n${mlContext}`, 0.5)
-    zealotCase = zealotResult.text
-    llmSource = zealotResult.source
-    console.log(`[Debate] Zealot done for ${symbol} via ${zealotResult.source}`)
-  } catch (e) {
-    console.warn(`[Debate] Zealot round failed for ${symbol}: ${e}`)
-    // Fallback: 用原始 ML data 作為 zealot case（降級但不放棄）
-    zealotCase = mlContext
-  }
-
-  // ── Round 2 (Reaper): 極度看空 — 找致命缺陷 ────────────────────────────
-  const reaperSystemPrompt = [
+  const reaperSystemPromptBase = [
     '你是 Reaper — 一位極度悲觀的空頭風控分析師（融合 Charlie Munger + Michael Burry）。',
     '你的信念：任何看起來完美的交易都藏著致命缺陷。',
-    '你的任務：從以下角度挑戰這個 BUY 推薦，找出多頭忽略的風險：',
     '',
+    '挑戰角度：',
     '【價值面】估值合理性、護城河是否真實',
     '【動能面】技術疲態、追高風險、量價背離',
     '【宏觀面】總經/地緣尾部風險',
@@ -273,19 +289,100 @@ export async function runBuyDebate(
     '規則：',
     '- 不准說「優點是」「看好」「值得買入」，你是死空頭',
     '- 每個挑戰都要具體，不要空泛警告',
-    '- 提出 3-5 個致命挑戰。最多 300 字。用繁體中文回答。',
+    '- 用繁體中文回答。',
   ].join('\n')
 
-  let reaperCase = ''
-  try {
-    const reaperResult = await callLLM(env, reaperSystemPrompt, `Challenge this BUY case:\n\n${mlContext}`, 0.7)
-    reaperCase = reaperResult.text
-    llmSource = reaperResult.source
-    console.log(`[Debate] Reaper done for ${symbol} via ${reaperResult.source}`)
-  } catch (e) {
-    console.warn(`[Debate] Reaper round failed for ${symbol}: ${e}`)
-    return { verdict: 'APPROVE', rounds: 1, summary: `Zealot only (Reaper LLM error): ${zealotCase}`.slice(0, 500), llmSource, convictionScore: 60 }
+  const zealotCases: string[] = []
+  const reaperCases: string[] = []
+  let llmSource = 'unknown'
+  let roundsCompleted = 0
+
+  for (let r = 1; r <= maxRounds; r++) {
+    // Round token budgets: round 1 = 512 (initial argument), round ≥2 = 256 (rebuttal)
+    const isInitial = r === 1
+    const maxTokens = isInitial ? 512 : 256
+
+    // ── Zealot turn ──────────────────────────────────────────────────────
+    let zealotPrompt: string
+    let zealotSystem: string
+    if (isInitial) {
+      zealotSystem = zealotSystemPromptBase + '\n\n你的任務：根據 ML 數據和公司資訊，寫出 3-5 個強力看多理由。最多 300 字。'
+      zealotPrompt = `Write the bull case:\n\n${mlContext}`
+    } else {
+      zealotSystem = zealotSystemPromptBase + `\n\n你的任務：讀對方（Reaper）剛才的空方論點，針對其每個挑戰回擊反駁。最多 180 字。`
+      const prevReaper = reaperCases[reaperCases.length - 1] ?? ''
+      zealotPrompt = [
+        `=== 原始 BUY context ===`,
+        mlContext,
+        ``,
+        `=== Reaper Round ${r - 1} 挑戰 ===`,
+        prevReaper,
+        ``,
+        `你的反駁（Round ${r}）：`,
+      ].join('\n')
+    }
+    try {
+      const res = await callLLM(env, zealotSystem, zealotPrompt, 0.5)
+      zealotCases.push(res.text)
+      llmSource = res.source
+      console.log(`[Debate] ${symbol} Zealot R${r} done via ${res.source}`)
+    } catch (e) {
+      console.warn(`[Debate] ${symbol} Zealot R${r} failed: ${e}`)
+      if (isInitial) {
+        // R1 fail → fallback to raw ML data; mark as minimally viable
+        zealotCases.push(mlContext)
+      } else {
+        // R≥2 fail → stop loop early but still have prior rounds
+        break
+      }
+    }
+
+    // ── Reaper turn ──────────────────────────────────────────────────────
+    let reaperPrompt: string
+    let reaperSystem: string
+    if (isInitial) {
+      reaperSystem = reaperSystemPromptBase + '\n\n你的任務：提出 3-5 個致命挑戰，最多 300 字。'
+      reaperPrompt = `Challenge this BUY case:\n\n${mlContext}`
+    } else {
+      reaperSystem = reaperSystemPromptBase + '\n\n你的任務：讀對方（Zealot）剛才的反駁，再挑出新的弱點或未被回應的風險。最多 180 字。'
+      const prevZealot = zealotCases[zealotCases.length - 1] ?? ''
+      reaperPrompt = [
+        `=== 原始 BUY context ===`,
+        mlContext,
+        ``,
+        `=== Zealot Round ${r} 反駁 ===`,
+        prevZealot,
+        ``,
+        `你的再反擊（Round ${r}）：`,
+      ].join('\n')
+    }
+    try {
+      const res = await callLLM(env, reaperSystem, reaperPrompt, 0.7)
+      reaperCases.push(res.text)
+      llmSource = res.source
+      console.log(`[Debate] ${symbol} Reaper R${r} done via ${res.source}`)
+    } catch (e) {
+      console.warn(`[Debate] ${symbol} Reaper R${r} failed: ${e}`)
+      if (isInitial) {
+        // Initial Reaper fail blocks meaningful judgement → short-circuit
+        return {
+          verdict: 'APPROVE',
+          rounds: 1,
+          summary: `Zealot only (Reaper LLM error R1): ${zealotCases[0] ?? ''}`.slice(0, 500),
+          llmSource,
+          convictionScore: 60,
+        }
+      } else {
+        break
+      }
+    }
+
+    roundsCompleted = r
   }
+
+  // Flattened transcripts for Fulcrum input and for final summary
+  const zealotCase = zealotCases.join('\n\n--- 下一輪 ---\n\n')
+  const reaperCase = reaperCases.join('\n\n--- 下一輪 ---\n\n')
 
   // ── Round 3 (Fulcrum): 冷靜裁決 — 低 temperature 穩定判決 ──────────────
   const fulcrumSystemPrompt = [
@@ -315,15 +412,17 @@ export async function runBuyDebate(
   ].join('\n')
 
   let fulcrumResponse = ''
+  // Total rounds label = 2 * completed_debate_rounds + 1 (for Fulcrum)
+  const totalRounds = 2 * roundsCompleted + 1
   try {
     const fulcrumResult = await callLLM(env, fulcrumSystemPrompt, fulcrumUserPrompt, 0.2)
     fulcrumResponse = fulcrumResult.text
     llmSource = fulcrumResult.source
-    console.log(`[Debate] Fulcrum done for ${symbol} via ${fulcrumResult.source}`)
+    console.log(`[Debate] Fulcrum done for ${symbol} via ${fulcrumResult.source} (totalRounds=${totalRounds})`)
   } catch (e) {
     console.warn(`[Debate] Fulcrum round failed for ${symbol}: ${e}`)
     return {
-      verdict: 'APPROVE', rounds: 2,
+      verdict: 'APPROVE', rounds: totalRounds - 1,
       summary: `Zealot+Reaper done (Fulcrum error). Zealot: ${zealotCase.slice(0, 200)} | Reaper: ${reaperCase.slice(0, 200)}`.slice(0, 500),
       llmSource, convictionScore: 60,
     }
@@ -334,7 +433,7 @@ export async function runBuyDebate(
   if (injectionCheck.action === 'reject') {
     console.warn(`[Debate] INJECTION DETECTED for ${symbol}: ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`)
     return {
-      verdict: 'REJECT' as DebateVerdict, rounds: 3,
+      verdict: 'REJECT' as DebateVerdict, rounds: totalRounds,
       summary: `[INJECTION_BLOCKED] ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`.slice(0, 500),
       llmSource, convictionScore: 0,
     }
@@ -350,13 +449,13 @@ export async function runBuyDebate(
   }
 
   const summary = [
-    `[${verdict}|conv:${convictionScore}|${llmSource}] `,
+    `[${verdict}|conv:${convictionScore}|rounds:${roundsCompleted}|${llmSource}] `,
     injectionCheck.action !== 'pass' ? `[INJ:${injectionCheck.severity}] ` : '',
-    `Reaper: ${reaperCase.slice(0, 120)} | `,
+    `Reaper(last): ${(reaperCases[reaperCases.length - 1] ?? '').slice(0, 100)} | `,
     `Fulcrum: ${fulcrumResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)
 
-  return { verdict, rounds: 3, summary, llmSource, convictionScore }
+  return { verdict, rounds: totalRounds, summary, llmSource, convictionScore }
 }
 
 // ─── Verdict Parser ───────────────────────────────────────────────────────────

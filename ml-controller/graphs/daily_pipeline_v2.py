@@ -42,6 +42,14 @@ from services.recommendation_service import (
 )
 from services.llm_reason import generate_recommendation_reasons
 from services.sector_flow_service import run_sector_flow_pipeline
+from services.persona_service import (
+    ChipBar,
+    MarginBar,
+    PersonaOpinions,
+    compute_trust_opinion,
+    compute_retail_opinion,
+    write_opinions as write_persona_opinions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +83,7 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Outputs
     sector_flow_summary: dict               # Phase 6: RRG compute result (concept + industry)
+    persona_opinions: dict                  # symbol → {trust:{...}, retail:{...}} (Taiwan-persona augmentation)
     metrics: dict                           # timing, counts
     errors: Annotated[list[str], operator.add]
 
@@ -171,6 +180,123 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     return {"predictions": pred_map}
 
 
+async def node_compute_personas(state: PipelineStateV2) -> dict:
+    """
+    Taiwan-persona augmentation layer (投信 + 散戶 contrarian).
+
+    For each active stock with a payload, compute two opinions using
+    chip_data (trust_net) and margin_data (margin_balance) already loaded
+    into the payload, plus concept-level PTT sentiment via stock_tags →
+    concept_buzz.
+
+    Written to persona_opinions D1 table AND returned in state for the
+    recommendation node (Phase 2 score integration).
+
+    Non-fatal: failures log a warning but do not block the pipeline.
+    """
+    logger.info("[Pipeline V2] node_compute_personas")
+    run_date = state["run_date"]
+    payloads = state.get("payloads") or []
+    if not payloads:
+        return {"persona_opinions": {}}
+
+    # ── Bulk-load concept sentiment: symbol → best_concept → sentiment_avg ──
+    # One query each for tags + buzz, then join in memory. Keeps D1 QPS low.
+    symbols = [p.get("stock_id") or p.get("symbol") for p in payloads]
+    symbols = [s for s in symbols if s]
+    sentiment_by_symbol: dict[str, float] = {}
+    try:
+        # Top concept per symbol (highest weight)
+        placeholders = ",".join("?" * len(symbols))
+        tag_rows = d1_client.query(
+            f"SELECT symbol, tag FROM stock_tags WHERE symbol IN ({placeholders}) "
+            f"ORDER BY symbol, weight DESC",
+            list(symbols),
+        )
+        top_concept_by_symbol: dict[str, str] = {}
+        for r in tag_rows or []:
+            sym = r.get("symbol")
+            if sym and sym not in top_concept_by_symbol:
+                top_concept_by_symbol[sym] = r.get("tag")
+
+        # Today's concept_buzz sentiment for those concepts
+        concepts = list({c for c in top_concept_by_symbol.values() if c})
+        if concepts:
+            cp_placeholders = ",".join("?" * len(concepts))
+            buzz_rows = d1_client.query(
+                f"SELECT concept, sentiment_avg FROM concept_buzz "
+                f"WHERE date = ? AND concept IN ({cp_placeholders})",
+                [run_date, *concepts],
+            )
+            sent_by_concept: dict[str, float] = {}
+            for r in buzz_rows or []:
+                c = r.get("concept")
+                s = r.get("sentiment_avg")
+                if c is not None and s is not None:
+                    sent_by_concept[c] = float(s)
+            for sym, concept in top_concept_by_symbol.items():
+                if concept in sent_by_concept:
+                    sentiment_by_symbol[sym] = sent_by_concept[concept]
+    except Exception as e:
+        logger.warning(f"[Pipeline V2] persona sentiment lookup failed (non-fatal): {e}")
+
+    # ── Compute per-symbol opinions ─────────────────────────────────────────
+    from datetime import date as _date
+    try:
+        today_dt = _date.fromisoformat(run_date)
+    except Exception:
+        today_dt = _date.today()
+
+    opinions: list[PersonaOpinions] = []
+    opinions_dict: dict[str, dict] = {}
+    for p in payloads:
+        sym = p.get("stock_id") or p.get("symbol")
+        if not sym:
+            continue
+        chips = p.get("chips") or []
+        if not chips:
+            continue
+
+        chip_bars: list[ChipBar] = []
+        margin_bars: list[MarginBar] = []
+        for row in chips:
+            d = row.get("date")
+            if not d:
+                continue
+            tn = row.get("trust_net")
+            if tn is not None:
+                chip_bars.append(ChipBar(date=str(d), trust_net=float(tn)))
+            mb = row.get("margin_balance")
+            if mb is not None:
+                margin_bars.append(MarginBar(date=str(d), margin_balance=float(mb)))
+
+        sentiment = sentiment_by_symbol.get(sym)
+
+        try:
+            trust = compute_trust_opinion(chip_bars, today_dt)
+            retail = compute_retail_opinion(margin_bars, sentiment)
+        except Exception as e:
+            logger.warning(f"[Pipeline V2] persona compute failed for {sym}: {e}")
+            continue
+
+        opinions.append(PersonaOpinions(
+            symbol=sym, date=run_date, trust=trust, retail=retail,
+        ))
+        opinions_dict[sym] = {
+            "trust": trust.to_dict(),
+            "retail": retail.to_dict(),
+        }
+
+    # ── Persist to D1 (non-fatal) ───────────────────────────────────────────
+    try:
+        written = write_persona_opinions(d1_client, opinions)
+        logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
+    except Exception as e:
+        logger.warning(f"[Pipeline V2] persona D1 write failed (non-fatal): {e}")
+
+    return {"persona_opinions": opinions_dict}
+
+
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
     Phase 6: Compute RRG (rs_ratio / rs_momentum / quadrant) for concept + industry
@@ -191,13 +317,25 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute ml_score, hybrid ranking promotion.
+    Filter SELL, compute ml_score + persona_score, hybrid ranking promotion.
     """
     logger.info("[Pipeline V2] node_recommend")
+
+    # Phase 2: persona weight is KV-controllable for safe rollout
+    #   ml:persona_score_weight — float, default 1.0, 0 = disabled, 0.5 = shadow
+    try:
+        persona_weight = float(
+            kv_client.get_json("ml:persona_score_weight", default=1.0) or 1.0
+        )
+    except Exception:
+        persona_weight = 1.0
+
     final, sell_count = filter_and_score_recommendations(
         state["screener_recs"],
         state["predictions"],
         state["payloads"],
+        persona_opinions=state.get("persona_opinions") or {},
+        persona_weight=persona_weight,
     )
 
     # Hybrid ranking from KV trading:config.ranking
@@ -320,6 +458,7 @@ def build_graph():
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("build_payloads",    node_build_payloads)
     g.add_node("ml_predict",        node_ml_predict, retry=ml_retry)
+    g.add_node("compute_personas", node_compute_personas)
     g.add_node("recommend",         node_recommend)
     g.add_node("gen_llm_reasons",   node_llm_reasons)
     g.add_node("write_d1",          node_write_d1)
@@ -329,7 +468,8 @@ def build_graph():
     g.add_edge("load_market_env",     "compute_sector_flow")
     g.add_edge("compute_sector_flow", "build_payloads")
     g.add_edge("build_payloads",      "ml_predict")
-    g.add_edge("ml_predict",          "recommend")
+    g.add_edge("ml_predict",          "compute_personas")
+    g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
     g.add_edge("write_d1",            END)

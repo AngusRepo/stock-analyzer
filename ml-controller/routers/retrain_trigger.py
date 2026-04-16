@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body
 from pydantic import BaseModel
 from dataclasses import asdict
 
-from services import d1_client
+from services import d1_client, retrain_lock
 from services.payload_builder import (
     load_market_env,
     _bulk_load_prices,
@@ -31,10 +31,10 @@ from services.modal_client import batch_retrain, prep_universal_batch, train_uni
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
-# ── Idempotency lock (P0-4) ──────────────────────────────────────────────────
-# 防止 cron 重複觸發（13:37 + 13:47 各觸發一次 → 第二次 skip）
-# in-memory dict: {date_key: triggered_at_epoch}
-_RETRAIN_LOCK: dict[str, float] = {}
+# ── Idempotency lock (P0-4 + persistent GCS layer) ──────────────────────────
+# Protects against duplicate cron triggers (e.g. 13:37 + 13:47) AND against
+# cross-instance races that the old in-memory dict missed. See
+# services.retrain_lock for design (GCS CAS via if_generation_match).
 _LOCK_TTL_SECONDS = 600  # 10 分鐘
 
 
@@ -208,24 +208,36 @@ async def trigger_universal_retrain(
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
 
-    # ── Idempotency check (P0-4) ─────────────────────────────────────────────
+    # ── Idempotency check (P0-4, persistent via GCS) ─────────────────────────
     run_date = tw_now.date().isoformat()
     lock_key = f"retrain:{run_date}"
-    now_epoch = t0
-    if lock_key in _RETRAIN_LOCK:
-        elapsed_since = now_epoch - _RETRAIN_LOCK[lock_key]
-        if elapsed_since < _LOCK_TTL_SECONDS:
-            logger.info(
-                f"[retrain/universal] Already triggered {elapsed_since:.0f}s ago "
-                f"(lock TTL={_LOCK_TTL_SECONDS}s) — skip duplicate trigger"
-            )
-            return {
-                "status": "skipped",
-                "reason": f"Already triggered {elapsed_since:.0f}s ago (idempotency lock)",
-                "lock_key": lock_key,
-            }
-        else:
-            logger.info(f"[retrain/universal] Lock expired ({elapsed_since:.0f}s > {_LOCK_TTL_SECONDS}s) — re-allowing")
+    lock_result = retrain_lock.acquire(
+        lock_key,
+        ttl_seconds=_LOCK_TTL_SECONDS,
+        metadata={
+            "run_date": run_date,
+            "limit": req.limit,
+            "force_monthly": req.force_monthly,
+            "tw_now": tw_now.isoformat(),
+        },
+    )
+    if not lock_result.acquired:
+        logger.info(
+            f"[retrain/universal] {lock_result.reason} — skip duplicate trigger "
+            f"(backend={lock_result.backend})"
+        )
+        return {
+            "status": "skipped",
+            "reason": lock_result.reason,
+            "lock_key": lock_key,
+            "backend": lock_result.backend,
+            "existing_instance": lock_result.existing_instance,
+            "elapsed_since": lock_result.elapsed_since_acquire,
+        }
+    logger.info(
+        f"[retrain/universal] Lock acquired: {lock_key} (backend={lock_result.backend}, "
+        f"reason={lock_result.reason})"
+    )
 
     # ── 1. All stocks (universal covers inactive too for training diversity) ──
     stock_rows = d1_client.query(
@@ -235,6 +247,7 @@ async def trigger_universal_retrain(
         [req.limit],
     )
     if not stock_rows:
+        retrain_lock.release(lock_key)
         return {"error": "No stocks found", "total": 0}
 
     stock_ids = [r["id"] for r in stock_rows]
@@ -503,6 +516,9 @@ async def trigger_universal_retrain(
     logger.info(f"[retrain/universal] Prep done: {batch_count} batches, {total_rows} total rows")
 
     if total_rows < 10000:
+        # Abort before orchestrator spawn → release lock so next retry can run.
+        logger.warning(f"[retrain/universal] Aborting: total_rows={total_rows} < 10000; releasing lock")
+        retrain_lock.release(lock_key)
         return {
             "error": f"Total prep rows {total_rows} < 10000, aborting train",
             "prep_results": prep_results,
@@ -513,19 +529,25 @@ async def trigger_universal_retrain(
     from services.modal_client import retrain_orchestrator
     logger.info(f"[retrain/universal] Flow B: spawning Modal orchestrator "
                 f"(batches={batch_count}, monthly={is_monthly})")
-    orchestrator_result = await retrain_orchestrator(
-        payload={
-            "batch_count": batch_count,
-            "is_monthly": is_monthly,
-            "selection_params": {"max_rounds": 100, "alpha": 0.01},
-        },
-        fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
-    )
+    try:
+        orchestrator_result = await retrain_orchestrator(
+            payload={
+                "batch_count": batch_count,
+                "is_monthly": is_monthly,
+                "selection_params": {"max_rounds": 100, "alpha": 0.01},
+            },
+            fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
+        )
+    except Exception as orch_err:
+        # Orchestrator dispatch failed — release lock so the next cron retry
+        # is not blocked by our aborted attempt (matches pre-GCS behavior).
+        logger.error(f"[retrain/universal] orchestrator dispatch failed: {orch_err}; releasing lock")
+        retrain_lock.release(lock_key)
+        raise
 
-    # ── P0-4: Write idempotency lock AFTER orchestrator spawn succeeds ───────
-    # Lock 在 spawn 成功後才寫，失敗時不寫（讓下次 retry）
-    _RETRAIN_LOCK[lock_key] = now_epoch
-    logger.info(f"[retrain/universal] Idempotency lock written: {lock_key} @ {now_epoch:.0f}")
+    # ── Lock held by services.retrain_lock.acquire() above.  Intentionally
+    # kept for the full TTL so cron re-triggers within 10 minutes are skipped.
+    logger.info(f"[retrain/universal] Lock held: {lock_key} (orchestrator dispatched)")
 
     elapsed = round(time.time() - t0, 2)
     logger.info(f"[retrain/universal] Done in {elapsed}s")

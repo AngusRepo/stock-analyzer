@@ -1436,6 +1436,25 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] sector_heat write failed:', e)
   }
 
+  // Momentum Crash Zone snapshot (Daniel & Moskowitz 2016)
+  // Tracks pool-level crowding and writes today's zone for circuit-breaker Layer 6.
+  try {
+    const {
+      aggregateFromPrices, loadOversoldHistory, assessZone, writeMomentumSnapshot,
+    } = await import('./momentumZone')
+    const indicator = aggregateFromPrices(finalCandidates, data.prices)
+    const history = await loadOversoldHistory(env.DB, endDate)
+    const assessment = assessZone(indicator.pct_oversold, history)
+    await writeMomentumSnapshot(env.DB, endDate, indicator, assessment)
+    console.log(
+      `[Screener v2] momentum zone ${assessment.zone} ` +
+      `(pct_oversold=${(indicator.pct_oversold * 100).toFixed(1)}%, ` +
+      `rank=${(assessment.percentile_rank * 100).toFixed(1)}, history=${assessment.n_history})`
+    )
+  } catch (e) {
+    console.warn('[Screener v2] momentum zone snapshot failed (non-blocking):', e)
+  }
+
   try {
     await storePttBuzz(env.DB, endDate, combinedBuzz)
   } catch (e) {

@@ -166,6 +166,7 @@ interface CircuitBreakerState {
   maxPositionPct: number         // 8% 正常，4% 高波動縮減
   buyConfThreshold: number       // 0.60 正常，0.70 低準確率時提高
   sellConfThreshold: number      // 0.65 正常，0.70 低準確率時提高
+  momentumZone?: 'RED' | 'YELLOW' | 'GREEN'  // Layer 6 — last applied zone (for logs/UI)
 }
 
 async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVNamespace): Promise<CircuitBreakerState> {
@@ -298,6 +299,32 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < bullAlignmentThreshold) {
     console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%, reducing position`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
+  }
+
+  // Layer 6: Momentum Crash Zone（Daniel & Moskowitz 2016）
+  // 候選池擁擠度在 36 個月分布中的 percentile rank → 縮減倉位
+  // RED (rank>P90) → posPct × 0.3；YELLOW (P70-P90) → × 0.7；GREEN → 不變
+  // 在 Layer 5 前執行（Layer 5 會 return halt，優先處理行為紀律）
+  try {
+    const { readCurrentZone, ZONE_MULTIPLIER } = await import('../lib/momentumZone')
+    const zoneInfo = await readCurrentZone(db)
+    if (zoneInfo.zone !== 'GREEN') {
+      const mult = ZONE_MULTIPLIER[zoneInfo.zone]
+      const adjusted = defaults.maxPositionPct * mult
+      console.warn(
+        `[CircuitBreaker] Layer6: momentum zone ${zoneInfo.zone} ` +
+        `(date=${zoneInfo.date}, rank=${zoneInfo.percentile_rank?.toFixed(3) ?? 'n/a'}) ` +
+        `→ posPct ${(adjusted * 100).toFixed(1)}% (× ${mult})`
+      )
+      return {
+        ...defaults,
+        maxPositionPct: adjusted,
+        momentumZone: zoneInfo.zone,
+        reason: `動能擁擠 ${zoneInfo.zone}（rank ${((zoneInfo.percentile_rank ?? 0) * 100).toFixed(0)}%）`,
+      }
+    }
+  } catch (e) {
+    console.warn('[CircuitBreaker] Layer6 check failed (non-fatal):', e)
   }
 
   // Layer 5: 連續虧損暫停（nofx SafetyMode）— 最近 5 筆平倉中 >= 3 筆虧損 → 暫停 1 天

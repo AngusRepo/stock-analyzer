@@ -59,7 +59,7 @@ export interface StockProfile {
   key_suppliers?: string | null
 }
 
-interface LLMEnv {
+export interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
   GEMINI_API_KEY?: string     // Gemini 3.1 Flash Lite (primary cheap+fast)
@@ -96,7 +96,7 @@ async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
  *   2. Workers AI (Llama 3.3 70B) — $5 plan 包含
  *   3. Anthropic API (Haiku) — 花錢，最後手段
  */
-async function callLLM(
+export async function callLLM(
   env: LLMEnv,
   systemPrompt: string,
   userPrompt: string,

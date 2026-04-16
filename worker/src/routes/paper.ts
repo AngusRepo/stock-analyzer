@@ -1299,6 +1299,30 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       ].filter(Boolean).join(' | ')
     : undefined
 
+  // News Analyst report (Batch C) — enrich debate context + optionally tighten
+  // buy confidence threshold when macro bias is negative.
+  let newsReport: any = null
+  let newsContextStr: string | undefined
+  try {
+    const { readCurrentNewsReport } = await import('../lib/newsAnalyst')
+    newsReport = await readCurrentNewsReport(env.KV, today)
+    if (newsReport) {
+      const factors = (newsReport.key_factors ?? []).slice(0, 3).join(' / ')
+      newsContextStr = `【News Analyst】bias=${newsReport.bias} conf=${newsReport.confidence.toFixed(2)} | ${factors}`
+      // Negative bias with decent confidence → tighten buy threshold by 0.05
+      if (newsReport.bias === 'negative' && newsReport.confidence >= 0.5) {
+        const before = cb.buyConfThreshold
+        cb.buyConfThreshold = Math.min(0.75, cb.buyConfThreshold + 0.05)
+        console.warn(
+          `[MorningSetup] News bias=negative conf=${newsReport.confidence.toFixed(2)} ` +
+          `→ buyConfThreshold ${before.toFixed(3)} → ${cb.buyConfThreshold.toFixed(3)}`
+        )
+      }
+    }
+  } catch (e) {
+    console.warn('[MorningSetup] news analyst read failed (non-fatal):', e)
+  }
+
   // 台指期夜盤 context（07:15 時夜盤已收盤，取最後成交資料）
   const { fetchTaifexNightClose } = await import('../lib/twseApi')
   const taifex = await fetchTaifexNightClose().catch(e => {
@@ -1461,12 +1485,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[Debate] ${rec.symbol} cached → ${debateVerdict}`)
       } else {
         try {
+          // Prepend News Analyst context to usContextStr so debate agents see it
+          const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
           const debate = await runBuyDebate(
             rec.symbol, rec.name ?? rec.symbol,
             rec.signal, adjustedConfidence,
             rec.reason ?? 'ML ensemble signal',
             { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
-            usContextStr,
+            mergedUsContext || undefined,
             profileMap.get(rec.symbol),
             taifexContextStr,
           )

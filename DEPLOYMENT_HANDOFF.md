@@ -1,9 +1,15 @@
-# Deployment Handoff — Sprint KFlux-Inspired Improvements
+# Deployment Handoff — Sprint KFlux + TradingAgents-Inspired Improvements
 
 **Branch**: `claude/resolve-merge-conflicts-E73zu`
 **PR**: AngusRepo/stock-analyzer#5
-**Last commit (strategy layer)**: `ae62823` — WFE gate + Momentum zone
-**Last commit (engineering layer)**: TBD this push — Post-exit discipline + GCS lock + tripartite notify
+
+**Commit timeline** (oldest → newest):
+  - `ae62823` — Per-fold WFE gate + Momentum crash zone (KFlux-inspired)
+  - `58896f4` — Post-exit discipline + Persistent GCS lock + Tripartite notify (KFlux-inspired)
+  - `5a8e9b2` — Taiwan personas (投信/散戶) + Layer 7 streak CB (Batch A)
+  - `342969b` — Wire persona_score into recommendation ranking (Batch B)
+  - `77b7f22` — News Analyst daily agent (Batch C)
+  - `a00bf32` — Multi-round Zealot↔Reaper debate (Batch D)
 
 ---
 
@@ -24,8 +30,13 @@ Run order is **mandatory** because step 3 depends on step 2's new D1 table exist
 | 3 | EXIT Post-Exit Discipline | `worker/src/lib/postExit.ts`, `worker/src/routes/paper.ts` (EOD + intraday exit sites, morning-setup) | See above |
 | 4 | Persistent GCS Retrain Lock | `ml-controller/services/retrain_lock.py`, `ml-controller/tests/test_retrain_lock.py`, `ml-controller/routers/retrain_trigger.py` (wired in) | 13 unit tests with fake GCS |
 | 5 | Tripartite Discord Notification | `worker/src/lib/notify.ts` (new exported `buildTripartiteDailyEmbed`) | No tests; pure function — visual QA on first run |
+| 6 | Taiwan Personas (投信/散戶) | `ml-controller/services/persona_service.py`, `ml-controller/tests/test_persona_service.py`, `ml-controller/graphs/daily_pipeline_v2.py` (new node), `worker/migration_persona_opinions.sql` | 23 unit tests |
+| 7 | Persona Score Integration | `ml-controller/services/recommendation_service.py`, `ml-controller/tests/test_persona_integration.py` | 6 integration tests |
+| 8 | Layer 7 Recent-Streak CB | `worker/src/routes/paper.ts` (checkCircuitBreakers) | Worker no test infra |
+| 9 | News Analyst Daily Agent | `worker/src/lib/newsAnalyst.ts`, `worker/src/lib/debateTrader.ts` (exports callLLM + LLMEnv), `worker/src/index.ts` (cron handler), `worker/wrangler.toml` (cron) | Worker no test infra |
+| 10 | Multi-Round Debate Upgrade | `worker/src/lib/debateTrader.ts` (refactored runBuyDebate) | Worker no test infra |
 
-**Test totals**: ml-service 41/41 · ml-controller 45/45 · cascade parity 12/12 · screener parity 20/20.
+**Test totals**: ml-service 41/41 · ml-controller 74/74 · cascade parity 12/12 · screener parity 20/20 (152 tests total).
 
 ---
 
@@ -51,23 +62,25 @@ cd ml-controller && python3 tests/test_screener_parity.py --mode local
 ```
 Expected: 86 passed, 15 skipped (cross-runtime, needs Worker URL).
 
-### Step 2 — Apply D1 migration (momentum zone table)
+### Step 2 — Apply D1 migrations (TWO new tables)
 ```bash
 cd worker
 
-# DRY RUN first — creates table in local D1 preview only
+# DRY RUN first — creates tables in local D1 preview only
 npx wrangler d1 execute stockvision-db --local --file=./migration_momentum_zone.sql
+npx wrangler d1 execute stockvision-db --local --file=./migration_persona_opinions.sql
 
-# If dry run passes, apply to remote
+# If dry runs pass, apply both to remote
 npx wrangler d1 execute stockvision-db --remote --file=./migration_momentum_zone.sql
+npx wrangler d1 execute stockvision-db --remote --file=./migration_persona_opinions.sql
 ```
 
-Verify the table exists:
+Verify both tables exist:
 ```bash
 npx wrangler d1 execute stockvision-db --remote \
-  --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='screener_momentum_snapshots'"
+  --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('screener_momentum_snapshots', 'persona_opinions')"
 ```
-Expected: one row with the `CREATE TABLE` DDL matching `migration_momentum_zone.sql`.
+Expected: two rows (both table names present).
 
 ### Step 3 — Verify GCS bucket access for retrain lock
 The persistent lock stores tiny JSON blobs at `gs://stockvision-models/locks/retrain/<key>.json`. The existing `ml-controller` service account is already authenticated for `stockvision-models` (used for `feature_pool.json`, line 283 of `retrain_trigger.py`). Confirm with:
@@ -135,6 +148,61 @@ Or via the admin endpoint if you have one.
 
 ---
 
+### Step 7 — Configure persona_score weight (optional dial)
+The persona score is enabled by default at full weight (1.0). For gradual rollout
+or to observe effect before committing, use shadow-ish mode:
+
+```bash
+# Full weight (default)
+npx wrangler kv:key put --binding=KV "ml:persona_score_weight" "1.0"
+
+# Half weight — persona still affects ranking but only 0.5× effect (observe phase)
+npx wrangler kv:key put --binding=KV "ml:persona_score_weight" "0.5"
+
+# Disabled — persona writes to D1 but doesn't influence ranking
+npx wrangler kv:key put --binding=KV "ml:persona_score_weight" "0.0"
+```
+
+Run the ml-controller pipeline once (daily cron) and verify new rows appear:
+```bash
+npx wrangler d1 execute stockvision-db --remote \
+  --command "SELECT date, symbol, trust_signal, trust_strength, retail_signal, retail_strength FROM persona_opinions ORDER BY date DESC LIMIT 10"
+```
+
+### Step 8 — Tune multi-round debate rounds (optional)
+Default is 2 rounds of Zealot↔Reaper rebuttal (Batch D upgrade). Reset to
+single-shot (pre-upgrade behavior) or extend to 3 rounds:
+
+```bash
+# Single-shot (pre-Batch-D behavior; ~1500 tokens/call)
+npx wrangler kv:key put --binding=KV "ml:config.debate_max_rounds" "1"
+
+# Default (~2500 tokens/call)
+npx wrangler kv:key put --binding=KV "ml:config.debate_max_rounds" "2"
+
+# Deep debate (~3500 tokens/call)
+npx wrangler kv:key put --binding=KV "ml:config.debate_max_rounds" "3"
+```
+
+The per-symbol 24h KV cache (`paper:debate:<sym>:<date>`) still applies so
+you only pay token cost once per symbol per day.
+
+### Step 9 — Verify News Analyst cron + KV writes
+New cron `45 22 * * SUN-THU` (06:45 TW) runs the News Analyst agent.
+After first firing, verify KV key exists:
+
+```bash
+npx wrangler kv:key get --binding=KV "market:news_analyst:$(date +%Y-%m-%d)"
+```
+Expected: JSON with `bias`, `confidence`, `key_factors`, `sector_bias`,
+`risk_factors`, `summary`, `source`.
+
+If missing, check Worker logs for `[NewsAnalyst]` lines to diagnose
+(LLM provider down, source data missing, etc.). Failure is non-fatal —
+morning-setup reads the report opportunistically.
+
+---
+
 ## Per-feature observability hooks
 
 Each feature emits distinctive log lines you can grep for.
@@ -143,11 +211,16 @@ Each feature emits distinctive log lines you can grep for.
 |---------|---------------|------------------|
 | Momentum zone | `[Screener v2] momentum zone <RED/YELLOW/GREEN>` | Every screener run (daily 17:30 TW) |
 | Momentum Layer 6 | `[CircuitBreaker] Layer6: momentum zone <RED/YELLOW>` | Only on non-GREEN days |
+| Streak Layer 7 | `[CircuitBreaker] Layer7 SCALE: recent streak <N>/5 wrong` | Only when ≥4/5 recent preds wrong |
 | Post-exit discipline | `[EODExit] post-exit <symbol>: category=...` or `[Intraday] post-exit <symbol>: ...` | After every full_sell |
 | Stop-day freeze | `[PostExit] Stop-day freeze ACTIVE (<date>)` | Only after HardStop/InitStop exits |
 | Cooldown excluded | `[MorningSetup] Cooldown-excluded: <symbols>` | Morning-setup only when there is ≥ 1 cooldown |
 | GCS lock acquire | `[retrain/universal] Lock acquired: retrain:<date> (backend=gcs, reason=acquired_new)` | First retrain of day |
 | GCS lock skip | `[retrain/universal] held_by_<instance> <N>s ago — skip duplicate trigger` | Duplicate cron within 10 min |
+| Persona pipeline | `[Pipeline V2] persona opinions written: <N>/<M>` | Every ml-controller daily run |
+| News Analyst | `[NewsAnalyst] <YYYY-MM-DD> bias=<pos/neu/neg> conf=<N>` | Every 06:45 TW cron |
+| News → debate bias | `[MorningSetup] News bias=negative conf=<N> → buyConfThreshold <before> → <after>` | Only when bias=negative AND conf≥0.5 |
+| Multi-round debate | `[Debate] <symbol> max_rounds=<N>` and `[Debate] <symbol> Zealot R<n> done via <llm>` | Every debate call (once per symbol per day) |
 
 ---
 
@@ -184,11 +257,36 @@ The in-memory fallback still works within a single instance; cross-instance dedu
 
 **Feature 5 (Tripartite notify)** — not wired anywhere, rollback = no action.
 
+**Feature 6 (Taiwan personas)** — to disable without redeploying:
+```bash
+# Option A: disable score contribution (opinions still computed + stored for audit)
+npx wrangler kv:key put --binding=KV "ml:persona_score_weight" "0.0"
+
+# Option B: stop writing to the table entirely — redeploy without the node in graph
+#   (requires code revert of daily_pipeline_v2.py persona node registration)
+```
+
+**Feature 8 (Layer 7 streak)** — purely additive in paper.ts; revert paper.ts
+to the pre-commit state, or (quick disable) seed predictions table so
+direction_correct recent rows are 1 (clean) — normal daily verify restores this.
+
+**Feature 9 (News Analyst)** — to disable:
+```bash
+# Remove cron from wrangler.toml and redeploy, OR wipe KV key
+#   so morning-setup reads null and skips bias-based threshold adjustment
+npx wrangler kv:key delete --binding=KV "market:news_analyst:$(date +%Y-%m-%d)"
+```
+
+**Feature 10 (Multi-round debate)** — reset to single-shot:
+```bash
+npx wrangler kv:key put --binding=KV "ml:config.debate_max_rounds" "1"
+```
+
 ---
 
 ## Follow-ups (not done in this branch; require user decision)
 
-Three items were intentionally deferred because they affect production flow in ways that need a separate review.
+Five items were intentionally deferred because they affect production flow in ways that need a separate review.
 
 1. **Wire WFE gate into Modal retrain pipeline**
    - Location: `ml-service/modal_app.py` functions `retrain_universal_batch` and `train_universal`.
@@ -203,6 +301,16 @@ Three items were intentionally deferred because they affect production flow in w
 3. **Wire Layer 6 momentum-zone data into tripartite embed color**
    - Trivial once #2 is done: pass `readCurrentZone(env.DB)` result into `summary.momentum_zone` field. Already supported by the type signature.
 
+4. **Consume `persona_applied` meta in debate context**
+   - The `recommendation_service` now attaches `persona_applied` (trust/retail signal + strength) to each recommendation row. Not yet wired into debateTrader's `mlContext`.
+   - Implementation: in `paper.ts` morning-setup, read `rec.persona_applied` (if present) and format as a short string, then prepend to debate context alongside News Analyst report. Would let Bull/Bear agents cite persona signals in their arguments.
+
+5. **Add additional Taiwan personas (外資, 大戶)**
+   - Current: only 投信 + 散戶 implemented. The plan document proposed 4 personas.
+   - 外資 Agent: `chip_data.foreign_net` momentum vs MSCI/QFII flow patterns
+   - 大戶 Agent: broker-concentration (分點) data — requires additional scraper/feed
+   - Why deferred per user: start with 2 personas; evaluate signal quality over 2-4 weeks before expanding.
+
 ---
 
 ## Files touched by this branch (complete list)
@@ -213,18 +321,28 @@ ml-service/app/wfe.py                              — WFE core module (320 line
 ml-service/tests/test_wfe.py                       — 20 unit tests
 worker/src/lib/momentumZone.ts                     — Zone detection + DB I/O (290 lines)
 worker/src/lib/postExit.ts                         — Cooldown + freeze + re-rank (280 lines)
-worker/migration_momentum_zone.sql                 — D1 schema
+worker/src/lib/newsAnalyst.ts                      — News Analyst agent (240 lines)
+worker/migration_momentum_zone.sql                 — D1 schema (momentum zone)
+worker/migration_persona_opinions.sql              — D1 schema (persona opinions)
 ml-controller/services/retrain_lock.py             — GCS-backed lock (250 lines)
+ml-controller/services/persona_service.py          — 投信/散戶 compute (380 lines)
 ml-controller/tests/test_retrain_lock.py           — 13 unit tests with fake bucket
+ml-controller/tests/test_persona_service.py        — 23 unit tests
+ml-controller/tests/test_persona_integration.py    — 6 integration tests
 ```
 
 ### Modified files
 ```
 ml-service/scripts/walk_forward_ml.py              — per-fold CAGR/DD + gate CLI flag
 worker/src/lib/marketScreener.ts                   — writes momentum snapshot after daily screen
-worker/src/routes/paper.ts                         — Layer 6 CB, post-exit hooks in 2 sites, cooldown filter in morning-setup
+worker/src/routes/paper.ts                         — Layer 6/7 CB, post-exit hooks, cooldown filter, news bias adjust, news-context merged into debate
 worker/src/lib/notify.ts                           — new buildTripartiteDailyEmbed export
-ml-controller/routers/retrain_trigger.py           — replaced in-memory lock with persistent GCS lock
+worker/src/lib/debateTrader.ts                     — multi-round Zealot↔Reaper debate; exports callLLM + LLMEnv
+worker/src/index.ts                                — news-analyst cron handler
+worker/wrangler.toml                               — news-analyst cron schedule
+ml-controller/routers/retrain_trigger.py           — persistent GCS lock
+ml-controller/services/recommendation_service.py   — persona_score wired into total_score
+ml-controller/graphs/daily_pipeline_v2.py          — new node_compute_personas + persona_weight KV dial
 progress.md                                        — merge conflict resolution
 ```
 
@@ -240,6 +358,9 @@ All features ship with references in their source file docstrings.
 | `momentumZone.ts` | Daniel & Moskowitz (2016) JFE 122(2); Barroso & Santa-Clara (2015) JFE 116(1); Cooper-Gutierrez-Hameed (2004) JF |
 | `postExit.ts` | Odean (1998) JF 53(5); Barber & Odean (2000) JF 55(2); Perold (1988) JPM |
 | `retrain_lock.py` | Burrows (2006) OSDI — Chubby; GCS precondition docs |
+| `persona_service.py` | Black (1986) JF 41(3) "Noise"; Shleifer (2000) "Inefficient Markets"; Barber et al. (2009) RFS — TW retail underperformance |
+| `newsAnalyst.ts` | Tetlock (2007) JF 62(3); Loughran & McDonald (2011) JF 66(1) |
+| `debateTrader.ts` (multi-round) | Du et al. (2023) arXiv:2305.14325 — Multi-agent debate improves LLM factual accuracy; TauricResearch/TradingAgents GitHub 9.3K★ |
 
 ---
 

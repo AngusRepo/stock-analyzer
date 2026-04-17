@@ -381,7 +381,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pl.DataFrame(rows)
+                df = pl.DataFrame(rows, infer_schema_length=None)
                 # Map stock_id → symbol via join
                 map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
                 df = df.join(map_df, on="stock_id", how="inner")
@@ -423,7 +423,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pl.DataFrame(rows)
+                df = pl.DataFrame(rows, infer_schema_length=None)
                 map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
                 df = df.join(map_df, on="stock_id", how="inner")
                 chunks.append(df)
@@ -466,7 +466,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                chunks.append(pl.DataFrame(rows))
+                chunks.append(pl.DataFrame(rows, infer_schema_length=None))
 
             if chunk_end == end_date:
                 break
@@ -496,7 +496,7 @@ class BacktestDataset:
         rows = d1_client.query(sql, [start_date, end_date])
         if not rows:
             return pl.DataFrame()
-        df = pl.DataFrame(rows)
+        df = pl.DataFrame(rows, infer_schema_length=None)
         df = df.sort("date")
         return df
 

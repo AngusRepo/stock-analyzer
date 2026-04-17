@@ -161,7 +161,7 @@ def run_kalman_filter(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) 
         preds_test.append(float(x_nx[0, 0]))
     dir_acc = _direction_accuracy(prices[-test_size:], np.array(preds_test))
 
-    pct        = (forecast_vals[4] - prices[-1]) / prices[-1]
+    pct        = (forecast_vals[4] - prices[-1]) / prices[-1] if len(forecast_vals) > 4 else 0.0
     std        = sigma_obs
     confidence = min(0.88, max(0.35, dir_acc * (1.0 + abs(pct) * 5)))
 
@@ -238,7 +238,7 @@ def run_dlinear(prices: np.ndarray, horizon: int = 14) -> ModelPrediction:
         actual_test.append(float(prices[n - test_size + i]))
 
     dir_acc    = _direction_accuracy(np.array(actual_test), np.array(preds_test)) if len(preds_test) > 3 else 0.5
-    pct        = (forecast_vals[4] - prices[-1]) / prices[-1]
+    pct        = (forecast_vals[4] - prices[-1]) / prices[-1] if len(forecast_vals) > 4 else 0.0
     std        = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
     confidence = min(0.88, max(0.35, dir_acc * (1 + abs(pct) * 4)))
 

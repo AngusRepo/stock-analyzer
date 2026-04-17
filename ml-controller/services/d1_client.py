@@ -145,4 +145,6 @@ def batch_execute(
         "success_count": success_count,
         "error_count": error_count,
         "changes_total": total_changes,
+        "first_error": first_error,
+        "partial_failure": error_count > 0 and success_count > 0,
     }

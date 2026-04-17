@@ -157,7 +157,7 @@ def weighted_vote(
 
     # ── 加權方向投票 ──────────────────────────────────────────────────────────
     up_weight = sum(w for p, w in zip(predictions, norm_weights) if p.direction == "up")
-    down_weight = 1.0 - up_weight
+    down_weight = sum(w for p, w in zip(predictions, norm_weights) if p.direction != "up")
 
     # ── 加權平均預測漲跌幅 ────────────────────────────────────────────────────
     weighted_pct = sum(p.forecast_pct * w for p, w in zip(predictions, norm_weights))
@@ -315,8 +315,9 @@ def weighted_vote(
     for p, w in zip(predictions, norm_weights):
         if p.forecasts:
             mid = p.forecasts[4] if len(p.forecasts) > 4 else p.forecasts[-1]
-            lows.append(mid["lower95"] * w)
-            highs.append(mid["upper95"] * w)
+            if isinstance(mid, dict) and "lower95" in mid and "upper95" in mid:
+                lows.append(mid["lower95"] * w)
+                highs.append(mid["upper95"] * w)
     forecast_range = {
         "low": round(sum(lows), 2) if lows else current_price * 0.95,
         "high": round(sum(highs), 2) if highs else current_price * 1.05,

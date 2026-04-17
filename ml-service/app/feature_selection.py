@@ -211,6 +211,8 @@ def target_permutation(
     actual_rounds = 0
 
     for perm_i in range(max_permutations):
+        # Full random permutation per Altmann et al. (2010) — breaks ALL
+        # feature-target associations including cross-date rank structure.
         y_shuffled = rng.permutation(y_train)
         null_model = _train_lgbm_regression(X_train, y_shuffled, X_val, y_val,
                                              seed=42 + perm_i + 1)

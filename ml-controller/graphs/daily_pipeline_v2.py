@@ -329,6 +329,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         )
     except Exception:
         persona_weight = 1.0
+    persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
 
     final, sell_count = filter_and_score_recommendations(
         state["screener_recs"],

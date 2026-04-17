@@ -1187,10 +1187,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         from sklearn.preprocessing import StandardScaler
         feat_scaler = StandardScaler()
         Xt = feat_scaler.fit_transform(X_train).astype(np.float32)
-        valid_cols_mask = feat_scaler.scale_ > 1e-10
+        # StandardScaler natively sets scale_=1.0 for zero-variance columns
+        # (scikit-learn docs: "data is left as-is"). No manual valid_cols_mask
+        # needed — removing to eliminate train/inference mismatch.
+        zero_var_count = int((feat_scaler.scale_ <= 1e-10).sum())
         Xt = np.nan_to_num(Xt, nan=0.0, posinf=0.0, neginf=0.0)
         yt = y_train.astype(np.float32)  # 2.0: regression target (rank 0~1)
-        print(f"[TrainUniversal] FT-T scaler: {valid_cols_mask.sum()}/{len(valid_cols_mask)} columns with variance")
+        print(f"[TrainUniversal] FT-T scaler: {len(feat_scaler.scale_) - zero_var_count}/{len(feat_scaler.scale_)} columns with variance (zero-var={zero_var_count})")
         print(f"[TrainUniversal] FT-T using all {len(Xt)} samples (L4 24GB + batched val)")
 
         # Val split with 5-day embargo (De Prado AFML: prevent label leakage)
@@ -1237,8 +1240,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         _global_step = 0
         # 2.0: Pairwise Margin Ranking Loss (CIKM 2025: best Sharpe 0.7529)
         # ListNet softmax unstable with unbounded FT-T output (caused IC=0 collapse)
-        # Margin loss: per-pair, only cares about relative order, unbounded OK
-        _margin_loss = nn.MarginRankingLoss(margin=0.1)
+        # Margin: PyTorch default=0.0; CIKM 2025 (arXiv 2510.14156) recommends grid
+        # search per dataset. Read from Optuna params if available, else default 0.0.
+        _ftt_margin = float(req.get("ftt_margin", 0.0)) if hasattr(req, "get") else 0.0
+        _margin_loss = nn.MarginRankingLoss(margin=_ftt_margin)
         _n_pairs = 1024  # P0-5e: 256→1024 (larger batch → more pairs available)
 
         def crit(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -1290,7 +1295,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     xb = torch.tensor(Xt_trn[bi], device=device)
                     yb = torch.tensor(yt_trn[bi], device=device)
                     with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                        loss = crit(model_ftt(xb), yb) / grad_accum
+                        preds_amp = model_ftt(xb)
+                    # Loss in fp32: bf16 ULP ≈ 0.004 cannot resolve rank steps of 0.0004
+                    # (cross-sectional rank with 2500 stocks). PyTorch AMP docs:
+                    # "Wrap fragile ops/losses in fp32 blocks."
+                    loss = crit(preds_amp.float(), yb.float()) / grad_accum
                     grad_scaler.scale(loss).backward()
                     step_loss += loss.item()
                     mini_step += 1

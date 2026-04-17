@@ -668,13 +668,13 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         dir_acc   = float(model.score(X_test, y_test)) if len(X_test) > 0 else 0.5
         proba     = model.predict_proba(X_latest.reshape(1, -1))[0]
-        up_prob   = float(proba[1])
+        up_prob   = float(proba[1]) if len(proba) > 1 else 0.5
         direction = "up" if up_prob > 0.5 else "down"
         confidence = max(up_prob, 1 - up_prob)
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -730,13 +730,13 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         dir_acc   = float(model.score(X_test, y_test)) if len(X_test) > 0 else 0.5
         proba     = model.predict_proba(X_latest.reshape(1, -1))[0]
-        up_prob   = float(proba[1])
+        up_prob   = float(proba[1]) if len(proba) > 1 else 0.5
         direction = "up" if up_prob > 0.5 else "down"
         confidence = max(up_prob, 1 - up_prob)
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -800,7 +800,7 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -878,7 +878,7 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -1033,7 +1033,7 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
     else:
         dir_acc = 0.5
 
-    up_prob    = float(proba_lat[1])
+    up_prob    = float(proba_lat[1]) if len(proba_lat) > 1 else 0.5
     direction  = "up" if up_prob > 0.5 else "down"
     confidence = max(up_prob, 1 - up_prob)
 

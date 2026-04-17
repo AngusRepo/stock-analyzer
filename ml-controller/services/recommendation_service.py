@@ -455,7 +455,7 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
     if not statements:
         return 0
     result = d1_client.batch_execute(statements)
-    written = result.get("total", 0) // 2  # delete + insert pair
+    written = result.get("success_count", result.get("total", 0)) // 2
     logger.info(f"[recommendation_service] Wrote {written} predictions to D1")
     return written
 

@@ -452,6 +452,7 @@ def rank_to_signal(
         avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
     else:
         avg_rank = float(np.mean(list(rank_scores.values())))
+    scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
 
     # Consensus: fraction of models agreeing on dominant direction (symmetric)

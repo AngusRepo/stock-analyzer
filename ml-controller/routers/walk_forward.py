@@ -37,11 +37,13 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
     from services.backtest_engine import BacktestDataset
     from services.stratified_subset import select_stratified_subset
 
-    symbols = select_stratified_subset(size=min(req.subset_size, 200), as_of=req.end_date)
+    symbols = select_stratified_subset(
+        target_size=min(req.subset_size, 200), end_date=req.end_date,
+    )
     if not symbols:
         raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
     dataset = BacktestDataset.load_from_d1(
-        symbols=symbols, start=req.start_date, end=req.end_date,
+        start_date=req.start_date, end_date=req.end_date, symbols=symbols,
     )
     run = await run_walk_forward(
         dataset=dataset,
@@ -98,11 +100,13 @@ async def walk_forward_run(req: WalkForwardRequest):
     from services.backtest_engine import BacktestDataset
     from services.stratified_subset import select_stratified_subset
 
-    symbols = select_stratified_subset(size=req.subset_size, as_of=req.end_date)
+    symbols = select_stratified_subset(
+        target_size=req.subset_size, end_date=req.end_date,
+    )
     if not symbols:
         raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
     dataset = BacktestDataset.load_from_d1(
-        symbols=symbols, start=req.start_date, end=req.end_date,
+        start_date=req.start_date, end_date=req.end_date, symbols=symbols,
     )
 
     logger.info(

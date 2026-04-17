@@ -20,6 +20,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.kv_pusher import push_optuna_result
+from services.payload_builder import load_market_env
+from dataclasses import asdict
 
 logger = logging.getLogger("regime")
 router = APIRouter()
@@ -28,49 +30,21 @@ TW_TZ = timezone(timedelta(hours=8))
 
 ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
 ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
-CF_ACCOUNT_ID     = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_D1_DB_ID       = os.environ.get("CF_D1_DB_ID",   "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
-CF_API_TOKEN      = os.environ.get("CF_API_TOKEN",   "")
-
-D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
 
 
 class RegimeComputeRequest(BaseModel):
     force_retrain: bool = False       # retrain HMM from history before predict
-    history_days: int = 180           # window for market_env history pull
 
 
-async def _fetch_market_env(client: httpx.AsyncClient, history_days: int) -> dict:
-    """Pull last N days market_env from D1 → shape expected by regime.py."""
-    if not CF_API_TOKEN:
-        raise HTTPException(status_code=500, detail="CF_API_TOKEN not set in ml-controller env")
-
-    sql = (
-        "SELECT date, market_return_1d, market_return_5d, risk_score, market_bias_20d "
-        "FROM market_env_history "
-        "WHERE date >= date('now', ?) "
-        "ORDER BY date ASC"
-    )
-    resp = await client.post(
-        D1_API,
-        json={"sql": sql, "params": [f"-{history_days} days"]},
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
-        timeout=30.0,
-    )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"D1 market_env fetch failed: HTTP {resp.status_code}")
-    data = resp.json()
-    if not data.get("success"):
-        raise HTTPException(status_code=502, detail="D1 query returned success=false")
-    results = data.get("result", [])
-    rows = results[0].get("results", []) if results else []
-    if not rows:
-        raise HTTPException(status_code=404, detail="No market_env rows in D1")
-
-    # Shape into {history: {date: {...}}} expected by regime.build_market_feature_matrix
-    history = {r["date"]: r for r in rows}
-    latest = rows[-1]
-    return {"history": history, **latest}
+def _fetch_market_env_via_payload_builder() -> dict:
+    """Use payload_builder.load_market_env which already knows the canonical
+    D1 schema (market_risk + stock_prices TAIEX history + ETF 0050 fallback).
+    Saves re-implementing the query here.
+    """
+    run_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    market_env, _, _, _, _ = load_market_env(run_date)
+    env_dict = asdict(market_env)
+    return env_dict
 
 
 @router.post("/regime/compute")
@@ -90,9 +64,16 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
 
     logger.info(f"[Regime] compute start (force_retrain={req.force_retrain})")
 
-    async with httpx.AsyncClient() as client:
-        market_env = await _fetch_market_env(client, req.history_days)
+    try:
+        market_env = _fetch_market_env_via_payload_builder()
+    except Exception as e:
+        logger.error(f"[Regime] load_market_env failed: {e}")
+        raise HTTPException(status_code=502, detail=f"load_market_env failed: {e}")
 
+    if not market_env.get("history"):
+        raise HTTPException(status_code=404, detail="market_env has empty history")
+
+    async with httpx.AsyncClient() as client:
         headers = {"Content-Type": "application/json"}
         if ML_SERVICE_SECRET:
             headers["X-Service-Token"] = ML_SERVICE_SECRET

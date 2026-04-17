@@ -363,8 +363,7 @@ app.post('/api/admin/optuna-push', async (c) => {
       ]
       break
     }
-    case 'feature_window':
-    case 'regime': {
+    case 'feature_window': {
       // Phase B/C 後實作；目前先記錄但不寫 KV
       console.warn(`[OptunaPush] source=${source} not yet wired (deferred to Phase B/C)`)
       return c.json({
@@ -372,6 +371,48 @@ app.post('/api/admin/optuna-push', async (c) => {
         message: `source '${source}' not yet wired`,
         deferred_to: 'Phase B/C',
       }, 501)
+    }
+    case 'regime': {
+      // 2026-04-17 #30: HMM regime pipeline wired (Sprint 4-2 revisit).
+      // params: { label: 'bull_market'|'volatile'|'sideways'|'bear_market',
+      //           regime_index: 0-3,
+      //           hmm_state: int,
+      //           label_zh: str,
+      //           consensus_threshold: float,
+      //           weight_multipliers: {model_name: mult} }
+      // Write to KV ml:regime as raw string label (marketScreener.ts + paper.ts
+      // consume via string .includes('bull'/'bear'/'sideways'/'volatile')).
+      // Also store full structured blob in ml:regime:meta for dashboards.
+      const label = String(params.label ?? 'sideways')
+      const validLabels = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])
+      if (!validLabels.has(label)) {
+        return c.json({
+          error: `Invalid regime label: ${label}`,
+          allowed: Array.from(validLabels),
+        }, 400)
+      }
+      await c.env.KV.put('ml:regime', label, { expirationTtl: 2 * 86400 })
+      await c.env.KV.put('ml:regime:meta', JSON.stringify({
+        label,
+        regime_index: Number(params.regime_index ?? 2),
+        hmm_state: Number(params.hmm_state ?? -1),
+        label_zh: String(params.label_zh ?? ''),
+        consensus_threshold: Number(params.consensus_threshold ?? 0.60),
+        weight_multipliers: params.weight_multipliers ?? {},
+        pushed_at: new Date().toISOString(),
+      }), { expirationTtl: 2 * 86400 })
+      // Audit log
+      const auditKey = `audit:optuna-push:regime:${twToday()}`
+      await c.env.KV.put(auditKey, JSON.stringify({
+        source: 'regime', params, meta: meta ?? null,
+        pushed_at: new Date().toISOString(),
+      }), { expirationTtl: 30 * 86400 })
+      return c.json({
+        success: true,
+        source: 'regime',
+        regime: label,
+        updatedKeys: ['ml:regime', 'ml:regime:meta'],
+      })
     }
     default:
       return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','screener','conformal','risk_params','rrg','feature_window','regime'] }, 400)
@@ -781,6 +822,9 @@ app.post('/api/admin/trigger/:task', async (c) => {
     warmup:        () => runMorningWarmup(c.env),
     'morning-briefing': async () => { const { generateMorningBriefing } = await import('./lib/morningBriefing'); return generateMorningBriefing(c.env) },
     'daily-report':     async () => { const { generateDailyReport } = await import('./lib/dailyReport'); return generateDailyReport(c.env) },
+    // 2026-04-17 fix: Cloud Scheduler job is named `obsidian-sync` but Worker only
+    // had `obsidian-daily` in taskMap → daily HTTP 400 since 4/16 (Cloud Scheduler
+    // migration). Alias below so both names work; scheduler rename can be deferred.
     'obsidian-daily':   async () => {
       if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
       const headers: Record<string,string> = { 'Content-Type': 'application/json' }
@@ -788,6 +832,30 @@ app.post('/api/admin/trigger/:task', async (c) => {
       const twDate = twToday()
       const res = await fetch(`${c.env.ML_CONTROLLER_URL}/obsidian/daily`, { method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000) })
       return res.ok ? await res.json() : `HTTP ${res.status}`
+    },
+    'obsidian-sync':    async () => {
+      // Alias for obsidian-daily; keeps Cloud Scheduler `obsidian-sync` job working
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string,string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const twDate = twToday()
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/obsidian/daily`, { method: 'POST', headers, body: JSON.stringify({ date: twDate }), signal: AbortSignal.timeout(60000) })
+      return res.ok ? await res.json() : `HTTP ${res.status}`
+    },
+    // 2026-04-17 #30: HMM regime compute (Sprint 4-2 revisit)
+    // Calls ml-controller /regime/compute which pulls market_env from D1,
+    // runs HMM predict, and pushes label to KV ml:regime via optuna-push.
+    'regime-compute':   async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string,string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/regime/compute`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ force_retrain: false, history_days: 180 }),
+        signal: AbortSignal.timeout(180_000),
+      })
+      if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
+      return await res.json()
     },
     'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
@@ -859,7 +927,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
         const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
         await logCronResult(c.env.KV, task, { status: 'success', summary, duration_ms: Date.now() - t0 })
       } catch (e: any) {
-        await logCronResult(c.env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) })
+        await logCronResult(c.env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) }, c.env as any)
       }
     })())
     return c.json({ success: true, message: `${task} 已啟動（背景執行，poll cron log）`, triggered_at: new Date().toISOString(), mode: 'async' })
@@ -873,7 +941,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
     await logCronResult(c.env.KV, task, { status: 'success', summary, duration_ms: Date.now() - t0 })
     return c.json({ success: true, message: `${task} 完成`, triggered_at: new Date().toISOString(), result })
   } catch (e: any) {
-    await logCronResult(c.env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) })
+    await logCronResult(c.env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) }, c.env as any)
     return c.json({ success: false, message: `${task} 失敗`, error: e.message }, 500)
   }
 })
@@ -1896,7 +1964,7 @@ export default {
           const summary = await fn()
           await logCronResult(env.KV, task, { status: 'success', summary, duration_ms: Date.now() - t0 })
         } catch (e: any) {
-          await logCronResult(env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) })
+          await logCronResult(env.KV, task, { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) }, env as any)
         }
       })())
 
@@ -1980,6 +2048,22 @@ export default {
       runWithLog('adapt', async () => {
         const { runAdaptiveUpdate } = await import('./lib/adaptiveEngine')
         return await runAdaptiveUpdate(env)
+      })
+    } else if (cron === '50 10 * * 1-5') {
+      // 2026-04-17 #30: HMM regime compute (Sprint 4-2 revisit)
+      // Calls ml-controller /regime/compute → ml-service HMM predict → push ml:regime KV
+      runWithLog('regime-compute', async () => {
+        if (!env.ML_CONTROLLER_URL) return '跳過（ML_CONTROLLER_URL 未設定）'
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        const res = await fetch(`${env.ML_CONTROLLER_URL}/regime/compute`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ force_retrain: false, history_days: 180 }),
+          signal: AbortSignal.timeout(180_000),
+        })
+        if (!res.ok) throw new Error(`Controller /regime/compute HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+        const data = await res.json() as any
+        return `regime=${data.regime_label_en} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'}`
       })
     } else if (cron === '0 11 * * 1-5') {
       // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2

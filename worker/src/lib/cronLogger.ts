@@ -32,6 +32,9 @@ const TASK_NAMES: Record<string, string> = {
   'morning-briefing': 'Morning Briefing',
   'daily-report':     'Daily Report',
   'obsidian-daily':   'Obsidian Notes',
+  'obsidian-sync':    'Obsidian Sync',
+  'regime-compute':   'HMM Regime',       // 2026-04-17 #30 Sprint 4-2 revisit
+  'pipeline':         'Pipeline',
 }
 
 export function getTaskDisplayName(task: string): string {
@@ -42,6 +45,7 @@ export async function logCronResult(
   kv: KVNamespace,
   task: string,
   result: Omit<CronLogEntry, 'task' | 'timestamp'>,
+  env?: { DISCORD_WEBHOOK_URL?: string },
 ): Promise<void> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
   const entry: CronLogEntry = {
@@ -52,6 +56,32 @@ export async function logCronResult(
   try {
     await kv.put(`cron:log:${task}:${today}`, JSON.stringify(entry), { expirationTtl: 7 * 86400 })
   } catch { /* KV write failure should not block cron */ }
+
+  // 2026-04-17 fix: 5-day silent pipeline fail exposed. Alert on cron error to
+  // Discord immediately. Rate-limit 1 alert per task per day to avoid spam on
+  // repeated retries. Critical tasks override the dedup (pipeline / ml-predict).
+  if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {
+    const CRITICAL = new Set(['pipeline', 'ml-predict', 'ml', 'recommendation', 'morning-setup', 'paper-trade'])
+    const dedupKey = `cron:alert:${task}:${today}`
+    try {
+      const already = await kv.get(dedupKey)
+      if (!already || CRITICAL.has(task)) {
+        const displayName = getTaskDisplayName(task)
+        const msg = `🚨 **Cron Fail: ${displayName}** (\`${task}\`)\n` +
+          `Date: ${today}\n` +
+          `Duration: ${(result.duration_ms / 1000).toFixed(1)}s\n` +
+          `Summary: ${(result.summary || '').slice(0, 500)}\n` +
+          (result.error ? `Error: \`${String(result.error).slice(0, 300)}\`` : '')
+        await fetch(env.DISCORD_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: msg }),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => { /* don't let Discord failure block cron logging */ })
+        await kv.put(dedupKey, '1', { expirationTtl: 86400 }).catch(() => {})
+      }
+    } catch { /* alert dispatch must never block cron */ }
+  }
 }
 
 /** 讀取指定日期所有 cron log */

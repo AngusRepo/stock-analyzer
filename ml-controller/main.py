@@ -17,7 +17,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import predict, retrain, retrain_trigger, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday
+from routers import predict, retrain, retrain_trigger, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -68,6 +68,10 @@ app.include_router(audit.router,       dependencies=[Depends(verify_token)])
 app.include_router(adversarial.router, dependencies=[Depends(verify_token)])
 app.include_router(obsidian.router, prefix="/obsidian", dependencies=[Depends(verify_token)])
 app.include_router(intraday.router, dependencies=[Depends(verify_token)])
+# 2026-04-17 #30: HMM regime → ml:regime KV (Sprint 4-2 revisit)
+app.include_router(regime.router,   dependencies=[Depends(verify_token)])
+# 2026-04-17 #32: Sprint 6b walk-forward ML retrain orchestrator (scaffold)
+app.include_router(walk_forward.router, dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])

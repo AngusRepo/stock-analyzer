@@ -524,7 +524,15 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
 
     # Feature extraction — 2.0 uses target_rank (continuous 0~1)
-    X, y, feature_names = get_features(df, target_col="target_rank")
+    # 2026-04-17 v2-predict-crash fix:
+    # target_rank is produced by cross-sectional pooling (prep_universal_batch).
+    # Single-stock predict-time `build_feature_matrix` doesn't produce target_rank
+    # → get_features raises ValueError (line 947) → v2 crashes on every stock,
+    #   falls through to v1 fallback which only works for 5 per-stock legacy
+    #   models → pipeline writes 3/33 predictions every day.
+    # Fix: pass allow_missing_target=True so get_features tolerates predict-time
+    # (y unused — we only consume X_latest).
+    X, y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
     if len(X) == 0:
         raise ValueError(f"Feature matrix empty for {req.symbol}")
     X_latest = X[-1].reshape(1, -1)
@@ -2198,4 +2206,80 @@ async def bandit_stats(request: Request):
         out["arf"] = _arf.stats_summary()
     except Exception as e:
         out["arf"] = {"error": str(e)}
-    retu
+    return out
+
+
+# ── Regime Pipeline (Sprint 4-2 revisit, 2026-04-17 #30) ─────────────────────
+# Fixes "HMM regime pipeline broken" — adds /regime/current endpoint so that
+# ml-controller can pull the current HMM regime and push to Worker KV.
+# See memory/project_regime_pipeline_broken.md for the full 9-item checklist.
+
+# English labels for KV consumption (Worker marketScreener / paper.ts consume
+# these via string .includes('bull'/'bear'/'sideways'/'volatile')).
+_REGIME_INDEX_TO_EN = {
+    0: "bull_market",   # 低波動牛市
+    1: "volatile",      # 高波動牛市（bull but high vol）
+    2: "sideways",      # 震盪整理
+    3: "bear_market",   # 熊市危機
+}
+
+
+class RegimeRequest(BaseModel):
+    market_env: dict | None = None  # same structure used by /predict /predict/v2
+    force_retrain: bool = False     # if True, retrain HMM from history
+
+
+@app.post("/regime/current")
+async def regime_current(req: RegimeRequest, request: Request):
+    """Returns the current HMM market regime.
+
+    Response:
+      {
+        "regime_label_en":       "bull_market" | "volatile" | "sideways" | "bear_market",
+        "regime_index":          0-3,
+        "hmm_state":              HMM internal state index,
+        "label_zh":              "低波動牛市" etc,
+        "weight_multipliers":    {model_name: mult},
+        "consensus_threshold":   float,
+        "computed_at":           ISO8601 TWD,
+      }
+    """
+    await verify_service_token(request)
+    from datetime import datetime, timezone, timedelta
+    from .regime import (
+        RegimeDetector,
+        build_market_feature_matrix,
+        get_current_market_features,
+    )
+
+    TW_TZ = timezone(timedelta(hours=8))
+
+    detector = None if req.force_retrain else RegimeDetector.load_from_gcs()
+    if detector is None:
+        feat_mat = build_market_feature_matrix(req.market_env)
+        if feat_mat is None or len(feat_mat) < 20:
+            raise HTTPException(
+                status_code=400,
+                detail="insufficient market_env.history to train HMM (need >=20 days)",
+            )
+        detector = RegimeDetector().fit(feat_mat)
+        if detector._trained:
+            detector.save_to_gcs()
+
+    cur_feat = get_current_market_features(req.market_env)
+    if cur_feat is None:
+        raise HTTPException(status_code=400, detail="market_env missing current features")
+
+    info = detector.predict_regime(cur_feat)
+    reg_idx = int(info.get("regime_index", 1))
+    label_en = _REGIME_INDEX_TO_EN.get(reg_idx, "sideways")
+
+    return {
+        "regime_label_en":     label_en,
+        "regime_index":        reg_idx,
+        "hmm_state":           info.get("hmm_state", -1),
+        "label_zh":            info.get("label", "未知"),
+        "weight_multipliers":  info.get("weight_multipliers", {}),
+        "consensus_threshold": info.get("consensus_threshold", 0.60),
+        "computed_at":         datetime.now(TW_TZ).isoformat(),
+    }

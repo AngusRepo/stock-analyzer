@@ -297,8 +297,10 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
         res = mod.fit(maxiter=200, disp=False, search_reps=20)
 
         # 取 smoothed probabilities → 當前 regime
-        smoothed = res.smoothed_marginal_probabilities
-        regime_probs = smoothed.iloc[-1].values  # [P(regime0), P(regime1)]
+        # 2026-04-17 #1 fix: 新版 statsmodels 對 numpy input 回傳 numpy array
+        # (不是 pandas DataFrame) → .iloc 不存在。用 np.asarray 統一處理兩種回傳。
+        smoothed = np.asarray(res.smoothed_marginal_probabilities)
+        regime_probs = smoothed[-1]  # [P(regime0), P(regime1)]
 
         # 判斷哪個 regime 是 bull（drift 較高的）
         regime_means = [res.params.get(f"const[{i}]", 0.0) for i in range(2)]
@@ -346,10 +348,10 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
                 m = MarkovAutoregression(seg_ret, k_regimes=2, order=2,
                                          switching_ar=True, switching_variance=True)
                 r_fit = m.fit(maxiter=100, disp=False, search_reps=5)
-                sp = r_fit.smoothed_marginal_probabilities
+                sp = np.asarray(r_fit.smoothed_marginal_probabilities)  # 2026-04-17 #1 fix
                 rm = [r_fit.params.get(f"const[{j}]", 0.0) for j in range(2)]
                 br = int(np.argmax(rm))
-                pred_up = float(sp.iloc[-1, br]) > 0.5
+                pred_up = float(sp[-1, br]) > 0.5
                 actual_up = prices[min(seg_end + 4, n - 1)] > prices[seg_end - 1]
                 if pred_up == actual_up:
                     wf_correct += 1

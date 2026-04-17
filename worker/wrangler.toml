@@ -70,6 +70,7 @@ crons = [
   "15 9 * * 1-5",    # 17:15 TW → ML 預熱（2026-04-08 P0-a fix: 從 17:50 移到 pipeline 前 15 分鐘）
   "30 9 * * 1-5",    # 17:30 TW → Pipeline trigger（Controller LangGraph: fetch→screen→ml→rec→verify）
   "20 10 * * 1-5",   # 18:20 TW → Adaptive Engine
+  "50 10 * * 1-5",   # 18:50 TW → HMM Regime Compute (2026-04-17 #30, Sprint 4-2 revisit)
   "0 11 * * 1-5",    # 19:00 TW → D-2 Verify Pipeline V2 (ml-controller LangGraph)
   "25 10 * * 1-5",   # 18:25 TW → 收盤報告推送 Discord
   "40 10 * * 1-5",   # 18:40 TW → Obsidian daily notes + progress.md sync

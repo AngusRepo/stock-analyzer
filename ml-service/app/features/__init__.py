@@ -855,7 +855,15 @@ def build_feature_matrix(
         lower_pct_cap=bp.get("lower_pct_cap", 0.03),
         max_days=bp.get("max_days", 20),
     )
-    df = df.with_columns(pl.Series("target_dir", target_dir))
+    # 2026-04-17 #3 fix: compute_triple_barrier_labels returns float NaN for
+    # unresolved rows (last max_days rows or missing data). Polars drop_nulls()
+    # only removes null values, NOT NaN floats → get_features leaks NaN into y
+    # → sklearn model.score(y_test) raises "Input y_true contains NaN" →
+    # [LightGBM] fallback across all stocks every predict.
+    # Replace float NaN with Polars null so drop_nulls() catches them cleanly.
+    df = df.with_columns(
+        pl.Series("target_dir", target_dir).fill_nan(None)
+    )
 
     return df
 
@@ -935,6 +943,7 @@ CATBOOST_EXTRA_COLS = [
 def get_features(
     df: pl.DataFrame,
     target_col: str = "target_rank",
+    allow_missing_target: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """取得可用的特徵欄位，回傳 (X, y, feature_names)。
 
@@ -942,11 +951,23 @@ def get_features(
       - "target_rank": cross-sectional rank 0~1 (regression, batch training)
       - "target_dir": binary triple-barrier (per-stock predict/retrain)
     Caller 必須顯式傳 target_col，不做 fallback。
+
+    allow_missing_target: 2026-04-17
+      False (default, training): 若 target_col 不在 df 中 → raise ValueError
+      True (predict mode): target_col 不存在時回傳 y=empty array；適用於單股
+        predict（target_rank 由 batch pool 產生，單股 df 沒有 rank）。
+        Caller 不應讀 y，只用 X_latest。
     """
     available = [c for c in FEATURE_COLS if c in df.columns]
     if target_col not in df.columns:
-        raise ValueError(f"target_col '{target_col}' not found in DataFrame. "
-                         f"Available: {[c for c in df.columns if c.startswith('target')]}")
+        if not allow_missing_target:
+            raise ValueError(f"target_col '{target_col}' not found in DataFrame. "
+                             f"Available: {[c for c in df.columns if c.startswith('target')]}")
+        # Predict mode: drop nulls on features only, y 回傳空陣列 (caller 不該讀)
+        df_clean = df.select(available).drop_nulls()
+        X = df_clean.to_numpy()
+        y = np.empty(len(X), dtype=np.float32)
+        return X, y, available
     select_cols = available + [target_col]
     # 加 target_5d 供 drop_nulls 同步過濾
     if "target_5d" in df.columns and "target_5d" not in select_cols:

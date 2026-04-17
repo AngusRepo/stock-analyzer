@@ -785,13 +785,25 @@ def build_feature_matrix(
                 ((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0).alias(col)
             )
 
-    # ── 14. Forward-fill + fill null (features only, not targets) ────────────
+    # ── 14. NaN handling (features only, not targets) ────────────────────────
+    # forward_fill: carry last known value forward (stale but not fictional).
+    # fill_null: remaining NaN (start of series) → per-column median, NOT 0.0.
+    #   Zero is a false signal for any real feature (e.g. MA5=0 is impossible
+    #   for a stock with price > 0). Median is neutral and doesn't create
+    #   artificial split patterns in tree models.
+    #   Reference: Qlib (Microsoft) CSZFillna uses cross-sectional mean;
+    #   we use per-column median (more robust to outliers).
     target_cols = ["target_5d", "target_dir"]
     feature_cols = [c for c in df.columns if c not in target_cols and c != "date"]
-    # Single-pass forward_fill + fill_null for all feature columns
     df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
-    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_null(0.0))
-    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_nan(0.0))
+    median_fills = []
+    for col in feature_cols:
+        if col in df.columns:
+            col_median = df[col].drop_nulls().drop_nans().median()
+            fill_val = float(col_median) if col_median is not None else 0.0
+            median_fills.append(pl.col(col).fill_null(fill_val).fill_nan(fill_val))
+    if median_fills:
+        df = df.with_columns(median_fills)
 
     # ── 15. Target variables ─────────────────────────────────────────────────
     df = df.with_columns(

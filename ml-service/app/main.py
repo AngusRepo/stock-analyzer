@@ -1187,9 +1187,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         from sklearn.preprocessing import StandardScaler
         feat_scaler = StandardScaler()
         Xt = feat_scaler.fit_transform(X_train).astype(np.float32)
-        # StandardScaler natively sets scale_=1.0 for zero-variance columns
-        # (scikit-learn docs: "data is left as-is"). No manual valid_cols_mask
-        # needed — removing to eliminate train/inference mismatch.
+        # StandardScaler: zero-variance columns get scale_=1.0 (scikit-learn docs).
+        # Post-scaler, remaining NaN (from upstream edge cases) → fill with 0.0
+        # which in scaled space = column mean (neutral, per Qlib CSZFillna rationale).
         zero_var_count = int((feat_scaler.scale_ <= 1e-10).sum())
         Xt = np.nan_to_num(Xt, nan=0.0, posinf=0.0, neginf=0.0)
         yt = y_train.astype(np.float32)  # 2.0: regression target (rank 0~1)

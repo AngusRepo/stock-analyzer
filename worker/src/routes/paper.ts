@@ -233,8 +233,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
       const haltConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
       return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: haltConf, sellConfThreshold: haltConf }
     } else if (drawdown > cc.drawdownScaleStart) {
-      // 連續調控：drawdown drawdownScaleStart ~ drawdownHalt 之間逐步縮減部位（Sprint 4-1 wire）
-      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (1 - drawdown))
+      // CPPI-style linear scaling (Black & Perold 1992 JEDC):
+      // mult=1.0 at drawdownScaleStart, mult=0.0 at drawdownHalt, linear between.
+      // Replaces FinLab formula M=(ε-DD)/(1-DD) which was dominated by mddMultFloor
+      // across the entire 3%-15% range (effectively a step function, not smooth).
+      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (cc.drawdownHalt - cc.drawdownScaleStart))
       const adjustedPosPct = cc.maxPositionPct * mddMultiplier
       // Phase 2: SCALE 階段也用 effective baseline+delta，drawdown 過半才額外加嚴
       const adjustedConf = drawdown > cc.drawdownHalt * 0.5

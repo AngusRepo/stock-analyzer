@@ -5,6 +5,32 @@
 
 ---
 
+## 📌 Current Implementation Status (2026-04-17)
+
+**Phase**: **Not Started** — current system has only `checkCircuitBreakers()` 180-line monolith (Layer 2 portfolio-level only, early-return semantics).
+
+| Phase | Description | Behavior change | Status |
+|---|---|---|---|
+| R1 Extract | Split into 7 layers + riskTypes.ts + riskChain.ts | None (keep early-return) | ❌ NOT STARTED |
+| R2 Chain | Remove early-return → run all → merge (halt=OR, posPct=MIN, conf=MAX) | More conservative | ❌ NOT STARTED |
+| R3 Expand | Add Level 1/3/4 + P8/P9 + audit table | New control layers | ❌ NOT STARTED |
+| R4 Real | Shioaji proxy `activate_ca` + `POST /order`; Worker executeBuy/Sell call proxy | **Real order placement** | ❌ NOT STARTED |
+
+**What exists today**:
+- `checkCircuitBreakers()` in Worker, portfolio-level P1-P7 checks only
+- Paper trading only — no real orders, no kill switch, no order-level gate
+- Audit: `console.log` only, no D1 `risk_audit_log` table
+
+**Prerequisites before R4 Real**:
+1. OPEN ISSUE §3.1 (predict_stock_v2 crash) resolved
+2. Pipeline producing >0 daily_recommendations for 3 consecutive days
+3. Paper trading track record ≥ 30 days with >0.5 Sharpe
+4. Wei's explicit approval — real-money switch is a Wei-only decision
+
+Estimated effort when unblocked: **5-6 days** (R1-R4).
+
+---
+
 ## 現況 vs 目標
 
 | 面向 | 現在 | 目標 |

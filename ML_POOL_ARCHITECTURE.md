@@ -5,6 +5,29 @@
 
 ---
 
+## 📌 Current Implementation Status (2026-04-17)
+
+**Phase**: **Not Started** — entire architecture still design-only.
+
+| Phase | Description | Status |
+|---|---|---|
+| P1 | GCS versioning `v{N}.joblib` + `model_pool.json` state machine | ❌ NOT STARTED |
+| P2 | Weekly IC tracker cron + Decay Detection | ❌ NOT STARTED |
+| P3 | Challenger shadow mode | ❌ NOT STARTED |
+| P4 | Auto-promote gate + lifecycle_events audit | ❌ NOT STARTED |
+| P5 | Discord alerts + dashboard query | ❌ NOT STARTED |
+
+**What exists today**:
+- Single-model training per retrain (Run #3 at 2026-04-16 18:29 UTC) — no version history, old GCS artifacts overwritten
+- Basic `ic_tracking.json` with 5 models' last-run IC, no historical trend
+- No shadow/challenger mechanism — retrained model goes straight to production
+
+**Blocker**: `predict_stock_v2` crash (OPEN ISSUE §3.1 in `memory/project_handoff_to_gpt.md`) must be resolved before model pool work starts — otherwise scaffolding on broken predict path.
+
+Estimated effort when unblocked: **4.5 days** (P1-P5).
+
+---
+
 ## 業界主流做法比較
 
 | 模式 | 誰用 | 替換頻率 | 優點 | 缺點 |

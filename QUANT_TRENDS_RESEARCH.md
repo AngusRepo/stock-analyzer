@@ -6,6 +6,26 @@
 
 ---
 
+## 📌 Current Implementation Status (2026-04-17)
+
+**Phase**: **Research complete, all sprints Not Started**.
+
+| Item | Sprint | Effort | Status |
+|---|---|---|---|
+| S1 🥇 QuantaAlpha LLM Factor Mining | Main | 2-3 weeks | ❌ NOT STARTED |
+| S2 🥈 FinMem 分層記憶接 debate | Main | 2-3 days | ❌ NOT STARTED (highest ROI / easiest) |
+| S3 Trading-R1 shadow integration | Main | 2 weeks | ❌ NOT STARTED |
+| S4 Chronos-2 / Moirai-2 / TimesFM 2.5 upgrade | Main | TBD | ❌ NOT STARTED |
+| D1 選股頻率追蹤 (screener_selection_history) | dannyquant_tw | 1 day | ❌ NOT STARTED |
+| D2 族群連動選股 (sector leader corr bonus) | dannyquant_tw | 2 days | ❌ NOT STARTED |
+| D3 四維籌碼 Composite (FinMind options) | dannyquant_tw | 3 days | ❌ NOT STARTED |
+
+**Recommended order when production is stable**: S2 first (smallest, highest ROI), then data-source integration (roadmap #52-54), then S1 QuantaAlpha.
+
+**Blocker**: same as ML_POOL_ARCHITECTURE — `predict_stock_v2` crash must be resolved first (see `memory/project_handoff_to_gpt.md` §3.1).
+
+---
+
 ## TL;DR
 
 掃完 10+ 個 GitHub 搜尋查詢，2025-2026 年量化交易主要有 **4 大新趨勢**。對 stock-analyzer 來說最有 ROI 的兩件事：

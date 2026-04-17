@@ -463,14 +463,23 @@ def optuna_k_sweep(
     X_train: np.ndarray, y_train: np.ndarray,
     X_val: np.ndarray, y_val: np.ndarray,
     feature_names: list[str],
-    n_trials: int = 50,
+    n_trials: int = 150,        # 2026-04-17: 50→150 (NSGAII 2-objective Pareto 建議 150-200)
     score_key: str = "score",
-    pareto_ic_ratio: float = 0.95,  # Pareto front: IC >= ratio × max_IC → pick min K
+    min_k: int = 20,            # 2026-04-17: MIN_K guard（共線性保護，少於 20 稀釋 ensemble diversity）
 ) -> dict:
     """Optuna K sweep: multi-objective Pareto (maximize IC, minimize K).
 
     Replaces single-objective maximize IC with Pareto front to avoid overfitting K.
-    From the Pareto front, select the trial with IC >= 0.95 × max_IC and smallest K.
+
+    Selection rule (Plan B, 2026-04-17):
+      1. Optuna NSGAII explores (K, IC) Pareto front
+      2. Kneedle knee detection ONLY on Pareto front — finds marginal IC gain 趨緩 的拐點
+      3. MIN_K=20 guard 避免共線性下被壓到個位數 K
+
+    Why Kneedle on Pareto front (not full sweep): V1 Permutation Importance 的教訓是
+    Kneedle 直接用在 feature importance 曲線會 correlation dilution；這裡 Kneedle 只作用
+    在 Pareto 已 dominated-filter 的 (K, IC) 點，是二階事後選取，不走回頭路。
+    見 memory/project_feature_selection_locked_plan.md。
 
     Returns same format as elbow_detection for backward compat:
         {"active": [...], "reserve": [...], "threshold": float, "knee_index": int,
@@ -531,34 +540,67 @@ def optuna_k_sweep(
             ic_val, k_val = trial.values
             sweep_results.append({"k": int(trial.params["k"]), "ic": round(float(ic_val), 6)})
 
-    # Select best trial from Pareto front:
-    # IC >= 0.95 × max_IC → pick the one with minimum K
+    # Select best K from Pareto front using Kneedle knee detection (Plan B, 2026-04-17)
     pareto_trials = study.best_trials  # Pareto-optimal trials
     if not pareto_trials:
         # Fallback: use all trials
         pareto_trials = [t for t in study.trials if t.values is not None]
 
-    max_ic = max((t.values[0] for t in pareto_trials if t.values), default=0.0)
-    ic_threshold = pareto_ic_ratio * max_ic
+    # Build (K, IC) points from Pareto front, sorted by K ascending
+    pareto_pts = sorted(
+        [
+            (int(t.params["k"]), float(t.values[0]))
+            for t in pareto_trials
+            if t.values is not None and "k" in t.params
+        ],
+        key=lambda x: x[0],
+    )
 
-    candidates = [
-        t for t in pareto_trials
-        if t.values and t.values[0] >= ic_threshold
-    ]
-    if not candidates:
-        candidates = pareto_trials  # fallback: all Pareto trials
+    best_k = n_max
+    best_ic = 0.0
+    knee_method = "fallback"
 
-    # Pick minimum K among candidates
-    best_trial = min(candidates, key=lambda t: t.params.get("k", n_max))
-    best_k = best_trial.params["k"]
-    best_ic = best_trial.values[0] if best_trial.values else 0.0
+    if pareto_pts:
+        ks = [p[0] for p in pareto_pts]
+        ics = [p[1] for p in pareto_pts]
+        max_ic = max(ics)
+
+        # Kneedle knee on Pareto front — needs >= 3 points to detect curvature
+        knee_k: int | None = None
+        if len(pareto_pts) >= 3:
+            try:
+                from kneed import KneeLocator
+                kl = KneeLocator(ks, ics, curve="concave", direction="increasing")
+                if kl.knee is not None:
+                    knee_k = int(kl.knee)
+                    knee_method = "kneedle"
+            except Exception as _kne:
+                print(f"[OptunaKSweep] Kneedle failed: {_kne}, falling back to 0.8 × max_IC rule")
+
+        # Fallback 1: min-K with IC ≥ 0.8 × max_IC (less aggressive than 0.95)
+        if knee_k is None:
+            fallback_k = next((k for k, ic in pareto_pts if ic >= 0.8 * max_ic), pareto_pts[-1][0])
+            knee_k = fallback_k
+            knee_method = "0.8_threshold"
+
+        # MIN_K guard: 共線性保護
+        best_k = max(int(knee_k), min_k)
+        # Find actual IC at best_k (or closest Pareto point)
+        best_ic = next((ic for k, ic in pareto_pts if k == best_k), 0.0)
+        if best_ic == 0.0:
+            # best_k was promoted by MIN_K guard — use IC of first Pareto point with k >= best_k
+            best_ic = next((ic for k, ic in pareto_pts if k >= best_k), max_ic)
+
+    # Clamp best_k to available feature count
+    best_k = min(best_k, n_max)
 
     active = sorted_names[:best_k]
     reserve = sorted_names[best_k:]
     threshold = per_feature.get(sorted_names[best_k - 1], {}).get(score_key, 0) if best_k > 0 else 0
 
     elapsed = round(time.time() - t0, 1)
-    print(f"[OptunaKSweep] Pareto best K={best_k}/{n_max} (IC={best_ic:.4f}, threshold={ic_threshold:.4f}), "
+    print(f"[OptunaKSweep] Pareto+Kneedle best K={best_k}/{n_max} (IC={best_ic:.4f}, "
+          f"method={knee_method}, min_k_guard={min_k}), "
           f"active={len(active)}, reserve={len(reserve)}, {elapsed}s")
 
     pareto_front = [
@@ -627,6 +669,7 @@ def update_feature_pool(
     ic_results: dict | None = None,
     all_feature_names: list[str] | None = None,  # for ft_active (full 106 features)
     k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
+    gate_result: dict | None = None,              # P0-9: Signal Sanity Gate result
 ) -> dict:
     """Build feature_pool.json structure with dual pool output.
 
@@ -666,6 +709,7 @@ def update_feature_pool(
             "sweep_results": (k_sweep_result or {}).get("sweep_results", []),
             "pareto_front": (k_sweep_result or {}).get("pareto_front", []),
         } if k_sweep_result else {},
+        "signal_gate": gate_result if gate_result else {},  # P0-9: Signal Sanity Gate metadata
     }
     return pool
 
@@ -706,6 +750,7 @@ def run_feature_selection_pipeline(
     max_rounds: int = 100,
     alpha: float = 0.01,
     dry_run: bool = False,
+    icir_weight: float = 0.1,  # 2026-04-17 P2: promoted from hardcode; combined_score = tp_score + icir × icir_weight
     **_kwargs,  # absorb legacy params (required_power etc.)
 ) -> dict:
     """Full 2.0 pipeline:
@@ -808,17 +853,17 @@ def run_feature_selection_pipeline(
         ic_stable = 1.0 if ic_info.get("stable", False) else 0.0
         icir = ic_info.get("icir", 0)
         combined_scores[name] = {
-            "score": round(tp_score + icir * 0.1, 4),
+            "score": round(tp_score + icir * icir_weight, 4),
             "tp_score": tp_score,
             "icir": icir,
             "ic_stable": bool(ic_stable),
         }
 
-    # ── 7. K selection: Optuna Pareto sweep (P0-2) ──────────────────────────
+    # ── 7. K selection: Optuna Pareto sweep + Kneedle (Plan B, 2026-04-17) ───
     try:
         k_sweep_result = optuna_k_sweep(
             combined_scores, X_train, y_train, X_val, y_val,
-            feature_names=feature_names, n_trials=50,
+            feature_names=feature_names,  # n_trials/min_k 走 function 預設 (150/20)
         )
         print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
               f"best_ic={k_sweep_result.get('best_ic')}")

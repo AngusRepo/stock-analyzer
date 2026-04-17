@@ -756,7 +756,6 @@ app.post('/api/admin/trigger/:task', async (c) => {
     screener:      () => runMarketScreener(c.env),
     update:        () => runDailyUpdate(c.env, !!c.req.query('force')),
     ml:            () => runMLAndRiskV2(c.env),
-    'ml-legacy':   () => runMLAndRisk(c.env),  // 2026-04-07 LangGraph A+B 重構前舊版，保留 fallback 1 週
     recommendation:() => runDailyRecommendation(c.env),
     'paper-trade': () => runPaperAutoTrade(c.env),
     'morning-setup': () => setupMorningPendingBuys(c.env),
@@ -1209,349 +1208,35 @@ async function processUpdateBatch(
     console.log('[Queue] All stocks done. Running alert check...')
     await checkAlerts(env)
 
-    // #12 Event-driven chain: update complete → trigger ML (don't wait for 15:30 cron)
+    // #12 Event-driven chain: update complete → trigger ML V2 (don't wait for 15:30 cron)
     try {
-      await runMLAndRisk(env)  // idempotent — lockKey 保護不會重複執行
-      console.log('[Queue] Event-driven: triggered runMLAndRisk after update complete')
+      await runMLAndRiskV2(env)  // idempotent — lockKey 保護不會重複執行
+      console.log('[Queue] Event-driven: triggered runMLAndRiskV2 after update complete')
     } catch (e) {
       console.warn('[Queue] Event-driven ML trigger failed (cron fallback still active):', e)
     }
   }
 }
 
-// ─── Cron 2：每日 15:30 — 計算大盤風險 + Controller 並行 ML 預測 ─────────────
-async function runMLAndRisk(env: Bindings) {
-  // C3: KV lock — prevent concurrent ML predict runs (cron + event-driven overlap)
-  // Fix 2026-04-07: TTL 600→120s（防 wall-clock kill 時 lock 殘留 10 分鐘）+ try/finally cleanup
-  const twDate = twToday()
-  const lockKey = `lock:ml-predict:${twDate}`
-  const existing = await env.KV.get(lockKey)
-  if (existing) { console.log('[ML] Already running, skip'); return 'LOCKED' }
-  await env.KV.put(lockKey, '1', { expirationTtl: 120 })
 
-  try {
-  console.log(`[Cron] Starting market risk + ML batch predict... (controller=${env.ML_CONTROLLER_URL ? 'SET' : 'NOT_SET'}, mlService=${env.ML_SERVICE_URL ? 'SET' : 'NOT_SET'})`)
-
-  // 1. 大盤風險（直接執行，速度快）
-  try {
-    const { calcMarketRisk } = await import('./lib/marketRisk')
-    const risk = await calcMarketRisk(env.DB, env.ANTHROPIC_API_KEY, env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET, env.GEMINI_API_KEY)
-    await env.DB.prepare(`
-      INSERT OR REPLACE INTO market_risk
-        (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
-         foreign_consecutive_sell, foreign_net_5d, margin_ratio,
-         limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).bind(
-      risk.date, risk.vix, risk.vixLevel, risk.twiiClose, risk.twiiVol20,
-      risk.twiiMa20, risk.twiiBias, risk.foreignConsecutiveSell,
-      risk.foreignNet5d, risk.marginRatio, risk.limitDownCount, risk.limitDownPct,
-      risk.riskScore, risk.riskLevel, risk.riskSummary,
-    ).run()
-    await env.KV.delete('market:risk:latest')
-    console.log(`[Cron] Market risk: ${risk.riskLevel} (${risk.riskScore}/100)`)
-  } catch (e) {
-    console.error('[Cron] Market risk failed:', e)
-  }
-
-  // 2. ML 並行預測（Worker → Controller → Modal）
-  if (!env.ML_CONTROLLER_URL) {
-    console.warn('[ML] ML_CONTROLLER_URL not set — skipping ML predict. Deploy Controller to Cloud Run first.')
-    // 仍然觸發 recommendation（用 screener 分數，ML=0）
-    try {
-      await runDailyRecommendation(env)
-    } catch (e) { console.warn('[ML] recommendation fallback failed:', e) }
-    return
-  }
-
-  // ── 2a. 查詢共用資料（查一次，所有股票共用）────────────────────────────────
-  const marketRiskRow = await env.DB.prepare(
-    'SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1'
-  ).first<any>()
-
-  const twiiPrices = await env.DB.prepare(`
-    SELECT date, close FROM stock_prices
-    WHERE stock_id=(SELECT id FROM stocks WHERE symbol='TAIEX' OR symbol='^TWII' LIMIT 1)
-    ORDER BY date DESC LIMIT 25
-  `).all<any>()
-  const twiiArr = (twiiPrices.results ?? []).reverse().map((r: any) => r.close)
-  const twii1d = twiiArr.length > 1 ? (twiiArr[twiiArr.length-1] - twiiArr[twiiArr.length-2]) / twiiArr[twiiArr.length-2] : 0
-  const twii5d = twiiArr.length > 5 ? (twiiArr[twiiArr.length-1] - twiiArr[twiiArr.length-6]) / twiiArr[twiiArr.length-6] : 0
-  const twiiMa20 = twiiArr.length >= 20 ? twiiArr.slice(-20).reduce((a: number, b: number) => a + b, 0) / 20 : twiiArr[twiiArr.length-1]
-  const twiiBias20d = twiiArr.length > 0 ? (twiiArr[twiiArr.length-1] - twiiMa20) / twiiMa20 : 0
-
-  const { results: marketHistory } = await env.DB.prepare(`
-    SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close
-    FROM market_risk ORDER BY date ASC LIMIT 500
-  `).all<any>().catch(() => ({ results: [] }))
-  const marketHistoryMap: Record<string, any> = {}
-  for (let i = 0; i < (marketHistory ?? []).length; i++) {
-    const row = marketHistory![i]
-    const prev1 = i >= 1 ? marketHistory![i - 1].twii_close : null
-    const prev5 = i >= 5 ? marketHistory![i - 5].twii_close : null
-    marketHistoryMap[row.date] = {
-      risk_score: row.risk_score, risk_level: row.risk_level,
-      market_bias_20d: row.market_bias_20d,
-      market_return_1d: prev1 ? (row.twii_close - prev1) / prev1 : 0,
-      market_return_5d: prev5 ? (row.twii_close - prev5) / prev5 : 0,
-    }
-  }
-
-  // twDate already declared at top of runMLAndRisk via twToday()
-  const usSignalRaw = await env.KV.get(`us:leading:${twDate}`, 'json') as any
-  const breadthResult = await env.DB.prepare(
-    'SELECT date, advance_ratio, bull_alignment_pct FROM market_breadth ORDER BY date DESC LIMIT 5'
-  ).all<any>().catch(() => ({ results: [] }))
-  const latestBreadth = breadthResult.results?.[0]
-
-  const { getAdaptiveParams } = await import('./lib/adaptiveConfig')
-  const adaptiveParams = await getAdaptiveParams(env.KV)
-
-  // Read trading config for barrier params (Optuna #1 searchable via KV)
-  const { getTradingConfig } = await import('./lib/tradingConfig')
-  const tradingCfg = await getTradingConfig(env.KV)
-
-  // P1#8: Read lifecycle weight overrides from D1
-  let lifecycleWeights: Record<string, number> = {}
-  try {
-    const lcRow = await env.DB.prepare('SELECT state_json FROM model_lifecycle_state WHERE id=1').first<any>()
-    if (lcRow?.state_json) {
-      const states = JSON.parse(lcRow.state_json)
-      for (const [name, s] of Object.entries(states as Record<string, any>)) {
-        if (s.weight_mult != null && s.weight_mult !== 1.0) {
-          lifecycleWeights[name] = s.weight_mult
-        }
-      }
-      if (Object.keys(lifecycleWeights).length > 0) {
-        console.log(`[ML] Lifecycle weights active: ${JSON.stringify(lifecycleWeights)}`)
-      }
-    }
-  } catch (e) { console.warn('[ML] Lifecycle weights read failed:', e) }
-
-  // ── 2b. 逐股查詢 + 建構 payload ──────────────────────────────────────────
-  const { results: allStocks } = await env.DB.prepare(
-    'SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC'
-  ).all<any>()
-
-  const payloads: any[] = []
-  for (const stock of (allStocks ?? [])) {
-    try {
-      const [prices, indicators, chips, newsRows] = await Promise.all([
-        env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stock.id).all<any>(),
-        env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
-        env.DB.prepare("SELECT date(published_at) as date, AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90").bind(stock.id).all<any>(),
-      ])
-
-      const { results: accRows } = await env.DB.prepare(`
-        SELECT model_name, accuracy, profit_factor, expectancy,
-               avg_win_pct, avg_loss_pct, avg_trade_pnl_r, hit_target_rate, hit_stop_rate
-        FROM model_accuracy WHERE stock_id=? AND period='30d' AND total_count >= 5
-      `).bind(stock.id).all<any>().catch(() => ({ results: [] }))
-
-      const realAccuracies: Record<string, number> = {}
-      const modelStats: Record<string, any> = {}
-      for (const a of (accRows ?? [])) {
-        realAccuracies[a.model_name] = a.accuracy
-        modelStats[a.model_name] = {
-          profit_factor: a.profit_factor, expectancy: a.expectancy,
-          avg_win_pct: a.avg_win_pct, avg_loss_pct: a.avg_loss_pct,
-          avg_pnl_r: a.avg_trade_pnl_r, hit_target_rate: a.hit_target_rate,
-          hit_stop_rate: a.hit_stop_rate,
-        }
-      }
-
-      // Per-stock: margin + retail + revenue
-      const marginRow = await env.DB.prepare(
-        'SELECT margin_balance, short_ratio FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT 1'
-      ).bind(stock.id).first<any>().catch(() => null)
-      const margin5dAgo = await env.DB.prepare(
-        'SELECT margin_balance FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT 1 OFFSET 5'
-      ).bind(stock.id).first<any>().catch(() => null)
-      const retailRow = await env.DB.prepare(
-        'SELECT retail_pct FROM shareholding WHERE stock_id=? ORDER BY date DESC LIMIT 1'
-      ).bind(stock.id).first<any>().catch(() => null)
-      const revRow = await env.DB.prepare(
-        'SELECT revenue_yoy FROM monthly_revenue WHERE stock_id=? ORDER BY date DESC LIMIT 1'
-      ).bind(stock.id).first<any>().catch(() => null)
-
-      const marketEnv = {
-        risk_score:      marketRiskRow?.risk_score ?? 50,
-        risk_level:      marketRiskRow?.risk_level ?? 'medium',
-        twii_return_1d:  twii1d,
-        twii_return_5d:  twii5d,
-        twii_bias_20d:   twiiBias20d,
-        history:         marketHistoryMap,
-        us_sox_return:     usSignalRaw?.sox_return ?? null,
-        us_gspc_return:    usSignalRaw?.gspc_return ?? null,
-        us_dxy_return:     usSignalRaw?.dxy_return ?? null,
-        us_hy_spread:      usSignalRaw?.hy_spread ?? null,
-        us_hy_spread_chg:  usSignalRaw?.hy_spread_chg ?? null,
-        us_vix:            usSignalRaw?.vix_close ?? null,
-        us_sentiment:      usSignalRaw?.sentiment ?? null,
-        advance_ratio:     latestBreadth?.advance_ratio ?? null,
-        bull_alignment_pct: latestBreadth?.bull_alignment_pct ?? null,
-        revenue_yoy:       revRow?.revenue_yoy ?? null,
-        margin_balance:    marginRow?.margin_balance ?? null,
-        short_ratio:       marginRow?.short_ratio ?? null,
-        margin_change_5d:  margin5dAgo?.margin_balance
-          ? (marginRow!.margin_balance - margin5dAgo.margin_balance) / margin5dAgo.margin_balance
-          : null,
-        retail_pct:        retailRow?.retail_pct ?? null,
-      }
-
-      payloads.push({
-        stock_id: stock.id, symbol: stock.symbol,
-        prices: (prices.results ?? []).reverse(),
-        indicators: (indicators.results ?? []).reverse(),
-        chips: (chips.results ?? []).reverse(),
-        sentiment_scores: (newsRows.results ?? []).reverse(),
-        horizon: 14,
-        real_accuracies: realAccuracies,
-        model_stats: modelStats,
-        market: stock.market ?? 'TW',
-        market_env: marketEnv,
-        adaptive_params: adaptiveParams,
-        lifecycle_weights: lifecycleWeights,
-        barrier_params: {
-          upper_mult: tradingCfg.barrier.upperMult,
-          lower_mult: tradingCfg.barrier.lowerMult,
-          upper_pct_cap: tradingCfg.barrier.upperPctCap,
-          lower_pct_cap: tradingCfg.barrier.lowerPctCap,
-          max_days: tradingCfg.barrier.maxDays,
-        },
-      })
-    } catch (e) {
-      console.error(`[ML] Failed building payload for ${stock.symbol}:`, e)
-    }
-  }
-
-  if (!payloads.length) {
-    console.warn('[ML] No payloads built, skipping')
-    return
-  }
-
-  // ── 2c. Controller 一次性推論 ──────────────────────────────────────────────
-  // 2026-04-07 F3: 砍掉 BATCH_SIZE=20 序列分批
-  // 之前序列分批是「worker 端排程」，但 worker await 每批 = 序列等待
-  // 改成一次扔全部 stocks 給 controller，讓 modal.map() 內部真並行（max_containers=20）
-  // 預期 33 stocks: ~50-70s vs 之前 169s+524 timeout
-  const t0 = Date.now()
-  const results: any[] = []
-  console.log(`[ML] Sending ${payloads.length} stocks (single batch, controller-side parallel)`)
-  try {
-    const batchResult = await postController(env, '/batch-predict', { stocks: payloads }, 600_000) as any
-    results.push(...(batchResult.results ?? []))
-    console.log(`[ML] All done: ${results.length}/${payloads.length}`)
-  } catch (e: any) {
-    console.error(`[ML] Batch predict failed: ${e.message}`)
-  }
-
-  const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-  console.log(`[ML] All batches done: ${results.length}/${payloads.length} in ${elapsed}s`)
-
-  // ── 2d. 寫入 D1 predictions + KV 快取 ─────────────────────────────────────
-  let written = 0
-  for (const data of results) {
-    if (data.error) continue
-    try {
-      await env.KV.put(`ml:predict:${data.stock_id}`, JSON.stringify(data), { expirationTtl: 86400 })
-      // trade_signal: 簡化版（buy/sell/hold）保留向下相容
-      // signal_raw: ensemble 原始 signal（STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL/NO_SIGNAL）
-      const rawSignal = data.signal ?? 'NO_SIGNAL'
-      // NO_SIGNAL → null（跳過，不寫 trade_signal）
-      const tradeSignal = rawSignal.includes('BUY') ? 'buy'
-        : rawSignal.includes('SELL') ? 'sell'
-        : rawSignal === 'NO_SIGNAL' ? null
-        : 'hold'
-      // H2: Delete stale prediction for same stock+model+date before INSERT (prevent duplicates)
-      await env.DB.prepare(
-        `DELETE FROM predictions WHERE stock_id=? AND model_name='ensemble' AND date(generated_at)=date('now')`
-      ).bind(data.stock_id).run().catch(() => {})
-      await env.DB.prepare(`
-        INSERT INTO predictions
-          (stock_id, model_name, generated_at, horizon, direction_accuracy,
-           forecast_data, entry_price, stop_loss, target1, target2, trade_signal, feature_version, signal_raw)
-        VALUES (?,?,datetime('now'),?,?,?,?,?,?,?,?,?,?)
-      `).bind(
-        data.stock_id, 'ensemble', 14, data.confidence ?? null,
-        JSON.stringify({ signal: rawSignal, models: data.models, forecasts: data.forecasts, arf_features: data.arf_features }),
-        data.entry_price ?? null, data.stop_loss ?? null,
-        data.target1 ?? null, data.target2 ?? null,
-        tradeSignal,
-        data.feature_version ?? null,
-        rawSignal,  // 保留原始 signal
-      ).run().catch((e: any) => console.warn(`[ML] D1 insert failed for ${data.symbol}:`, e?.message ?? e))
-      written++
-      console.log(`[ML] ${data.symbol} → ${data.signal}`)
-    } catch (e) {
-      console.error(`[ML] Write failed for stock_id=${data.stock_id}:`, e)
-    }
-  }
-  console.log(`[ML] Batch predict done: ${written}/${payloads.length} written, ${elapsed}s total`)
-
-  // ── 2d+. Store per-model timing & feature count to KV ──────────────────
-  {
-    const timingAgg: Record<string, number[]> = {}
-    const featureCounts: number[] = []
-    for (const data of results) {
-      if (data.model_timings_ms) {
-        for (const [model, ms] of Object.entries(data.model_timings_ms)) {
-          if (!timingAgg[model]) timingAgg[model] = []
-          timingAgg[model].push(ms as number)
-        }
-      }
-      if (data.feature_count) featureCounts.push(data.feature_count as number)
-    }
-    const avgTimings: Record<string, number> = {}
-    for (const [model, arr] of Object.entries(timingAgg)) {
-      avgTimings[model] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
-    }
-    await env.KV.put(`ml:perf:${twDate}`, JSON.stringify({
-      avg_model_timings_ms: avgTimings,
-      avg_feature_count: featureCounts.length ? Math.round(featureCounts.reduce((a, b) => a + b, 0) / featureCounts.length) : 0,
-      total_stocks: results.length,
-      total_time_s: parseFloat(elapsed),
-    }), { expirationTtl: 30 * 86400 })
-    console.log(`[ML] Performance stored: ${Object.keys(avgTimings).length} models, avg features=${featureCounts[0] ?? 0}`)
-  }
-
-  // ── 2e. Event-driven chain: ML complete → trigger recommendation ───────
-  try {
-    await runDailyRecommendation(env)
-    console.log('[ML] Event-driven: triggered recommendation after ML complete')
-  } catch (e) {
-    console.warn('[ML] Event-driven recommendation trigger failed (cron fallback still active):', e)
-  }
-  } finally {
-    // Fix 2026-04-07: 確保 lock 不論 success/error/throw 都會清除
-    await env.KV.delete(lockKey).catch(() => {})
-  }
-}
-
-// ─── 2026-04-07 LangGraph A+B Refactor: runMLAndRiskV2 ─────────────────────
+// ─── Cron：每日 17:30 — 計算大盤風險 + 觸發 ml-controller pipeline V2 ──────
 // thin trigger — 把 ML business logic 整段交給 ml-controller LangGraph V2
 // Worker 只負責: market_risk 計算 (~5s) + 觸發 controller /pipeline/v2/run + lock 管理
 //
-// 之前的 runMLAndRisk (上面 ~300 行) 違反 MVC：worker 做了 ML payload build /
-// batch dispatch / D1 predictions 寫入 / hybrid ranking / LLM reasons，
-// 都應該是 ml-controller 的責任。完整 audit 見 memory/project_langgraph_real_refactor.md
-//
-// runMLAndRisk 舊版保留 1 週做 rollback safety，2026-04-14 後砍。
+// /pipeline/v2/run 由 ml-controller 觸發 Cloud Run Job `pipeline-v2`
+// (2026-04-16 搬移)，避免 Cloud Run Service 15-min idle-kill 截斷 pipeline。
 async function runMLAndRiskV2(env: Bindings): Promise<string> {
   const twDate = twToday()
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) { console.log('[ML V2] Already running, skip'); return 'LOCKED' }
-  // 2026-04-08 Part 5 Option A: TTL bumped 600→1800 so background pipeline on
-  // ml-controller has headroom to finish before lock expires. ml-controller
-  // callback does not clear this lock; TTL cleanup only.
+  // TTL 1800s so the Cloud Run Job (2-5 min wall clock) can finish before
+  // lock expires. ml-controller callback does not clear this lock; TTL only.
   await env.KV.put(lockKey, '1', { expirationTtl: 1800 })  // 30 min TTL
 
   try {
     if (!env.ML_CONTROLLER_URL) {
-      console.warn('[ML V2] ML_CONTROLLER_URL not set, falling back to legacy runMLAndRisk')
-      return await runMLAndRisk(env) as any
+      throw new Error('ML_CONTROLLER_URL not set — cannot trigger pipeline V2')
     }
 
     // 1. Market risk (~5 sec) — 仍在 worker 做，因為 marketRisk.ts 邏輯複雜不值得搬
@@ -1618,10 +1303,6 @@ async function runMLAndRiskV2(env: Bindings): Promise<string> {
   // Note: on success, lockKey is NOT cleared here. It expires via TTL (1800s).
   // ml-controller callback does not touch it.
 }
-
-// processMLBatch removed in Phase 3 — ML batch predict now handled by Controller /batch-predict
-// Legacy ML_QUEUE fallback retained in runMLAndRisk for rollback safety
-
 
 // ─── Cron P2#16：Weekly AI Audit Report（Controller 觸發） ────────────────────
 async function runWeeklyAudit(env: Bindings) {

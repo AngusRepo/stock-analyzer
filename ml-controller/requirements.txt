@@ -15,3 +15,6 @@ langgraph==0.2.74
 langgraph-checkpoint-sqlite==2.0.10  # >=2.0.0 to satisfy langgraph 0.2.74's checkpoint constraint
 anthropic==0.40.0
 google-cloud-storage>=2.14.0
+# 2026-04-16: pipeline/v2 moved from asyncio.create_task in Service (idle-killed
+# after 15 min) to a dedicated Cloud Run Job.
+google-cloud-run>=0.10.0

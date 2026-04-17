@@ -60,10 +60,19 @@ def _get_bucket():
 
 
 # ── 儲存模型 ──────────────────────────────────────────────────────────────────
-def save_model(stock_id: int, model_name: str, model: Any, feature_names: list[str], sample_count: int) -> bool:
+def save_model(
+    stock_id: int,
+    model_name: str,
+    model: Any,
+    feature_names: list[str],
+    sample_count: int,
+    feature_medians: dict[str, float] | None = None,  # 2026-04-17: P1 v2 alignment fallback
+) -> bool:
     """
     序列化模型並上傳到 GCS
     model_name: 'XGBoost' | 'CatBoost' | 'ExtraTrees' | 'MLP' | 'TCN'
+    feature_medians: training-time per-feature median, used by predict_stock_v2
+                     for name-based alignment when a feature is missing at predict time
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -88,6 +97,7 @@ def save_model(stock_id: int, model_name: str, model: Any, feature_names: list[s
             "stock_id": stock_id,
             "model_name": model_name,
             "feature_names": feature_names,
+            "feature_medians": feature_medians or {},  # 2026-04-17: P1
             "sample_count": sample_count,
             "trained_at": datetime.now(timezone.utc).isoformat(),
         }

@@ -544,17 +544,28 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 continue
 
             # Name-based feature alignment: align predict features to training features
+            # 2026-04-17 P1 fix: missing features fill training median (from meta) not 0
+            # — 填 0 會讓 tree model 把缺失當 "最低值" 處理，預測偏差；median 是 neutral 填法
             training_features = (meta or {}).get("feature_names", [])
+            training_medians = (meta or {}).get("feature_medians", {})  # new metadata field
             if training_features and training_features != feature_names:
                 _pred_name_to_idx = {n: i for i, n in enumerate(feature_names)}
-                _X_aligned = np.zeros((1, len(training_features)), dtype=np.float32)
+                # Start with training medians (neutral fallback) — shape (1, n_train_features)
+                _defaults = np.array(
+                    [float(training_medians.get(n, 0.0)) for n in training_features],
+                    dtype=np.float32,
+                ).reshape(1, -1)
+                _X_aligned = _defaults.copy()
+                # Overwrite with actual predict values where feature name matches
                 for _j, _fname in enumerate(training_features):
                     if _fname in _pred_name_to_idx:
                         _X_aligned[0, _j] = float(X_latest[0, _pred_name_to_idx[_fname]])
                 X_to_predict = _X_aligned
                 _missing = len([f for f in training_features if f not in _pred_name_to_idx])
                 if _missing > 0:
-                    print(f"[PredictV2] {model_name}: {_missing}/{len(training_features)} features missing, filled with 0")
+                    _have_median = sum(1 for f in training_features if f not in _pred_name_to_idx and f in training_medians)
+                    print(f"[PredictV2] {model_name}: {_missing}/{len(training_features)} features missing, "
+                          f"{_have_median} filled with training median, {_missing - _have_median} filled with 0 (no median)")
             else:
                 X_to_predict = X_latest
 
@@ -1160,7 +1171,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
         n_features = X_train.shape[1]
         D_MODEL, N_HEADS, N_LAYERS = 128, 8, 3
-        MAX_EPOCHS, LR, PATIENCE = 120, 2e-4, 12  # P0-5e: 200→120, 16→12
+        # 2026-04-17: PATIENCE 12→16 (Gorishniy 2021 原論文標準；12 太緊讓 noisy val IC 早停)
+        MAX_EPOCHS, LR, PATIENCE = 120, 2e-4, 16
         BATCH_SIZE = 1024                           # P0-5e: 512→1024
 
         class _FTT(nn.Module):
@@ -1221,19 +1233,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             print(f"[TrainUniversal] FT-T simple split (data < 1000): trn={len(Xt_trn)}, val={len(Xt_val)}")
 
         model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
-        # P0-5a: Adam → AdamW, weight_decay 1e-5 → 5e-5
+        # AdamW; weight_decay 5e-5（PyTrial 預設 1e-4，5e-5 更溫和）
+        # 2026-04-17: 移除 cosine warmup + decay scheduler
+        # Gorishniy 2021 原論文明示「do not employ learning rate warmup, learning rate decay」
+        # 實測 warmup 6 epochs 期 LR 過低 → model 學到 spurious peak → early stop 誤觸 → IC=0.015
         opt = torch.optim.AdamW(model_ftt.parameters(), lr=LR, weight_decay=5e-5)
-        # P0-5b: cosine annealing with linear warmup (warmup_ratio=0.05)
-        import math as _math
-        _total_steps = (len(Xt_trn) // BATCH_SIZE + 1) * MAX_EPOCHS
-        _warmup_steps = int(_total_steps * 0.05)
-        def _lr_lambda(step: int) -> float:
-            if step < _warmup_steps:
-                return step / max(1, _warmup_steps)
-            progress = (step - _warmup_steps) / max(1, _total_steps - _warmup_steps)
-            return max(0.0, 0.5 * (1.0 + _math.cos(_math.pi * progress)))
-        from torch.optim.lr_scheduler import LambdaLR as _LambdaLR
-        scheduler = _LambdaLR(opt, _lr_lambda)
         _global_step = 0
         # 2.0: Pairwise Margin Ranking Loss (CIKM 2025: best Sharpe 0.7529)
         # ListNet softmax unstable with unbounded FT-T output (caused IC=0 collapse)
@@ -1297,14 +1301,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     if mini_step % grad_accum == 0:
                         grad_scaler.step(opt)
                         grad_scaler.update()
-                        scheduler.step()
                         opt.zero_grad()
                         _global_step += 1
                 # flush remaining gradient
                 if mini_step % grad_accum != 0:
                     grad_scaler.step(opt)
                     grad_scaler.update()
-                    scheduler.step()
                     opt.zero_grad()
                     _global_step += 1
 
@@ -1445,13 +1447,28 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     # ── 6. Save ALL models to GCS (IC-weighted ensemble handles quality at predict time) ──
     if circuit_breaker_triggered:
         print(f"[IC-熔斷] ⚠️ 至少一個 model OOS IC ≤ 0 — ensemble 會自動零權重排除，但 model 仍存 GCS")
+
+    # 2026-04-17 P1: compute per-feature training median for predict_stock_v2 fallback
+    # when a feature is missing at predict time (previously filled with 0 → biased).
+    try:
+        medians_arr = np.nanmedian(X_train, axis=0)
+        feature_medians = {
+            feature_names[i]: float(medians_arr[i]) if not np.isnan(medians_arr[i]) else 0.0
+            for i in range(len(feature_names))
+        }
+    except Exception as _med_err:
+        print(f"[TrainUniversal] feature_medians compute failed: {_med_err}")
+        feature_medians = {}
+
     for model_name, model_obj in trained_models.items():
         try:
             if model_name == "FT-Transformer":
                 _, _, _, ftt_bundle = model_obj
-                save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train))
+                save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train),
+                           feature_medians=feature_medians)
             else:
-                save_model(0, model_name, model_obj, feature_names, len(X_train))
+                save_model(0, model_name, model_obj, feature_names, len(X_train),
+                           feature_medians=feature_medians)
             print(f"[TrainUniversal] Saved {model_name} to GCS ✅")
         except Exception as e:
             print(f"[TrainUniversal] Failed to save {model_name}: {e}")

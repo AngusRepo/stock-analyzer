@@ -390,6 +390,133 @@ def train_ftt_model(payload: dict) -> dict:
         return {"error": str(e), "type": "ftt_model"}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Sprint 6b Walk-Forward Modal functions (2026-04-18 #32)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.function(
+    cpu=2,
+    memory=4096,
+    timeout=3600,   # 60 min per window — tree models on ~60d train data
+    scaledown_window=60,
+    max_containers=3,   # allow 3 windows in parallel for tree path
+)
+def train_wf_tree_window(payload: dict) -> dict:
+    """CPU-only walk-forward: XGBoost + CatBoost + ExtraTrees + LightGBM for one window.
+
+    payload: window_id, train_start, train_end, test_start, test_end, batch_count
+    """
+    _setup_env()
+    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        gcs_prefix = f"walk_forward/w{payload['window_id']}"
+        req = UniversalTrainRequest(
+            batch_count=payload.get("batch_count", 5),
+            models_filter=["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"],
+            skip_feature_pool=payload.get("skip_feature_pool", False),
+            train_start=payload["train_start"],
+            train_end=payload["train_end"],
+            test_start=payload["test_start"],
+            test_end=payload["test_end"],
+            gcs_prefix=gcs_prefix,
+            window_id=payload["window_id"],
+            skip_weekly_backup=True,
+        )
+        return _train(req)
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()[:2000],
+            "window_id": payload.get("window_id"),
+            "type": "wf_tree",
+        }
+
+
+@app.function(
+    gpu="L4",
+    memory=4096,
+    timeout=3600,  # 60 min per window — FT-T on ~60d train data (smaller than universal)
+    scaledown_window=60,
+    max_containers=2,   # allow 2 windows on GPU in parallel
+)
+def train_wf_ftt_window(payload: dict) -> dict:
+    """GPU walk-forward: FT-Transformer for one window."""
+    _setup_env()
+    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        gcs_prefix = f"walk_forward/w{payload['window_id']}"
+        req = UniversalTrainRequest(
+            batch_count=payload.get("batch_count", 5),
+            models_filter=["FT-Transformer"],
+            skip_feature_pool=True,   # FT-T benefits from full features
+            train_start=payload["train_start"],
+            train_end=payload["train_end"],
+            test_start=payload["test_start"],
+            test_end=payload["test_end"],
+            gcs_prefix=gcs_prefix,
+            window_id=payload["window_id"],
+            skip_weekly_backup=True,
+        )
+        return _train(req)
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()[:2000],
+            "window_id": payload.get("window_id"),
+            "type": "wf_ftt",
+        }
+
+
+@app.function(
+    cpu=1,
+    memory=2048,
+    timeout=300,   # 5 min — HMM is small (market-level, ~500 days max)
+    scaledown_window=60,
+    max_containers=3,
+)
+def train_wf_hmm_window(payload: dict) -> dict:
+    """Train HMM on historical window and save snapshot to walk_forward/w{id}/."""
+    _setup_env()
+    from app.regime import RegimeDetector, build_market_feature_matrix
+    try:
+        window_id = payload["window_id"]
+        train_end = payload["train_end"]
+        market_env = payload["market_env"]
+
+        feat_mat = build_market_feature_matrix(market_env)
+        if feat_mat is None or len(feat_mat) < 30:
+            return {
+                "error": f"insufficient history: got {len(feat_mat) if feat_mat is not None else 0}, need >=30",
+                "window_id": window_id,
+            }
+
+        detector = RegimeDetector().fit(feat_mat)
+        if not detector._trained:
+            return {"error": "HMM fit did not converge", "window_id": window_id}
+
+        gcs_prefix = f"walk_forward/w{window_id}"
+        saved = detector.save_to_gcs(
+            gcs_prefix=gcs_prefix,
+            extra_metadata={
+                "window_id": window_id,
+                "train_end": train_end,
+                "history_days": len(feat_mat),
+            },
+        )
+        return {
+            "window_id": window_id,
+            "gcs_prefix": gcs_prefix,
+            "n_components": detector.n_components,
+            "history_days": len(feat_mat),
+            "saved": saved,
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "window_id": payload.get("window_id")}
+
+
 @app.function(
     gpu="L4",
     memory=4096,

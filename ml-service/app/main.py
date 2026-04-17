@@ -848,6 +848,18 @@ class UniversalTrainRequest(BaseModel):
     batch_count: int = 5  # 預期幾個 batch npz
     models_filter: list[str] | None = None  # None=all, or ["XGBoost","CatBoost",...] subset
     skip_feature_pool: bool = False  # True = FT-T mode: use all features, skip pool filter
+    # ── 2026-04-18 #32 Sprint 6b walk-forward params ──────────────────────────
+    # When train_start/train_end given: use explicit date range instead of purged split.
+    # test_start/test_end: OOS evaluation range (must be AFTER train_end, can have gap).
+    # gcs_prefix: override default 'universal/' save path. For walk-forward: 'walk_forward/w{id}'.
+    # window_id: identifier stored in model metadata for traceability.
+    train_start: str | None = None
+    train_end: str | None = None
+    test_start: str | None = None
+    test_end: str | None = None
+    gcs_prefix: str | None = None
+    window_id: int | None = None
+    skip_weekly_backup: bool = False  # walk-forward uses window-versioned paths, no weekly needed
 
 
 class UniversalRetrainRequest(BaseModel):
@@ -1047,17 +1059,47 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     print(f"[TrainUniversal] Total: {len(X)} rows × {len(feature_names)} features")
 
-    if len(X) < 1000:
-        raise ValueError(f"Pooled 樣本不足 1000 ({len(X)})")
-
-    # ── 2. Purged time-based split (2.0: embargo gap to prevent label leakage) ──
-    from .purged_cv import purged_train_test_split
-    X_train, y_train, dates_train, X_test, y_test, dates_test = purged_train_test_split(
-        X, y, dates_arr,
-        test_ratio=0.2,
-        embargo_days=10,  # ~1.3%T per De Prado AFML Ch.7 (was 15, reduced to save training data)
+    # ── 2026-04-18 #32 Sprint 6b: walk-forward explicit date-range split ─────
+    # When train_start/train_end/test_start/test_end are all provided, skip
+    # purged_train_test_split and use the explicit dates. Walk-forward windows
+    # already enforce train-then-test temporal ordering so embargo is implicit
+    # in the window step_size.
+    walk_forward_mode = (
+        req.train_start is not None and req.train_end is not None
+        and req.test_start is not None and req.test_end is not None
     )
-    print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=10d")
+
+    if walk_forward_mode:
+        print(f"[TrainUniversal] Walk-forward mode: train={req.train_start}..{req.train_end} "
+              f"test={req.test_start}..{req.test_end} window_id={req.window_id}")
+        # dates_arr is numpy array of "YYYY-MM-DD" strings
+        dates_str = dates_arr.astype(str)
+        train_mask = (dates_str >= req.train_start) & (dates_str <= req.train_end)
+        test_mask  = (dates_str >= req.test_start)  & (dates_str <= req.test_end)
+        X_train, y_train, dates_train = X[train_mask], y[train_mask], dates_arr[train_mask]
+        X_test,  y_test,  dates_test  = X[test_mask],  y[test_mask],  dates_arr[test_mask]
+        print(f"[TrainUniversal] Walk-forward split: train={len(X_train)}, test={len(X_test)}")
+        if len(X_train) < 500:
+            raise ValueError(
+                f"Walk-forward train window {req.train_start}..{req.train_end} has only "
+                f"{len(X_train)} samples (<500 minimum)"
+            )
+        if len(X_test) < 100:
+            raise ValueError(
+                f"Walk-forward test window {req.test_start}..{req.test_end} has only "
+                f"{len(X_test)} samples (<100 minimum)"
+            )
+    else:
+        if len(X) < 1000:
+            raise ValueError(f"Pooled 樣本不足 1000 ({len(X)})")
+        # ── 2. Purged time-based split (2.0: embargo gap to prevent label leakage) ──
+        from .purged_cv import purged_train_test_split
+        X_train, y_train, dates_train, X_test, y_test, dates_test = purged_train_test_split(
+            X, y, dates_arr,
+            test_ratio=0.2,
+            embargo_days=10,  # ~1.3%T per De Prado AFML Ch.7
+        )
+        print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=10d")
 
     # ── 3. Train models (filtered by models_filter if set) ──────────────────
     results = {}
@@ -1451,16 +1493,25 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "train_samples": len(X_train),
                 "test_samples": len(X_test),
             }
+            if walk_forward_mode:
+                ic_record.update({
+                    "window_id": req.window_id,
+                    "train_range": [req.train_start, req.train_end],
+                    "test_range":  [req.test_start, req.test_end],
+                })
             ic_json = json.dumps(ic_record, indent=2)
-            bucket.blob("universal/ic_tracking.json").upload_from_string(
+            # 2026-04-18 #32: walk-forward writes to windowed path, not universal/
+            ic_base_prefix = (req.gcs_prefix.rstrip("/") if req.gcs_prefix else "universal")
+            bucket.blob(f"{ic_base_prefix}/ic_tracking.json").upload_from_string(
                 ic_json, content_type="application/json"
             )
-            # History
-            month = datetime.utcnow().strftime("%Y-%m")
-            bucket.blob(f"universal/ic_history/{month}.json").upload_from_string(
-                ic_json, content_type="application/json"
-            )
-            print(f"[IC-Track] Saved ic_tracking.json (breaker={'ON' if circuit_breaker_triggered else 'OFF'})")
+            # History (only for universal, walk-forward windows are themselves the history)
+            if not walk_forward_mode:
+                month = datetime.utcnow().strftime("%Y-%m")
+                bucket.blob(f"{ic_base_prefix}/ic_history/{month}.json").upload_from_string(
+                    ic_json, content_type="application/json"
+                )
+            print(f"[IC-Track] Saved {ic_base_prefix}/ic_tracking.json (breaker={'ON' if circuit_breaker_triggered else 'OFF'})")
         except Exception as e:
             print(f"[IC-Track] GCS save failed: {e}")
 
@@ -1480,16 +1531,31 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         print(f"[TrainUniversal] feature_medians compute failed: {_med_err}")
         feature_medians = {}
 
+    # 2026-04-18 #32: walk-forward passes gcs_prefix + window_id metadata
+    extra_meta = {}
+    if walk_forward_mode:
+        extra_meta = {
+            "window_id": req.window_id,
+            "train_range": [req.train_start, req.train_end],
+            "test_range":  [req.test_start, req.test_end],
+        }
+
     for model_name, model_obj in trained_models.items():
         try:
             if model_name == "FT-Transformer":
                 _, _, _, ftt_bundle = model_obj
                 save_model(0, "FT-Transformer", ftt_bundle, feature_names, len(X_train),
-                           feature_medians=feature_medians)
+                           feature_medians=feature_medians,
+                           gcs_prefix=req.gcs_prefix,
+                           extra_metadata=extra_meta or None,
+                           skip_weekly_backup=req.skip_weekly_backup)
             else:
                 save_model(0, model_name, model_obj, feature_names, len(X_train),
-                           feature_medians=feature_medians)
-            print(f"[TrainUniversal] Saved {model_name} to GCS ✅")
+                           feature_medians=feature_medians,
+                           gcs_prefix=req.gcs_prefix,
+                           extra_metadata=extra_meta or None,
+                           skip_weekly_backup=req.skip_weekly_backup)
+            print(f"[TrainUniversal] Saved {model_name} to GCS ✅ (prefix={req.gcs_prefix or 'universal'})")
         except Exception as e:
             print(f"[TrainUniversal] Failed to save {model_name}: {e}")
 
@@ -2283,3 +2349,140 @@ async def regime_current(req: RegimeRequest, request: Request):
         "consensus_threshold": info.get("consensus_threshold", 0.60),
         "computed_at":         datetime.now(TW_TZ).isoformat(),
     }
+
+
+# ── Walk-Forward endpoints (Sprint 6b / 2026-04-18 #32) ──────────────────────
+
+class WalkForwardHMMTrainRequest(BaseModel):
+    """Train HMM on historical window for walk-forward regime replay."""
+    window_id: int
+    train_end: str                       # HMM sees history up to & including this date
+    market_env: dict                     # already-filtered history (caller ensures no future leak)
+    gcs_prefix: str                      # e.g. "walk_forward/w3"
+
+
+@app.post("/regime/train_window")
+async def regime_train_window(req: WalkForwardHMMTrainRequest, request: Request):
+    """Train HMM on a historical window's market data and save a snapshot.
+
+    This enables `predict_regime_at_date()` to replay regime decisions without
+    future leak — each window has its own HMM joblib under `walk_forward/w{id}/`.
+    """
+    await verify_service_token(request)
+    from .regime import RegimeDetector, build_market_feature_matrix
+
+    feat_mat = build_market_feature_matrix(req.market_env)
+    if feat_mat is None or len(feat_mat) < 30:
+        raise HTTPException(
+            status_code=400,
+            detail=f"insufficient market_env.history (got {len(feat_mat) if feat_mat is not None else 0} days, need ≥30)",
+        )
+
+    detector = RegimeDetector().fit(feat_mat)
+    if not detector._trained:
+        raise HTTPException(status_code=500, detail="HMM fit did not converge")
+
+    saved = detector.save_to_gcs(
+        gcs_prefix=req.gcs_prefix,
+        extra_metadata={
+            "window_id": req.window_id,
+            "train_end": req.train_end,
+            "history_days": len(feat_mat),
+        },
+    )
+    return {
+        "window_id": req.window_id,
+        "gcs_prefix": req.gcs_prefix.rstrip("/"),
+        "n_components": detector.n_components,
+        "regime_map": {str(k): v for k, v in detector.regime_map.items()},
+        "history_days": len(feat_mat),
+        "saved": saved,
+    }
+
+
+class WalkForwardReplayRequest(BaseModel):
+    """Replay HMM prediction for a historical date using per-window snapshot."""
+    window_id: int                       # which window's HMM joblib to load
+    market_env: dict                      # filtered history + 'current' date's features
+
+
+@app.post("/regime/replay_at_date")
+async def regime_replay_at_date(req: WalkForwardReplayRequest, request: Request):
+    """Predict regime at a historical date using the windowed HMM snapshot.
+
+    No future leak: loads HMM from `walk_forward/w{id}/` which was trained only
+    on data up to window.train_end. Caller must pass market_env with features
+    computed using data available at the replay date (not beyond).
+    """
+    await verify_service_token(request)
+    from .regime import RegimeDetector, get_current_market_features
+
+    gcs_prefix = f"walk_forward/w{req.window_id}"
+    detector = RegimeDetector.load_from_gcs(
+        gcs_prefix=gcs_prefix,
+        skip_freshness_check=True,   # historical snapshots are never "fresh"
+    )
+    if detector is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No HMM snapshot at {gcs_prefix}. Run /regime/train_window first.",
+        )
+
+    cur_feat = get_current_market_features(req.market_env)
+    if cur_feat is None:
+        raise HTTPException(status_code=400, detail="market_env missing current features")
+
+    info = detector.predict_regime(cur_feat)
+    reg_idx = int(info.get("regime_index", 1))
+    return {
+        "window_id":       req.window_id,
+        "regime_label_en": _REGIME_INDEX_TO_EN.get(reg_idx, "sideways"),
+        "regime_index":    reg_idx,
+        "hmm_state":       info.get("hmm_state", -1),
+        "label_zh":        info.get("label", "未知"),
+    }
+
+
+class WalkForwardTrainRequest(BaseModel):
+    """Retrain 5 ML models on a walk-forward window's train range."""
+    window_id: int
+    train_start: str
+    train_end: str
+    test_start: str
+    test_end: str
+    models: list[str] | None = None      # None = all 5
+    batch_count: int = 5                  # re-uses existing prep npz
+    skip_feature_pool: bool = False
+
+
+@app.post("/retrain/walk_forward")
+async def retrain_walk_forward_endpoint(req: WalkForwardTrainRequest, request: Request):
+    """Train all specified models on a walk-forward window.
+
+    Writes per-window model artifacts to GCS `walk_forward/w{window_id}/`.
+    Returns per-model IC + metadata for the window.
+
+    This endpoint is a thin wrapper around `train_universal_from_gcs` with
+    walk-forward params baked in. Heavy lifting happens in the Modal functions
+    `train_tree_models` / `train_ftt_model` when called from ml-controller.
+    """
+    await verify_service_token(request)
+    gcs_prefix = f"walk_forward/w{req.window_id}"
+
+    # Delegate to existing train with walk-forward params
+    inner_req = UniversalTrainRequest(
+        batch_count=req.batch_count,
+        models_filter=req.models,
+        skip_feature_pool=req.skip_feature_pool,
+        train_start=req.train_start,
+        train_end=req.train_end,
+        test_start=req.test_start,
+        test_end=req.test_end,
+        gcs_prefix=gcs_prefix,
+        window_id=req.window_id,
+        skip_weekly_backup=True,   # windowed paths are themselves versioned
+    )
+    result = train_universal_from_gcs(inner_req)
+    result["window_id"] = req.window_id
+    result["gcs_prefix"] = gcs_prefix
+    return result

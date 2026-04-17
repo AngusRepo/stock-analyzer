@@ -199,7 +199,16 @@ class RegimeDetector:
             return default
 
     # ── GCS 持久化 ────────────────────────────────────────────────────────────
-    def save_to_gcs(self) -> bool:
+    def save_to_gcs(
+        self,
+        gcs_prefix: str = "market_regime",     # 2026-04-18 #32: walk-forward override
+        extra_metadata: Optional[dict] = None,
+    ) -> bool:
+        """Save trained HMM to GCS.
+
+        Default: `market_regime/hmm_detector.joblib` (production path)
+        Walk-forward: `walk_forward/w{id}/hmm_detector.joblib` (window snapshot)
+        """
         from .model_store import _get_bucket
         if not self._trained:
             return False
@@ -208,47 +217,65 @@ class RegimeDetector:
             bucket = _get_bucket()
             if not bucket:
                 return False
+            prefix = gcs_prefix.rstrip("/")
             buf = io.BytesIO()
             joblib.dump(self, buf); buf.seek(0)
-            bucket.blob("market_regime/hmm_detector.joblib").upload_from_file(buf)
+            bucket.blob(f"{prefix}/hmm_detector.joblib").upload_from_file(buf)
             meta = {
                 "n_components": self.n_components,
                 "regime_map":   {str(k): v for k, v in self.regime_map.items()},
                 "trained_at":   datetime.now(timezone.utc).isoformat(),
+                "gcs_prefix":   prefix,
             }
-            bucket.blob("market_regime/metadata.json").upload_from_string(
+            if extra_metadata:
+                meta.update(extra_metadata)
+            bucket.blob(f"{prefix}/metadata.json").upload_from_string(
                 json.dumps(meta), content_type="application/json")
-            logger.info("[Regime] 模型已儲存至 GCS")
+            logger.info(f"[Regime] 模型已儲存至 GCS: {prefix}")
             return True
         except Exception as e:
             logger.error(f"[Regime] GCS save 失敗: {e}")
             return False
 
     @classmethod
-    def load_from_gcs(cls) -> Optional["RegimeDetector"]:
+    def load_from_gcs(
+        cls,
+        gcs_prefix: str = "market_regime",
+        skip_freshness_check: bool = False,
+    ) -> Optional["RegimeDetector"]:
+        """Load HMM detector from GCS.
+
+        gcs_prefix:           default production path `market_regime`.
+                              Walk-forward: `walk_forward/w{id}`.
+        skip_freshness_check: walk-forward snapshots are historical, never "fresh";
+                              set True to bypass the 9-day freshness gate.
+        """
         from .model_store import _get_bucket, is_model_fresh
         try:
             import joblib
             bucket = _get_bucket()
             if not bucket:
                 return None
-            meta_blob = bucket.blob("market_regime/metadata.json")
+            prefix = gcs_prefix.rstrip("/")
+            meta_blob = bucket.blob(f"{prefix}/metadata.json")
             if not meta_blob.exists():
                 return None
             meta = json.loads(meta_blob.download_as_text())
-            if not is_model_fresh({"trained_at": meta.get("trained_at", "")}, max_age_days=9):
-                logger.info("[Regime] GCS 模型已過期，需重訓")
+            if not skip_freshness_check and not is_model_fresh(
+                {"trained_at": meta.get("trained_at", "")}, max_age_days=9
+            ):
+                logger.info(f"[Regime] GCS 模型 ({prefix}) 已過期，需重訓")
                 return None
-            model_blob = bucket.blob("market_regime/hmm_detector.joblib")
+            model_blob = bucket.blob(f"{prefix}/hmm_detector.joblib")
             if not model_blob.exists():
                 return None
             buf = io.BytesIO()
             model_blob.download_to_file(buf); buf.seek(0)
             det = joblib.load(buf)
-            logger.info("[Regime] 已從 GCS 載入 HMM detector")
+            logger.info(f"[Regime] 已從 GCS ({prefix}) 載入 HMM detector")
             return det
         except Exception as e:
-            logger.warning(f"[Regime] GCS load 失敗: {e}")
+            logger.warning(f"[Regime] GCS load 失敗 ({gcs_prefix}): {e}")
             return None
 
 

@@ -67,12 +67,19 @@ def save_model(
     feature_names: list[str],
     sample_count: int,
     feature_medians: dict[str, float] | None = None,  # 2026-04-17: P1 v2 alignment fallback
+    gcs_prefix: str | None = None,                     # 2026-04-18 #32: walk-forward override
+    extra_metadata: dict | None = None,                # 2026-04-18 #32: windowed metadata
+    skip_weekly_backup: bool = False,                   # 2026-04-18 #32: walk-forward wf/w{id}/* doesn't need weekly
 ) -> bool:
     """
     序列化模型並上傳到 GCS
     model_name: 'XGBoost' | 'CatBoost' | 'ExtraTrees' | 'MLP' | 'TCN'
     feature_medians: training-time per-feature median, used by predict_stock_v2
                      for name-based alignment when a feature is missing at predict time
+    gcs_prefix:      Override default path. If None: 'universal' (stock_id=0) or str(stock_id).
+                     For walk-forward: 'walk_forward/w{window_id}'.
+    extra_metadata:  Additional keys merged into metadata JSON (e.g. window_id, train_range).
+    skip_weekly_backup: when True, don't write weekly/* copy (saves space for walk-forward).
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -86,8 +93,11 @@ def save_model(
         joblib.dump(model, buf)
         buf.seek(0)
 
-        # 上傳最新版本 (stock_id=0 → universal model path)
-        prefix = "universal" if stock_id == 0 else str(stock_id)
+        # 2026-04-18 #32: gcs_prefix override takes priority, falls back to stock_id-based default
+        if gcs_prefix is not None:
+            prefix = gcs_prefix.rstrip("/")
+        else:
+            prefix = "universal" if stock_id == 0 else str(stock_id)
         blob_path = f"{prefix}/{model_name.lower()}.joblib"
         blob = bucket.blob(blob_path)
         blob.upload_from_file(buf, content_type="application/octet-stream")
@@ -100,29 +110,39 @@ def save_model(
             "feature_medians": feature_medians or {},  # 2026-04-17: P1
             "sample_count": sample_count,
             "trained_at": datetime.now(timezone.utc).isoformat(),
+            "gcs_prefix": prefix,   # 2026-04-18 #32: self-describing path
         }
+        if extra_metadata:
+            meta.update(extra_metadata)
         meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         meta_blob.upload_from_string(json.dumps(meta, ensure_ascii=False), content_type="application/json")
 
-        # 每週備份（方便回溯）
-        week_key = datetime.now(timezone.utc).strftime("%Y-W%W")
-        weekly_blob = bucket.blob(f"{prefix}/weekly/{week_key}/{model_name.lower()}.joblib")
-        buf.seek(0)
-        weekly_blob.upload_from_file(buf, content_type="application/octet-stream")
+        # 每週備份（方便回溯）— walk-forward 不需要，因為 gcs_prefix 已是 window-versioned
+        if not skip_weekly_backup:
+            week_key = datetime.now(timezone.utc).strftime("%Y-W%W")
+            weekly_blob = bucket.blob(f"{prefix}/weekly/{week_key}/{model_name.lower()}.joblib")
+            buf.seek(0)
+            weekly_blob.upload_from_file(buf, content_type="application/octet-stream")
 
-        logger.info(f"[ModelStore] Saved {model_name} for stock {stock_id} ({sample_count} samples)")
+        logger.info(f"[ModelStore] Saved {model_name} ({prefix}) {sample_count} samples")
         return True
 
     except Exception as e:
-        logger.error(f"[ModelStore] Save failed for {model_name} stock {stock_id}: {e}")
+        logger.error(f"[ModelStore] Save failed for {model_name} prefix={gcs_prefix or stock_id}: {e}")
         return False
 
 
 # ── 載入模型 ──────────────────────────────────────────────────────────────────
-def load_model(stock_id: int, model_name: str) -> tuple[Any | None, dict | None]:
+def load_model(
+    stock_id: int,
+    model_name: str,
+    gcs_prefix: str | None = None,  # 2026-04-18 #32: walk-forward override
+) -> tuple[Any | None, dict | None]:
     """
     從 GCS 載入已訓練的模型和 metadata
     回傳 (model, metadata) 或 (None, None)
+
+    gcs_prefix: override default path. For walk-forward: 'walk_forward/w{window_id}'.
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -131,7 +151,10 @@ def load_model(stock_id: int, model_name: str) -> tuple[Any | None, dict | None]
     try:
         import joblib
 
-        prefix = "universal" if stock_id == 0 else str(stock_id)
+        if gcs_prefix is not None:
+            prefix = gcs_prefix.rstrip("/")
+        else:
+            prefix = "universal" if stock_id == 0 else str(stock_id)
         blob_path = f"{prefix}/{model_name.lower()}.joblib"
         blob = bucket.blob(blob_path)
 
@@ -148,11 +171,11 @@ def load_model(stock_id: int, model_name: str) -> tuple[Any | None, dict | None]
         meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
 
-        logger.info(f"[ModelStore] Loaded {model_name} for stock {stock_id}")
+        logger.info(f"[ModelStore] Loaded {model_name} ({prefix})")
         return model, metadata
 
     except Exception as e:
-        logger.warning(f"[ModelStore] Load failed for {model_name} stock {stock_id}: {e}")
+        logger.warning(f"[ModelStore] Load failed for {model_name} prefix={gcs_prefix or stock_id}: {e}")
         return None, None
 
 

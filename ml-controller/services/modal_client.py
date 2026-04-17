@@ -105,6 +105,35 @@ async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
     return results
 
 
+# ── Walk-Forward helpers (2026-04-18 #32 Sprint 6b) ───────────────────────────
+
+async def _modal_train_wf_tree_window(payload: dict) -> dict:
+    fn = _lookup("train_wf_tree_window")
+    return await fn.remote.aio(payload)
+
+
+async def _modal_train_wf_ftt_window(payload: dict) -> dict:
+    fn = _lookup("train_wf_ftt_window")
+    return await fn.remote.aio(payload)
+
+
+async def _modal_train_wf_hmm_window(payload: dict) -> dict:
+    fn = _lookup("train_wf_hmm_window")
+    return await fn.remote.aio(payload)
+
+
+def _spawn_wf_tree_window(payload: dict):
+    """Spawn tree training (returns handle immediately, caller .get() later)."""
+    fn = _lookup("train_wf_tree_window")
+    return fn.spawn(payload)
+
+
+def _spawn_wf_ftt_window(payload: dict):
+    """Spawn FT-T training (returns handle)."""
+    fn = _lookup("train_wf_ftt_window")
+    return fn.spawn(payload)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Cloud Run ML path（httpx 並行，fallback）
 # ══════════════════════════════════════════════════════════════════════════════

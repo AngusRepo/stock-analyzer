@@ -222,6 +222,158 @@ Branch base: main（PR #6 merge 後）
 
 ---
 
+## dannyquant_tw 系統分析 — 三個值得吸收的概念
+
+來源：Threads @dannyquant_tw「AI 產業連動選股」系統（2026/03/30 貼文分析）
+
+### 概念 1：族群連動選股（最大差異化）
+
+**核心 insight**：不是獨立給每支股票打分，而是先找到「本週最強族群的龍頭」，再找歷史上跟龍頭連動的股票。
+
+**他的標籤系統**：
+- ★週核：本週核心族群龍頭或前三大
+- ☆高連：與龍頭在歷史上高度連動（correlation > threshold）
+- ■高頻：近期高頻率被模型選到
+- ◉達標：符合模型重要條件篩選標準
+- ●新資金：過去幾週未出現的新題材/族群
+
+**我們的 gap**：screener 是 independent scoring，不看 cross-stock correlation。
+
+**導入方式**：
+```python
+# 新模組: ml-controller/services/sector_correlation_service.py
+
+# Step 1: 從 sector_heat 取本週最強 sector 的 leader（前 3）
+leaders = get_sector_leaders(sector_heat_scores, top_n=3)
+
+# Step 2: 算每支候選股 vs leaders 的 60d rolling correlation
+for candidate in screener_candidates:
+    corr = compute_pairwise_correlation(
+        prices[candidate.symbol],
+        prices[leader.symbol],
+        window=60
+    )
+    candidate.leader_correlation = max(corr_values)
+    candidate.correlation_tag = 'HIGH_CORR' if corr > 0.7 else 'NORMAL'
+
+# Step 3: 高連加分（加到 total_score）
+if candidate.leader_correlation > 0.7:
+    candidate.score_bonus += 5
+```
+
+**工作量**：2 天（新 service + screener 整合 + D1 table）
+
+### 概念 2：選股頻率追蹤（高頻 / 新資金標籤）
+
+**核心 insight**：追蹤每支股票「被選中的頻率」→ 穩定信號 vs 新趨勢。
+
+**導入方式**：
+```sql
+-- 新表: screener_selection_history
+CREATE TABLE screener_selection_history (
+  date    TEXT NOT NULL,
+  symbol  TEXT NOT NULL,
+  rank    INTEGER,
+  score   REAL,
+  PRIMARY KEY (date, symbol)
+);
+
+-- 「高頻」: 過去 20 個交易日被選中 >= 12 次
+SELECT symbol, COUNT(*) as freq
+FROM screener_selection_history
+WHERE date >= date('now', '-30 days')
+GROUP BY symbol HAVING freq >= 12;
+
+-- 「新資金」: 今天被選中但近 30 天沒出現過
+SELECT today.symbol FROM screener_selection_history today
+WHERE today.date = ?
+AND today.symbol NOT IN (
+  SELECT symbol FROM screener_selection_history
+  WHERE date BETWEEN date(?, '-30 days') AND date(?, '-1 day')
+);
+```
+
+**工作量**：1 天（新表 + screener 寫入 + tag 計算）
+
+### 概念 3：四維籌碼 Composite（期貨 + 選擇權 + PCR + 散戶反向）
+
+**核心 insight**：外資現貨偏多但期貨偏空 = 避險不是真看多。只看三大法人現貨會被騙。
+
+**四維**：
+1. 外資現貨（已有 chip_data.foreign_net）
+2. 外資期貨淨口（FinMind `TaiwanFuturesInstitutionalInvestors`）
+3. 外資選擇權（FinMind `TaiwanOptionInstitutionalInvestors`）
+4. 散戶反向（全體 - 三大法人，取反）
+
+**FinMind 資料可用性**：✅ 全部有
+
+| 資料 | FinMind Dataset | 狀態 |
+|------|----------------|------|
+| 三大法人期貨 | `TaiwanFuturesInstitutionalInvestors` (data_id=TX) | ✅ 可查 |
+| 三大法人選擇權 | `TaiwanOptionInstitutionalInvestors` (data_id=TXO) | ✅ 可查 |
+| PCR (Put/Call Ratio) | 從 `TaiwanOptionDaily` 計算 (put_vol / call_vol) | ✅ 可算 |
+| 前 5 大/前 10 大期貨 | `TaiwanFuturesTopTraders` | ✅ 應可查 |
+| 散戶反向 | 全體 - 三大法人 | ✅ 可算 |
+
+**API 額度**：每日只需 5-6 次 call，免費額度（600/hr）即足夠。
+系統已有 FinMind token（stock_prices 在用）。
+
+**導入方式**：
+```python
+# 新模組: ml-controller/services/derivatives_fetcher.py
+# 新 cron: 每日收盤後（跟 chip_data 同步）
+
+from FinMind.data import DataLoader
+dl = DataLoader()
+dl.login_by_token(api_token=FINMIND_TOKEN)
+
+# 1. 三大法人期貨
+futures_inst = dl.taiwan_futures_institutional_investors(
+    data_id="TX", start_date=today
+)
+
+# 2. 三大法人選擇權
+options_inst = dl.taiwan_option_institutional_investors(
+    data_id="TXO", start_date=today
+)
+
+# 3. PCR
+options_daily = dl.taiwan_option_daily(data_id="TXO", start_date=today)
+pcr = put_volume_sum / call_volume_sum
+
+# 存 D1 新表
+# derivatives_daily (date, foreign_futures_net, foreign_options_net,
+#                    pcr, top5_net, top10_net, four_dim_score, direction)
+```
+
+**四維 composite 計算**（仿 dannyquant 的四維分數）：
+```python
+def compute_4d_score(spot_net, futures_net, options_net, pcr, retail_net):
+    # 各維度 normalize 到 [-1, 1]
+    d1 = normalize(spot_net, history_60d)       # 現貨
+    d2 = normalize(futures_net, history_60d)     # 期貨
+    d3 = normalize(-options_net, history_60d)    # 選擇權（反向）
+    d4 = normalize(-retail_net, history_60d)     # 散戶反向
+    # 等權平均（或 Optuna 搜權重）
+    score = (d1 + d2 + d3 + d4) / 4
+    # 一致性 = 4 個維度同向的程度
+    signs = [np.sign(d) for d in [d1, d2, d3, d4]]
+    consistency = abs(sum(signs)) / 4
+    return score, consistency
+```
+
+**工作量**：3 天（fetcher + D1 table + composite score + 接入 screener / CB）
+
+### Sprint 規劃（dannyquant 啟發）
+
+| Sprint | 內容 | 工作量 | 依賴 |
+|--------|------|--------|------|
+| D1 | 選股頻率追蹤（高頻/新資金 tag） | 1 天 | 無 |
+| D2 | 族群連動選股（leader correlation + score bonus） | 2 天 | sector_heat 已有 |
+| D3 | 四維籌碼 composite（FinMind 期權資料 + 4D score） | 3 天 | FinMind token 已有 |
+
+---
+
 ## Sources
 
 - [QuantaAlpha GitHub](https://github.com/QuantaAlpha/QuantaAlpha) | [Paper](https://arxiv.org/abs/2602.07085)

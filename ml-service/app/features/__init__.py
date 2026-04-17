@@ -330,6 +330,10 @@ def build_feature_matrix(
                 _clip_expr(_safe_div(pl.col("margin_balance"), vol_close), 0.0, 10.0)
                 .alias("margin_ratio")
             )
+            # NOTE: shift(5) assumes 5 consecutive rows = 5 trading days. If data has
+            # gaps (holidays, trading halts), the actual calendar span may differ.
+            # Accepted tradeoff: date-aware shift requires date join (complex + slow).
+            # Models are trained on this definition, so changing it requires retrain.
             df = df.with_columns(
                 _clip_expr(
                     _safe_div(
@@ -767,6 +771,10 @@ def build_feature_matrix(
         ])
 
     # ── 13. Rolling Z-score normalization ────────────────────────────────────
+    # Only raw-scale features (returns, volatility, chip flows, bias) are Z-scored.
+    # RSI/MACD/KD are intentionally EXCLUDED — they are already bounded by their
+    # own formulas (RSI ∈ [0,100], MACD is differenced). Z-scoring them would be
+    # double normalization and attenuate their predictive signal.
     ZSCORE_COLS = [
         "return_1d", "return_3d", "return_5d", "return_10d",
         "volatility_5d", "volatility_20d",
@@ -777,13 +785,23 @@ def build_feature_matrix(
     # Save raw ATR before Z-score for triple barrier
     atr14_raw = df["atr14"].to_numpy().astype(np.float64) if "atr14" in df.columns else None
 
+    _zscore_const_cols = []
     for col in ZSCORE_COLS:
         if col in df.columns:
             roll_mean = pl.col(col).rolling_mean(60)
-            roll_std = pl.col(col).rolling_std(60).clip(1e-8, None)
+            roll_std_raw = pl.col(col).rolling_std(60)
+            # Track columns where std ≈ 0 in the latest window (constant feature
+            # → Z-score becomes ±5 binary after clip, losing granularity)
+            latest_std = df.select(roll_std_raw).to_series()[-1] if len(df) > 60 else None
+            if latest_std is not None and latest_std < 1e-6:
+                _zscore_const_cols.append(col)
+            roll_std = roll_std_raw.clip(1e-8, None)
             df = df.with_columns(
                 ((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0).alias(col)
             )
+    if _zscore_const_cols:
+        print(f"[Features] Z-score: {len(_zscore_const_cols)} constant-variance cols "
+              f"(will be ±5 binary): {_zscore_const_cols[:5]}")
 
     # ── 14. NaN handling (features only, not targets) ────────────────────────
     # forward_fill: carry last known value forward (stale but not fictional).

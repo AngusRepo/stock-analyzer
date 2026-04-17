@@ -54,12 +54,15 @@ def compute_ptt_features(
         mentions_3d = 0
         pos_3d = 0
         neg_3d = 0
+        days_with_data = 0
         for j in range(max(0, i - 2), i + 1):
             if j < len(dates):
-                p = ptt_map.get(dates[j], {})
-                mentions_3d += p.get("mention_count", 0)
-                pos_3d += p.get("positive", 0)
-                neg_3d += p.get("negative", 0)
+                p = ptt_map.get(dates[j])
+                if p is not None:
+                    days_with_data += 1
+                    mentions_3d += p.get("mention_count", 0)
+                    pos_3d += p.get("positive", 0)
+                    neg_3d += p.get("negative", 0)
 
         mention_count[i] = mentions_3d
 

@@ -245,7 +245,12 @@ export async function readCurrentZone(
        LIMIT 1
     `).first<{ date: string; zone: string; percentile_rank: number }>()
     if (!row) return { zone: 'GREEN', date: null, percentile_rank: null }
-    const z = (row.zone === 'RED' || row.zone === 'YELLOW') ? row.zone : 'GREEN'
+    const validZones = new Set(['RED', 'YELLOW', 'GREEN'])
+    const rawZone = (row.zone ?? '').toUpperCase()
+    if (!validZones.has(rawZone)) {
+      console.warn(`[MomentumZone] corrupt zone value "${row.zone}" in DB (date=${row.date}); defaulting to GREEN`)
+    }
+    const z: MomentumZone = (rawZone === 'RED' || rawZone === 'YELLOW') ? rawZone : 'GREEN'
     return { zone: z, date: row.date, percentile_rank: row.percentile_rank ?? null }
   } catch (e) {
     console.warn('[MomentumZone] readCurrentZone failed:', e)

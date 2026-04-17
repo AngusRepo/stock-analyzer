@@ -249,6 +249,9 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   }
 
   // Layer 2: 模型近期準確率 < lowAccuracyThreshold → 提高信心門檻
+  // TODO(M15): Layers 2-7 use early-return → Layer 2 firing masks Layers 3-7.
+  // A more robust design would chain all layers and take the strictest result.
+  // Current ordering: 1(MDD)→2(accuracy)→3(risk)→4(breadth)→6(momentum)→7(streak)→5(losses)
   // Phase 2 fix: 改讀 ml:adaptive_params.recent_accuracy_30d (single source of truth)
   // 之前自己 SQL 算 over 20 days 算出 18.6%，跟 adaptive 60% 差距大
   let recentAcc = 0.5
@@ -271,7 +274,7 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     const accuracyRow = await db.prepare(`
       SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
       FROM predictions
-      WHERE generated_at >= datetime('now', '-20 days')
+      WHERE generated_at >= datetime('now', '-30 days')
       AND direction_correct IN (0, 1)
     `).first<any>()
     recentAcc = accuracyRow?.acc ?? 0.5
@@ -300,8 +303,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     'SELECT bull_alignment_pct, advance_ratio FROM market_breadth ORDER BY date DESC LIMIT 1'
   ).first<any>()
   const bullAlignmentThreshold = cfg.circuit.bullAlignmentThreshold ?? 20
-  if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < bullAlignmentThreshold) {
-    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%, reducing position`)
+  if (breadth?.bull_alignment_pct == null) {
+    console.warn('[CircuitBreaker] Layer4: market_breadth missing or NULL — skipping breadth check')
+  } else if (breadth.bull_alignment_pct < bullAlignmentThreshold) {
+    const advRatio = breadth.advance_ratio != null ? ` adv_ratio=${Number(breadth.advance_ratio).toFixed(2)}` : ''
+    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%${advRatio}, reducing position`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
   }
 

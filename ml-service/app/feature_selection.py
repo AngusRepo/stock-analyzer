@@ -71,7 +71,11 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
         }
 
     # Spearman rank-order correlation
-    corr_matrix, _ = stats.spearmanr(X_valid)
+    # Guard: drop rows with any NaN before computing (otherwise spearmanr
+    # silently drops different rows per column → incomparable correlations)
+    nan_row_mask = ~np.isnan(X_valid).any(axis=1)
+    X_clean = X_valid[nan_row_mask] if nan_row_mask.sum() >= 20 else X_valid
+    corr_matrix, _ = stats.spearmanr(X_clean)
     if corr_matrix.ndim == 0:
         corr_matrix = np.array([[1.0]])
 

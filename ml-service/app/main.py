@@ -1680,8 +1680,15 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
 
         if ftt_scaler and ftt_valid_cols is not None:
             X_shap_scaled = X_shap_ftt.copy().astype(np.float32)
-            vc = ftt_valid_cols if ftt_valid_cols.shape[0] == X_shap_ftt.shape[1] else ftt_valid_cols[:X_shap_ftt.shape[1]]
-            X_shap_scaled[:, vc] = ftt_scaler.transform(X_shap_ftt)[:, vc].astype(np.float32)
+            # valid_cols_mask was removed from training (P1 M1 fix); this path
+            # is legacy for old GCS bundles. Use scaler.transform on all columns
+            # for consistency. If bundle still has valid_cols_mask, apply as boolean.
+            if hasattr(ftt_valid_cols, 'dtype') and ftt_valid_cols.dtype == bool:
+                vc = ftt_valid_cols if ftt_valid_cols.shape[0] == X_shap_ftt.shape[1] else ftt_valid_cols[:X_shap_ftt.shape[1]]
+                X_shap_scaled[:, vc] = ftt_scaler.transform(X_shap_ftt)[:, vc].astype(np.float32)
+            else:
+                X_shap_scaled = ftt_scaler.transform(X_shap_ftt).astype(np.float32)
+                X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)
         elif ftt_scaler:
             X_shap_scaled = ftt_scaler.transform(X_shap_ftt).astype(np.float32)
             X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)

@@ -480,8 +480,12 @@ def run_patchtst(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> Mo
 
     scaler  = StandardScaler()
     X_train = scaler.fit_transform(X_arr[:split])
-    X_test  = scaler.transform(X_arr[split:]) if split < len(X_arr) else X_train[:1]
-    y_test  = y_arr[split:] if split < len(X_arr) else y_arr[:1]
+    if split < len(X_arr):
+        X_test = scaler.transform(X_arr[split:])
+        y_test = y_arr[split:]
+    else:
+        X_test = np.empty((0, X_arr.shape[1]))
+        y_test = np.array([])
 
     model = MLPClassifier(
         hidden_layer_sizes=(32, 16), max_iter=300,

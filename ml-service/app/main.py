@@ -1327,7 +1327,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                             val_preds.append(model_ftt(xvb).float().cpu().numpy())  # .float() bfloat16→fp32 before numpy
                     val_preds_arr = np.concatenate(val_preds)
                 val_ic = 0.0
-                if np.std(val_preds_arr) > 1e-10 and np.std(yt_val) > 1e-10:
+                nan_count = int(np.isnan(val_preds_arr).sum())
+                if nan_count > 0:
+                    print(f"[TrainUniversal] FT-T val preds contain {nan_count} NaN — skipping IC")
+                elif np.std(val_preds_arr) > 1e-10 and np.std(yt_val) > 1e-10:
                     rho, _ = _spearmanr(val_preds_arr, yt_val)
                     val_ic = float(rho) if not np.isnan(rho) else 0.0
 

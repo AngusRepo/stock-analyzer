@@ -285,7 +285,8 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     'SELECT risk_level FROM market_risk ORDER BY date DESC LIMIT 1'
   ).first<any>()
 
-  const isHighVol = marketRisk?.risk_level === 'HIGH' || marketRisk?.risk_level === 'VERY_HIGH'
+  const riskStr = (marketRisk?.risk_level ?? '').toString().toUpperCase()
+  const isHighVol = riskStr === 'HIGH' || riskStr === 'VERY_HIGH'
   if (isHighVol) {
     console.warn(`[CircuitBreaker] Layer3: market risk ${marketRisk?.risk_level}, reducing max position to ${(cc.highVolReducedPosPct * 100).toFixed(0)}%`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
@@ -367,8 +368,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
         try {
           const n = typeof s.note === 'string' ? JSON.parse(s.note) : s.note
           const entry = n?.entry_price ?? s.price
-          if (s.price < entry) lossCount++
-        } catch { /* skip */ }
+          if (entry > 0 && s.price < entry) lossCount++
+        } catch {
+          // Malformed note JSON — conservatively count as loss (defensive)
+          if (s.price > 0) lossCount++
+        }
       }
       if (lossCount >= 3) {
         console.warn(`[CircuitBreaker] Layer5 HALT: ${lossCount}/${recentSells.length} 近期交易虧損，暫停掛單`)

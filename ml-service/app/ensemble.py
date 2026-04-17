@@ -495,7 +495,7 @@ def rank_to_signal(
 
     # Forecast: approximate from rank position
     # rank 0.8 → top 20% → historically ~3-5% above market
-    forecast_pct = round((avg_rank - 0.5) * 0.10, 4)  # linear approx
+    forecast_pct = round(max(-0.05, min(0.05, (avg_rank - 0.5) * 0.10)), 4)
 
     atr_val = max(atr, current_price * 0.01)
 

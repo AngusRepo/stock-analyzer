@@ -394,7 +394,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.drop("stock_id", strict=False)
         df = df.sort(["symbol", "date"])
         return df
@@ -435,7 +435,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.drop("stock_id", strict=False)
         df = df.sort(["symbol", "date"])
         return df
@@ -475,7 +475,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.sort(["symbol", "date"])
         return df
 

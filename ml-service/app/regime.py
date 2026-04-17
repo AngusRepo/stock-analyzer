@@ -256,7 +256,8 @@ class RegimeDetector:
 def build_market_feature_matrix(market_env: dict | None) -> np.ndarray | None:
     """
     從 market_env.history 建立供 HMM 訓練的特徵矩陣
-    Returns shape (n_days, 4) or None
+    Returns shape (n_days, 6) or None.
+    Features: [ret_1d, ret_5d, risk_score, bias_20d, abs_ret_1d, realized_vol_3d]
     """
     if not market_env:
         return None
@@ -289,7 +290,7 @@ def build_market_feature_matrix(market_env: dict | None) -> np.ndarray | None:
 
 
 def get_current_market_features(market_env: dict | None) -> np.ndarray | None:
-    """從 market_env 取當前（最新一天）的 4 維特徵向量"""
+    """從 market_env 取當前（最新一天）的 6 維特徵向量（與 build_market_feature_matrix 對齊）"""
     if not market_env:
         return None
     history = market_env.get("history", {})

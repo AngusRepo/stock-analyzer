@@ -161,7 +161,7 @@ def run_kalman_filter(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) 
         preds_test.append(float(x_nx[0, 0]))
     dir_acc = _direction_accuracy(prices[-test_size:], np.array(preds_test))
 
-    pct        = (forecast_vals[4] - prices[-1]) / prices[-1]
+    pct        = (forecast_vals[4] - prices[-1]) / prices[-1] if len(forecast_vals) > 4 else 0.0
     std        = sigma_obs
     confidence = min(0.88, max(0.35, dir_acc * (1.0 + abs(pct) * 5)))
 
@@ -238,7 +238,7 @@ def run_dlinear(prices: np.ndarray, horizon: int = 14) -> ModelPrediction:
         actual_test.append(float(prices[n - test_size + i]))
 
     dir_acc    = _direction_accuracy(np.array(actual_test), np.array(preds_test)) if len(preds_test) > 3 else 0.5
-    pct        = (forecast_vals[4] - prices[-1]) / prices[-1]
+    pct        = (forecast_vals[4] - prices[-1]) / prices[-1] if len(forecast_vals) > 4 else 0.0
     std        = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
     confidence = min(0.88, max(0.35, dir_acc * (1 + abs(pct) * 4)))
 
@@ -480,8 +480,12 @@ def run_patchtst(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> Mo
 
     scaler  = StandardScaler()
     X_train = scaler.fit_transform(X_arr[:split])
-    X_test  = scaler.transform(X_arr[split:]) if split < len(X_arr) else X_train[:1]
-    y_test  = y_arr[split:] if split < len(X_arr) else y_arr[:1]
+    if split < len(X_arr):
+        X_test = scaler.transform(X_arr[split:])
+        y_test = y_arr[split:]
+    else:
+        X_test = np.empty((0, X_arr.shape[1]))
+        y_test = np.array([])
 
     model = MLPClassifier(
         hidden_layer_sizes=(32, 16), max_iter=300,
@@ -668,13 +672,13 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         dir_acc   = float(model.score(X_test, y_test)) if len(X_test) > 0 else 0.5
         proba     = model.predict_proba(X_latest.reshape(1, -1))[0]
-        up_prob   = float(proba[1])
+        up_prob   = float(proba[1]) if len(proba) > 1 else 0.5
         direction = "up" if up_prob > 0.5 else "down"
         confidence = max(up_prob, 1 - up_prob)
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -730,13 +734,13 @@ def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         dir_acc   = float(model.score(X_test, y_test)) if len(X_test) > 0 else 0.5
         proba     = model.predict_proba(X_latest.reshape(1, -1))[0]
-        up_prob   = float(proba[1])
+        up_prob   = float(proba[1]) if len(proba) > 1 else 0.5
         direction = "up" if up_prob > 0.5 else "down"
         confidence = max(up_prob, 1 - up_prob)
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -800,7 +804,7 @@ def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -878,7 +882,7 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
         pct           = (up_prob - 0.5) * 2 * 0.05
         forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:])))
+        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
         last_date     = datetime.now()
         dates         = _add_trading_days(last_date, horizon)
         forecasts     = _make_forecast_points(forecast_vals, std, dates)
@@ -1033,7 +1037,7 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
     else:
         dir_acc = 0.5
 
-    up_prob    = float(proba_lat[1])
+    up_prob    = float(proba_lat[1]) if len(proba_lat) > 1 else 0.5
     direction  = "up" if up_prob > 0.5 else "down"
     confidence = max(up_prob, 1 - up_prob)
 

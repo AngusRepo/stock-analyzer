@@ -154,7 +154,7 @@ async def _http_batch(
     """
     url = f"{_ML_SERVICE_URL}{endpoint}"
     sem = asyncio.Semaphore(concurrency)
-    results: list[dict] = [{}] * len(payloads)
+    results: list[dict] = [{} for _ in payloads]
 
     async def run(idx: int, p: dict):
         async with sem:

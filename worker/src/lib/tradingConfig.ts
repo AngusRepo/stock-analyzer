@@ -477,5 +477,21 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('barrier.upperMult must be 0.5-10')
   if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)
     errors.push('barrier.lowerMult must be 0.5-10')
+  // Cross-field: drawdownScaleStart must be < drawdownHalt (otherwise MDD formula
+  // produces NaN/Infinity due to negative denominator)
+  const cc = config.circuit
+  if (cc.drawdownScaleStart != null && cc.drawdownHalt != null) {
+    if (cc.drawdownScaleStart >= cc.drawdownHalt)
+      errors.push(`drawdownScaleStart (${cc.drawdownScaleStart}) must be < drawdownHalt (${cc.drawdownHalt})`)
+  }
+  // mddMultFloor sanity (FinLab formula: 0 = full halt, 1 = no scaling)
+  if (cc.mddMultFloor != null && (cc.mddMultFloor < 0.05 || cc.mddMultFloor > 0.95))
+    errors.push('mddMultFloor must be 0.05-0.95')
+  // Confidence clip: lo must be < hi
+  const l2 = (config as any).L2_formula
+  if (l2?.confidence_effective_clip_lo != null && l2?.confidence_effective_clip_hi != null) {
+    if (l2.confidence_effective_clip_lo >= l2.confidence_effective_clip_hi)
+      errors.push(`confidence clip lo (${l2.confidence_effective_clip_lo}) must be < hi (${l2.confidence_effective_clip_hi})`)
+  }
   return errors
 }

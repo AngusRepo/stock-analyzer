@@ -84,7 +84,7 @@ class ConformalCalibrator:
             # ratio > 1 表示當前 interval 比中位數寬 → 不確定性偏高
             width_ratio = interval_width / median_residual
             # 映射：ratio=1 → penalty=1.0, ratio=2 → penalty=0.7, ratio=3+ → penalty=0.5
-            uncertainty_penalty = max(0.5, 1.0 - (width_ratio - 1.0) * 0.15)
+            uncertainty_penalty = max(0.5, min(1.0, 1.0 - (width_ratio - 1.0) * 0.15))
         else:
             uncertainty_penalty = 1.0
 

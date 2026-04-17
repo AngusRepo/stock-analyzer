@@ -108,18 +108,18 @@ def train_meta_learner_oof(
                               use_label_encoder=False, eval_metric="logloss",
                               random_state=42, verbosity=0)
             m.fit(X_tr, y_tr); fold_models["XGBoost"] = m
-        except Exception: pass
+        except Exception as e: logger.warning(f"[Stacking] XGBoost OOF fold failed: {e}")
 
         try:
             m = CatBoostClassifier(iterations=80, depth=4, learning_rate=0.05,
                                    loss_function="Logloss", random_seed=42, verbose=0)
             m.fit(X_tr, y_tr); fold_models["CatBoost"] = m
-        except Exception: pass
+        except Exception as e: logger.warning(f"[Stacking] CatBoost OOF fold failed: {e}")
 
         try:
             m = ExtraTreesClassifier(n_estimators=80, max_depth=5, **_simple_kwargs)
             m.fit(X_tr, y_tr); fold_models["ExtraTrees"] = m
-        except Exception: pass
+        except Exception as e: logger.warning(f"[Stacking] ExtraTrees OOF fold failed: {e}")
 
         # LightGBM：輕量版 OOF
         try:
@@ -130,7 +130,7 @@ def train_meta_learner_oof(
                 random_state=42, verbose=-1,
             )
             m.fit(X_tr, y_tr); fold_models["LightGBM"] = m
-        except Exception: pass
+        except Exception as e: logger.warning(f"[Stacking] LightGBM OOF fold failed: {e}")
 
         # ── 對每個驗證樣本建立 meta-features ────────────────────────────────
         from .models import ModelPrediction

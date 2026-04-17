@@ -233,8 +233,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
       const haltConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
       return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: haltConf, sellConfThreshold: haltConf }
     } else if (drawdown > cc.drawdownScaleStart) {
-      // 連續調控：drawdown drawdownScaleStart ~ drawdownHalt 之間逐步縮減部位（Sprint 4-1 wire）
-      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (1 - drawdown))
+      // CPPI-style linear scaling (Black & Perold 1992 JEDC):
+      // mult=1.0 at drawdownScaleStart, mult=0.0 at drawdownHalt, linear between.
+      // Replaces FinLab formula M=(ε-DD)/(1-DD) which was dominated by mddMultFloor
+      // across the entire 3%-15% range (effectively a step function, not smooth).
+      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (cc.drawdownHalt - cc.drawdownScaleStart))
       const adjustedPosPct = cc.maxPositionPct * mddMultiplier
       // Phase 2: SCALE 階段也用 effective baseline+delta，drawdown 過半才額外加嚴
       const adjustedConf = drawdown > cc.drawdownHalt * 0.5
@@ -246,6 +249,9 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   }
 
   // Layer 2: 模型近期準確率 < lowAccuracyThreshold → 提高信心門檻
+  // TODO(M15): Layers 2-7 use early-return → Layer 2 firing masks Layers 3-7.
+  // A more robust design would chain all layers and take the strictest result.
+  // Current ordering: 1(MDD)→2(accuracy)→3(risk)→4(breadth)→6(momentum)→7(streak)→5(losses)
   // Phase 2 fix: 改讀 ml:adaptive_params.recent_accuracy_30d (single source of truth)
   // 之前自己 SQL 算 over 20 days 算出 18.6%，跟 adaptive 60% 差距大
   let recentAcc = 0.5
@@ -268,7 +274,7 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     const accuracyRow = await db.prepare(`
       SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
       FROM predictions
-      WHERE generated_at >= datetime('now', '-20 days')
+      WHERE generated_at >= datetime('now', '-30 days')
       AND direction_correct IN (0, 1)
     `).first<any>()
     recentAcc = accuracyRow?.acc ?? 0.5
@@ -285,7 +291,8 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     'SELECT risk_level FROM market_risk ORDER BY date DESC LIMIT 1'
   ).first<any>()
 
-  const isHighVol = marketRisk?.risk_level === 'HIGH' || marketRisk?.risk_level === 'VERY_HIGH'
+  const riskStr = (marketRisk?.risk_level ?? '').toString().toUpperCase()
+  const isHighVol = riskStr === 'HIGH' || riskStr === 'VERY_HIGH'
   if (isHighVol) {
     console.warn(`[CircuitBreaker] Layer3: market risk ${marketRisk?.risk_level}, reducing max position to ${(cc.highVolReducedPosPct * 100).toFixed(0)}%`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
@@ -296,8 +303,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     'SELECT bull_alignment_pct, advance_ratio FROM market_breadth ORDER BY date DESC LIMIT 1'
   ).first<any>()
   const bullAlignmentThreshold = cfg.circuit.bullAlignmentThreshold ?? 20
-  if (breadth?.bull_alignment_pct != null && breadth.bull_alignment_pct < bullAlignmentThreshold) {
-    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%, reducing position`)
+  if (breadth?.bull_alignment_pct == null) {
+    console.warn('[CircuitBreaker] Layer4: market_breadth missing or NULL — skipping breadth check')
+  } else if (breadth.bull_alignment_pct < bullAlignmentThreshold) {
+    const advRatio = breadth.advance_ratio != null ? ` adv_ratio=${Number(breadth.advance_ratio).toFixed(2)}` : ''
+    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%${advRatio}, reducing position`)
     return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
   }
 
@@ -367,8 +377,11 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
         try {
           const n = typeof s.note === 'string' ? JSON.parse(s.note) : s.note
           const entry = n?.entry_price ?? s.price
-          if (s.price < entry) lossCount++
-        } catch { /* skip */ }
+          if (entry > 0 && s.price < entry) lossCount++
+        } catch {
+          // Malformed note JSON — conservatively count as loss (defensive)
+          if (s.price > 0) lossCount++
+        }
       }
       if (lossCount >= 3) {
         console.warn(`[CircuitBreaker] Layer5 HALT: ${lossCount}/${recentSells.length} 近期交易虧損，暫停掛單`)

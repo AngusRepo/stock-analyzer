@@ -2512,6 +2512,13 @@ export default {
         const signal = await fetchAndStoreUSLeading(env)
         return signal ? `SOX ${((signal.sox_return ?? 0) * 100).toFixed(1)}% | ${signal.sentiment}` : '抓取失敗'
       })
+    } else if (cron === '45 22 * * SUN-THU') {
+      // 06:45 TW (=UTC Sun-Thu 22:45) → News Analyst (after us-leading finishes)
+      runWithLog('news-analyst', async () => {
+        const { runDailyNewsAnalysis } = await import('./lib/newsAnalyst')
+        const report = await runDailyNewsAnalysis(env as any)
+        return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
+      })
     } else if (cron === '50 23 * * SUN-THU') {
       runWithLog('morning-briefing', async () => {
         const { generateMorningBriefing } = await import('./lib/morningBriefing')

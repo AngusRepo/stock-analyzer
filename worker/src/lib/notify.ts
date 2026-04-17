@@ -225,3 +225,132 @@ export function formatDailySummary(
     `> 📊 今日交易 ${trades} 筆\n` +
     `> ⚠️ 最大回撤 ${ddText} | Sharpe ${sharpeText}`
 }
+
+// ─── Three-section daily embed (actionable / holdings / summary) ─────────────
+//
+// Rationale: existing `formatDailySummary()` is a single markdown blob that
+// mixes P/L, holdings and trade events. For fast scan-ability (see Sweller 1988
+// on cognitive load, and F-pattern reading research), the daily digest should
+// separate:
+//   1. Actionable Signals — new buy candidates you might want to act on
+//   2. Holdings            — current positions and their P/L
+//   3. Summary             — account totals + momentum zone
+//
+// Embed color reflects the momentum zone (RED/YELLOW/GREEN), so a glance at
+// the webhook tells you the risk posture before you read a single number.
+
+export interface ActionableSignal {
+  symbol: string
+  name: string
+  signal: string             // e.g. 'BUY', 'STRONG_BUY'
+  score: number | null       // composite score
+  confidence: number | null  // model confidence [0, 1]
+  reason: string
+}
+
+export interface HoldingSnapshot {
+  symbol: string
+  name: string
+  shares: number
+  entry_price: number
+  current_price: number
+  pnl_pct: number
+  trailing_stop: number | null
+  tp1_price: number | null
+  days_held: number | null
+}
+
+export interface DailySummaryMetrics {
+  total_value: number
+  cash: number
+  daily_pnl_pct: number
+  cumulative_pnl_pct: number
+  trades_today: number
+  max_drawdown: number | null
+  sharpe: number | null
+  momentum_zone?: 'RED' | 'YELLOW' | 'GREEN'
+  momentum_percentile?: number | null
+}
+
+/** Discord embed color per momentum zone. */
+const ZONE_COLOR: Record<'RED' | 'YELLOW' | 'GREEN', number> = {
+  RED: 0xe74c3c,
+  YELLOW: 0xf1c40f,
+  GREEN: 0x2ecc71,
+}
+
+/** Pad a symbol string to fixed width for monospace column alignment. */
+function pad(s: string, width: number): string {
+  const len = [...s].length
+  return len >= width ? s : s + ' '.repeat(width - len)
+}
+
+/** Build a single Discord Embed with 3 fields: actionable / holdings / summary. */
+export function buildTripartiteDailyEmbed(args: {
+  date: string
+  actionable: ActionableSignal[]
+  holdings: HoldingSnapshot[]
+  summary: DailySummaryMetrics
+}): DiscordEmbed {
+  const { date, actionable, holdings, summary } = args
+  const zone = summary.momentum_zone ?? 'GREEN'
+  const color = ZONE_COLOR[zone]
+
+  // ── Actionable section ────────────────────────────────────────────────────
+  const actionableText = actionable.length === 0
+    ? '_今日無新買訊_'
+    : actionable.slice(0, 8).map(s => {
+        const score = s.score != null ? ` 分 ${Math.round(s.score)}` : ''
+        const conf = s.confidence != null ? ` ${Math.round(s.confidence * 100)}%` : ''
+        return '`' + pad(s.symbol, 6) + '` ' + s.signal + score + conf +
+               (s.reason ? ` — ${s.reason.slice(0, 40)}` : '')
+      }).join('\n')
+
+  // ── Holdings section ──────────────────────────────────────────────────────
+  const holdingsText = holdings.length === 0
+    ? '_目前空倉_'
+    : holdings.map(h => {
+        const pnlSign = h.pnl_pct >= 0 ? '+' : ''
+        const pnlStr = `${pnlSign}${(h.pnl_pct * 100).toFixed(1)}%`
+        const tsStr = h.trailing_stop != null ? ` 停 ${h.trailing_stop.toFixed(1)}` : ''
+        const tpStr = h.tp1_price != null ? ` T1 ${h.tp1_price.toFixed(1)}` : ''
+        const dStr = h.days_held != null ? ` (${h.days_held}d)` : ''
+        return '`' + pad(h.symbol, 6) + '` ' +
+               `${h.shares}股 @ ${h.entry_price.toFixed(1)}→${h.current_price.toFixed(1)} ` +
+               `${pnlStr}${tsStr}${tpStr}${dStr}`
+      }).join('\n')
+
+  // ── Summary section ───────────────────────────────────────────────────────
+  const todaySign = summary.daily_pnl_pct >= 0 ? '+' : ''
+  const cumSign = summary.cumulative_pnl_pct >= 0 ? '+' : ''
+  const ddStr = summary.max_drawdown != null
+    ? `${(summary.max_drawdown * 100).toFixed(1)}%`
+    : 'N/A'
+  const sharpeStr = summary.sharpe != null ? summary.sharpe.toFixed(2) : 'N/A'
+  const zoneEmoji = zone === 'RED' ? '🔴' : zone === 'YELLOW' ? '🟡' : '🟢'
+  const zoneLine = `${zoneEmoji} Momentum Zone: ${zone}` +
+    (summary.momentum_percentile != null
+      ? ` (P${(summary.momentum_percentile * 100).toFixed(0)})`
+      : '')
+
+  const summaryText = [
+    `💰 總資產 NT$${Math.round(summary.total_value).toLocaleString()} ` +
+      `(現金 NT$${Math.round(summary.cash).toLocaleString()})`,
+    `📈 今日 ${todaySign}${(summary.daily_pnl_pct * 100).toFixed(2)}% | ` +
+      `累計 ${cumSign}${(summary.cumulative_pnl_pct * 100).toFixed(2)}%`,
+    `📊 今日交易 ${summary.trades_today} 筆 | MDD ${ddStr} | Sharpe ${sharpeStr}`,
+    zoneLine,
+  ].join('\n')
+
+  return {
+    title: `📊 StockVision Daily — ${date}`,
+    color,
+    fields: [
+      { name: '🎯 Actionable Signals', value: actionableText.slice(0, 1024), inline: false },
+      { name: '📦 Holdings',           value: holdingsText.slice(0, 1024),   inline: false },
+      { name: '📈 Summary',            value: summaryText.slice(0, 1024),    inline: false },
+    ],
+    footer: { text: 'StockVision • 三段式 v1 (zone-aware)' },
+    timestamp: new Date().toISOString(),
+  }
+}

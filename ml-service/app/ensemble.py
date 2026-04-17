@@ -157,7 +157,7 @@ def weighted_vote(
 
     # ── 加權方向投票 ──────────────────────────────────────────────────────────
     up_weight = sum(w for p, w in zip(predictions, norm_weights) if p.direction == "up")
-    down_weight = 1.0 - up_weight
+    down_weight = sum(w for p, w in zip(predictions, norm_weights) if p.direction != "up")
 
     # ── 加權平均預測漲跌幅 ────────────────────────────────────────────────────
     weighted_pct = sum(p.forecast_pct * w for p, w in zip(predictions, norm_weights))
@@ -315,8 +315,9 @@ def weighted_vote(
     for p, w in zip(predictions, norm_weights):
         if p.forecasts:
             mid = p.forecasts[4] if len(p.forecasts) > 4 else p.forecasts[-1]
-            lows.append(mid["lower95"] * w)
-            highs.append(mid["upper95"] * w)
+            if isinstance(mid, dict) and "lower95" in mid and "upper95" in mid:
+                lows.append(mid["lower95"] * w)
+                highs.append(mid["upper95"] * w)
     forecast_range = {
         "low": round(sum(lows), 2) if lows else current_price * 0.95,
         "high": round(sum(highs), 2) if highs else current_price * 1.05,
@@ -452,6 +453,7 @@ def rank_to_signal(
         avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
     else:
         avg_rank = float(np.mean(list(rank_scores.values())))
+    scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
 
     # Consensus: fraction of models agreeing on dominant direction (symmetric)
@@ -493,7 +495,7 @@ def rank_to_signal(
 
     # Forecast: approximate from rank position
     # rank 0.8 → top 20% → historically ~3-5% above market
-    forecast_pct = round((avg_rank - 0.5) * 0.10, 4)  # linear approx
+    forecast_pct = round(max(-0.05, min(0.05, (avg_rank - 0.5) * 0.10)), 4)
 
     atr_val = max(atr, current_price * 0.01)
 

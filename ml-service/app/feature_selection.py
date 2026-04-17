@@ -71,7 +71,11 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
         }
 
     # Spearman rank-order correlation
-    corr_matrix, _ = stats.spearmanr(X_valid)
+    # Guard: drop rows with any NaN before computing (otherwise spearmanr
+    # silently drops different rows per column → incomparable correlations)
+    nan_row_mask = ~np.isnan(X_valid).any(axis=1)
+    X_clean = X_valid[nan_row_mask] if nan_row_mask.sum() >= 20 else X_valid
+    corr_matrix, _ = stats.spearmanr(X_clean)
     if corr_matrix.ndim == 0:
         corr_matrix = np.array([[1.0]])
 
@@ -211,6 +215,8 @@ def target_permutation(
     actual_rounds = 0
 
     for perm_i in range(max_permutations):
+        # Full random permutation per Altmann et al. (2010) — breaks ALL
+        # feature-target associations including cross-date rank structure.
         y_shuffled = rng.permutation(y_train)
         null_model = _train_lgbm_regression(X_train, y_shuffled, X_val, y_val,
                                              seed=42 + perm_i + 1)

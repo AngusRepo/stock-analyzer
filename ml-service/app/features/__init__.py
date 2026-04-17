@@ -330,6 +330,10 @@ def build_feature_matrix(
                 _clip_expr(_safe_div(pl.col("margin_balance"), vol_close), 0.0, 10.0)
                 .alias("margin_ratio")
             )
+            # NOTE: shift(5) assumes 5 consecutive rows = 5 trading days. If data has
+            # gaps (holidays, trading halts), the actual calendar span may differ.
+            # Accepted tradeoff: date-aware shift requires date join (complex + slow).
+            # Models are trained on this definition, so changing it requires retrain.
             df = df.with_columns(
                 _clip_expr(
                     _safe_div(
@@ -767,6 +771,10 @@ def build_feature_matrix(
         ])
 
     # ── 13. Rolling Z-score normalization ────────────────────────────────────
+    # Only raw-scale features (returns, volatility, chip flows, bias) are Z-scored.
+    # RSI/MACD/KD are intentionally EXCLUDED — they are already bounded by their
+    # own formulas (RSI ∈ [0,100], MACD is differenced). Z-scoring them would be
+    # double normalization and attenuate their predictive signal.
     ZSCORE_COLS = [
         "return_1d", "return_3d", "return_5d", "return_10d",
         "volatility_5d", "volatility_20d",
@@ -777,21 +785,43 @@ def build_feature_matrix(
     # Save raw ATR before Z-score for triple barrier
     atr14_raw = df["atr14"].to_numpy().astype(np.float64) if "atr14" in df.columns else None
 
+    _zscore_const_cols = []
     for col in ZSCORE_COLS:
         if col in df.columns:
             roll_mean = pl.col(col).rolling_mean(60)
-            roll_std = pl.col(col).rolling_std(60).clip(1e-8, None)
+            roll_std_raw = pl.col(col).rolling_std(60)
+            # Track columns where std ≈ 0 in the latest window (constant feature
+            # → Z-score becomes ±5 binary after clip, losing granularity)
+            latest_std = df.select(roll_std_raw).to_series()[-1] if len(df) > 60 else None
+            if latest_std is not None and latest_std < 1e-6:
+                _zscore_const_cols.append(col)
+            roll_std = roll_std_raw.clip(1e-8, None)
             df = df.with_columns(
                 ((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0).alias(col)
             )
+    if _zscore_const_cols:
+        print(f"[Features] Z-score: {len(_zscore_const_cols)} constant-variance cols "
+              f"(will be ±5 binary): {_zscore_const_cols[:5]}")
 
-    # ── 14. Forward-fill + fill null (features only, not targets) ────────────
+    # ── 14. NaN handling (features only, not targets) ────────────────────────
+    # forward_fill: carry last known value forward (stale but not fictional).
+    # fill_null: remaining NaN (start of series) → per-column median, NOT 0.0.
+    #   Zero is a false signal for any real feature (e.g. MA5=0 is impossible
+    #   for a stock with price > 0). Median is neutral and doesn't create
+    #   artificial split patterns in tree models.
+    #   Reference: Qlib (Microsoft) CSZFillna uses cross-sectional mean;
+    #   we use per-column median (more robust to outliers).
     target_cols = ["target_5d", "target_dir"]
     feature_cols = [c for c in df.columns if c not in target_cols and c != "date"]
-    # Single-pass forward_fill + fill_null for all feature columns
     df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
-    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_null(0.0))
-    df = df.with_columns(pl.exclude(target_cols + ["date"]).fill_nan(0.0))
+    median_fills = []
+    for col in feature_cols:
+        if col in df.columns:
+            col_median = df[col].drop_nulls().drop_nans().median()
+            fill_val = float(col_median) if col_median is not None else 0.0
+            median_fills.append(pl.col(col).fill_null(fill_val).fill_nan(fill_val))
+    if median_fills:
+        df = df.with_columns(median_fills)
 
     # ── 15. Target variables ─────────────────────────────────────────────────
     df = df.with_columns(

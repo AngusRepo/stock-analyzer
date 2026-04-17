@@ -307,14 +307,24 @@ Real Trading (future)
 
 ## 4-Phase 實作計畫
 
-| Phase | 內容 | 行為改變 | Rollback |
-|-------|------|---------|---------|
-| **1. Extract** | 拆 7 layer 到獨立檔案 + riskTypes + riskChain | **零改變**（保持早期返回） | KV flag `risk:use_chain=v1` |
-| **2. Chain** | 移除早期返回，全跑 + merge | **更保守**（多 layer 可同時觸發） | KV flag `risk:use_chain=v0` 回舊版 |
-| **3. Expand** | 加 Level 1/3/4 + P8/P9 + audit table | 新增控制層 | 各 layer 獨立 feature flag |
-| **4. Real** | 接 validateOrder 到 Shioaji proxy | 真實下單 | `riskConfig.system.killSwitch=true` |
+| Phase | 內容 | 行為改變 | Rollback | 工作量 |
+|-------|------|---------|---------|--------|
+| **1. Extract** | 拆 7 layer 到獨立檔案 + riskTypes + riskChain | **零改變**（保持早期返回） | KV flag `risk:use_chain=v1` | 1 天 |
+| **2. Chain** | 移除早期返回，全跑 + merge | **更保守**（多 layer 可同時觸發） | KV flag `risk:use_chain=v0` 回舊版 | 1 天 |
+| **3. Expand** | 加 Level 1/3/4 + P8/P9 + audit table | 新增控制層 | 各 layer 獨立 feature flag | 2-3 天 |
+| **4. Real** | Proxy 加 `activate_ca` + `POST /order`；Worker 改 call proxy | 真實下單 | `riskConfig.system.killSwitch=true` | 1 天 |
 
-**Phase 1-2 可在一個 sprint 完成（~3 天）**。Phase 3 另一個 sprint（~3 天）。Phase 4 需要 broker API 整合。
+**總計 ~5-6 天可完成 paper → real 過渡。**
+
+### Phase 4 說明
+
+Shioaji proxy **已經 deploy 在 Cloud Run**，目前開放查價權限（`GET /quote`），paper trading 用的是**真實市價**。過渡到真實交易只需要：
+
+1. Shioaji proxy 加 `activate_ca`（電子憑證啟用）+ 新增 `POST /order` endpoint
+2. Worker 的 `executeBuy` / `executeSell` 從「寫 D1 `paper_orders`」改成「call proxy `/order`」
+3. `validateOrder()` 的全部 Level 4 gate 接在 call 之前
+
+**不需要重新整合 broker API** — broker 已接好，差的只是開啟下單功能 + 一個 endpoint。
 
 ---
 
@@ -325,7 +335,7 @@ Real Trading (future)
 | Pre-trade order validation | Level 4 validateOrder | Phase 3 新增 |
 | Real-time position monitoring | Level 2 P1/P8/P9 | P1 有，P8/P9 Phase 3 |
 | Kill switch | Level 1 S1 | Phase 3 新增 |
-| Market data quality | Level 1 S2 | Phase 3 新增 |
+| Market data quality | Level 1 S2（Shioaji proxy 已提供 real-time quotes）| Phase 3 新增 staleness check |
 | Post-trade audit | risk_audit_log | Phase 3 新增 |
 | Exchange circuit breakers | N/A（台交所自己有） | 不需要 |
 

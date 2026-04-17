@@ -341,7 +341,11 @@ class BacktestDataset:
             WHERE {' AND '.join(base_where)}
         """
         rows = d1_client.query(sql, base_params)
-        df = pl.DataFrame(rows) if rows else pl.DataFrame()
+        # 2026-04-18 #32 dry-run fix: delisted_date is sparse (mostly null with
+        # occasional date strings) → default schema infer crashes with
+        # "could not append value '2026-01-22' of type str". Set infer_schema_length=None
+        # to let Polars scan all rows before deciding the column's dtype.
+        df = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
         # Large subset path: filter in Polars after fetching full tradable universe
         if symbols and len(symbols) > 80 and not df.is_empty():

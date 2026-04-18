@@ -285,24 +285,17 @@ async def trigger_universal_retrain(
     if is_monthly:
         logger.info("[retrain/universal] Monthly detected (day 1-7) — selection will run in Modal orchestrator")
 
-    # Read feature_pool.json for prep column filtering
-    # 月度: 不過濾 — selection 需要看全量 features 才能重新評估
-    # 非月度: 用 pool 過濾 — 只訓練 active features 即可
+    # 2026-04-18 A1 fix: prep 一律寫全 106 features，不管月度/非月度。
+    # 原邏輯：非月度用 feature_pool.json.active (46) 過濾 → 嚴重 bug：
+    #   1. FT-T `skip_feature_pool=True` 救不回（資料源頭已砍）→ FT-T 只吃 46，違反 project_optimization_queue 設計
+    #   2. Walk-forward future leak：用「今天的 pool」套到 window 0 (2024) 訓練 = feature 選擇已看過未來
+    #   3. 每次 Kneedle rerun 改 active 數 → FT-T 訓練欄位飄來飄去
+    # 新邏輯：prep 寫 canonical 全集 (106)，train 端有 skip_feature_pool 開關
+    #   - Tree models (skip_feature_pool=False): train 時 reload pool 過濾到 46
+    #   - FT-T (skip_feature_pool=True): 真的吃全 106
+    # Cost: npz ~2.3x 大小 (~825MB → ~1.9GB total 5 batches) — GCS 儲存可接受
     active_features = None
-    if is_monthly:
-        logger.info("[retrain/universal] Monthly → skip feature pool filter (selection needs full 106 features)")
-    else:
-        try:
-            _bucket = _gcs.Client().bucket("stockvision-models")
-            _pool_blob = _bucket.blob("universal/feature_pool.json")
-            if _pool_blob.exists():
-                _pool = _json.loads(_pool_blob.download_as_text())
-                active_features = _pool.get("active")
-                logger.info(f"[retrain/universal] Feature pool loaded: {len(active_features)} active features")
-            else:
-                logger.info("[retrain/universal] No feature_pool.json found, using all features")
-        except Exception as e:
-            logger.warning(f"[retrain/universal] Failed to load feature pool (using all): {e}")
+    logger.info("[retrain/universal] A1 fix: prep writes full 106 features, train-side pool filter decides per-model")
 
     # ── 3. Bulk load per-stock data (chunked — CF D1 REST API binding limit ~100) ──
     D1_CHUNK = 80

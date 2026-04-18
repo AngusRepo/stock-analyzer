@@ -218,6 +218,77 @@ async function readMaxRounds(kv?: KVNamespace): Promise<number> {
   }
 }
 
+// ─── 2026-04-18 #39: ml-controller batch migration ────────────────────────────
+
+export interface BatchDebateCandidate {
+  symbol: string
+  stock_name: string
+  signal: string
+  confidence: number
+  reasoning: string
+  us_context?: string
+  taifex_context?: string
+  stock_profile?: StockProfile
+  cache_key_date?: string
+}
+
+/**
+ * Call ml-controller POST /debate/buy_batch — runs all debates in parallel
+ * inside ml-controller (asyncio.gather), returning a Map<symbol, result>.
+ *
+ * This solves the Worker waitUntil 30s limit: instead of N sequential LLM
+ * rounds (M5 budget overflow with >3 candidates), Worker makes ONE HTTP call
+ * and ml-controller fans out server-side.
+ *
+ * Returns null if ML_CONTROLLER_URL missing or endpoint unreachable — caller
+ * should fall back to inline runBuyDebate loop.
+ */
+export async function runBuyDebateBatchViaController(
+  candidates: BatchDebateCandidate[],
+  env: { ML_CONTROLLER_URL?: string; ML_CONTROLLER_SECRET?: string },
+  concurrent: number = 5,
+): Promise<Map<string, DebateResult> | null> {
+  const url = env.ML_CONTROLLER_URL
+  if (!url || candidates.length === 0) return null
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  try {
+    const timeoutMs = Math.min(290_000, 60_000 + candidates.length * 20_000)
+    const resp = await fetch(`${url}/debate/buy_batch`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ candidates, concurrent }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!resp.ok) {
+      console.warn(`[Debate-Batch] ml-controller HTTP ${resp.status}`)
+      return null
+    }
+    const json = await resp.json() as any
+    const results = json?.results as any[] | undefined
+    if (!Array.isArray(results)) return null
+    const map = new Map<string, DebateResult>()
+    for (const r of results) {
+      if (!r || r.error) {
+        console.warn(`[Debate-Batch] ${r?.symbol ?? '?'} error: ${r?.error}`)
+        continue
+      }
+      map.set(r.symbol, {
+        verdict: r.verdict as DebateVerdict,
+        rounds: r.rounds ?? 0,
+        summary: r.summary ?? '',
+        llmSource: r.llm_source ?? 'ml-controller',
+        convictionScore: r.conviction_score ?? 60,
+      })
+    }
+    return map
+  } catch (e) {
+    console.warn(`[Debate-Batch] ml-controller call failed: ${e}`)
+    return null
+  }
+}
+
+
 export async function runBuyDebate(
   symbol: string,
   stockName: string,

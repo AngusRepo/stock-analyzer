@@ -11,7 +11,7 @@
 
 import { Hono, type Context } from 'hono'
 import { verifyJWT }  from '../lib/auth'
-import { runBuyDebate, type DebateResult, type StockProfile } from '../lib/debateTrader'
+import { runBuyDebate, runBuyDebateBatchViaController, type DebateResult, type StockProfile, type BatchDebateCandidate } from '../lib/debateTrader'
 import { sendDiscordNotification, formatTradeNotification, formatDailySummary } from '../lib/notify'
 import { getTradingConfig, type TradingConfig } from '../lib/tradingConfig'
 import type { Bindings, Variables } from '../types'
@@ -1435,6 +1435,59 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     console.warn('[MorningSetup] Quadrant query failed (non-fatal):', e)
   }
 
+  // ── 2026-04-18 #39: batch debate via ml-controller ─────────────────────────
+  // Worker waitUntil budget is ~30s (M5). With 3-5 candidates × 5-15s debate each,
+  // sequential inline runBuyDebate easily overflows → whole morning-setup
+  // silent-fails. Delegate to ml-controller /debate/buy_batch which runs all
+  // debates in parallel server-side (asyncio.gather). Worker sees ONE HTTP call.
+  //
+  // Fallback: if ml-controller missing or returns null, loop below uses inline
+  // runBuyDebate (old path, preserved for safety).
+  let batchDebateMap: Map<string, DebateResult> | null = null
+  try {
+    const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
+    const batchCands: BatchDebateCandidate[] = []
+    for (const rec of buyRecs) {
+      if (punishedSet.has(rec.symbol)) continue
+      if (cooldownSet.has(rec.symbol)) continue
+      const qi = symbolQuadrantMap.get(rec.symbol)
+      if (qi?.quadrant === 'Lagging') continue
+      if (qi?.quadrant === 'Weakening') continue   // Weakening 直接 DOWNGRADE，不進 debate
+      // Match inline logic's confidenceAdj
+      let confAdj = 0
+      if (qi?.quadrant === 'Leading' && qi.rs_momentum < 0) confAdj = -0.03
+      else if (qi?.quadrant === 'Improving') confAdj = -0.02
+      const adjConf = Math.max(0, rec.confidence + confAdj)
+      const profile = profileMap.get(rec.symbol)
+      batchCands.push({
+        symbol: rec.symbol,
+        stock_name: rec.name ?? rec.symbol,
+        signal: rec.signal,
+        confidence: adjConf,
+        reasoning: rec.reason ?? 'ML ensemble signal',
+        us_context: mergedUsContext || undefined,
+        taifex_context: taifexContextStr,
+        stock_profile: profile ? {
+          business_desc: profile.business_desc ?? undefined,
+          key_customers: profile.key_customers ?? undefined,
+          key_suppliers: profile.key_suppliers ?? undefined,
+        } : undefined,
+        cache_key_date: today,
+      })
+    }
+    if (batchCands.length > 0) {
+      console.log(`[Debate-Batch] dispatching ${batchCands.length} candidates to ml-controller`)
+      batchDebateMap = await runBuyDebateBatchViaController(batchCands, {
+        ML_CONTROLLER_URL: env.ML_CONTROLLER_URL,
+        ML_CONTROLLER_SECRET: env.ML_CONTROLLER_SECRET,
+      })
+      console.log(`[Debate-Batch] received ${batchDebateMap?.size ?? 'null'} verdicts`)
+    }
+  } catch (e) {
+    console.warn(`[Debate-Batch] unexpected error (falling back to inline): ${e}`)
+    batchDebateMap = null
+  }
+
   // Debate 篩選（含 T2 Quadrant Filter）
   const pendingBuys: PendingBuy[] = []
   for (const rec of buyRecs) {
@@ -1473,56 +1526,64 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       debateVerdict = 'DOWNGRADE'
       riskPct *= 0.5
       console.log(`[T2 Filter] ${rec.symbol} 直接 DOWNGRADE（Weakening 象限），跳過 Debate`)
-    } else if ((env as any).LOCAL_TUNNEL_URL || (env as any).AI || env.ANTHROPIC_API_KEY) {
-      // 正常 Debate 流程（Leading / Improving 象限）
+    } else if (batchDebateMap?.has(rec.symbol)) {
+      // ── 2026-04-18 #39: prefer batched result from ml-controller ──────
+      const d = batchDebateMap.get(rec.symbol)!
+      debateVerdict = d.verdict
+      if (d.convictionScore < 50) {
+        riskPct *= d.convictionScore / 50
+        console.log(`[Debate] ${rec.symbol} low conviction ${d.convictionScore} → riskPct × ${(d.convictionScore / 50).toFixed(2)} (batch)`)
+      }
+      if (debateVerdict === 'REJECT') {
+        console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT (batch)`)
+        continue
+      }
+      if (debateVerdict === 'DOWNGRADE') riskPct *= 0.5
+    } else if ((env as any).LOCAL_TUNNEL_URL || (env as any).AI || env.ANTHROPIC_API_KEY || (env as any).GEMINI_API_KEY) {
+      // ── Fallback: inline TS debate (used when ml-controller 未 deploy / 不可達) ─
       // Phase 4.5: 雙因子微調 — 象限 + Momentum 方向影響 confidence
       let confidenceAdj = 0
       if (qInfo) {
         if (qInfo.quadrant === 'Leading' && qInfo.rs_momentum < 0) {
-          confidenceAdj = -0.03 // Leading 但動能轉弱 → 追高風險
+          confidenceAdj = -0.03
         } else if (qInfo.quadrant === 'Improving') {
-          confidenceAdj = -0.02 // 方向對但趨勢未確立
+          confidenceAdj = -0.02
         }
-        // Leading+Mom≥0 → 0.00（最佳，基準）
         if (confidenceAdj !== 0) {
           console.log(`[T2 Adj] ${rec.symbol} ${qInfo.quadrant} mom=${qInfo.rs_momentum} → conf ${confidenceAdj > 0 ? '+' : ''}${confidenceAdj}`)
         }
       }
       const adjustedConfidence = Math.max(0, rec.confidence + confidenceAdj)
 
-      // M9 教訓：同一天同一支 debate 結果鎖定，重跑不重新 LLM 判斷
       const debateCacheKey = `paper:debate:${rec.symbol}:${today}`
-      const cachedDebate = await env.KV.get(debateCacheKey, 'json') as { verdict: string; summary: string } | null
+      const cachedDebate = await env.KV.get(debateCacheKey, 'json') as { verdict: string; summary: string; convictionScore?: number } | null
       if (cachedDebate) {
         debateVerdict = cachedDebate.verdict
-        console.log(`[Debate] ${rec.symbol} cached → ${debateVerdict}`)
+        console.log(`[Debate] ${rec.symbol} cached → ${debateVerdict} (inline fallback)`)
       } else {
         try {
-          // Prepend News Analyst context to usContextStr so debate agents see it
           const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
           const debate = await runBuyDebate(
             rec.symbol, rec.name ?? rec.symbol,
             rec.signal, adjustedConfidence,
             rec.reason ?? 'ML ensemble signal',
-            { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
+            { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, GEMINI_API_KEY: (env as any).GEMINI_API_KEY, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
             mergedUsContext || undefined,
             profileMap.get(rec.symbol),
             taifexContextStr,
           )
           debateVerdict = debate.verdict
-          // conviction score 影響 riskPct：低信念度 → 進一步縮減倉位
           if (debate.convictionScore < 50) {
-            riskPct *= debate.convictionScore / 50  // conv=25 → riskPct × 0.5
-            console.log(`[Debate] ${rec.symbol} low conviction ${debate.convictionScore} → riskPct × ${(debate.convictionScore / 50).toFixed(2)}`)
+            riskPct *= debate.convictionScore / 50
+            console.log(`[Debate] ${rec.symbol} low conviction ${debate.convictionScore} → riskPct × ${(debate.convictionScore / 50).toFixed(2)} (inline)`)
           }
-          // 快取 24h
           await env.KV.put(debateCacheKey, JSON.stringify({ verdict: debate.verdict, summary: debate.summary, convictionScore: debate.convictionScore }), { expirationTtl: 86400 })
         } catch (e) {
-          console.warn(`[Debate] ${rec.symbol} failed: ${e}`)
+          console.warn(`[Debate] ${rec.symbol} inline fallback failed: ${e}`)
         }
       }
       if (debateVerdict === 'REJECT') {
-        console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT`)
+        console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT (inline)`)
         continue
       }
       if (debateVerdict === 'DOWNGRADE') riskPct *= 0.5

@@ -749,6 +749,7 @@ def feature_selection_pipeline(payload: dict) -> dict:
             max_rounds=payload.get("max_rounds", 100),
             alpha=payload.get("alpha", 0.01),
             dry_run=payload.get("dry_run", False),
+            icir_weight=payload.get("icir_weight", 0.1),  # 2026-04-18 P2 #37: searchable
         )
     except Exception as e:
         import traceback

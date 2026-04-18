@@ -948,18 +948,25 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
             pooled = pooled.drop(drop_cols)
             print(f"[PrepBatch] Feature pool filter: kept {len(keep_cols)}, dropped {len(drop_cols)}")
 
-    # get_features uses target_rank (regression) by default
-    X, y, feature_names = get_features(pooled, target_col="target_rank")
-
-    # 取 dates（同步 drop_nulls filter）
+    # 2026-04-18 #32 walk-forward bug fix:
+    # Derive X / y / dates_arr from the SAME df_clean so .shape[0] aligned.
+    # Previous code: X from get_features() which drops on target_rank+target_5d,
+    # dates_arr from a separate df_clean dropping target_rank+target_5d+target_dir
+    # → X had 38K more rows than dates → walk-forward boolean mask crashed.
     available = [c for c in FEATURE_COLS if c in pooled.columns]
-    target_cols_to_keep = ["target_5d", "_date"]
-    if "target_rank" in pooled.columns:
-        target_cols_to_keep.append("target_rank")
+    select_cols = available + ["target_rank", "_date"]
+    if "target_5d" in pooled.columns:
+        select_cols.append("target_5d")
     if "target_dir" in pooled.columns:
-        target_cols_to_keep.append("target_dir")
-    df_clean = pooled.select(available + target_cols_to_keep).drop_nulls()
+        select_cols.append("target_dir")
+    df_clean = pooled.select(select_cols).drop_nulls()
+    X = df_clean.select(available).to_numpy()
+    y = df_clean["target_rank"].to_numpy()
     dates_arr = df_clean["_date"].to_numpy()
+    feature_names = available
+    assert len(X) == len(y) == len(dates_arr), (
+        f"prep alignment broken: X={len(X)} y={len(y)} dates={len(dates_arr)}"
+    )
 
     # 存 GCS npz
     bucket = _get_bucket()

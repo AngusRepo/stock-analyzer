@@ -464,9 +464,17 @@ def build_graph():
     g.add_node("gen_llm_reasons",   node_llm_reasons)
     g.add_node("write_d1",          node_write_d1)
 
+    # 2026-04-18 P2 #40: parallelize independent loaders.
+    # load_market_env and compute_sector_flow are independent of each other
+    # (and only need load_inputs.run_date which all nodes already have via state).
+    # Fan-out from load_inputs → both run concurrently → fan-in at build_payloads.
+    # Saves ~10-20s of sequential wait per pipeline.
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
-    g.add_edge("load_market_env",     "compute_sector_flow")
+    g.add_edge("load_inputs",         "compute_sector_flow")
+    # Both load_market_env and compute_sector_flow converge at build_payloads.
+    # LangGraph fan-in: build_payloads waits for both upstream nodes to complete.
+    g.add_edge("load_market_env",     "build_payloads")
     g.add_edge("compute_sector_flow", "build_payloads")
     g.add_edge("build_payloads",      "ml_predict")
     g.add_edge("ml_predict",          "compute_personas")

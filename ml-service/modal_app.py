@@ -10,6 +10,7 @@ Phase 1 MVC 重構：
   部署：cd ml-service && python3 -m modal deploy modal_app.py
   本地測試：python3 -m modal serve modal_app.py
 """
+import os
 import modal
 from pathlib import Path
 
@@ -515,6 +516,194 @@ def train_wf_hmm_window(payload: dict) -> dict:
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "window_id": payload.get("window_id")}
+
+
+@app.function(
+    cpu=1,
+    memory=2048,
+    timeout=14400,   # 4 hour cap — 14 windows × ~15 min sequential = ~3.5 hr
+    scaledown_window=60,
+    max_containers=1,   # only one orchestrator at a time
+)
+def walk_forward_orchestrator(payload: dict) -> dict:
+    """Walk-forward orchestrator (Modal-resident) — runs full pipeline across
+    all windows, calling train_wf_tree_window / train_wf_ftt_window / train_wf_hmm_window
+    internally. Persists aggregate result to GCS walk_forward/runs/{start}_{end}.json.
+
+    payload:
+        windows: list of {window_id, train_start, train_end, test_start, test_end}
+        market_env: dict (full history — each window filters locally)
+        batch_count: int
+        models: list[str]
+        concurrent_windows: int (default 2)
+        start_date: str (for GCS path)
+        end_date: str
+
+    Returns: {gcs_path, aggregate}
+    Fire-and-forget: ml-controller calls .spawn() and returns immediately.
+    """
+    _setup_env()
+    import time
+    import json
+    import asyncio
+
+    t0 = time.time()
+    windows = payload["windows"]
+    market_env = payload["market_env"]
+    batch_count = payload.get("batch_count", 5)
+    models = payload.get("models") or ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+    concurrent = int(payload.get("concurrent_windows", 2))
+    start_date = payload["start_date"]
+    end_date = payload["end_date"]
+
+    def _filter_env(end_str: str) -> dict:
+        hist = market_env.get("history", {})
+        filtered = {d: v for d, v in hist.items() if d <= end_str}
+        if not filtered:
+            return market_env
+        latest_date = max(filtered.keys())
+        return {"history": filtered, **filtered[latest_date]}
+
+    async def _run_one(window: dict) -> dict:
+        """HMM → tree+ftt in parallel for one window."""
+        wid = window["window_id"]
+        result = {
+            "window_id": wid,
+            "train_range": [window["train_start"], window["train_end"]],
+            "test_range": [window["test_start"], window["test_end"]],
+            "model_metrics": {},
+        }
+        # Step 1: HMM
+        try:
+            hmm_payload = {
+                "window_id": wid,
+                "train_end": window["train_end"],
+                "market_env": _filter_env(window["train_end"]),
+            }
+            result["hmm_result"] = await train_wf_hmm_window.remote.aio(hmm_payload)
+        except Exception as e:
+            print(f"[WF-Orchestrator] w{wid} HMM crashed: {e}")
+            result["hmm_result"] = {"error": str(e)}
+
+        # Step 2+3: tree + ftt in parallel
+        train_payload = {
+            "window_id": wid,
+            "train_start": window["train_start"],
+            "train_end": window["train_end"],
+            "test_start": window["test_start"],
+            "test_end": window["test_end"],
+            "batch_count": batch_count,
+            "skip_feature_pool": False,
+        }
+
+        need_tree = any(m in models for m in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
+        need_ftt = "FT-Transformer" in models
+        tasks = []
+        if need_tree:
+            tasks.append(("tree", train_wf_tree_window.remote.aio(dict(train_payload))))
+        if need_ftt:
+            ftt_payload = dict(train_payload)
+            ftt_payload["skip_feature_pool"] = True
+            tasks.append(("ftt", train_wf_ftt_window.remote.aio(ftt_payload)))
+
+        if tasks:
+            raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+            for (kind, _), r in zip(tasks, raw):
+                if isinstance(r, BaseException):
+                    print(f"[WF-Orchestrator] w{wid} {kind} crashed: {r}")
+                    result[f"{kind}_result"] = {"error": str(r)}
+                else:
+                    result[f"{kind}_result"] = r
+
+        # Consolidate per-model metrics
+        for partial in [result.get("tree_result") or {}, result.get("ftt_result") or {}]:
+            if not partial or partial.get("error"):
+                continue
+            for model_name, m in (partial.get("results") or {}).items():
+                if m.get("skipped") or m.get("error"):
+                    continue
+                result["model_metrics"][model_name] = {
+                    "oos_ic": m.get("oos_ic"),
+                    "train_samples": m.get("train"),
+                    "test_samples": m.get("test"),
+                }
+        return result
+
+    async def _orchestrate() -> list[dict]:
+        sem = asyncio.Semaphore(concurrent)
+
+        async def _bounded(w):
+            async with sem:
+                print(f"[WF-Orchestrator] Starting window {w['window_id']}")
+                r = await _run_one(w)
+                print(f"[WF-Orchestrator] Finished window {w['window_id']} "
+                      f"(ic={[(k, v.get('oos_ic')) for k, v in r.get('model_metrics',{}).items()]})")
+                return r
+
+        return await asyncio.gather(*[_bounded(w) for w in windows])
+
+    all_results = asyncio.run(_orchestrate())
+
+    # Aggregate
+    per_model = {}
+    n_err = 0
+    for wr in all_results:
+        if not wr.get("model_metrics"):
+            n_err += 1
+            continue
+        for mname, m in wr["model_metrics"].items():
+            if m.get("oos_ic") is None:
+                continue
+            per_model.setdefault(mname, []).append(float(m["oos_ic"]))
+
+    summary = {}
+    for mname, ics in per_model.items():
+        import statistics
+        if not ics:
+            continue
+        summary[mname] = {
+            "n_windows": len(ics),
+            "mean_ic": sum(ics) / len(ics),
+            "std_ic": statistics.stdev(ics) if len(ics) >= 2 else 0.0,
+            "min_ic": min(ics),
+            "max_ic": max(ics),
+            "positive_share": sum(1 for ic in ics if ic > 0) / len(ics),
+            "ic_per_window": ics,
+        }
+
+    aggregate = {
+        "n_windows_total": len(all_results),
+        "n_windows_errored": n_err,
+        "per_model": summary,
+        "elapsed_s": round(time.time() - t0, 1),
+    }
+
+    # Persist to GCS
+    try:
+        from google.cloud import storage
+        bucket = storage.Client().bucket(os.environ.get("GCS_BUCKET_NAME", "stockvision-models"))
+        gcs_path = f"walk_forward/runs/{start_date}_{end_date}.json"
+        bucket.blob(gcs_path).upload_from_string(
+            json.dumps({
+                "start_date": start_date,
+                "end_date": end_date,
+                "train_window_days": payload.get("train_window_days", 60),
+                "test_window_days": payload.get("test_window_days", 30),
+                "windows": all_results,
+                "aggregate": aggregate,
+            }, indent=2, default=str),
+            content_type="application/json",
+        )
+        print(f"[WF-Orchestrator] Persisted → gs://{bucket.name}/{gcs_path}")
+    except Exception as e:
+        print(f"[WF-Orchestrator] Persist failed: {e}")
+        gcs_path = None
+
+    return {
+        "gcs_path": gcs_path,
+        "aggregate": aggregate,
+        "elapsed_s": round(time.time() - t0, 1),
+    }
 
 
 @app.function(

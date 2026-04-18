@@ -74,32 +74,33 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
 
 @router.post("/walk_forward/run")
 async def walk_forward_run(req: WalkForwardRequest):
-    """Execute full walk-forward. Requires confirm=true.
+    """Execute full walk-forward — fire-and-forget via Modal orchestrator.
 
-    For each window: train HMM snapshot + 5 ML models via Modal.
-    Writes artifacts to walk_forward/w{id}/* and the aggregate run JSON to
-    walk_forward/runs/{start}_{end}.json.
+    Returns 202-style response immediately with the spawn's fn_call_id. The
+    orchestrator runs inside Modal for up to 4 hours and persists the
+    aggregate JSON to walk_forward/runs/{start_date}_{end_date}.json.
+
+    Poll GET /walk_forward/report/{start}/{end} for completion.
     """
     if not req.confirm:
         raise HTTPException(
             status_code=400,
             detail=(
-                "walk_forward/run requires confirm=true — this triggers Modal retrains "
-                f"(12+ windows × 5 models = 60+ GPU jobs, ~2-3 hr wall clock). "
-                "Use /walk_forward/dry-run first to validate plan, then re-POST with confirm=true."
+                "walk_forward/run requires confirm=true — triggers Modal retrains "
+                "(12+ windows × 5 models = 60+ GPU jobs, ~2-3 hr wall clock). "
+                "Use /walk_forward/dry-run first."
             ),
         )
 
-    from services.walk_forward_retrain import (
-        run_walk_forward,
-        MODELS_ALL,
-        persist_run_to_gcs,
-        load_current_universal_ic,
-        build_report,
-    )
-    from services.backtest_engine import BacktestDataset
+    from services.walk_forward_retrain import MODELS_ALL
+    from services.backtest_engine import BacktestDataset, walk_forward_windows
     from services.stratified_subset import select_stratified_subset
+    from services.payload_builder import load_market_env
+    from services import modal_client
+    from dataclasses import asdict
+    from datetime import datetime, timezone, timedelta
 
+    # Build the window index from a proper dataset (needs the trading_days list)
     symbols = select_stratified_subset(
         target_size=req.subset_size, end_date=req.end_date,
     )
@@ -109,46 +110,67 @@ async def walk_forward_run(req: WalkForwardRequest):
         start_date=req.start_date, end_date=req.end_date, symbols=symbols,
     )
 
-    logger.info(
-        f"[WalkForward] starting full run: {req.start_date}..{req.end_date} "
-        f"concurrent={req.concurrent_windows} subset={len(symbols)}"
-    )
-
-    run = await run_walk_forward(
-        dataset=dataset,
-        start_date=req.start_date,
-        end_date=req.end_date,
+    trading_days = [d for d in dataset.trading_days if req.start_date <= d <= req.end_date]
+    windows = walk_forward_windows(
+        trading_days=trading_days,
         train_window_days=req.train_window_days,
         test_window_days=req.test_window_days,
-        models=req.models or MODELS_ALL,
-        batch_count=req.batch_count,
-        dry_run=False,
-        concurrent_windows=req.concurrent_windows,
     )
+    if not windows:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No windows generated. trading_days={len(trading_days)}, need >= {req.train_window_days + req.test_window_days}",
+        )
 
-    # Persist to GCS + include current universal comparison
-    current_ic = load_current_universal_ic()
-    gcs_path = persist_run_to_gcs(
-        run,
-        extra={
-            "subset_size": len(symbols),
-            "universal_ic_anchor": current_ic,
-        },
+    # Load market_env once — orchestrator filters per-window
+    run_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    me, _, _, _, _ = load_market_env(run_date)
+    market_env = asdict(me)
+
+    windows_payload = [
+        {
+            "window_id": w.window_id,
+            "train_start": w.train_start,
+            "train_end":   w.train_end,
+            "test_start":  w.test_start,
+            "test_end":    w.test_end,
+        }
+        for w in windows
+    ]
+
+    # Spawn Modal orchestrator (fire-and-forget)
+    try:
+        fn_call = modal_client.spawn_walk_forward_orchestrator({
+            "windows": windows_payload,
+            "market_env": market_env,
+            "batch_count": req.batch_count,
+            "models": req.models or MODELS_ALL,
+            "concurrent_windows": req.concurrent_windows,
+            "start_date": req.start_date,
+            "end_date": req.end_date,
+            "train_window_days": req.train_window_days,
+            "test_window_days": req.test_window_days,
+        })
+        fn_call_id = getattr(fn_call, "object_id", None) or str(fn_call)
+    except Exception as e:
+        logger.error(f"[WalkForward] spawn failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Modal spawn failed: {e}")
+
+    logger.info(
+        f"[WalkForward] spawned orchestrator: {len(windows)} windows, "
+        f"fn_call_id={fn_call_id}"
     )
-
-    # Build report inline (also stored with the run)
-    report_md = build_report(run, current_universal_ic=current_ic)
 
     return {
-        "status": "done",
-        "windows_run": len(run.windows),
-        "aggregate": run.aggregate,
-        "persisted_gcs": gcs_path,
-        "report_preview": report_md[:2000],
-        "next_step": (
-            "Review aggregate metrics. If mean_ic shows stable >0.08 across windows and "
-            "consistent with universal IC, consider feeding per-window metrics into "
-            "Champion-Challenger pool (ML_POOL_ARCHITECTURE.md)."
+        "status": "spawned",
+        "fn_call_id": fn_call_id,
+        "windows_planned": len(windows),
+        "models": req.models or MODELS_ALL,
+        "gcs_result_path": f"walk_forward/runs/{req.start_date}_{req.end_date}.json",
+        "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",
+        "poll_hint": (
+            "Orchestrator runs up to 4 hrs inside Modal. Poll the GET /walk_forward/report "
+            "endpoint above; 404 = still running, 200 = done."
         ),
     }
 

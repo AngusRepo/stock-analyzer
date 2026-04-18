@@ -134,6 +134,15 @@ def _spawn_wf_ftt_window(payload: dict):
     return fn.spawn(payload)
 
 
+def spawn_walk_forward_orchestrator(payload: dict):
+    """Spawn the Modal-resident walk-forward orchestrator and return its FunctionCall.
+    Fire-and-forget from ml-controller side: orchestrator runs inside Modal for
+    up to 4 hours, persists result to GCS walk_forward/runs/{start}_{end}.json.
+    """
+    fn = _lookup("walk_forward_orchestrator")
+    return fn.spawn(payload)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Cloud Run ML path（httpx 並行，fallback）
 # ══════════════════════════════════════════════════════════════════════════════

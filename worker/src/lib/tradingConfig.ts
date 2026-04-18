@@ -79,6 +79,10 @@ export interface TradingConfig {
       time: number             // swap timeScore 權重（預設 0.25）
       tp1: number              // swap tp1_hit 懲罰權重（預設 0.20）
       loss: number             // swap 虧損懲罰權重（預設 0.20）
+      // 2026-04-18 #36 Round 2: swap scoring magic numbers
+      tp1NotHitPenalty: number   // tp1 沒命中時基礎懲罰分（預設 40）
+      lossPenalty: number        // pnl 為負時加扣（預設 20）
+      tp1MissMultiplier: number  // tp1 命中後折扣因子（預設 0.5 → 1 - 0.5 = 0.5 剩餘懲罰）
     }
     tp1ProximityRatio: number  // 接近 tp1 判定比例（預設 0.97）
     requoteDeviationMax: number  // 重掛 entry 偏離容忍（預設 0.05）
@@ -91,6 +95,9 @@ export interface TradingConfig {
     riskPctBuyConfThreshold: number        // riskPctBuy 門檻（預設 0.70）
     riskPctStrongBuyConfThreshold: number  // riskPctStrongBuy 門檻（預設 0.80）
     downgradeRiskMultiplier: number        // DOWNGRADE verdict → riskPct × N（預設 0.5 半倉）
+    // 2026-04-18 #36 Round 2 (補齊至 26)
+    gapChaseBuffer: number                 // gap-aware 追價 buffer（預設 0.995 = 留 0.5%）
+    fillSlippageTicks: number              // 預設下單滑價 tick 數（預設 1）
   }
   screener: {
     minPrice: number             // 最低股價（預設 15）
@@ -157,6 +164,8 @@ export interface TradingConfig {
     consensusThreshold: number   // 共識門檻（預設 0.60）
     // ── 2026-04-18 #36: news analyst hardcode ─────────────────────────────
     newsNegativeConfThreshold: number  // 新聞 bias=negative 觸發 conf 門檻（預設 0.5）
+    newsNegativeConfBoost: number      // 觸發時 buyConfThreshold 上調量（預設 0.05）
+    newsNegativeConfCap: number        // 上調後 buyConfThreshold 硬上限（預設 0.75）
   }
   // ── 2026-04-07 added: Optuna #3 SL/TP 月搜結果 destination ─────────────────
   // 之前 sl_mult_base/tp_mult_base 寫進 ml:adaptive_params 是錯的
@@ -231,6 +240,9 @@ export interface TradingConfig {
   momentum: {
     minVolumeRatio: number               // 最低 volume ratio vs 20d avg（預設 0.8）
     minRangePosition: number             // 最低 day range position（預設 0.3 = 30%）
+    // 2026-04-18 #36 Round 2
+    tradingDayMinutes: number            // 台股交易時段分鐘數（預設 270 = 9:00-13:30）
+    minutesFractionFloor: number         // minutesSinceOpen/total 下限（預設 0.1 防早盤分母太小）
   }
 }
 
@@ -309,6 +321,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
       time: 0.25,         // timeScore 權重（預設 0.25）
       tp1: 0.20,          // tp1_hit 懲罰權重（預設 0.20）
       loss: 0.20,         // 虧損懲罰權重（預設 0.20）
+      // Round 2
+      tp1NotHitPenalty: 40,
+      lossPenalty: 20,
+      tp1MissMultiplier: 0.5,
     },
     tp1ProximityRatio: 0.97,    // 接近 tp1 判定比例（預設 0.97 = 距離 TP1 3%內）
     requoteDeviationMax: 0.05,  // 重掛 entry 偏離容忍（預設 0.05 = 5%，超過棄單）
@@ -321,6 +337,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     riskPctBuyConfThreshold: 0.70,
     riskPctStrongBuyConfThreshold: 0.80,
     downgradeRiskMultiplier: 0.5,
+    // Round 2
+    gapChaseBuffer: 0.995,
+    fillSlippageTicks: 1,
   },
   screener: {
     minPrice: 15,
@@ -383,6 +402,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     consensusThreshold: 0.60,
     // 2026-04-18 #36
     newsNegativeConfThreshold: 0.5,
+    newsNegativeConfBoost: 0.05,
+    newsNegativeConfCap: 0.75,
   },
   // ── 2026-04-07 NEW: Optuna #3 destination ─────────────────────────────────
   sltp: {
@@ -443,6 +464,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   momentum: {
     minVolumeRatio: 0.8,
     minRangePosition: 0.3,
+    // Round 2
+    tradingDayMinutes: 270,
+    minutesFractionFloor: 0.1,
   },
 }
 

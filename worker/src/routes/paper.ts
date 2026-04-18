@@ -200,7 +200,8 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
         confidenceDelta = adaptive.confidence_delta
       } else if (adaptive?.confidence_threshold != null) {
         // legacy fallback: 把 absolute 反推為 delta
-        confidenceDelta = adaptive.confidence_threshold - 0.60
+        // 2026-04-18 #36: baseline from cfg (was hardcode 0.60)
+        confidenceDelta = adaptive.confidence_threshold - (cc.buyConfThreshold ?? 0.60)
       }
     } catch (e) { console.warn('[CircuitBreaker] adaptive params load failed:', e) }
   }
@@ -1348,7 +1349,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const newsNegTh = cfg.signal.newsNegativeConfThreshold ?? 0.5
       if (newsReport.bias === 'negative' && newsReport.confidence >= newsNegTh) {
         const before = cb.buyConfThreshold
-        cb.buyConfThreshold = Math.min(0.75, cb.buyConfThreshold + 0.05)
+        // 2026-04-18 #36 Round 2: boost + cap from cfg
+        const newsBoost = cfg.signal.newsNegativeConfBoost ?? 0.05
+        const newsCap = cfg.signal.newsNegativeConfCap ?? 0.75
+        cb.buyConfThreshold = Math.min(newsCap, cb.buyConfThreshold + newsBoost)
         console.warn(
           `[MorningSetup] News bias=negative conf=${newsReport.confidence.toFixed(2)} ` +
           `→ buyConfThreshold ${before.toFixed(3)} → ${cb.buyConfThreshold.toFixed(3)}`
@@ -1664,9 +1668,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% 過大，SKIP`)
         skipDueToGap = true
       } else {
-        // 追價 (gap × 0.995 留 0.5% 緩衝)，cap 至 ml_entry_price × (1 + threshold)
+        // 追價：gap × gapChaseBuffer（預設 0.995 = 留 0.5% 緩衝），cap 至 ml_entry_price × (1 + threshold)
+        // 2026-04-18 #36 Round 2: gapChaseBuffer from cfg
         const chasePct = Math.min(impliedGap, gapThresh)
-        const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * 0.995 * 100) / 100
+        const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
+        const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * gapBuffer * 100) / 100
         if (newEntry > adjustedEntry) {
           console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% → entry ${adjustedEntry} → ${newEntry}`)
           adjustedEntry = newEntry
@@ -1861,10 +1867,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
       // Weakness = weighted sum (higher = weaker)
       // Sprint 4-1 wire: 四個權重從 cfg.position.swapWeights 讀
+      // 2026-04-18 #36 Round 2: magic numbers 40/20/0.5 promoted to swapWeights.*
       const sw = cfg.position.swapWeights
+      const tp1MissMult = (sw as any).tp1MissMultiplier ?? 0.5
+      const tp1NotHitPen = (sw as any).tp1NotHitPenalty ?? 40
+      const lossPen = (sw as any).lossPenalty ?? 20
       const pnlScore = Math.max(0, -pnlPct * 100)   // more loss = weaker (0-12 range for -12%)
       const timeScore = timeRatio * 100               // closer to time stop = weaker
-      const score = pnlScore * sw.pnl + timeScore * sw.time + (1 - (pos.tp1_hit ? 0.5 : 0)) * 40 * sw.tp1 + (pnlPct < 0 ? 20 : 0) * sw.loss
+      const score = pnlScore * sw.pnl
+                  + timeScore * sw.time
+                  + (1 - (pos.tp1_hit ? tp1MissMult : 0)) * tp1NotHitPen * sw.tp1
+                  + (pnlPct < 0 ? lossPen : 0) * sw.loss
       weaknessScores.push({ symbol: pos.symbol, score })
     }
     weaknessScores.sort((a, b) => b.score - a.score) // weakest first
@@ -2133,7 +2146,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           const avgVol = avgVolRow?.avg_vol ?? 0
           const twNow = new Date(Date.now() + 8 * 3600_000)
           const minutesSinceOpen = Math.max(1, (twNow.getUTCHours() * 60 + twNow.getUTCMinutes()) - 9 * 60)
-          const timePct = Math.max(0.1, minutesSinceOpen / 270)
+          // 2026-04-18 #36 Round 2: trading minutes + floor from cfg
+          const tradingMin = cfg.momentum?.tradingDayMinutes ?? 270
+          const minutesFloor = cfg.momentum?.minutesFractionFloor ?? 0.1
+          const timePct = Math.max(minutesFloor, minutesSinceOpen / tradingMin)
           if (avgVol > 0) {
             const volRatio = (snapData.total_volume ?? 0) / (avgVol * timePct)
             const minVolRatio = cfg.momentum?.minVolumeRatio ?? 0.8
@@ -2295,7 +2311,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
                 atr14,
                 budget: Math.round(budget),
                 fill_type: 'limit_intraday',
-                slippage_ticks: 1,
+                // 2026-04-18 #36 Round 2: slippage ticks from cfg
+                slippage_ticks: cfg.position.fillSlippageTicks ?? 1,
                 market_price: price,
               })),
     ])

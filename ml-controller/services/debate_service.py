@@ -413,8 +413,10 @@ async def run_buy_debate(
         summary_parts = [f"[{verdict}|conv:{conviction}|rounds:{rounds_completed}|{llm_source}] "]
         if injection["action"] != "pass":
             summary_parts.append(f"[INJ:{injection['severity']}] ")
-        summary_parts.append(f"Reaper(last): {(reaper_cases[-1] if reaper_cases else '')[:100]} | ")
-        summary_parts.append(f"Fulcrum: {re.sub(r'VERDICT:.*\\n?', '', fulcrum_response).strip()[:150]}")
+        reaper_last = (reaper_cases[-1] if reaper_cases else "")[:100]
+        summary_parts.append(f"Reaper(last): {reaper_last} | ")
+        fulcrum_stripped = re.sub(r"VERDICT:.*\n?", "", fulcrum_response).strip()[:150]
+        summary_parts.append(f"Fulcrum: {fulcrum_stripped}")
         summary = "".join(summary_parts)[:500]
 
         return DebateResult(

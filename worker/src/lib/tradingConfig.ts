@@ -27,6 +27,15 @@ export interface TradingConfig {
     // ── Sprint 4-1: L2 drawdown scaling 常數 ───────────────────────────────
     drawdownScaleStart: number   // 開始縮減部位的回撤起點（預設 0.03）
     mddMultFloor: number         // mddMultiplier 下限（預設 0.2 = 縮到 20%）
+    // ── 2026-04-18 #36 paper.ts hardcode 一次到位 ───────────────────────────
+    lockedDropPct: number              // 鎖股判定跌幅（預設 -0.095，台股日限 ~-9.5%）
+    lockedVolRatio: number             // 鎖股低量判定（預設 0.1 = 10% 前日量）
+    drawdownConfTriggerRatio: number   // drawdown 超過 halt × N 時提高 conf 門檻（預設 0.5 = halt 一半）
+    defaultAccuracy: number            // 無歷史時預設準確率 fallback（預設 0.5）
+    layer7ScaleRatio: number           // Layer7 SCALE（連 4/5 錯）maxPositionPct 縮減倍數（預設 0.3）
+    preMarketGapThreshold: number      // 盤前隱含 gap 觸發 risk gate（預設 0.05）
+    limitUpPct: number                 // 漲停判定（預設 0.095）
+    limitDownPct: number               // 跌停判定（預設 -0.095）
   }
   exit: {
     hardStopPct: number          // 硬上限止損（預設 -0.12）
@@ -75,6 +84,13 @@ export interface TradingConfig {
     requoteDeviationMax: number  // 重掛 entry 偏離容忍（預設 0.05）
     requoteDiscount: number      // 重掛新 entry 折扣（預設 0.985）
     requoteStopFallback: number  // ml_stop_loss fallback 係數（預設 0.92）
+    // ── 2026-04-18 #36: calcRiskPct tiers 從 paper.ts hardcode 搬過來 ──────
+    riskPctBaseline: number                // 預設一般信號 risk（預設 0.01 = 1%）
+    riskPctBuy: number                     // BUY 且 conf≥buyConf 時（預設 0.015 = 1.5%）
+    riskPctStrongBuy: number               // STRONG_BUY 且 conf≥strongConf 時（預設 0.02 = 2%）
+    riskPctBuyConfThreshold: number        // riskPctBuy 門檻（預設 0.70）
+    riskPctStrongBuyConfThreshold: number  // riskPctStrongBuy 門檻（預設 0.80）
+    downgradeRiskMultiplier: number        // DOWNGRADE verdict → riskPct × N（預設 0.5 半倉）
   }
   screener: {
     minPrice: number             // 最低股價（預設 15）
@@ -108,6 +124,9 @@ export interface TradingConfig {
     improvingBonus: number       // Improving 象限加分（預設 7）
     weakeningBonus: number       // Weakening 象限加分（預設 0）
     laggingPenalty: number       // Lagging 象限扣分（預設 -5）
+    // ── 2026-04-18 #36: paper.ts T2 confidence adj hardcodes ──────────────
+    leadingNegMomConfAdj: number   // Leading 但 momentum<0 時 conf 調整（預設 -0.03）
+    improvingConfAdj: number       // Improving 象限 conf 調整（預設 -0.02）
   }
   barrier: {
     upperMult: number            // 停利 ATR 倍數（預設 3.0）— Optuna #1 搜尋
@@ -136,6 +155,8 @@ export interface TradingConfig {
     buySignalScore: number       // BUY 門檻（預設 0.52） — Optuna 月搜的 baseline
     holdSignalScore: number      // HOLD 門檻（預設 0.36）
     consensusThreshold: number   // 共識門檻（預設 0.60）
+    // ── 2026-04-18 #36: news analyst hardcode ─────────────────────────────
+    newsNegativeConfThreshold: number  // 新聞 bias=negative 觸發 conf 門檻（預設 0.5）
   }
   // ── 2026-04-07 added: Optuna #3 SL/TP 月搜結果 destination ─────────────────
   // 之前 sl_mult_base/tp_mult_base 寫進 ml:adaptive_params 是錯的
@@ -155,6 +176,8 @@ export interface TradingConfig {
     tpMultHigh: number           // 高波動 TP 倍率相對 base（預設 1.33）
     // ── Sprint 5.1 Phase 7 Layer C (2026-04-09): extreme low vol skip ───────
     volSkipThreshold: number     // vol_pct < threshold → NO_SIGNAL (預設 0.005)
+    // ── 2026-04-18 #36: TP2 multiplier from paper.ts hardcode ──────────────
+    tp2DistanceMultiplier: number  // TP2 = entry + atr × tpMult × N（預設 2.0 = TP2 是 TP1 兩倍距離）
   }
   // ── 2026-04-07 added: L2 daily formula 內部係數（adaptive.py 用） ──────────
   // 把 hardcoded formula 常數搬到 KV，讓未來 Optuna 可搜
@@ -233,6 +256,15 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     // Sprint 4-1
     drawdownScaleStart: 0.03,
     mddMultFloor: 0.2,
+    // 2026-04-18 #36
+    lockedDropPct: -0.095,
+    lockedVolRatio: 0.1,
+    drawdownConfTriggerRatio: 0.5,
+    defaultAccuracy: 0.5,
+    layer7ScaleRatio: 0.3,
+    preMarketGapThreshold: 0.05,
+    limitUpPct: 0.095,
+    limitDownPct: -0.095,
   },
   exit: {
     hardStopPct: -0.10,
@@ -282,6 +314,13 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     requoteDeviationMax: 0.05,  // 重掛 entry 偏離容忍（預設 0.05 = 5%，超過棄單）
     requoteDiscount: 0.985,     // 重掛新 entry 折扣（預設 0.985 = 下修 1.5%）
     requoteStopFallback: 0.92,  // ml_stop_loss 缺失時回退係數（預設 0.92 = entry × 0.92）
+    // 2026-04-18 #36
+    riskPctBaseline: 0.01,
+    riskPctBuy: 0.015,
+    riskPctStrongBuy: 0.02,
+    riskPctBuyConfThreshold: 0.70,
+    riskPctStrongBuyConfThreshold: 0.80,
+    downgradeRiskMultiplier: 0.5,
   },
   screener: {
     minPrice: 15,
@@ -315,6 +354,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     improvingBonus: 7,
     weakeningBonus: 0,
     laggingPenalty: -5,
+    // 2026-04-18 #36
+    leadingNegMomConfAdj: -0.03,
+    improvingConfAdj: -0.02,
   },
   barrier: {
     upperMult: 3.0,
@@ -339,6 +381,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     buySignalScore: 0.52,
     holdSignalScore: 0.36,
     consensusThreshold: 0.60,
+    // 2026-04-18 #36
+    newsNegativeConfThreshold: 0.5,
   },
   // ── 2026-04-07 NEW: Optuna #3 destination ─────────────────────────────────
   sltp: {
@@ -355,6 +399,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     tpMultHigh: 1.33,
     // Sprint 5.1 Phase 7 Layer C default: 0.5% daily vol skip
     volSkipThreshold: 0.005,
+    // 2026-04-18 #36
+    tp2DistanceMultiplier: 2.0,
   },
   // ── 2026-04-07 NEW: L2 daily formula 內部係數 ─────────────────────────────
   L2_formula: {

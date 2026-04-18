@@ -85,13 +85,18 @@ function applyPartialFill(shares: number, price: number, dailyVolume: number, cf
 
 /**
  * P1#13: Limit-down lock detection — can't exit if stock is locked limit-down
- * Drop >= 9.5% + volume < 10% of yesterday → locked, can't sell
+ * 2026-04-18 #36: read thresholds from cfg.circuit (fallback to historical defaults).
  */
-function isLimitDownLocked(currentPrice: number, prevClose: number, volume: number, prevVolume: number): boolean {
+function isLimitDownLocked(
+  currentPrice: number, prevClose: number, volume: number, prevVolume: number,
+  cfg?: TradingConfig,
+): boolean {
   if (prevClose <= 0) return false
   const dropPct = (currentPrice - prevClose) / prevClose
   const volRatio = prevVolume > 0 ? volume / prevVolume : 1
-  return dropPct <= -0.095 && volRatio < 0.1
+  const dropThresh = cfg?.circuit?.lockedDropPct ?? -0.095
+  const volThresh = cfg?.circuit?.lockedVolRatio ?? 0.1
+  return dropPct <= dropThresh && volRatio < volThresh
 }
 function calcTax(value: number, cfg: TradingConfig, isDayTrade = false): number {
   const rate = isDayTrade ? cfg.fees.dayTradeTax : cfg.fees.tax
@@ -240,7 +245,8 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
       const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (cc.drawdownHalt - cc.drawdownScaleStart))
       const adjustedPosPct = cc.maxPositionPct * mddMultiplier
       // Phase 2: SCALE 階段也用 effective baseline+delta，drawdown 過半才額外加嚴
-      const adjustedConf = drawdown > cc.drawdownHalt * 0.5
+      // 2026-04-18 #36: drawdownConfTriggerRatio promoted to KV (was hardcode 0.5)
+      const adjustedConf = drawdown > cc.drawdownHalt * cc.drawdownConfTriggerRatio
         ? Math.max(cc.drawdownRaisedConf, effectiveBuy)
         : effectiveBuy
       console.log(`[CircuitBreaker] Layer1 SCALE: drawdown ${(drawdown * 100).toFixed(1)}% → posPct ${(adjustedPosPct * 100).toFixed(1)}% (mult=${mddMultiplier.toFixed(2)})`)
@@ -254,7 +260,9 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   // Current ordering: 1(MDD)→2(accuracy)→3(risk)→4(breadth)→6(momentum)→7(streak)→5(losses)
   // Phase 2 fix: 改讀 ml:adaptive_params.recent_accuracy_30d (single source of truth)
   // 之前自己 SQL 算 over 20 days 算出 18.6%，跟 adaptive 60% 差距大
-  let recentAcc = 0.5
+  // 2026-04-18 #36: defaultAccuracy promoted to KV (was hardcode 0.5)
+  const defaultAcc = cc.defaultAccuracy ?? 0.5
+  let recentAcc = defaultAcc
   if (kv) {
     try {
       const { getAdaptiveParams } = await import('../lib/adaptiveConfig')
@@ -264,7 +272,7 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
       }
     } catch { /* fallback to local SQL */ }
   }
-  if (recentAcc === 0.5) {
+  if (recentAcc === defaultAcc) {
     // adaptive_params 沒值 → fallback 到本地 SQL（保持 backwards compat）
     // Sprint 4-3 root cause fix (2026-04-07):
     // 之前 WHERE direction_correct IS NOT NULL 會納入 -1 (neutral HOLD/NO_SIGNAL)
@@ -277,7 +285,7 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
       WHERE generated_at >= datetime('now', '-30 days')
       AND direction_correct IN (0, 1)
     `).first<any>()
-    recentAcc = accuracyRow?.acc ?? 0.5
+    recentAcc = accuracyRow?.acc ?? defaultAcc
   }
   if (recentAcc < cc.lowAccuracyThreshold) {
     console.warn(`[CircuitBreaker] Layer2: model accuracy ${(recentAcc * 100).toFixed(1)}% < ${(cc.lowAccuracyThreshold * 100).toFixed(0)}%, raising threshold`)
@@ -350,10 +358,12 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     if (recent && recent.length >= 5) {
       const wrongCount = recent.filter((r: any) => Number(r.direction_correct) === 0).length
       if (wrongCount >= 4) {
-        const adjusted = defaults.maxPositionPct * 0.3
+        // 2026-04-18 #36: layer7ScaleRatio promoted to KV
+        const layer7Scale = cc.layer7ScaleRatio ?? 0.3
+        const adjusted = defaults.maxPositionPct * layer7Scale
         console.warn(
           `[CircuitBreaker] Layer7 SCALE: recent streak ${wrongCount}/5 wrong ` +
-          `→ posPct ${(adjusted * 100).toFixed(1)}% (× 0.3)`
+          `→ posPct ${(adjusted * 100).toFixed(1)}% (× ${layer7Scale})`
         )
         return {
           ...defaults,
@@ -1167,11 +1177,22 @@ paper.post('/reset', async (c) => {
 export { paper }
 
 // ─── Risk-Based Position Sizing 輔助函數 ──────────────────────────────
-function calcRiskPct(signal: string, confidence: number, debateVerdict?: string): number {
-  let base = 0.01
-  if (signal.includes('STRONG_BUY') && confidence >= 0.80) base = 0.02
-  else if (signal.includes('BUY') && confidence >= 0.70)   base = 0.015
-  if (debateVerdict === 'DOWNGRADE') base *= 0.5
+// 2026-04-18 #36: tiers + thresholds + DOWNGRADE multiplier all promoted to cfg.
+function calcRiskPct(
+  signal: string, confidence: number, debateVerdict?: string,
+  cfg?: TradingConfig,
+): number {
+  const p = cfg?.position
+  const baseline = p?.riskPctBaseline ?? 0.01
+  const buyR = p?.riskPctBuy ?? 0.015
+  const strongR = p?.riskPctStrongBuy ?? 0.02
+  const buyTh = p?.riskPctBuyConfThreshold ?? 0.70
+  const strongTh = p?.riskPctStrongBuyConfThreshold ?? 0.80
+  const dgMult = p?.downgradeRiskMultiplier ?? 0.5
+  let base = baseline
+  if (signal.includes('STRONG_BUY') && confidence >= strongTh) base = strongR
+  else if (signal.includes('BUY') && confidence >= buyTh)       base = buyR
+  if (debateVerdict === 'DOWNGRADE') base *= dgMult
   return base
 }
 
@@ -1323,7 +1344,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const factors = (newsReport.key_factors ?? []).slice(0, 3).join(' / ')
       newsContextStr = `【News Analyst】bias=${newsReport.bias} conf=${newsReport.confidence.toFixed(2)} | ${factors}`
       // Negative bias with decent confidence → tighten buy threshold by 0.05
-      if (newsReport.bias === 'negative' && newsReport.confidence >= 0.5) {
+      // 2026-04-18 #36: newsNegativeConfThreshold promoted to cfg.signal
+      const newsNegTh = cfg.signal.newsNegativeConfThreshold ?? 0.5
+      if (newsReport.bias === 'negative' && newsReport.confidence >= newsNegTh) {
         const before = cb.buyConfThreshold
         cb.buyConfThreshold = Math.min(0.75, cb.buyConfThreshold + 0.05)
         console.warn(
@@ -1453,10 +1476,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const qi = symbolQuadrantMap.get(rec.symbol)
       if (qi?.quadrant === 'Lagging') continue
       if (qi?.quadrant === 'Weakening') continue   // Weakening 直接 DOWNGRADE，不進 debate
-      // Match inline logic's confidenceAdj
+      // 2026-04-18 #36: rrg conf adjustments promoted to KV
+      const rrgLeadingNeg = cfg.rrg.leadingNegMomConfAdj ?? -0.03
+      const rrgImproving = cfg.rrg.improvingConfAdj ?? -0.02
       let confAdj = 0
-      if (qi?.quadrant === 'Leading' && qi.rs_momentum < 0) confAdj = -0.03
-      else if (qi?.quadrant === 'Improving') confAdj = -0.02
+      if (qi?.quadrant === 'Leading' && qi.rs_momentum < 0) confAdj = rrgLeadingNeg
+      else if (qi?.quadrant === 'Improving') confAdj = rrgImproving
       const adjConf = Math.max(0, rec.confidence + confAdj)
       const profile = profileMap.get(rec.symbol)
       batchCands.push({
@@ -1520,11 +1545,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
 
     let debateVerdict = 'APPROVE'
-    let riskPct = calcRiskPct(rec.signal, rec.confidence)
+    let riskPct = calcRiskPct(rec.signal, rec.confidence, undefined, cfg)
+    // 2026-04-18 #36: downgradeRiskMultiplier from cfg (was hardcode 0.5)
+    const dgMult = cfg.position.downgradeRiskMultiplier ?? 0.5
     // Weakening 象限 → 強制半倉（不進 Debate，直接 DOWNGRADE）
     if (qInfo?.quadrant === 'Weakening') {
       debateVerdict = 'DOWNGRADE'
-      riskPct *= 0.5
+      riskPct *= dgMult
       console.log(`[T2 Filter] ${rec.symbol} 直接 DOWNGRADE（Weakening 象限），跳過 Debate`)
     } else if (batchDebateMap?.has(rec.symbol)) {
       // ── 2026-04-18 #39: prefer batched result from ml-controller ──────
@@ -1538,16 +1565,19 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT (batch)`)
         continue
       }
-      if (debateVerdict === 'DOWNGRADE') riskPct *= 0.5
+      if (debateVerdict === 'DOWNGRADE') riskPct *= (cfg.position.downgradeRiskMultiplier ?? 0.5)
     } else if ((env as any).LOCAL_TUNNEL_URL || (env as any).AI || env.ANTHROPIC_API_KEY || (env as any).GEMINI_API_KEY) {
       // ── Fallback: inline TS debate (used when ml-controller 未 deploy / 不可達) ─
       // Phase 4.5: 雙因子微調 — 象限 + Momentum 方向影響 confidence
+      // 2026-04-18 #36: adjustments now from cfg.rrg
+      const rrgLeadingNegFb = cfg.rrg.leadingNegMomConfAdj ?? -0.03
+      const rrgImprovingFb = cfg.rrg.improvingConfAdj ?? -0.02
       let confidenceAdj = 0
       if (qInfo) {
         if (qInfo.quadrant === 'Leading' && qInfo.rs_momentum < 0) {
-          confidenceAdj = -0.03
+          confidenceAdj = rrgLeadingNegFb
         } else if (qInfo.quadrant === 'Improving') {
-          confidenceAdj = -0.02
+          confidenceAdj = rrgImprovingFb
         }
         if (confidenceAdj !== 0) {
           console.log(`[T2 Adj] ${rec.symbol} ${qInfo.quadrant} mom=${qInfo.rs_momentum} → conf ${confidenceAdj > 0 ? '+' : ''}${confidenceAdj}`)
@@ -1586,7 +1616,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[MorningSetup-DEBUG] ${rec.symbol} SKIP: debate REJECT (inline)`)
         continue
       }
-      if (debateVerdict === 'DOWNGRADE') riskPct *= 0.5
+      if (debateVerdict === 'DOWNGRADE') riskPct *= dgMult
     }
     console.log(`[MorningSetup-DEBUG] ${rec.symbol} post-debate verdict=${debateVerdict} riskPct=${riskPct}`)
 
@@ -1627,13 +1657,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
     if (holidayGapDays >= 3 && nightDropPct > 1.0) {
       const impliedGap = nightDropPct / 100
-      if (impliedGap > 0.05) {
-        // 隔夜 gap 超過 5% → 太極端，不追
+      // 2026-04-18 #36: preMarketGapThreshold from cfg (was hardcode 0.05)
+      const gapThresh = cfg.circuit.preMarketGapThreshold ?? 0.05
+      if (impliedGap > gapThresh) {
+        // 隔夜 gap 超過 threshold → 太極端，不追
         console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% 過大，SKIP`)
         skipDueToGap = true
       } else {
-        // 追價 (gap × 0.995 留 0.5% 緩衝)，cap 至 ml_entry_price × 1.05
-        const chasePct = Math.min(impliedGap, 0.05)
+        // 追價 (gap × 0.995 留 0.5% 緩衝)，cap 至 ml_entry_price × (1 + threshold)
+        const chasePct = Math.min(impliedGap, gapThresh)
         const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * 0.995 * 100) / 100
         if (newEntry > adjustedEntry) {
           console.log(`[GapAware] ${rec.symbol} 長假 ${holidayGapDays} 天 + 台指期 +${nightDropPct.toFixed(1)}% → entry ${adjustedEntry} → ${newEntry}`)
@@ -2067,7 +2099,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const prevClose = prevCloseMap.get(pending.symbol)
     if (prevClose && prevClose > 0) {
       const changePct = (price - prevClose) / prevClose
-      if (changePct >= 0.095) {
+      // 2026-04-18 #36: limitUpPct from cfg
+      const limitUp = cfg.circuit.limitUpPct ?? 0.095
+      if (changePct >= limitUp) {
         console.log(`[Intraday] ⛔ ${pending.symbol} 疑似漲停鎖死（${(changePct * 100).toFixed(1)}%），不模擬成交`)
         continue
       }
@@ -2198,20 +2232,29 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     // 出場參數（基於 fillPrice — 含滑價）
     // Phase 2 (2026-04-07): 從 trading:config.sltp 讀（Optuna #3 月搜結果）
-    // 之前 hardcode 1.5/2.0/2.5/1.5/3.0，現在從 KV 讀 baseline
+    // 2026-04-18 #36: per-vol-branch multipliers + tp2 distance 都接進 KV
+    //                 之前 slMultLow/High 在 schema 有但 paper.ts 寫死 0.75/1.25，wiring 壞
     const volPct = atr14 / fillPrice
     const sltp = cfg.sltp
     const volLow  = sltp?.volThresholdLow  ?? 0.015
     const volHigh = sltp?.volThresholdHigh ?? 0.03
     const slBase  = sltp?.slMultBase ?? 2.0
     const tpBase  = sltp?.tpMultBase ?? 1.5
-    // 三段 SL multiplier：低波 = base × 0.75，中波 = base，高波 = base × 1.25
-    const slMult = volPct < volLow ? slBase * 0.75
+    const slLow   = sltp?.slMultLow ?? 0.75
+    const slHigh  = sltp?.slMultHigh ?? 1.25
+    const tpLow   = sltp?.tpMultLow ?? 0.67
+    const tpHigh  = sltp?.tpMultHigh ?? 1.33
+    const tp2Mult = sltp?.tp2DistanceMultiplier ?? 2.0
+    // 三段 SL/TP multiplier：低波 × slMultLow/tpMultLow，中波 base，高波 × slMultHigh/tpMultHigh
+    const slMult = volPct < volLow ? slBase * slLow
                  : volPct < volHigh ? slBase
-                 : slBase * 1.25
+                 : slBase * slHigh
+    const tpMult = volPct < volLow ? tpBase * tpLow
+                 : volPct < volHigh ? tpBase
+                 : tpBase * tpHigh
     const initialStop = fillPrice - atr14 * slMult
-    const tp1Price = fillPrice + atr14 * tpBase
-    const tp2Price = fillPrice + atr14 * tpBase * 2  // TP2 = 2×TP1 距離
+    const tp1Price = fillPrice + atr14 * tpMult
+    const tp2Price = fillPrice + atr14 * tpMult * tp2Mult  // TP2 = tp2Mult × TP1 距離
 
     const existing = await env.DB.prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?'
@@ -2339,9 +2382,11 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     ).bind(pos.symbol).first<any>()
     if (prevCloseRow && prevCloseRow.close > 0) {
       const dropPct = (price - prevCloseRow.close) / prevCloseRow.close
-      // Only block if we can confirm limit-down (price drop >= 9.5%)
+      // Only block if we can confirm limit-down
       // Volume check skipped here since we don't have intraday volume
-      if (dropPct <= -0.095) {
+      // 2026-04-18 #36: limitDownPct from cfg
+      const limitDownLog = cfg.circuit.limitDownPct ?? -0.095
+      if (dropPct <= limitDownLog) {
         console.log(`[Exit] ${pos.symbol} at limit-down (${(dropPct*100).toFixed(1)}%), sell may not execute`)
       }
     }
@@ -2695,7 +2740,9 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const prevC = prevCloseMapSell.get(pos.symbol)
       if (prevC && prevC > 0) {
         const changePct = (currentPrice - prevC) / prevC
-        if (changePct <= -0.095) {
+        // 2026-04-18 #36: limitDownPct from cfg
+        const limitDown = cfg.circuit.limitDownPct ?? -0.095
+        if (changePct <= limitDown) {
           console.warn(`[Intraday] ⛔ ${pos.symbol} 疑似跌停鎖死（${(changePct * 100).toFixed(1)}%），停損單無法成交`)
           continue
         }

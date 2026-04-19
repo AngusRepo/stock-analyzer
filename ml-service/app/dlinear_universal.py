@@ -106,11 +106,20 @@ def _build_model(seq_len: int = DEFAULT_SEQ_LEN, pred_len: int = DEFAULT_PRED_LE
 # series scale variability. Without it, a stock priced $1000 dominates loss
 # vs $20 stock. Implementation: subtract per-series mean, divide by std,
 # forward, then de-normalize for output.
+#
+# 2026-04-19 D fix: epsilon 1e-9 → 1e-4 to match PatchTST. Near-constant
+# series (delisted floors, stuck price) had std ≈ 0, dividing by 1e-9 blew
+# normalized values into 1e6+ range → MSE loss 9.19e14 noise. Bumped epsilon
+# treats those rows as ~zero variance (predict mean) without exploding loss.
+# Direction accuracy uses denormalized comparison so unaffected by eps.
+
+_NORM_EPS = 1e-4
+
 
 def _normalize(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-row standardize. x: (B, L) → (x_norm, mean, std)."""
     mean = x.mean(axis=1, keepdims=True)
-    std = x.std(axis=1, keepdims=True) + 1e-9
+    std = x.std(axis=1, keepdims=True) + _NORM_EPS
     return (x - mean) / std, mean, std
 
 

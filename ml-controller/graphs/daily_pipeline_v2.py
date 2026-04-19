@@ -158,13 +158,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     Single batch_predict call — modal.map() (or httpx parallel concurrency=20).
     No serial sub-batching: all stocks at once, controller-side parallel.
 
-    2026-04-19 ML_POOL Stage 0.1: parallel Chronos universal batch predict.
-    Chronos foundation model runs zero-shot on the full watchlist in one
-    Modal call (vs former per-stock per-call pattern). Its output is merged
-    into pred_map[symbol]["chronos"] for downstream ensemble (recommendation
-    + ARF aggregator) to consume.
+    2026-04-19 ML_POOL Stage 0.1+0.2+0.3 + A:
+    - Parallel batch: 5 feature models + Chronos + DLinear + PatchTST.
+    - Per-stock merged signal: time_series → rank via sigmoid, weighted by
+      ic_weights × lifecycle_weights from model_pool.json.
+    - Original signal preserved as r["signal"] for backward compat;
+      merged exposed as r["ensemble_v2"] = {avg_rank, signal, contributing_models}.
     """
     import asyncio
+    import json as _json
+    import math
     from services import modal_client
 
     payloads = state["payloads"]
@@ -271,7 +274,119 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}"
     )
+
+    # ── A: ML_POOL ensemble merge (5 feature + 3 time-series with lifecycle) ──
+    # Load model_pool.json + ic_tracking.json once; merge inline (no Modal
+    # round-trip). Original r["signal"]/r["confidence"] preserved for
+    # backward-compat; merged exposed at r["ensemble_v2"].
+    lifecycle, ic_universe, used_pool = await asyncio.to_thread(_load_pool_and_ic)
+    if used_pool:
+        for sym, r in pred_map.items():
+            try:
+                _attach_ensemble_v2(r, lifecycle, ic_universe)
+            except Exception as e:
+                logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
+        logger.info(
+            f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks"
+        )
+    else:
+        logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
+
     return {"predictions": pred_map}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A: ML_POOL-aware ensemble merge helpers (pure Python, no Modal)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _load_pool_and_ic():
+    """Synchronous loader (called via asyncio.to_thread).
+
+    Returns:
+      (lifecycle_weights: dict, ic_weights: dict, used_pool: bool)
+    """
+    import json as _json
+    try:
+        from google.cloud import storage
+        bucket = storage.Client().bucket("stockvision-models")
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            return {}, {}, False
+        pool = _json.loads(pool_blob.download_as_text())
+        lifecycle: dict[str, float] = {}
+        for name, entry in pool.get("models", {}).items():
+            status = entry.get("status", "active")
+            lifecycle[name] = {
+                "active": 1.0, "challenger": 0.0, "degraded": 0.1, "retired": 0.0,
+            }.get(status, 0.0)
+        # IC tracking sidecar — best-effort
+        ic_weights: dict[str, float] = {}
+        ic_blob = bucket.blob("universal/ic_tracking.json")
+        if ic_blob.exists():
+            ic_data = _json.loads(ic_blob.download_as_text())
+            for name, info in (ic_data.get("models") or {}).items():
+                ic_weights[name] = float(info.get("oos_ic", 0.0))
+        return lifecycle, ic_weights, True
+    except Exception as e:
+        logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
+        return {}, {}, False
+
+
+def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
+    """Sigmoid map for time-series forecast → rank-like 0~1 (mirror of
+    ml-service ensemble.time_series_to_rank)."""
+    import math
+    return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
+
+
+def _attach_ensemble_v2(pred: dict, lifecycle: dict, ic_weights: dict) -> None:
+    """Merge feature rank_scores + time-series sigmoid into a single weighted
+    avg, applying lifecycle × ic weights. Mutates pred in place to add
+    pred["ensemble_v2"] = {avg_rank, signal_label, contributing_models, weights}.
+    """
+    feat_ranks = pred.get("rank_scores") or {}
+    if not feat_ranks:
+        return  # predict_stock_v2 must have failed
+    merged: dict[str, float] = dict(feat_ranks)
+    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+        sig = pred.get(src_key) or {}
+        if sig.get("forecast_pct") is None:
+            continue
+        merged[model_name] = _ts_to_rank(float(sig["forecast_pct"]))
+
+    # Apply weights
+    weights: dict[str, float] = {}
+    for name in merged:
+        ic_w = max(0.0, ic_weights.get(name, 0.0))
+        lc_w = lifecycle.get(name, 1.0)  # missing pool entry = treat as active
+        weights[name] = ic_w * lc_w
+
+    # Weighted avg with fallback to plain mean if all weights == 0
+    weight_total = sum(weights.values())
+    if weight_total > 0:
+        avg = sum(merged[n] * weights[n] for n in merged) / weight_total
+    else:
+        avg = sum(merged.values()) / max(len(merged), 1)
+
+    # Translate to signal label (mirror ml-service ensemble defaults)
+    if avg >= 0.85:
+        label = "STRONG_BUY"
+    elif avg >= 0.70:
+        label = "BUY"
+    elif avg <= 0.15:
+        label = "STRONG_SELL"
+    elif avg <= 0.30:
+        label = "SELL"
+    else:
+        label = "HOLD"
+
+    pred["ensemble_v2"] = {
+        "avg_rank": round(avg, 4),
+        "signal": label,
+        "contributing_models": sorted(merged.keys()),
+        "weights": {k: round(v, 6) for k, v in weights.items()},
+    }
 
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:

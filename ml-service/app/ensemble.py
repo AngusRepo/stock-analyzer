@@ -411,6 +411,83 @@ def load_ic_weights() -> dict[str, float]:
         return {}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-19 ML_POOL Plan A — Time-series signal → rank score (for ensemble)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def time_series_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
+    """Map a single-stock 5d forecast_pct (e.g. +0.025 = +2.5%) to rank 0~1.
+
+    Sigmoid centered at 0:
+      rank = 1 / (1 + exp(-forecast_pct * scale))
+
+    With scale=12:
+      forecast=0      → rank=0.50  (neutral)
+      forecast=+0.025 → rank=0.575 (mild bullish)
+      forecast=+0.050 → rank=0.646 (bullish, ~BUY threshold)
+      forecast=+0.100 → rank=0.769 (strong bullish, ~STRONG_BUY threshold)
+      forecast=-0.050 → rank=0.354 (bearish)
+
+    Time-series models output absolute %; sigmoid keeps them in (0,1) so
+    they're directly comparable to feature-model cross-sectional ranks.
+    """
+    import math
+    return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
+
+
+def merge_with_time_series(
+    feature_rank_scores: dict[str, float],
+    time_series_signals: dict[str, dict],
+    ic_weights: dict[str, float] | None = None,
+    lifecycle_weights: dict[str, float] | None = None,
+    forecast_to_rank_scale: float = 12.0,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Combine 5 feature-model rank scores with 3 time-series forecasts.
+
+    Args:
+      feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
+      time_series_signals: {name: {forecast_pct, ...}} for Chronos/DLinear/PatchTST
+        (key absent or value None → that model contributes nothing)
+      ic_weights: {name: IC} (Grinold-Kahn). If absent → uniform.
+      lifecycle_weights: {name: ML_POOL lifecycle multiplier 0/0.1/1.0}.
+        If absent → 1.0 for all (no demotion applied).
+      forecast_to_rank_scale: sigmoid sharpness for time-series → rank.
+
+    Returns:
+      (merged_rank_scores, applied_weights)
+        merged_rank_scores: {name: rank 0~1} including time-series sigmoid
+        applied_weights: {name: ic_weight × lifecycle_mult} for downstream
+                         computation/audit. weight=0 means "drop from ensemble".
+    """
+    merged: dict[str, float] = dict(feature_rank_scores)
+    for name, ts in (time_series_signals or {}).items():
+        if not ts or ts.get("forecast_pct") is None:
+            continue
+        merged[name] = time_series_to_rank(float(ts["forecast_pct"]), scale=forecast_to_rank_scale)
+
+    weights: dict[str, float] = {}
+    for name in merged:
+        ic_w = max(0.0, (ic_weights or {}).get(name, 0.0)) if ic_weights else 1.0
+        lc_w = (lifecycle_weights or {}).get(name, 1.0)  # default active=1.0
+        weights[name] = ic_w * lc_w
+    return merged, weights
+
+
+def weighted_average_rank(rank_scores: dict[str, float], weights: dict[str, float]) -> float:
+    """Standard weighted average. Falls back to plain mean if all weights ≤ 0."""
+    weight_total = 0.0
+    weighted_sum = 0.0
+    for name, score in rank_scores.items():
+        w = max(0.0, weights.get(name, 0.0))
+        weighted_sum += score * w
+        weight_total += w
+    if weight_total <= 0:
+        scores = list(rank_scores.values())
+        return float(np.mean(scores)) if scores else 0.5
+    return weighted_sum / weight_total
+
+
 def rank_to_signal(
     rank_scores: dict[str, float],
     current_price: float,

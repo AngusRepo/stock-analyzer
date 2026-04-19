@@ -655,6 +655,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "feature_version": "v2_universal_regression",
         "model_errors": model_errors if model_errors else None,
         "ic_weights": {k: round(v, 4) for k, v in ic_weights.items()} if ic_weights else None,
+        # 2026-04-19 ML_POOL Plan A: expose raw per-model rank scores so
+        # pipeline_v2 can re-merge with Chronos/DLinear/PatchTST + lifecycle
+        # weights from model_pool.json without a second predict round-trip.
+        "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
+        "atr": float(atr),
     }
 
 

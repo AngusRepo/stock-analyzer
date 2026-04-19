@@ -17,7 +17,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import predict, retrain, retrain_trigger, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate
+from routers import predict, retrain, retrain_trigger, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -74,6 +74,8 @@ app.include_router(regime.router,   dependencies=[Depends(verify_token)])
 app.include_router(walk_forward.router, dependencies=[Depends(verify_token)])
 # 2026-04-18 #39: Morning Debate full port — runBuyDebate migrated from Worker
 app.include_router(debate.router,       dependencies=[Depends(verify_token)])
+# 2026-04-19 ML_POOL Plan A: model pool management (Stage 0.x bootstrap, Stage 1+ full lifecycle)
+app.include_router(model_pool.router,   dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])

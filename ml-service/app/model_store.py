@@ -143,6 +143,13 @@ def load_model(
     回傳 (model, metadata) 或 (None, None)
 
     gcs_prefix: override default path. For walk-forward: 'walk_forward/w{window_id}'.
+
+    2026-04-19 ML_POOL Stage 1 path resolution order (when gcs_prefix is None
+    AND stock_id == 0 = universal predict):
+      1. Try model_pool.json → use pool entry's gcs_path (versioned layout)
+      2. Fallback: legacy flat-file universal/{model}.joblib
+    Walk-forward callers (gcs_prefix set) bypass pool lookup. Per-stock
+    callers (stock_id != 0) also bypass — they aren't ML_POOL managed.
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -151,13 +158,38 @@ def load_model(
     try:
         import joblib
 
+        blob_path: str | None = None
+        meta_path: str | None = None
+        used_pool = False
         if gcs_prefix is not None:
             prefix = gcs_prefix.rstrip("/")
+            blob_path = f"{prefix}/{model_name.lower()}.joblib"
+            meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
+        elif stock_id == 0:
+            # ML_POOL aware: prefer pool entry, fall back to legacy
+            try:
+                from .model_pool import get_active_path, gcs_metadata_path_for, get_active_version
+                pool_path = get_active_path(model_name)
+                if pool_path:
+                    candidate = bucket.blob(pool_path)
+                    if candidate.exists():
+                        blob_path = pool_path
+                        ver = get_active_version(model_name)
+                        if ver:
+                            meta_path = gcs_metadata_path_for(model_name, ver)
+                        used_pool = True
+            except Exception as _e:
+                logger.debug(f"[ModelStore] Pool lookup skipped for {model_name}: {_e}")
+            if blob_path is None:
+                # Legacy flat-file fallback (kept for safety while ML_POOL bootstraps)
+                blob_path = f"universal/{model_name.lower()}.joblib"
+                meta_path = f"universal/metadata_{model_name.lower()}.json"
         else:
-            prefix = "universal" if stock_id == 0 else str(stock_id)
-        blob_path = f"{prefix}/{model_name.lower()}.joblib"
-        blob = bucket.blob(blob_path)
+            prefix = str(stock_id)
+            blob_path = f"{prefix}/{model_name.lower()}.joblib"
+            meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
 
+        blob = bucket.blob(blob_path)
         if not blob.exists():
             return None, None
 
@@ -168,10 +200,13 @@ def load_model(
         model = joblib.load(buf)
 
         # 載入 metadata
-        meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
-        metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
+        metadata = {}
+        if meta_path:
+            meta_blob = bucket.blob(meta_path)
+            if meta_blob.exists():
+                metadata = json.loads(meta_blob.download_as_text())
 
-        logger.info(f"[ModelStore] Loaded {model_name} ({prefix})")
+        logger.info(f"[ModelStore] Loaded {model_name} from {blob_path} ({'pool' if used_pool else 'legacy/wf'})")
         return model, metadata
 
     except Exception as e:

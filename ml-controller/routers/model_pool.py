@@ -286,14 +286,206 @@ async def train_patchtst(req: TrainPatchTSTRequest):
 
 @router.get("/status")
 async def status():
-    """Read current model_pool.json from GCS. Placeholder until Stage 1 lands."""
+    """Read current model_pool.json from GCS."""
     try:
         import json as _json
         from google.cloud import storage
         bucket = storage.Client().bucket("stockvision-models")
         blob = bucket.blob("universal/model_pool.json")
         if not blob.exists():
-            return {"status": "not_initialized", "note": "model_pool.json not yet created (ML_POOL Stage 1+)"}
+            return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
         return _json.loads(blob.download_as_text())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 bootstrap endpoints (versioning + state machine init)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MigrateLegacyRequest(BaseModel):
+    dry_run: bool = True
+    confirm: bool = False  # required when dry_run=False
+
+
+@router.post("/migrate_legacy")
+async def migrate_legacy(req: MigrateLegacyRequest):
+    """Copy legacy flat-file GCS artifacts to versioned layout (universal/{model}/v1.{ext}).
+
+    dry_run=True: report only.
+    dry_run=False + confirm=true: actually copy. Originals kept (for predict
+    fallback until model_pool.json is the canonical source). Stage 4 follow-up
+    will deprecate originals after consumers migrate.
+    """
+    if not req.dry_run and not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Non-dry-run requires confirm=true (writes to GCS)",
+        )
+    # Inline import — avoid forcing controller container to load ml-service deps at startup
+    import importlib
+    import sys
+    sys.path.insert(0, "/app")  # ensure ml-service modules importable when colocated
+    try:
+        from app import model_pool as _mp  # ml-service module
+    except ImportError:
+        # Fallback path for cases where ml-service modules not on PYTHONPATH:
+        # do the bare migration via direct GCS calls
+        return _inline_migrate_via_gcs(dry_run=req.dry_run)
+    return _mp.migrate_legacy_to_versioned(dry_run=req.dry_run)
+
+
+def _inline_migrate_via_gcs(dry_run: bool) -> dict:
+    """Fallback if ml-service module isn't reachable: minimal inline copy."""
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    legacy_to_versioned = {
+        "universal/xgboost.joblib":          "universal/xgboost/v1.joblib",
+        "universal/catboost.joblib":         "universal/catboost/v1.joblib",
+        "universal/extratrees.joblib":       "universal/extratrees/v1.joblib",
+        "universal/lightgbm.joblib":         "universal/lightgbm/v1.joblib",
+        "universal/ft-transformer.joblib":   "universal/ft_transformer/v1.joblib",
+        "universal/metadata_xgboost.json":          "universal/xgboost/metadata_v1.json",
+        "universal/metadata_catboost.json":         "universal/catboost/metadata_v1.json",
+        "universal/metadata_extratrees.json":       "universal/extratrees/metadata_v1.json",
+        "universal/metadata_lightgbm.json":         "universal/lightgbm/metadata_v1.json",
+        "universal/metadata_ft-transformer.json":   "universal/ft_transformer/metadata_v1.json",
+    }
+    actions = []
+    for src, tgt in legacy_to_versioned.items():
+        src_blob = bucket.blob(src)
+        tgt_blob = bucket.blob(tgt)
+        item = {"source": src, "target": tgt}
+        if not src_blob.exists():
+            actions.append({**item, "executed": False, "note": "source missing"})
+            continue
+        if tgt_blob.exists():
+            actions.append({**item, "executed": False, "note": "target exists (skip)"})
+            continue
+        if dry_run:
+            actions.append({**item, "executed": False, "note": "dry_run"})
+            continue
+        try:
+            new = bucket.copy_blob(src_blob, bucket, tgt)
+            actions.append({**item, "executed": True, "note": f"copied → {new.name}"})
+        except Exception as e:
+            actions.append({**item, "executed": False, "note": f"error: {e}"})
+    return {"dry_run": dry_run, "actions": actions}
+
+
+class InitPoolRequest(BaseModel):
+    confirm: bool = False
+    overwrite: bool = False  # if model_pool.json already exists
+
+
+@router.post("/init")
+async def init_pool(req: InitPoolRequest):
+    """Initialize model_pool.json with all 8 universal models as 'active' v1.
+
+    Idempotent unless overwrite=true. Should run AFTER /migrate_legacy so
+    versioned paths exist for the entries this writes.
+    """
+    if not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="init requires confirm=true (writes model_pool.json to GCS)",
+        )
+    import json as _json
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    pool_blob = bucket.blob("universal/model_pool.json")
+    if pool_blob.exists() and not req.overwrite:
+        existing = _json.loads(pool_blob.download_as_text())
+        return {
+            "status": "exists",
+            "note": "model_pool.json already initialized; pass overwrite=true to replace",
+            "model_count": len(existing.get("models", {})),
+            "last_updated": existing.get("last_updated"),
+        }
+
+    # Inline default pool (mirrors ml-service app/model_pool.py:init_default_pool
+    # without forcing module import here — keep ml-controller decoupled).
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+    iso_now = datetime.now(timezone.utc).isoformat()
+    managed = [
+        # (name, model_type, balance_family, ext)
+        ("XGBoost",         "feature",                "feature",     "joblib"),
+        ("CatBoost",        "feature",                "feature",     "joblib"),
+        ("ExtraTrees",      "feature",                "feature",     "joblib"),
+        ("LightGBM",        "feature",                "feature",     "joblib"),
+        ("FT-Transformer",  "feature",                "feature",     "joblib"),
+        ("Chronos",         "time_series_foundation", "time_series", "json"),
+        ("DLinear",         "time_series_learnable",  "time_series", "pt"),
+        ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
+    ]
+    models = {}
+    for name, mt, bf, ext in managed:
+        folder = name.lower().replace("-", "_")
+        models[name] = {
+            "status": "active",
+            "version": "v1",
+            "gcs_path": f"universal/{folder}/v1.{ext}",
+            "model_type": mt,
+            "balance_family": bf,
+            "promoted_at": today,
+            "shadow_since": None,
+            "degraded_since": None,
+            "retired_at": None,
+            "weekly_ic": [],
+            "ic_4w_avg": None,
+            "consecutive_negative_weeks": 0,
+        }
+    pool = {
+        "schema_version": "1.0",
+        "last_updated": iso_now,
+        "models": models,
+    }
+    pool_blob.upload_from_string(
+        _json.dumps(pool, indent=2, ensure_ascii=False),
+        content_type="application/json",
+    )
+    return {"status": "initialized", "model_count": len(models), "last_updated": iso_now}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chronos config marker (foundation model — no weights, just a version stub)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class WriteChronosConfigRequest(BaseModel):
+    version: str = "v1"
+    model_id: str = "amazon/chronos-t5-tiny"
+    horizon_default: int = 5
+    num_samples_default: int = 20
+    confirm: bool = False
+
+
+@router.post("/write_chronos_config")
+async def write_chronos_config(req: WriteChronosConfigRequest):
+    """Write Chronos version config to GCS (foundation model, no weights).
+
+    Stage 1 needs every managed model to have an artifact at its versioned
+    path so model_pool.json entries stay valid. For Chronos the artifact is
+    a config JSON capturing which HuggingFace model_id is in production.
+    """
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="write_chronos_config requires confirm=true")
+    import json as _json
+    from datetime import datetime, timezone
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    cfg = {
+        "version": req.version,
+        "model_id": req.model_id,
+        "horizon_default": req.horizon_default,
+        "num_samples_default": req.num_samples_default,
+        "strategy": "zero-shot foundation, no training",
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = f"universal/chronos/{req.version}.json"
+    bucket.blob(path).upload_from_string(
+        _json.dumps(cfg, indent=2), content_type="application/json"
+    )
+    return {"status": "written", "path": path, "config": cfg}

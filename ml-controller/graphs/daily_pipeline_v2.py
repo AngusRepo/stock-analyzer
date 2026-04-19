@@ -185,10 +185,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym and closes:
             chronos_series.append({"symbol": sym, "prices": closes})
 
-    # Parallel: feature models + Chronos universal (2 independent I/O waits)
+    # Parallel: feature models + Chronos universal + DLinear universal
+    # 3 independent I/O waits (Stage 0.1 + 0.2)
     feat_task = batch_predict(payloads)
     chronos_task = modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
-    results, chronos_raw = await asyncio.gather(feat_task, chronos_task, return_exceptions=True)
+    dlinear_task = modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version="v1")
+    results, chronos_raw, dlinear_raw = await asyncio.gather(
+        feat_task, chronos_task, dlinear_task, return_exceptions=True
+    )
 
     # Guard against Chronos total failure (don't let it block feature preds)
     chronos_map: dict[str, dict] = {}
@@ -205,6 +209,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
 
+    # Guard against DLinear total failure (Stage 0.2 — may have no trained weights yet)
+    dlinear_map: dict[str, dict] = {}
+    if isinstance(dlinear_raw, BaseException):
+        logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw} — skipping DLinear layer")
+    elif isinstance(dlinear_raw, dict) and not dlinear_raw.get("error"):
+        for dr in dlinear_raw.get("results") or []:
+            sym = dr.get("symbol")
+            if sym and not dr.get("error"):
+                dlinear_map[sym] = dr
+        if dlinear_map:
+            logger.info(
+                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(chronos_series)} succeeded"
+            )
+        else:
+            logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
+    else:
+        logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
+
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -214,15 +236,18 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     for r in results:
         sym = r.get("symbol")
         if sym and not r.get("error"):
-            # Attach Chronos forecast if available for this symbol
+            # Attach Chronos / DLinear forecasts if available
             if sym in chronos_map:
                 r["chronos"] = chronos_map[sym]
+            if sym in dlinear_map:
+                r["dlinear"] = dlinear_map[sym]
             pred_map[sym] = r
 
     error_count = sum(1 for r in results if r.get("error"))
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
-        f"{error_count} errors, chronos_attached={sum(1 for v in pred_map.values() if 'chronos' in v)}"
+        f"{error_count} errors, chronos_attached={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
+        f"dlinear_attached={sum(1 for v in pred_map.values() if 'dlinear' in v)}"
     )
     return {"predictions": pred_map}
 

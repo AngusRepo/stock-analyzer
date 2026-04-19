@@ -834,6 +834,87 @@ def feature_selection_pipeline(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
 
 
+# 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
+@app.function(
+    gpu="L4",
+    memory=8192,
+    timeout=1800,             # 30 min for ~2500 stocks × ~500 windows × 30 epochs
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_dlinear_universal(payload: dict) -> dict:
+    """One-shot universal DLinear training across all stocks' close series.
+
+    payload:
+        series_close: list[list[float]]   raw close per stock
+        seq_len/pred_len/kernel/n_epochs/batch_size/lr/val_ratio: hyperparams
+        version: GCS save tag (default "v1")
+        device: "cuda" (default if GPU avail) or "cpu"
+
+    Returns:
+        {"saved": {weights_path, metadata_path}, "metadata": {...}}
+    """
+    _setup_env()
+    from app.dlinear_universal import train_dlinear, save_to_gcs
+    try:
+        import torch
+        device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+        result = train_dlinear(
+            series_close=payload.get("series_close") or [],
+            seq_len=payload.get("seq_len", 60),
+            pred_len=payload.get("pred_len", 5),
+            kernel=payload.get("kernel", 25),
+            n_epochs=payload.get("n_epochs", 30),
+            batch_size=payload.get("batch_size", 256),
+            lr=payload.get("lr", 1e-3),
+            val_ratio=payload.get("val_ratio", 0.15),
+            device=device,
+        )
+        if result.get("error"):
+            return result
+        version = payload.get("version", "v1")
+        saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
+        return {"saved": saved, "metadata": result["metadata"], "version": version}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_dlinear_universal"}
+
+
+# 2026-04-19 ML_POOL Stage 0.2: DLinear batch predict
+@app.function(
+    cpu=2,
+    memory=2048,             # DLinear is tiny, just linear layers
+    timeout=300,             # 5 min cap for whole watchlist
+    scaledown_window=300,    # keep model warm 5 min
+    max_containers=1,
+)
+def dlinear_universal_predict(payload: dict) -> dict:
+    """Batch DLinear forecast for the watchlist.
+
+    payload:
+        series_list: list of {symbol: str, prices: list[float]}
+        version: GCS model version (default "v1")
+        horizon_used: which pred_len step to report (default 5)
+
+    Returns:
+        {"results": [{...}], "n_input": int, "n_success": int}
+        If model not in GCS yet → all rows error "weights not in GCS".
+    """
+    _setup_env()
+    from app.dlinear_universal import dlinear_batch_predict
+    try:
+        results = dlinear_batch_predict(
+            series_list=payload.get("series_list") or [],
+            horizon_used=payload.get("horizon_used", 5),
+            version=payload.get("version", "v1"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []),
+                "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "dlinear_universal_predict"}
+
+
 # 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
 @app.function(
     cpu=2,

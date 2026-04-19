@@ -147,6 +147,42 @@ async def chronos_batch_predict(series_list: list[dict], horizon: int = 5, num_s
     })
 
 
+# 2026-04-19 ML_POOL Stage 0.2: DLinear universal helpers
+async def _modal_dlinear_universal_predict(payload: dict) -> dict:
+    fn = _lookup("dlinear_universal_predict")
+    return await fn.remote.aio(payload)
+
+
+async def dlinear_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
+    """Universal DLinear forecast for a batch of stocks.
+
+    series_list: [{"symbol": str, "prices": list[float]}]
+    Returns: {"results": [...], "n_input": int, "n_success": int}
+    Note: returns error rows if no trained DLinear weights exist in GCS yet.
+    """
+    return await _modal_dlinear_universal_predict({
+        "series_list": series_list,
+        "horizon_used": horizon_used,
+        "version": version,
+    })
+
+
+async def _modal_train_dlinear_universal(payload: dict) -> dict:
+    fn = _lookup("train_dlinear_universal")
+    return await fn.remote.aio(payload)
+
+
+async def train_dlinear_universal(series_close: list[list[float]], **hyperparams) -> dict:
+    """One-shot universal DLinear training.
+
+    series_close: list of close-price lists (one per stock).
+    hyperparams: seq_len/pred_len/kernel/n_epochs/batch_size/lr/val_ratio/version
+    Returns: {"saved": {weights_path, metadata_path}, "metadata": {...}, "version": str}
+    """
+    payload = {"series_close": series_close, **hyperparams}
+    return await _modal_train_dlinear_universal(payload)
+
+
 def _spawn_wf_ftt_window(payload: dict):
     """Spawn FT-T training (returns handle)."""
     fn = _lookup("train_wf_ftt_window")

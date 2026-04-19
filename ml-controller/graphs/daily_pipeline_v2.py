@@ -185,13 +185,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym and closes:
             chronos_series.append({"symbol": sym, "prices": closes})
 
-    # Parallel: feature models + Chronos universal + DLinear universal
-    # 3 independent I/O waits (Stage 0.1 + 0.2)
+    # Parallel: feature models + Chronos + DLinear + PatchTST (Stage 0.1+0.2+0.3)
+    # 4 independent I/O waits, all batched on watchlist symbols
     feat_task = batch_predict(payloads)
     chronos_task = modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
     dlinear_task = modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version="v1")
-    results, chronos_raw, dlinear_raw = await asyncio.gather(
-        feat_task, chronos_task, dlinear_task, return_exceptions=True
+    patchtst_task = modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version="v1")
+    results, chronos_raw, dlinear_raw, patchtst_raw = await asyncio.gather(
+        feat_task, chronos_task, dlinear_task, patchtst_task, return_exceptions=True
     )
 
     # Guard against Chronos total failure (don't let it block feature preds)
@@ -227,6 +228,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
 
+    # Guard against PatchTST total failure (Stage 0.3 — may have no trained weights yet)
+    patchtst_map: dict[str, dict] = {}
+    if isinstance(patchtst_raw, BaseException):
+        logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw} — skipping PatchTST layer")
+    elif isinstance(patchtst_raw, dict) and not patchtst_raw.get("error"):
+        for pr in patchtst_raw.get("results") or []:
+            sym = pr.get("symbol")
+            if sym and not pr.get("error"):
+                patchtst_map[sym] = pr
+        if patchtst_map:
+            logger.info(
+                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(chronos_series)} succeeded"
+            )
+        else:
+            logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
+    else:
+        logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
+
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -236,18 +255,21 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     for r in results:
         sym = r.get("symbol")
         if sym and not r.get("error"):
-            # Attach Chronos / DLinear forecasts if available
+            # Attach Chronos / DLinear / PatchTST forecasts if available
             if sym in chronos_map:
                 r["chronos"] = chronos_map[sym]
             if sym in dlinear_map:
                 r["dlinear"] = dlinear_map[sym]
+            if sym in patchtst_map:
+                r["patchtst"] = patchtst_map[sym]
             pred_map[sym] = r
 
     error_count = sum(1 for r in results if r.get("error"))
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
-        f"{error_count} errors, chronos_attached={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
-        f"dlinear_attached={sum(1 for v in pred_map.values() if 'dlinear' in v)}"
+        f"{error_count} errors, chronos={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
+        f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
+        f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}"
     )
     return {"predictions": pred_map}
 

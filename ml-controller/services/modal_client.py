@@ -183,6 +183,32 @@ async def train_dlinear_universal(series_close: list[list[float]], **hyperparams
     return await _modal_train_dlinear_universal(payload)
 
 
+# 2026-04-19 ML_POOL Stage 0.3: PatchTST universal helpers
+async def _modal_patchtst_universal_predict(payload: dict) -> dict:
+    fn = _lookup("patchtst_universal_predict")
+    return await fn.remote.aio(payload)
+
+
+async def patchtst_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
+    """Universal PatchTST forecast for a batch of stocks."""
+    return await _modal_patchtst_universal_predict({
+        "series_list": series_list,
+        "horizon_used": horizon_used,
+        "version": version,
+    })
+
+
+async def _modal_train_patchtst_universal(payload: dict) -> dict:
+    fn = _lookup("train_patchtst_universal")
+    return await fn.remote.aio(payload)
+
+
+async def train_patchtst_universal(series_close: list[list[float]], **hyperparams) -> dict:
+    """One-shot universal PatchTST training."""
+    payload = {"series_close": series_close, **hyperparams}
+    return await _modal_train_patchtst_universal(payload)
+
+
 def _spawn_wf_ftt_window(payload: dict):
     """Spawn FT-T training (returns handle)."""
     fn = _lookup("train_wf_ftt_window")

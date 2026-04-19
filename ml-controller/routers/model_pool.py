@@ -159,6 +159,131 @@ async def train_dlinear(req: TrainDLinearRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# 2026-04-19 ML_POOL Stage 0.3: PatchTST universal training (parallel structure to DLinear)
+
+
+class TrainPatchTSTRequest(BaseModel):
+    lookback_days: int = 365
+    min_history_days: int = 90
+    max_stocks: int = 1500
+    seq_len: int = 60
+    pred_len: int = 5
+    patch_len: int = 12
+    stride: int = 12
+    d_model: int = 128
+    n_heads: int = 8
+    n_layers: int = 3
+    dropout: float = 0.1
+    n_epochs: int = 30
+    batch_size: int = 256
+    lr: float = 5e-4
+    weight_decay: float = 1e-5
+    val_ratio: float = 0.15
+    version: str = "v1"
+    confirm: bool = False
+
+
+@router.post("/train_patchtst")
+async def train_patchtst(req: TrainPatchTSTRequest):
+    """One-shot universal PatchTST training. Mirrors /train_dlinear pipeline."""
+    if not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="train_patchtst requires confirm=true — overwrites "
+                   f"gs://stockvision-models/universal/patchtst/{req.version}.pt",
+        )
+
+    t0 = time.time()
+    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    end_date = tw_now.date().isoformat()
+    start_date = (
+        datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)
+    ).date().isoformat()
+
+    sql = """
+        SELECT s.symbol, sp.date, sp.close
+        FROM stocks s
+        JOIN stock_prices sp ON sp.stock_id = s.id
+        WHERE s.delisted_date IS NULL
+          AND s.sector IS NOT NULL AND s.sector != ''
+          AND sp.date >= ? AND sp.date <= ?
+          AND sp.close IS NOT NULL
+        ORDER BY s.symbol, sp.date
+    """
+    rows = d1_query(sql, [start_date, end_date])
+    if not rows:
+        raise HTTPException(status_code=400, detail=f"No close rows in {start_date}~{end_date}")
+
+    by_symbol: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        try:
+            by_symbol[r["symbol"]].append(float(r["close"]))
+        except (TypeError, ValueError):
+            continue
+
+    eligible = [(sym, prices) for sym, prices in by_symbol.items() if len(prices) >= req.min_history_days]
+    eligible.sort(key=lambda x: -len(x[1]))
+    eligible = eligible[: req.max_stocks]
+    series_close = [prices for _, prices in eligible]
+    if not series_close:
+        raise HTTPException(
+            status_code=400,
+            detail=f"0 stocks with ≥{req.min_history_days}d history in window",
+        )
+
+    logger.info(
+        f"[ModelPool] PatchTST train candidates: {len(series_close)} stocks "
+        f"(window {start_date}~{end_date}, min_history={req.min_history_days})"
+    )
+
+    try:
+        result = await modal_client.train_patchtst_universal(
+            series_close=series_close,
+            seq_len=req.seq_len,
+            pred_len=req.pred_len,
+            patch_len=req.patch_len,
+            stride=req.stride,
+            d_model=req.d_model,
+            n_heads=req.n_heads,
+            n_layers=req.n_layers,
+            dropout=req.dropout,
+            n_epochs=req.n_epochs,
+            batch_size=req.batch_size,
+            lr=req.lr,
+            weight_decay=req.weight_decay,
+            val_ratio=req.val_ratio,
+            version=req.version,
+        )
+    except Exception as e:
+        logger.error(f"[ModelPool] PatchTST train Modal call failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Modal call failed: {e}")
+
+    if result.get("error"):
+        return {
+            "status": "error",
+            "error": result.get("error"),
+            "trace": (result.get("trace") or "")[:500],
+            "input_stocks": len(series_close),
+            "elapsed_s": round(time.time() - t0, 1),
+        }
+
+    md = result.get("metadata", {})
+    return {
+        "status": "success",
+        "version": result.get("version"),
+        "saved": result.get("saved"),
+        "input_stocks": len(series_close),
+        "lookback_window": [start_date, end_date],
+        "min_history_days": req.min_history_days,
+        "best_val_loss": md.get("best_val_loss"),
+        "val_dir_accuracy": md.get("val_dir_accuracy"),
+        "n_train_windows": md.get("n_train_windows"),
+        "n_val_windows": md.get("n_val_windows"),
+        "training_elapsed_s": md.get("elapsed_s"),
+        "total_elapsed_s": round(time.time() - t0, 1),
+    }
+
+
 @router.get("/status")
 async def status():
     """Read current model_pool.json from GCS. Placeholder until Stage 1 lands."""

@@ -915,6 +915,73 @@ def dlinear_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "dlinear_universal_predict"}
 
 
+# 2026-04-19 ML_POOL Stage 0.3: PatchTST universal training
+@app.function(
+    gpu="L4",
+    memory=8192,
+    timeout=3600,             # 60 min for ~1500 stocks × ~330k windows × 30 epochs
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_patchtst_universal(payload: dict) -> dict:
+    """One-shot universal PatchTST training across all stocks' close series."""
+    _setup_env()
+    from app.patchtst_universal import train_patchtst, save_to_gcs
+    try:
+        import torch
+        device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+        result = train_patchtst(
+            series_close=payload.get("series_close") or [],
+            seq_len=payload.get("seq_len", 60),
+            pred_len=payload.get("pred_len", 5),
+            patch_len=payload.get("patch_len", 12),
+            stride=payload.get("stride", 12),
+            d_model=payload.get("d_model", 128),
+            n_heads=payload.get("n_heads", 8),
+            n_layers=payload.get("n_layers", 3),
+            dropout=payload.get("dropout", 0.1),
+            n_epochs=payload.get("n_epochs", 30),
+            batch_size=payload.get("batch_size", 256),
+            lr=payload.get("lr", 5e-4),
+            weight_decay=payload.get("weight_decay", 1e-5),
+            val_ratio=payload.get("val_ratio", 0.15),
+            device=device,
+        )
+        if result.get("error"):
+            return result
+        version = payload.get("version", "v1")
+        saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
+        return {"saved": saved, "metadata": result["metadata"], "version": version}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_patchtst_universal"}
+
+
+# 2026-04-19 ML_POOL Stage 0.3: PatchTST batch predict
+@app.function(
+    cpu=2,
+    memory=4096,             # PatchTST is small (~1MB weights), but transformer needs torch overhead
+    timeout=300,
+    scaledown_window=300,
+    max_containers=1,
+)
+def patchtst_universal_predict(payload: dict) -> dict:
+    """Batch PatchTST forecast for the watchlist."""
+    _setup_env()
+    from app.patchtst_universal import patchtst_batch_predict
+    try:
+        results = patchtst_batch_predict(
+            series_list=payload.get("series_list") or [],
+            horizon_used=payload.get("horizon_used", 5),
+            version=payload.get("version", "v1"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []),
+                "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "patchtst_universal_predict"}
+
+
 # 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
 @app.function(
     cpu=2,

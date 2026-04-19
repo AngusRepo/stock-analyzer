@@ -128,6 +128,25 @@ def _spawn_wf_tree_window(payload: dict):
     return fn.spawn(payload)
 
 
+# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+async def _modal_chronos_universal_predict(payload: dict) -> dict:
+    fn = _lookup("chronos_universal_predict")
+    return await fn.remote.aio(payload)
+
+
+async def chronos_batch_predict(series_list: list[dict], horizon: int = 5, num_samples: int = 20) -> dict:
+    """Universal Chronos forecast for a batch of stocks.
+
+    series_list: [{"symbol": str, "prices": list[float]}]
+    Returns: {"results": [...], "n_input": int, "n_success": int}
+    """
+    return await _modal_chronos_universal_predict({
+        "series_list": series_list,
+        "horizon": horizon,
+        "num_samples": num_samples,
+    })
+
+
 def _spawn_wf_ftt_window(payload: dict):
     """Spawn FT-T training (returns handle)."""
     fn = _lookup("train_wf_ftt_window")

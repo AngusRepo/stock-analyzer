@@ -157,25 +157,72 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     """
     Single batch_predict call — modal.map() (or httpx parallel concurrency=20).
     No serial sub-batching: all stocks at once, controller-side parallel.
+
+    2026-04-19 ML_POOL Stage 0.1: parallel Chronos universal batch predict.
+    Chronos foundation model runs zero-shot on the full watchlist in one
+    Modal call (vs former per-stock per-call pattern). Its output is merged
+    into pred_map[symbol]["chronos"] for downstream ensemble (recommendation
+    + ARF aggregator) to consume.
     """
+    import asyncio
+    from services import modal_client
+
     payloads = state["payloads"]
     n = len(payloads)
-    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (single batch, parallel)")
+    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (batch feature models + Chronos)")
 
     if not payloads:
         return {"predictions": {}}
 
-    results = await batch_predict(payloads)
+    # Build Chronos series_list once (close prices per symbol) to run in parallel
+    # with feature-model batch predict. Uses last 512 values max — Chronos T5
+    # context limit. Failed rows get error dict from chronos_universal.
+    chronos_series = []
+    for p in payloads:
+        sym = p.get("symbol") if isinstance(p, dict) else None
+        prices = p.get("prices") or [] if isinstance(p, dict) else []
+        closes = [float(px.get("close", 0) or 0) for px in prices if px.get("close") is not None]
+        if sym and closes:
+            chronos_series.append({"symbol": sym, "prices": closes})
+
+    # Parallel: feature models + Chronos universal (2 independent I/O waits)
+    feat_task = batch_predict(payloads)
+    chronos_task = modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
+    results, chronos_raw = await asyncio.gather(feat_task, chronos_task, return_exceptions=True)
+
+    # Guard against Chronos total failure (don't let it block feature preds)
+    chronos_map: dict[str, dict] = {}
+    if isinstance(chronos_raw, BaseException):
+        logger.warning(f"[Pipeline V2] Chronos batch failed entirely: {chronos_raw} — skipping Chronos layer")
+    elif isinstance(chronos_raw, dict) and not chronos_raw.get("error"):
+        for cr in chronos_raw.get("results") or []:
+            sym = cr.get("symbol")
+            if sym and not cr.get("error"):
+                chronos_map[sym] = cr
+        logger.info(
+            f"[Pipeline V2] Chronos universal: {len(chronos_map)}/{len(chronos_series)} succeeded"
+        )
+    else:
+        logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
+
+    # Guard against feature batch total failure
+    if isinstance(results, BaseException):
+        logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
+        return {"predictions": {}}
+
     pred_map: dict[str, dict] = {}
     for r in results:
         sym = r.get("symbol")
         if sym and not r.get("error"):
+            # Attach Chronos forecast if available for this symbol
+            if sym in chronos_map:
+                r["chronos"] = chronos_map[sym]
             pred_map[sym] = r
 
     error_count = sum(1 for r in results if r.get("error"))
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
-        f"{error_count} errors"
+        f"{error_count} errors, chronos_attached={sum(1 for v in pred_map.values() if 'chronos' in v)}"
     )
     return {"predictions": pred_map}
 

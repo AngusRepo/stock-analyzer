@@ -834,6 +834,46 @@ def feature_selection_pipeline(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
 
 
+# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+@app.function(
+    cpu=2,
+    memory=4096,              # chronos-t5-tiny loads ~500MB
+    timeout=600,              # 10 min cap — 33 stocks × ~0.5s = 20s typical
+    scaledown_window=300,     # keep container warm 5 min for back-to-back calls
+    max_containers=1,         # singleton pipeline in module cache, one container fine
+)
+def chronos_universal_predict(payload: dict) -> dict:
+    """Batch Chronos foundation model forecast for the watchlist.
+
+    Replaces per-stock per-call invocation pattern (models.py:run_chronos
+    called 33 times with fresh pipeline each) with a single batch call that
+    reuses a module-cached pipeline.
+
+    payload:
+        series_list: list of {symbol: str, prices: list[float]}
+        horizon: int (default 5)
+        num_samples: int (default 20)
+        model_id: str (optional override)
+
+    Returns:
+        {"results": [{symbol, model, forecast_pct, up_prob, confidence,
+                      direction, n_samples} | {symbol, error}]}
+    """
+    _setup_env()
+    from app.chronos_universal import chronos_batch_predict
+    try:
+        results = chronos_batch_predict(
+            series_list=payload.get("series_list") or [],
+            horizon=payload.get("horizon", 5),
+            num_samples=payload.get("num_samples", 20),
+            model_id=payload.get("model_id", "amazon/chronos-t5-tiny"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []), "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc(), "type": "chronos_universal"}
+
+
 # 2026-04-19 N2: Walk-forward per-window feature selection
 @app.function(
     cpu=4,

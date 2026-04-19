@@ -186,24 +186,88 @@ def get_active_path(model_name: str, pool: Optional[dict] = None) -> Optional[st
     return gcs_path_for(model_name, version)
 
 
-def get_lifecycle_weight(model_name: str, pool: Optional[dict] = None) -> float:
-    """Return lifecycle weight multiplier per ML_POOL_ARCHITECTURE.md.
+def get_status_filter(status: str) -> float:
+    """Pure status → on/off filter. NOT a final weight (use compute_weight).
 
-    challenger=0 (shadow), active=1.0, degraded=0.1, retired=0.
-    Stage 4 will additionally multiply by ic_weight + regime_mult.
+    Returns 1.0 for active/degraded (model still inferring), 0.0 for
+    challenger/retired (shadow or stopped).
+    """
+    return {
+        "active":     1.0,
+        "degraded":   1.0,    # still in ensemble, may be IC-dampened by caller
+        "challenger": 0.0,    # shadow predict, vote=0
+        "retired":    0.0,    # not in ensemble
+    }.get(status, 0.0)
+
+
+def compute_weight(
+    model_name: str,
+    ic_value: float,
+    pool: Optional[dict] = None,
+    degraded_dampening: float = 1.0,
+) -> float:
+    """ML_POOL ensemble weight = max(0, ic) × status_filter × dampening.
+
+    2026-04-19 R1+R3 hybrid (replaces hardcoded 0.0/0.1/1.0 lifecycle multipliers):
+      - **R3 (continuous IC-based)**: IC drives weight directly; IC<0 → 0.
+        Industry standard for cases with clear ground truth (IC).
+      - **R1 (KV-driven dampening)**: degraded_dampening defaults to 1.0
+        (pure IC, no extra dampening). Caller passes from
+        `trading:config.mlPool.degradedDampening` for production override.
+        Future Optuna search (after #31 backtest Mode B) can tune this.
+
+    Status semantics:
+      active:     pure IC weight
+      degraded:   IC × degraded_dampening (default 1.0 = no extra dampening)
+      challenger: 0 (shadow predict only)
+      retired:    0 (excluded)
+
+    Args:
+      model_name:  for pool lookup
+      ic_value:    raw IC (e.g. 0.13 from ic_tracking.json or weekly_ic avg)
+      pool:        loaded model_pool dict (or None to fetch from GCS)
+      degraded_dampening: extra multiplier applied only if status == degraded.
+                          Default 1.0 = no dampening = pure R3 (industry std).
+                          Future: Optuna-searchable post #31 Mode B.
+
+    Returns:
+      Effective ensemble weight (≥ 0).
     """
     pool = pool or load_pool()
     if not pool:
-        return 1.0  # no pool → assume active (backward compat for callers)
+        # No pool → backward-compat: pure IC weight
+        return max(0.0, ic_value)
+    entry = pool.get("models", {}).get(model_name)
+    if not entry:
+        return max(0.0, ic_value)  # unknown model → assume active
+
+    status = entry.get("status", "active")
+    status_filter = get_status_filter(status)
+    if status_filter == 0.0:
+        return 0.0
+    base = max(0.0, ic_value)
+    if status == "degraded":
+        base *= float(degraded_dampening)
+    return base
+
+
+# Backward-compat shim (older callers expect the lifecycle-only multiplier)
+# Will be removed after Stage 4. Default lifecycle_weight=1.0 for active so
+# callers that haven't migrated still see "active = full weight".
+def get_lifecycle_weight(model_name: str, pool: Optional[dict] = None) -> float:
+    """DEPRECATED — use compute_weight(name, ic_value, pool, degraded_dampening).
+
+    Returns status_filter only (no IC multiplication). Kept for callers that
+    haven't migrated to the new R1+R3 weight formula. Will be removed in
+    Stage 4 follow-up after grep verifies 0 active call sites.
+    """
+    pool = pool or load_pool()
+    if not pool:
+        return 1.0
     entry = pool.get("models", {}).get(model_name)
     if not entry:
         return 1.0
-    return {
-        "challenger": 0.0,
-        "active":     1.0,
-        "degraded":   0.1,
-        "retired":    0.0,
-    }.get(entry["status"], 0.0)
+    return get_status_filter(entry["status"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -276,18 +276,19 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     )
 
     # ── A: ML_POOL ensemble merge (5 feature + 3 time-series with lifecycle) ──
-    # Load model_pool.json + ic_tracking.json once; merge inline (no Modal
-    # round-trip). Original r["signal"]/r["confidence"] preserved for
-    # backward-compat; merged exposed at r["ensemble_v2"].
-    lifecycle, ic_universe, used_pool = await asyncio.to_thread(_load_pool_and_ic)
+    # 2026-04-19 R1+R3 hybrid: weight = max(0, ic) × status_filter × dampening.
+    # No more hardcoded 0.1 degraded multiplier; pure IC drives weight, with
+    # KV-overridable dampening for degraded models (default 1.0 = no dampening).
+    model_status, ic_universe, degraded_dampening, used_pool = await asyncio.to_thread(_load_pool_and_ic)
     if used_pool:
         for sym, r in pred_map.items():
             try:
-                _attach_ensemble_v2(r, lifecycle, ic_universe)
+                _attach_ensemble_v2(r, model_status, ic_universe, degraded_dampening)
             except Exception as e:
                 logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
         logger.info(
-            f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks"
+            f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks "
+            f"(degraded_dampening={degraded_dampening})"
         )
     else:
         logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
@@ -304,7 +305,15 @@ def _load_pool_and_ic():
     """Synchronous loader (called via asyncio.to_thread).
 
     Returns:
-      (lifecycle_weights: dict, ic_weights: dict, used_pool: bool)
+      (model_status: dict, ic_weights: dict, degraded_dampening: float, used_pool: bool)
+
+    2026-04-19 R1+R3 hybrid:
+      - model_status: per-model "active"/"degraded"/"challenger"/"retired"
+        (no hardcoded weight multiplier here; that's status_filter only)
+      - ic_weights: from ic_tracking.json (raw OOS IC per model)
+      - degraded_dampening: from trading:config.mlPool.degradedDampening
+        (default 1.0 = pure R3 IC-based, no extra dampening). KV-driven
+        for Optuna future search (post #31 backtest Mode B).
     """
     import json as _json
     try:
@@ -312,14 +321,11 @@ def _load_pool_and_ic():
         bucket = storage.Client().bucket("stockvision-models")
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {}, {}, False
+            return {}, {}, 1.0, False
         pool = _json.loads(pool_blob.download_as_text())
-        lifecycle: dict[str, float] = {}
+        model_status: dict[str, str] = {}
         for name, entry in pool.get("models", {}).items():
-            status = entry.get("status", "active")
-            lifecycle[name] = {
-                "active": 1.0, "challenger": 0.0, "degraded": 0.1, "retired": 0.0,
-            }.get(status, 0.0)
+            model_status[name] = entry.get("status", "active")
         # IC tracking sidecar — best-effort
         ic_weights: dict[str, float] = {}
         ic_blob = bucket.blob("universal/ic_tracking.json")
@@ -327,10 +333,36 @@ def _load_pool_and_ic():
             ic_data = _json.loads(ic_blob.download_as_text())
             for name, info in (ic_data.get("models") or {}).items():
                 ic_weights[name] = float(info.get("oos_ic", 0.0))
-        return lifecycle, ic_weights, True
+        # KV-driven degraded dampening (default 1.0 = pure IC, no extra penalty)
+        degraded_dampening = 1.0
+        try:
+            from services import kv_client
+            tcfg = kv_client.get_json("trading:config", default={}) or {}
+            ml_pool_cfg = tcfg.get("mlPool", {}) or {}
+            degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
+        except Exception as _e:
+            logger.debug(f"[Pipeline V2] degradedDampening KV lookup failed (using 1.0): {_e}")
+        return model_status, ic_weights, degraded_dampening, True
     except Exception as e:
         logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
-        return {}, {}, False
+        return {}, {}, 1.0, False
+
+
+def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: float = 1.0) -> float:
+    """ML_POOL R1+R3 ensemble weight for one model.
+
+    Mirror of ml-service `model_pool.compute_weight` so ml-controller doesn't
+    need to import ml-service.
+
+    weight = max(0, ic) × status_filter × (degraded_dampening if degraded else 1)
+    """
+    status_filter = {"active": 1.0, "degraded": 1.0, "challenger": 0.0, "retired": 0.0}.get(status, 0.0)
+    if status_filter == 0.0:
+        return 0.0
+    base = max(0.0, ic_value)
+    if status == "degraded":
+        base *= float(degraded_dampening)
+    return base
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
@@ -340,10 +372,23 @@ def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
     return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
 
 
-def _attach_ensemble_v2(pred: dict, lifecycle: dict, ic_weights: dict) -> None:
+def _attach_ensemble_v2(
+    pred: dict,
+    model_status: dict,
+    ic_weights: dict,
+    degraded_dampening: float,
+) -> None:
     """Merge feature rank_scores + time-series sigmoid into a single weighted
-    avg, applying lifecycle × ic weights. Mutates pred in place to add
-    pred["ensemble_v2"] = {avg_rank, signal_label, contributing_models, weights}.
+    avg, applying R1+R3 ensemble weight: max(0, ic) × status_filter × dampening.
+
+    2026-04-19 hybrid (replaces hardcoded 0.0/0.1/1.0 lifecycle multipliers):
+      active:     max(0, ic) — pure IC weight
+      degraded:   max(0, ic) × degraded_dampening (KV-driven, default 1.0)
+      challenger: 0 (shadow predict only)
+      retired:    0 (excluded)
+
+    Mutates pred to add pred["ensemble_v2"] = {avg_rank, signal,
+    contributing_models, weights}.
     """
     feat_ranks = pred.get("rank_scores") or {}
     if not feat_ranks:
@@ -355,12 +400,12 @@ def _attach_ensemble_v2(pred: dict, lifecycle: dict, ic_weights: dict) -> None:
             continue
         merged[model_name] = _ts_to_rank(float(sig["forecast_pct"]))
 
-    # Apply weights
+    # R1+R3 weights: max(0, ic) × status_filter × dampening_if_degraded
     weights: dict[str, float] = {}
     for name in merged:
-        ic_w = max(0.0, ic_weights.get(name, 0.0))
-        lc_w = lifecycle.get(name, 1.0)  # missing pool entry = treat as active
-        weights[name] = ic_w * lc_w
+        status = model_status.get(name, "active")  # missing pool entry = active default
+        ic_value = ic_weights.get(name, 0.0)
+        weights[name] = _compute_lifecycle_weight(status, ic_value, degraded_dampening)
 
     # Weighted avg with fallback to plain mean if all weights == 0
     weight_total = sum(weights.values())
@@ -386,6 +431,7 @@ def _attach_ensemble_v2(pred: dict, lifecycle: dict, ic_weights: dict) -> None:
         "signal": label,
         "contributing_models": sorted(merged.keys()),
         "weights": {k: round(v, 6) for k, v in weights.items()},
+        "weight_formula": "max(0,ic) × status_filter × dampening_if_degraded",
     }
 
 

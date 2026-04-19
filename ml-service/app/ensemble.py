@@ -440,25 +440,34 @@ def merge_with_time_series(
     feature_rank_scores: dict[str, float],
     time_series_signals: dict[str, dict],
     ic_weights: dict[str, float] | None = None,
-    lifecycle_weights: dict[str, float] | None = None,
+    model_status: dict[str, str] | None = None,
+    degraded_dampening: float = 1.0,
     forecast_to_rank_scale: float = 12.0,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Combine 5 feature-model rank scores with 3 time-series forecasts.
+
+    2026-04-19 R1+R3 hybrid (replaces hardcoded lifecycle multipliers 0/0.1/1.0):
+      weight = max(0, ic) × status_filter × dampening_if_degraded
+        active:     max(0, ic)
+        degraded:   max(0, ic) × degraded_dampening (default 1.0 = pure IC)
+        challenger: 0  (shadow)
+        retired:    0  (excluded)
 
     Args:
       feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
       time_series_signals: {name: {forecast_pct, ...}} for Chronos/DLinear/PatchTST
         (key absent or value None → that model contributes nothing)
-      ic_weights: {name: IC} (Grinold-Kahn). If absent → uniform.
-      lifecycle_weights: {name: ML_POOL lifecycle multiplier 0/0.1/1.0}.
-        If absent → 1.0 for all (no demotion applied).
+      ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).
+      model_status: {name: "active"|"degraded"|"challenger"|"retired"} from
+        model_pool.json. None → all "active" (no ML_POOL applied).
+      degraded_dampening: extra multiplier on degraded models.
+        Default 1.0 (= pure IC, R3 industry standard).
+        KV-driven via trading:config.mlPool.degradedDampening.
+        Future: Optuna-searchable post #31 backtest Mode B.
       forecast_to_rank_scale: sigmoid sharpness for time-series → rank.
 
     Returns:
       (merged_rank_scores, applied_weights)
-        merged_rank_scores: {name: rank 0~1} including time-series sigmoid
-        applied_weights: {name: ic_weight × lifecycle_mult} for downstream
-                         computation/audit. weight=0 means "drop from ensemble".
     """
     merged: dict[str, float] = dict(feature_rank_scores)
     for name, ts in (time_series_signals or {}).items():
@@ -467,10 +476,17 @@ def merge_with_time_series(
         merged[name] = time_series_to_rank(float(ts["forecast_pct"]), scale=forecast_to_rank_scale)
 
     weights: dict[str, float] = {}
+    status_filter_map = {"active": 1.0, "degraded": 1.0, "challenger": 0.0, "retired": 0.0}
     for name in merged:
+        status = (model_status or {}).get(name, "active")
+        sf = status_filter_map.get(status, 0.0)
+        if sf == 0.0:
+            weights[name] = 0.0
+            continue
         ic_w = max(0.0, (ic_weights or {}).get(name, 0.0)) if ic_weights else 1.0
-        lc_w = (lifecycle_weights or {}).get(name, 1.0)  # default active=1.0
-        weights[name] = ic_w * lc_w
+        if status == "degraded":
+            ic_w *= float(degraded_dampening)
+        weights[name] = ic_w
     return merged, weights
 
 

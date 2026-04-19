@@ -860,6 +860,10 @@ class UniversalTrainRequest(BaseModel):
     gcs_prefix: str | None = None
     window_id: int | None = None
     skip_weekly_backup: bool = False  # walk-forward uses window-versioned paths, no weekly needed
+    # 2026-04-19 N2: walk-forward — load per-window pool to eliminate look-ahead bias.
+    # None → legacy (universal/feature_pool.json). Walk-forward orchestrator passes
+    # {gcs_prefix}/feature_pool.json after running per-window feature_selection.
+    feature_pool_path: str | None = None
 
 
 class UniversalRetrainRequest(BaseModel):
@@ -1042,8 +1046,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     if req.skip_feature_pool:
         print(f"[TrainUniversal] skip_feature_pool=True → using all {len(feature_names)} features (FT-T mode)")
     else:
+        # 2026-04-19 N2: walk-forward passes feature_pool_path = walk_forward/w{id}/feature_pool.json
+        # so each tree window loads its own pool computed only from data ≤ train_end (no leak).
+        pool_path = req.feature_pool_path or "universal/feature_pool.json"
         try:
-            pool_blob = bucket.blob("universal/feature_pool.json")
+            pool_blob = bucket.blob(pool_path)
             if pool_blob.exists():
                 pool = json.loads(pool_blob.download_as_text())
                 # Prefer tree_active (dual-pool output), fallback to active (backward compat)
@@ -1054,13 +1061,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         orig_count = len(feature_names)
                         X = X[:, keep_idx]
                         feature_names = [feature_names[i] for i in keep_idx]
-                        print(f"[TrainUniversal] Feature pool filter: {len(keep_idx)} active (from {orig_count} total)")
+                        print(f"[TrainUniversal] Feature pool filter ({pool_path}): {len(keep_idx)} active (from {orig_count} total)")
                     else:
-                        print(f"[TrainUniversal] Feature pool has {len(active)} active but none match prep columns, using all")
+                        print(f"[TrainUniversal] Feature pool {pool_path} has {len(active)} active but none match prep columns, using all")
                 else:
-                    print("[TrainUniversal] Feature pool empty, using all features")
+                    print(f"[TrainUniversal] Feature pool {pool_path} empty, using all features")
             else:
-                print("[TrainUniversal] No feature_pool.json, using all features")
+                print(f"[TrainUniversal] No {pool_path}, using all features")
         except Exception as e:
             print(f"[TrainUniversal] Feature pool load failed (using all): {e}")
 
@@ -1436,14 +1443,16 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         ic = _oos_ic(preds, y_test)
 
         stopped_epoch = last_epoch  # P0-7: use outer-scope tracker (epoch is local to _run_ftt_training)
+        # 2026-04-19: valid_cols_mask 從 FT-T training 流程移除（P1 M1 fix 歷史殘留）
+        # bundle dict 與 tuple 原本仍引用此變數 → NameError。改為 None，
+        # consumer (line 585 / 1759) 用 bundle.get() 已為 None-safe。
         bundle = {
             "state_dict": model_ftt.state_dict(),
             "scaler": feat_scaler,
-            "valid_cols_mask": valid_cols_mask,
             "n_features": n_features,
             "model_type": "regression",  # 2.0 flag
         }
-        trained_models["FT-Transformer"] = (model_ftt, feat_scaler, valid_cols_mask, bundle)
+        trained_models["FT-Transformer"] = (model_ftt, feat_scaler, None, bundle)
         results["FT-Transformer"] = {
             "oos_ic": round(ic, 4), "train": len(X_train), "test": len(X_test),
             "stopped_epoch": stopped_epoch, "best_val_ic": round(best_val_ic, 6),

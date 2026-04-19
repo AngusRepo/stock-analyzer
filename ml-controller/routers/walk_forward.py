@@ -28,6 +28,9 @@ class WalkForwardRequest(BaseModel):
     concurrent_windows: int = 2
     batch_count: int = 5
     subset_size: int = 500
+    # 2026-04-19 N2: per-window feature selection controls
+    fs_max_rounds: int = 60          # lighter than production 100; trade speed for slight precision loss
+    fs_force_refresh: bool = False   # True = re-run FS even if walk_forward/w{id}/feature_pool.json exists
 
 
 @router.post("/walk_forward/dry-run")
@@ -150,6 +153,9 @@ async def walk_forward_run(req: WalkForwardRequest):
             "end_date": req.end_date,
             "train_window_days": req.train_window_days,
             "test_window_days": req.test_window_days,
+            # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
+            "fs_max_rounds": req.fs_max_rounds,
+            "fs_force_refresh": req.fs_force_refresh,
         })
         fn_call_id = getattr(fn_call, "object_id", None) or str(fn_call)
     except Exception as e:

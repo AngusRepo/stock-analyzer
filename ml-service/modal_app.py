@@ -405,12 +405,16 @@ def train_ftt_model(payload: dict) -> dict:
 def train_wf_tree_window(payload: dict) -> dict:
     """CPU-only walk-forward: XGBoost + CatBoost + ExtraTrees + LightGBM for one window.
 
-    payload: window_id, train_start, train_end, test_start, test_end, batch_count
+    payload: window_id, train_start, train_end, test_start, test_end, batch_count,
+             feature_pool_path (2026-04-19 N2: per-window pool to eliminate look-ahead)
     """
     _setup_env()
     from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         gcs_prefix = f"walk_forward/w{payload['window_id']}"
+        # 2026-04-19 N2: default to per-window pool path; orchestrator now writes
+        # {gcs_prefix}/feature_pool.json before calling this fn.
+        feature_pool_path = payload.get("feature_pool_path") or f"{gcs_prefix}/feature_pool.json"
         req = UniversalTrainRequest(
             batch_count=payload.get("batch_count", 5),
             models_filter=["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"],
@@ -422,6 +426,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             gcs_prefix=gcs_prefix,
             window_id=payload["window_id"],
             skip_weekly_backup=True,
+            feature_pool_path=feature_pool_path,
         )
         return _train(req)
     except Exception as e:
@@ -521,7 +526,9 @@ def train_wf_hmm_window(payload: dict) -> dict:
 @app.function(
     cpu=1,
     memory=2048,
-    timeout=14400,   # 4 hour cap — 14 windows × ~15 min sequential = ~3.5 hr
+    timeout=28800,   # 8 hour cap — 2026-04-19 bumped from 4hr after N2 added per-window FS:
+                     # 14 windows × max(FS_30min, train_15min) / concurrent=2 ≈ 3.5-5 hr nominal,
+                     # 8hr gives headroom for FS variance + late SHAP audit
     scaledown_window=60,
     max_containers=1,   # only one orchestrator at a time
 )
@@ -564,15 +571,52 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         latest_date = max(filtered.keys())
         return {"history": filtered, **filtered[latest_date]}
 
+    # 2026-04-19 N2: per-window FS gates tree training to eliminate look-ahead
+    fs_max_rounds = int(payload.get("fs_max_rounds", 60))
+    fs_force_refresh = bool(payload.get("fs_force_refresh", False))
+
     async def _run_one(window: dict) -> dict:
-        """HMM → tree+ftt in parallel for one window."""
+        """FS → HMM → tree+ftt in parallel for one window."""
         wid = window["window_id"]
+        gcs_prefix = f"walk_forward/w{wid}"
         result = {
             "window_id": wid,
             "train_range": [window["train_start"], window["train_end"]],
             "test_range": [window["test_start"], window["test_end"]],
             "model_metrics": {},
         }
+
+        # Step 0: per-window feature selection (NEW — kills future leak in tree path)
+        # Tree training waits for this; FT-T (skip_feature_pool=True) does not need pool.
+        # On FS error, fallback to running tree without pool (skip_feature_pool=True)
+        # so the run does not abort entirely.
+        fs_ok = False
+        try:
+            fs_payload = {
+                "window_id": wid,
+                "train_end_date": window["train_end"],
+                "gcs_prefix": gcs_prefix,
+                "max_rounds": fs_max_rounds,
+                "force_refresh": fs_force_refresh,
+            }
+            fs_result = await feature_selection_per_window.remote.aio(fs_payload)
+            result["fs_result"] = fs_result
+            fs_ok = not bool(fs_result.get("error"))
+            if fs_ok:
+                pool_summary = (
+                    fs_result.get("feature_pool", {}).get("tree_active")
+                    or fs_result.get("feature_pool", {}).get("active")
+                    or []
+                )
+                if not pool_summary and fs_result.get("skipped"):
+                    pool_summary = [None] * (fs_result.get("tree_active_count") or 0)
+                result["fs_tree_active_count"] = len(pool_summary)
+            else:
+                print(f"[WF-Orchestrator] w{wid} FS failed: {fs_result.get('error')} — tree will fallback to skip_feature_pool")
+        except Exception as e:
+            print(f"[WF-Orchestrator] w{wid} FS crashed: {e}")
+            result["fs_result"] = {"error": str(e)}
+
         # Step 1: HMM
         try:
             hmm_payload = {
@@ -600,7 +644,15 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         need_ftt = "FT-Transformer" in models
         tasks = []
         if need_tree:
-            tasks.append(("tree", train_wf_tree_window.remote.aio(dict(train_payload))))
+            tree_payload = dict(train_payload)
+            if fs_ok:
+                # explicit per-window pool path; train_wf_tree_window also defaults
+                # to walk_forward/w{id}/feature_pool.json so this is belt-and-suspenders
+                tree_payload["feature_pool_path"] = f"{gcs_prefix}/feature_pool.json"
+            else:
+                # FS failed → don't filter at all (avoids using stale global pool which has leak)
+                tree_payload["skip_feature_pool"] = True
+            tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
         if need_ftt:
             ftt_payload = dict(train_payload)
             ftt_payload["skip_feature_pool"] = True
@@ -671,10 +723,36 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "ic_per_window": ics,
         }
 
+    # 2026-04-19 N2: aggregate per-window FS stats
+    fs_stats = []
+    for wr in all_results:
+        fs_r = wr.get("fs_result") or {}
+        if fs_r.get("error"):
+            fs_stats.append({"window_id": wr.get("window_id"), "status": "error", "error": fs_r.get("error")})
+        elif fs_r.get("skipped"):
+            fs_stats.append({
+                "window_id": wr.get("window_id"),
+                "status": "cached",
+                "tree_active_count": fs_r.get("tree_active_count"),
+            })
+        elif fs_r:
+            pool_active = (
+                fs_r.get("feature_pool", {}).get("tree_active")
+                or fs_r.get("feature_pool", {}).get("active")
+                or []
+            )
+            fs_stats.append({
+                "window_id": wr.get("window_id"),
+                "status": "computed",
+                "tree_active_count": len(pool_active),
+                "elapsed_s": fs_r.get("elapsed_s"),
+            })
+
     aggregate = {
         "n_windows_total": len(all_results),
         "n_windows_errored": n_err,
         "per_model": summary,
+        "fs_stats": fs_stats,
         "elapsed_s": round(time.time() - t0, 1),
     }
 
@@ -754,6 +832,83 @@ def feature_selection_pipeline(payload: dict) -> dict:
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
+
+
+# 2026-04-19 N2: Walk-forward per-window feature selection
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=3600,                # 60 min cap — wf window subset (~110K samples)
+    scaledown_window=60,
+    max_containers=3,            # parallel windows
+)
+def feature_selection_per_window(payload: dict) -> dict:
+    """Walk-forward window-scoped feature selection.
+
+    Filters prep data to dates ≤ train_end_date BEFORE running the pipeline,
+    so the resulting pool reflects ONLY the train horizon (no look-ahead).
+    Writes to {gcs_prefix}/feature_pool.json (no monthly snapshot).
+
+    payload:
+        window_id (int)
+        train_end_date (str, ISO date)
+        gcs_prefix (str, e.g., "walk_forward/w0")
+        max_rounds (int, default 60 — lighter than production 100)
+        force_refresh (bool, default False) — if False and pool already exists, skip
+    """
+    _setup_env()
+    import time
+    from app.feature_selection import run_feature_selection_pipeline
+
+    t0 = time.time()
+    window_id = payload.get("window_id")
+    train_end_date = payload["train_end_date"]
+    gcs_prefix = payload["gcs_prefix"].rstrip("/")
+    force = bool(payload.get("force_refresh", False))
+
+    # Idempotency: skip if pool already exists for this window
+    if not force:
+        try:
+            from google.cloud import storage
+            bucket = storage.Client().bucket("stockvision-models")
+            existing = bucket.blob(f"{gcs_prefix}/feature_pool.json")
+            if existing.exists():
+                import json as _json
+                pool = _json.loads(existing.download_as_text())
+                active = pool.get("tree_active") or pool.get("active", [])
+                print(f"[FS-Window] w{window_id} skip — pool exists ({len(active)} tree_active)")
+                return {
+                    "skipped": True,
+                    "window_id": window_id,
+                    "gcs_prefix": gcs_prefix,
+                    "tree_active_count": len(active),
+                    "elapsed_s": round(time.time() - t0, 1),
+                }
+        except Exception as e:
+            print(f"[FS-Window] w{window_id} idempotency check failed ({e}) — proceeding")
+
+    try:
+        result = run_feature_selection_pipeline(
+            max_rounds=payload.get("max_rounds", 60),
+            alpha=payload.get("alpha", 0.01),
+            icir_weight=payload.get("icir_weight", 0.1),
+            train_end_date=train_end_date,
+            gcs_prefix=gcs_prefix,
+        )
+        # Annotate for orchestrator aggregate
+        result["window_id"] = window_id
+        result["gcs_prefix"] = gcs_prefix
+        result["elapsed_s"] = round(time.time() - t0, 1)
+        return result
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()[:2000],
+            "window_id": window_id,
+            "gcs_prefix": gcs_prefix,
+            "type": "feature_selection_per_window",
+        }
 
 
 @app.function(

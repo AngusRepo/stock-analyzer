@@ -720,21 +720,32 @@ def update_feature_pool(
     return pool
 
 
-def save_feature_pool(pool: dict) -> None:
-    """Save feature_pool.json to GCS."""
+def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
+    """Save feature_pool.json to GCS.
+
+    gcs_prefix=None → production: writes universal/feature_pool.json + universal/powershap_history/YYYY-MM.json
+    gcs_prefix=str  → walk-forward: writes {gcs_prefix}/feature_pool.json ONLY (no monthly snapshot)
+    """
     from google.cloud import storage
     bucket = storage.Client().bucket("stockvision-models")
 
     pool_json = json.dumps(pool, ensure_ascii=False, indent=2)
-    bucket.blob("universal/feature_pool.json").upload_from_string(
-        pool_json, content_type="application/json"
-    )
 
-    month = pool["updated_at"][:7]
-    bucket.blob(f"universal/powershap_history/{month}.json").upload_from_string(
-        pool_json, content_type="application/json"
-    )
-    print(f"[FeatureSelection] Saved feature_pool.json + history/{month}.json to GCS")
+    if gcs_prefix:
+        # Walk-forward per-window write (no monthly snapshot)
+        path = f"{gcs_prefix.rstrip('/')}/feature_pool.json"
+        bucket.blob(path).upload_from_string(pool_json, content_type="application/json")
+        print(f"[FeatureSelection] Saved {path} to GCS (wf scope)")
+    else:
+        # Production write (legacy behavior)
+        bucket.blob("universal/feature_pool.json").upload_from_string(
+            pool_json, content_type="application/json"
+        )
+        month = pool["updated_at"][:7]
+        bucket.blob(f"universal/powershap_history/{month}.json").upload_from_string(
+            pool_json, content_type="application/json"
+        )
+        print(f"[FeatureSelection] Saved feature_pool.json + history/{month}.json to GCS")
 
 
 def load_feature_pool() -> Optional[dict]:
@@ -757,6 +768,8 @@ def run_feature_selection_pipeline(
     alpha: float = 0.01,
     dry_run: bool = False,
     icir_weight: float = 0.1,  # 2026-04-17 P2: promoted from hardcode; combined_score = tp_score + icir × icir_weight
+    train_end_date: str | None = None,  # 2026-04-19 N2: walk-forward — filter dates ≤ this (no future leak)
+    gcs_prefix: str | None = None,       # 2026-04-19 N2: walk-forward — write to {prefix}/feature_pool.json
     **_kwargs,  # absorb legacy params (required_power etc.)
 ) -> dict:
     """Full 2.0 pipeline:
@@ -764,6 +777,11 @@ def run_feature_selection_pipeline(
     IC/ICIR → Optuna K sweep (Pareto) → Diversity Guard → Save dual pool.
 
     Reads training data from GCS prep npz (same format as retrain).
+
+    Walk-forward mode (train_end_date + gcs_prefix set):
+      - Filter prep data to dates ≤ train_end_date BEFORE any computation
+        → no look-ahead bias for that window
+      - Write per-window pool to {gcs_prefix}/feature_pool.json (no monthly snapshot)
     """
     t0 = time.time()
 
@@ -795,6 +813,23 @@ def run_feature_selection_pipeline(
     fn_blob = bucket.blob("universal/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text())
     print(f"[FeatureSelection] Loaded {len(X)} samples, {len(feature_names)} features")
+
+    # ── 1b. Walk-forward date-range filter (zero look-ahead) ─────────────────
+    # Apply BEFORE nan_to_num + cluster + signal gate so all downstream stages
+    # only see data ≤ train_end_date. target_rank in prep is per-date cross-
+    # sectional (compute_cross_sectional_rank, features/__init__.py:93) so
+    # post-hoc date filtering preserves rank validity for retained dates.
+    if train_end_date is not None:
+        dates_str = np.array([str(d) for d in dates])
+        wf_mask = dates_str <= train_end_date
+        kept = int(wf_mask.sum())
+        if kept == 0:
+            return {"error": f"walk_forward_filter: no samples ≤ {train_end_date}"}
+        print(f"[FeatureSelection] WF filter: dates ≤ {train_end_date} → "
+              f"{kept}/{len(X)} samples retained")
+        X = X[wf_mask]
+        y = y[wf_mask]
+        dates = dates[wf_mask]
 
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -906,33 +941,38 @@ def run_feature_selection_pipeline(
     )
 
     if not dry_run:
-        save_feature_pool(pool)
+        save_feature_pool(pool, gcs_prefix=gcs_prefix)
     else:
         print("[FeatureSelection] DRY RUN — skipping GCS save")
 
     # ── 10. SHAP baseline comparison (if shap_audit.json exists) ─────────────
+    # WF mode: skip — universal/shap_audit.json reflects post-train_end data
+    # so the comparison would inject look-ahead context.
     shap_overlap = None
-    try:
-        shap_blob = bucket.blob("universal/shap_audit.json")
-        if shap_blob.exists():
-            shap_data = json.loads(shap_blob.download_as_text())
-            shap_keep = set(shap_data.get("keep", []))
-            tp_active = set(active_final)
-            overlap = shap_keep & tp_active
-            only_shap = shap_keep - tp_active
-            only_tp = tp_active - shap_keep
-            shap_overlap = {
-                "overlap": len(overlap),
-                "shap_total": len(shap_keep),
-                "tp_total": len(tp_active),
-                "overlap_ratio": round(len(overlap) / max(len(shap_keep), 1), 3),
-                "only_in_shap": sorted(only_shap)[:20],
-                "only_in_tp": sorted(only_tp)[:20],
-            }
-            print(f"[FeatureSelection] SHAP baseline comparison: "
-                  f"{len(overlap)}/{len(shap_keep)} overlap ({shap_overlap['overlap_ratio']:.0%})")
-    except Exception as e:
-        print(f"[FeatureSelection] SHAP comparison skipped: {e}")
+    if train_end_date is not None:
+        print("[FeatureSelection] SHAP comparison skipped in walk-forward mode")
+    else:
+        try:
+            shap_blob = bucket.blob("universal/shap_audit.json")
+            if shap_blob.exists():
+                shap_data = json.loads(shap_blob.download_as_text())
+                shap_keep = set(shap_data.get("keep", []))
+                tp_active = set(active_final)
+                overlap = shap_keep & tp_active
+                only_shap = shap_keep - tp_active
+                only_tp = tp_active - shap_keep
+                shap_overlap = {
+                    "overlap": len(overlap),
+                    "shap_total": len(shap_keep),
+                    "tp_total": len(tp_active),
+                    "overlap_ratio": round(len(overlap) / max(len(shap_keep), 1), 3),
+                    "only_in_shap": sorted(only_shap)[:20],
+                    "only_in_tp": sorted(only_tp)[:20],
+                }
+                print(f"[FeatureSelection] SHAP baseline comparison: "
+                      f"{len(overlap)}/{len(shap_keep)} overlap ({shap_overlap['overlap_ratio']:.0%})")
+        except Exception as e:
+            print(f"[FeatureSelection] SHAP comparison skipped: {e}")
 
     elapsed = round(time.time() - t0, 1)
     print(f"\n[FeatureSelection] === PIPELINE COMPLETE ({elapsed}s) ===")

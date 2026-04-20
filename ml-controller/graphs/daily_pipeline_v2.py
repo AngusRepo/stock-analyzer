@@ -188,14 +188,17 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym and closes:
             chronos_series.append({"symbol": sym, "prices": closes})
 
-    # Parallel: feature models + Chronos + DLinear + PatchTST (Stage 0.1+0.2+0.3)
-    # 4 independent I/O waits, all batched on watchlist symbols
+    # Parallel: feature + Chronos + DLinear + PatchTST + Kalman + Markov
+    # 6-way asyncio.gather (Stage 0.1+0.2+0.3 + 6.2)
     feat_task = batch_predict(payloads)
     chronos_task = modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
     dlinear_task = modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version="v1")
     patchtst_task = modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version="v1")
-    results, chronos_raw, dlinear_raw, patchtst_raw = await asyncio.gather(
-        feat_task, chronos_task, dlinear_task, patchtst_task, return_exceptions=True
+    kalman_task = modal_client.kalman_batch_predict(chronos_series, horizon=5, version="v1")
+    markov_task = modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version="v1")
+    results, chronos_raw, dlinear_raw, patchtst_raw, kalman_raw, markov_raw = await asyncio.gather(
+        feat_task, chronos_task, dlinear_task, patchtst_task, kalman_task, markov_task,
+        return_exceptions=True,
     )
 
     # Guard against Chronos total failure (don't let it block feature preds)
@@ -249,6 +252,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
 
+    # Stage 6.2: KalmanFilter + MarkovSwitching state-space (per-stock loop, shared hyperparams)
+    def _drain_state_space(raw, name: str) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        if isinstance(raw, BaseException):
+            logger.warning(f"[Pipeline V2] {name} batch failed: {raw}")
+            return out
+        if isinstance(raw, dict) and not raw.get("error"):
+            for r in raw.get("results") or []:
+                sym = r.get("symbol")
+                if sym and not r.get("error"):
+                    out[sym] = r
+            logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded")
+        else:
+            logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
+        return out
+    kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
+    markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
+
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -258,13 +279,17 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     for r in results:
         sym = r.get("symbol")
         if sym and not r.get("error"):
-            # Attach Chronos / DLinear / PatchTST forecasts if available
+            # Attach all 5 alternate-source forecasts when available
             if sym in chronos_map:
                 r["chronos"] = chronos_map[sym]
             if sym in dlinear_map:
                 r["dlinear"] = dlinear_map[sym]
             if sym in patchtst_map:
                 r["patchtst"] = patchtst_map[sym]
+            if sym in kalman_map:
+                r["kalman_filter"] = kalman_map[sym]
+            if sym in markov_map:
+                r["markov_switching"] = markov_map[sym]
             pred_map[sym] = r
 
     error_count = sum(1 for r in results if r.get("error"))
@@ -272,7 +297,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
         f"{error_count} errors, chronos={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
-        f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}"
+        f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
+        f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
+        f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}"
     )
 
     # ── A: ML_POOL ensemble merge (5 feature + 3 time-series with lifecycle) ──
@@ -394,7 +421,15 @@ def _attach_ensemble_v2(
     if not feat_ranks:
         return  # predict_stock_v2 must have failed
     merged: dict[str, float] = dict(feat_ranks)
-    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+    # 10-model merge: 5 feature + 3 time-series + 2 state-space
+    _SRC_KEY_MODEL = (
+        ("chronos",          "Chronos"),
+        ("dlinear",          "DLinear"),
+        ("patchtst",         "PatchTST"),
+        ("kalman_filter",    "KalmanFilter"),       # Stage 6.2
+        ("markov_switching", "MarkovSwitching"),    # Stage 6.2
+    )
+    for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}
         if sig.get("forecast_pct") is None:
             continue

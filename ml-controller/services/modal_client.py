@@ -209,6 +209,32 @@ async def train_patchtst_universal(series_close: list[list[float]], **hyperparam
     return await _modal_train_patchtst_universal(payload)
 
 
+# 2026-04-20 ML_POOL Stage 6.2: state-space batch predict helpers
+async def _modal_state_space_predict(payload: dict) -> dict:
+    fn = _lookup("state_space_universal_predict")
+    return await fn.remote.aio(payload)
+
+
+async def kalman_batch_predict(series_list: list[dict], horizon: int = 5, version: str = "v1") -> dict:
+    """Universal KalmanFilter forecast batch (per-stock loop, shared hyperparams)."""
+    return await _modal_state_space_predict({
+        "model_name": "KalmanFilter",
+        "series_list": series_list,
+        "horizon": horizon,
+        "version": version,
+    })
+
+
+async def markov_switching_batch_predict(series_list: list[dict], horizon: int = 5, version: str = "v1") -> dict:
+    """Universal MarkovSwitching forecast batch."""
+    return await _modal_state_space_predict({
+        "model_name": "MarkovSwitching",
+        "series_list": series_list,
+        "horizon": horizon,
+        "version": version,
+    })
+
+
 def _spawn_wf_ftt_window(payload: dict):
     """Spawn FT-T training (returns handle)."""
     fn = _lookup("train_wf_ftt_window")

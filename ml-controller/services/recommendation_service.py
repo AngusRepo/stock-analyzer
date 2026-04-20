@@ -564,18 +564,22 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Models whose rank scores we want stored for weekly IC tracking.
-# Mirrors ml-service app/model_pool.py:MANAGED_MODELS keys.
-_PER_MODEL_TRACKED = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-                       "Chronos", "DLinear", "PatchTST")
+# Mirrors ml-service app/model_pool.py:MANAGED_MODELS keys (10 models = 5 feature
+# + 3 time-series + 2 state-space).
+_PER_MODEL_TRACKED = (
+    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
+    "Chronos", "DLinear", "PatchTST",
+    "KalmanFilter", "MarkovSwitching",   # 2026-04-20 Stage 6.2
+)
 
 
 def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     """Pull out per-model rank scores from one stock's prediction dict.
 
     For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
-      from predict_stock_v2 — exposed in commit 005ebee).
-    For 3 time-series: sigmoid-map pred["chronos"|"dlinear"|"patchtst"]
-      .forecast_pct to a rank 0~1 (mirror of pipeline_v2._ts_to_rank).
+      from predict_stock_v2).
+    For 3 time-series + 2 state-space: sigmoid-map .forecast_pct → 0~1
+      (mirror of pipeline_v2._ts_to_rank with scale=12).
 
     Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
     """
@@ -589,7 +593,15 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 out[name] = float(v)
             except (TypeError, ValueError):
                 pass
-    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+    # Time-series + state-space: forecast_pct → sigmoid rank
+    _SRC_KEY_MODEL = (
+        ("chronos",          "Chronos"),
+        ("dlinear",          "DLinear"),
+        ("patchtst",         "PatchTST"),
+        ("kalman_filter",    "KalmanFilter"),       # Stage 6.2
+        ("markov_switching", "MarkovSwitching"),    # Stage 6.2
+    )
+    for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}
         fp = sig.get("forecast_pct")
         if fp is None:

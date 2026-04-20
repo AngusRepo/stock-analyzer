@@ -982,6 +982,41 @@ def patchtst_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "patchtst_universal_predict"}
 
 
+# 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
+@app.function(
+    cpu=2,
+    memory=2048,
+    timeout=600,             # 10 min — per-stock loop, Markov can take ~50ms × 33 stocks
+    scaledown_window=300,    # keep hyperparam cache warm
+    max_containers=1,
+)
+def state_space_universal_predict(payload: dict) -> dict:
+    """Batch state-space forecast (KalmanFilter or MarkovSwitching).
+
+    payload:
+        model_name: 'KalmanFilter' or 'MarkovSwitching'
+        series_list: list of {symbol: str, prices: list[float]}
+        horizon: int (default 5)
+        version: hyperparams version (default 'v1')
+
+    Returns: {"results": [...], "n_input": int, "n_success": int}
+    """
+    _setup_env()
+    from app.state_space_universal import state_space_batch_predict
+    try:
+        results = state_space_batch_predict(
+            model_name=payload.get("model_name", "KalmanFilter"),
+            series_list=payload.get("series_list") or [],
+            horizon=payload.get("horizon", 5),
+            version=payload.get("version", "v1"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []),
+                "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
+
+
 # 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
 @app.function(
     cpu=2,

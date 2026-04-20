@@ -142,7 +142,14 @@ def run_l2_sensitivity_search(
         raise ValueError("run_l2_sensitivity_search: empty search_space")
 
     # Mode B objective — import lazily so unit-test stubs can intercept
-    from services.backtest_engine import replay_period  # type: ignore
+    from services.backtest_engine import replay_period, BacktestDataset  # type: ignore
+
+    # Load dataset ONCE outside objective — D6 pattern. Replay loop + D1 query
+    # per trial would be N+1 disaster (200+ trials × 580+ days). Module docstring
+    # on replay_period_loading spells this out.
+    logger.info(f"[L2 Optuna] Loading BacktestDataset {start_date}~{end_date}")
+    dataset = BacktestDataset.load_from_d1(start_date=start_date, end_date=end_date)
+    logger.info(f"[L2 Optuna] Dataset loaded, starting {n_trials} trials")
 
     def objective(trial: "optuna.Trial") -> float:
         # Deep-copy baseline so trial overrides don't leak
@@ -159,6 +166,7 @@ def run_l2_sensitivity_search(
 
         try:
             result = replay_period(
+                dataset=dataset,
                 start_date=start_date,
                 end_date=end_date,
                 params=params,
@@ -169,10 +177,10 @@ def run_l2_sensitivity_search(
             logger.warning(f"[L2 Optuna] trial {trial.number} replay crashed: {e}")
             return -1e9
 
-        metrics = (result or {}).get("metrics") or {}
-        sharpe = float(metrics.get("sharpe") or 0.0)
-        max_dd = float(metrics.get("max_drawdown") or 0.0)
-        n_trades = int(metrics.get("n_trades") or 0)
+        # replay_period returns BacktestMetrics dataclass, not dict.
+        sharpe   = float(getattr(result, "sharpe", None) or 0.0)
+        max_dd   = float(getattr(result, "max_drawdown", 0.0) or 0.0)
+        n_trades = int(getattr(result, "total_trades", 0) or 0)
 
         # Min-trade guard — avoid rewarding "no-trade high-sharpe" degenerate solutions
         if n_trades < 5:

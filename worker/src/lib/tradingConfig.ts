@@ -679,6 +679,25 @@ export async function getSnapshot(
   return { ...raw, bytes: JSON.stringify(raw).length }
 }
 
+/** Restore a snapshot by writing its config back to KV as a new forward-commit
+ *  (Git `git revert` pattern — not destructive reset). Triggers a new snapshot
+ *  in the chain tagged source='restore' with meta linking to the restored id.
+ *  Returns the new snapshot id (forward commit) or null if snapshot missing.
+ */
+export async function restoreSnapshot(
+  kv: KVNamespace,
+  snapshotId: string,
+  meta?: { push_id?: string; restore_reason?: string },
+): Promise<{ snapshotId: string | null; skipped: boolean; restoredFrom: string } | null> {
+  const snap = await getSnapshot(kv, snapshotId)
+  if (!snap) return null
+  const r = await setTradingConfig(kv, snap.config, {
+    source: 'restore',
+    push_id: meta?.push_id ?? snapshotId,
+  })
+  return { ...r, restoredFrom: snapshotId }
+}
+
 // ─── C4: Config Validation ──────────────────────────────────────────────────
 
 export function validateTradingConfig(config: TradingConfig): string[] {

@@ -173,6 +173,37 @@ def build_watch_points(s: dict) -> list[str]:
 # Filter + score (port from dailyRecommendation.ts:541-613)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | None:
+    """ML_POOL Plan A migration helper — prefer ensemble_v2.signal over legacy signal.
+
+    Returns the signal string (uppercase) used for downstream BUY/SELL filter.
+    If ensemble_v2 absent or use_ensemble_v2=False → falls back to legacy
+    rank_to_signal output (5-feature ensemble). When time-series models have
+    no IC data yet, ensemble_v2 weight for them = 0 → ensemble_v2.signal is
+    mathematically equivalent to legacy signal, so migration is no-op until
+    IC tracker accumulates time-series IC (Stage 2 cron, ~3-4 weeks).
+    """
+    if not ml:
+        return None
+    if use_ensemble_v2:
+        ev2 = ml.get("ensemble_v2") or {}
+        if ev2.get("signal"):
+            return ev2["signal"].upper()
+    return (ml.get("signal") or "").upper() or None
+
+
+def _is_use_ensemble_v2() -> bool:
+    """Read trading:config.mlPool.useEnsembleV2 (default True). KV override."""
+    try:
+        from services import kv_client
+        tcfg = kv_client.get_json("trading:config", default={}) or {}
+        ml_pool_cfg = tcfg.get("mlPool", {}) or {}
+        v = ml_pool_cfg.get("useEnsembleV2")
+        return True if v is None else bool(v)
+    except Exception:
+        return True
+
+
 def filter_and_score_recommendations(
     screener_recs: list[dict],
     predictions: dict[str, dict],   # symbol → ml result from ml-service
@@ -201,6 +232,12 @@ def filter_and_score_recommendations(
     final: list[dict] = []
     sell_count = 0
 
+    # ML_POOL Plan A migration (2026-04-19): toggle which signal drives the
+    # BUY/SELL gate. Default True = use ensemble_v2 (5 feature + 3 time-series
+    # with R1+R3 lifecycle weights). KV override:
+    # trading:config.mlPool.useEnsembleV2=false → fall back to legacy 5-feature signal.
+    use_ev2 = _is_use_ensemble_v2()
+
     # Lazy-import persona helpers so this module stays import-safe even if
     # persona_service has a downstream issue.
     _persona_helpers = None
@@ -217,7 +254,7 @@ def filter_and_score_recommendations(
     for rec in screener_recs:
         symbol = rec["symbol"]
         ml = predictions.get(symbol)
-        sig = (ml.get("signal") or "").upper() if ml else None
+        sig = _effective_signal(ml, use_ensemble_v2=use_ev2)
 
         # Filter SELL / NO_SIGNAL
         if sig and ("SELL" in sig or sig == "NO_SIGNAL"):
@@ -416,13 +453,18 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
     Returns count written.
     """
     statements: list[tuple[str, list[Any]]] = []
+    use_ev2 = _is_use_ensemble_v2()
     for symbol, data in predictions.items():
         if data.get("error"):
             continue
         stock_id = stock_id_map.get(symbol)
         if not stock_id:
             continue
-        raw_signal = data.get("signal") or "NO_SIGNAL"
+        # ML_POOL Plan A migration: ensemble_v2 (8-model w/ R1+R3) drives the
+        # stored signal. Legacy 5-feature signal kept in forecast_data for audit.
+        legacy_signal = data.get("signal") or "NO_SIGNAL"
+        ev2_signal = (data.get("ensemble_v2") or {}).get("signal")
+        raw_signal = (ev2_signal if (use_ev2 and ev2_signal) else legacy_signal) or "NO_SIGNAL"
         if raw_signal == "NO_SIGNAL":
             trade_signal = None
         elif "BUY" in raw_signal:
@@ -434,6 +476,9 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
 
         forecast_data = json.dumps({
             "signal": raw_signal,
+            "legacy_signal": legacy_signal,                 # 5-feature ensemble (audit trail)
+            "ensemble_v2": data.get("ensemble_v2"),         # 8-model R1+R3 (audit trail)
+            "signal_source": "ensemble_v2" if (use_ev2 and ev2_signal) else "legacy",
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),

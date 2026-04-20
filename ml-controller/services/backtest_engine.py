@@ -1831,6 +1831,14 @@ def simulate_entries_for_date(
     # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
     ml_predictions: Optional["MLPredictionsCache"] = None,
     buy_conf_threshold: Optional[float] = None,
+    # 2026-04-20 #28 P2 L2 Layer 1 + 2 circuit breakers (Mode B only)
+    #   circuit_cfg: dict view of trading:config.circuit (paper.ts source-of-truth)
+    #   current_drawdown_30d: from compute_drawdown_30d(equity_curve, day)
+    #   recent_accuracy_30d: from compute_rolling_accuracy_30d(verified_preds, day)
+    # All three None = Mode A (skip breakers entirely).
+    circuit_cfg: Optional[dict] = None,
+    current_drawdown_30d: Optional[float] = None,
+    recent_accuracy_30d: Optional[float] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1856,6 +1864,37 @@ def simulate_entries_for_date(
     buy_candidates = [c for c in candidates if c.has_buy_signal == 1]
     if not buy_candidates:
         return attempts
+
+    # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
+    # Only apply when Mode B is active (ml_predictions cache present) AND
+    # circuit_cfg explicitly provided. Mode A skips entirely to preserve
+    # existing Optuna 5.x parity.
+    if ml_predictions is not None and circuit_cfg is not None:
+        dd_halt_thresh = float(circuit_cfg.get("drawdownHalt", 0.15))
+        low_acc_thresh = float(circuit_cfg.get("lowAccuracyThreshold", 0.45))
+        raised_conf    = float(circuit_cfg.get("drawdownRaisedConf", 0.70))
+
+        # Layer 1: rolling 30d drawdown > drawdownHalt → halt ALL entries today
+        # Source: paper.ts checkCircuitBreakers lines 269-273 (identical threshold)
+        if current_drawdown_30d is not None and current_drawdown_30d > dd_halt_thresh:
+            halt_reason = (f"L1 halt: dd_30d {current_drawdown_30d:.1%} "
+                           f"> drawdownHalt {dd_halt_thresh:.1%}")
+            for c in buy_candidates:
+                attempts.append(EntryAttempt(
+                    symbol=c.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_circuit_halt", adjusted_entry=c.close,
+                    reason=f"Mode B: {halt_reason}",
+                ))
+            return attempts
+
+        # Layer 2: 30d rolling accuracy < lowAccuracyThreshold → raise conf gate
+        # Source: paper.ts checkCircuitBreakers lines 324-328
+        if (recent_accuracy_30d is not None
+                and recent_accuracy_30d < low_acc_thresh
+                and buy_conf_threshold is not None):
+            new_conf = max(buy_conf_threshold, raised_conf)
+            if new_conf > buy_conf_threshold:
+                buy_conf_threshold = new_conf  # local rebind — caller unaffected
 
     # Gap proxy (shared across all candidates today)
     gap_pct = _gap_pct_from_benchmark(dataset, decision_date, entry_date)
@@ -3374,11 +3413,19 @@ def replay_period(
     # buyConfThreshold pulled from circuit subsection (KV trading:config).
     ml_cache: Optional[MLPredictionsCache] = None
     buy_conf_threshold: Optional[float] = None
+    circuit_cfg_b: Optional[dict] = None   # #28 P2: shared across days
+    verified_preds_cache: list[dict] = []  # #28 P2: verified predictions for rolling acc
+    from services.backtest_state import (
+        BacktestMarketState, load_verified_predictions,
+        compute_rolling_accuracy_30d, compute_drawdown_30d,
+    )
+    market_state: Optional[BacktestMarketState] = None
+
     if mode == "B":
         try:
             ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
-            circuit_cfg = (params or {}).get("circuit", {}) or {}
-            buy_conf_threshold = float(circuit_cfg.get("buyConfThreshold", 0.60))
+            circuit_cfg_b = (params or {}).get("circuit", {}) or {}
+            buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
             logger.info(
                 f"[BacktestEngine] Mode B: cache_size={ml_cache._n}, "
                 f"buy_conf_threshold={buy_conf_threshold}"
@@ -3389,10 +3436,30 @@ def replay_period(
                     "will be skipped 'no_ml_pred'. Run Stage 2 cron / verify "
                     "or backfill historical predictions first."
                 )
+            # 2026-04-20 #28 P2: preload per-date market state + verified
+            # predictions for L2 circuit breakers (Layer 1 dd halt, Layer 2
+            # low-accuracy conf raise). Both are one-shot reads — O(1) lookup
+            # per-day inside the replay loop.
+            try:
+                market_state = BacktestMarketState(start_date, end_date)
+                verified_preds_cache = load_verified_predictions(start_date, end_date)
+                logger.info(
+                    f"[BacktestEngine] Mode B #28 P2: preloaded market state "
+                    f"(risk={len(market_state._risk)}) + "
+                    f"verified_preds={len(verified_preds_cache)}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[BacktestEngine] #28 P2 state preload failed: {e} — "
+                    f"circuit breakers will be disabled this run"
+                )
+                market_state = None
+                verified_preds_cache = []
         except Exception as e:
             logger.error(f"[BacktestEngine] Mode B cache load failed: {e} — falling back to Mode A behavior")
             ml_cache = None
             buy_conf_threshold = None
+            circuit_cfg_b = None
 
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
@@ -3419,6 +3486,18 @@ def replay_period(
 
         # Step 2: attempt entries from prev day's candidates (T-1 → T fill)
         if prev_candidates and prev_decision_date is not None:
+            # 2026-04-20 #28 P2: compute per-day rolling metrics for Mode B
+            # circuit breakers. Cheap filter operations over trades/equity/preds
+            # caches already in memory (no D1 round-trip per day).
+            current_dd_b: Optional[float] = None
+            recent_acc_b: Optional[float] = None
+            if mode == "B" and circuit_cfg_b is not None:
+                current_dd_b = compute_drawdown_30d(equity_curve, day, window_days=30)
+                if verified_preds_cache:
+                    recent_acc_b = compute_rolling_accuracy_30d(
+                        verified_preds_cache, day, window_days=30, min_samples=10,
+                    )
+
             attempts = simulate_entries_for_date(
                 dataset=dataset,
                 decision_date=prev_decision_date,
@@ -3432,6 +3511,10 @@ def replay_period(
                 # 2026-04-20 #31 Mode B
                 ml_predictions=ml_cache,
                 buy_conf_threshold=buy_conf_threshold,
+                # 2026-04-20 #28 P2 circuit breakers
+                circuit_cfg=circuit_cfg_b,
+                current_drawdown_30d=current_dd_b,
+                recent_accuracy_30d=recent_acc_b,
             )
             all_attempts.extend(attempts)
 

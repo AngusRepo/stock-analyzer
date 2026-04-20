@@ -1839,6 +1839,11 @@ def simulate_entries_for_date(
     circuit_cfg: Optional[dict] = None,
     current_drawdown_30d: Optional[float] = None,
     recent_accuracy_30d: Optional[float] = None,
+    # 2026-04-20 #28 P3 effective confidence (L2_formula delta + clip)
+    #   l2_formula_cfg: dict view of trading:config.L2_formula
+    #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
+    l2_formula_cfg: Optional[dict] = None,
+    risk_score: Optional[int] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1904,6 +1909,27 @@ def simulate_entries_for_date(
     for p_open in account.positions.values():
         industry_count[p_open.industry] = industry_count.get(p_open.industry, 0) + 1
 
+    # 2026-04-20 #28 P3: effective confidence delta formula (adaptive.py port)
+    # Compute once per day — same risk_score + acc for every candidate today.
+    # effective_conf = clip(real_conf + delta(risk_score, acc, L2), lo, hi)
+    # See adaptive.py compute_confidence_delta source of truth.
+    effective_delta: float = 0.0
+    effective_clip_lo: float = 0.0
+    effective_clip_hi: float = 1.0
+    apply_effective_conf = (
+        ml_predictions is not None
+        and l2_formula_cfg is not None
+        and risk_score is not None
+        and recent_accuracy_30d is not None
+    )
+    if apply_effective_conf:
+        from services.adaptive import compute_confidence_delta
+        effective_delta = compute_confidence_delta(
+            float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
+        )
+        effective_clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
+        effective_clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
+
     for cand in buy_candidates:
         # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
         # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
@@ -1917,12 +1943,26 @@ def simulate_entries_for_date(
                     reason=f"Mode B: no historical prediction in D1 for ({cand.symbol},{cand.date})",
                 ))
                 continue
-            cand.confidence = real_conf
-            if buy_conf_threshold is not None and real_conf < buy_conf_threshold:
+
+            # 2026-04-20 #28 P3: apply effective confidence delta (adaptive.py formula)
+            if apply_effective_conf:
+                effective_conf = max(
+                    effective_clip_lo,
+                    min(effective_clip_hi, real_conf + effective_delta),
+                )
+            else:
+                effective_conf = real_conf
+            cand.confidence = effective_conf
+
+            if buy_conf_threshold is not None and effective_conf < buy_conf_threshold:
                 attempts.append(EntryAttempt(
                     symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                     status="skipped_low_conf", adjusted_entry=cand.close,
-                    reason=f"Mode B: conf {real_conf:.3f} < threshold {buy_conf_threshold:.3f}",
+                    reason=(
+                        f"Mode B: eff_conf {effective_conf:.3f} "
+                        f"(raw {real_conf:.3f} + delta {effective_delta:+.3f}) "
+                        f"< threshold {buy_conf_threshold:.3f}"
+                    ),
                 ))
                 continue
 
@@ -3515,6 +3555,13 @@ def replay_period(
                 circuit_cfg=circuit_cfg_b,
                 current_drawdown_30d=current_dd_b,
                 recent_accuracy_30d=recent_acc_b,
+                # 2026-04-20 #28 P3 effective confidence delta
+                l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
+                risk_score=(
+                    market_state.get_risk(day).risk_score
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else None
+                ),
             )
             all_attempts.extend(attempts)
 

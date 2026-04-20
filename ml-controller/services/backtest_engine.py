@@ -208,10 +208,20 @@ class BacktestDataset:
 
         # Layer 1: Polars DataFrame cache + Layer 2: Numpy snapshot
         # M14: sorted(keys) for deterministic iteration
+        #
+        # B1 fix (2026-04-20): Polars ≥1.0 `partition_by(..., as_dict=True)` returns
+        # tuple keys even for single-column partitions (e.g. ("2330",) not "2330").
+        # This silently made `_price_np["2330"]` miss → replay_screener_for_date
+        # returned 0 candidates → 0 trades regression since 2.0 migration (73c2c8b).
+        # Unwrap to str key so `get_price_history_np(symbol: str)` lookup hits.
+        def _unwrap(key):
+            return key[0] if isinstance(key, tuple) else key
+
         if not self.prices.is_empty():
             partitions = self.prices.partition_by("symbol", as_dict=True)
-            for sym in sorted(partitions.keys()):
-                grp = partitions[sym]
+            for key in sorted(partitions.keys()):
+                sym = _unwrap(key)
+                grp = partitions[key]
                 df = grp.drop("symbol").sort("date")
                 self._price_cache[sym] = df
                 dates_arr = df.get_column("date").to_numpy().astype("U10")
@@ -226,8 +236,9 @@ class BacktestDataset:
 
         if not self.chips.is_empty():
             partitions = self.chips.partition_by("symbol", as_dict=True)
-            for sym in sorted(partitions.keys()):
-                grp = partitions[sym]
+            for key in sorted(partitions.keys()):
+                sym = _unwrap(key)
+                grp = partitions[key]
                 df = grp.drop("symbol").sort("date")
                 self._chip_cache[sym] = df
                 dates_arr = df.get_column("date").to_numpy().astype("U10")
@@ -1457,6 +1468,254 @@ def replay_screener_for_date(
             c.has_buy_signal = 1
 
     return final_candidates
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B1 Diagnostic (2026-04-20 — regression: 0 candidates in Mode A replay)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Screener funnel counters + dataset-level cache sanity, for locating the stage
+# where replay_screener_for_date drops symbols to 0. Used by /backtest/diagnose.
+# See memory/project_session_2026_04_20_evening.md for the regression story.
+
+def diagnose_replay_for_date(
+    dataset: "BacktestDataset",
+    date: str,
+    screener: ScreenerParams,
+    ranking: RankingParams,
+    lookback_days: int = 22,
+    max_dropped_samples: int = 10,
+) -> dict:
+    """
+    Instrumented clone of `replay_screener_for_date` that returns stage-by-stage
+    counts + sample dropped symbols (with the reason each was dropped) instead
+    of the candidate list. Read-only — does NOT mutate dataset or write D1.
+
+    Returns shape (all counts are ints; *_samples are lists of str symbols):
+
+        {
+          "date": "YYYY-MM-DD",
+          "dataset_sanity": {
+            "trading_days_count": int,
+            "price_np_size": int, "chip_np_size": int,
+            "price_np_key_type": "str"|"tuple"|"other",
+            "price_np_sample_keys": [...up to 5 raw key reprs],
+            "price_cache_df_key_type": "str"|"tuple"|"other",
+            "universe_size_at_date": int,
+            "universe_sample_5": [...],
+            "lookup_2330_as_str":   True if "2330" is a key in _price_np,
+            "lookup_2330_as_tuple": True if ("2330",) is a key,
+            "get_price_history_np_2330": dict|None summary,
+          },
+          "funnel": {
+            "S0_universe": int,
+            "S1_pnp_none": int, "S1_pnp_short": int, "S1_pnp_ok": int,
+            "S2_price_low_fail": int, "S2_price_high_fail": int,
+            "S2_volume_zero_fail": int, "S2_avg_vol_fail": int,
+            "S2_turnover_fail": int,
+            "S2_hard_filter_pass": int,
+            "S3_scored": int,
+            "S4_after_industry_cap": int,
+            "S5_final_candidates": int,
+            "S6_has_buy_signal": int,
+          },
+          "dropped_samples": {
+            "pnp_none": [...], "pnp_short": [...],
+            "price_low": [...], "price_high": [...], "volume_zero": [...],
+            "avg_vol_low": [...], "turnover_low": [...],
+          },
+          "passed_samples": [{"symbol","close","base","chip","tech","mom"}, ...]
+        }
+    """
+    from dataclasses import asdict as _asdict  # local import to keep top clean
+
+    # ── Stage 0: universe ────────────────────────────────────────────────────
+    universe_symbols = sorted(dataset.get_universe_at(date))
+    funnel: dict[str, int] = {"S0_universe": len(universe_symbols)}
+    dropped: dict[str, list[str]] = {
+        "pnp_none": [], "pnp_short": [],
+        "price_low": [], "price_high": [],
+        "volume_zero": [], "avg_vol_low": [], "turnover_low": [],
+    }
+
+    def _push(bucket: str, sym: str) -> None:
+        if len(dropped[bucket]) < max_dropped_samples:
+            dropped[bucket].append(sym)
+
+    # ── Dataset-level sanity (A1 cache keys — suspected tuple vs str bug) ────
+    sample_sym = "2330"
+    price_np_keys = list(dataset._price_np.keys())
+    price_df_keys = list(dataset._price_cache.keys())
+
+    def _key_type(keys: list) -> str:
+        if not keys:
+            return "empty"
+        k0 = keys[0]
+        if isinstance(k0, tuple):
+            return "tuple"
+        if isinstance(k0, str):
+            return "str"
+        return f"other:{type(k0).__name__}"
+
+    pnp_2330 = dataset.get_price_history_np(sample_sym, date, lookback_days)
+    sanity = {
+        "trading_days_count": len(dataset.trading_days),
+        "price_np_size": len(price_np_keys),
+        "chip_np_size": len(dataset._chip_np),
+        "price_np_key_type": _key_type(price_np_keys),
+        "price_np_sample_keys": [repr(k) for k in price_np_keys[:5]],
+        "price_cache_df_key_type": _key_type(price_df_keys),
+        "universe_size_at_date": len(universe_symbols),
+        "universe_sample_5": universe_symbols[:5],
+        "lookup_2330_as_str":   (sample_sym in dataset._price_np),
+        "lookup_2330_as_tuple": ((sample_sym,) in dataset._price_np),
+        "get_price_history_np_2330": (
+            {"n": pnp_2330["n"],
+             "first_date": str(pnp_2330["dates"][0]),
+             "last_date":  str(pnp_2330["dates"][-1])}
+            if pnp_2330 is not None else None
+        ),
+    }
+
+    if not universe_symbols:
+        funnel.update({
+            "S1_pnp_none": 0, "S1_pnp_short": 0, "S1_pnp_ok": 0,
+            "S2_price_low_fail": 0, "S2_price_high_fail": 0,
+            "S2_volume_zero_fail": 0, "S2_avg_vol_fail": 0,
+            "S2_turnover_fail": 0, "S2_hard_filter_pass": 0,
+            "S3_scored": 0, "S4_after_industry_cap": 0,
+            "S5_final_candidates": 0, "S6_has_buy_signal": 0,
+        })
+        return {"date": date, "dataset_sanity": sanity,
+                "funnel": funnel, "dropped_samples": dropped,
+                "passed_samples": []}
+
+    market_return_5d = _calc_market_return_5d(dataset, date)
+
+    # Sector lookup (same as replay_screener_for_date)
+    sector_map = dict(zip(
+        dataset.stocks.get_column("symbol").to_list(),
+        dataset.stocks.get_column("sector").fill_null("其他").to_list(),
+    ))
+
+    # ── Stage 1-3: per-symbol filter + scoring ───────────────────────────────
+    pnp_none = pnp_short = pnp_ok = 0
+    price_low_fail = price_high_fail = 0
+    volume_zero_fail = avg_vol_fail = turnover_fail = 0
+
+    scored: list[Candidate] = []
+    passed_samples: list[dict] = []
+
+    for symbol in universe_symbols:
+        pnp = dataset.get_price_history_np(symbol, date, lookback_days)
+        if pnp is None:
+            pnp_none += 1
+            _push("pnp_none", symbol)
+            continue
+        if pnp["n"] < 3:
+            pnp_short += 1
+            _push("pnp_short", symbol)
+            continue
+        pnp_ok += 1
+
+        closes = pnp["close"]
+        volumes = pnp["volume"]
+        latest_close = float(closes[-1])
+        latest_volume = float(volumes[-1])
+
+        if latest_close < screener.min_price:
+            price_low_fail += 1
+            _push("price_low", symbol)
+            continue
+        if latest_close > screener.max_price:
+            price_high_fail += 1
+            _push("price_high", symbol)
+            continue
+        if latest_volume == 0:
+            volume_zero_fail += 1
+            _push("volume_zero", symbol)
+            continue
+
+        vol_tail = volumes[-min(20, pnp["n"]):]
+        avg_vol_20 = float(vol_tail.mean())
+        if avg_vol_20 < screener.min_avg_volume:
+            avg_vol_fail += 1
+            _push("avg_vol_low", symbol)
+            continue
+        avg_daily_turnover = avg_vol_20 * latest_close
+        if avg_daily_turnover < screener.min_daily_turnover:
+            turnover_fail += 1
+            _push("turnover_low", symbol)
+            continue
+
+        cnp = dataset.get_chip_history_np(symbol, date, lookback_days=5)
+        base, chip_s, tech_s, mom_s, reasons = score_multi_factor_np(
+            pnp, cnp, market_return_5d, screener
+        )
+        scored.append(Candidate(
+            symbol=symbol, date=date, close=latest_close,
+            industry=sector_map.get(symbol, "其他"),
+            base_score=base, chip_score=chip_s, tech_score=tech_s,
+            momentum_score=mom_s, combined_score=0.0, reasons=reasons[:3],
+        ))
+        if len(passed_samples) < max_dropped_samples:
+            passed_samples.append({
+                "symbol": symbol, "close": round(latest_close, 2),
+                "base": round(base, 2), "chip": round(chip_s, 2),
+                "tech": round(tech_s, 2), "mom": round(mom_s, 2),
+            })
+
+    # ── Stage 4-6: ranking pipeline (mirrors replay_screener_for_date) ───────
+    scored.sort(key=lambda c: c.base_score, reverse=True)
+    industry_count: dict[str, int] = {}
+    after_industry: list[Candidate] = []
+    for c in scored:
+        cnt = industry_count.get(c.industry, 0)
+        if cnt >= screener.max_per_industry:
+            continue
+        industry_count[c.industry] = cnt + 1
+        after_industry.append(c)
+
+    final_candidates = after_industry[: screener.max_candidates]
+    for c in final_candidates:
+        screener_norm = min(
+            1.0, (c.chip_score + c.tech_score) / ranking.screener_denominator
+        )
+        c.combined_score = (
+            ranking.alpha * screener_norm
+            + ranking.beta * 0.5      # ML_CONF_PLACEHOLDER
+            + ranking.gamma * 0.35    # SIGNAL_TIER_PLACEHOLDER
+        )
+    final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
+    promoted = 0
+    if ranking.enabled:
+        for c in final_candidates[: ranking.top_k]:
+            c.has_buy_signal = 1
+            promoted += 1
+
+    funnel.update({
+        "S1_pnp_none": pnp_none,
+        "S1_pnp_short": pnp_short,
+        "S1_pnp_ok": pnp_ok,
+        "S2_price_low_fail": price_low_fail,
+        "S2_price_high_fail": price_high_fail,
+        "S2_volume_zero_fail": volume_zero_fail,
+        "S2_avg_vol_fail": avg_vol_fail,
+        "S2_turnover_fail": turnover_fail,
+        "S2_hard_filter_pass": len(scored),
+        "S3_scored": len(scored),
+        "S4_after_industry_cap": len(after_industry),
+        "S5_final_candidates": len(final_candidates),
+        "S6_has_buy_signal": promoted,
+    })
+
+    return {
+        "date": date,
+        "dataset_sanity": sanity,
+        "funnel": funnel,
+        "dropped_samples": dropped,
+        "passed_samples": passed_samples,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

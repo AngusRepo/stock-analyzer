@@ -14,7 +14,13 @@ from typing import Optional
 from services.backtest_service import run_full_backtest
 from services.monte_carlo_service import run_monte_carlo_mdd
 from services.pbo_service import run_pbo_analysis
-from services.backtest_engine import replay_period_loading
+from services.backtest_engine import (
+    replay_period_loading,
+    diagnose_replay_for_date,
+    BacktestDataset,
+    ScreenerParams,
+    RankingParams,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/backtest", tags=["backtest"])
@@ -163,6 +169,82 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
         }
     except Exception as e:
         logger.exception("[Replay] Failed")
+        return {"status": "error", "error": str(e)}
+
+
+class DiagnoseRequest(BaseModel):
+    """B1 regression diagnostic: funnel counters per stage of
+    replay_screener_for_date. Loads BacktestDataset for a short window
+    ending at `date`, then runs the instrumented clone.
+
+    Typical smoke body:
+      {"date": "2024-03-08", "lookback_calendar_days": 35,
+       "params": {}, "symbols": null}
+    """
+    date: str = Field(..., description="Decision date 'YYYY-MM-DD' (end of window)")
+    lookback_calendar_days: int = Field(
+        default=35, ge=7, le=120,
+        description="Calendar days of history to load before `date` (must be "
+                    ">= 22 trading days for screener lookback window)"
+    )
+    params: dict = Field(
+        default_factory=dict,
+        description="trading:config shape for screener/ranking. Missing keys use defaults."
+    )
+    symbols: Optional[list[str]] = Field(
+        default=None,
+        description="Subset filter. None = full universe."
+    )
+    max_dropped_samples: int = Field(default=10, ge=0, le=50)
+
+
+@router.post("/diagnose")
+async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
+    """
+    B1 regression diagnostic endpoint (2026-04-20).
+
+    Funnel-counter view of `replay_screener_for_date` for a single date.
+    Returns:
+      - dataset_sanity: _price_np cache key type + lookup test on 2330
+        (reveals Polars 1.0 tuple-key bug vs str-key)
+      - funnel: count at each of the 6 pipeline stages
+      - dropped_samples: up to N symbol names per drop bucket
+      - passed_samples: first N symbols that made it to `scored`
+
+    Expensive: loads BacktestDataset from D1 (same cost as /backtest/replay).
+    """
+    from datetime import date as _date, timedelta as _td
+    try:
+        end_d = _date.fromisoformat(req.date)
+    except ValueError:
+        return {"status": "error", "error": f"Invalid date '{req.date}'"}
+    start_d = end_d - _td(days=req.lookback_calendar_days)
+    start_s = start_d.isoformat()
+
+    logger.info(
+        f"[Diagnose] date={req.date} window={start_s}~{req.date} "
+        f"symbols={len(req.symbols) if req.symbols else 'full'}"
+    )
+
+    try:
+        dataset = BacktestDataset.load_from_d1(
+            start_date=start_s,
+            end_date=req.date,
+            symbols=req.symbols,
+        )
+        screener = ScreenerParams.from_trading_config(req.params)
+        ranking = RankingParams.from_trading_config(req.params)
+        result = diagnose_replay_for_date(
+            dataset=dataset,
+            date=req.date,
+            screener=screener,
+            ranking=ranking,
+            lookback_days=22,
+            max_dropped_samples=req.max_dropped_samples,
+        )
+        return {"status": "ok", **result}
+    except Exception as e:
+        logger.exception("[Diagnose] Failed")
         return {"status": "error", "error": str(e)}
 
 

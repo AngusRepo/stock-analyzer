@@ -334,9 +334,12 @@ def main():
         if raw.is_empty():
             print("ERROR: No data loaded from CSV")
             sys.exit(1)
+        # Polars ≥1.0: partition_by(..., as_dict=True) returns tuple keys
+        # even for a single column (("2330",) not "2330"). Unwrap so downstream
+        # dict lookups / JSON dumps see plain str symbols. (B1 bundle 2026-04-20)
         if "symbol" in raw.columns:
             all_data = {
-                name: group
+                (name[0] if isinstance(name, tuple) else name): group
                 for name, group in sorted(
                     raw.partition_by("symbol", as_dict=True).items()
                 )
@@ -349,7 +352,7 @@ def main():
             print("ERROR: No data loaded from D1")
             sys.exit(1)
         all_data = {
-            name: group
+            (name[0] if isinstance(name, tuple) else name): group
             for name, group in sorted(
                 raw.partition_by("symbol", as_dict=True).items()
             )

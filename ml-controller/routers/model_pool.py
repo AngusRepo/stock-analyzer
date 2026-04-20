@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from services import modal_client
 from services.d1_client import query as d1_query
+from services import discord_alert  # 2026-04-19 Stage 5
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +360,18 @@ async def register_challenger(req: RegisterChallengerRequest):
     }
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+
+    # Stage 5 alert (graceful no-op if DISCORD_WEBHOOK_URL absent)
+    try:
+        discord_alert.alert_lifecycle(
+            event="register",
+            model_name=req.model_name,
+            from_status=None, to_status=f"challenger:{req.version}",
+            reason=f"New shadow version registered. Active stays {entry.get('version')}.",
+            metrics={"gcs_path": target_path, "shadow_since": today},
+        )
+    except Exception as _e:
+        logger.debug(f"[ModelPool] register alert skipped: {_e}")
     return {"status": "registered", "model": req.model_name, "challenger": entry["challenger"]}
 
 
@@ -386,6 +399,19 @@ async def discard_challenger(req: DiscardChallengerRequest):
     removed = entry.pop("challenger", None)
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+    try:
+        if removed:
+            discord_alert.alert_lifecycle(
+                event="discard",
+                model_name=req.model_name,
+                from_status=f"challenger:{removed.get('version')}",
+                to_status=None,
+                reason="Manual discard or Stage 4 retire-not-promote.",
+                metrics={"weekly_ic_count": len(removed.get("weekly_ic") or []),
+                          "ic_4w_avg": removed.get("ic_4w_avg")},
+            )
+    except Exception as _e:
+        logger.debug(f"[ModelPool] discard alert skipped: {_e}")
     return {"status": "discarded", "model": req.model_name, "removed": removed}
 
 
@@ -540,6 +566,21 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
 
+    # ── 4. Stage 5 alerts: weekly summary + decay-detection per-event ────────
+    # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status —
+    # Stage 4 promote gate will own the actual transitions):
+    #   active model w/ consecutive_negative_weeks ≥ 3 → 🟡 demote candidate
+    #   degraded model w/ consecutive_negative_weeks ≥ 6 → 🔴 retire candidate
+    #   degraded model w/ last 2 ic > 0 → 🔵 recovery candidate
+    try:
+        if discord_alert.is_enabled():
+            discord_alert.alert_weekly_ic_summary(per_model_ic, pool_changes)
+            # Per-model decay alerts (only when pool was updated)
+            if req.update_pool and pool_changes:
+                _emit_decay_alerts(pool_changes)
+    except Exception as _e:
+        logger.warning(f"[ModelPool] Stage 5 alerts failed (non-fatal): {_e}")
+
     return {
         "status": "ok",
         "lookback_days": req.lookback_days,
@@ -548,6 +589,67 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         "pool_updates": pool_changes if req.update_pool else None,
         "elapsed_s": round(time.time() - t0, 1),
     }
+
+
+def _emit_decay_alerts(pool_changes: dict) -> None:
+    """Inspect ic_4w_avg + consecutive_negative_weeks and fire candidate alerts.
+
+    Fires advisory notifications only — does NOT mutate model_pool.json status.
+    Stage 4 promote/demote gate owns actual lifecycle transitions.
+    """
+    import json as _json
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    pool_blob = bucket.blob("universal/model_pool.json")
+    if not pool_blob.exists():
+        return
+    pool = _json.loads(pool_blob.download_as_text())
+    for tracked_name, change in pool_changes.items():
+        is_challenger = tracked_name.endswith("::challenger")
+        base_name = tracked_name.replace("::challenger", "")
+        entry = pool.get("models", {}).get(base_name)
+        if not entry:
+            continue
+        target_status = entry.get("status", "active")
+        if is_challenger:
+            target_status = "challenger"
+        neg = change.get("consecutive_negative_weeks", 0) or 0
+        ic_4w = change.get("ic_4w_avg")
+        # Active model showing 3-week decay
+        if target_status == "active" and neg >= 3:
+            discord_alert.alert_lifecycle(
+                event="demote",
+                model_name=base_name,
+                from_status="active", to_status="degraded (CANDIDATE)",
+                reason=f"IC 連 {neg} 週 < 0 (4w_avg={ic_4w})",
+                metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
+                          "note": "Advisory — Stage 4 will own actual transition"},
+            )
+        # Degraded model showing 6-week extended decay
+        elif target_status == "degraded" and neg >= 6:
+            discord_alert.alert_lifecycle(
+                event="retire",
+                model_name=base_name,
+                from_status="degraded", to_status="retired (CANDIDATE)",
+                reason=f"IC 連 {neg} 週 < 0 (4w_avg={ic_4w})",
+                metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
+                          "note": "Advisory — Stage 4 will own actual transition"},
+            )
+        # Degraded recovery: last 2 weeks > 0 (read direct weekly_ic since
+        # consecutive_negative_weeks resets to 0 on first positive)
+        elif target_status == "degraded":
+            wkly = (entry.get("weekly_ic") or []) if not is_challenger else \
+                   (entry.get("challenger", {}).get("weekly_ic") or [])
+            if len(wkly) >= 2 and wkly[-1] > 0 and wkly[-2] > 0:
+                discord_alert.alert_lifecycle(
+                    event="recovery",
+                    model_name=base_name,
+                    from_status="degraded", to_status="active (CANDIDATE)",
+                    reason=f"IC 連 2 週 > 0 (recent={wkly[-2]:.4f}, {wkly[-1]:.4f})",
+                    metrics={"recent_2_weeks": [round(wkly[-2], 4), round(wkly[-1], 4)],
+                              "ic_4w_avg": ic_4w,
+                              "note": "Advisory — Stage 4 will own actual transition"},
+                )
 
 
 def _rank_avg_ties(xs: list[float]) -> list[float]:

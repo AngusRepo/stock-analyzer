@@ -777,6 +777,63 @@ export async function getSandboxEntry(
   return { ...raw, bytes: JSON.stringify(raw).length }
 }
 
+// ─── #28b T3.4: Challenger Slot (2026-04-20) ─────────────────────────────
+//
+// Single-slot challenger config living at `trading:config:challenger`.
+// Paralleled by champion at `trading:config`. Weekly eval cron (T3.5)
+// compares both via replay_period and auto-promotes or retires.
+//
+// Design refs:
+//   - Plan A model_pool.json single-active/single-challenger pattern
+//   - MLflow stage None → Staging → Production
+//   - KV single-slot (vs GCS JSON pool): OK because we only track 1 challenger
+//     at a time (Plan A tracks 10 models so needs a pool file)
+
+const CHALLENGER_KEY = 'trading:config:challenger'
+
+export interface ChallengerState {
+  config: TradingConfig
+  hash: string
+  shadow_since: string        // ISO timestamp
+  source: string              // 'sandbox:<id>' | 'manual' | 'auto'
+  source_id?: string          // e.g. sandbox_id it came from
+  note?: string
+}
+
+/** Read current challenger (null if no challenger active). */
+export async function getChallenger(kv: KVNamespace): Promise<ChallengerState | null> {
+  return (await kv.get(CHALLENGER_KEY, 'json') as ChallengerState | null) ?? null
+}
+
+/** Set challenger slot (overwrites any existing challenger). */
+export async function setChallenger(
+  kv: KVNamespace,
+  config: TradingConfig,
+  meta: { source: string; source_id?: string; note?: string },
+): Promise<ChallengerState> {
+  const hash = await hashConfig(config)
+  const state: ChallengerState = {
+    config,
+    hash,
+    shadow_since: new Date().toISOString(),
+    source: meta.source,
+    source_id: meta.source_id,
+    note: meta.note,
+  }
+  await kv.put(CHALLENGER_KEY, JSON.stringify(state))
+  return state
+}
+
+/** Retire (clear) challenger slot. */
+export async function retireChallenger(kv: KVNamespace): Promise<void> {
+  await kv.delete(CHALLENGER_KEY)
+}
+
+/** Expose content hash helper for external callers (T3.5 eval). */
+export async function computeConfigHash(config: TradingConfig): Promise<string> {
+  return hashConfig(config)
+}
+
 /** Promote a sandbox entry to prod. Triggers T3.1 snapshot chain. */
 export async function promoteSandbox(
   kv: KVNamespace,

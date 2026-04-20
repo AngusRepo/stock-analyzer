@@ -717,6 +717,280 @@ app.post('/api/admin/config/promote', async (c) => {
   })
 })
 
+// ─── #28b T3.4: Challenger slot endpoints ───────────────────────────────────
+// GET    /api/admin/config/challenger          → current challenger state (null if empty)
+// POST   /api/admin/config/challenger          → {sandbox_id?, config?, note?} → set challenger
+// DELETE /api/admin/config/challenger          → retire challenger
+// GET    /api/admin/config/challenger/state    → latest config_lifecycle_state row
+// GET    /api/admin/config/challenger/events   → last N rows from config_lifecycle_events
+
+app.get('/api/admin/config/challenger', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const { getChallenger } = await import('./lib/tradingConfig')
+  const ch = await getChallenger(c.env.KV)
+  if (!ch) return c.json({ success: true, challenger: null, message: 'No active challenger.' })
+  return c.json({ success: true, challenger: {
+    hash: ch.hash,
+    shadow_since: ch.shadow_since,
+    source: ch.source,
+    source_id: ch.source_id,
+    note: ch.note,
+    // config body available on request via ?full=1 (omitted for index view)
+    config: c.req.query('full') === '1' ? ch.config : '(pass ?full=1 for body)',
+  }})
+})
+
+app.post('/api/admin/config/challenger', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<{
+    sandbox_id?: string
+    config?: unknown
+    note?: string
+  }>().catch(() => null)
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400)
+
+  const { getSandboxEntry, setChallenger } = await import('./lib/tradingConfig')
+
+  // config coerced to TradingConfig — setChallenger signature accepts it;
+  // runtime validation is setTradingConfig concern, not here.
+  let config: any
+  let source: string
+  let source_id: string | undefined
+
+  if (body.sandbox_id) {
+    const entry = await getSandboxEntry(c.env.KV, body.sandbox_id)
+    if (!entry) return c.json({ error: 'sandbox entry not found' }, 404)
+    config = entry.config
+    source = `sandbox:${entry.source}`
+    source_id = body.sandbox_id
+  } else if (body.config) {
+    config = body.config
+    source = 'manual'
+  } else {
+    return c.json({ error: 'Body requires either sandbox_id or config' }, 400)
+  }
+
+  const state = await setChallenger(c.env.KV, config, {
+    source, source_id, note: body.note,
+  })
+
+  // Audit into config_lifecycle_events
+  await c.env.DB.prepare(
+    `INSERT INTO config_lifecycle_events
+     (event_date, event_type, challenger_source, challenger_hash, detail)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(
+    twToday(),
+    'challenger_set',
+    source,
+    state.hash,
+    JSON.stringify({ source_id, note: body.note, shadow_since: state.shadow_since }),
+  ).run()
+
+  return c.json({
+    success: true,
+    challenger: {
+      hash: state.hash,
+      shadow_since: state.shadow_since,
+      source: state.source,
+      source_id: state.source_id,
+    },
+    message: 'Challenger set. Weekly Friday 19:30 TW eval will compare vs champion.',
+  })
+})
+
+app.delete('/api/admin/config/challenger', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const { getChallenger, retireChallenger } = await import('./lib/tradingConfig')
+  const existing = await getChallenger(c.env.KV)
+  if (!existing) return c.json({ success: true, message: 'No challenger to retire.' })
+
+  await retireChallenger(c.env.KV)
+
+  // Audit
+  const reason = c.req.query('reason') || 'manual'
+  await c.env.DB.prepare(
+    `INSERT INTO config_lifecycle_events
+     (event_date, event_type, challenger_source, challenger_hash, detail)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(
+    twToday(),
+    'retire',
+    existing.source,
+    existing.hash,
+    JSON.stringify({ reason, shadow_duration_days: Math.round((Date.now() - new Date(existing.shadow_since).getTime()) / 86400_000) }),
+  ).run()
+
+  return c.json({ success: true, retired: existing.hash, reason })
+})
+
+app.get('/api/admin/config/challenger/state', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const row = await c.env.DB.prepare(
+    `SELECT state_json, last_eval_json, updated_at FROM config_lifecycle_state WHERE id = 1`
+  ).first<{ state_json: string; last_eval_json: string | null; updated_at: string }>()
+
+  if (!row) return c.json({ success: true, state: null, message: 'No eval data yet (weekly cron not fired).' })
+  return c.json({
+    success: true,
+    updated_at: row.updated_at,
+    state: JSON.parse(row.state_json),
+    last_eval: row.last_eval_json ? JSON.parse(row.last_eval_json) : null,
+  })
+})
+
+// Note: bare GET /api/admin/config exists at the top of this file (returns
+// raw config). Controller /config_pool/weekly_eval fetches that directly and
+// computes hash client-side. No duplicate route needed here.
+
+// POST /api/admin/config/challenger/eval_commit — controller cron writes state + event atomically.
+// Body: {state: {...}, event: {...}}
+app.post('/api/admin/config/challenger/eval_commit', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<{ state: any; event: any }>().catch(() => null)
+  if (!body?.state || !body?.event)
+    return c.json({ error: 'Body requires { state, event }' }, 400)
+
+  const now = new Date().toISOString()
+
+  // Upsert state (single row id=1)
+  await c.env.DB.prepare(
+    `INSERT INTO config_lifecycle_state (id, state_json, last_eval_json, updated_at)
+     VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       state_json = excluded.state_json,
+       last_eval_json = excluded.last_eval_json,
+       updated_at = excluded.updated_at`
+  ).bind(
+    JSON.stringify(body.state),
+    JSON.stringify(body.event.detail ?? null),
+    now,
+  ).run()
+
+  // Append event
+  await c.env.DB.prepare(
+    `INSERT INTO config_lifecycle_events
+     (event_date, event_type, challenger_source, champion_hash, challenger_hash,
+      sharpe_delta, win_rate_delta, max_dd_delta, detail)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    twToday(),
+    body.event.event_type || 'eval_done',
+    body.event.challenger_source ?? null,
+    body.event.champion_hash ?? null,
+    body.event.challenger_hash ?? null,
+    body.event.sharpe_delta ?? null,
+    body.event.win_rate_delta ?? null,
+    body.event.max_dd_delta ?? null,
+    JSON.stringify(body.event.detail ?? {}),
+  ).run()
+
+  return c.json({ success: true, committed_at: now })
+})
+
+// POST /api/admin/config/challenger/promote_to_prod — auto-promote from cron.
+// Internal path (not Wei manual) — controller calls this with X-Confirm-Prod: true
+// header + CTRL auth, to move the current challenger's config into prod, then
+// retire the challenger slot. Triggers T3.1 snapshot chain with source='auto_promote'.
+app.post('/api/admin/config/challenger/promote_to_prod', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const confirm = c.req.header('X-Confirm-Prod')
+  if (confirm !== 'true')
+    return c.json({ error: 'requires X-Confirm-Prod: true header' }, 400)
+
+  const body = await c.req.json<{ reason?: string }>().catch(() => null) ?? {} as { reason?: string }
+
+  const { getChallenger, setTradingConfig, retireChallenger } = await import('./lib/tradingConfig')
+  const ch = await getChallenger(c.env.KV)
+  if (!ch) return c.json({ error: 'no active challenger to promote' }, 404)
+
+  // Write challenger config → prod (triggers T3.1 snapshot chain)
+  const snap = await setTradingConfig(c.env.KV, ch.config, {
+    source: 'auto_promote',
+    push_id: ch.hash,
+  })
+
+  // Retire challenger slot
+  await retireChallenger(c.env.KV)
+
+  // Audit event
+  await c.env.DB.prepare(
+    `INSERT INTO config_lifecycle_events
+     (event_date, event_type, challenger_source, challenger_hash, detail)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(
+    twToday(),
+    'promote',
+    ch.source,
+    ch.hash,
+    JSON.stringify({
+      reason: body?.reason ?? 'auto-promote from weekly_eval',
+      promoted_at: new Date().toISOString(),
+      new_snapshot_id: snap.snapshotId,
+      snapshot_skipped: snap.skipped,
+    }),
+  ).run()
+
+  // Discord alert if configured
+  if ((c.env as any).DISCORD_WEBHOOK_URL) {
+    try {
+      const { sendDiscordNotification } = await import('./lib/notify')
+      await sendDiscordNotification((c.env as any).DISCORD_WEBHOOK_URL,
+        `🎯 **Config Challenger PROMOTED**\n` +
+        `challenger=${ch.hash} source=${ch.source}\n` +
+        `reason=${body?.reason ?? 'auto'}\n` +
+        `new_snapshot=${snap.snapshotId}`)
+    } catch (e) {
+      console.warn('[config/promote_to_prod] discord alert failed (non-blocking)', e)
+    }
+  }
+
+  return c.json({
+    success: true,
+    promoted_hash: ch.hash,
+    new_snapshot_id: snap.snapshotId,
+    snapshot_skipped: snap.skipped,
+    retired_at: new Date().toISOString(),
+  })
+})
+
+app.get('/api/admin/config/challenger/events', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit')) || 20))
+  const rows = await c.env.DB.prepare(
+    `SELECT id, event_date, event_type, challenger_source, champion_hash, challenger_hash,
+            sharpe_delta, win_rate_delta, max_dd_delta, detail, created_at
+     FROM config_lifecycle_events ORDER BY id DESC LIMIT ?`
+  ).bind(limit).all<any>()
+
+  const events = (rows.results || []).map((r: any) => ({
+    ...r,
+    detail: r.detail ? (() => { try { return JSON.parse(r.detail) } catch { return r.detail } })() : null,
+  }))
+  return c.json({ success: true, count: events.length, events })
+})
+
 // ─── Admin: Cron 執行日誌 ────────────────────────────────────────────────────
 app.get('/api/admin/cron-logs', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
@@ -2419,7 +2693,30 @@ export default {
         } catch (e: any) {
           stage4 = `chain exception ${e?.message || e}`
         }
-        return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4}`
+        // #28b T3.5: Config challenger weekly eval (appended to chain after model promote_check)
+        let configEval = '(skip)'
+        try {
+          const ceRes = await fetch(`${env.ML_CONTROLLER_URL}/config_pool/weekly_eval`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ lookback_days: 30, apply: true }),
+            signal: AbortSignal.timeout(300_000),  // 5 min (replay × 2 configs)
+          })
+          if (ceRes.ok) {
+            const cd = await ceRes.json() as any
+            if (cd.status === 'no_challenger') {
+              configEval = 'no_challenger'
+            } else {
+              const sd = cd.sharpe_delta?.toFixed?.(3) ?? cd.sharpe_delta
+              configEval = `${cd.action}(wins=${cd.consecutive_wins} losses=${cd.consecutive_losses} Δsharpe=${sd})`
+            }
+          } else {
+            configEval = `HTTP ${ceRes.status}`
+          }
+        } catch (e: any) {
+          configEval = `exception ${e?.message?.slice(0, 40) ?? 'unknown'}`
+        }
+
+        return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4} || ConfigEval ${configEval}`
       })
     } else if (cron === '0 11 * * 1-5') {
       // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2

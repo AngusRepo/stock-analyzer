@@ -98,11 +98,21 @@ def _train_one_trial(
     Uses MarginRankingLoss (locked) and AdamW (main.py default).
     Patience for search is 8 (not the locked production 16) — search is shorter
     for throughput. The WINNING config is then re-trained with production settings.
+
+    #29a.3 debug fixes (2026-04-21):
+      - Val set size sanity (reject < 50 rows — MarginRankingLoss needs enough pairs)
+      - Batched val inference (VAL_BATCH=2048) to prevent L4 OOM on large d_model ×
+        full-val pass (137K × 101 feats × d_model=256 × n_layers=6 ≈ 14GB
+        activation in one shot, exceeds L4's 24GB at peak)
     """
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
     from scipy.stats import spearmanr
+
+    # Fix 3 (#29a.3): val set size sanity — guard against tiny val post-subset
+    if len(y_val) < 50:
+        raise ValueError(f"val set too small for MarginRankingLoss: {len(y_val)} rows < 50 minimum")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _build_ftt_model(X_train.shape[1], d_model, n_heads, n_layers, dropout).to(device)
@@ -116,6 +126,7 @@ def _train_one_trial(
     criterion = nn.MarginRankingLoss(margin=0.0)
     best_ic, no_improve = -1e9, 0
     batch_size = 256
+    VAL_BATCH = 2048  # Fix 2 (#29a.3): chunked val inference, prevents OOM
 
     for epoch in range(max_epochs):
         model.train()
@@ -141,10 +152,14 @@ def _train_one_trial(
             loss.backward()
             opt.step()
 
-        # Validation IC
+        # Validation IC — chunked to avoid OOM on large d_model × full val
         model.eval()
         with torch.no_grad():
-            pred_val = model(X_va).cpu().numpy()
+            pred_chunks = []
+            for i in range(0, len(X_va), VAL_BATCH):
+                pred_chunks.append(model(X_va[i:i + VAL_BATCH]).cpu().numpy())
+            pred_val = np.concatenate(pred_chunks) if pred_chunks else np.array([])
+
         ic, _ = spearmanr(pred_val, y_val)
         ic = float(ic or 0.0)
         if ic > best_ic:
@@ -184,7 +199,14 @@ def run_search(X_train, y_train, X_val, y_val, n_trials: int = 50,
             ic = _train_one_trial(d_model, n_heads, n_layers, dropout,
                                   X_train, y_train, X_val, y_val)
         except Exception as e:
-            logger.warning(f"[FT-T Optuna] trial {trial.number} crashed: {e}")
+            # #29a.3 Fix 1: surface full exception instead of swallowing.
+            # Previous behavior silently returned -1.0 — Wei couldn't diagnose
+            # why trials failed (e.g. OOM vs val-too-small vs shape mismatch).
+            import traceback as _tb
+            logger.error(f"[FT-T Optuna] trial {trial.number} crashed: {type(e).__name__}: {e}")
+            logger.error(_tb.format_exc())
+            # Stash on trial user_attrs so final result can expose crash taxonomy
+            trial.set_user_attr("crash_reason", f"{type(e).__name__}: {str(e)[:200]}")
             return -1.0
         logger.info(f"[FT-T Optuna] trial {trial.number} IC={ic:.4f}")
         return ic
@@ -193,12 +215,22 @@ def run_search(X_train, y_train, X_val, y_val, n_trials: int = 50,
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best = study.best_trial
+    # #29a.3 Fix 5: surface crash taxonomy so Wei sees why trials failed
+    # instead of only seeing aggregate -1.0 fallbacks.
+    crash_reasons = {}
+    for t in study.trials:
+        if t.value == -1.0 and t.user_attrs.get("crash_reason"):
+            crash_reasons[t.number] = t.user_attrs["crash_reason"]
+
     result = {
         "best_ic": best.value,
         "best_params": best.params,
         "n_trials": len(study.trials),
+        "n_crashed": len(crash_reasons),
+        "crash_reasons": crash_reasons,
         "all_trials": [
-            {"number": t.number, "value": t.value, "params": t.params}
+            {"number": t.number, "value": t.value, "params": t.params,
+             "crash_reason": t.user_attrs.get("crash_reason")}
             for t in study.trials
             if t.value is not None
         ],

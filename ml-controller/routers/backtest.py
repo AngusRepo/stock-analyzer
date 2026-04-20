@@ -81,6 +81,13 @@ class ReplayRequest(BaseModel):
         description="Subset filter for smoke tests. None = full universe (~2346 stocks).",
     )
     verbose: bool = Field(default=False)
+    regime_label: Optional[str] = Field(
+        default=None,
+        description="#28b T2.4: apply params.sltp_per_regime[canonical_label] overlay "
+                    "for the whole replay window. Accepts 'bull' / 'bull_market' / "
+                    "'bear' / 'bear_market' / 'volatile' / 'sideways' (case-insensitive). "
+                    "None = flat sltp (backward-compat).",
+    )
 
 
 @router.post("/replay")
@@ -122,6 +129,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             mode=req.mode,
             symbols=req.symbols,
             verbose=req.verbose,
+            regime_label=req.regime_label,
         )
 
         # Serialize BacktestMetrics to JSON-safe dict

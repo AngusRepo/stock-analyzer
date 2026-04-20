@@ -1802,14 +1802,40 @@ class SLTPParams:
     vol_threshold_high: float = 0.03
 
     @classmethod
-    def from_trading_config(cls, tc: dict) -> "SLTPParams":
-        s = tc.get("sltp", {})
+    def from_trading_config(cls, tc: dict, regime_label: Optional[str] = None) -> "SLTPParams":
+        """Build from trading:config dict.
+
+        #28b T2.4 (2026-04-21): if regime_label provided AND
+        tc["sltp_per_regime"][canonical_label] overlay exists, overlay
+        wins over flat sltp fields (matches worker resolveSltpForRegime
+        pattern). Backward-compat: regime_label=None or missing overlay
+        → uses flat sltp only.
+        """
+        s = dict(tc.get("sltp", {}))
+        if regime_label:
+            canonical = _canonical_regime_label(regime_label)
+            if canonical:
+                overlay = ((tc.get("sltp_per_regime") or {}).get(canonical) or {})
+                s = {**s, **overlay}  # shallow merge
         return cls(
             sl_mult_base=s.get("slMultBase", 1.6806),
             tp_mult_base=s.get("tpMultBase", 2.9632),
             vol_threshold_low=s.get("volThresholdLow", 0.015),
             vol_threshold_high=s.get("volThresholdHigh", 0.03),
         )
+
+
+# #28b T2.4: regime label normalization (mirrors worker _normalizeRegimeLabel)
+def _canonical_regime_label(label: str) -> Optional[str]:
+    """Normalize 'bull', 'bull_market', 'BULL' → 'bull_market'. Returns None on unknown."""
+    if not label:
+        return None
+    lower = str(label).lower().strip()
+    if lower.startswith("bull"):     return "bull_market"
+    if lower.startswith("bear"):     return "bear_market"
+    if lower.startswith("volatile"): return "volatile"
+    if lower.startswith("sideway"):  return "sideways"
+    return None
 
 
 @dataclass
@@ -3754,6 +3780,7 @@ def replay_period(
     initial_capital: float = 1_000_000,
     mode: str = "A",
     verbose: bool = False,
+    regime_label: Optional[str] = None,
 ) -> BacktestMetrics:
     """
     Full Mode A rule-based backtest replay over [start_date, end_date].
@@ -3785,7 +3812,8 @@ def replay_period(
     screener_p = ScreenerParams.from_trading_config(params)
     ranking_p = RankingParams.from_trading_config(params)
     pos_p = PositionSizeParams.from_trading_config(params)
-    sltp_p = SLTPParams.from_trading_config(params)
+    # #28b T2.4 (2026-04-21): optional regime_label applies sltp_per_regime overlay
+    sltp_p = SLTPParams.from_trading_config(params, regime_label=regime_label)
     exit_p = ExitParams.from_trading_config(params)
     fees_p = FeeParams.from_trading_config(params)
 
@@ -4053,6 +4081,7 @@ def replay_period_loading(
     mode: str = "A",
     symbols: Optional[list[str]] = None,
     verbose: bool = False,
+    regime_label: Optional[str] = None,
 ) -> BacktestMetrics:
     """
     Convenience wrapper: loads dataset from D1 then runs replay.
@@ -4075,6 +4104,7 @@ def replay_period_loading(
         initial_capital=initial_capital,
         mode=mode,
         verbose=verbose,
+        regime_label=regime_label,
     )
 
 

@@ -736,6 +736,95 @@ class Candidate:
     combined_score: float      # Hybrid Ranking (Architecture C)
     reasons: list[str] = field(default_factory=list)
     has_buy_signal: int = 0    # 1 = top-K promoted, 0 = not
+    # 2026-04-20 #31 Mode B: real ML confidence loaded from D1 historical
+    # predictions (None when running Mode A or no historical row available).
+    confidence: Optional[float] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-20 #31 ML Predictions cache (Mode B prerequisite)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MLPredictionsCache:
+    """Pre-loads ensemble-row predictions from D1 for the entire backtest
+    date range so simulate_entries_for_date can apply realistic confidence
+    filters + Kelly sizing instead of the ml_conf_placeholder=0.60 hardcode.
+
+    Storage: dict {(symbol, date) → confidence float in [0,1]}.
+    Returns None on miss (caller decides skip vs default behavior).
+
+    Source:
+      D1 predictions WHERE
+        model_name='ensemble' AND
+        date(generated_at) BETWEEN start_date AND end_date
+
+    confidence is read from `direction_accuracy` column (set at INSERT time
+    by recommendation_service to ml result["confidence"], which is the
+    rank_to_signal output for the 5-feature ensemble; post-Migration C this
+    is the same value, ensemble_v2.avg_rank delta is small until time-series
+    IC accumulates). Stage 4 follow-up may add ensemble_v2_confidence column.
+    """
+
+    def __init__(self, predictions: dict[tuple[str, str], float]):
+        self._cache = predictions
+        self._n = len(predictions)
+        self._symbols = {sym for sym, _ in predictions}
+        self._dates = {d for _, d in predictions}
+
+    @classmethod
+    def load_from_d1(cls, start_date: str, end_date: str) -> "MLPredictionsCache":
+        """Bulk pull historical ensemble predictions for the date range.
+
+        Cross-references stocks.id → symbol so the dict is keyed by symbol
+        (matching Candidate.symbol). Returns empty cache if no D1 rows.
+        """
+        from services.d1_client import query as d1_query
+        sql = """
+            SELECT s.symbol, date(p.generated_at) AS d, p.direction_accuracy AS conf
+            FROM predictions p
+            JOIN stocks s ON s.id = p.stock_id
+            WHERE p.model_name = 'ensemble'
+              AND date(p.generated_at) >= ?
+              AND date(p.generated_at) <= ?
+              AND p.direction_accuracy IS NOT NULL
+        """
+        rows = d1_query(sql, [start_date, end_date])
+        out: dict[tuple[str, str], float] = {}
+        for r in rows:
+            try:
+                out[(r["symbol"], r["d"])] = float(r["conf"])
+            except (TypeError, ValueError):
+                continue
+        logger.info(
+            f"[MLPredictionsCache] Loaded {len(out)} (symbol,date) "
+            f"predictions for {start_date}..{end_date}"
+        )
+        return cls(out)
+
+    @classmethod
+    def empty(cls) -> "MLPredictionsCache":
+        return cls({})
+
+    def get(self, symbol: str, date: str) -> Optional[float]:
+        """O(1) lookup — returns confidence in [0,1] or None on miss."""
+        return self._cache.get((symbol, date))
+
+    def coverage(self, symbol_date_pairs: list[tuple[str, str]]) -> dict:
+        """Reports how many of the requested pairs we have predictions for.
+
+        Used by replay_period to log Mode B coverage so user knows what
+        fraction of decision points have real ML confidence vs missing.
+        """
+        n_total = len(symbol_date_pairs)
+        n_hit = sum(1 for sd in symbol_date_pairs if sd in self._cache)
+        return {
+            "total": n_total,
+            "hit": n_hit,
+            "miss": n_total - n_hit,
+            "ratio": round(n_hit / max(n_total, 1), 4),
+            "cache_size": self._n,
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1739,6 +1828,9 @@ def simulate_entries_for_date(
     fees: FeeParams,
     ml_conf_placeholder: float = 0.60,
     replay_days: list[str] | None = None,
+    # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
+    ml_predictions: Optional["MLPredictionsCache"] = None,
+    buy_conf_threshold: Optional[float] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1774,6 +1866,27 @@ def simulate_entries_for_date(
         industry_count[p_open.industry] = industry_count.get(p_open.industry, 0) + 1
 
     for cand in buy_candidates:
+        # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
+        # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
+        # using ml_conf_placeholder=0.60 hardcode.
+        if ml_predictions is not None:
+            real_conf = ml_predictions.get(cand.symbol, cand.date)
+            if real_conf is None:
+                attempts.append(EntryAttempt(
+                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_no_ml_pred", adjusted_entry=cand.close,
+                    reason=f"Mode B: no historical prediction in D1 for ({cand.symbol},{cand.date})",
+                ))
+                continue
+            cand.confidence = real_conf
+            if buy_conf_threshold is not None and real_conf < buy_conf_threshold:
+                attempts.append(EntryAttempt(
+                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_low_conf", adjusted_entry=cand.close,
+                    reason=f"Mode B: conf {real_conf:.3f} < threshold {buy_conf_threshold:.3f}",
+                ))
+                continue
+
         # Skip symbols already held — paper.ts merges into existing paper_positions
         # via UPDATE avg_cost, but for Mode A backtest we take the simpler path of
         # skipping dupes to avoid silent overwrite of OpenPosition dict (which would
@@ -1835,9 +1948,10 @@ def simulate_entries_for_date(
             ))
             continue
 
-        # Kelly or risk-parity sizing
+        # Kelly or risk-parity sizing — Mode B uses real confidence when available
+        effective_conf = cand.confidence if cand.confidence is not None else ml_conf_placeholder
         kelly_pct = calc_kelly_pct(
-            confidence=ml_conf_placeholder,
+            confidence=effective_conf,
             entry_price=adjusted_entry,
             stop_loss=adjusted_stop,
             target1=ml_tp1,
@@ -3254,6 +3368,32 @@ def replay_period(
         f"({len(replay_days)} days) mode={mode}"
     )
 
+    # ── 2026-04-20 #31 Mode B: load historical ML predictions cache ───────
+    # Mode B reads ensemble-row direction_accuracy from D1 to derive real
+    # per-(symbol, date) confidence. Mode A keeps using ml_conf_placeholder.
+    # buyConfThreshold pulled from circuit subsection (KV trading:config).
+    ml_cache: Optional[MLPredictionsCache] = None
+    buy_conf_threshold: Optional[float] = None
+    if mode == "B":
+        try:
+            ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
+            circuit_cfg = (params or {}).get("circuit", {}) or {}
+            buy_conf_threshold = float(circuit_cfg.get("buyConfThreshold", 0.60))
+            logger.info(
+                f"[BacktestEngine] Mode B: cache_size={ml_cache._n}, "
+                f"buy_conf_threshold={buy_conf_threshold}"
+            )
+            if ml_cache._n == 0:
+                logger.warning(
+                    "[BacktestEngine] Mode B: empty ML cache — every candidate "
+                    "will be skipped 'no_ml_pred'. Run Stage 2 cron / verify "
+                    "or backfill historical predictions first."
+                )
+        except Exception as e:
+            logger.error(f"[BacktestEngine] Mode B cache load failed: {e} — falling back to Mode A behavior")
+            ml_cache = None
+            buy_conf_threshold = None
+
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
         cash=initial_capital,
@@ -3289,6 +3429,9 @@ def replay_period(
                 sltp=sltp_p,
                 fees=fees_p,
                 replay_days=replay_days,
+                # 2026-04-20 #31 Mode B
+                ml_predictions=ml_cache,
+                buy_conf_threshold=buy_conf_threshold,
             )
             all_attempts.extend(attempts)
 

@@ -471,8 +471,13 @@ export function checkExitConditions(
   hasMlSell: boolean,
   isEOD: boolean,
   cfg: TradingConfig,
+  // #28b T2.3: optional resolved sltp overlay for per-regime trail switches.
+  // Caller resolves via resolveSltpForRegime(cfg, regimeLabel) before this call.
+  // Omitting = backward-compat flat sltp behavior.
+  resolvedSltp?: TradingConfig['sltp'],
 ): ExitDecision {
   const ex = cfg.exit
+  const sltp = resolvedSltp ?? cfg.sltp
   const entryPrice = pos.entry_price ?? pos.avg_cost
   const pnlPct = (currentPrice - entryPrice) / entryPrice
 
@@ -536,9 +541,9 @@ export function checkExitConditions(
   const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
 
   // Phase 2 (2026-04-07): profit-lock 門檻從 trading:config.sltp 讀（Optuna #3 月搜結果）
-  // 之前 0.08/0.03 是 hardcode，跟 Optuna 跑出來的 trail_switch_3pct/8pct 脫鉤
-  const trailSwitch3 = cfg.sltp?.trailSwitch3pct ?? 0.03
-  const trailSwitch8 = cfg.sltp?.trailSwitch8pct ?? 0.08
+  // #28b T2.3 (2026-04-21): resolved sltp may include per-regime overlay
+  const trailSwitch3 = sltp?.trailSwitch3pct ?? 0.03
+  const trailSwitch8 = sltp?.trailSwitch8pct ?? 0.08
 
   // Profit-lock: 獲利越多 trailing 越緊
   let trailMult = ex.trailMultDefault
@@ -2282,9 +2287,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     // 出場參數（基於 fillPrice — 含滑價）
     // Phase 2 (2026-04-07): 從 trading:config.sltp 讀（Optuna #3 月搜結果）
     // 2026-04-18 #36: per-vol-branch multipliers + tp2 distance 都接進 KV
-    //                 之前 slMultLow/High 在 schema 有但 paper.ts 寫死 0.75/1.25，wiring 壞
+    // #28b T2.3 (2026-04-21): resolveSltpForRegime overlay if sltp_per_regime[label]
+    //   set. Backward-compat: empty overlay → returns flat cfg.sltp unchanged.
     const volPct = atr14 / fillPrice
-    const sltp = cfg.sltp
+    const { resolveSltpForRegime: _resolveSltp } = await import('../lib/tradingConfig')
+    const _regimeLabel = await env.KV.get('ml:regime')
+    const sltp = _resolveSltp(cfg, _regimeLabel)
     const volLow  = sltp?.volThresholdLow  ?? 0.015
     const volHigh = sltp?.volThresholdHigh ?? 0.03
     const slBase  = sltp?.slMultBase ?? 2.0
@@ -2442,7 +2450,8 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
       }
     }
 
-    const decision = checkExitConditions(pos, price, atr, false, false, cfg)
+    const decision = checkExitConditions(pos, price, atr, false, false, cfg,
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
     if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason)
     if (decision.action === 'hold') continue
 
@@ -2518,7 +2527,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
     if (!currentPrice) continue
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(pos, currentPrice, atr14, sellRecMap.has(pos.symbol), true, cfg)
+    const decision = checkExitConditions(pos, currentPrice, atr14, sellRecMap.has(pos.symbol), true, cfg,
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
     if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason)
 
     // 當沖判斷：同日進場 → 查當沖標的 + 動態觸發條件
@@ -2787,7 +2797,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     if (!currentPrice) continue
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(pos, currentPrice, atr14, false, false, cfg)  // isEOD=false, no ML signal
+    const decision = checkExitConditions(pos, currentPrice, atr14, false, false, cfg,  // isEOD=false, no ML signal
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason)
 
     // 跌停鎖死檢查：價格接近跌停（≤-9.5%）時，真實市場賣不掉

@@ -188,6 +188,21 @@ export interface TradingConfig {
     // ── 2026-04-18 #36: TP2 multiplier from paper.ts hardcode ──────────────
     tp2DistanceMultiplier: number  // TP2 = entry + atr × tpMult × N（預設 2.0 = TP2 是 TP1 兩倍距離）
   }
+  // ── #28b T2.2 (2026-04-21): Per-regime sltp overlay ─────────────────────
+  // Optional — when empty (default), paper.ts uses flat sltp.* above. When
+  // present, active regime label from ml:regime KV picks the matching overlay;
+  // fields in overlay override matching sltp.* fields; unset fields fall back
+  // to flat sltp.* (partial override pattern, Kubernetes ConfigMap style).
+  //
+  // Four HMM regime labels (aligned with ml-service/app/regime.py):
+  //   bull_market / volatile / sideways / bear_market
+  // Produced by /optuna/per_regime robust search → sandbox → challenger → prod.
+  sltp_per_regime?: {
+    bull_market?:  Partial<TradingConfig['sltp']>
+    volatile?:     Partial<TradingConfig['sltp']>
+    sideways?:     Partial<TradingConfig['sltp']>
+    bear_market?:  Partial<TradingConfig['sltp']>
+  }
   // ── 2026-04-07 added: L2 daily formula 內部係數（adaptive.py 用） ──────────
   // 把 hardcoded formula 常數搬到 KV，讓未來 Optuna 可搜
   L2_formula: {
@@ -423,6 +438,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     // 2026-04-18 #36
     tp2DistanceMultiplier: 2.0,
   },
+  // ── #28b T2.2 (2026-04-21): Per-regime overlay default empty ─────────────
+  // Empty = fall back to flat sltp.* for all regimes (backward-compatible).
+  // Populated by /optuna/per_regime → sandbox → challenger → prod flow.
+  sltp_per_regime: {},
   // ── 2026-04-07 NEW: L2 daily formula 內部係數 ─────────────────────────────
   L2_formula: {
     confidence_risk_mult: 0.15,
@@ -500,6 +519,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     // 2026-04-07 added:
     signal: { ...d.signal, ...partial.signal },
     sltp: { ...d.sltp, ...partial.sltp },
+    sltp_per_regime: partial.sltp_per_regime ?? d.sltp_per_regime ?? {},
     L2_formula: { ...d.L2_formula, ...partial.L2_formula },
     intraday: { ...d.intraday, ...partial.intraday },
     momentum: { ...d.momentum, ...partial.momentum },
@@ -832,6 +852,48 @@ export async function retireChallenger(kv: KVNamespace): Promise<void> {
 /** Expose content hash helper for external callers (T3.5 eval). */
 export async function computeConfigHash(config: TradingConfig): Promise<string> {
   return hashConfig(config)
+}
+
+// ─── #28b T2.2 Regime-conditional sltp lookup ───────────────────────────────
+//
+// Resolves the effective sltp block for a given regime label by overlaying
+// sltp_per_regime[label] onto flat sltp (partial override pattern).
+// Unknown / null label → returns flat sltp (backward-compat).
+
+export type RegimeLabel = 'bull_market' | 'volatile' | 'sideways' | 'bear_market'
+
+/** Normalize regime label variants ('bull', 'bull_market', 'BULL') to canonical form. */
+function _normalizeRegimeLabel(label: string): RegimeLabel | null {
+  const lower = label.toLowerCase().trim()
+  if (lower.startsWith('bull')) return 'bull_market'
+  if (lower.startsWith('bear')) return 'bear_market'
+  if (lower.startsWith('volatile')) return 'volatile'
+  if (lower.startsWith('sideway')) return 'sideways'
+  return null
+}
+
+export function resolveSltpForRegime(
+  config: TradingConfig,
+  regime: RegimeLabel | string | null | undefined,
+): TradingConfig['sltp'] {
+  const flat = config.sltp
+  if (!regime) return flat
+  const canonical = _normalizeRegimeLabel(String(regime))
+  if (!canonical) return flat
+  const perRegime = config.sltp_per_regime ?? {}
+  const overlay = perRegime[canonical]
+  if (!overlay) return flat
+  // Shallow merge: overlay fields win, missing fields fall back to flat
+  return { ...flat, ...overlay }
+}
+
+/** Fetch current ml:regime KV label (null if unset or malformed). */
+export async function getCurrentRegime(kv: KVNamespace): Promise<RegimeLabel | null> {
+  const raw = await kv.get('ml:regime', 'text')
+  if (!raw) return null
+  const label = raw.trim() as RegimeLabel
+  const valid: Set<string> = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])
+  return valid.has(label) ? label : null
 }
 
 /** Promote a sandbox entry to prod. Triggers T3.1 snapshot chain. */

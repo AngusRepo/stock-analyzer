@@ -874,6 +874,16 @@ app.post('/api/admin/trigger/:task', async (c) => {
       if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
       return await res.json()
     },
+    // 2026-04-20 #18 Phase 2c: FinMem debate_memory retention
+    // Keep 180d (60d buffer beyond FinMem's 90d max layer) so any future
+    // retrieval tweak can widen the window without hitting already-dropped rows.
+    'debate-memory-retention': async () => {
+      const res = await c.env.DB.prepare(
+        `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`
+      ).run()
+      const meta = (res as any)?.meta ?? {}
+      return `deleted=${meta.changes ?? 0} rows_read=${meta.rows_read ?? 0}`
+    },
     'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
@@ -2081,6 +2091,16 @@ export default {
         if (!res.ok) throw new Error(`Controller /regime/compute HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
         const data = await res.json() as any
         return `regime=${data.regime_label_en} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'}`
+      })
+    } else if (cron === '0 19 * * *') {
+      // 2026-04-20 #18 Phase 2c: daily 03:00 TW FinMem debate_memory retention
+      // Drops rows older than 180 days (60d buffer beyond FinMem 90d max).
+      runWithLog('debate-memory-retention', async () => {
+        const res = await env.DB.prepare(
+          `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`
+        ).run()
+        const meta = (res as any)?.meta ?? {}
+        return `deleted=${meta.changes ?? 0}`
       })
     } else if (cron === '30 11 * * 5') {
       // 2026-04-19 Stage 2 + 2026-04-20 Stage 4: Friday 19:30 TW

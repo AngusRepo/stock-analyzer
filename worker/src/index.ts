@@ -372,6 +372,23 @@ app.post('/api/admin/optuna-push', async (c) => {
         deferred_to: 'Phase B/C',
       }, 501)
     }
+    case 'l2_sensitivity': {
+      // 2026-04-20 #28 P7: L2/circuit Optuna results from ml-controller.
+      // Payload is already nested in trading:config shape:
+      //   params = { circuit: {...}, L2_formula: {...} }
+      // Deep-merge top-level subsections so untouched fields stay intact
+      // (search space may cover only some dims — e.g., smoke run with 3 dims).
+      const pcircuit = (params && typeof params.circuit === 'object' && params.circuit) || {}
+      const pL2 = (params && typeof params.L2_formula === 'object' && params.L2_formula) || {}
+      const mergedCircuit = { ...current.circuit, ...pcircuit }
+      const mergedL2 = { ...current.L2_formula, ...pL2 }
+      merged = { ...current, circuit: mergedCircuit, L2_formula: mergedL2 }
+      updatedFields = [
+        ...Object.keys(pcircuit).map(k => `circuit.${k}`),
+        ...Object.keys(pL2).map(k => `L2_formula.${k}`),
+      ]
+      break
+    }
     case 'regime': {
       // 2026-04-17 #30: HMM regime pipeline wired (Sprint 4-2 revisit).
       // params: { label: 'bull_market'|'volatile'|'sideways'|'bear_market',
@@ -415,7 +432,7 @@ app.post('/api/admin/optuna-push', async (c) => {
       })
     }
     default:
-      return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','screener','conformal','risk_params','rrg','feature_window','regime'] }, 400)
+      return c.json({ error: `Unknown source: ${source}`, allowed: ['barrier','signal','sltp','screener','conformal','risk_params','rrg','feature_window','regime','l2_sensitivity'] }, 400)
   }
 
   const errors = validateTradingConfig(merged)

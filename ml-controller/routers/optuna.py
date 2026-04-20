@@ -507,6 +507,101 @@ async def run_ft_arch(req: FtArchReq = Body(default=FtArchReq())):
     }
 
 
+class L2SensitivityReq(BaseModel):
+    """L2 sensitivity search request (#28 P7)."""
+    n_trials: int = 50
+    start_date: str | None = None   # default: end_date - 90 days
+    end_date: str | None = None     # default: today (TW)
+    push_kv: bool = True
+    dry_run: bool = False
+    dd_penalty: float = 2.0
+    sampler: str = "nsga2"          # 'nsga2' | 'tpe'
+
+
+@router.post("/l2_sensitivity")
+def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq())):
+    """25-dim (minus 5 bandit defer) L2/circuit Optuna search against Mode B replay.
+
+    Search space source-of-truth:
+      trading:config.optuna_l2.search_space.dims (KV-driven, D4 citation)
+
+    Falls back to DEFAULT_SEARCH_SPACE when KV key missing so smoke-test
+    bootstrapping doesn't block on Wei seeding KV first.
+
+    Results push (source='l2_sensitivity') writes nested params into
+    trading:config.circuit + trading:config.L2_formula on the Worker.
+    """
+    try:
+        from optuna_l2_sensitivity import (  # type: ignore
+            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE,
+        )
+    except ImportError as e:
+        raise HTTPException(500, f"optuna_l2_sensitivity import failed: {e}")
+
+    # ── Load search space + baseline from KV ────────────────────────────────
+    from services import kv_client
+    from datetime import datetime, timezone, timedelta
+    TW = timezone(timedelta(hours=8))
+
+    baseline_config = kv_client.get_json("trading:config", default={}) or {}
+    kv_space = (baseline_config.get("optuna_l2") or {}).get("search_space")
+    search_space = (kv_space or {}).get("dims") if isinstance(kv_space, dict) else None
+    used_source = "KV" if search_space else "DEFAULT_SEARCH_SPACE"
+    if not search_space:
+        search_space = DEFAULT_SEARCH_SPACE
+
+    # ── Resolve date range ──────────────────────────────────────────────────
+    end_date = req.end_date or datetime.now(TW).strftime("%Y-%m-%d")
+    start_date = req.start_date or (
+        datetime.fromisoformat(end_date) - timedelta(days=90)
+    ).strftime("%Y-%m-%d")
+
+    logger.info(
+        f"[Optuna/l2_sensitivity] n_trials={req.n_trials} "
+        f"range={start_date}~{end_date} dims={len(search_space)} "
+        f"source={used_source} sampler={req.sampler}"
+    )
+
+    # ── Run search ──────────────────────────────────────────────────────────
+    result = run_l2_sensitivity_search(
+        search_space=search_space,
+        start_date=start_date,
+        end_date=end_date,
+        baseline_config=baseline_config,
+        n_trials=req.n_trials,
+        dd_penalty=req.dd_penalty,
+        sampler_name=req.sampler,
+    )
+
+    # ── KV push (nested form matches trading:config shape) ──────────────────
+    push_response = None
+    if req.push_kv and not req.dry_run and result.get("best_params_nested"):
+        push_response = push_optuna_result(
+            source="l2_sensitivity",
+            params=result["best_params_nested"],
+            meta={
+                "n_trials": req.n_trials,
+                "best_value": result.get("best_value"),
+                "start_date": start_date,
+                "end_date": end_date,
+                "sampler": req.sampler,
+                "dd_penalty": req.dd_penalty,
+                "search_space_source": used_source,
+            },
+        )
+
+    return {
+        "status": "completed",
+        "source": "l2_sensitivity",
+        "best_value": result.get("best_value"),
+        "best_params": result.get("best_params"),
+        "n_trials": result.get("n_trials"),
+        "search_space_source": used_source,
+        "date_range": [start_date, end_date],
+        "push": push_response,
+    }
+
+
 @router.post("/feature_window")
 def run_feature_window(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna feature_window: vol/ma/return windows"""

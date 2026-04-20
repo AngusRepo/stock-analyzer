@@ -14,7 +14,40 @@ import { verifyJWT }  from '../lib/auth'
 import { runBuyDebate, runBuyDebateBatchViaController, type DebateResult, type StockProfile, type BatchDebateCandidate } from '../lib/debateTrader'
 import { sendDiscordNotification, formatTradeNotification, formatDailySummary } from '../lib/notify'
 import { getTradingConfig, type TradingConfig } from '../lib/tradingConfig'
+import { getExitOrder, getExitMultiplier, type MarketRegime } from '../lib/dynamicExitPriority'
 import type { Bindings, Variables } from '../types'
+
+// 2026-04-20 #30 Step 9 regime shadow mode
+// Reads ml:regime KV (populated by 18:50 TW cron) and maps to MarketRegime union.
+// Returns null on miss — callers then skip shadow log (safe default).
+async function getCurrentRegime(kv: KVNamespace): Promise<MarketRegime | null> {
+  const raw = await kv.get('ml:regime')
+  if (!raw) return null
+  const lower = raw.toLowerCase()
+  if (lower.startsWith('bull')) return 'bull'
+  if (lower.startsWith('bear')) return 'bear'
+  if (lower.startsWith('volatile')) return 'volatile'
+  return 'sideways'
+}
+
+function logRegimeShadow(
+  caller: string, symbol: string, regime: MarketRegime,
+  actualAction: string, actualReason: string,
+): void {
+  console.log(JSON.stringify({
+    event: 'regime_shadow', caller, symbol, regime,
+    actual_action: actualAction, actual_reason: actualReason,
+    hypothetical_order: getExitOrder(regime),
+    hypothetical_mult: {
+      hardStop: getExitMultiplier(regime, 'hardStop'),
+      atrTrail: getExitMultiplier(regime, 'atrTrail'),
+      tp1:      getExitMultiplier(regime, 'tp1'),
+      tp2:      getExitMultiplier(regime, 'tp2'),
+      timeStop: getExitMultiplier(regime, 'timeStop'),
+    },
+    ts: new Date().toISOString(),
+  }))
+}
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -1601,7 +1634,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             rec.symbol, rec.name ?? rec.symbol,
             rec.signal, adjustedConfidence,
             rec.reason ?? 'ML ensemble signal',
-            { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, GEMINI_API_KEY: (env as any).GEMINI_API_KEY, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV },
+            { LOCAL_TUNNEL_URL: (env as any).LOCAL_TUNNEL_URL, AI: (env as any).AI, GEMINI_API_KEY: (env as any).GEMINI_API_KEY, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, KV: env.KV, DB: env.DB },
             mergedUsContext || undefined,
             profileMap.get(rec.symbol),
             taifexContextStr,
@@ -2386,6 +2419,7 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
   const symbols = sameDayPos.map((p: any) => p.symbol)
   const priceMap = await batchGetIntradayPrices(symbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
   const atrMap = await batchGetATR(env.DB, symbols)
+  const regime = await getCurrentRegime(env.KV)
 
   for (const pos of sameDayPos) {
     const price = priceMap.get(pos.symbol)
@@ -2409,6 +2443,7 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     }
 
     const decision = checkExitConditions(pos, price, atr, false, false, cfg)
+    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason)
     if (decision.action === 'hold') continue
 
     const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, decision.reason, env.KV)
@@ -2459,6 +2494,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const exitSymbols = exitPositions.map((p: any) => p.symbol)
   const exitPriceMap = await batchGetIntradayPrices(exitSymbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
   const exitAtrMap = await batchGetATR(env.DB, exitSymbols)
+  const eodRegime = await getCurrentRegime(env.KV)
 
   // ML SELL signals（讀前一交易日推薦）
   const prevDay = await getPrevTradingDay(env.DB, env.KV)
@@ -2483,6 +2519,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(pos, currentPrice, atr14, sellRecMap.has(pos.symbol), true, cfg)
+    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason)
 
     // 當沖判斷：同日進場 → 查當沖標的 + 動態觸發條件
     let dayTradeSell = false
@@ -2714,6 +2751,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   const symbols = positions.map((p: any) => p.symbol)
   const priceMap = await batchGetIntradayPrices(symbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
   const atrMap = await batchGetATR(env.DB, symbols)
+  const intraRegime = await getCurrentRegime(env.KV)
 
   if (priceMap.size === 0) {
     console.log('[Intraday] 無法取得盤中報價，跳過')
@@ -2750,6 +2788,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(pos, currentPrice, atr14, false, false, cfg)  // isEOD=false, no ML signal
+    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason)
 
     // 跌停鎖死檢查：價格接近跌停（≤-9.5%）時，真實市場賣不掉
     // 停損單不成交，虧損繼續累積（更真實的 paper trade）

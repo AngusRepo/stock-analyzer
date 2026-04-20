@@ -4,7 +4,7 @@
  * 讀取 stock_profiles（TimeVerse）+ 現有 stock_tags，
  * 用 LLM 判斷每支股票的核心概念（1~3 個，不強制湊滿）+ 權重（0.1~1.0）。
  *
- * LLM 優先級：Local Tunnel Opus → Workers AI Llama → 規則 fallback
+ * LLM 優先級：Anthropic Sonnet → Gemini 3.1 Flash Lite → 規則 fallback
  * 觸發方式：POST /api/admin/trigger/reclassify-tags
  */
 
@@ -86,7 +86,7 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
         '[{"tag":"概念名","weight":1.0}]',
       ].filter(Boolean).join('\n')
 
-      // 呼叫 LLM：優先 Anthropic API（Opus），fallback Workers AI Llama
+      // 呼叫 LLM：優先 Anthropic API（Sonnet），fallback Gemini 3.1 Flash Lite
       let result: TagWeight[] | null = null
 
       // 1. Anthropic API (Opus) — on-demand 用途，品質最高
@@ -120,21 +120,31 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
         }
       }
 
-      // 2. Fallback: Workers AI Llama
-      if (!result && (env as any).AI) {
+      // 2. Fallback: Gemini 3.1 Flash Lite（便宜+快速+中文好）
+      const geminiKey = (env as any).GEMINI_API_KEY as string | undefined
+      if (!result && geminiKey) {
         try {
-          const aiResult = await ((env as any).AI as any).run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-            messages: [
-              { role: 'system', content: '你是台股概念股分類專家。只回覆 JSON array，不要其他文字。' },
-              { role: 'user', content: prompt },
-            ],
-            max_tokens: 200,
-          }) as any
-          const text = aiResult?.response ?? ''
-          const match = text.match(/\[[\s\S]*\]/)
-          if (match) result = JSON.parse(match[0]) as TagWeight[]
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: '你是台股概念股分類專家。只回覆 JSON array，不要其他文字。' }] },
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                generationConfig: { temperature: 0.3, maxOutputTokens: 200 },
+              }),
+              signal: AbortSignal.timeout(30000),
+            }
+          )
+          if (res.ok) {
+            const json = await res.json() as any
+            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+            const match = text.match(/\[[\s\S]*\]/)
+            if (match) result = JSON.parse(match[0]) as TagWeight[]
+          }
         } catch (e) {
-          console.warn(`[Reclassify] Workers AI failed for ${stock.symbol}: ${e}`)
+          console.warn(`[Reclassify] Gemini API failed for ${stock.symbol}: ${e}`)
         }
       }
 

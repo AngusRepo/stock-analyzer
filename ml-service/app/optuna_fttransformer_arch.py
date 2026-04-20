@@ -214,6 +214,52 @@ def run_search(X_train, y_train, X_val, y_val, n_trials: int = 50,
     return result
 
 
+def load_prep_data_from_gcs(gcs_prefix: str = "universal") -> tuple:
+    """Load X_train/y_train/X_val/y_val from GCS prep npz files.
+
+    Uses the same time-based 80/20 split as train_universal_from_gcs so the
+    search evaluates the same OOS distribution production training sees.
+    """
+    import io
+    from google.cloud import storage
+
+    bucket = storage.Client().bucket("stockvision-models")
+    prefix = f"{gcs_prefix}/prep/"
+    blobs = sorted(
+        [b for b in bucket.list_blobs(prefix=prefix) if b.name.endswith(".npz")],
+        key=lambda b: b.name,
+    )
+    if not blobs:
+        raise RuntimeError(f"No prep npz at gs://stockvision-models/{prefix}")
+
+    all_X, all_y, all_dates = [], [], []
+    for blob in blobs:
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        data = np.load(buf, allow_pickle=True)
+        all_X.append(data["X"])
+        all_y.append(data["y"])
+        all_dates.append(data["dates"])
+    X = np.vstack(all_X)
+    y = np.concatenate(all_y)
+    dates = np.concatenate(all_dates)
+
+    sorted_dates = np.sort(np.unique(dates))
+    cutoff_idx = max(1, int(len(sorted_dates) * 0.8))
+    cutoff_date = sorted_dates[cutoff_idx]
+    train_mask = dates <= cutoff_date
+    val_mask = dates > cutoff_date
+
+    X_tr, y_tr = X[train_mask], y[train_mask]
+    X_va, y_va = X[val_mask],   y[val_mask]
+    logger.info(
+        f"[FT-T Optuna] Loaded prep: train={len(X_tr)} val={len(X_va)} "
+        f"feats={X.shape[1]} cutoff={cutoff_date}"
+    )
+    return X_tr, y_tr, X_va, y_va
+
+
 if __name__ == "__main__":
     # Minimal CLI for running inside Modal container with GPU
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

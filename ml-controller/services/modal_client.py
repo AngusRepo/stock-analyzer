@@ -97,6 +97,12 @@ async def _modal_shap_audit(payload: dict) -> dict:
     return await fn.remote.aio(payload)
 
 
+async def _modal_ft_arch_search(payload: dict) -> dict:
+    """#29 FT-T architecture Optuna on GPU L4 (2026-04-20)."""
+    fn = _lookup("ft_transformer_arch_search")
+    return await fn.remote.aio(payload)
+
+
 async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
     fn = _lookup("update_arf_reward")
     results = []

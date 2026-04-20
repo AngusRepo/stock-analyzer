@@ -466,6 +466,47 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 
 # ─── /optuna/feature_window ──────────────────────────────────────────────────
 
+class FtArchReq(BaseModel):
+    """FT-T architecture Optuna request (#29)."""
+    n_trials: int = 20
+    subset_size: int | None = None  # None = full ~681K, int = subsample for coarse
+    gcs_prefix: str = "universal"
+
+
+@router.post("/ft_arch")
+async def run_ft_arch(req: FtArchReq = Body(default=FtArchReq())):
+    """FT-T architecture search — GPU Modal. Result saved to GCS audit trail.
+
+    LOCKED constraints (see feedback_ft_transformer_tuning.md): no warmup, no
+    cosine decay, PATIENCE production stays 16. Search only varies
+    d_model / n_heads / n_layers / dropout with shorter in-trial patience.
+
+    Result is NOT auto-pushed to KV — Wei manually applies winning config to
+    main.py FTTransformer + re-runs production retrain to produce challenger.
+    """
+    from services.modal_client import _modal_ft_arch_search
+    logger.info(
+        f"[Optuna/ft_arch] start n_trials={req.n_trials} "
+        f"subset_size={req.subset_size} gcs_prefix={req.gcs_prefix}"
+    )
+    result = await _modal_ft_arch_search({
+        "n_trials":    req.n_trials,
+        "subset_size": req.subset_size,
+        "gcs_prefix":  req.gcs_prefix,
+    })
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(502, f"Modal ft_arch_search failed: {result['error']}")
+
+    return {
+        "status": "completed",
+        "source": "ft_arch",
+        "best_ic":       result.get("best_ic"),
+        "best_params":   result.get("best_params"),
+        "n_trials":      result.get("n_trials"),
+        "gcs_audit_path": result.get("gcs_audit_path"),
+    }
+
+
 @router.post("/feature_window")
 def run_feature_window(req: OptunaReq = Body(default=OptunaReq())):
     """Optuna feature_window: vol/ma/return windows"""

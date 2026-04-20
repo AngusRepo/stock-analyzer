@@ -391,6 +391,62 @@ def train_ftt_model(payload: dict) -> dict:
         return {"error": str(e), "type": "ftt_model"}
 
 
+@app.function(
+    gpu="L4",
+    memory=4096,
+    timeout=21600,               # 360 min — 20 trials @ ~15 min each + buffer
+    scaledown_window=60,
+    max_containers=1,
+)
+def ft_transformer_arch_search(payload: dict) -> dict:
+    """GPU L4: FT-Transformer architecture Optuna search (#29).
+
+    LOCKED (see feedback_ft_transformer_tuning.md): no warmup / no cosine decay /
+    PATIENCE stays 16 in production. Search only varies d_model / n_heads /
+    n_layers / dropout with shorter patience=8 for throughput. Winning config is
+    manually applied to main.py FTTransformer then re-trained with production
+    settings. DO NOT auto-push to KV.
+
+    Payload:
+      n_trials     (int, default 20) — coarse=20, full=50
+      subset_size  (int | null)      — null = full 681K, int = subsample X_train
+      gcs_prefix   (str, default "universal")
+    """
+    _setup_env()
+    try:
+        import json, io
+        from datetime import datetime
+        import numpy as np
+        from google.cloud import storage
+        from app.optuna_fttransformer_arch import load_prep_data_from_gcs, run_search
+
+        gcs_prefix  = payload.get("gcs_prefix", "universal")
+        n_trials    = int(payload.get("n_trials", 20))
+        subset_size = payload.get("subset_size")
+
+        X_tr, y_tr, X_val, y_val = load_prep_data_from_gcs(gcs_prefix)
+
+        if isinstance(subset_size, int) and 0 < subset_size < len(X_tr):
+            rng = np.random.RandomState(42)
+            idx = np.sort(rng.choice(len(X_tr), subset_size, replace=False))
+            X_tr, y_tr = X_tr[idx], y_tr[idx]
+
+        result = run_search(X_tr, y_tr, X_val, y_val, n_trials=n_trials,
+                            save_path="/tmp/ft_arch_optuna.json")
+
+        # Audit trail to GCS for traceability
+        now_iso = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        gcs_key = f"{gcs_prefix}/ft_arch_optuna_{now_iso}.json"
+        bucket = storage.Client().bucket("stockvision-models")
+        bucket.blob(gcs_key).upload_from_string(
+            json.dumps(result, indent=2), content_type="application/json",
+        )
+        result["gcs_audit_path"] = f"gs://stockvision-models/{gcs_key}"
+        return result
+    except Exception as e:
+        return {"error": str(e), "type": "ft_arch_search"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Sprint 6b Walk-Forward Modal functions (2026-04-18 #32)
 # ══════════════════════════════════════════════════════════════════════════════

@@ -1844,6 +1844,13 @@ def simulate_entries_for_date(
     #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
     l2_formula_cfg: Optional[dict] = None,
     risk_score: Optional[int] = None,
+    # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling + bull align
+    #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
+    #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
+    #   bull_align_pct: market_breadth.bull_alignment_pct for `day` (0-100 %)
+    #     → if < circuit.bullAlignmentThreshold → budget × 0.5 (paper.ts:347-352)
+    risk_level: Optional[str] = None,
+    bull_align_pct: Optional[float] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1930,6 +1937,21 @@ def simulate_entries_for_date(
         effective_clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
         effective_clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
 
+    # 2026-04-20 #28 P4: SLTP risk-level add (adaptive.compute_sltp_override port)
+    # Compute once per day — same risk_level modifies sl_mult_base / tp_mult_base
+    # for every candidate today. orange/red/black only; green/yellow return None.
+    # Source: paper.ts pollIntradayStopLoss SL/TP × ATR reads these post-override.
+    effective_sl_mult: float = sltp.sl_mult_base
+    effective_tp_mult: float = sltp.tp_mult_base
+    if (ml_predictions is not None
+            and l2_formula_cfg is not None
+            and risk_level in ("orange", "red", "black")):
+        from services.adaptive import compute_sltp_override
+        override = compute_sltp_override(risk_level, l2_formula_cfg)
+        if override:
+            effective_sl_mult = sltp.sl_mult_base + float(override.get("sl_add", 0.0))
+            effective_tp_mult = sltp.tp_mult_base + float(override.get("tp_add", 0.0))
+
     for cand in buy_candidates:
         # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
         # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
@@ -2011,9 +2033,10 @@ def simulate_entries_for_date(
             atr14 = cand.close * 0.02
 
         # Synthesize stop/target from ATR × sltp params (Optuna-searchable)
+        # #28 P4: use effective_sl_mult / effective_tp_mult (includes L2 risk-level add)
         ml_entry = cand.close
         ml_stop, ml_tp1, _ = _synth_stop_target(
-            ml_entry, atr14, sltp.sl_mult_base, sltp.tp_mult_base
+            ml_entry, atr14, effective_sl_mult, effective_tp_mult
         )
 
         # Gap-aware adjustment
@@ -2066,6 +2089,33 @@ def simulate_entries_for_date(
                 daily_remaining,
             )
             sizing_mode = "risk_parity"
+
+        # 2026-04-20 #28 P4: Mode B budget multipliers (dd scale, bull align).
+        # Applied AFTER Kelly/risk-parity so confidence-based sizing stays primary.
+        if ml_predictions is not None and circuit_cfg is not None:
+            # Layer 3: drawdownScaleStart → mddMultFloor linear scaling.
+            # Paper.ts source 269-279: mdd_mult = max(floor, (halt-dd)/(halt-start)).
+            # Applied only inside (dd_scale_start, dd_halt]; outside this range no
+            # scaling (> dd_halt is caught by Layer 1 halt; ≤ dd_scale_start = 1.0).
+            if current_drawdown_30d is not None:
+                dd_scale_start = float(circuit_cfg.get("drawdownScaleStart", 0.03))
+                dd_halt = float(circuit_cfg.get("drawdownHalt", 0.15))
+                mdd_floor = float(circuit_cfg.get("mddMultFloor", 0.2))
+                if (current_drawdown_30d > dd_scale_start
+                        and current_drawdown_30d <= dd_halt
+                        and dd_halt > dd_scale_start):
+                    mdd_mult = max(
+                        mdd_floor,
+                        (dd_halt - current_drawdown_30d) / (dd_halt - dd_scale_start),
+                    )
+                    budget *= mdd_mult
+
+            # Layer 4: bullAlignmentThreshold → halve position when breadth weak.
+            # Paper.ts source 347-352: position × 0.5 when < threshold.
+            if bull_align_pct is not None:
+                bull_thresh = float(circuit_cfg.get("bullAlignmentThreshold", 20))
+                if bull_align_pct < bull_thresh:
+                    budget *= 0.5
 
         if budget <= 0:
             attempts.append(EntryAttempt(
@@ -3560,6 +3610,17 @@ def replay_period(
                 risk_score=(
                     market_state.get_risk(day).risk_score
                     if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else None
+                ),
+                # 2026-04-20 #28 P4 SLTP add + bull align
+                risk_level=(
+                    market_state.get_risk(day).risk_level
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else None
+                ),
+                bull_align_pct=(
+                    market_state.get_breadth(day).bull_alignment_pct
+                    if (mode == "B" and market_state is not None and market_state.get_breadth(day))
                     else None
                 ),
             )

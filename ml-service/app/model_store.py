@@ -137,19 +137,21 @@ def load_model(
     stock_id: int,
     model_name: str,
     gcs_prefix: str | None = None,  # 2026-04-18 #32: walk-forward override
+    explicit_path: str | None = None,  # 2026-04-19 Stage 3: challenger override
 ) -> tuple[Any | None, dict | None]:
     """
     從 GCS 載入已訓練的模型和 metadata
     回傳 (model, metadata) 或 (None, None)
 
-    gcs_prefix: override default path. For walk-forward: 'walk_forward/w{window_id}'.
-
-    2026-04-19 ML_POOL Stage 1 path resolution order (when gcs_prefix is None
-    AND stock_id == 0 = universal predict):
-      1. Try model_pool.json → use pool entry's gcs_path (versioned layout)
-      2. Fallback: legacy flat-file universal/{model}.joblib
-    Walk-forward callers (gcs_prefix set) bypass pool lookup. Per-stock
-    callers (stock_id != 0) also bypass — they aren't ML_POOL managed.
+    Path resolution priority:
+      1. explicit_path:  full GCS path override (Stage 3 challenger uses this).
+                         metadata read from sibling 'metadata_v{N}.json' if present.
+      2. gcs_prefix:     walk-forward override e.g. 'walk_forward/w0' →
+                         '{prefix}/{model_name.lower()}.joblib'
+      3. ML_POOL pool:   when stock_id=0 and no overrides, look up active version
+                         from model_pool.json
+      4. Legacy fallback: 'universal/{model_name.lower()}.joblib' (for migration safety)
+      5. Per-stock:      stock_id != 0 → '{stock_id}/{model_name.lower()}.joblib'
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -161,7 +163,17 @@ def load_model(
         blob_path: str | None = None
         meta_path: str | None = None
         used_pool = False
-        if gcs_prefix is not None:
+        if explicit_path is not None:
+            blob_path = explicit_path
+            # Derive sibling metadata path: e.g. universal/xgboost/v2.joblib
+            #   → universal/xgboost/metadata_v2.json
+            try:
+                folder, fname = explicit_path.rsplit("/", 1)
+                stem, _ext = fname.rsplit(".", 1)
+                meta_path = f"{folder}/metadata_{stem}.json"
+            except ValueError:
+                meta_path = None
+        elif gcs_prefix is not None:
             prefix = gcs_prefix.rstrip("/")
             blob_path = f"{prefix}/{model_name.lower()}.joblib"
             meta_path = f"{prefix}/metadata_{model_name.lower()}.json"

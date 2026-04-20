@@ -251,6 +251,103 @@ def compute_weight(
     return base
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 challenger helpers (shadow mode)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CHALLENGER_SUFFIX = "::challenger"   # convention: model_name@D1 = "XGBoost::challenger"
+
+
+def get_challenger_version(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
+    """If a challenger version is registered for model_name, return it. Else None."""
+    pool = pool or load_pool()
+    if not pool:
+        return None
+    entry = pool.get("models", {}).get(model_name)
+    if not entry:
+        return None
+    ch = entry.get("challenger")
+    if not ch:
+        return None
+    return ch.get("version")
+
+
+def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
+    """Return GCS path for challenger version, or None if no challenger registered."""
+    version = get_challenger_version(model_name, pool=pool)
+    if version is None:
+        return None
+    pool = pool or load_pool()
+    if pool:
+        ch = pool.get("models", {}).get(model_name, {}).get("challenger") or {}
+        if ch.get("gcs_path"):
+            return ch["gcs_path"]
+    # Fallback: derive from convention
+    return gcs_path_for(model_name, version)
+
+
+def register_challenger(
+    model_name: str,
+    version: str,
+    pool: Optional[dict] = None,
+    save: bool = True,
+) -> dict:
+    """Add a challenger entry to model_pool.json.
+
+    Caller responsible for ensuring the GCS artifact at the challenger path
+    actually exists. This function only writes the bookkeeping entry.
+
+    Args:
+      model_name: must be in MANAGED_MODELS
+      version:    new version string (e.g., "v2"); must NOT equal active
+      pool:       loaded pool (or None to fetch from GCS)
+      save:       write back to GCS
+
+    Returns the updated pool entry for model_name.
+    """
+    if model_name not in MANAGED_MODELS:
+        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
+    pool = pool or load_pool()
+    if not pool:
+        raise RuntimeError("model_pool.json not initialized; run /model_pool/init first")
+    entry = pool.get("models", {}).get(model_name)
+    if not entry:
+        raise ValueError(f"{model_name} missing from model_pool.json (likely Stage 1 init missed)")
+    if entry.get("version") == version:
+        raise ValueError(
+            f"{model_name} active version is already {version}; "
+            f"challenger must be a different version"
+        )
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    entry["challenger"] = {
+        "version": version,
+        "gcs_path": gcs_path_for(model_name, version),
+        "shadow_since": today,
+        "weekly_ic": [],
+        "ic_4w_avg": None,
+        "consecutive_negative_weeks": 0,
+    }
+    if save:
+        save_pool(pool)
+    return entry
+
+
+def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool = True) -> dict:
+    """Remove challenger entry (used when Stage 4 retire-not-promote, or
+    manual rollback). Returns updated entry."""
+    pool = pool or load_pool()
+    if not pool:
+        raise RuntimeError("model_pool.json not initialized")
+    entry = pool.get("models", {}).get(model_name)
+    if not entry:
+        raise ValueError(f"{model_name} not in pool")
+    entry.pop("challenger", None)
+    if save:
+        save_pool(pool)
+    return entry
+
+
 # Backward-compat shim (older callers expect the lifecycle-only multiplier)
 # Will be removed after Stage 4. Default lifecycle_weight=1.0 for active so
 # callers that haven't migrated still see "active = full weight".

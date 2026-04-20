@@ -285,6 +285,111 @@ async def train_patchtst(req: TrainPatchTSTRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stage 3: Challenger registration / discard (manual triggers; auto-register
+# on retrain success will be wired in Stage 4 promote-gate work)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class RegisterChallengerRequest(BaseModel):
+    model_name: str            # one of MANAGED_MODELS keys
+    version: str               # e.g. "v2" — must differ from active
+    confirm: bool = False
+
+
+@router.post("/register_challenger")
+async def register_challenger(req: RegisterChallengerRequest):
+    """Mark a model version as challenger (shadow mode).
+
+    Caller must have already trained + saved the artifact at the implied
+    GCS path (universal/{model_lower}/v{N}.{ext}). This endpoint only
+    writes the bookkeeping entry to model_pool.json so predict_stock_v2
+    knows to also load + inference with the challenger.
+
+    Inference behavior after registration:
+      - Active version still drives ensemble vote (status_filter=1.0)
+      - Challenger predicts in parallel; result written to D1 as
+        model_name='{name}::challenger'
+      - Stage 4 promote gate compares challenger vs active weekly_ic
+    """
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="register_challenger requires confirm=true")
+    import json as _json
+    from datetime import datetime, timezone
+    from google.cloud import storage
+
+    bucket = storage.Client().bucket("stockvision-models")
+    pool_blob = bucket.blob("universal/model_pool.json")
+    if not pool_blob.exists():
+        raise HTTPException(status_code=400, detail="model_pool.json not initialized; run /init first")
+    pool = _json.loads(pool_blob.download_as_text())
+    entry = pool.get("models", {}).get(req.model_name)
+    if not entry:
+        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
+    if entry.get("version") == req.version:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.model_name} active is already {req.version}; challenger must differ",
+        )
+
+    # Determine extension (mirror MANAGED_MODELS)
+    ext_map = {
+        "XGBoost": "joblib", "CatBoost": "joblib", "ExtraTrees": "joblib",
+        "LightGBM": "joblib", "FT-Transformer": "joblib",
+        "Chronos": "json", "DLinear": "pt", "PatchTST": "pt",
+    }
+    ext = ext_map.get(req.model_name, "joblib")
+    folder = req.model_name.lower().replace("-", "_")
+    target_path = f"universal/{folder}/{req.version}.{ext}"
+
+    # Verify artifact exists at expected path
+    if not bucket.blob(target_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Challenger artifact missing at {target_path}; train it first",
+        )
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    entry["challenger"] = {
+        "version": req.version,
+        "gcs_path": target_path,
+        "shadow_since": today,
+        "weekly_ic": [],
+        "ic_4w_avg": None,
+        "consecutive_negative_weeks": 0,
+    }
+    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
+    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+    return {"status": "registered", "model": req.model_name, "challenger": entry["challenger"]}
+
+
+class DiscardChallengerRequest(BaseModel):
+    model_name: str
+    confirm: bool = False
+
+
+@router.post("/discard_challenger")
+async def discard_challenger(req: DiscardChallengerRequest):
+    """Remove challenger entry (used for rollback or Stage 4 retire-not-promote)."""
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="discard_challenger requires confirm=true")
+    import json as _json
+    from datetime import datetime, timezone
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    pool_blob = bucket.blob("universal/model_pool.json")
+    if not pool_blob.exists():
+        raise HTTPException(status_code=400, detail="model_pool.json not initialized")
+    pool = _json.loads(pool_blob.download_as_text())
+    entry = pool.get("models", {}).get(req.model_name)
+    if not entry:
+        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
+    removed = entry.pop("challenger", None)
+    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
+    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+    return {"status": "discarded", "model": req.model_name, "removed": removed}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: Weekly IC tracker (cron-driven)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -325,9 +430,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     t0 = time.time()
     managed_models = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
                       "Chronos", "DLinear", "PatchTST")
+    # Stage 3: also track challenger rows (model_name='{name}::challenger')
+    challenger_models = tuple(f"{n}::challenger" for n in managed_models)
+    all_tracked = managed_models + challenger_models
 
     # ── 1. Pull verified per-model rows from D1 ──────────────────────────────
-    placeholders = ",".join(["?"] * len(managed_models))
+    placeholders = ",".join(["?"] * len(all_tracked))
     sql = f"""
         SELECT model_name, direction_accuracy, actual_return_pct, generated_at
         FROM predictions
@@ -336,8 +444,8 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
           AND verified_at IS NOT NULL
           AND generated_at >= datetime('now', ?)
     """
-    rows = d1_query(sql, [*managed_models, f"-{req.lookback_days} days"])
-    by_model: dict[str, list[tuple[float, float]]] = {n: [] for n in managed_models}
+    rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+    by_model: dict[str, list[tuple[float, float]]] = {n: [] for n in all_tracked}
     for r in rows:
         try:
             score = float(r["direction_accuracy"])
@@ -369,7 +477,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         return num / (denx * deny)
 
     per_model_ic: dict[str, dict] = {}
-    for name in managed_models:
+    for name in all_tracked:
         pairs = by_model[name]
         if len(pairs) < req.min_samples:
             per_model_ic[name] = {"status": "insufficient_samples", "n_samples": len(pairs)}
@@ -382,6 +490,8 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         }
 
     # ── 3. Update model_pool.json ────────────────────────────────────────────
+    # Active rows update entry.weekly_ic; challenger rows update
+    # entry.challenger.weekly_ic (separate IC history per shadow version).
     pool_changes: dict[str, dict] = {}
     if req.update_pool:
         try:
@@ -390,29 +500,34 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             if pool_blob.exists():
                 pool = _json.loads(pool_blob.download_as_text())
                 changed = False
-                for name in managed_models:
-                    info = per_model_ic.get(name, {})
+                for tracked_name in all_tracked:
+                    info = per_model_ic.get(tracked_name, {})
                     ic = info.get("ic")
                     if ic is None:
                         continue
-                    entry = pool.get("models", {}).get(name)
+                    is_challenger = tracked_name.endswith("::challenger")
+                    base_name = tracked_name.replace("::challenger", "")
+                    entry = pool.get("models", {}).get(base_name)
                     if not entry:
                         continue
-                    entry.setdefault("weekly_ic", [])
-                    entry["weekly_ic"].append(ic)
-                    if len(entry["weekly_ic"]) > req.history_max:
-                        entry["weekly_ic"] = entry["weekly_ic"][-req.history_max:]
-                    last4 = entry["weekly_ic"][-4:]
-                    entry["ic_4w_avg"] = round(sum(last4) / len(last4), 6)
+                    target = entry.get("challenger") if is_challenger else entry
+                    if target is None:
+                        continue  # Challenger IC found in D1 but pool entry has no challenger registered
+                    target.setdefault("weekly_ic", [])
+                    target["weekly_ic"].append(ic)
+                    if len(target["weekly_ic"]) > req.history_max:
+                        target["weekly_ic"] = target["weekly_ic"][-req.history_max:]
+                    last4 = target["weekly_ic"][-4:]
+                    target["ic_4w_avg"] = round(sum(last4) / len(last4), 6)
                     if ic < 0:
-                        entry["consecutive_negative_weeks"] = (entry.get("consecutive_negative_weeks") or 0) + 1
+                        target["consecutive_negative_weeks"] = (target.get("consecutive_negative_weeks") or 0) + 1
                     else:
-                        entry["consecutive_negative_weeks"] = 0
-                    pool_changes[name] = {
+                        target["consecutive_negative_weeks"] = 0
+                    pool_changes[tracked_name] = {
                         "ic": ic,
-                        "ic_4w_avg": entry["ic_4w_avg"],
-                        "consecutive_negative_weeks": entry["consecutive_negative_weeks"],
-                        "history_len": len(entry["weekly_ic"]),
+                        "ic_4w_avg": target["ic_4w_avg"],
+                        "consecutive_negative_weeks": target["consecutive_negative_weeks"],
+                        "history_len": len(target["weekly_ic"]),
                     }
                     changed = True
                 if changed:

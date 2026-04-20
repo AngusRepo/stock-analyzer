@@ -463,13 +463,17 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
         ))
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
-        # Stores each base model's rank_score (or sigmoid-mapped time-series
-        # forecast) so that Friday cron can compute spearman IC per model
-        # vs actual_return_pct (filled by verify path).
-        # 8 models total: 5 feature + 3 time-series (Chronos/DLinear/PatchTST).
-        # Same forecast_data shape (allows verify path to fill actual_return_pct
-        # without special-casing). model_name carries the per-model attribution.
+        # Stages 2+3: active rows model_name='{name}'; challenger rows
+        # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
         per_model_scores = _extract_per_model_scores_for_d1(data)
+        # Stage 3: also extract challenger scores (5 feature models only;
+        # time-series challengers handled separately in pipeline_v2 future work)
+        challenger_scores = data.get("challenger_rank_scores") or {}
+        for ch_name, ch_score in (challenger_scores or {}).items():
+            try:
+                per_model_scores[f"{ch_name}::challenger"] = float(ch_score)
+            except (TypeError, ValueError):
+                pass
         for model_name, model_score in per_model_scores.items():
             per_model_forecast = json.dumps(
                 {"signal": raw_signal, "rank_score": model_score, "source": "model_pool_stage2"},

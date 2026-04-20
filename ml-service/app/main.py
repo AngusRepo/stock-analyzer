@@ -633,6 +633,90 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     if not rank_scores:
         raise ValueError(f"All models failed for {req.symbol}: {model_errors}")
 
+    # 2026-04-19 ML_POOL Stage 3: challenger shadow inference.
+    # If model_pool.json has a challenger version registered for any of the
+    # 5 feature models, run inference with the challenger weights too. Result
+    # is recorded in challenger_rank_scores (returned to pipeline_v2 which
+    # writes a parallel D1 row with model_name='{name}::challenger'). Status
+    # filter in ensemble_v2 = 0 for "::challenger" suffix → does NOT influence
+    # current trading vote. Stage 4 promote gate compares accumulated
+    # weekly_ic of challenger vs active and may flip status.
+    challenger_rank_scores: dict[str, float] = {}
+    challenger_errors: list[str] = []
+    try:
+        from .model_pool import get_challenger_path, load_pool as _load_pool
+        _pool_snapshot = _load_pool()
+    except Exception:
+        _pool_snapshot = None
+
+    if _pool_snapshot:
+        for model_name in _MODEL_NAMES_V2:
+            try:
+                ch_path = get_challenger_path(model_name, pool=_pool_snapshot)
+                if not ch_path:
+                    continue
+                ch_obj, ch_meta = load_model(0, model_name, explicit_path=ch_path)
+                if ch_obj is None:
+                    challenger_errors.append(f"{model_name}: challenger artifact missing at {ch_path}")
+                    continue
+                training_features = (ch_meta or {}).get("feature_names", [])
+                training_medians = (ch_meta or {}).get("feature_medians", {})
+                if training_features and training_features != feature_names:
+                    _pred_name_to_idx = {n: i for i, n in enumerate(feature_names)}
+                    _defaults = np.array(
+                        [float(training_medians.get(n, 0.0)) for n in training_features],
+                        dtype=np.float32,
+                    ).reshape(1, -1)
+                    _X_aligned = _defaults.copy()
+                    for _j, _fname in enumerate(training_features):
+                        if _fname in _pred_name_to_idx:
+                            _X_aligned[0, _j] = float(X_latest[0, _pred_name_to_idx[_fname]])
+                    X_to_predict = _X_aligned
+                else:
+                    X_to_predict = X_latest
+
+                if model_name == "FT-Transformer":
+                    bundle = ch_obj
+                    state_dict = bundle["state_dict"]
+                    scaler = bundle["scaler"]
+                    n_feat = bundle.get("n_features", X_to_predict.shape[1])
+                    if X_to_predict.shape[1] != n_feat:
+                        challenger_errors.append(f"{model_name}: challenger dim mismatch")
+                        continue
+                    X_scaled = scaler.transform(X_to_predict).astype(np.float32)
+                    X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+                    import torch.nn as nn
+                    class _FTT_ch(nn.Module):
+                        def __init__(self, n_f, d_model=128, n_heads=8, n_layers=3):
+                            super().__init__()
+                            self.feat_embed = nn.Linear(1, d_model, bias=True)
+                            self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+                            enc_layer = nn.TransformerEncoderLayer(
+                                d_model=d_model, nhead=n_heads,
+                                dim_feedforward=int(d_model * 4 / 3),
+                                dropout=0.1, batch_first=True,
+                            )
+                            self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+                            self.head = nn.Linear(d_model, 1)
+                        def forward(self, x):
+                            B = x.shape[0]
+                            tokens = self.feat_embed(x.unsqueeze(-1))
+                            cls = self.cls_token.expand(B, -1, -1)
+                            tokens = torch.cat([cls, tokens], dim=1)
+                            out = self.encoder(tokens)
+                            return self.head(out[:, 0, :]).squeeze(-1)
+                    ftt_ch = _FTT_ch(n_feat)
+                    ftt_ch.load_state_dict(state_dict)
+                    ftt_ch.eval()
+                    with torch.no_grad():
+                        pred = ftt_ch(torch.tensor(X_scaled)).item()
+                    challenger_rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
+                else:
+                    pred = ch_obj.predict(X_to_predict)
+                    challenger_rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
+            except Exception as e:
+                challenger_errors.append(f"{model_name}: challenger {e}")
+
     # IC-weighted ensemble → EnsembleResult
     result = rank_to_signal(
         rank_scores=rank_scores,
@@ -659,6 +743,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         # pipeline_v2 can re-merge with Chronos/DLinear/PatchTST + lifecycle
         # weights from model_pool.json without a second predict round-trip.
         "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
+        # 2026-04-19 ML_POOL Stage 3: challenger shadow predictions.
+        # Empty dict if no challenger registered. Caller writes parallel D1
+        # rows with model_name='{name}::challenger' for IC tracking.
+        "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
+        "challenger_errors": challenger_errors if challenger_errors else None,
         "atr": float(atr),
     }
 

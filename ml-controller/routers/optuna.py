@@ -633,3 +633,73 @@ def run_feature_window(req: OptunaReq = Body(default=OptunaReq())):
 
     return {"status": "completed", "source": "feature_window", "best_params": best,
             "push": push_response}
+
+
+# ─── /optuna/per_regime (#28b T2.1, 2026-04-21) ──────────────────────────────
+
+class PerRegimeReq(BaseModel):
+    """Per-regime robust Optuna request (#28b T2.1)."""
+    target: str = Field(default="sltp", pattern="^(sltp)$",
+                        description="Target param family. Only 'sltp' supported initially.")
+    n_trials: int = Field(default=50, ge=5, le=500)
+    subset_size: int = Field(default=400, ge=50, le=2000)
+    window_days: int = Field(default=365, ge=90, le=730)
+    push_kv: bool = Field(default=False,
+                          description="If true, push winning params to KV via "
+                                      "writeSandbox (secure-by-default through T3.3).")
+    dry_run: bool = Field(default=True,
+                          description="Default true — set false to actually push "
+                                      "via push_optuna_result (which now routes to "
+                                      "sandbox unless ?prod=1 header).")
+
+
+@router.post("/per_regime")
+def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
+    """Per-regime robust Optuna search — maximizes min(sharpe across 4 regimes)
+    to avoid regime-specialized overfits. See optuna_per_regime_robust.py
+    docstring for full design rationale.
+
+    Writes winning params to sandbox (via push_optuna_result default path) —
+    Wei then promotes to challenger slot via POST /api/admin/config/challenger
+    and the T3.5 weekly_eval cron compares vs champion before promote.
+
+    Expensive: runs replay_period 50×200 = ~10000 times on 400-stock subset
+    × 365-day window. Typical wall-clock 8-15 min on ml-controller Cloud Run.
+    """
+    try:
+        # optuna_scripts/ must be on PYTHONPATH — already set for sibling scripts
+        import sys as _sys, os as _os
+        _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "optuna_scripts")
+        if _p not in _sys.path:
+            _sys.path.insert(0, _p)
+        from optuna_per_regime_robust import run_search  # type: ignore
+    except ImportError as e:
+        raise HTTPException(500, f"optuna_per_regime_robust import failed: {e}")
+
+    logger.info(
+        f"[Optuna/per_regime] target={req.target} n_trials={req.n_trials} "
+        f"subset={req.subset_size} window={req.window_days}d "
+        f"push_kv={req.push_kv} dry_run={req.dry_run}"
+    )
+
+    try:
+        result = run_search(
+            target=req.target,
+            n_trials=req.n_trials,
+            subset_size=req.subset_size,
+            window_days=req.window_days,
+            push_kv=req.push_kv and not req.dry_run,
+        )
+    except RuntimeError as e:
+        # e.g. "No feasible trials — regime split too sparse"
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("[Optuna/per_regime] unexpected failure")
+        raise HTTPException(500, f"per_regime search failed: {type(e).__name__}: {e}")
+
+    return {
+        "status": "completed",
+        "source": "per_regime_robust",
+        "dry_run": req.dry_run,
+        **result,
+    }

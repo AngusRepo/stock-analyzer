@@ -62,24 +62,45 @@ GCS_POOL_KEY = "universal/model_pool.json"
 
 SCHEMA_VERSION = "1.0"
 
-# 8 universal models managed by Stage 1
-# Order matters: family balance guard reads this for ≥3 feature + ≥2 time-series
+# 10 models managed by ML_POOL (Stage 1 launched with 8; Stage 6 adds 2 state-space)
+# Order matters: family balance guard reads this for ≥3 feature + ≥2 time-series + ≥1 state-space
 MANAGED_MODELS = {
     # name → (model_type, balance_family, gcs_extension)
-    "XGBoost":         ("feature",                    "feature",     "joblib"),
-    "CatBoost":        ("feature",                    "feature",     "joblib"),
-    "ExtraTrees":      ("feature",                    "feature",     "joblib"),
-    "LightGBM":        ("feature",                    "feature",     "joblib"),
-    "FT-Transformer":  ("feature",                    "feature",     "joblib"),
-    "Chronos":         ("time_series_foundation",     "time_series", "json"),
-    "DLinear":         ("time_series_learnable",      "time_series", "pt"),
-    "PatchTST":        ("time_series_learnable",      "time_series", "pt"),
+    "XGBoost":          ("feature",                    "feature",     "joblib"),
+    "CatBoost":         ("feature",                    "feature",     "joblib"),
+    "ExtraTrees":       ("feature",                    "feature",     "joblib"),
+    "LightGBM":         ("feature",                    "feature",     "joblib"),
+    "FT-Transformer":   ("feature",                    "feature",     "joblib"),
+    "Chronos":          ("time_series_foundation",     "time_series", "json"),
+    "DLinear":          ("time_series_learnable",      "time_series", "pt"),
+    "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
+    # 2026-04-20 Stage 6: state-space models (per-stock state, shared hyperparams)
+    "KalmanFilter":     ("state_space_per_stock",      "state_space", "json"),
+    "MarkovSwitching":  ("state_space_per_stock",      "state_space", "json"),
 }
 
-# Family balance guards (per ML_POOL_ARCHITECTURE.md, adjusted for 5+3):
+# Family balance guards (per ML_POOL_ARCHITECTURE.md, adjusted for 5+3+2):
 MIN_ACTIVE_PER_FAMILY = {
     "feature":     3,    # ≥3 of 5 feature models must stay active
     "time_series": 2,    # ≥2 of 3 time-series must stay active
+    "state_space": 1,    # ≥1 of 2 state-space must stay active (small family)
+}
+
+# State-space default hyperparameters (used when no GCS pool entry exists).
+# Stage 6.3 future: Optuna search replaces these with Pareto-optimal values.
+DEFAULT_STATE_SPACE_HYPERPARAMS = {
+    "KalmanFilter": {
+        "process_noise":      1e-4,    # Q matrix scalar (state evolution variance)
+        "observation_noise":  1e-2,    # R matrix scalar (measurement variance)
+        "init_cov_scale":     1.0,     # P0 initial uncertainty scale
+        "smoothing":          False,    # forward-only (online), no Kalman smoother
+    },
+    "MarkovSwitching": {
+        "n_regimes":          2,        # bull / bear (or trending / mean-reverting)
+        "transition_prior":   0.95,     # diagonal prior (regime persistence)
+        "switching_vol":      True,     # volatility differs per regime (vs only mean)
+        "ar_order":           1,        # AR(1) within each regime
+    },
 }
 
 
@@ -365,6 +386,82 @@ def get_lifecycle_weight(model_name: str, pool: Optional[dict] = None) -> float:
     if not entry:
         return 1.0
     return get_status_filter(entry["status"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 6 state-space helpers (per-stock state, shared hyperparams)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GCS_STATE_SPACE_PREFIX = "per_stock_state_space"
+
+
+def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
+    """e.g. ('KalmanFilter', 'v1') → 'per_stock_state_space/kalman/hyperparams_v1.json'
+
+    State-space models follow the per_stock_state_space/ folder convention to
+    distinguish them from universal/ (where 8-model pooled artifacts live).
+    Hyperparams are SHARED across all stocks; per-stock state is computed
+    online at inference and not persisted.
+    """
+    if model_name not in MANAGED_MODELS:
+        raise ValueError(f"Unknown model {model_name}")
+    folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
+    return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
+
+
+def load_state_space_hyperparams(model_name: str, version: str = "v1") -> dict:
+    """Load shared hyperparams from GCS, fall back to DEFAULT_STATE_SPACE_HYPERPARAMS.
+
+    Inference path (run_kalman_filter / run_markov_switching) calls this once
+    per request; the returned dict drives state-space construction.
+    """
+    if model_name not in DEFAULT_STATE_SPACE_HYPERPARAMS:
+        raise ValueError(f"{model_name} is not a state-space model")
+    try:
+        from google.cloud import storage
+        bucket = storage.Client().bucket(GCS_BUCKET)
+        path = state_space_hyperparams_path(model_name, version)
+        blob = bucket.blob(path)
+        if blob.exists():
+            return json.loads(blob.download_as_text())
+    except Exception as e:
+        logger.warning(f"[ModelPool] state-space hyperparams load failed for {model_name}/{version}: {e}")
+    return dict(DEFAULT_STATE_SPACE_HYPERPARAMS[model_name])
+
+
+def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: str = "v1") -> str:
+    """Persist hyperparams to GCS. Returns saved path.
+
+    Validates hyperparam keys against DEFAULT_STATE_SPACE_HYPERPARAMS to catch
+    typos. Future Stage 6.3 Optuna can use this as the search-result writer.
+    """
+    if model_name not in DEFAULT_STATE_SPACE_HYPERPARAMS:
+        raise ValueError(f"{model_name} is not a state-space model")
+    expected_keys = set(DEFAULT_STATE_SPACE_HYPERPARAMS[model_name].keys())
+    missing = expected_keys - set(hyperparams.keys())
+    extra = set(hyperparams.keys()) - expected_keys
+    if missing:
+        raise ValueError(f"Missing hyperparam keys for {model_name}: {missing}")
+    if extra:
+        # Allow extras but warn — accommodates future schema migration
+        logger.warning(f"[ModelPool] Unexpected hyperparam keys for {model_name}: {extra}")
+
+    from google.cloud import storage
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    path = state_space_hyperparams_path(model_name, version)
+    payload = dict(hyperparams)
+    payload["_meta"] = {
+        "model": model_name,
+        "version": version,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": SCHEMA_VERSION,
+    }
+    bucket.blob(path).upload_from_string(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        content_type="application/json",
+    )
+    logger.info(f"[ModelPool] Saved state-space hyperparams: {path}")
+    return path
 
 
 # ─────────────────────────────────────────────────────────────────────────────

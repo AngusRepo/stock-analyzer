@@ -671,6 +671,96 @@ def _rank_avg_ties(xs: list[float]) -> list[float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stage 6: State-space hyperparams pool (KalmanFilter / MarkovSwitching)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_DEFAULT_STATE_SPACE = {
+    "KalmanFilter": {
+        "process_noise": 1e-4,
+        "observation_noise": 1e-2,
+        "init_cov_scale": 1.0,
+        "smoothing": False,
+    },
+    "MarkovSwitching": {
+        "n_regimes": 2,
+        "transition_prior": 0.95,
+        "switching_vol": True,
+        "ar_order": 1,
+    },
+}
+
+
+class PutStateSpaceHyperparamsRequest(BaseModel):
+    model_name: str           # 'KalmanFilter' or 'MarkovSwitching'
+    hyperparams: dict
+    version: str = "v1"
+    confirm: bool = False
+
+
+@router.post("/state_space/put_hyperparams")
+async def put_state_space_hyperparams(req: PutStateSpaceHyperparamsRequest):
+    """Stage 6.1: persist shared hyperparams for a state-space model.
+
+    State-space models can't be 'universal' (each stock needs own state),
+    but hyperparameters CAN be shared. This endpoint writes the pool's
+    canonical hyperparams JSON to GCS at:
+      per_stock_state_space/{kalman|markov_switching}/hyperparams_v{N}.json
+
+    Used by:
+      - Initial bootstrap (Stage 6.1, manual put with default values)
+      - Future Stage 6.3 Optuna search (writes search-optimal values)
+      - Stage 4 promote_check via challenger registration
+    """
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="put_state_space_hyperparams requires confirm=true")
+    if req.model_name not in _DEFAULT_STATE_SPACE:
+        raise HTTPException(status_code=400, detail=f"{req.model_name} is not a state-space model; expected one of {list(_DEFAULT_STATE_SPACE)}")
+    expected = set(_DEFAULT_STATE_SPACE[req.model_name].keys())
+    missing = expected - set(req.hyperparams.keys())
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing keys for {req.model_name}: {sorted(missing)}")
+
+    import json as _json
+    from datetime import datetime, timezone
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    folder = "kalman" if req.model_name == "KalmanFilter" else "markov_switching"
+    path = f"per_stock_state_space/{folder}/hyperparams_{req.version}.json"
+    payload = dict(req.hyperparams)
+    payload["_meta"] = {
+        "model": req.model_name,
+        "version": req.version,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "1.0",
+    }
+    bucket.blob(path).upload_from_string(
+        _json.dumps(payload, indent=2, ensure_ascii=False),
+        content_type="application/json",
+    )
+    logger.info(f"[Stage 6] put_hyperparams saved {path}")
+    return {"status": "ok", "path": path, "hyperparams": payload}
+
+
+@router.get("/state_space/hyperparams/{model_name}")
+async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
+    """Read state-space hyperparams (or default if no GCS file)."""
+    if model_name not in _DEFAULT_STATE_SPACE:
+        raise HTTPException(status_code=400, detail=f"{model_name} is not a state-space model")
+    import json as _json
+    from google.cloud import storage
+    bucket = storage.Client().bucket("stockvision-models")
+    folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
+    blob = bucket.blob(f"per_stock_state_space/{folder}/hyperparams_{version}.json")
+    if not blob.exists():
+        return {"status": "default", "model": model_name, "version": version,
+                "hyperparams": _DEFAULT_STATE_SPACE[model_name],
+                "note": "no GCS file; serving in-code defaults"}
+    return {"status": "loaded", "model": model_name, "version": version,
+            "hyperparams": _json.loads(blob.download_as_text())}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Stage 4: Promote / demote / retire / recovery gate (lifecycle owner)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1060,14 +1150,24 @@ async def init_pool(req: InitPoolRequest):
         ("Chronos",         "time_series_foundation", "time_series", "json"),
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
         ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
+        # 2026-04-20 Stage 6: state-space (per-stock state, shared hyperparams)
+        ("KalmanFilter",    "state_space_per_stock",  "state_space", "json"),
+        ("MarkovSwitching", "state_space_per_stock",  "state_space", "json"),
     ]
     models = {}
     for name, mt, bf, ext in managed:
         folder = name.lower().replace("-", "_")
+        # State-space stores hyperparams under per_stock_state_space/ instead
+        # of universal/, since they're not pooled artifacts.
+        if bf == "state_space":
+            ss_folder = "kalman" if name == "KalmanFilter" else "markov_switching"
+            gcs_path = f"per_stock_state_space/{ss_folder}/hyperparams_v1.json"
+        else:
+            gcs_path = f"universal/{folder}/v1.{ext}"
         models[name] = {
             "status": "active",
             "version": "v1",
-            "gcs_path": f"universal/{folder}/v1.{ext}",
+            "gcs_path": gcs_path,
             "model_type": mt,
             "balance_family": bf,
             "promoted_at": today,

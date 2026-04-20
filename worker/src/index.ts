@@ -440,7 +440,11 @@ app.post('/api/admin/optuna-push', async (c) => {
     return c.json({ error: 'Schema validation failed', errors, source, updatedFields }, 400)
   }
 
-  await setTradingConfig(c.env.KV, merged)
+  // #28b T3.1: pass caller context so snapshot chain records source + run_id
+  const snapshotResult = await setTradingConfig(c.env.KV, merged, {
+    source,
+    push_id: meta?.run_id ?? meta?.push_id,
+  })
 
   // Audit log
   const auditKey = `audit:optuna-push:${source}:${twToday()}`
@@ -450,6 +454,8 @@ app.post('/api/admin/optuna-push', async (c) => {
     meta: meta ?? null,
     updatedFields,
     pushed_at: new Date().toISOString(),
+    snapshot_id: snapshotResult.snapshotId,
+    snapshot_skipped: snapshotResult.skipped,
   }), { expirationTtl: 30 * 86400 })  // 30 day audit retention
 
   return c.json({
@@ -457,6 +463,8 @@ app.post('/api/admin/optuna-push', async (c) => {
     source,
     updatedFields,
     audit_key: auditKey,
+    snapshot_id: snapshotResult.snapshotId,
+    snapshot_skipped: snapshotResult.skipped,
     message: `Optuna ${source} pushed to trading:config (${updatedFields.length} fields updated)`,
   })
 })

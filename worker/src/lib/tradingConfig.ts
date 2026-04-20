@@ -520,17 +520,163 @@ export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> 
   return _cached
 }
 
-/** 寫入 KV（admin API 用）+ 清除 cache */
-export async function setTradingConfig(kv: KVNamespace, config: TradingConfig): Promise<void> {
+/** 寫入 KV（admin API 用）+ 清除 cache + auto snapshot (#28b T3.1)
+ *
+ * @param meta optional caller context { source, push_id }. When provided,
+ *   a content-addressed snapshot is written to `trading:config:snapshot:<ISO>:<hash8>`
+ *   and indexed at `trading:config:snapshot_index`. No-op writes (identical
+ *   hash to previous config) skip snapshot to avoid noise. Snapshot failures
+ *   are best-effort — main config write always succeeds (AWS CloudTrail pattern).
+ */
+export async function setTradingConfig(
+  kv: KVNamespace,
+  config: TradingConfig,
+  meta?: { source?: string; push_id?: string },
+): Promise<{ snapshotId: string | null; skipped: boolean }> {
+  // 先 snapshot（讀 prev + hash compare）— main write 後面永遠跑
+  let snapshotId: string | null = null
+  let skipped = false
+  try {
+    const prevHash = _cached ? await hashConfig(_cached) : null
+    const newHash = await hashConfig(config)
+    if (prevHash === newHash) {
+      skipped = true  // no-op write，不 pollute snapshot history
+    } else {
+      snapshotId = await writeSnapshot(kv, config, {
+        source: meta?.source ?? 'unknown',
+        push_id: meta?.push_id,
+        prev_hash: prevHash,
+        new_hash: newHash,
+      })
+    }
+  } catch (e: any) {
+    // Best-effort：snapshot 失敗不影響 main write（業界 audit fail-open 標準）
+    console.warn(`[tradingConfig] snapshot failed (non-blocking): ${e?.message ?? e}`)
+  }
+
+  // Main write — 永遠跑，與 snapshot 成敗無關
   await kv.put(KV_KEY, JSON.stringify(config))
   _cached = config
   _cachedAt = Date.now()
+  return { snapshotId, skipped }
 }
 
 /** 強制清除 in-memory cache（deploy 後或手動 reset） */
 export function invalidateConfigCache(): void {
   _cached = null
   _cachedAt = 0
+}
+
+// ─── #28b T3.1: KV Snapshot Versioning (2026-04-20) ─────────────────────────
+//
+// Content-addressed snapshot chain for every trading:config PUT. Design:
+//   - trading:config:snapshot:<ISO>:<hash8>  → full cfg + meta, TTL 90d
+//   - trading:config:snapshot_index         → last 100 entries, no TTL
+//
+// Why 90-day TTL: AWS Config / GCP Audit Log default for operational audit
+// (non-regulated). Metadata in index outlives snapshot body (AWS CloudTrail
+// Lake pattern — metadata永久、body 90d)，長期仍可列出何時何 source 改過。
+//
+// Why content-addressed: Git blob / Docker layer pattern — same content
+// same hash means no-op writes skip snapshot, preventing noise pollution.
+//
+// Why deterministic hash: RFC 8785 JSON Canonicalization Scheme — recursive
+// key sort ensures nested-dict reorder doesn't change hash.
+
+const SNAPSHOT_INDEX_KEY = 'trading:config:snapshot_index'
+const SNAPSHOT_TTL_SEC = 90 * 86400    // 90 days
+const SNAPSHOT_MAX_ENTRIES = 100       // last 100 in index
+
+export interface ConfigSnapshotMeta {
+  source: string           // 'barrier' | 'sltp' | 'manual' | 'l2_sensitivity' | 'unknown' 等
+  push_id?: string         // caller-supplied correlation id (optuna run_id 等)
+  prev_hash: string | null // chain link — 上一個 config hash
+  new_hash: string         // 自己 content hash
+}
+
+export interface ConfigSnapshotEntry {
+  id: string               // 'trading:config:snapshot:<ISO>:<hash8>'
+  pushed_at: string        // ISO timestamp
+  source: string
+  push_id?: string
+  hash: string             // hash8
+  prev_hash: string | null
+  bytes: number            // snapshot body size
+}
+
+export interface ConfigSnapshotRecord {
+  config: TradingConfig
+  meta: ConfigSnapshotMeta
+  pushed_at: string
+  bytes: number
+}
+
+/** Recursive canonical JSON (RFC 8785 style) — sorts keys at every level. */
+function canonicalJson(v: any): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v)
+  if (Array.isArray(v)) return '[' + v.map(canonicalJson).join(',') + ']'
+  const keys = Object.keys(v).sort()
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalJson(v[k])).join(',') + '}'
+}
+
+/** 8-hex-char (32-bit) content hash — safe for ≤1000 snapshots (birthday paradox ~1%). */
+async function hashConfig(cfg: TradingConfig): Promise<string> {
+  const canonical = canonicalJson(cfg)
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))
+  const bytes = new Uint8Array(buf).slice(0, 4)
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Write snapshot body + update index. Returns snapshot_id. */
+async function writeSnapshot(
+  kv: KVNamespace,
+  config: TradingConfig,
+  meta: ConfigSnapshotMeta,
+): Promise<string> {
+  const pushed_at = new Date().toISOString()
+  const id = `trading:config:snapshot:${pushed_at}:${meta.new_hash}`
+  const body = JSON.stringify({ config, meta, pushed_at } satisfies Omit<ConfigSnapshotRecord, 'bytes'>)
+  const bytes = body.length
+
+  // Body write — 90 day TTL
+  await kv.put(id, body, { expirationTtl: SNAPSHOT_TTL_SEC })
+
+  // Append index + truncate to last SNAPSHOT_MAX_ENTRIES
+  const idxRaw = await kv.get(SNAPSHOT_INDEX_KEY, 'json') as ConfigSnapshotEntry[] | null
+  const idx = Array.isArray(idxRaw) ? idxRaw : []
+  const entry: ConfigSnapshotEntry = {
+    id, pushed_at,
+    source: meta.source,
+    push_id: meta.push_id,
+    hash: meta.new_hash,
+    prev_hash: meta.prev_hash,
+    bytes,
+  }
+  idx.unshift(entry)  // desc by pushed_at (newest first)
+  const trimmed = idx.slice(0, SNAPSHOT_MAX_ENTRIES)
+  await kv.put(SNAPSHOT_INDEX_KEY, JSON.stringify(trimmed))
+
+  return id
+}
+
+/** List recent snapshots (most recent first). Used by T3.2 rollback UI. */
+export async function listSnapshots(
+  kv: KVNamespace,
+  limit: number = 20,
+): Promise<ConfigSnapshotEntry[]> {
+  const idxRaw = await kv.get(SNAPSHOT_INDEX_KEY, 'json') as ConfigSnapshotEntry[] | null
+  const idx = Array.isArray(idxRaw) ? idxRaw : []
+  return idx.slice(0, Math.max(0, Math.min(limit, SNAPSHOT_MAX_ENTRIES)))
+}
+
+/** Fetch full snapshot body. Returns null if expired (TTL 90d) or never existed. */
+export async function getSnapshot(
+  kv: KVNamespace,
+  id: string,
+): Promise<ConfigSnapshotRecord | null> {
+  const raw = await kv.get(id, 'json') as Omit<ConfigSnapshotRecord, 'bytes'> | null
+  if (!raw) return null
+  return { ...raw, bytes: JSON.stringify(raw).length }
 }
 
 // ─── C4: Config Validation ──────────────────────────────────────────────────

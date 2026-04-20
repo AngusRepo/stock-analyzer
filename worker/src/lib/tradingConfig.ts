@@ -679,6 +679,119 @@ export async function getSnapshot(
   return { ...raw, bytes: JSON.stringify(raw).length }
 }
 
+// ─── #28b T3.3: Sandbox Namespace (2026-04-20) ──────────────────────────────
+//
+// Separate KV namespace for refactor-time / test pushes. Secure-by-default
+// (Q5 locked): all optuna-push calls route here unless caller sets ?prod=1
+// + X-Confirm-Prod: true header. Sandbox writes DO NOT trigger the T3.1
+// prod snapshot chain — they accumulate in their own index until promoted.
+//
+// Design refs:
+//   - Kubernetes namespace isolation (separate storage realm)
+//   - MLflow stage None → Staging → Production (explicit promotion)
+//   - Snowflake RBAC secure-by-default
+//
+// Promotion path: POST /api/admin/config/promote {sandbox_id} → reads
+// sandbox body → calls setTradingConfig (triggers T3.1 prod snapshot).
+// The sandbox entry itself stays intact for audit.
+
+const SANDBOX_INDEX_KEY = 'trading:config:sandbox_index'
+const SANDBOX_TTL_SEC = 30 * 86400     // 30 days (shorter than prod 90d — ephemeral staging)
+const SANDBOX_MAX_ENTRIES = 50
+
+export interface SandboxEntry {
+  id: string
+  pushed_at: string
+  source: string
+  hash: string
+  bytes: number
+  push_id?: string
+  note?: string
+}
+
+export interface SandboxRecord {
+  config: TradingConfig
+  source: string
+  pushed_at: string
+  hash: string
+  bytes: number
+  push_id?: string
+  note?: string
+}
+
+/** Write a sandbox entry. Never touches prod trading:config or its snapshot chain. */
+export async function writeSandbox(
+  kv: KVNamespace,
+  source: string,
+  config: TradingConfig,
+  meta?: { push_id?: string; note?: string },
+): Promise<string> {
+  const pushed_at = new Date().toISOString()
+  const hash = await hashConfig(config)
+  const id = `trading:config:sandbox:${source}:${pushed_at}:${hash}`
+  const body = JSON.stringify({
+    config, source, pushed_at, hash,
+    push_id: meta?.push_id,
+    note: meta?.note,
+  })
+  const bytes = body.length
+
+  // Body — 30d TTL (sandbox is ephemeral)
+  await kv.put(id, body, { expirationTtl: SANDBOX_TTL_SEC })
+
+  // Index — no TTL, truncate to last SANDBOX_MAX_ENTRIES
+  const idxRaw = await kv.get(SANDBOX_INDEX_KEY, 'json') as SandboxEntry[] | null
+  const idx = Array.isArray(idxRaw) ? idxRaw : []
+  const entry: SandboxEntry = {
+    id, pushed_at, source, hash, bytes,
+    push_id: meta?.push_id,
+    note: meta?.note,
+  }
+  idx.unshift(entry)
+  const trimmed = idx.slice(0, SANDBOX_MAX_ENTRIES)
+  await kv.put(SANDBOX_INDEX_KEY, JSON.stringify(trimmed))
+
+  return id
+}
+
+/** List recent sandbox pushes (most recent first). Optional source filter. */
+export async function listSandbox(
+  kv: KVNamespace,
+  limit: number = 20,
+  sourceFilter?: string,
+): Promise<SandboxEntry[]> {
+  const idxRaw = await kv.get(SANDBOX_INDEX_KEY, 'json') as SandboxEntry[] | null
+  const idx = Array.isArray(idxRaw) ? idxRaw : []
+  const filtered = sourceFilter ? idx.filter(e => e.source === sourceFilter) : idx
+  return filtered.slice(0, Math.max(0, Math.min(limit, SANDBOX_MAX_ENTRIES)))
+}
+
+/** Fetch a sandbox body. Returns null if expired (TTL 30d) or never existed. */
+export async function getSandboxEntry(
+  kv: KVNamespace,
+  id: string,
+): Promise<SandboxRecord | null> {
+  if (!id.startsWith('trading:config:sandbox:')) return null
+  const raw = await kv.get(id, 'json') as Omit<SandboxRecord, 'bytes'> | null
+  if (!raw) return null
+  return { ...raw, bytes: JSON.stringify(raw).length }
+}
+
+/** Promote a sandbox entry to prod. Triggers T3.1 snapshot chain. */
+export async function promoteSandbox(
+  kv: KVNamespace,
+  sandboxId: string,
+  meta?: { push_id?: string; reason?: string },
+): Promise<{ snapshotId: string | null; skipped: boolean; promotedFrom: string } | null> {
+  const entry = await getSandboxEntry(kv, sandboxId)
+  if (!entry) return null
+  const r = await setTradingConfig(kv, entry.config, {
+    source: `promote:${entry.source}`,
+    push_id: meta?.push_id ?? sandboxId,
+  })
+  return { ...r, promotedFrom: sandboxId }
+}
+
 /** Restore a snapshot by writing its config back to KV as a new forward-commit
  *  (Git `git revert` pattern — not destructive reset). Triggers a new snapshot
  *  in the chain tagged source='restore' with meta linking to the restored id.

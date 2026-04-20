@@ -440,32 +440,69 @@ app.post('/api/admin/optuna-push', async (c) => {
     return c.json({ error: 'Schema validation failed', errors, source, updatedFields }, 400)
   }
 
-  // #28b T3.1: pass caller context so snapshot chain records source + run_id
-  const snapshotResult = await setTradingConfig(c.env.KV, merged, {
-    source,
+  // #28b T3.3: Sandbox-by-default (Q5 locked — secure-by-default).
+  // Prod write requires BOTH ?prod=1 query + X-Confirm-Prod: true header.
+  // Without both, all pushes route to trading:config:sandbox:<source>:* namespace
+  // and DO NOT trigger T3.1 snapshot chain (sandbox has its own index).
+  const wantsProd = c.req.query('prod') === '1'
+  const confirmProd = c.req.header('X-Confirm-Prod') === 'true'
+
+  if (wantsProd && !confirmProd) {
+    return c.json({
+      error: 'prod=1 requires header X-Confirm-Prod: true (double-gate)',
+      hint: 'Drop ?prod=1 to write to sandbox (safe), or add the header to force prod.',
+    }, 400)
+  }
+
+  if (wantsProd && confirmProd) {
+    // Prod path — T3.1 snapshot chain fires via setTradingConfig
+    const snapshotResult = await setTradingConfig(c.env.KV, merged, {
+      source,
+      push_id: meta?.run_id ?? meta?.push_id,
+    })
+
+    const auditKey = `audit:optuna-push:${source}:${twToday()}`
+    await c.env.KV.put(auditKey, JSON.stringify({
+      target: 'prod',
+      source, params, meta: meta ?? null, updatedFields,
+      pushed_at: new Date().toISOString(),
+      snapshot_id: snapshotResult.snapshotId,
+      snapshot_skipped: snapshotResult.skipped,
+    }), { expirationTtl: 30 * 86400 })
+
+    return c.json({
+      success: true,
+      target: 'prod',
+      source, updatedFields,
+      audit_key: auditKey,
+      snapshot_id: snapshotResult.snapshotId,
+      snapshot_skipped: snapshotResult.skipped,
+      message: `Optuna ${source} pushed to PROD trading:config (${updatedFields.length} fields updated)`,
+    })
+  }
+
+  // Sandbox path (default) — separate namespace, no prod touch, no T3.1 chain
+  const { writeSandbox } = await import('./lib/tradingConfig')
+  const sandboxId = await writeSandbox(c.env.KV, source, merged, {
     push_id: meta?.run_id ?? meta?.push_id,
+    note: meta?.note,
   })
 
-  // Audit log
   const auditKey = `audit:optuna-push:${source}:${twToday()}`
   await c.env.KV.put(auditKey, JSON.stringify({
-    source,
-    params,
-    meta: meta ?? null,
-    updatedFields,
+    target: 'sandbox',
+    source, params, meta: meta ?? null, updatedFields,
     pushed_at: new Date().toISOString(),
-    snapshot_id: snapshotResult.snapshotId,
-    snapshot_skipped: snapshotResult.skipped,
-  }), { expirationTtl: 30 * 86400 })  // 30 day audit retention
+    sandbox_id: sandboxId,
+  }), { expirationTtl: 30 * 86400 })
 
   return c.json({
     success: true,
-    source,
-    updatedFields,
+    target: 'sandbox',
+    source, updatedFields,
     audit_key: auditKey,
-    snapshot_id: snapshotResult.snapshotId,
-    snapshot_skipped: snapshotResult.skipped,
-    message: `Optuna ${source} pushed to trading:config (${updatedFields.length} fields updated)`,
+    sandbox_id: sandboxId,
+    message: `Optuna ${source} written to SANDBOX (prod unchanged). Promote via POST /api/admin/config/promote {sandbox_id} + X-Confirm-Prod: true`,
   })
 })
 
@@ -570,6 +607,109 @@ app.post('/api/admin/config/restore', async (c) => {
     success: true,
     mode: 'restored',
     restored_from: body.snapshot_id,
+    new_snapshot_id: result.snapshotId,
+    skipped: result.skipped,
+    audit_key: auditKey,
+    diff_summary: summarizeDiff(diff),
+  })
+})
+
+// ─── #28b T3.3: Sandbox namespace — list / get / promote ────────────────────
+// GET  /api/admin/config/sandbox            → last N sandbox entries
+// GET  /api/admin/config/sandbox/:id        → full sandbox body
+// POST /api/admin/config/promote            → sandbox → prod (T3.1 snapshot chain)
+app.get('/api/admin/config/sandbox', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const { listSandbox } = await import('./lib/tradingConfig')
+  const limit = Math.max(1, Math.min(50, Number(c.req.query('limit')) || 20))
+  const source = c.req.query('source') || undefined
+  const entries = await listSandbox(c.env.KV, limit, source)
+  return c.json({ success: true, count: entries.length, source_filter: source ?? null, entries })
+})
+
+app.get('/api/admin/config/sandbox/:id{.+}', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const id = c.req.param('id')
+  if (!id || !id.startsWith('trading:config:sandbox:'))
+    return c.json({ error: 'sandbox id must start with trading:config:sandbox:' }, 400)
+
+  const { getSandboxEntry } = await import('./lib/tradingConfig')
+  const entry = await getSandboxEntry(c.env.KV, id)
+  if (!entry) return c.json({ error: 'sandbox entry not found (expired or never existed)' }, 404)
+  return c.json({ success: true, id, ...entry })
+})
+
+app.post('/api/admin/config/promote', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json<{
+    sandbox_id?: string
+    dry_run?: boolean
+    reason?: string
+  }>().catch(() => null)
+  if (!body?.sandbox_id)
+    return c.json({ error: 'Body requires { sandbox_id, dry_run?, reason? }' }, 400)
+
+  const dryRun = body.dry_run !== false  // default true
+  const { getSandboxEntry, getTradingConfig, promoteSandbox } = await import('./lib/tradingConfig')
+  const { diffConfig, summarizeDiff } = await import('./lib/configDiff')
+
+  const sandbox = await getSandboxEntry(c.env.KV, body.sandbox_id)
+  if (!sandbox)
+    return c.json({ error: 'sandbox entry not found (expired or never existed)' }, 404)
+
+  const current = await getTradingConfig(c.env.KV)
+  const diff = diffConfig(current, sandbox.config)
+
+  if (dryRun) {
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      sandbox_id: body.sandbox_id,
+      sandbox_source: sandbox.source,
+      sandbox_pushed_at: sandbox.pushed_at,
+      diff_summary: summarizeDiff(diff),
+      diff,
+      hint: 'Re-POST with dry_run=false + header X-Confirm-Prod: true to promote.',
+    })
+  }
+
+  // Real promote requires explicit confirm header (same double-gate as prod push)
+  const confirm = c.req.header('X-Confirm-Prod')
+  if (confirm !== 'true')
+    return c.json({
+      error: 'Real promote requires header X-Confirm-Prod: true',
+      hint: 'Run with dry_run=true first to preview diff.',
+    }, 400)
+
+  const result = await promoteSandbox(c.env.KV, body.sandbox_id, {
+    reason: body.reason,
+  })
+  if (!result) return c.json({ error: 'sandbox entry vanished mid-operation' }, 409)
+
+  const auditKey = `audit:config-promote:${twToday()}`
+  await c.env.KV.put(auditKey, JSON.stringify({
+    promoted_from: body.sandbox_id,
+    source: sandbox.source,
+    new_snapshot_id: result.snapshotId,
+    skipped: result.skipped,
+    reason: body.reason ?? null,
+    diff_summary: summarizeDiff(diff),
+    promoted_at: new Date().toISOString(),
+  }), { expirationTtl: 90 * 86400 })
+
+  return c.json({
+    success: true,
+    mode: 'promoted',
+    promoted_from: body.sandbox_id,
     new_snapshot_id: result.snapshotId,
     skipped: result.skipped,
     audit_key: auditKey,

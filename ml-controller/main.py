@@ -17,7 +17,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import predict, retrain, retrain_trigger, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -56,6 +56,8 @@ async def verify_token(request: Request) -> None:
 app.include_router(predict.router,  dependencies=[Depends(verify_token)])
 app.include_router(retrain.router,  dependencies=[Depends(verify_token)])
 app.include_router(retrain_trigger.router, dependencies=[Depends(verify_token)])
+# 2026-04-20 #10 Phase 1: Webhook receiver for long-task completion (Pattern 1)
+app.include_router(retrain_followup.router, dependencies=[Depends(verify_token)])
 app.include_router(verify.router,   dependencies=[Depends(verify_token)])
 app.include_router(recommend.router, dependencies=[Depends(verify_token)])
 app.include_router(risk.router,     dependencies=[Depends(verify_token)])

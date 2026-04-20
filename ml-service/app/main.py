@@ -958,6 +958,11 @@ class UniversalTrainRequest(BaseModel):
     # None → legacy (universal/feature_pool.json). Walk-forward orchestrator passes
     # {gcs_prefix}/feature_pool.json after running per-window feature_selection.
     feature_pool_path: str | None = None
+    # 2026-04-20 #10 Phase 1 webhook: if set, ml-service POSTs retrain-complete
+    # callback to this URL after GCS save. Controller uses it to trigger downstream
+    # pipeline without keeping a CCD session alive (session kill <2min).
+    # Pattern 1 (see memory/feedback_ccd_session_discipline.md).
+    followup_webhook_url: str | None = None
 
 
 class UniversalRetrainRequest(BaseModel):
@@ -1672,6 +1677,34 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s — {len(results)} models")
 
+    trained_at_iso = datetime.utcnow().isoformat() + "Z"
+
+    # 2026-04-20 #10 Pattern 1 webhook: retrain-complete callback.
+    # Best-effort POST; ml-controller side uses `trained_at` as idempotency key
+    # and has a safety-net cron that catches missing callbacks via GCS timestamp.
+    if getattr(req, "followup_webhook_url", None):
+        try:
+            import httpx as _httpx
+            _followup_payload = {
+                "trained_at":     trained_at_iso,
+                "gcs_prefix":     req.gcs_prefix or "universal",
+                "window_id":      req.window_id,
+                "total_samples":  len(X),
+                "train_samples":  len(X_train),
+                "feature_count":  len(feature_names),
+                "elapsed_s":      elapsed,
+                "circuit_breaker": circuit_breaker_triggered,
+                "ic_summary":     {k: v.get("ic") for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
+            }
+            _headers = {"Content-Type": "application/json"}
+            _token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
+            if _token:
+                _headers["X-Service-Token"] = _token
+            _resp = _httpx.post(req.followup_webhook_url, json=_followup_payload, headers=_headers, timeout=15)
+            print(f"[TrainUniversal] followup webhook POST {req.followup_webhook_url} → HTTP {_resp.status_code}")
+        except Exception as _wh_err:
+            print(f"[TrainUniversal] followup webhook failed (safety-net cron will catch): {_wh_err}")
+
     return {
         "type": "universal",
         "total_samples": len(X),
@@ -1683,6 +1716,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "results": results,
         "ic_tracking": ic_tracking,
         "circuit_breaker": circuit_breaker_triggered,
+        "trained_at": trained_at_iso,
     }
 
 

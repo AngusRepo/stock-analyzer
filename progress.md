@@ -1,11 +1,11 @@
 # Progress — StockVision
 
-## Session 2026-04-16
+## Session 2026-04-20
 
 ### Portfolio
-- Total: $1000201 (0.02%)
+- Total: $890201 (-10.98%)
 - Positions: 0 | Cash: $890201
-- MDD: 10.6% | Sharpe(30d): 0.3986294602622852
+- MDD: 11.5% | Sharpe(30d): -1.5047332672617564
 
 ### Today's Pipeline
 - Screener: 25 → ML BUY: 0 → T2: 0 orders

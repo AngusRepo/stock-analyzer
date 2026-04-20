@@ -1847,10 +1847,22 @@ def simulate_entries_for_date(
     # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling + bull align
     #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
     #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
+    #     → 'yellow' maps to paper.ts 'medium' for medium_risk_scale (#28 P5)
     #   bull_align_pct: market_breadth.bull_alignment_pct for `day` (0-100 %)
     #     → if < circuit.bullAlignmentThreshold → budget × 0.5 (paper.ts:347-352)
     risk_level: Optional[str] = None,
     bull_align_pct: Optional[float] = None,
+    # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
+    #   prev_night_drop: us_market_signals.gspc_return for most recent US close
+    #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
+    #     Conservative Mode B: apply adjust factor by magnitude alone, without
+    #     paper.ts's debate-verdict gate (backtest has no debate runtime).
+    #   pf_30d / pf_90d: rolling portfolio profit factor from replay's own
+    #     all_trades (Mode B self-generates). Blended via pf_quality_*_weight
+    #     + clipped by pf_quality_clip_lo/hi per adaptive.compute_pf_quality_mults.
+    prev_night_drop: Optional[float] = None,
+    pf_30d: Optional[float] = None,
+    pf_90d: Optional[float] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -2050,6 +2062,27 @@ def simulate_entries_for_date(
             ))
             continue
 
+        # 2026-04-20 #28 P5: Night-drop entry/stop adjustment (Mode B only)
+        # Paper.ts:1673-1684 gates on debateVerdict in prod; backtest has no
+        # debate runtime, so apply adjust purely by drop magnitude (most
+        # conservative path — see P5 header note). Ratio convention:
+        #   prev_night_drop is a return ratio (-0.015 for -1.5%), so L2 KV
+        #   `night_drop_severe_pct` etc. MUST be stored in the same ratio
+        #   form (e.g. -0.015, not -1.5). Mismatch = adjust never triggers.
+        if (ml_predictions is not None
+                and l2_formula_cfg is not None
+                and prev_night_drop is not None):
+            severe_thr = float(l2_formula_cfg.get("night_drop_severe_pct", -0.015))
+            mild_thr   = float(l2_formula_cfg.get("night_drop_mild_pct",   -0.008))
+            if prev_night_drop < severe_thr:
+                severe_adj = float(l2_formula_cfg.get("night_drop_severe_adjust", 0.98))
+                adjusted_entry *= severe_adj
+                adjusted_stop  *= severe_adj
+            elif prev_night_drop < mild_thr:
+                mild_adj = float(l2_formula_cfg.get("night_drop_mild_adjust", 0.99))
+                adjusted_entry *= mild_adj
+                adjusted_stop  *= mild_adj
+
         # Kelly or risk-parity sizing — Mode B uses real confidence when available
         effective_conf = cand.confidence if cand.confidence is not None else ml_conf_placeholder
         kelly_pct = calc_kelly_pct(
@@ -2116,6 +2149,30 @@ def simulate_entries_for_date(
                 bull_thresh = float(circuit_cfg.get("bullAlignmentThreshold", 20))
                 if bull_align_pct < bull_thresh:
                     budget *= 0.5
+
+        # 2026-04-20 #28 P5: medium_risk_scale + PF quality blend (Mode B only).
+        # Both live under L2_formula, applied on budget AFTER circuit-level mults.
+        if ml_predictions is not None and l2_formula_cfg is not None:
+            # medium_risk_scale: yellow is our D1 mapping of paper.ts's 'medium'
+            # (paper.ts runtime fetches from Shioaji proxy whose domain is
+            # 'low/medium/high/extreme'; we use D1 market_risk.risk_level whose
+            # yellow tier is the semantic equivalent of paper.ts 'medium').
+            if risk_level == "yellow":
+                medium_scale = float(l2_formula_cfg.get("medium_risk_scale", 0.5))
+                budget *= medium_scale
+
+            # PF quality blend: weight 30d + 90d rolling PF then clip.
+            # Port of adaptive.compute_pf_quality_mults simplified for Mode B
+            # (production version is per-model; backtest has single portfolio).
+            if pf_30d is not None and pf_90d is not None:
+                w30 = float(l2_formula_cfg.get("pf_quality_30d_weight", 0.7))
+                w90 = float(l2_formula_cfg.get("pf_quality_90d_weight", 0.3))
+                clip_lo = float(l2_formula_cfg.get("pf_quality_clip_lo", 0.3))
+                clip_hi = float(l2_formula_cfg.get("pf_quality_clip_hi", 1.8))
+                pf30_c = max(clip_lo, min(clip_hi, pf_30d))
+                pf90_c = max(clip_lo, min(clip_hi, pf_90d))
+                pf_mult = max(clip_lo, min(clip_hi, pf30_c * w30 + pf90_c * w90))
+                budget *= pf_mult
 
         if budget <= 0:
             attempts.append(EntryAttempt(
@@ -3508,6 +3565,7 @@ def replay_period(
     from services.backtest_state import (
         BacktestMarketState, load_verified_predictions,
         compute_rolling_accuracy_30d, compute_drawdown_30d,
+        compute_profit_factor, get_prev_night_drop,
     )
     market_state: Optional[BacktestMarketState] = None
 
@@ -3622,6 +3680,20 @@ def replay_period(
                     market_state.get_breadth(day).bull_alignment_pct
                     if (mode == "B" and market_state is not None and market_state.get_breadth(day))
                     else None
+                ),
+                # 2026-04-20 #28 P5 night drop + PF quality blend
+                prev_night_drop=(
+                    get_prev_night_drop(market_state, day, lookback_days=3)
+                    if (mode == "B" and market_state is not None)
+                    else None
+                ),
+                pf_30d=(
+                    compute_profit_factor(all_trades, day, window_days=30, min_trades=5)
+                    if mode == "B" and circuit_cfg_b is not None else None
+                ),
+                pf_90d=(
+                    compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
+                    if mode == "B" and circuit_cfg_b is not None else None
                 ),
             )
             all_attempts.extend(attempts)

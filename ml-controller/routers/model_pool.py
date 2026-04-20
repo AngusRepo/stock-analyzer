@@ -670,6 +670,261 @@ def _rank_avg_ties(xs: list[float]) -> list[float]:
     return ranks
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 4: Promote / demote / retire / recovery gate (lifecycle owner)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PromoteCheckRequest(BaseModel):
+    apply: bool = False                # False = dry-run report only
+    min_shadow_weeks: int = 4          # required shadow duration
+    promote_margin: float = 0.01       # challenger 4w IC > active 4w IC + margin
+    demote_consec_weeks: int = 3       # active → degraded threshold
+    retire_consec_weeks: int = 6       # degraded → retired threshold
+    recovery_consec_pos_weeks: int = 2 # degraded → active threshold
+
+
+@router.post("/promote_check")
+async def promote_check(req: PromoteCheckRequest):
+    """Stage 4: scan model_pool.json for lifecycle transitions.
+
+    Checks (per ML_POOL_ARCHITECTURE.md + 4-state machine):
+      Challenger → Active (promote):
+        1. shadow_since older than min_shadow_weeks
+        2. challenger.ic_4w_avg > active.ic_4w_avg + promote_margin
+        3. challenger.ic_4w_avg > 0
+        4. family balance preserved (≥3 feature + ≥2 time-series active)
+      Active → Degraded (demote):
+        consecutive_negative_weeks >= demote_consec_weeks
+      Degraded → Retired (retire):
+        consecutive_negative_weeks >= retire_consec_weeks
+      Degraded → Active (recovery):
+        last recovery_consec_pos_weeks weeks all > 0
+
+    Returns: {actions: [...], applied: bool, audit: {...}}
+    Each action has dry-run preview UNLESS req.apply=True; then mutates pool.
+    Stage 5 alerts fire on actual transitions (apply=True path).
+    """
+    import json as _json
+    from datetime import datetime, timezone, date as _date
+    from google.cloud import storage
+
+    bucket = storage.Client().bucket("stockvision-models")
+    pool_blob = bucket.blob("universal/model_pool.json")
+    if not pool_blob.exists():
+        raise HTTPException(status_code=400, detail="model_pool.json not initialized")
+    pool = _json.loads(pool_blob.download_as_text())
+    today = datetime.now(timezone.utc).date()
+    today_iso = today.isoformat()
+
+    # Family balance baseline: count current actives per family
+    def _family_actives(p: dict) -> dict[str, int]:
+        counts = {"feature": 0, "time_series": 0}
+        for entry in p.get("models", {}).values():
+            if entry.get("status") == "active":
+                fam = entry.get("balance_family", "feature")
+                counts[fam] = counts.get(fam, 0) + 1
+        return counts
+    MIN_PER_FAMILY = {"feature": 3, "time_series": 2}
+
+    actions: list[dict] = []
+    for name, entry in pool.get("models", {}).items():
+        status = entry.get("status", "active")
+        family = entry.get("balance_family", "feature")
+        ic_4w = entry.get("ic_4w_avg")
+        consec_neg = entry.get("consecutive_negative_weeks", 0) or 0
+        weekly_ic = entry.get("weekly_ic") or []
+        challenger = entry.get("challenger") or {}
+
+        # ── Promote check (challenger → active) ─────────────────────────────
+        if challenger:
+            ch_4w = challenger.get("ic_4w_avg")
+            shadow_since_str = challenger.get("shadow_since")
+            ch_weekly = challenger.get("weekly_ic") or []
+            preconds_failed = []
+            if not shadow_since_str:
+                preconds_failed.append("missing shadow_since")
+            else:
+                try:
+                    shadow_age_days = (today - _date.fromisoformat(shadow_since_str)).days
+                except ValueError:
+                    shadow_age_days = 0
+                    preconds_failed.append("invalid shadow_since")
+                if shadow_age_days < req.min_shadow_weeks * 7:
+                    preconds_failed.append(
+                        f"shadow_age={shadow_age_days}d < {req.min_shadow_weeks}w"
+                    )
+            if ch_4w is None:
+                preconds_failed.append("challenger ic_4w_avg=null (need 4 wkly samples)")
+            elif ch_4w <= 0:
+                preconds_failed.append(f"challenger ic_4w_avg={ch_4w} ≤ 0")
+            if ic_4w is not None and ch_4w is not None and ch_4w <= ic_4w + req.promote_margin:
+                preconds_failed.append(
+                    f"challenger {ch_4w} ≤ active {ic_4w} + margin {req.promote_margin}"
+                )
+            # Family balance: promotion replaces v_old with v_new (no count change)
+            # so only check if current actives are already at minimum
+            actives = _family_actives(pool)
+            if actives.get(family, 0) < MIN_PER_FAMILY.get(family, 0):
+                preconds_failed.append(
+                    f"family balance: {family}={actives.get(family,0)} < min {MIN_PER_FAMILY[family]}"
+                )
+
+            if not preconds_failed:
+                actions.append({
+                    "model": name,
+                    "transition": "promote",
+                    "from": f"active:{entry.get('version')} + challenger:{challenger.get('version')}",
+                    "to": f"active:{challenger.get('version')} + retired:{entry.get('version')}",
+                    "ic_active_4w": ic_4w,
+                    "ic_challenger_4w": ch_4w,
+                    "margin": ch_4w - (ic_4w if ic_4w is not None else 0),
+                    "reason": "All promote preconditions satisfied",
+                })
+            else:
+                actions.append({
+                    "model": name,
+                    "transition": "promote_blocked",
+                    "preconditions_failed": preconds_failed,
+                    "ic_active_4w": ic_4w,
+                    "ic_challenger_4w": ch_4w,
+                })
+
+        # ── Demote check (active → degraded) ────────────────────────────────
+        if status == "active" and consec_neg >= req.demote_consec_weeks:
+            actions.append({
+                "model": name,
+                "transition": "demote",
+                "from": "active",
+                "to": "degraded",
+                "consecutive_negative_weeks": consec_neg,
+                "reason": f"IC 連 {consec_neg} 週 < 0 (threshold={req.demote_consec_weeks})",
+            })
+
+        # ── Retire check (degraded → retired) ───────────────────────────────
+        if status == "degraded" and consec_neg >= req.retire_consec_weeks:
+            actions.append({
+                "model": name,
+                "transition": "retire",
+                "from": "degraded",
+                "to": "retired",
+                "consecutive_negative_weeks": consec_neg,
+                "reason": f"IC 連 {consec_neg} 週 < 0 (extended threshold={req.retire_consec_weeks})",
+            })
+
+        # ── Recovery check (degraded → active) ──────────────────────────────
+        if status == "degraded" and len(weekly_ic) >= req.recovery_consec_pos_weeks:
+            recent = weekly_ic[-req.recovery_consec_pos_weeks:]
+            if all(w > 0 for w in recent):
+                actions.append({
+                    "model": name,
+                    "transition": "recovery",
+                    "from": "degraded",
+                    "to": "active",
+                    "recent_weeks_ic": recent,
+                    "reason": f"IC 連 {req.recovery_consec_pos_weeks} 週 > 0",
+                })
+
+    # ── Apply transitions if requested ────────────────────────────────────
+    applied_count = 0
+    if req.apply:
+        for action in actions:
+            t = action["transition"]
+            name = action["model"]
+            entry = pool["models"][name]
+            if t == "promote":
+                # Move challenger → active; keep history of v_old as "retired" sub-entry
+                ch = entry["challenger"]
+                _retired_history = entry.setdefault("retired_versions", [])
+                _retired_history.append({
+                    "version": entry["version"],
+                    "retired_at": today_iso,
+                    "weekly_ic_at_retire": entry.get("weekly_ic", []).copy(),
+                    "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
+                })
+                entry["version"] = ch["version"]
+                entry["gcs_path"] = ch["gcs_path"]
+                entry["promoted_at"] = today_iso
+                entry["weekly_ic"] = ch.get("weekly_ic", []).copy()
+                entry["ic_4w_avg"] = ch.get("ic_4w_avg")
+                entry["consecutive_negative_weeks"] = ch.get("consecutive_negative_weeks", 0)
+                entry["status"] = "active"
+                entry.pop("challenger", None)
+                entry.pop("degraded_since", None)
+                applied_count += 1
+                try:
+                    discord_alert.alert_lifecycle(
+                        event="promote", model_name=name,
+                        from_status=action["from"], to_status=action["to"],
+                        reason=action["reason"],
+                        metrics={"ic_active_4w": action["ic_active_4w"],
+                                  "ic_challenger_4w": action["ic_challenger_4w"],
+                                  "margin": action["margin"]},
+                    )
+                except Exception as _e:
+                    logger.debug(f"[Stage 4] promote alert skipped: {_e}")
+            elif t == "demote":
+                entry["status"] = "degraded"
+                entry["degraded_since"] = today_iso
+                applied_count += 1
+                try:
+                    discord_alert.alert_lifecycle(
+                        event="demote", model_name=name,
+                        from_status="active", to_status="degraded",
+                        reason=action["reason"],
+                        metrics={"consecutive_negative_weeks": action["consecutive_negative_weeks"]},
+                    )
+                except Exception as _e:
+                    logger.debug(f"[Stage 4] demote alert skipped: {_e}")
+            elif t == "retire":
+                entry["status"] = "retired"
+                entry["retired_at"] = today_iso
+                applied_count += 1
+                try:
+                    discord_alert.alert_lifecycle(
+                        event="retire", model_name=name,
+                        from_status="degraded", to_status="retired",
+                        reason=action["reason"],
+                        metrics={"consecutive_negative_weeks": action["consecutive_negative_weeks"]},
+                    )
+                except Exception as _e:
+                    logger.debug(f"[Stage 4] retire alert skipped: {_e}")
+            elif t == "recovery":
+                entry["status"] = "active"
+                entry.pop("degraded_since", None)
+                applied_count += 1
+                try:
+                    discord_alert.alert_lifecycle(
+                        event="recovery", model_name=name,
+                        from_status="degraded", to_status="active",
+                        reason=action["reason"],
+                        metrics={"recent_weeks_ic": action["recent_weeks_ic"]},
+                    )
+                except Exception as _e:
+                    logger.debug(f"[Stage 4] recovery alert skipped: {_e}")
+        if applied_count > 0:
+            pool["last_updated"] = datetime.now(timezone.utc).isoformat()
+            pool_blob.upload_from_string(
+                _json.dumps(pool, indent=2, ensure_ascii=False),
+                content_type="application/json",
+            )
+
+    return {
+        "status": "ok",
+        "dry_run": not req.apply,
+        "actions_count": len(actions),
+        "applied_count": applied_count,
+        "actions": actions,
+        "thresholds": {
+            "min_shadow_weeks": req.min_shadow_weeks,
+            "promote_margin": req.promote_margin,
+            "demote_consec_weeks": req.demote_consec_weeks,
+            "retire_consec_weeks": req.retire_consec_weeks,
+            "recovery_consec_pos_weeks": req.recovery_consec_pos_weeks,
+        },
+    }
+
+
 @router.get("/status")
 async def status():
     """Read current model_pool.json from GCS."""

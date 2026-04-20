@@ -2083,28 +2083,50 @@ export default {
         return `regime=${data.regime_label_en} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'}`
       })
     } else if (cron === '30 11 * * 5') {
-      // 2026-04-19 ML_POOL Stage 2: Friday 19:30 TW weekly IC tracker
-      // (fires after 19:00 verify so today's just-verified rows are included).
-      // Reads last 7 days of verified per-model predictions, computes
-      // Spearman IC, appends to model_pool.json weekly_ic + recomputes
-      // ic_4w_avg + consecutive_negative_weeks. Stage 4 promote/demote
-      // logic reads these accumulated metrics.
+      // 2026-04-19 Stage 2 + 2026-04-20 Stage 4: Friday 19:30 TW
+      //   1. compute_weekly_ic (writes weekly_ic + ic_4w_avg + consec_neg)
+      //   2. promote_check apply=true — Stage 4 lifecycle transitions
+      //      (promote / demote / retire / recovery) with Discord alerts
+      // Single cron event = atomic chain.
       runWithLog('model-ic-tracker', async () => {
         if (!env.ML_CONTROLLER_URL) return '跳過（ML_CONTROLLER_URL 未設定）'
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
         if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
-        const res = await fetch(`${env.ML_CONTROLLER_URL}/model_pool/compute_weekly_ic`, {
+
+        const icRes = await fetch(`${env.ML_CONTROLLER_URL}/model_pool/compute_weekly_ic`, {
           method: 'POST', headers,
           body: JSON.stringify({ lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true }),
           signal: AbortSignal.timeout(120_000),
         })
-        if (!res.ok) throw new Error(`Controller /model_pool/compute_weekly_ic HTTP ${res.status}`)
-        const data = await res.json() as any
-        const computed = Object.entries(data.per_model_ic || {})
+        if (!icRes.ok) throw new Error(`Controller /compute_weekly_ic HTTP ${icRes.status}`)
+        const icData = await icRes.json() as any
+        const computed = Object.entries(icData.per_model_ic || {})
           .filter(([_, v]: any) => v.status === 'computed')
           .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}`)
           .join(' ')
-        return `n_rows=${data.n_rows_total} | ${computed}`
+
+        // Stage 4 chained transition check (apply=true)
+        let stage4 = '(skip)'
+        try {
+          const promoRes = await fetch(`${env.ML_CONTROLLER_URL}/model_pool/promote_check`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ apply: true }),
+            signal: AbortSignal.timeout(60_000),
+          })
+          if (promoRes.ok) {
+            const pd = await promoRes.json() as any
+            const transitions = (pd.actions || [])
+              .filter((a: any) => a.transition !== 'promote_blocked')
+              .map((a: any) => `${a.model}:${a.transition}`)
+              .join(',') || 'none'
+            stage4 = `applied=${pd.applied_count}/${pd.actions_count} [${transitions}]`
+          } else {
+            stage4 = `chain failed HTTP ${promoRes.status}`
+          }
+        } catch (e: any) {
+          stage4 = `chain exception ${e?.message || e}`
+        }
+        return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4}`
       })
     } else if (cron === '0 11 * * 1-5') {
       // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2

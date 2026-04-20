@@ -19,6 +19,16 @@ from services._predictions_schema import (
     COL_STOCK_ID,
     COL_MODEL_NAME,
     COL_GENERATED_AT,
+    COL_HORIZON,
+    COL_DIRECTION_ACCURACY,
+    COL_FORECAST_DATA,
+    COL_ENTRY_PRICE,
+    COL_STOP_LOSS,
+    COL_TARGET1,
+    COL_TARGET2,
+    COL_TRADE_SIGNAL,
+    COL_FEATURE_VERSION,
+    COL_SIGNAL_RAW,
     INSERT_PREDICTIONS_SQL,
 )
 
@@ -452,12 +462,105 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
             ],
         ))
 
+        # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
+        # Stores each base model's rank_score (or sigmoid-mapped time-series
+        # forecast) so that Friday cron can compute spearman IC per model
+        # vs actual_return_pct (filled by verify path).
+        # 8 models total: 5 feature + 3 time-series (Chronos/DLinear/PatchTST).
+        # Same forecast_data shape (allows verify path to fill actual_return_pct
+        # without special-casing). model_name carries the per-model attribution.
+        per_model_scores = _extract_per_model_scores_for_d1(data)
+        for model_name, model_score in per_model_scores.items():
+            per_model_forecast = json.dumps(
+                {"signal": raw_signal, "rank_score": model_score, "source": "model_pool_stage2"},
+                ensure_ascii=False,
+            )
+            statements.append((
+                f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}=? "
+                f"AND date({COL_GENERATED_AT})=date('now')",
+                [stock_id, model_name],
+            ))
+            # Use INSERT with explicit model_name override (INSERT_PREDICTIONS_SQL
+            # hardcodes 'ensemble'; build a parallel SQL for per-model name).
+            statements.append((
+                _build_per_model_insert_sql(),
+                [
+                    stock_id, model_name,
+                    14,                     # horizon
+                    float(model_score),     # direction_accuracy = rank_score
+                    per_model_forecast,
+                    data.get("entry_price"),
+                    data.get("stop_loss"),
+                    data.get("target1"),
+                    data.get("target2"),
+                    trade_signal,
+                    data.get("feature_version"),
+                    raw_signal,
+                ],
+            ))
+
     if not statements:
         return 0
     result = d1_client.batch_execute(statements)
+    # Each prediction row = 2 statements (delete + insert), so written count is
+    # success_count / 2. With per-model rows, total rows per stock = 1 ensemble
+    # + N per-model = (1 + N) × 2 statements.
     written = result.get("success_count", result.get("total", 0)) // 2
-    logger.info(f"[recommendation_service] Wrote {written} predictions to D1")
+    logger.info(f"[recommendation_service] Wrote {written} prediction rows to D1 (incl. per-model)")
     return written
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-19 ML_POOL Stage 2 helpers (per-model row writers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Models whose rank scores we want stored for weekly IC tracking.
+# Mirrors ml-service app/model_pool.py:MANAGED_MODELS keys.
+_PER_MODEL_TRACKED = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
+                       "Chronos", "DLinear", "PatchTST")
+
+
+def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
+    """Pull out per-model rank scores from one stock's prediction dict.
+
+    For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
+      from predict_stock_v2 — exposed in commit 005ebee).
+    For 3 time-series: sigmoid-map pred["chronos"|"dlinear"|"patchtst"]
+      .forecast_pct to a rank 0~1 (mirror of pipeline_v2._ts_to_rank).
+
+    Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
+    """
+    import math
+    out: dict[str, float] = {}
+    rank_scores = pred.get("rank_scores") or {}
+    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"):
+        v = rank_scores.get(name)
+        if v is not None:
+            try:
+                out[name] = float(v)
+            except (TypeError, ValueError):
+                pass
+    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+        sig = pred.get(src_key) or {}
+        fp = sig.get("forecast_pct")
+        if fp is None:
+            continue
+        try:
+            out[model_name] = 1.0 / (1.0 + math.exp(-float(fp) * 12.0))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return out
+
+
+def _build_per_model_insert_sql() -> str:
+    """Like INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
+    return f"""
+INSERT INTO predictions (
+    {COL_STOCK_ID}, {COL_MODEL_NAME}, {COL_GENERATED_AT}, {COL_HORIZON}, {COL_DIRECTION_ACCURACY},
+    {COL_FORECAST_DATA}, {COL_ENTRY_PRICE}, {COL_STOP_LOSS}, {COL_TARGET1}, {COL_TARGET2},
+    {COL_TRADE_SIGNAL}, {COL_FEATURE_VERSION}, {COL_SIGNAL_RAW}
+) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""".strip()
 
 
 def update_recommendations_in_d1(

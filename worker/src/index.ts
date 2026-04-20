@@ -857,6 +857,23 @@ app.post('/api/admin/trigger/:task', async (c) => {
       if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
       return await res.json()
     },
+    // 2026-04-19 ML_POOL Stage 2: weekly IC tracker (Friday 18:30 TW).
+    // Reads last 7 days of verified per-model predictions, computes
+    // Spearman IC, appends to model_pool.json weekly_ic + recomputes
+    // ic_4w_avg + consecutive_negative_weeks. Stage 4 will read these
+    // accumulated metrics for promote/demote decisions.
+    'model-ic-tracker': async () => {
+      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
+      const headers: Record<string,string> = { 'Content-Type': 'application/json' }
+      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
+      const res = await fetch(`${c.env.ML_CONTROLLER_URL}/model_pool/compute_weekly_ic`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!res.ok) return `HTTP ${res.status}: ${await res.text()}`
+      return await res.json()
+    },
     'weekly-audit':     () => runWeeklyAudit(c.env),
     'timeverse-sync':   async () => { const { syncTimeverse } = await import('./lib/timeverse'); return syncTimeverse(c.env) },
     'us-leading':       async () => { const { fetchAndStoreUSLeading } = await import('./lib/usLeading'); return fetchAndStoreUSLeading(c.env) },
@@ -2064,6 +2081,30 @@ export default {
         if (!res.ok) throw new Error(`Controller /regime/compute HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
         const data = await res.json() as any
         return `regime=${data.regime_label_en} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'}`
+      })
+    } else if (cron === '30 11 * * 5') {
+      // 2026-04-19 ML_POOL Stage 2: Friday 19:30 TW weekly IC tracker
+      // (fires after 19:00 verify so today's just-verified rows are included).
+      // Reads last 7 days of verified per-model predictions, computes
+      // Spearman IC, appends to model_pool.json weekly_ic + recomputes
+      // ic_4w_avg + consecutive_negative_weeks. Stage 4 promote/demote
+      // logic reads these accumulated metrics.
+      runWithLog('model-ic-tracker', async () => {
+        if (!env.ML_CONTROLLER_URL) return '跳過（ML_CONTROLLER_URL 未設定）'
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        const res = await fetch(`${env.ML_CONTROLLER_URL}/model_pool/compute_weekly_ic`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        if (!res.ok) throw new Error(`Controller /model_pool/compute_weekly_ic HTTP ${res.status}`)
+        const data = await res.json() as any
+        const computed = Object.entries(data.per_model_ic || {})
+          .filter(([_, v]: any) => v.status === 'computed')
+          .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}`)
+          .join(' ')
+        return `n_rows=${data.n_rows_total} | ${computed}`
       })
     } else if (cron === '0 11 * * 1-5') {
       // Phase 5.5 (2026-04-08 audit): 19:00 TW → D-2 verify pipeline V2

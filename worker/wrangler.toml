@@ -72,6 +72,13 @@ crons = [
   "20 10 * * 1-5",   # 18:20 TW → Adaptive Engine
   "50 10 * * 1-5",   # 18:50 TW → HMM Regime Compute (2026-04-17 #30, Sprint 4-2 revisit)
   "0 11 * * 1-5",    # 19:00 TW → D-2 Verify Pipeline V2 (ml-controller LangGraph)
+
+  # ── ML_POOL Stage 2 (2026-04-19): Friday weekly IC tracker ──
+  # 19:30 TW Fri — fires AFTER verify cron at 19:00 so today's just-verified
+  # rows from earlier-in-week predictions are included. min_samples=50 →
+  # gracefully reports "insufficient_samples" until ~5 trading days of
+  # per-model rows accumulate post-deploy.
+  "30 11 * * 5",     # 19:30 TW Fri → /model_pool/compute_weekly_ic
   "25 10 * * 1-5",   # 18:25 TW → 收盤報告推送 Discord
   "40 10 * * 1-5",   # 18:40 TW → Obsidian daily notes + progress.md sync
   "30 10 * * 5",     # 18:30 TW (Fri) → P2#16 Weekly AI Audit Report

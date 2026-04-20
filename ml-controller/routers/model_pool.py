@@ -284,6 +284,175 @@ async def train_patchtst(req: TrainPatchTSTRequest):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Weekly IC tracker (cron-driven)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ComputeWeeklyICRequest(BaseModel):
+    lookback_days: int = 7              # Friday cron rolls last 7 days of verified rows
+    history_max: int = 26               # cap weekly_ic array (~6 months rolling)
+    min_samples: int = 50               # IC noise floor — skip if fewer obs/model
+    update_pool: bool = True            # write back to model_pool.json
+
+
+@router.post("/compute_weekly_ic")
+async def compute_weekly_ic(req: ComputeWeeklyICRequest):
+    """Compute Spearman IC per managed model from last lookback_days of
+    verified predictions, append to model_pool.json weekly_ic, recompute
+    ic_4w_avg, increment consecutive_negative_weeks if IC<0.
+
+    Reads:
+      D1 predictions WHERE
+        model_name IN (8 managed model names)
+        AND verified_at IS NOT NULL
+        AND generated_at >= datetime('now','-7 days')
+
+    Writes:
+      gs://stockvision-models/universal/model_pool.json
+        models[name].weekly_ic.append(this_week_ic)
+        models[name].ic_4w_avg = mean(weekly_ic[-4:])
+        models[name].consecutive_negative_weeks (incr if < 0 else 0)
+
+    NOTE: Stage 4 promote/demote logic reads these accumulated metrics; Stage 2
+    only WRITES the metrics. Decay/promotion threshold logic stays separate.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    import math
+    from google.cloud import storage
+
+    t0 = time.time()
+    managed_models = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
+                      "Chronos", "DLinear", "PatchTST")
+
+    # ── 1. Pull verified per-model rows from D1 ──────────────────────────────
+    placeholders = ",".join(["?"] * len(managed_models))
+    sql = f"""
+        SELECT model_name, direction_accuracy, actual_return_pct, generated_at
+        FROM predictions
+        WHERE model_name IN ({placeholders})
+          AND actual_return_pct IS NOT NULL
+          AND verified_at IS NOT NULL
+          AND generated_at >= datetime('now', ?)
+    """
+    rows = d1_query(sql, [*managed_models, f"-{req.lookback_days} days"])
+    by_model: dict[str, list[tuple[float, float]]] = {n: [] for n in managed_models}
+    for r in rows:
+        try:
+            score = float(r["direction_accuracy"])
+            actual = float(r["actual_return_pct"])
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(score) or math.isnan(actual):
+            continue
+        by_model[r["model_name"]].append((score, actual))
+
+    # ── 2. Spearman IC per model ─────────────────────────────────────────────
+    def _spearman(pairs: list[tuple[float, float]]) -> float | None:
+        n = len(pairs)
+        if n < 2:
+            return None
+        # Rank both arrays (average rank for ties — stats.spearmanr equivalent)
+        xs = [p[0] for p in pairs]
+        ys = [p[1] for p in pairs]
+        x_rank = _rank_avg_ties(xs)
+        y_rank = _rank_avg_ties(ys)
+        # Pearson on ranks = Spearman
+        mx = sum(x_rank) / n
+        my = sum(y_rank) / n
+        num = sum((x_rank[i] - mx) * (y_rank[i] - my) for i in range(n))
+        denx = math.sqrt(sum((x - mx) ** 2 for x in x_rank))
+        deny = math.sqrt(sum((y - my) ** 2 for y in y_rank))
+        if denx == 0 or deny == 0:
+            return None
+        return num / (denx * deny)
+
+    per_model_ic: dict[str, dict] = {}
+    for name in managed_models:
+        pairs = by_model[name]
+        if len(pairs) < req.min_samples:
+            per_model_ic[name] = {"status": "insufficient_samples", "n_samples": len(pairs)}
+            continue
+        ic = _spearman(pairs)
+        per_model_ic[name] = {
+            "status": "computed",
+            "ic": round(ic, 6) if ic is not None else None,
+            "n_samples": len(pairs),
+        }
+
+    # ── 3. Update model_pool.json ────────────────────────────────────────────
+    pool_changes: dict[str, dict] = {}
+    if req.update_pool:
+        try:
+            bucket = storage.Client().bucket("stockvision-models")
+            pool_blob = bucket.blob("universal/model_pool.json")
+            if pool_blob.exists():
+                pool = _json.loads(pool_blob.download_as_text())
+                changed = False
+                for name in managed_models:
+                    info = per_model_ic.get(name, {})
+                    ic = info.get("ic")
+                    if ic is None:
+                        continue
+                    entry = pool.get("models", {}).get(name)
+                    if not entry:
+                        continue
+                    entry.setdefault("weekly_ic", [])
+                    entry["weekly_ic"].append(ic)
+                    if len(entry["weekly_ic"]) > req.history_max:
+                        entry["weekly_ic"] = entry["weekly_ic"][-req.history_max:]
+                    last4 = entry["weekly_ic"][-4:]
+                    entry["ic_4w_avg"] = round(sum(last4) / len(last4), 6)
+                    if ic < 0:
+                        entry["consecutive_negative_weeks"] = (entry.get("consecutive_negative_weeks") or 0) + 1
+                    else:
+                        entry["consecutive_negative_weeks"] = 0
+                    pool_changes[name] = {
+                        "ic": ic,
+                        "ic_4w_avg": entry["ic_4w_avg"],
+                        "consecutive_negative_weeks": entry["consecutive_negative_weeks"],
+                        "history_len": len(entry["weekly_ic"]),
+                    }
+                    changed = True
+                if changed:
+                    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    pool_blob.upload_from_string(
+                        _json.dumps(pool, indent=2, ensure_ascii=False),
+                        content_type="application/json",
+                    )
+        except Exception as e:
+            logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
+            return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
+
+    return {
+        "status": "ok",
+        "lookback_days": req.lookback_days,
+        "n_rows_total": len(rows),
+        "per_model_ic": per_model_ic,
+        "pool_updates": pool_changes if req.update_pool else None,
+        "elapsed_s": round(time.time() - t0, 1),
+    }
+
+
+def _rank_avg_ties(xs: list[float]) -> list[float]:
+    """Rank xs ascending with average-rank tie handling (stats.rankdata equivalent)."""
+    n = len(xs)
+    indexed = sorted(range(n), key=lambda i: xs[i])
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        # Group ties
+        while j + 1 < n and xs[indexed[j + 1]] == xs[indexed[i]]:
+            j += 1
+        avg = (i + j + 2) / 2.0  # 1-indexed average
+        for k in range(i, j + 1):
+            ranks[indexed[k]] = avg
+        i = j + 1
+    return ranks
+
+
 @router.get("/status")
 async def status():
     """Read current model_pool.json from GCS."""

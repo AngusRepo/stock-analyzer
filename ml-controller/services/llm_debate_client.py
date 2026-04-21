@@ -117,6 +117,17 @@ async def call_llm(
                         if parts:
                             text = parts[0].get("text", "")
                             if text:
+                                # #43 cost tracking (fire-and-forget)
+                                try:
+                                    from .cost_tracker import record_llm_call
+                                    usage = data.get("usageMetadata") or {}
+                                    await record_llm_call(
+                                        "llm_debate", "gemini", GEMINI_MODEL_DEFAULT,
+                                        int(usage.get("promptTokenCount", 0) or 0),
+                                        int(usage.get("candidatesTokenCount", 0) or 0),
+                                    )
+                                except Exception:
+                                    pass
                                 return text, "gemini_api"
             except Exception as e:
                 logger.warning(f"[LLM-Debate] Gemini failed: {e}")
@@ -148,6 +159,17 @@ async def call_llm(
                     if content:
                         text = content[0].get("text", "")
                         if text:
+                            # #43 cost tracking (fire-and-forget)
+                            try:
+                                from .cost_tracker import record_llm_call
+                                usage = data.get("usage") or {}
+                                await record_llm_call(
+                                    "llm_debate", "anthropic", model,
+                                    int(usage.get("input_tokens", 0) or 0),
+                                    int(usage.get("output_tokens", 0) or 0),
+                                )
+                            except Exception:
+                                pass
                             return text, "anthropic_api"
             except Exception as e:
                 logger.warning(f"[LLM-Debate] Anthropic failed: {e}")

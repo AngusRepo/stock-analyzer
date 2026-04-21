@@ -82,10 +82,21 @@ async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> O
             logger.warning("[llm_reason] Gemini returned empty text")
             return None
         usage = data.get("usageMetadata", {})
+        tokens_in = int(usage.get("promptTokenCount", 0) or 0)
+        tokens_out = int(usage.get("candidatesTokenCount", 0) or 0)
         logger.info(
-            f"[llm_reason] Gemini OK tokens in={usage.get('promptTokenCount','?')} "
-            f"out={usage.get('candidatesTokenCount','?')}"
+            f"[llm_reason] Gemini OK tokens in={tokens_in} out={tokens_out}"
         )
+        # #43 cost tracking (fire-and-forget)
+        try:
+            from .cost_tracker import record_llm_call
+            await record_llm_call(
+                "llm_reason", "gemini", GEMINI_MODEL,
+                tokens_in, tokens_out,
+                meta={"n_candidates": n_candidates},
+            )
+        except Exception:
+            pass
         return text
     except Exception as e:
         logger.warning(f"[llm_reason] Gemini error: {type(e).__name__}: {e!r}")
@@ -120,6 +131,18 @@ async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, m
             text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
             raw = "\n".join(text_blocks)
             logger.info(f"[llm_reason] Anthropic fallback OK (attempt={attempt})")
+            # #43 cost tracking (fire-and-forget)
+            try:
+                from .cost_tracker import record_llm_call
+                usage = data.get("usage", {}) or {}
+                await record_llm_call(
+                    "llm_reason", "anthropic", ANTHROPIC_MODEL,
+                    int(usage.get("input_tokens", 0) or 0),
+                    int(usage.get("output_tokens", 0) or 0),
+                    meta={"n_candidates": n_candidates, "attempt": attempt},
+                )
+            except Exception:
+                pass
             return raw
         except httpx.RequestError as e:
             exc_type = type(e).__name__

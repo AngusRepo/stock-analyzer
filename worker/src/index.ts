@@ -996,6 +996,78 @@ app.get('/api/admin/config/challenger/events', async (c) => {
 })
 
 // ─── Admin: Cron 執行日誌 ────────────────────────────────────────────────────
+// ─── #43 Cost Tracking — aggregated spend query (2026-04-21) ────────────────
+app.get('/api/admin/costs/today', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token ?? '', c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const date = c.req.query('date') ?? twToday()
+  const { results } = await c.env.DB.prepare(
+    `SELECT source, provider, model, calls, tokens_in_total, tokens_out_total,
+            compute_sec_total, est_usd_total
+     FROM cost_daily WHERE date = ? ORDER BY est_usd_total DESC`
+  ).bind(date).all<any>()
+  const total = (results ?? []).reduce((s: number, r: any) => s + (r.est_usd_total ?? 0), 0)
+  return c.json({ date, total_usd: Math.round(total * 10000) / 10000, breakdown: results ?? [] })
+})
+
+app.get('/api/admin/costs/month', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token ?? '', c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  // Rolling 30 days by source
+  const { results } = await c.env.DB.prepare(
+    `SELECT source, provider, model, SUM(est_usd) AS total_usd, COUNT(*) AS calls,
+            SUM(COALESCE(tokens_in, 0)) AS tokens_in, SUM(COALESCE(tokens_out, 0)) AS tokens_out
+     FROM cost_events WHERE date >= date('now', '-30 days')
+     GROUP BY source, provider, model ORDER BY total_usd DESC`
+  ).all<any>()
+  const total = (results ?? []).reduce((s: number, r: any) => s + (r.total_usd ?? 0), 0)
+  // Per-day for trend chart
+  const { results: daily } = await c.env.DB.prepare(
+    `SELECT date, ROUND(SUM(est_usd), 4) AS total_usd
+     FROM cost_events WHERE date >= date('now', '-30 days')
+     GROUP BY date ORDER BY date`
+  ).all<any>()
+  return c.json({
+    total_usd: Math.round(total * 10000) / 10000,
+    by_source: results ?? [],
+    by_day: daily ?? [],
+  })
+})
+
+// POST manual entry — for Modal persistent App cost imported from dashboard
+app.post('/api/admin/costs/manual', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json() as any
+  if (!body?.source || typeof body?.est_usd !== 'number') {
+    return c.json({ error: 'Required: {source, est_usd, date?, model?, meta?}' }, 400)
+  }
+  const now = new Date()
+  const tw = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
+  await c.env.DB.prepare(
+    `INSERT INTO cost_events (ts, date, source, provider, model, tokens_in, tokens_out, compute_sec, est_usd, meta)
+     VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`
+  ).bind(
+    now.toISOString(),
+    body.date ?? tw,
+    body.source,
+    body.provider ?? 'manual',
+    body.model ?? null,
+    body.compute_sec ?? 0,
+    body.est_usd,
+    body.meta ? JSON.stringify(body.meta) : null,
+  ).run()
+  return c.json({ ok: true, recorded_usd: body.est_usd })
+})
+
 app.get('/api/admin/cron-logs', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {

@@ -146,6 +146,243 @@ def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
     return result
 
 
+# ─── /admin/quantaalpha-* (#11 Phase 1 T1.4 — 2026-04-21) ────────────────────
+# Three endpoints bootstrapping + running QuantaAlpha POC entirely from cloud.
+# Reuses same modal CLI / MODAL_TOKEN setup as /admin/modal-deploy above.
+
+class QuantaAlphaBootstrapReq(BaseModel):
+    force_secret_update: bool = Field(default=False)
+    timeout_sec: int = Field(default=900, ge=60, le=3600)
+
+
+@router.post("/quantaalpha-bootstrap")
+def quantaalpha_bootstrap(req: QuantaAlphaBootstrapReq = Body(default=QuantaAlphaBootstrapReq())):
+    """One-shot: (1) create/update modal secret quantaalpha-llm from ml-controller
+    env GEMINI_API_KEY, (2) modal deploy modal_app_quantaalpha.py.
+
+    Idempotent — safe to re-run. Returns per-step status.
+    """
+    results: dict[str, Any] = {}
+    start = time.time()
+
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        raise HTTPException(500, "GEMINI_API_KEY not in ml-controller env")
+    cf_token = os.environ.get("CF_API_TOKEN", "")
+    cf_account = os.environ.get("CF_ACCOUNT_ID", "")
+    cf_d1 = os.environ.get("CF_D1_DB_ID", "")
+    if not all([cf_token, cf_account, cf_d1]):
+        raise HTTPException(500, "CF_* env vars incomplete in ml-controller env")
+
+    def _create_or_noop_secret(name: str, kv_args: list[str]) -> dict:
+        cmd = ["modal", "secret", "create", name] + kv_args
+        if req.force_secret_update:
+            cmd.append("--force")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=120, env={**os.environ})
+            if proc.returncode == 0:
+                return {"status": "ok", "note": "created/updated"}
+            combined = (proc.stderr or "") + (proc.stdout or "")
+            if "already exists" in combined.lower():
+                return {"status": "ok", "note": "already exists (idempotent)"}
+            return {"status": "error", "rc": proc.returncode, "stderr": combined[-500:]}
+        except Exception as e:
+            return {"status": "error", "exception": str(e)}
+
+    # Step 1a: Gemini LLM secret
+    results["secret_llm"] = _create_or_noop_secret(
+        "quantaalpha-llm",
+        [f"GEMINI_API_KEY={gemini_key}"],
+    )
+    # Step 1b: CF D1 secret (ml-controller's token has verified D1 access; paper-trail:
+    # routers/migration_safety_check pulls predictions via same token)
+    results["secret_cf"] = _create_or_noop_secret(
+        "quantaalpha-cf",
+        [f"CF_API_TOKEN={cf_token}",
+         f"CF_ACCOUNT_ID={cf_account}",
+         f"CF_D1_DB_ID={cf_d1}"],
+    )
+
+    # Step 2: modal deploy modal_app_quantaalpha.py
+    # Cloud Run 容器 /app/ 下的 filesystem mtime 不穩 → Modal CLI 誤判 "file modified"。
+    # 複製到 /tmp 固定 mtime 後 deploy，避開此 issue。
+    src_path = "/app/ml-service/modal_app_quantaalpha.py"
+    if not Path(src_path).is_file():
+        raise HTTPException(500, f"{src_path} not in image — rebuild ml-controller required")
+    import shutil
+    stable_dir = Path("/tmp/quantaalpha_deploy")
+    stable_dir.mkdir(parents=True, exist_ok=True)
+    app_path = str(stable_dir / "modal_app_quantaalpha.py")
+    shutil.copy2(src_path, app_path)
+    # 固定 mtime 到一個過去時間（2026-01-01）讓 Modal hash 穩定
+    os.utime(app_path, (1767225600, 1767225600))
+    try:
+        proc = subprocess.run(
+            ["modal", "deploy", "modal_app_quantaalpha.py"],
+            capture_output=True, text=True,
+            timeout=req.timeout_sec,
+            env={**os.environ},
+            cwd=str(stable_dir),
+        )
+        results["deploy"] = {
+            "status": "ok" if proc.returncode == 0 else "error",
+            "rc": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-800:],
+            "stderr_tail": (proc.stderr or "")[-800:],
+        }
+    except subprocess.TimeoutExpired:
+        results["deploy"] = {"status": "timeout", "after_sec": req.timeout_sec}
+    except Exception as e:
+        results["deploy"] = {"status": "error", "exception": str(e)}
+
+    results["duration_sec"] = round(time.time() - start, 1)
+    return results
+
+
+class QuantaAlphaRunReq(BaseModel):
+    step: str = Field(default="full", description="'build_qlib' | 'mine' | 'full' | 'check'")
+    direction: str = Field(default="Price-Volume Factor Mining")
+    experiment_suffix: str = Field(default="poc1")
+    years: int = Field(default=5, ge=1, le=10)
+    timeout_sec: int = Field(default=900, ge=60, le=3600,
+                             description="Subprocess timeout for spawn/status; actual Modal jobs run asynchronously")
+
+
+@router.post("/quantaalpha-run")
+def quantaalpha_run(req: QuantaAlphaRunReq = Body(default=QuantaAlphaRunReq())):
+    """Trigger QuantaAlpha Modal functions. step='build_qlib' builds Qlib binary
+    from D1; step='mine' runs 1 mining cycle; step='full' chains both (build
+    first, then mine); step='check' reports volume state only.
+
+    Uses `modal run --detach` so Cloud Run request returns quickly while Modal
+    executes in background. Poll Modal dashboard for live progress.
+    """
+    src_path = "/app/ml-service/modal_app_quantaalpha.py"
+    if not Path(src_path).is_file():
+        raise HTTPException(500, f"{src_path} not in image — rebuild ml-controller required")
+    # 同 bootstrap 用 /tmp 固定 mtime 避 "file modified" error
+    import shutil
+    stable_dir = Path("/tmp/quantaalpha_deploy")
+    stable_dir.mkdir(parents=True, exist_ok=True)
+    app_path_local = str(stable_dir / "modal_app_quantaalpha.py")
+    shutil.copy2(src_path, app_path_local)
+    os.utime(app_path_local, (1767225600, 1767225600))
+
+    def _modal_run(func: str, extra_args: list[str] | None = None) -> dict:
+        cmd = ["modal", "run", "--detach",
+               f"modal_app_quantaalpha.py::{func}"] + (extra_args or [])
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=req.timeout_sec, env={**os.environ},
+                                  cwd=str(stable_dir))
+            return {
+                "status": "ok" if proc.returncode == 0 else "error",
+                "cmd": " ".join(shlex.quote(p) for p in cmd),
+                "rc": proc.returncode,
+                "stdout_tail": (proc.stdout or "")[-800:],
+                "stderr_tail": (proc.stderr or "")[-800:],
+            }
+        except subprocess.TimeoutExpired:
+            return {"status": "timeout", "cmd": " ".join(cmd)}
+
+    def _modal_spawn(func_name: str, kwargs: dict) -> dict:
+        """True fire-and-forget via Modal Python SDK .spawn() — returns call_id
+        for dashboard lookup; does NOT wait for function completion."""
+        try:
+            import modal
+            fn = modal.Function.from_name("quantaalpha-poc", func_name)
+            call = fn.spawn(**kwargs)
+            return {
+                "status": "spawned",
+                "function": func_name,
+                "call_id": getattr(call, "object_id", str(call)),
+                "dashboard": f"https://modal.com/apps/wayne60619/main (search {func_name})",
+            }
+        except Exception as e:
+            return {"status": "error", "exception": f"{type(e).__name__}: {e}"}
+
+    out: dict[str, Any] = {}
+    if req.step in ("check", "full"):
+        out["check"] = _modal_run("check_qlib_data")
+    if req.step in ("build_qlib", "full"):
+        out["build_qlib"] = _modal_run(
+            "build_qlib_binary",
+            ["--universe-name", "sv_screener_350", "--years", str(req.years)],
+        )
+    if req.step in ("mine", "full"):
+        # Mine cycle 1-6 hr → spawn truly async (CLI --detach 不 detach)
+        out["mine"] = _modal_spawn("run_mine_cycle", {
+            "research_direction": req.direction,
+            "experiment_suffix": req.experiment_suffix,
+        })
+    return out
+
+
+class QuantaAlphaStatusReq(BaseModel):
+    call_id: str
+
+
+@router.post("/quantaalpha-logs")
+def quantaalpha_logs(timeout_sec: int = 60):
+    """Tail recent Modal app logs via CLI — diagnose hung function calls."""
+    try:
+        proc = subprocess.run(
+            ["modal", "app", "logs", "quantaalpha-poc"],
+            capture_output=True, text=True,
+            timeout=timeout_sec, env={**os.environ},
+        )
+        return {
+            "status": "ok" if proc.returncode == 0 else "error",
+            "rc": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-3000:],
+            "stderr_tail": (proc.stderr or "")[-1000:],
+        }
+    except subprocess.TimeoutExpired:
+        # modal app logs streams; timeout is normal. return whatever we got.
+        return {"status": "streamed_timeout",
+                "note": f"CLI ran {timeout_sec}s (log streaming expected)."}
+    except Exception as e:
+        return {"status": "error", "exception": f"{type(e).__name__}: {e}"}
+
+
+class QuantaAlphaCancelReq(BaseModel):
+    call_id: str
+
+
+@router.post("/quantaalpha-cancel")
+def quantaalpha_cancel(req: QuantaAlphaCancelReq = Body(...)):
+    """Cancel a running Modal FunctionCall."""
+    try:
+        import modal
+        call = modal.FunctionCall.from_id(req.call_id)
+        call.cancel()
+        return {"status": "cancelled", "call_id": req.call_id}
+    except Exception as e:
+        return {"status": "error", "call_id": req.call_id,
+                "exception": f"{type(e).__name__}: {e}"}
+
+
+@router.post("/quantaalpha-status")
+def quantaalpha_status(req: QuantaAlphaStatusReq = Body(...)):
+    """Poll Modal FunctionCall status by call_id returned from /quantaalpha-run."""
+    try:
+        import modal
+        call = modal.FunctionCall.from_id(req.call_id)
+        # get with timeout=0 raises TimeoutError if still running
+        try:
+            result = call.get(timeout=0)
+            return {"status": "done", "call_id": req.call_id, "result": result}
+        except TimeoutError:
+            return {"status": "running", "call_id": req.call_id}
+        except modal.exception.OutputExpiredError:
+            return {"status": "expired", "call_id": req.call_id,
+                    "note": "Output expired (>48h). Check Modal dashboard."}
+    except Exception as e:
+        return {"status": "error", "call_id": req.call_id,
+                "exception": f"{type(e).__name__}: {e}"}
+
+
 # ─── /admin/migration_safety_check (#11 / M33 2026-04-21) ────────────────────
 
 # Ordinal mapping for signal labels. Higher = more bullish.

@@ -65,6 +65,27 @@ export interface RiskCheckResult {
   evaluatedAt: string
 }
 
+// ─── Level 4 Order validation (R3) ──────────────────────────────────────────
+
+export interface OrderViolation {
+  gate: string                         // 'G5' | 'G6' | 'G7' | 'G14' etc.
+  severity: 'block' | 'warn' | 'adjust'
+  message: string
+  requestedValue: number
+  allowedValue: number
+}
+
+export interface OrderValidation {
+  approved: boolean
+  violations: OrderViolation[]
+  adjustedOrder: {
+    shares: number
+    limitPrice: number
+    adjustmentReasons: string[]
+  } | null
+  checkedAt: string
+}
+
 export interface AggregatedRiskState {
   halt: boolean
   haltReasons: string[]

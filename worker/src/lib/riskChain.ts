@@ -33,6 +33,9 @@ import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
+import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
+import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
+import { getRiskConfig } from './riskConfig'
 
 export interface AggregatedPortfolioState extends CircuitBreakerState {
   triggeredLayers: string[]
@@ -45,8 +48,13 @@ export async function runPortfolioChecks(
   kv: KVNamespace | undefined,
   deps: LegacyLayerDeps,
 ): Promise<AggregatedPortfolioState> {
-  // Run all 7 in parallel — none depend on each other's output.
-  const [p1, p2, p3, p4, p5, p6, p7] = await Promise.all([
+  // R3 expand: S1 killSwitch (Level 1) + P8 dailyPnl (Level 2) added alongside
+  // P1-P7. KV `trading:risk_config` fetched once here for all R3 checkers.
+  const riskCfg = await getRiskConfig(kv)
+
+  // Run 9 checks in parallel — none depend on each other's output.
+  const [s1, p1, p2, p3, p4, p5, p6, p7, p8] = await Promise.all([
+    checkS1KillSwitch(kv, deps),
     checkP1Mdd(db, cfg, deps),
     checkP2Accuracy(db, kv, cfg, deps),
     checkP3MarketRisk(db, cfg, deps),
@@ -54,11 +62,12 @@ export async function runPortfolioChecks(
     checkP5Losses(db, deps),
     checkP6Momentum(db, deps),
     checkP7Streak(db, cfg, deps),
+    checkP8DailyPnl(db, riskCfg, deps),
   ])
 
   const entries: Array<[string, CircuitBreakerState | null]> = [
-    ['P1', p1], ['P2', p2], ['P3', p3], ['P4', p4],
-    ['P5', p5], ['P6', p6], ['P7', p7],
+    ['S1', s1], ['P1', p1], ['P2', p2], ['P3', p3], ['P4', p4],
+    ['P5', p5], ['P6', p6], ['P7', p7], ['P8', p8],
   ]
 
   let halt = false

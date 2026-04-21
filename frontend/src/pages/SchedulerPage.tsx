@@ -18,6 +18,11 @@ import {
 } from 'lucide-react'
 import { schedulerApi, costsApi, type SchedulerStatus, type CostsMonth } from '@/lib/api'
 
+// Build stamp — Vite replaces import.meta.env.VITE_BUILD_STAMP at build time.
+// Injected via vite.config.ts `define`. If the visible banner still shows an
+// older timestamp after deploy, the browser is still serving a cached bundle.
+const BUILD_STAMP = (import.meta.env.VITE_BUILD_STAMP as string | undefined) || 'dev'
+
 // ── Types ─────────────────────────────────────────────────────────────────
 type JobStatus = 'success' | 'failed' | 'running' | 'paused' | 'skip'
 
@@ -184,6 +189,7 @@ export default function SchedulerPage() {
             <p className="text-xs text-muted-foreground mt-1">
               {stats.total} jobs &nbsp;|&nbsp; Last sync: {lastSync} TW
               {refreshing && <span className="ml-2 text-sky-400">refreshing…</span>}
+              <span className="ml-2 text-zinc-600">· build {BUILD_STAMP}</span>
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={() => { setRefreshing(true); load() }}>

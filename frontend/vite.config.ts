@@ -4,7 +4,12 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import { VitePWA } from 'vite-plugin-pwa'
 
+const BUILD_STAMP = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_BUILD_STAMP': JSON.stringify(BUILD_STAMP),
+  },
   plugins: [
     react(),
     tailwindcss(),
@@ -13,6 +18,12 @@ export default defineConfig({
       devOptions: { enabled: true },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // 2026-04-21 fix: without these flags new sw waits for all tabs to
+        // close before activating → user sees stale bundle after deploy.
+        // skipWaiting + clientsClaim makes new sw take over on next refresh.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // API calls: never cache financial data
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],

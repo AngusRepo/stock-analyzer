@@ -33,20 +33,32 @@ async function getCurrentRegime(kv: KVNamespace): Promise<MarketRegime | null> {
 function logRegimeShadow(
   caller: string, symbol: string, regime: MarketRegime,
   actualAction: string, actualReason: string,
+  db?: D1Database,
 ): void {
+  const hypOrder = getExitOrder(regime)
+  const hypMult = {
+    hardStop: getExitMultiplier(regime, 'hardStop'),
+    atrTrail: getExitMultiplier(regime, 'atrTrail'),
+    tp1:      getExitMultiplier(regime, 'tp1'),
+    tp2:      getExitMultiplier(regime, 'tp2'),
+    timeStop: getExitMultiplier(regime, 'timeStop'),
+  }
+  const ts = new Date().toISOString()
   console.log(JSON.stringify({
     event: 'regime_shadow', caller, symbol, regime,
     actual_action: actualAction, actual_reason: actualReason,
-    hypothetical_order: getExitOrder(regime),
-    hypothetical_mult: {
-      hardStop: getExitMultiplier(regime, 'hardStop'),
-      atrTrail: getExitMultiplier(regime, 'atrTrail'),
-      tp1:      getExitMultiplier(regime, 'tp1'),
-      tp2:      getExitMultiplier(regime, 'tp2'),
-      timeStop: getExitMultiplier(regime, 'timeStop'),
-    },
-    ts: new Date().toISOString(),
+    hypothetical_order: hypOrder, hypothetical_mult: hypMult, ts,
   }))
+  // #9 4/27 Step 9c review 需要歷史 — Worker log 無持久化，同步 insert D1。
+  // Fire-and-forget: 失敗不影響 exit decision，但 log warn 供 tail 發現。
+  if (db) {
+    const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    db.prepare(
+      'INSERT INTO exit_shadow_log (ts, date, caller, symbol, regime, actual_action, actual_reason, hypothetical_order, hypothetical_mult) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(ts, twDate, caller, symbol, regime, actualAction, actualReason ?? null, JSON.stringify(hypOrder), JSON.stringify(hypMult))
+      .run()
+      .catch((e: any) => console.warn(`[ExitShadow] D1 insert failed: ${e?.message ?? e}`))
+  }
 }
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -2547,7 +2559,7 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     const decision = checkExitConditions(pos, price, atr, false, false, cfg,
       (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
       regime ?? undefined)
-    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason)
+    if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, env.DB)
     if (decision.action === 'hold') continue
 
     const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, decision.reason, env.KV)
@@ -2625,7 +2637,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     const decision = checkExitConditions(pos, currentPrice, atr14, sellRecMap.has(pos.symbol), true, cfg,
       (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
       eodRegime ?? undefined)
-    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason)
+    if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, env.DB)
 
     // 當沖判斷：同日進場 → 查當沖標的 + 動態觸發條件
     let dayTradeSell = false
@@ -2896,7 +2908,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     const decision = checkExitConditions(pos, currentPrice, atr14, false, false, cfg,  // isEOD=false, no ML signal
       (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
       intraRegime ?? undefined)
-    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason)
+    if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
 
     // 跌停鎖死檢查：價格接近跌停（≤-9.5%）時，真實市場賣不掉
     // 停損單不成交，虧損繼續累積（更真實的 paper trade）

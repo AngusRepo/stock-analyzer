@@ -1342,8 +1342,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
            p.target1 AS ml_target1, p.target2 AS ml_target2
     FROM daily_recommendations dr
     LEFT JOIN stocks s ON s.symbol = dr.symbol
-    LEFT JOIN predictions p ON p.stock_id = s.id
-      AND p.generated_at = (SELECT MAX(p2.generated_at) FROM predictions p2 WHERE p2.stock_id = s.id)
+    LEFT JOIN predictions p ON p.id = (
+      SELECT p2.id FROM predictions p2
+      WHERE p2.stock_id = s.id
+      ORDER BY p2.generated_at DESC, p2.id DESC
+      LIMIT 1
+    )
     WHERE dr.date=? AND dr.has_buy_signal=1 AND dr.confidence >= ?
     ORDER BY dr.score DESC, dr.confidence DESC
     LIMIT 3

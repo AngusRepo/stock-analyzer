@@ -260,6 +260,15 @@ export interface TradingConfig {
     night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
     medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
   }
+  // ── #28b T1.3/T1.4 (2026-04-21): Risk event trigger thresholds ────────────
+  // Used by daily-report cron (lib/riskTriggers.ts) to decide when to enqueue
+  // Optuna re-tune requests into pending_optuna_queue. KV-driven so Wei can
+  // tune as the strategy stabilises (industry systematic L/S always uses
+  // config-driven thresholds, not hardcode — see mistake.md M33 context).
+  risk: {
+    sharpe_rolling_threshold: number     // rolling 30d sharpe < this → T1.3 trigger (預設 0.5，業界 systematic L/S 常用 0.3-0.5 區間)
+    dd_spike_threshold: number           // 單日 drawdown > this → T1.4 trigger (預設 0.08 = 8%)
+  }
   // ── Sprint 5.2+: Intraday Re-score 安控 ───────────────────────────────────
   // 盤中 10:00/12:00 call ml-controller /intraday/rescore，對持倉 confidence 衰減
   // 隔夜持倉可自動出場；當日持倉只能 WARN（當沖白名單限制）
@@ -503,6 +512,11 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     night_drop_mild_adjust: 0.99,
     medium_risk_scale: 0.5,
   },
+  // #28b T1.3/T1.4 defaults
+  risk: {
+    sharpe_rolling_threshold: 0.5,
+    dd_spike_threshold: 0.08,
+  },
   intraday: {
     rescoreEnabled: true,
     rescoreExitThreshold: 0.40,
@@ -554,6 +568,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     sltp: { ...d.sltp, ...partial.sltp },
     sltp_per_regime: partial.sltp_per_regime ?? d.sltp_per_regime ?? {},
     L2_formula: { ...d.L2_formula, ...partial.L2_formula },
+    risk: { ...d.risk, ...partial.risk },
     intraday: { ...d.intraday, ...partial.intraday },
     momentum: { ...d.momentum, ...partial.momentum },
   }

@@ -1,0 +1,84 @@
+[
+  {
+    "results": [
+      {
+        "sector": "IC載板",
+        "rs": 109.38,
+        "quadrant": "Leading",
+        "stock_count": 4
+      },
+      {
+        "sector": "銅箔基板",
+        "rs": 106.76,
+        "quadrant": "Leading",
+        "stock_count": 10
+      },
+      {
+        "sector": "TPU",
+        "rs": 104.95,
+        "quadrant": "Leading",
+        "stock_count": 12
+      },
+      {
+        "sector": "CoWos",
+        "rs": 104.14,
+        "quadrant": "Leading",
+        "stock_count": 21
+      },
+      {
+        "sector": "光通訊",
+        "rs": 104.08,
+        "quadrant": "Leading",
+        "stock_count": 13
+      },
+      {
+        "sector": "HBM",
+        "rs": 103.52,
+        "quadrant": "Leading",
+        "stock_count": 4
+      },
+      {
+        "sector": "GB300",
+        "rs": 102.97,
+        "quadrant": "Leading",
+        "stock_count": 24
+      },
+      {
+        "sector": "玻璃基板 E-Core Sys.",
+        "rs": 101.85,
+        "quadrant": "Leading",
+        "stock_count": 8
+      },
+      {
+        "sector": "次世代半導體",
+        "rs": 101.4,
+        "quadrant": "Leading",
+        "stock_count": 18
+      },
+      {
+        "sector": "FOPLP扇出型封裝",
+        "rs": 100.98,
+        "quadrant": "Leading",
+        "stock_count": 6
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.4185
+      },
+      "duration": 0.4185,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 240480256,
+      "rows_read": 216,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

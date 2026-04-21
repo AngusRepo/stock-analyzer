@@ -116,6 +116,7 @@ app.put('/api/admin/config', async (c) => {
     signal:     { ...current.signal,     ...body.signal },
     sltp:       { ...current.sltp,       ...body.sltp },
     L2_formula: { ...current.L2_formula, ...body.L2_formula },
+    risk:       { ...current.risk,       ...(body as any).risk },
     intraday:   { ...current.intraday,   ...body.intraday },
     momentum:   { ...current.momentum,   ...body.momentum },
   }
@@ -155,6 +156,7 @@ app.post('/api/admin/config/push-defaults', async (c) => {
     signal:     { ...d.signal,     ...current.signal },
     sltp:       { ...d.sltp,       ...current.sltp },
     L2_formula: { ...d.L2_formula, ...current.L2_formula },
+    risk:       { ...d.risk,       ...(current as any).risk },
   }
   await setTradingConfig(c.env.KV, filled as any)
   return c.json({
@@ -1464,7 +1466,8 @@ app.post('/api/admin/trigger/:task', async (c) => {
     'monte-carlo': () => runWeeklyMonteCarlo(c.env),
     pbo: () => runWeeklyPBO(c.env),
     lifecycle: () => runWeeklyLifecycleCheck(c.env),
-    'monthly-optuna': () => runMonthlyOptunaResearch(c.env),
+    'weekly-optuna': () => runWeeklyOptunaResearch(c.env),
+    'optuna-queue':  () => runOptunaQueueProcessor(c.env),
     // force_monthly=true 觸發完整月度 retrain（含 feature selection）
     // fire-and-forget：postController 在 background 跑，不等 ~14min prep 回應
     retrain: async () => {
@@ -1493,7 +1496,7 @@ app.post('/api/admin/trigger/:task', async (c) => {
   // 加 ?sync=1 走 sync mode：caller 等 fetch handler runtime（wall clock 數十分鐘
   // 都 OK，只要中間都在 await fetch 不是 CPU bound），用於手動補資料場景。
   const syncMode = c.req.query('sync') === '1'
-  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'monthly-optuna', 'retrain'])
+  const LONG_RUNNING = new Set(['pipeline', 'ml', 'update', 'recommendation', 'screener', 'backtest', 'monte-carlo', 'pbo', 'weekly-optuna', 'optuna-queue', 'retrain'])
   if (LONG_RUNNING.has(task) && !syncMode) {
     const t0 = Date.now()
     await logCronResult(c.env.KV, task, { status: 'success', summary: 'started (background)', duration_ms: 0 })
@@ -1973,14 +1976,18 @@ async function runWeeklyAudit(env: Bindings) {
 }
 
 
-// ─── Cron: Monthly Optuna Parameter Re-search ────────────────────────────────
-async function runMonthlyOptunaResearch(env: Bindings) {
+// ─── Cron: Weekly Optuna Parameter Re-search (#28b T1.1, 2026-04-21) ─────────
+// Replaces monthly cadence — systematic L/S 業界標準 weekly retune. Combined
+// with T3 challenger gate (no writes to prod KV — sandbox only). Renamed from
+// runMonthlyOptunaResearch. Behaviour unchanged: fires 7 independent sources in
+// parallel against ml-controller /optuna/*, each pushes result to sandbox.
+async function runWeeklyOptunaResearch(env: Bindings) {
   // Phase 1.6 (2026-04-07): 改 call Controller (Cloud Run) 而非 Modal
   // 原因：Modal web function 150s response timeout 限制，且 Optuna 不需要 ML inference 環境
   // Controller 自己會 push KV，Worker 不用做轉發
   const CTRL_URL = env.ML_CONTROLLER_URL
   if (!CTRL_URL) return 'skipped (no ML_CONTROLLER_URL)'
-  console.log('[Monthly] Starting Optuna parameter re-search (Cloud Run)...')
+  console.log('[Weekly Optuna] Starting Optuna parameter re-search (Cloud Run)...')
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
@@ -2006,15 +2013,77 @@ async function runMonthlyOptunaResearch(env: Bindings) {
   const results = settled.map(s => s.status === 'fulfilled' ? s.value : `REJECTED:${s.reason}`)
 
   const summary = results.join(', ')
-  console.log(`[Monthly] Optuna re-search: ${summary}`)
+  console.log(`[Weekly Optuna] re-search: ${summary}`)
 
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./lib/notify')
     await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
-      `🔬 **Monthly Optuna Re-search Complete**\n${summary}`)
+      `🔬 **Weekly Optuna Re-search Complete**\n${summary}`)
   }
 
   return summary
+}
+
+
+// ─── Cron: Optuna Event-Queue Processor (#28b T1.5, 2026-04-21) ──────────────
+// Drains pending_optuna_queue (written by Tier 1 event triggers: regime shift /
+// rolling sharpe / dd spike). Processes the oldest pending entry per 6-hr tick
+// — pushes to sandbox via ml-controller /optuna/<target>, records sandbox_id
+// on the queue entry. Wei manually promotes sandbox → challenger after review.
+//
+// Idempotency: queue entry id = `${reason}:${YYYY-MM-DD}` (lib/optunaQueue.ts).
+// Multiple triggers same reason same day dedupe at enqueue time.
+async function runOptunaQueueProcessor(env: Bindings) {
+  const CTRL_URL = env.ML_CONTROLLER_URL
+  if (!CTRL_URL) return 'skipped (no ML_CONTROLLER_URL)'
+  const { popNextPending, markProcessed, markFailed } = await import('./lib/optunaQueue')
+
+  const entry = await popNextPending(env.KV)
+  if (!entry) {
+    console.log('[Optuna Queue] empty — no pending entries')
+    return 'empty'
+  }
+  console.log(`[Optuna Queue] claimed ${entry.id} (${entry.reason} → ${entry.target})`)
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  try {
+    // Default body: per_regime (most common event trigger target). Other targets
+    // fire the source-specific /optuna/<target> endpoint with default params.
+    const isPerRegime = entry.target === 'per_regime'
+    const endpoint = isPerRegime ? '/optuna/per_regime' : `/optuna/${entry.target}`
+    const body = isPerRegime
+      ? { target: 'sltp', n_trials: 50, subset_size: 200, window_days: 365, push_kv: true, dry_run: false }
+      : { n_trials: 200, push_kv: true, dry_run: false }
+
+    const resp = await fetch(`${CTRL_URL}${endpoint}`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(3_500_000),  // 58 min cap (fits Cloud Run 3600s)
+    })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      await markFailed(env.KV, entry.id, `HTTP ${resp.status}: ${text.slice(0, 300)}`)
+      return `failed: ${entry.id} HTTP${resp.status}`
+    }
+    const data = await resp.json() as Record<string, any>
+    // push_optuna_result in ml-controller/kv_pusher returns push_response with
+    // sandbox id under /api/admin/optuna-push response; surfaced differently by
+    // endpoint. Extract best-effort.
+    const sandboxId = data.push_response?.sandbox_id
+      ?? data.push_response?.id
+      ?? data.kv_push_ok && data.sandbox_id
+      ?? undefined
+    await markProcessed(env.KV, entry.id, {
+      sandbox_id: sandboxId,
+      note: `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,
+    })
+    return `processed: ${entry.id}${sandboxId ? ` sandbox=${sandboxId.slice(-12)}` : ''}`
+  } catch (e: any) {
+    const msg = e?.message ?? String(e)
+    await markFailed(env.KV, entry.id, msg)
+    return `failed: ${entry.id} ${msg.slice(0, 100)}`
+  }
 }
 
 
@@ -2523,7 +2592,7 @@ export default {
     const twDayOfWeek = new Date(Date.now() + 8 * 3600_000).getUTCDay()
     const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
     const isHoliday = await env.KV.get(`holiday:${twTodayStr}`)
-    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '0 16 1-7 * 6'])
+    const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '30 22 * * 6', '0 */6 * * *'])
     if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
       console.log(`[Cron] ${twTodayStr} 休市（${isWeekend ? '週末' : isHoliday}），跳過 ${cron}`)
       return
@@ -2628,10 +2697,14 @@ export default {
     } else if (cron === '50 10 * * 1-5') {
       // 2026-04-17 #30: HMM regime compute (Sprint 4-2 revisit)
       // Calls ml-controller /regime/compute → ml-service HMM predict → push ml:regime KV
+      // 2026-04-21 #28b T1.2: regime shift event trigger — compare prev ml:regime
+      // with newly computed label; if changed → enqueue per_regime Optuna.
       runWithLog('regime-compute', async () => {
         if (!env.ML_CONTROLLER_URL) return '跳過（ML_CONTROLLER_URL 未設定）'
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
         if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+        // Capture prev label BEFORE /regime/compute overwrites ml:regime KV
+        const prevLabel = await env.KV.get('ml:regime')
         const res = await fetch(`${env.ML_CONTROLLER_URL}/regime/compute`, {
           method: 'POST', headers,
           body: JSON.stringify({ force_retrain: false, history_days: 180 }),
@@ -2639,7 +2712,16 @@ export default {
         })
         if (!res.ok) throw new Error(`Controller /regime/compute HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
         const data = await res.json() as any
-        return `regime=${data.regime_label_en} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'}`
+        const newLabel = data.regime_label_en as string | null
+        // T1.2 trigger — after KV was updated by /regime/compute
+        let shiftSummary = 'n/a'
+        try {
+          const { detectRegimeShift } = await import('./lib/riskTriggers')
+          shiftSummary = await detectRegimeShift(env, prevLabel, newLabel)
+        } catch (e: any) {
+          shiftSummary = `hook_error(${String(e?.message ?? e).slice(0, 30)})`
+        }
+        return `regime=${newLabel} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'} shift=${shiftSummary}`
       })
     } else if (cron === '0 19 * * *') {
       // 2026-04-20 #18 Phase 2c: daily 03:00 TW FinMem debate_memory retention
@@ -2945,9 +3027,29 @@ export default {
         return await generateMorningBriefing(env)
       })
     } else if (cron === '25 10 * * 1-5') {
+      // 2026-04-21 #28b T1.3 + T1.4: after daily-report, run risk triggers
+      // on paper_daily_snapshots (sharpe_30d + single-day dd) — enqueue Optuna
+      // re-tune to pending_optuna_queue when thresholds breached.
       runWithLog('daily-report', async () => {
         const { generateDailyReport } = await import('./lib/dailyReport')
-        return await generateDailyReport(env)
+        const reportSummary = await generateDailyReport(env)
+        // T1.3 + T1.4 risk triggers — graceful-skip on error, don't break report
+        let triggers = 'skip'
+        try {
+          const { getTradingConfig } = await import('./lib/tradingConfig')
+          const cfg = await getTradingConfig(env.KV)
+          const { checkRollingSharpe, checkDailyDrawdown } = await import('./lib/riskTriggers')
+          const sharpeTh = (cfg as any)?.risk?.sharpe_rolling_threshold ?? 0.5
+          const ddTh = (cfg as any)?.risk?.dd_spike_threshold ?? 0.08
+          const [s, d] = await Promise.all([
+            checkRollingSharpe(env, sharpeTh),
+            checkDailyDrawdown(env, ddTh),
+          ])
+          triggers = `sharpe:${s} | dd:${d}`
+        } catch (e: any) {
+          triggers = `hook_error(${String(e?.message ?? e).slice(0, 40)})`
+        }
+        return `${reportSummary} | triggers[${triggers}]`
       })
     } else if (cron === '40 10 * * 1-5') {
       // 18:40 TW → Obsidian daily notes + progress.md sync
@@ -3000,10 +3102,20 @@ export default {
         const pbo = await runWeeklyPBO(env).catch(e => { console.warn('[PBO]', e); return 'failed' })
         return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
       })
-    } else if (cron === '0 16 1-7 * 6') {
-      // 每月第一個週六 00:00 TW (=UTC Sat 16:00) → Optuna 參數重搜
-      runWithLog('monthly-optuna', async () => {
-        return await runMonthlyOptunaResearch(env)
+    } else if (cron === '30 22 * * 6') {
+      // #28b T1.1: 週日 06:30 TW (=UTC Sat 22:30) → Weekly Optuna 7-source re-search.
+      // Replaces monthly cron (0 16 1-7 * 6). Routes to sandbox via T3.3 default
+      // + Friday 19:30 TW weekly_eval gate (T3.5) decides promote/retire.
+      runWithLog('weekly-optuna', async () => {
+        return await runWeeklyOptunaResearch(env)
+      })
+    } else if (cron === '0 */6 * * *') {
+      // #28b T1.5: 每 6 小時 → drain pending_optuna_queue (event-triggered).
+      // Processes one oldest pending entry at a time → push sandbox → mark
+      // processed. Event triggers (regime shift / sharpe rolling / dd spike)
+      // enqueue via lib/optunaQueue.ts.
+      runWithLog('optuna-queue', async () => {
+        return await runOptunaQueueProcessor(env)
       })
     } else {
       console.warn(`[Cron] Unhandled cron expression: ${cron}`)

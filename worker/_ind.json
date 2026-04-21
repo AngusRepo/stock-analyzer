@@ -1,0 +1,164 @@
+[
+  {
+    "results": [
+      {
+        "tag": "光電業",
+        "COUNT(*)": 117
+      },
+      {
+        "tag": "其他",
+        "COUNT(*)": 211
+      },
+      {
+        "tag": "其他電子業",
+        "COUNT(*)": 96
+      },
+      {
+        "tag": "化學工業",
+        "COUNT(*)": 1
+      },
+      {
+        "tag": "半導體業",
+        "COUNT(*)": 201
+      },
+      {
+        "tag": "塑膠工業",
+        "COUNT(*)": 25
+      },
+      {
+        "tag": "存託憑證",
+        "COUNT(*)": 4
+      },
+      {
+        "tag": "居家生活",
+        "COUNT(*)": 25
+      },
+      {
+        "tag": "建材營造業",
+        "COUNT(*)": 73
+      },
+      {
+        "tag": "數位雲端",
+        "COUNT(*)": 16
+      },
+      {
+        "tag": "文化創意業",
+        "COUNT(*)": 16
+      },
+      {
+        "tag": "橡膠工業",
+        "COUNT(*)": 17
+      },
+      {
+        "tag": "水泥工業",
+        "COUNT(*)": 7
+      },
+      {
+        "tag": "汽車工業",
+        "COUNT(*)": 42
+      },
+      {
+        "tag": "油電燃氣業",
+        "COUNT(*)": 12
+      },
+      {
+        "tag": "生技醫療",
+        "COUNT(*)": 151
+      },
+      {
+        "tag": "綜合",
+        "COUNT(*)": 18
+      },
+      {
+        "tag": "綠能環保",
+        "COUNT(*)": 26
+      },
+      {
+        "tag": "航運業",
+        "COUNT(*)": 48
+      },
+      {
+        "tag": "觀光餐旅",
+        "COUNT(*)": 50
+      },
+      {
+        "tag": "貿易百貨",
+        "COUNT(*)": 9
+      },
+      {
+        "tag": "貿易百貨業",
+        "COUNT(*)": 19
+      },
+      {
+        "tag": "資訊服務業",
+        "COUNT(*)": 43
+      },
+      {
+        "tag": "農業科技",
+        "COUNT(*)": 24
+      },
+      {
+        "tag": "通信網路業",
+        "COUNT(*)": 37
+      },
+      {
+        "tag": "造紙工業",
+        "COUNT(*)": 7
+      },
+      {
+        "tag": "金融保險業",
+        "COUNT(*)": 41
+      },
+      {
+        "tag": "鋼鐵工業",
+        "COUNT(*)": 63
+      },
+      {
+        "tag": "電器電纜",
+        "COUNT(*)": 17
+      },
+      {
+        "tag": "電子商務",
+        "COUNT(*)": 11
+      },
+      {
+        "tag": "電子通路業",
+        "COUNT(*)": 95
+      },
+      {
+        "tag": "電子零組件業",
+        "COUNT(*)": 92
+      },
+      {
+        "tag": "電機機械",
+        "COUNT(*)": 99
+      },
+      {
+        "tag": "電腦及週邊設備業",
+        "COUNT(*)": 111
+      },
+      {
+        "tag": "食品工業",
+        "COUNT(*)": 33
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.2705
+      },
+      "duration": 2.2705,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 238342144,
+      "rows_read": 4827,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

@@ -98,8 +98,18 @@ crons = [
   # ── 每日維護（低負載時段）──
   "0 19 * * *",      # 每日 03:00 TW (=UTC 19:00) → FinMem debate_memory retention (#18 Phase 2c)
 
-  # ── 月度維護（每月第一個週六）──
-  "0 16 1-7 * 6",    # 每月第一個週六 00:00 TW (=UTC Sat 16:00) → Optuna 參數重搜
+  # ── #28b T1.1 週度 Optuna 重搜 (2026-04-21 — replaces monthly) ──
+  # Business rationale: systematic L/S 業界標準 weekly retune cadence.
+  # Monthly 間隔讓 params 跟 regime drift 漂走 (B2 incident 4/11~4/17 drift
+  # 1.86 sharpe → 1.373). Weekly + Tier 3 challenger gate → drift 不可能再發生。
+  # 30 min 後於 weekly backtest (0 22 * * 6) 之後，讓 backtest 結果可供 Optuna 參考。
+  "30 22 * * 6",     # 週日 06:30 TW (=UTC Sat 22:30) → Weekly Optuna 7-source re-search
+
+  # ── #28b T1.5 事件觸發 Optuna queue processor (每 6 小時) ──
+  # 消化 regime_shift / sharpe_rolling / dd_spike 等 event triggers 塞入的 queue
+  # (lib/optunaQueue.ts). 每批次處理 1 個 pending entry → push sandbox → Wei 手動
+  # promote challenger → Friday 19:30 weekly_eval 走 T3 gate 決定 promote/retire.
+  "0 */6 * * *",     # 每 6 小時（UTC 00/06/12/18 = TW 08/14/20/02）→ Optuna queue drain
 ]
 
 # ── 選配：Cron 失敗 Telegram 通知 ─────────────────────────────────────────────

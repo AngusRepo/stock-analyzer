@@ -1354,27 +1354,55 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     LIMIT 3
   `).bind(prevDay, cb.buyConfThreshold).all<any>()
 
-  // #B Option 1 follow-up (2026-04-21): Top-K forced BUY provenance → debate context.
-  // When ensemble_v2.topk_forced=true, the signal was algorithmically promoted under
-  // compressed-distribution regression (avg_rank stuck ~0.48 due to CLT). Judge needs
-  // this context to reason about fundamentals rather than raw signal strength — prior
-  // behaviour: all 3 top-K rows got DOWNGRADE because Bear agent attacked "conf 72%
-  // but evidence thin" correctly. Prepend a provenance marker to rec.reason so both
-  // batch (/debate/buy_batch) and inline runBuyDebate paths surface it via mlContext.
+  // #B Option 1 follow-up (2026-04-21): algorithmically-promoted BUY provenance
+  // → debate context. Two promotion paths exist:
+  //   (A) Ensemble layer Top-K override: forces top-K of ALL active stocks (~350)
+  //       by ensemble_v2.avg_rank when none hit absolute BUY threshold. Marked
+  //       via forecast_data.ensemble_v2.topk_forced=true.
+  //   (B) Hybrid ranking promotion: promotes top-K of SCREENER candidates (~25)
+  //       by combined_score when none have has_buy_signal=1. Mutates dr.signal
+  //       to "BUY" + conf=0.72 while leaving predictions.ensemble_v2 untouched.
+  //       Detected via dr.signal=BUY mismatching forecast_data.ensemble_v2.signal.
+  //
+  // Both produce synthetic BUYs that Bear agent correctly attacks as "evidence
+  // thin" — without context, Judge DOWNGRADEs everything. Prepend provenance
+  // marker so Judge reasons on fundamentals rather than raw signal strength.
+  // rec.reason flows into mlContext inside runBuyDebate (debateTrader.ts:330)
+  // covering both batch and inline paths.
   for (const rec of buyRecs ?? []) {
     try {
       const fdRaw = (rec as any).forecast_data
-      if (!fdRaw) continue
-      const fd = JSON.parse(fdRaw)
-      const ev2 = fd?.ensemble_v2
-      if (ev2?.topk_forced === true) {
-        const avgRank = typeof ev2.avg_rank === 'number' ? ev2.avg_rank.toFixed(3) : '?'
+      const fd = fdRaw ? JSON.parse(fdRaw) : {}
+      const ev2 = fd?.ensemble_v2 || {}
+      const avgRank: number | null =
+        typeof ev2.avg_rank === 'number' ? ev2.avg_rank : null
+      const avgStr = avgRank !== null ? avgRank.toFixed(3) : '?'
+      const ev2Signal: string = ev2.signal ?? 'unknown'
+      const recSignal: string = rec.signal ?? ''
+
+      let provenance: string | null = null
+      if (ev2.topk_forced === true) {
         const rawSig = ev2.signal_raw ?? 'HOLD'
-        const provenance =
-          `⚠️ Signal Provenance: Top-K forced BUY (ensemble_v2.signal_raw=${rawSig}, ` +
-          `avg_rank=${avgRank}). Promoted via compressed-distribution top-K selection ` +
-          `— industry-standard fix for rank-avg ensembles under CLT compression. ` +
-          `Judge on fundamental merit / industry context, not raw signal strength.`
+        provenance =
+          `⚠️ Signal Provenance (ensemble Top-K): BUY forced at ensemble layer ` +
+          `(signal_raw=${rawSig}, avg_rank=${avgStr}). Promoted via compressed-` +
+          `distribution top-K selection — industry-standard fix for rank-avg ` +
+          `ensembles under CLT compression. Judge on fundamental merit / industry ` +
+          `context, not raw signal strength.`
+      } else if (
+        /BUY/i.test(recSignal) &&
+        ev2Signal !== 'unknown' &&
+        !/BUY/i.test(ev2Signal)
+      ) {
+        provenance =
+          `⚠️ Signal Provenance (ranking promoted): BUY flipped at recommendation ` +
+          `layer (ensemble_v2.signal=${ev2Signal}, avg_rank=${avgStr}). Selected via ` +
+          `combined_score top-K from screener candidates when no natural BUY exists ` +
+          `— algorithmic substitute for empty pipeline, not strong conviction. Judge ` +
+          `on fundamental merit / industry context.`
+      }
+
+      if (provenance) {
         rec.reason = `${provenance}\n\n${rec.reason ?? ''}`
       }
     } catch (e) {

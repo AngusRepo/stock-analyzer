@@ -1224,6 +1224,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
   const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
   console.log(`[MorningSetup-DEBUG] CB result: halt=${cb.halt} buyConfThreshold=${cb.buyConfThreshold} maxPositionPct=${cb.maxPositionPct} reason=${cb.reason ?? 'none'}`)
+  // R3 audit: write one row per morning-setup invocation
+  {
+    const { writeAuditEntry } = await import('../lib/riskAudit')
+    writeAuditEntry(env.DB, {
+      triggerEvent: 'morning_setup',
+      decision: cb.halt ? 'halt' : 'executed',
+      riskState: cb,
+    }).catch(() => { /* non-fatal */ })
+  }
   if (cb.halt) {
     console.warn(`[MorningSetup] HALTED by circuit breaker: ${cb.reason}`)
     return
@@ -2468,6 +2477,15 @@ export async function runEODExit(env: Bindings): Promise<void> {
   // ML SELL signals（讀前一交易日推薦）
   const prevDay = await getPrevTradingDay(env.DB, env.KV)
   const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
+  // R3 audit: EOD exit risk state snapshot
+  {
+    const { writeAuditEntry } = await import('../lib/riskAudit')
+    writeAuditEntry(env.DB, {
+      triggerEvent: 'eod_exit',
+      decision: cb.halt ? 'halt' : 'executed',
+      riskState: cb,
+    }).catch(() => { /* non-fatal */ })
+  }
   let sellRecMap = new Map<string, any>()
   if (exitSymbols.length > 0) {
     const placeholders = exitSymbols.map(() => '?').join(',')

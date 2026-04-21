@@ -475,11 +475,33 @@ export function checkExitConditions(
   // Caller resolves via resolveSltpForRegime(cfg, regimeLabel) before this call.
   // Omitting = backward-compat flat sltp behavior.
   resolvedSltp?: TradingConfig['sltp'],
+  // #16 Step 9c prep (2026-04-21): regime label for dynamicExitPriority overlay.
+  // When cfg.exit.dynamicExitPriorityEnabled=true AND regime provided, exit
+  // thresholds are scaled via getExitMultiplier(regime, layer):
+  //   priority 1-2 (urgent in this regime) → 1.2× more aggressive
+  //   priority 3-4 (normal)                → 1.0× unchanged
+  //   priority 5-6 (delayed in this regime) → 0.8× less aggressive
+  // Default (flag off OR no regime): multipliers all 1.0 = exact pre-4/21 behavior.
+  // Full cascade reorder (rule execution order) is a larger refactor deferred
+  // to after 4/27 shadow-log review — this flag only gates threshold scaling.
+  regime?: MarketRegime,
 ): ExitDecision {
   const ex = cfg.exit
   const sltp = resolvedSltp ?? cfg.sltp
   const entryPrice = pos.entry_price ?? pos.avg_cost
   const pnlPct = (currentPrice - entryPrice) / entryPrice
+
+  // #16 regime-aware multipliers. When flag off OR regime null, all 1.0.
+  const useRegime = Boolean(ex.dynamicExitPriorityEnabled && regime)
+  const mHardStop = useRegime ? getExitMultiplier(regime!, 'hardStop') : 1.0
+  const mAtrTrail = useRegime ? getExitMultiplier(regime!, 'atrTrail') : 1.0
+  const mMlSell   = useRegime ? getExitMultiplier(regime!, 'mlSell')   : 1.0
+  const mTp1      = useRegime ? getExitMultiplier(regime!, 'tp1')      : 1.0
+  const mTp2      = useRegime ? getExitMultiplier(regime!, 'tp2')      : 1.0
+  const mTimeStop = useRegime ? getExitMultiplier(regime!, 'timeStop') : 1.0
+  // Suppress unused-var warnings for layers not yet hooked below (mMlSell/mTp2/mTimeStop
+  // will be consumed by follow-up commit after 4/27 cascade reorder review).
+  void mMlSell; void mTp2; void mTimeStop
 
   // H8: Ex-dividend stop/TP adjustment
   // When a stock goes ex-dividend, reference price drops by dividend amount
@@ -487,15 +509,19 @@ export function checkExitConditions(
   // TODO: Implement when ex-dividend forecast data is available in KV
   // For now, log a warning if we detect a large gap-down on ex-dividend day
 
-  // ❶ 硬上限止損
-  if (pnlPct <= ex.hardStopPct) {
-    return { action: 'full_sell', reason: `硬上限止損 ${(pnlPct * 100).toFixed(1)}%` }
+  // ❶ 硬上限止損 (#16: regime-aware — mHardStop > 1 tightens, < 1 loosens)
+  const effHardStopPct = ex.hardStopPct / mHardStop
+  if (pnlPct <= effHardStopPct) {
+    return { action: 'full_sell', reason: `硬上限止損 ${(pnlPct * 100).toFixed(1)}%` +
+        (useRegime ? ` [regime=${regime} ×${mHardStop}]` : '') }
   }
 
-  // ❷ ATR 初始止損
-  const initStop = pos.initial_stop ?? (entryPrice * ex.fallbackInitStopMult)
-  if (currentPrice <= initStop) {
-    return { action: 'full_sell', reason: `ATR 初始止損 @ ${initStop.toFixed(1)}（${(pnlPct * 100).toFixed(1)}%）` }
+  // ❷ ATR 初始止損 (regime-aware stop distance)
+  const initStopRaw = pos.initial_stop ?? (entryPrice * ex.fallbackInitStopMult)
+  const effInitStop = entryPrice - (entryPrice - initStopRaw) / mAtrTrail
+  if (currentPrice <= effInitStop) {
+    return { action: 'full_sell', reason: `ATR 初始止損 @ ${effInitStop.toFixed(1)}（${(pnlPct * 100).toFixed(1)}%）` +
+        (useRegime ? ` [regime=${regime} ×${mAtrTrail}]` : '') }
   }
 
   // ❸ ML SELL 訊號（僅 EOD）
@@ -503,11 +529,18 @@ export function checkExitConditions(
     return { action: 'full_sell', reason: 'ML SELL 訊號' }
   }
 
-  // ❹ Chandelier Trailing Stop
-  const trailingStop = pos.trailing_stop ?? initStop
-  if (currentPrice <= trailingStop && trailingStop > initStop) {
-    return { action: 'full_sell', reason: `Trailing Stop @ ${trailingStop.toFixed(1)}（${(pnlPct * 100).toFixed(1)}%）` }
+  // ❹ Chandelier Trailing Stop (regime-aware trail distance)
+  const trailingStopRaw = pos.trailing_stop ?? initStopRaw
+  const effTrailingStop = entryPrice - (entryPrice - trailingStopRaw) / mAtrTrail
+  if (currentPrice <= effTrailingStop && effTrailingStop > effInitStop) {
+    return { action: 'full_sell', reason: `Trailing Stop @ ${effTrailingStop.toFixed(1)}（${(pnlPct * 100).toFixed(1)}%）` +
+        (useRegime ? ` [regime=${regime} ×${mAtrTrail}]` : '') }
   }
+  // Preserve legacy variable names for downstream TP logic (no regime scaling
+  // applied to TP1/TP2/timeStop until post-4/27 cascade reorder commit).
+  const initStop = initStopRaw
+  const trailingStop = trailingStopRaw
+  void initStop; void trailingStop  // consumed by implicit flow below
 
   // ❺ TP1：賣 tp1SellRatio（首次觸發）
   const tp1 = pos.tp1_price ?? (entryPrice * ex.fallbackTp1Mult)
@@ -2512,7 +2545,8 @@ async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: stri
     }
 
     const decision = checkExitConditions(pos, price, atr, false, false, cfg,
-      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      regime ?? undefined)
     if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason)
     if (decision.action === 'hold') continue
 
@@ -2589,7 +2623,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(pos, currentPrice, atr14, sellRecMap.has(pos.symbol), true, cfg,
-      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      eodRegime ?? undefined)
     if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason)
 
     // 當沖判斷：同日進場 → 查當沖標的 + 動態觸發條件
@@ -2859,7 +2894,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(pos, currentPrice, atr14, false, false, cfg,  // isEOD=false, no ML signal
-      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')))
+      (await import('../lib/tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      intraRegime ?? undefined)
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason)
 
     // 跌停鎖死檢查：價格接近跌停（≤-9.5%）時，真實市場賣不掉

@@ -49,6 +49,16 @@ export interface TradingConfig {
     trailMultAt3pct: number      // 獲利 >3% 時 trail 倍數（預設 2.5）
     trailMultAt8pct: number      // 獲利 >8% 時 trail 倍數（預設 2.0）
     fallbackAtrPct: number       // ATR 不可用時的替代 %（預設 0.02）
+    // ── #28b T2.3/#30 Step 9c (2026-04-21): Regime-conditional exit cascade ──
+    // When true, checkExitConditions uses dynamicExitPriority.getExitOrder(regime)
+    // to reorder the exit rule cascade (hardStop / atrTrail / tp1 / tp2 / timeStop)
+    // based on the current HMM regime label. Default false = fixed cascade order
+    // (backwards-compat, same behavior since Sprint 3). Flip via `wrangler kv put`
+    // after 2026-04-27 shadow-log review (logRegimeShadow printed hypothetical
+    // orders since 4/20 for A/B comparison). Actual sltp multiplier overlay
+    // (resolveSltpForRegime) is ALREADY live since T2.3 — this flag only
+    // controls cascade ORDER.
+    dynamicExitPriorityEnabled: boolean  // 預設 false，4/27 後 Wei KV 翻
   }
   position: {
     dailyBuyLimit: number        // 每日自動買入上限 NT$（預設 200000）
@@ -335,6 +345,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     trailMultAt3pct: 2.5,
     trailMultAt8pct: 2.0,
     fallbackAtrPct: 0.02,
+    dynamicExitPriorityEnabled: false,  // #16 Step 9c prep — 4/27 Wei KV 翻
   },
   position: {
     dailyBuyLimit: 200_000,

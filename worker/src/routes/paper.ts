@@ -1339,12 +1339,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     SELECT dr.symbol, dr.name, dr.signal, dr.confidence, dr.current_price, dr.reason,
            dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
            p.entry_price AS ml_entry_price, p.stop_loss AS ml_stop_loss,
-           p.target1 AS ml_target1, p.target2 AS ml_target2
+           p.target1 AS ml_target1, p.target2 AS ml_target2,
+           p.forecast_data AS forecast_data
     FROM daily_recommendations dr
     LEFT JOIN stocks s ON s.symbol = dr.symbol
     LEFT JOIN predictions p ON p.id = (
       SELECT p2.id FROM predictions p2
-      WHERE p2.stock_id = s.id
+      WHERE p2.stock_id = s.id AND p2.model_name = 'ensemble'
       ORDER BY p2.generated_at DESC, p2.id DESC
       LIMIT 1
     )
@@ -1352,6 +1353,34 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     ORDER BY dr.score DESC, dr.confidence DESC
     LIMIT 3
   `).bind(prevDay, cb.buyConfThreshold).all<any>()
+
+  // #B Option 1 follow-up (2026-04-21): Top-K forced BUY provenance → debate context.
+  // When ensemble_v2.topk_forced=true, the signal was algorithmically promoted under
+  // compressed-distribution regression (avg_rank stuck ~0.48 due to CLT). Judge needs
+  // this context to reason about fundamentals rather than raw signal strength — prior
+  // behaviour: all 3 top-K rows got DOWNGRADE because Bear agent attacked "conf 72%
+  // but evidence thin" correctly. Prepend a provenance marker to rec.reason so both
+  // batch (/debate/buy_batch) and inline runBuyDebate paths surface it via mlContext.
+  for (const rec of buyRecs ?? []) {
+    try {
+      const fdRaw = (rec as any).forecast_data
+      if (!fdRaw) continue
+      const fd = JSON.parse(fdRaw)
+      const ev2 = fd?.ensemble_v2
+      if (ev2?.topk_forced === true) {
+        const avgRank = typeof ev2.avg_rank === 'number' ? ev2.avg_rank.toFixed(3) : '?'
+        const rawSig = ev2.signal_raw ?? 'HOLD'
+        const provenance =
+          `⚠️ Signal Provenance: Top-K forced BUY (ensemble_v2.signal_raw=${rawSig}, ` +
+          `avg_rank=${avgRank}). Promoted via compressed-distribution top-K selection ` +
+          `— industry-standard fix for rank-avg ensembles under CLT compression. ` +
+          `Judge on fundamental merit / industry context, not raw signal strength.`
+        rec.reason = `${provenance}\n\n${rec.reason ?? ''}`
+      }
+    } catch (e) {
+      console.warn(`[MorningSetup] forecast_data parse failed for ${rec.symbol}: ${e}`)
+    }
+  }
 
   console.log(`[MorningSetup-DEBUG] SQL returned ${buyRecs?.length ?? 0} rows (date=${prevDay}, has_buy_signal=1, conf>=${cb.buyConfThreshold})`)
   if (buyRecs && buyRecs.length > 0) {

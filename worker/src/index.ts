@@ -2700,7 +2700,7 @@ export default {
         try {
           const ceRes = await fetch(`${env.ML_CONTROLLER_URL}/config_pool/weekly_eval`, {
             method: 'POST', headers,
-            body: JSON.stringify({ lookback_days: 30, apply: true }),
+            body: JSON.stringify({ lookback_days: 90, apply: true }),
             signal: AbortSignal.timeout(300_000),  // 5 min (replay × 2 configs)
           })
           if (ceRes.ok) {

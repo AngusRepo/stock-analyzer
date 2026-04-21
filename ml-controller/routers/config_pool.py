@@ -44,7 +44,7 @@ WIN_RATE_RETIRE_CEIL = 0.45            # challenger <45% counts as a loss
 CONSECUTIVE_WINS_TO_PROMOTE = 2        # 2 weeks of winning → promote
 CONSECUTIVE_LOSSES_TO_RETIRE = 2       # 2 weeks of losing → retire
 MAX_SHADOW_DAYS = 30                   # retire if shadow > 30 days
-DEFAULT_LOOKBACK_DAYS = 30             # replay window for comparison
+DEFAULT_LOOKBACK_DAYS = 90             # replay window for comparison (90d quarter — longer than 30d to smooth sharpe noise when challenger was searched over 365d)
 
 WORKER_URL_ENV = "STOCKVISION_WORKER_URL"  # match kv_pusher.py convention
 WORKER_AUTH_TOKEN_ENV = "STOCKVISION_AUTH_TOKEN"
@@ -53,7 +53,7 @@ WORKER_AUTH_TOKEN_ENV = "STOCKVISION_AUTH_TOKEN"
 class WeeklyEvalRequest(BaseModel):
     """Weekly challenger evaluation request body."""
     lookback_days: int = Field(default=DEFAULT_LOOKBACK_DAYS, ge=7, le=180)
-    apply: bool = Field(default=True, description="If true, apply promote/retire transitions; false = dry-run reporting only")
+    apply: bool = Field(default=False, description="If true, apply promote/retire transitions + write lifecycle events. Default false = dry-run reporting only. Friday cron explicitly sends apply=true in body.")
     end_date: Optional[str] = None  # default: today TW
 
 

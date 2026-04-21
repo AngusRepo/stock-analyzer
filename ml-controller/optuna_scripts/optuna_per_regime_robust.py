@@ -82,8 +82,9 @@ class PerRegimeMetrics:
     sharpe_per_regime: dict[str, float]    # regime_label → sharpe
     max_dd_per_regime: dict[str, float]
     n_trades_per_regime: dict[str, int]
-    robust_sharpe: float                   # min(sharpe)
+    robust_sharpe: float                   # min(sharpe) across regimes with enough data
     weighted_sharpe: float                 # time-weighted average
+    regimes_with_data: int = 0             # count of regimes with >= 5 trades (robust_sharpe denominator)
 
 
 def _partition_trades_by_regime(
@@ -146,6 +147,11 @@ def _compute_per_regime_metrics(
         robust_sharpe = PENALTY_ROBUST
     else:
         robust_sharpe = min(sharpe_per_regime[r] for r in regimes_with_data)
+    # Track count for degeneracy-warning surfacing in run_search output — single-
+    # regime robust_sharpe is mathematically just that regime's sharpe, not a
+    # true "robust across regimes" quantity. Caller decides if the search is
+    # meaningful.
+    regimes_with_data_count = len(regimes_with_data)
 
     # Weighted sharpe: by trade count
     total = sum(n_trades_per_regime.values())
@@ -163,6 +169,7 @@ def _compute_per_regime_metrics(
         n_trades_per_regime=n_trades_per_regime,
         robust_sharpe=robust_sharpe,
         weighted_sharpe=weighted_sharpe,
+        regimes_with_data=regimes_with_data_count,
     )
 
 
@@ -280,6 +287,24 @@ def run_search(
                            "Increase --window-days or enlarge subset.")
     best = max(pareto, key=lambda t: t.values[0])
 
+    # Degeneracy warning: robust_sharpe is mathematically meaningful only when
+    # at least 2 regimes had enough trades. With single-regime data robust_sharpe
+    # collapses to that regime's sharpe and the "robust across 4 regimes" claim
+    # fails. Common causes: window too short (try 2-3 years) / subset too small
+    # (try ≥ 400) / HMM classifier labelling historical dates mostly one regime
+    # (check ml:regime KV history coverage).
+    sharpe_per_regime = best.user_attrs.get("sharpe_per_regime", {})
+    n_trades_per_regime = best.user_attrs.get("n_trades_per_regime", {})
+    regimes_with_data = sum(1 for _r, _n in n_trades_per_regime.items() if _n >= 5)
+    warnings: list[str] = []
+    if regimes_with_data < 2:
+        warnings.append(
+            f"single_regime_result: only {regimes_with_data} regime(s) had >=5 trades "
+            f"(n_trades_per_regime={n_trades_per_regime}). robust_sharpe is degenerate "
+            f"— equivalent to a single-regime search. Increase window_days / subset_size "
+            f"or verify HMM regime classification coverage over the replay window."
+        )
+
     result = {
         "target": target,
         "best_trial": best.number,
@@ -287,8 +312,10 @@ def run_search(
         "weighted_max_dd": best.values[1],
         "weighted_sharpe": best.values[2],
         "best_params": best.params,
-        "sharpe_per_regime": best.user_attrs.get("sharpe_per_regime", {}),
-        "n_trades_per_regime": best.user_attrs.get("n_trades_per_regime", {}),
+        "sharpe_per_regime": sharpe_per_regime,
+        "n_trades_per_regime": n_trades_per_regime,
+        "regimes_with_data": regimes_with_data,
+        "warnings": warnings,
         "n_trials_completed": len(study.trials),
         "n_pareto": len(pareto),
         "window": {"start": start_date, "end": end_date},

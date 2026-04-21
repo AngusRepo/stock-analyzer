@@ -2072,8 +2072,7 @@ async function runOptunaQueueProcessor(env: Bindings) {
     // endpoint. Extract best-effort.
     const sandboxId = data.push_response?.sandbox_id
       ?? data.push_response?.id
-      ?? data.kv_push_ok && data.sandbox_id
-      ?? undefined
+      ?? (data.kv_push_ok ? data.sandbox_id : undefined)
     await markProcessed(env.KV, entry.id, {
       sandbox_id: sandboxId,
       note: `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,

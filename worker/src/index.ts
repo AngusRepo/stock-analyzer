@@ -996,6 +996,39 @@ app.get('/api/admin/config/challenger/events', async (c) => {
 })
 
 // ─── Admin: Cron 執行日誌 ────────────────────────────────────────────────────
+// ─── #44 W5 Debate A/B stats (2026-04-21) ──────────────────────────────────
+app.get('/api/admin/debate-ab/stats', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token ?? '', c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  // Aggregate last 30 days by model_assigned
+  const { results: byModel } = await c.env.DB.prepare(
+    `SELECT model_assigned,
+            COUNT(*) AS calls,
+            AVG(conviction_score) AS avg_conviction,
+            AVG(summary_len) AS avg_summary_len,
+            AVG(debate_rounds) AS avg_rounds,
+            SUM(CASE WHEN verdict='APPROVE'   THEN 1 ELSE 0 END) AS approves,
+            SUM(CASE WHEN verdict='DOWNGRADE' THEN 1 ELSE 0 END) AS downgrades,
+            SUM(CASE WHEN verdict='REJECT'    THEN 1 ELSE 0 END) AS rejects
+     FROM debate_ab_log
+     WHERE date >= date('now', '-30 days')
+     GROUP BY model_assigned`
+  ).all<any>()
+  // Per-day trend
+  const { results: byDay } = await c.env.DB.prepare(
+    `SELECT date, model_assigned, COUNT(*) AS calls, AVG(conviction_score) AS avg_conviction
+     FROM debate_ab_log
+     WHERE date >= date('now', '-30 days')
+     GROUP BY date, model_assigned
+     ORDER BY date DESC`
+  ).all<any>()
+  return c.json({ by_model: byModel ?? [], by_day: byDay ?? [] })
+})
+
 // ─── Scheduler Dashboard — status endpoint (2026-04-21 fix: was missing) ───
 app.get('/api/scheduler/status', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')

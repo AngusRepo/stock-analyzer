@@ -249,6 +249,10 @@ async def run_buy_debate(
         client = httpx.AsyncClient()
         close_client = True
 
+    # #44 W5 A/B routing — deterministic per (symbol, TW date)
+    from .debate_ab import assign_model, log_debate
+    ab_model = assign_model(symbol)
+
     try:
         # ── Compose mlContext (matches TS ordering) ────────────────────────
         profile_lines: list[str] = []
@@ -308,7 +312,7 @@ async def run_buy_debate(
             try:
                 text, source = await call_llm(
                     zealot_system, zealot_prompt, temperature=0.5,
-                    max_tokens=max_tokens, client=client,
+                    max_tokens=max_tokens, client=client, ab_force=ab_model,
                 )
                 zealot_cases.append(text)
                 llm_source = source
@@ -339,7 +343,7 @@ async def run_buy_debate(
             try:
                 text, source = await call_llm(
                     reaper_system, reaper_prompt, temperature=0.7,
-                    max_tokens=max_tokens, client=client,
+                    max_tokens=max_tokens, client=client, ab_force=ab_model,
                 )
                 reaper_cases.append(text)
                 llm_source = source
@@ -376,7 +380,7 @@ async def run_buy_debate(
         try:
             fulcrum_response, source = await call_llm(
                 _FULCRUM_SYS_PROMPT, fulcrum_user_prompt,
-                temperature=0.2, max_tokens=256, client=client,
+                temperature=0.2, max_tokens=256, client=client, ab_force=ab_model,
             )
             llm_source = source
             logger.info(f"[Debate] Fulcrum done for {symbol} via {source} (totalRounds={total_rounds})")
@@ -419,13 +423,28 @@ async def run_buy_debate(
         summary_parts.append(f"Fulcrum: {fulcrum_stripped}")
         summary = "".join(summary_parts)[:500]
 
-        return DebateResult(
+        result = DebateResult(
             verdict=verdict,
             rounds=total_rounds,
             summary=summary,
             llm_source=llm_source,
             conviction_score=conviction,
         )
+        # #44 fire-and-forget A/B log (only when ab_model assigned)
+        if ab_model:
+            try:
+                await log_debate(
+                    symbol=symbol,
+                    model_assigned=ab_model,
+                    model_actual=llm_source,
+                    verdict=verdict,
+                    conviction_score=float(conviction) if conviction is not None else None,
+                    summary_len=len(summary),
+                    debate_rounds=total_rounds,
+                )
+            except Exception:
+                pass
+        return result
     finally:
         if close_client:
             await client.aclose()

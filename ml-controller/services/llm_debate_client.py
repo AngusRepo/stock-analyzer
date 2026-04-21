@@ -77,11 +77,16 @@ async def call_llm(
     temperature: float = 0.4,
     max_tokens: int = 512,
     client: Optional[httpx.AsyncClient] = None,
+    ab_force: Optional[str] = None,
 ) -> tuple[str, str]:
     """Call LLM with multi-provider fallback.
 
     Returns (text, source) where source is 'gemini_api' or 'anthropic_api'.
     Raises RuntimeError if all providers unavailable.
+
+    ab_force (#44 W5 Debate A/B): if 'gemini' skip Anthropic; if 'anthropic'
+    skip Gemini. None = default fallback chain. Caller (run_buy_debate)
+    passes deterministic hash(symbol + date) % 2 outcome.
     """
     close_client = False
     if client is None:
@@ -90,7 +95,7 @@ async def call_llm(
 
     try:
         # ── Layer 1: Gemini ─────────────────────────────────────────────────
-        if GEMINI_API_KEY:
+        if GEMINI_API_KEY and ab_force != "anthropic":
             try:
                 url = (
                     f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -133,7 +138,7 @@ async def call_llm(
                 logger.warning(f"[LLM-Debate] Gemini failed: {e}")
 
         # ── Layer 2: Anthropic ──────────────────────────────────────────────
-        if ANTHROPIC_API_KEY:
+        if ANTHROPIC_API_KEY and ab_force != "gemini":
             try:
                 cfg = await _get_ml_config(client)
                 model = cfg.get("debate_model") or ANTHROPIC_MODEL_DEFAULT

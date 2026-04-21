@@ -135,6 +135,9 @@ export interface TradingConfig {
     natrThreshold: number            // NATR 低波動門檻（預設 3）
     excessReturnRange: number[]      // 超額報酬 normalize 範圍（預設 [-0.03, 0.05]）
     volRatioRange: number[]          // 量比 normalize 範圍（預設 [0.7, 2.5]）
+    // #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發)
+    sectorLeaderBonusPoints: number  // 加分點數（預設 5）
+    sectorLeaderCorrThreshold: number // avg 60d corr 觸發門檻（預設 0.7）
   }
   rrg: {
     leadingBonus: number         // Leading 象限加分（預設 10）
@@ -423,6 +426,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     natrThreshold: 3,
     excessReturnRange: [-0.03, 0.05],
     volRatioRange: [0.7, 2.5],
+    // #16 Sector leader correlation bonus defaults
+    sectorLeaderBonusPoints: 5,
+    sectorLeaderCorrThreshold: 0.7,
   },
   rrg: {
     leadingBonus: 10,

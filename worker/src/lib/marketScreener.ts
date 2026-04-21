@@ -1370,6 +1370,67 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.error('[Screener v2] Watchlist update failed:', e)
   }
 
+  // ── #15 Selection frequency tag (dannyquant_tw 啟發, 2026-04-21) ──────────
+  // Query 前 20 天 / 30 天的 screener selection history 並為本日候選算兩個 flag:
+  //   high_freq: 20d count ≥ 12
+  //   new_money: 30d count = 0 (今天首次出現)
+  // Forward-only: deploy 日起累積，20d 後 high_freq 才成熟、30d 後 new_money 有信度
+  const selectionFlagMap = new Map<string, { highFreq: boolean; newMoney: boolean; freq20d: number }>()
+  try {
+    const symbolsList = finalCandidates.map(c => c.symbol)
+    if (symbolsList.length > 0) {
+      const placeholders = symbolsList.map(() => '?').join(',')
+      const { results: freqRows } = await env.DB.prepare(
+        `SELECT symbol, COUNT(*) as freq20d FROM screener_selection_history
+         WHERE date >= date(?, '-20 days') AND date < ? AND symbol IN (${placeholders})
+         GROUP BY symbol`
+      ).bind(endDate, endDate, ...symbolsList).all<{ symbol: string; freq20d: number }>()
+      const { results: newMoneyRows } = await env.DB.prepare(
+        `SELECT symbol FROM screener_selection_history
+         WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
+         GROUP BY symbol`
+      ).bind(endDate, endDate, ...symbolsList).all<{ symbol: string }>()
+      const freqMap = new Map((freqRows ?? []).map(r => [r.symbol, r.freq20d]))
+      const seenIn30d = new Set((newMoneyRows ?? []).map(r => r.symbol))
+      for (const sym of symbolsList) {
+        const freq = freqMap.get(sym) ?? 0
+        selectionFlagMap.set(sym, {
+          freq20d: freq,
+          highFreq: freq >= 12,
+          newMoney: !seenIn30d.has(sym),
+        })
+      }
+    }
+  } catch (e) {
+    console.warn('[Screener v2] #15 selection flag query failed (likely table missing, skip):', e)
+  }
+
+  // ── #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發) ──
+  // sectorLeaderBonus(symbol, sector) → bonus points if avg 60d corr > threshold.
+  // 連動族群 leaders 的候選 = 跟 ETF/基金 flow 同向，加分反映此 edge。
+  // Fire-and-forget: table 缺或運算失敗皆 0 bonus 不擋主流程。
+  const sectorBonusMap = new Map<string, { bonus: number; avgCorr: number | null }>()
+  try {
+    const { sectorLeaderBonus } = await import('./sectorCorrelation')
+    const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
+    const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
+    const concurrency = 5
+    for (let i = 0; i < finalCandidates.length; i += concurrency) {
+      const chunk = finalCandidates.slice(i, i + concurrency)
+      const results = await Promise.all(chunk.map(c =>
+        sectorLeaderBonus(env.DB, c.symbol, c.sector ?? null, corrThreshold, bonusPoints)
+          .catch(() => ({ bonus: 0, avgCorr: null, leaderCount: 0 }))
+      ))
+      for (let j = 0; j < chunk.length; j++) {
+        sectorBonusMap.set(chunk[j].symbol, { bonus: results[j].bonus, avgCorr: results[j].avgCorr })
+      }
+    }
+    const matched = [...sectorBonusMap.values()].filter(b => b.bonus > 0).length
+    console.log(`[Screener v2] #16 sector leader bonus: ${matched}/${finalCandidates.length} candidates corr>${corrThreshold} (+${bonusPoints})`)
+  } catch (e) {
+    console.warn('[Screener v2] #16 sector bonus failed (table missing or cold start):', e)
+  }
+
   // Screener 分數寫入 daily_recommendations（chip+tech+current_price，ML 由 recommendation 補）
   try {
     await env.DB.prepare("DELETE FROM daily_recommendations WHERE date = ?").bind(endDate).run()
@@ -1378,6 +1439,20 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       // 從即時 API 資料取最新收盤價（不寫 null）
       const latestPrices = data.prices.get(c.symbol)
       const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
+      // #15 tag prefix + #16 sector leader bonus 一起 append 到 reason
+      const flag = selectionFlagMap.get(c.symbol)
+      const sectorB = sectorBonusMap.get(c.symbol)
+      const tagParts: string[] = []
+      if (flag?.highFreq) tagParts.push(`📌 高頻 (20d 入選 ${flag.freq20d} 次)`)
+      if (flag?.newMoney) tagParts.push('🆕 新資金 (30d 首見)')
+      if (sectorB && sectorB.bonus > 0 && sectorB.avgCorr !== null) {
+        tagParts.push(`🔗 族群連動 (corr=${sectorB.avgCorr.toFixed(2)}, +${sectorB.bonus})`)
+      }
+      const reasonWithTags = tagParts.length
+        ? `${tagParts.join(' | ')}\n${c.reason ?? ''}`
+        : (c.reason ?? null)
+      const combinedScore = Math.round((sc.chip_score + sc.tech_score + sc.momentum_score) * 10) / 10
+       + (sectorB?.bonus ?? 0)
       return env.DB.prepare(`
         INSERT INTO daily_recommendations
           (date, stock_id, symbol, name, sector, rank, score,
@@ -1387,10 +1462,10 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
                 ?, ?, 0, ?, ?, '[]', 0, ?)
       `).bind(
         endDate, c.symbol, c.symbol, c.name ?? null, c.sector ?? null,
-        i + 1, Math.round((sc.chip_score + sc.tech_score + sc.momentum_score) * 10) / 10,
+        i + 1, combinedScore,
         sc.chip_score ?? 0, sc.tech_score ?? 0,
         currentPrice ?? null,
-        c.reason ?? null, sc.industry ?? c.sector ?? null,
+        reasonWithTags, sc.industry ?? c.sector ?? null,
       )
     })
     const BATCH = 50
@@ -1404,6 +1479,26 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     ).bind(endDate).run()
 
     console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
+
+    // #15 同步寫 screener_selection_history 供下次 run 計算 freq flag
+    try {
+      const histBatch = finalCandidates.map(c => {
+        const sc = c as any
+        const combined = Math.round(((sc.chip_score ?? 0) + (sc.tech_score ?? 0) + (sc.momentum_score ?? 0)) * 10) / 10
+        return env.DB.prepare(
+          `INSERT OR IGNORE INTO screener_selection_history (date, stock_id, symbol, score, industry)
+           VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?)`
+        ).bind(endDate, c.symbol, c.symbol, combined, sc.industry ?? c.sector ?? null)
+      })
+      for (let b = 0; b < histBatch.length; b += 50) {
+        await env.DB.batch(histBatch.slice(b, b + 50))
+      }
+      const hiCount = [...selectionFlagMap.values()].filter(f => f.highFreq).length
+      const newCount = [...selectionFlagMap.values()].filter(f => f.newMoney).length
+      console.log(`[Screener v2] #15 history +${finalCandidates.length} rows | high_freq=${hiCount} new_money=${newCount}`)
+    } catch (e) {
+      console.warn('[Screener v2] #15 history insert failed (likely table missing, skip):', e)
+    }
 
     // 對缺 technical_indicators 的新股立即計算（不等 Queue，避免 ML NO_SIGNAL）
     try {

@@ -1468,6 +1468,11 @@ app.post('/api/admin/trigger/:task', async (c) => {
     lifecycle: () => runWeeklyLifecycleCheck(c.env),
     'weekly-optuna': () => runWeeklyOptunaResearch(c.env),
     'optuna-queue':  () => runOptunaQueueProcessor(c.env),
+    'sector-leaders': async () => {
+      const { computeSectorLeaders } = await import('./lib/sectorCorrelation')
+      const r = await computeSectorLeaders(c.env.DB)
+      return `sectors=${r.sectorCount} leaders=${r.leaderCount}`
+    },
     // force_monthly=true 觸發完整月度 retrain（含 feature selection）
     // fire-and-forget：postController 在 background 跑，不等 ~14min prep 回應
     retrain: async () => {
@@ -3107,6 +3112,12 @@ export default {
       // + Friday 19:30 TW weekly_eval gate (T3.5) decides promote/retire.
       runWithLog('weekly-optuna', async () => {
         return await runWeeklyOptunaResearch(env)
+      })
+      // #16 Sector leaders cache refresh (2026-04-21). 同 slot 執行避免另開 cron。
+      runWithLog('sector-leaders', async () => {
+        const { computeSectorLeaders } = await import('./lib/sectorCorrelation')
+        const r = await computeSectorLeaders(env.DB)
+        return `sectors=${r.sectorCount} leaders=${r.leaderCount}`
       })
     } else if (cron === '0 */6 * * *') {
       // #28b T1.5: 每 6 小時 → drain pending_optuna_queue (event-triggered).

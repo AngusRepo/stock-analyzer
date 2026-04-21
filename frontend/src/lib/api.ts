@@ -161,6 +161,76 @@ export const cronApi = {
   schedule: () => get<{ schedule: { task: string; tw_time: string; description: string }[] }>('/cron/schedule'),
 }
 
+// 2026-04-21 Scheduler Dashboard API
+export type SchedulerJob = {
+  id: string
+  name: string
+  schedule: string
+  cron: string
+  group: 'pipeline_chain' | 'intraday' | 'weekly' | 'daily' | 'monthly'
+  chainIndex?: number
+  lastRun: string
+  lastStatus: 'success' | 'failed' | 'skip'
+  lastDuration: string
+  lastError?: string
+  nextRun: string
+  history7d: Array<'success' | 'failed' | 'skip'>
+  rate7d: string
+  summary: string
+}
+
+export type SchedulerStatus = {
+  stats: {
+    total: number
+    active: number
+    failed24h: number
+    successRate7d: number
+    nextJob: string
+    nextIn: string
+  }
+  jobs: SchedulerJob[]
+  dagSteps?: Array<{ name: string; duration: string; status: string }>
+}
+
+export const schedulerApi = {
+  status: () => get<SchedulerStatus>('/scheduler/status'),
+}
+
+// 2026-04-21 #43 Cost Tracking API
+export type CostsToday = {
+  date: string
+  total_usd: number
+  breakdown: Array<{
+    source: string
+    provider: string
+    model: string
+    calls: number
+    tokens_in_total: number
+    tokens_out_total: number
+    compute_sec_total: number
+    est_usd_total: number
+  }>
+}
+
+export type CostsMonth = {
+  total_usd: number
+  by_source: Array<{
+    source: string
+    provider: string
+    model: string
+    total_usd: number
+    calls: number
+    tokens_in: number
+    tokens_out: number
+  }>
+  by_day: Array<{ date: string; total_usd: number }>
+}
+
+export const costsApi = {
+  today: (date?: string) => get<CostsToday>(`/admin/costs/today${date ? `?date=${date}` : ''}`),
+  month: () => get<CostsMonth>('/admin/costs/month'),
+}
+
 export const paperApi = {
   account:         () => get<any>('/paper/account'),
   positions:       () => get<any>('/paper/positions'),

@@ -1,9 +1,10 @@
 /**
  * SchedulerPage — Cron job monitoring dashboard
  *
- * Layout: Two-column (left: Stats + DAG + Job Cards, right: Heatmap + Table + Cost)
- * Data: Mock data for now, will connect to /api/admin/scheduler/status
+ * 2026-04-21 rewrite: connects to /api/scheduler/status + /api/admin/costs/month.
+ * Previously hardcoded mock data (Last sync 2026-04-11) for 3 months.
  */
+import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -12,102 +13,27 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import {
-  Play, Pause, Clock, CheckCircle2, XCircle, AlertTriangle,
-  ArrowRight, Activity,
+  Play, Pause, Clock, CheckCircle2, AlertTriangle,
+  ArrowRight, Activity, RefreshCw, Loader2,
 } from 'lucide-react'
+import { schedulerApi, costsApi, type SchedulerStatus, type CostsMonth } from '@/lib/api'
 
-// ── Mock Data ────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────
+type JobStatus = 'success' | 'failed' | 'running' | 'paused' | 'skip'
 
-const STATS = { total: 20, active: 18, failed24h: 1, successRate7d: 96.4, nextJob: 'Pipeline', nextIn: '3d 2h' }
-
-const DAG_STEPS = [
-  { name: 'Bulk Fetch', duration: '3m12s', status: 'success' as const },
-  { name: 'Screener', duration: '14s', status: 'success' as const },
-  { name: 'ML Predict', duration: '4m18s', status: 'success' as const },
-  { name: 'Recommend', duration: '2m05s', status: 'success' as const },
-  { name: 'LLM Reason', duration: '1m42s', status: 'success' as const },
-  { name: 'Write D1', duration: '8s', status: 'success' as const },
-]
-
-type JobStatus = 'success' | 'failed' | 'running' | 'paused'
-
-interface Job {
-  name: string
-  schedule: string
-  group: string
-  chainIndex?: number
-  lastRun: string
-  lastStatus: JobStatus
-  lastDuration: string
-  nextRun: string
-  history7d: JobStatus[]
-}
-
-const JOBS: Job[] = [
-  { name: 'Pipeline', schedule: 'Weekdays 17:30', group: 'pipeline', chainIndex: 1, lastRun: '4/10 17:30', lastStatus: 'success', lastDuration: '11m42s', nextRun: '4/14 17:30', history7d: ['success','success','failed','success','success','success','success'] },
-  { name: 'ML Predict', schedule: 'After pipeline', group: 'pipeline', chainIndex: 2, lastRun: '4/10 17:42', lastStatus: 'success', lastDuration: '4m18s', nextRun: 'After pipeline', history7d: ['success','success','failed','success','success','success','success'] },
-  { name: 'Daily Rec', schedule: 'After ML predict', group: 'pipeline', chainIndex: 3, lastRun: '4/10 17:47', lastStatus: 'success', lastDuration: '2m05s', nextRun: 'After ML predict', history7d: ['success','success','success','success','success','success','success'] },
-  { name: 'Intraday Re-score', schedule: '09-13h hourly', group: 'intraday', lastRun: '4/10 13:00', lastStatus: 'success', lastDuration: '45s', nextRun: '4/14 09:00', history7d: ['success','success','success','success','success','success','success'] },
-  { name: 'EOD Exit', schedule: 'Weekdays 13:25', group: 'intraday', lastRun: '4/10 13:25', lastStatus: 'success', lastDuration: '12s', nextRun: '4/14 13:25', history7d: ['success','success','success','success','success','success','success'] },
-  { name: 'Weekly Retrain', schedule: 'Saturday 06:00', group: 'weekly', lastRun: '4/5 06:00', lastStatus: 'failed', lastDuration: 'timeout', nextRun: '4/12 06:00', history7d: ['success','failed','failed','success','success','failed','success'] },
-  { name: 'Weekly Cleanup', schedule: 'Sunday 04:00', group: 'weekly', lastRun: '4/6 04:00', lastStatus: 'success', lastDuration: '2m30s', nextRun: '4/13 04:00', history7d: ['success','success','success','success','success','success','success'] },
-  { name: 'Weekly Audit', schedule: 'Friday 18:30', group: 'weekly', lastRun: '4/4 18:30', lastStatus: 'success', lastDuration: '3m12s', nextRun: '4/11 18:30', history7d: ['success','success','success','success','success','success','success'] },
-]
-
-const ALL_JOBS_TABLE = [
-  { name: 'Pipeline', schedule: 'Weekdays 17:30', lastRun: '4/10 17:30', duration: '11m42s', nextRun: '4/14 17:30', rate7d: '4/5', status: 'success' as const },
-  { name: 'ML Predict', schedule: 'After pipeline', lastRun: '4/10 17:42', duration: '4m18s', nextRun: 'After pipeline', rate7d: '4/5', status: 'success' as const },
-  { name: 'Daily Recommendation', schedule: 'After ML predict', lastRun: '4/10 17:47', duration: '2m05s', nextRun: 'After ML', rate7d: '5/5', status: 'success' as const },
-  { name: 'Morning Setup', schedule: 'Weekdays 07:15', lastRun: '4/10 07:15', duration: '32s', nextRun: '4/14 07:15', rate7d: '5/5', status: 'success' as const },
-  { name: 'Morning Briefing', schedule: 'Weekdays 07:50', lastRun: '4/10 07:50', duration: '1m20s', nextRun: '4/14 07:50', rate7d: '5/5', status: 'success' as const },
-  { name: 'ML Warmup', schedule: 'Weekdays 09:15', lastRun: '4/10 09:15', duration: '15s', nextRun: '4/14 09:15', rate7d: '5/5', status: 'success' as const },
-  { name: 'Re-score 10:00', schedule: 'Weekdays 10:00', lastRun: '4/10 10:00', duration: '38s', nextRun: '4/14 10:00', rate7d: '5/5', status: 'success' as const },
-  { name: 'Re-score 11:00', schedule: 'Weekdays 11:00', lastRun: '4/10 11:00', duration: '42s', nextRun: '4/14 11:00', rate7d: '5/5', status: 'success' as const },
-  { name: 'Re-score 12:00', schedule: 'Weekdays 12:00', lastRun: '4/10 12:00', duration: '35s', nextRun: '4/14 12:00', rate7d: '5/5', status: 'success' as const },
-  { name: 'Re-score 12:30', schedule: 'Weekdays 12:30', lastRun: '4/10 12:30', duration: '40s', nextRun: '4/14 12:30', rate7d: '5/5', status: 'success' as const },
-  { name: 'Intraday Check', schedule: 'Weekdays 09-13h', lastRun: '4/10 13:00', duration: '45s', nextRun: '4/14 09:00', rate7d: '5/5', status: 'success' as const },
-  { name: 'EOD Exit', schedule: 'Weekdays 13:25', lastRun: '4/10 13:25', duration: '12s', nextRun: '4/14 13:25', rate7d: '5/5', status: 'success' as const },
-  { name: 'US Leading', schedule: 'Weekdays 06:30', lastRun: '4/10 06:30', duration: '8s', nextRun: '4/14 06:30', rate7d: '5/5', status: 'success' as const },
-  { name: 'Daily Report', schedule: 'Weekdays 18:25', lastRun: '4/10 18:25', duration: '48s', nextRun: '4/14 18:25', rate7d: '5/5', status: 'success' as const },
-  { name: 'Daily Snapshot', schedule: 'Weekdays 14:20', lastRun: '4/10 14:20', duration: '15s', nextRun: '4/14 14:20', rate7d: '5/5', status: 'success' as const },
-  { name: 'Adapt Params', schedule: 'Weekdays 18:20', lastRun: '4/10 18:20', duration: '25s', nextRun: '4/14 18:20', rate7d: '5/5', status: 'success' as const },
-  { name: 'Obsidian Sync', schedule: 'Weekdays 18:40', lastRun: '4/10 18:40', duration: '1m05s', nextRun: '4/14 18:40', rate7d: '5/5', status: 'success' as const },
-  { name: 'Weekly Retrain', schedule: 'Saturday 06:00', lastRun: '4/5 06:00', duration: 'timeout', nextRun: '4/12 06:00', rate7d: '0/1', status: 'failed' as const },
-  { name: 'Weekly Cleanup', schedule: 'Sunday 04:00', lastRun: '4/6 04:00', duration: '2m30s', nextRun: '4/13 04:00', rate7d: '1/1', status: 'success' as const },
-  { name: 'Weekly Audit', schedule: 'Friday 18:30', lastRun: '4/4 18:30', duration: '3m12s', nextRun: '4/11 18:30', rate7d: '1/1', status: 'success' as const },
-]
-
-const HEATMAP_ROWS = [
-  { name: 'Pipeline', cells: ['success','success','success','failed','success','skip','skip'] },
-  { name: 'ML Predict', cells: ['success','success','success','failed','success','skip','skip'] },
-  { name: 'Re-score (x3)', cells: ['3/3','3/3','3/3','3/3','3/3','skip','skip'] },
-  { name: 'Morning Setup', cells: ['success','success','success','success','success','skip','skip'] },
-  { name: 'US Leading', cells: ['success','success','success','success','success','skip','skip'] },
-  { name: 'Retrain', cells: ['skip','skip','skip','skip','skip','failed','skip'] },
-  { name: 'Cleanup', cells: ['skip','skip','skip','skip','skip','skip','success'] },
-  { name: 'Obsidian Sync', cells: ['success','success','success','success','success','skip','skip'] },
-]
-
-const COSTS = [
-  { label: 'Modal (GPU + CPU)', value: '$17.40', pct: 58, color: 'bg-amber-500' },
-  { label: 'Cloud Run', value: '$3.20', pct: 12, color: 'bg-emerald-500' },
-  { label: 'Claude API', value: '$2.10', pct: 8, color: 'bg-sky-500' },
-  { label: 'Gemini API', value: '$0.85', pct: 3, color: 'bg-emerald-500' },
-]
-
-// ── Components ───────────────────────────────────────────────────────────────
-
+// ── Small Components ─────────────────────────────────────────────────────
 function StatusDot({ status }: { status: JobStatus }) {
   const cls = {
     success: 'bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.4)]',
-    failed: 'bg-red-500 shadow-[0_0_6px_rgba(248,81,73,0.4)]',
+    failed:  'bg-red-500 shadow-[0_0_6px_rgba(248,81,73,0.4)]',
     running: 'bg-sky-500 shadow-[0_0_6px_rgba(56,189,248,0.4)] animate-pulse',
-    paused: 'bg-zinc-500',
+    paused:  'bg-zinc-500',
+    skip:    'bg-zinc-600',
   }
   return <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${cls[status]}`} />
 }
 
-function HistoryDots({ history }: { history: JobStatus[] }) {
+function HistoryDots({ history }: { history: Array<'success'|'failed'|'skip'> }) {
   return (
     <div className="flex gap-0.5">
       {history.map((s, i) => (
@@ -126,21 +52,143 @@ function HeatmapCell({ value }: { value: string }) {
   return <div className="h-7 rounded bg-emerald-500/15 flex items-center justify-center text-[10px] text-emerald-500 font-semibold">{value}</div>
 }
 
-// ── Main Page ────────────────────────────────────────────────────────────────
+// ── Cost helpers ──────────────────────────────────────────────────────────
+const COST_LABEL_MAP: Record<string, { label: string; color: string }> = {
+  modal:     { label: 'Modal (compute + LLM image)', color: 'bg-amber-500' },
+  anthropic: { label: 'Claude API',                  color: 'bg-sky-500' },
+  gemini:    { label: 'Gemini API',                  color: 'bg-emerald-500' },
+  deepseek:  { label: 'DeepSeek API',                color: 'bg-purple-500' },
+  openai:    { label: 'OpenAI API',                  color: 'bg-zinc-400' },
+  manual:    { label: 'Manual entries',              color: 'bg-zinc-600' },
+}
 
-export default function SchedulerPage() {
-  const groups = {
-    'Daily Pipeline Chain': JOBS.filter(j => j.group === 'pipeline'),
-    'Intraday': JOBS.filter(j => j.group === 'intraday'),
-    'Weekly': JOBS.filter(j => j.group === 'weekly'),
+function groupCosts(month: CostsMonth | null): Array<{ label: string; value: string; pct: number; color: string }> {
+  if (!month) return []
+  const total = Math.max(0.0001, month.total_usd)
+  const bucket: Record<string, number> = {}
+  for (const row of month.by_source) {
+    const key = (row.provider || 'manual').toLowerCase()
+    bucket[key] = (bucket[key] ?? 0) + (row.total_usd ?? 0)
   }
+  return Object.entries(bucket)
+    .sort(([, a], [, b]) => b - a)
+    .map(([provider, sum]) => {
+      const def = COST_LABEL_MAP[provider] || { label: provider, color: 'bg-zinc-500' }
+      return {
+        label: def.label,
+        value: `$${sum.toFixed(2)}`,
+        pct: Math.round((sum / total) * 100),
+        color: def.color,
+      }
+    })
+}
+
+const MONTHLY_BUDGET = 100
+
+// ── Main Page ────────────────────────────────────────────────────────────
+export default function SchedulerPage() {
+  const [status, setStatus] = useState<SchedulerStatus | null>(null)
+  const [costs, setCosts] = useState<CostsMonth | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+
+  async function load() {
+    try {
+      setError(null)
+      const [s, c] = await Promise.all([
+        schedulerApi.status().catch(e => { throw new Error(`scheduler: ${e.message}`) }),
+        costsApi.month().catch(() => null), // costs are optional — don't block main view
+      ])
+      setStatus(s)
+      setCosts(c)
+    } catch (e: any) {
+      setError(e.message ?? 'Load failed')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    // Auto-refresh every 60s while page is open
+    const t = setInterval(() => { setRefreshing(true); load() }, 60_000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="p-6 flex items-center gap-2 text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin" /> 載入 Scheduler 狀態…
+        </div>
+      </AppShell>
+    )
+  }
+
+  if (error || !status) {
+    return (
+      <AppShell>
+        <div className="p-6 space-y-2">
+          <div className="text-red-500 text-sm">Scheduler API 載入失敗：{error ?? 'no status'}</div>
+          <Button size="sm" variant="outline" onClick={() => { setLoading(true); load() }}>重試</Button>
+        </div>
+      </AppShell>
+    )
+  }
+
+  const jobs = status.jobs
+  const stats = status.stats
+  const lastSync = new Date().toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' })
+
+  // Group jobs for card display (non-table)
+  const pipelineJobs = jobs.filter(j => j.group === 'pipeline_chain')
+  const intradayJobs = jobs.filter(j => j.group === 'intraday')
+  const weeklyJobs   = jobs.filter(j => j.group === 'weekly')
+  const groups: Record<string, typeof jobs> = {
+    'Daily Pipeline Chain': pipelineJobs,
+    'Intraday': intradayJobs,
+    'Weekly': weeklyJobs,
+  }
+
+  // DAG steps — derive from pipeline_chain in order
+  const dagSteps = pipelineJobs.slice(0, 6).map(j => ({
+    name: j.name,
+    duration: j.lastDuration !== '—' ? j.lastDuration : '—',
+    status: j.lastStatus,
+  }))
+  const dagLastRun = pipelineJobs.find(j => j.id === 'pipeline')?.lastRun ?? '—'
+  const dagLastDuration = pipelineJobs.find(j => j.id === 'pipeline')?.lastDuration ?? '—'
+
+  // Heatmap — one row per meaningful job (use top-12 by history7d non-skip count)
+  const heatmapJobs = [...jobs]
+    .filter(j => j.history7d.some(h => h !== 'skip'))
+    .sort((a, b) => {
+      const aCnt = a.history7d.filter(h => h !== 'skip').length
+      const bCnt = b.history7d.filter(h => h !== 'skip').length
+      return bCnt - aCnt
+    })
+    .slice(0, 10)
+
+  const costBuckets = groupCosts(costs)
+  const mtdTotal = costs?.total_usd ?? 0
+  const budgetPct = Math.min(100, Math.round((mtdTotal / MONTHLY_BUDGET) * 1000) / 10)
 
   return (
     <AppShell>
       <div className="p-4 lg:p-6 space-y-6">
-        <div>
-          <h1 className="text-xl font-bold">Scheduler Dashboard</h1>
-          <p className="text-xs text-muted-foreground mt-1">20 Cloud Scheduler Jobs &nbsp;|&nbsp; Last sync: 2026-04-11 09:00 TW</p>
+        <div className="flex items-end justify-between">
+          <div>
+            <h1 className="text-xl font-bold">Scheduler Dashboard</h1>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.total} jobs &nbsp;|&nbsp; Last sync: {lastSync} TW
+              {refreshing && <span className="ml-2 text-sky-400">refreshing…</span>}
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => { setRefreshing(true); load() }}>
+            <RefreshCw className="w-3 h-3 mr-1" /> 重整
+          </Button>
         </div>
 
         {/* ═══ Two Column Layout ═══ */}
@@ -153,21 +201,21 @@ export default function SchedulerPage() {
             <div className="grid grid-cols-4 gap-3">
               <Card><CardContent className="pt-4 pb-3 px-4">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Total</p>
-                <p className="text-2xl font-bold text-sky-400 mt-1">{STATS.total}</p>
+                <p className="text-2xl font-bold text-sky-400 mt-1">{stats.total}</p>
               </CardContent></Card>
               <Card><CardContent className="pt-4 pb-3 px-4">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Success 7d</p>
-                <p className="text-2xl font-bold text-emerald-500 mt-1">{STATS.successRate7d}%</p>
+                <p className="text-2xl font-bold text-emerald-500 mt-1">{stats.successRate7d}%</p>
               </CardContent></Card>
               <Card><CardContent className="pt-4 pb-3 px-4">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Failed 24h</p>
-                <p className="text-2xl font-bold text-red-500 mt-1">{STATS.failed24h}</p>
-                <p className="text-[10px] text-muted-foreground">Retrain timeout</p>
+                <p className={`text-2xl font-bold mt-1 ${stats.failed24h > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{stats.failed24h}</p>
+                {stats.failed24h > 0 && <p className="text-[10px] text-muted-foreground">needs attention</p>}
               </CardContent></Card>
               <Card><CardContent className="pt-4 pb-3 px-4">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Next Run</p>
-                <p className="text-sm font-bold text-amber-500 mt-1">{STATS.nextJob}</p>
-                <p className="text-[10px] text-muted-foreground">{STATS.nextIn}</p>
+                <p className="text-sm font-bold text-amber-500 mt-1 truncate">{stats.nextJob}</p>
+                <p className="text-[10px] text-muted-foreground">{stats.nextIn}</p>
               </CardContent></Card>
             </div>
 
@@ -176,21 +224,24 @@ export default function SchedulerPage() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <Activity className="w-4 h-4" /> Daily Pipeline DAG
-                  <span className="ml-auto text-xs text-emerald-500">Last: 4/10 — 11m42s &#10003;</span>
+                  <span className="ml-auto text-xs text-emerald-500">
+                    Last: {dagLastRun} — {dagLastDuration}
+                  </span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="pb-4">
                 <div className="flex items-center justify-center gap-1 flex-wrap">
-                  {DAG_STEPS.map((step, i) => (
-                    <div key={step.name} className="flex items-center gap-1">
+                  {dagSteps.map((step, i) => (
+                    <div key={step.name + i} className="flex items-center gap-1">
                       <div className={`rounded-lg border-2 px-3 py-2 text-center min-w-[80px] ${
                         step.status === 'success' ? 'border-emerald-500/60 bg-emerald-500/5' :
-                        step.status === 'failed' ? 'border-red-500/60 bg-red-500/5' : 'border-zinc-600'
+                        step.status === 'failed'  ? 'border-red-500/60 bg-red-500/5' :
+                                                    'border-zinc-600'
                       }`}>
                         <p className="text-[11px] font-semibold">{step.name}</p>
                         <p className="text-[10px] text-muted-foreground">{step.duration}</p>
                       </div>
-                      {i < DAG_STEPS.length - 1 && <ArrowRight className="w-3.5 h-3.5 text-zinc-600 shrink-0" />}
+                      {i < dagSteps.length - 1 && <ArrowRight className="w-3.5 h-3.5 text-zinc-600 shrink-0" />}
                     </div>
                   ))}
                 </div>
@@ -199,47 +250,52 @@ export default function SchedulerPage() {
 
             {/* Job Cards */}
             <div className="space-y-4">
-              {Object.entries(groups).map(([groupName, jobs]) => (
-                <div key={groupName}>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 pl-1">{groupName}</p>
-                  <div className="space-y-2">
-                    {jobs.map(job => (
-                      <Card key={job.name} className={job.lastStatus === 'failed' ? 'border-red-500/30' : ''}>
-                        <CardContent className="py-3 px-4 flex items-center gap-3">
-                          <StatusDot status={job.lastStatus} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[13px] font-semibold">{job.name}</span>
-                              {job.chainIndex && (
-                                <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-sky-500/10 text-sky-400 border-0">
-                                  chain {job.chainIndex}/6
-                                </Badge>
-                              )}
+              {Object.entries(groups).map(([groupName, gjobs]) => (
+                gjobs.length > 0 && (
+                  <div key={groupName}>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 pl-1">{groupName}</p>
+                    <div className="space-y-2">
+                      {gjobs.map(job => (
+                        <Card key={job.id} className={job.lastStatus === 'failed' ? 'border-red-500/30' : ''}>
+                          <CardContent className="py-3 px-4 flex items-center gap-3">
+                            <StatusDot status={job.lastStatus} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[13px] font-semibold">{job.name}</span>
+                                {job.chainIndex !== undefined && job.chainIndex > 0 && (
+                                  <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-sky-500/10 text-sky-400 border-0">
+                                    chain {job.chainIndex}
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">{job.schedule}</p>
                             </div>
-                            <p className="text-[11px] text-muted-foreground">{job.schedule}</p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-[11px] text-muted-foreground">
-                              Last: {job.lastRun} <span className={job.lastStatus === 'success' ? 'text-emerald-500' : 'text-red-500'}>
-                                {job.lastStatus === 'success' ? `✓ ${job.lastDuration}` : `✗ ${job.lastDuration}`}
-                              </span>
-                            </p>
-                            <p className="text-[11px] text-sky-400">Next: {job.nextRun}</p>
-                            <HistoryDots history={job.history7d} />
-                          </div>
-                          <div className="flex gap-1 shrink-0">
-                            <Button size="sm" variant="default" className="h-7 px-2 text-[11px] bg-emerald-600 hover:bg-emerald-700">
-                              <Play className="w-3 h-3" />
-                            </Button>
-                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]">
-                              <Pause className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+                            <div className="text-right shrink-0">
+                              <p className="text-[11px] text-muted-foreground">
+                                Last: {job.lastRun}{' '}
+                                <span className={job.lastStatus === 'success' ? 'text-emerald-500' :
+                                                 job.lastStatus === 'failed'  ? 'text-red-500' : 'text-zinc-500'}>
+                                  {job.lastStatus === 'success' ? `✓ ${job.lastDuration}` :
+                                   job.lastStatus === 'failed'  ? `✗ ${job.lastDuration}` : '—'}
+                                </span>
+                              </p>
+                              <p className="text-[11px] text-sky-400">Next: {job.nextRun}</p>
+                              <HistoryDots history={job.history7d} />
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <Button size="sm" variant="default" className="h-7 px-2 text-[11px] bg-emerald-600 hover:bg-emerald-700" disabled>
+                                <Play className="w-3 h-3" />
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled>
+                                <Pause className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )
               ))}
             </div>
           </div>
@@ -255,16 +311,16 @@ export default function SchedulerPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="pb-4">
-                <div className="grid gap-1" style={{ gridTemplateColumns: '120px repeat(7, 1fr)' }}>
+                <div className="grid gap-1" style={{ gridTemplateColumns: '140px repeat(7, 1fr)' }}>
                   <div />
-                  {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => (
+                  {['D-6','D-5','D-4','D-3','D-2','D-1','Today'].map(d => (
                     <div key={d} className="text-center text-[10px] text-muted-foreground pb-1">{d}</div>
                   ))}
-                  {HEATMAP_ROWS.map(row => (
-                    <>
-                      <div key={row.name} className="flex items-center text-[11px] pl-1">{row.name}</div>
-                      {row.cells.map((c, i) => <HeatmapCell key={i} value={c} />)}
-                    </>
+                  {heatmapJobs.map(job => (
+                    <div key={`row-${job.id}`} className="contents">
+                      <div className="flex items-center text-[11px] pl-1 truncate">{job.name}</div>
+                      {job.history7d.map((c, i) => <HeatmapCell key={`${job.id}-${i}`} value={c} />)}
+                    </div>
                   ))}
                 </div>
               </CardContent>
@@ -274,7 +330,7 @@ export default function SchedulerPage() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-sky-400" /> Job Details
+                  <Clock className="w-4 h-4 text-sky-400" /> Job Details ({jobs.length})
                 </CardTitle>
               </CardHeader>
               <CardContent className="pb-2 px-0">
@@ -292,18 +348,23 @@ export default function SchedulerPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {ALL_JOBS_TABLE.map(job => (
-                        <TableRow key={job.name}>
+                      {jobs.map(job => (
+                        <TableRow key={job.id}>
                           <TableCell className="py-1.5">
-                            <Badge variant={job.status === 'success' ? 'default' : 'destructive'}
-                                   className={`text-[9px] px-1.5 ${job.status === 'success' ? 'bg-emerald-500/15 text-emerald-500 border-0' : ''}`}>
-                              {job.status === 'success' ? '✓ OK' : '✗ FAIL'}
+                            <Badge variant={job.lastStatus === 'success' ? 'default' :
+                                             job.lastStatus === 'failed'  ? 'destructive' : 'secondary'}
+                                   className={`text-[9px] px-1.5 ${
+                                     job.lastStatus === 'success' ? 'bg-emerald-500/15 text-emerald-500 border-0' :
+                                     job.lastStatus === 'skip'    ? 'bg-zinc-700/30 text-zinc-400 border-0' : ''
+                                   }`}>
+                              {job.lastStatus === 'success' ? '✓ OK' :
+                               job.lastStatus === 'failed'  ? '✗ FAIL' : '— SKIP'}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-[11px] font-medium py-1.5">{job.name}</TableCell>
                           <TableCell className="text-[11px] text-muted-foreground py-1.5">{job.schedule}</TableCell>
                           <TableCell className="text-[11px] py-1.5">{job.lastRun}</TableCell>
-                          <TableCell className="text-[11px] py-1.5">{job.duration}</TableCell>
+                          <TableCell className="text-[11px] py-1.5">{job.lastDuration}</TableCell>
                           <TableCell className="text-[11px] text-sky-400 py-1.5">{job.nextRun}</TableCell>
                           <TableCell className="text-[11px] py-1.5">{job.rate7d}</TableCell>
                         </TableRow>
@@ -318,31 +379,37 @@ export default function SchedulerPage() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" /> Cost Tracking (MTD)
+                  <AlertTriangle className="w-4 h-4 text-amber-500" /> Cost Tracking (last 30d)
+                  {!costs && <span className="text-[10px] text-muted-foreground ml-auto">載入中/N-A</span>}
                 </CardTitle>
               </CardHeader>
               <CardContent className="pb-4 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  {COSTS.map(c => (
-                    <div key={c.label} className="space-y-1.5">
-                      <p className="text-[10px] text-muted-foreground">{c.label}</p>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${c.color}`} style={{ width: `${c.pct}%` }} />
+                {costBuckets.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    {costBuckets.map(c => (
+                      <div key={c.label} className="space-y-1.5">
+                        <p className="text-[10px] text-muted-foreground">{c.label}</p>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${c.color}`} style={{ width: `${c.pct}%` }} />
+                          </div>
+                          <span className="text-sm font-bold">{c.value}</span>
                         </div>
-                        <span className="text-sm font-bold">{c.value}</span>
                       </div>
-                    </div>
-                  ))}
-                </div>
-                {/* Budget */}
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">目前 30 天內尚未累積成本資料（cost_events 表空或 LLM 未觸發）</p>
+                )}
                 <div className="pt-2 border-t border-zinc-800">
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-[11px] text-muted-foreground">Monthly Budget</span>
-                    <span className="text-base font-bold">$23.55 <span className="text-sm font-normal text-muted-foreground">/ $100</span></span>
+                    <span className="text-base font-bold">
+                      ${mtdTotal.toFixed(2)} <span className="text-sm font-normal text-muted-foreground">/ ${MONTHLY_BUDGET}</span>
+                    </span>
                   </div>
                   <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-amber-500" style={{ width: '23.5%' }} />
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-amber-500" style={{ width: `${budgetPct}%` }} />
                   </div>
                 </div>
               </CardContent>

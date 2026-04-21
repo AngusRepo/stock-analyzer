@@ -306,17 +306,49 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # 2026-04-19 R1+R3 hybrid: weight = max(0, ic) × status_filter × dampening.
     # No more hardcoded 0.1 degraded multiplier; pure IC drives weight, with
     # KV-overridable dampening for degraded models (default 1.0 = no dampening).
-    model_status, ic_universe, degraded_dampening, used_pool = await asyncio.to_thread(_load_pool_and_ic)
+    model_status, ic_universe, degraded_dampening, ev2_cfg, used_pool = await asyncio.to_thread(_load_pool_and_ic)
     if used_pool:
         for sym, r in pred_map.items():
             try:
-                _attach_ensemble_v2(r, model_status, ic_universe, degraded_dampening)
+                _attach_ensemble_v2(r, model_status, ic_universe, degraded_dampening, ev2_cfg)
             except Exception as e:
                 logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
         logger.info(
             f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks "
             f"(degraded_dampening={degraded_dampening})"
         )
+
+        # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
+        # compress to [0.43, 0.58] under realistic R² 0.02-0.05, never hitting
+        # absolute 0.70 BUY threshold. Industry-standard fix: sort top K by
+        # avg_rank desc, force BUY regardless of absolute threshold. Confidence
+        # override gives downstream (paper.ts morning-setup SQL + debate prompt)
+        # the margin they need to distinguish promoted signals from edge HOLDs.
+        top_k_enabled = bool(ev2_cfg.get("topKOverrideEnabled", True))
+        top_k_count = int(ev2_cfg.get("topKCount", 3))
+        top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
+        if top_k_enabled and top_k_count > 0:
+            ranked = sorted(
+                ((sym, v) for sym, v in pred_map.items() if "ensemble_v2" in v),
+                key=lambda kv: kv[1]["ensemble_v2"].get("avg_rank", 0.0),
+                reverse=True,
+            )
+            forced: list[str] = []
+            for sym, v in ranked[:top_k_count]:
+                ev2 = v["ensemble_v2"]
+                cur = ev2.get("signal")
+                if cur in ("BUY", "STRONG_BUY"):
+                    continue  # natural buy signal; leave as-is
+                ev2["signal_raw"] = cur  # preserve pre-override for audit
+                ev2["signal"] = "BUY"
+                ev2["confidence_override"] = top_k_conf
+                ev2["topk_forced"] = True
+                forced.append(sym)
+            if forced:
+                logger.info(
+                    f"[Pipeline V2] ensemble_v2 top-K override forced BUY on "
+                    f"{len(forced)}/{top_k_count} stocks (conf={top_k_conf}): {forced}"
+                )
     else:
         logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
 
@@ -332,15 +364,16 @@ def _load_pool_and_ic():
     """Synchronous loader (called via asyncio.to_thread).
 
     Returns:
-      (model_status: dict, ic_weights: dict, degraded_dampening: float, used_pool: bool)
+      (model_status, ic_weights, degraded_dampening, ev2_cfg, used_pool)
 
     2026-04-19 R1+R3 hybrid:
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
-        (no hardcoded weight multiplier here; that's status_filter only)
       - ic_weights: from ic_tracking.json (raw OOS IC per model)
       - degraded_dampening: from trading:config.mlPool.degradedDampening
-        (default 1.0 = pure R3 IC-based, no extra dampening). KV-driven
-        for Optuna future search (post #31 backtest Mode B).
+      - ev2_cfg: from trading:config.ensemble_v2 — thresholds + Top-K override
+        config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery). Empty
+        dict when KV absent → _attach_ensemble_v2 + top-K loop fall back to
+        hardcoded defaults matching ml-service ensemble.rank_to_signal.
     """
     import json as _json
     try:
@@ -348,7 +381,7 @@ def _load_pool_and_ic():
         bucket = storage.Client().bucket("stockvision-models")
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {}, {}, 1.0, False
+            return {}, {}, 1.0, {}, False
         pool = _json.loads(pool_blob.download_as_text())
         model_status: dict[str, str] = {}
         for name, entry in pool.get("models", {}).items():
@@ -360,19 +393,21 @@ def _load_pool_and_ic():
             ic_data = _json.loads(ic_blob.download_as_text())
             for name, info in (ic_data.get("models") or {}).items():
                 ic_weights[name] = float(info.get("oos_ic", 0.0))
-        # KV-driven degraded dampening (default 1.0 = pure IC, no extra penalty)
+        # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
         degraded_dampening = 1.0
+        ev2_cfg: dict = {}
         try:
             from services import kv_client
             tcfg = kv_client.get_json("trading:config", default={}) or {}
             ml_pool_cfg = tcfg.get("mlPool", {}) or {}
             degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
+            ev2_cfg = tcfg.get("ensemble_v2", {}) or {}
         except Exception as _e:
-            logger.debug(f"[Pipeline V2] degradedDampening KV lookup failed (using 1.0): {_e}")
-        return model_status, ic_weights, degraded_dampening, True
+            logger.debug(f"[Pipeline V2] trading:config KV lookup failed (using defaults): {_e}")
+        return model_status, ic_weights, degraded_dampening, ev2_cfg, True
     except Exception as e:
         logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
-        return {}, {}, 1.0, False
+        return {}, {}, 1.0, {}, False
 
 
 def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: float = 1.0) -> float:
@@ -404,6 +439,7 @@ def _attach_ensemble_v2(
     model_status: dict,
     ic_weights: dict,
     degraded_dampening: float,
+    ev2_cfg: dict | None = None,
 ) -> None:
     """Merge feature rank_scores + time-series sigmoid into a single weighted
     avg, applying R1+R3 ensemble weight: max(0, ic) × status_filter × dampening.
@@ -449,14 +485,20 @@ def _attach_ensemble_v2(
     else:
         avg = sum(merged.values()) / max(len(merged), 1)
 
-    # Translate to signal label (mirror ml-service ensemble defaults)
-    if avg >= 0.85:
+    # Translate to signal label — KV-driven thresholds (#B Option 1 2026-04-21),
+    # defaults mirror ml-service ensemble.rank_to_signal for backwards compat.
+    cfg = ev2_cfg or {}
+    sb_th = float(cfg.get("strongBuyThreshold", 0.85))
+    b_th = float(cfg.get("buyThreshold", 0.70))
+    ss_th = float(cfg.get("strongSellThreshold", 0.15))
+    s_th = float(cfg.get("sellThreshold", 0.30))
+    if avg >= sb_th:
         label = "STRONG_BUY"
-    elif avg >= 0.70:
+    elif avg >= b_th:
         label = "BUY"
-    elif avg <= 0.15:
+    elif avg <= ss_th:
         label = "STRONG_SELL"
-    elif avg <= 0.30:
+    elif avg <= s_th:
         label = "SELL"
     else:
         label = "HOLD"
@@ -634,7 +676,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
-    final = hybrid_ranking_promotion(final, ranking_cfg)
+    ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
+    final = hybrid_ranking_promotion(final, ranking_cfg, ev2_cfg)
 
     # Track which symbols were filtered out (for D1 delete in write_d1)
     final_syms = {r["symbol"] for r in final}

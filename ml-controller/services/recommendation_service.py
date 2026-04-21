@@ -389,10 +389,17 @@ def _signal_tier(sig: Optional[str]) -> float:
 def hybrid_ranking_promotion(
     recommendations: list[dict],
     ranking_config: dict,
+    ensemble_v2_cfg: dict | None = None,
 ) -> list[dict]:
     """
     Sprint 3 P0-4: combined_score = α*screener_norm + β*ml_conf + γ*signal_tier
     若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
+
+    #B Option 1 (2026-04-21): promoted rows now also get signal="BUY" and a
+    higher conf floor (ensemble_v2.topKConfidenceOverride, default 0.72). Prior
+    code only flipped has_buy_signal=1 and nudged conf to 0.60 while leaving
+    signal="HOLD" — downstream batch debate saw HOLD+0.60 edge candidates and
+    mostly REJECTed, producing 0 pending buys for 4 consecutive trading days.
     """
     if not ranking_config or not ranking_config.get("enabled", True):
         return recommendations
@@ -403,6 +410,10 @@ def hybrid_ranking_promotion(
     screener_denom = ranking_config.get("screenerDenominator", 60.0)
     top_k = ranking_config.get("topK", 3)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
+    boost_conf = float((ensemble_v2_cfg or {}).get("topKConfidenceOverride", 0.72))
+    # Always use the higher of KV-driven ranking.promoteMinConf and ensemble_v2
+    # boost — pick max so neither config can silently regress the other.
+    effective_boost = max(float(promote_min_conf), boost_conf)
 
     # Compute combined_score for each
     scored = []
@@ -428,13 +439,17 @@ def hybrid_ranking_promotion(
 
     promoted_syms = []
     for r in pool:
+        r["signal_raw"] = r.get("signal")  # preserve pre-promotion for audit
+        r["signal"] = "BUY"                 # make downstream "BUY" checks pass
         r["has_buy_signal"] = 1
-        r["confidence"] = max(r.get("confidence") or 0, promote_min_conf)
+        r["confidence"] = max(r.get("confidence") or 0, effective_boost)
+        r["ranking_promoted"] = True
         promoted_syms.append(r["symbol"])
 
     if promoted_syms:
         logger.info(
-            f"[Ranking] Promoted {len(promoted_syms)} to has_buy_signal=1 "
+            f"[Ranking] Promoted {len(promoted_syms)} to signal=BUY "
+            f"has_buy_signal=1 conf>={effective_boost} "
             f"(current={current_buy} < topK={top_k}): {promoted_syms}"
         )
     return scored

@@ -260,7 +260,7 @@ def run_search(
     end_date = today.strftime("%Y-%m-%d")
     start_date = (today - timedelta(days=window_days)).strftime("%Y-%m-%d")
 
-    symbols = select_stratified_subset(size=subset_size, as_of=end_date)
+    symbols = select_stratified_subset(target_size=subset_size, end_date=end_date)
     dataset = BacktestDataset.load_from_d1(symbols=symbols, start=start_date, end=end_date)
 
     baseline = _default_sltp_baseline() if target == "sltp" else {}

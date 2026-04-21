@@ -89,8 +89,14 @@ function getNextRunApprox(cron: string): string {
   if (parts.length < 5) return '—'
   const [min, hour, , , dow] = parts
   const now = new Date(Date.now() + 8 * 3600_000)
-  const targetHourTW = parseInt(hour) + 8 // UTC → TW
+  const targetHourUtc = parseInt(hour)
   const targetMin = parseInt(min)
+  // 2026-04-21 fix: step/list/range expressions (*/6, 2,3,4) were NaN-poisoning
+  // setHours and crashing toISOString → 500 on /api/scheduler/status.
+  if (!Number.isFinite(targetHourUtc) || !Number.isFinite(targetMin)) {
+    return '—'
+  }
+  const targetHourTW = targetHourUtc + 8 // UTC → TW
 
   // Find next matching day
   for (let offset = 0; offset < 8; offset++) {
@@ -103,11 +109,11 @@ function getNextRunApprox(cron: string): string {
     const dayNum = candidate.getDay()
     // Check if dow matches
     if (dow === '*') {
-      return candidate.toISOString().slice(0, 16).replace('T', ' ')
+      return `${candidate.getMonth() + 1}/${candidate.getDate()} ${String(targetHourTW % 24).padStart(2, '0')}:${String(targetMin).padStart(2, '0')}`
     }
     const allowedDays = dow.includes('-')
       ? expandRange(dow)
-      : dow.split(',').map(Number)
+      : dow.split(',').map(Number).filter(Number.isFinite)
     if (allowedDays.includes(dayNum)) {
       return `${candidate.getMonth() + 1}/${candidate.getDate()} ${String(targetHourTW % 24).padStart(2, '0')}:${String(targetMin).padStart(2, '0')}`
     }

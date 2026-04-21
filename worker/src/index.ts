@@ -996,6 +996,19 @@ app.get('/api/admin/config/challenger/events', async (c) => {
 })
 
 // ─── Admin: Cron 執行日誌 ────────────────────────────────────────────────────
+// ─── Scheduler Dashboard — status endpoint (2026-04-21 fix: was missing) ───
+app.get('/api/scheduler/status', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+    const { verifyJWT } = await import('./lib/auth')
+    const payload = await verifyJWT(token ?? '', c.env.JWT_SECRET)
+    if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const { getSchedulerStatus } = await import('./lib/schedulerStatus')
+  const status = await getSchedulerStatus(c.env)
+  return c.json(status)
+})
+
 // ─── #43 Cost Tracking — aggregated spend query (2026-04-21) ────────────────
 app.get('/api/admin/costs/today', async (c) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')

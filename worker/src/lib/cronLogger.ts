@@ -16,25 +16,43 @@ export interface CronLogEntry {
   error?: string
 }
 
+// 2026-04-21 audit: keys must match worker runWithLog(task, …) call sites.
+// Entries with red-light mismatch removed (data-update, obsidian-sync was OK
+// but now kept as alias since cron schedule also calls it).
 const TASK_NAMES: Record<string, string> = {
-  'morning-setup':    'Morning Setup',
-  'intraday-check':   'Limit Buy + SL/TP',
-  'screener':         'Screener',
-  'eod-exit':         'EOD Exit',
-  'daily-snapshot':   'Daily Snapshot',
-  'data-update':      'Data Update',
-  'ml-predict':       'ML Predict',
-  'recommendation':   'Recommendation',
-  'verify':           'Verify',
-  'us-leading':       'US Leading',
-  'weekly-cleanup':   'Weekly Cleanup',
-  'ml-warmup':        'ML Warmup',
-  'morning-briefing': 'Morning Briefing',
-  'daily-report':     'Daily Report',
-  'obsidian-daily':   'Obsidian Notes',
-  'obsidian-sync':    'Obsidian Sync',
-  'regime-compute':   'HMM Regime',       // 2026-04-17 #30 Sprint 4-2 revisit
-  'pipeline':         'Pipeline',
+  // Pipeline chain
+  'pre-market-warmup':        'Pre-market Warmup',
+  'ml-warmup':                'ML Warmup',
+  'pipeline':                 'Pipeline',
+  'ml-predict':               'ML Predict',
+  'recommendation':           'Daily Recommendation',
+  'screener':                 'Screener',
+  // Daily
+  'us-leading':               'US Leading',
+  'news-analyst':             'News Analyst',
+  'morning-setup':            'Morning Setup',
+  'morning-briefing':         'Morning Briefing',
+  'daily-snapshot':           'Daily Snapshot',
+  'adapt':                    'Adapt Params',
+  'daily-report':             'Daily Report',
+  'obsidian-daily':           'Obsidian Notes',
+  'obsidian-sync':            'Obsidian Sync',
+  'regime-compute':           'HMM Regime',
+  'verify-v2':                'Verify (V2 LangGraph)',
+  'debate-memory-retention':  'Debate Memory Retention',
+  // Intraday
+  'intraday-check':           'Limit Buy + SL/TP',
+  'intraday-rescore':         'Intraday Re-score',
+  'eod-exit':                 'EOD Exit',
+  // Weekly / multi-day
+  'weekly-audit':             'Weekly Audit',
+  'model-ic-tracker':         'Model IC Tracker',
+  'weekly-cleanup':           'Weekly Cleanup',
+  'weekly-backtest':          'Weekly Backtest/MC',
+  'weekly-optuna':            'Weekly Optuna',
+  'optuna-queue':             'Optuna Queue Processor',
+  // Legacy/compat — keep so old KV entries display nicely
+  'verify':                   'Verify (legacy V1)',
 }
 
 export function getTaskDisplayName(task: string): string {

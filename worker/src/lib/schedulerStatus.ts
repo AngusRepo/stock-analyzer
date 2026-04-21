@@ -17,36 +17,46 @@ interface JobDef {
   chainIndex?: number     // for pipeline chain ordering
 }
 
+// 2026-04-21 audit: JOB_DEFS aligned 1-1 with actual runWithLog(task, …) keys
+// in src/index.ts cron handlers. Adding / renaming an entry here without a
+// matching worker runWithLog call will result in perpetual red-light (404 on
+// KV cron:log:<id>:<date>).
 const JOB_DEFS: JobDef[] = [
-  // Pipeline chain
-  { id: 'pipeline', name: 'Pipeline', schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
-  { id: 'ml-predict', name: 'ML Predict', schedule: 'After pipeline', cron: '', group: 'pipeline_chain', chainIndex: 2 },
-  { id: 'recommendation', name: 'Daily Recommendation', schedule: 'After ML predict', cron: '', group: 'pipeline_chain', chainIndex: 3 },
+  // ── Pipeline chain ────────────────────────────────────────────────────────
+  { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
+  { id: 'ml-warmup',         name: 'ML Warmup',         schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
+  { id: 'pipeline',          name: 'Pipeline',          schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
+  { id: 'ml-predict',        name: 'ML Predict',        schedule: 'After pipeline', cron: '',            group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'recommendation',    name: 'Daily Recommendation', schedule: 'After ML predict', cron: '',       group: 'pipeline_chain', chainIndex: 4 },
 
-  // Daily
-  { id: 'us-leading', name: 'US Leading', schedule: 'Weekdays 06:30', cron: '30 22 * * 0-4', group: 'daily' },
-  { id: 'morning-setup', name: 'Morning Setup', schedule: 'Weekdays 07:15', cron: '15 23 * * 0-4', group: 'daily' },
-  { id: 'morning-briefing', name: 'Morning Briefing', schedule: 'Weekdays 07:50', cron: '50 23 * * 0-4', group: 'daily' },
-  { id: 'ml-warmup', name: 'ML Warmup', schedule: 'Weekdays 09:15', cron: '15 1 * * 1-5', group: 'daily' },
-  { id: 'daily-report', name: 'Daily Report', schedule: 'Weekdays 18:25', cron: '25 10 * * 1-5', group: 'daily' },
-  { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
-  { id: 'obsidian-daily', name: 'Obsidian Sync', schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5', group: 'daily' },
-  { id: 'verify', name: 'Verify', schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5', group: 'daily' },
-  // 2026-04-21 fix: cron handler writes log key `adapt` (runWithLog('adapt', …))
-  // Dashboard was querying `cron:log:data-update:<date>` → always 404 → red.
-  { id: 'adapt', name: 'Adapt Params', schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5', group: 'daily' },
+  // ── Daily (all weekday-only) ──────────────────────────────────────────────
+  { id: 'us-leading',              name: 'US Leading',              schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
+  { id: 'news-analyst',            name: 'News Analyst',            schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
+  { id: 'morning-setup',           name: 'Morning Setup',           schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
+  { id: 'morning-briefing',        name: 'Morning Briefing',        schedule: 'Mon-Fri 07:50', cron: '50 23 * * SUN-THU', group: 'daily' },
+  { id: 'daily-snapshot',          name: 'Daily Snapshot',          schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5',     group: 'daily' },
+  { id: 'adapt',                   name: 'Adapt Params',            schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5',    group: 'daily' },
+  { id: 'daily-report',            name: 'Daily Report',            schedule: 'Weekdays 18:25', cron: '25 10 * * 1-5',    group: 'daily' },
+  { id: 'obsidian-daily',          name: 'Obsidian Sync',           schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5',    group: 'daily' },
+  { id: 'regime-compute',          name: 'HMM Regime',              schedule: 'Weekdays 18:50', cron: '50 10 * * 1-5',    group: 'daily' },
+  { id: 'verify-v2',               name: 'Verify (V2 LangGraph)',   schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5',     group: 'daily' },
+  { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00',    cron: '0 19 * * *',       group: 'daily' },
 
-  // Intraday
-  { id: 'intraday-check', name: 'Intraday Check', schedule: 'Weekdays 09-13h', cron: '* 1-5 * * 1-5', group: 'intraday' },
-  { id: 'rescore-10', name: 'Re-score 10:00', schedule: 'Weekdays 10:00', cron: '0 2 * * 1-5', group: 'intraday' },
-  { id: 'rescore-11', name: 'Re-score 11:00', schedule: 'Weekdays 11:00', cron: '0 3 * * 1-5', group: 'intraday' },
-  { id: 'rescore-12', name: 'Re-score 12:00', schedule: 'Weekdays 12:00', cron: '0 4 * * 1-5', group: 'intraday' },
-  { id: 'rescore-1230', name: 'Re-score 12:30', schedule: 'Weekdays 12:30', cron: '30 4 * * 1-5', group: 'intraday' },
-  { id: 'eod-exit', name: 'EOD Exit', schedule: 'Weekdays 13:25', cron: '25 5 * * 1-5', group: 'intraday' },
+  // ── Intraday ──────────────────────────────────────────────────────────────
+  { id: 'intraday-check',   name: 'Intraday Check',   schedule: 'Mon-Fri 09-13h per-min', cron: '* 1-5 * * 1-5', group: 'intraday' },
+  // 4 schedules share one log key; Dashboard shows last run for the day.
+  { id: 'intraday-rescore', name: 'Intraday Re-score (10/11/12/12:30)', schedule: '10:00 / 11:00 / 12:00 / 12:30', cron: '0 2,3,4 * * 1-5 + 30 4 * * 1-5', group: 'intraday' },
+  { id: 'eod-exit',         name: 'EOD Exit',         schedule: 'Weekdays 13:25',         cron: '25 5 * * 1-5',  group: 'intraday' },
 
-  // Weekly
-  { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00', cron: '0 20 * * 6', group: 'weekly' },
-  { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },
+  // ── Weekly ────────────────────────────────────────────────────────────────
+  { id: 'weekly-audit',     name: 'Weekly Audit',        schedule: 'Friday 18:30',  cron: '30 10 * * 5', group: 'weekly' },
+  { id: 'model-ic-tracker', name: 'Model IC Tracker',    schedule: 'Friday 19:30',  cron: '30 11 * * 5', group: 'weekly' },
+  { id: 'weekly-cleanup',   name: 'Weekly Cleanup',      schedule: 'Sunday 04:00',  cron: '0 20 * * 6',  group: 'weekly' },
+  { id: 'weekly-backtest',  name: 'Weekly Backtest/MC',  schedule: 'Sunday 06:00',  cron: '0 22 * * 6',  group: 'weekly' },
+  { id: 'weekly-optuna',    name: 'Weekly Optuna',       schedule: 'Sunday 06:30',  cron: '30 22 * * 6', group: 'weekly' },
+
+  // ── Multi-day / event-driven ─────────────────────────────────────────────
+  { id: 'optuna-queue',     name: 'Optuna Queue Processor', schedule: 'Every 6h',   cron: '0 */6 * * *', group: 'daily' },
 ]
 
 // DAG steps for pipeline

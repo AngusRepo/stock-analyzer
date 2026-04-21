@@ -31,7 +31,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -130,11 +130,33 @@ def _is_loss(sharpe_delta: float, challenger_win_rate: float) -> bool:
 
 
 @router.post("/weekly_eval")
-async def weekly_eval(req: WeeklyEvalRequest = Body(default=WeeklyEvalRequest())):
+async def weekly_eval(
+    req: WeeklyEvalRequest = Body(default=WeeklyEvalRequest()),
+    apply_query: Optional[bool] = Query(
+        default=None, alias="apply",
+        description="URL query override for apply flag. "
+                    "When present, overrides body apply (useful for CLI dry-run: "
+                    "?apply=false). None = use body value (default).",
+    ),
+    lookback_query: Optional[int] = Query(
+        default=None, alias="lookback_days", ge=7, le=180,
+        description="URL query override for lookback_days (same semantic as apply query).",
+    ),
+):
     """
     Weekly champion vs challenger replay-based comparison. Called by worker
     Friday 19:30 TW cron chain after model promote_check.
+
+    Query params override body for ad-hoc testing:
+      ?apply=false          → force dry-run regardless of body
+      ?lookback_days=30     → override lookback window
     """
+    # Apply query overrides to request object (preserves body as secondary source).
+    if apply_query is not None:
+        req.apply = apply_query
+    if lookback_query is not None:
+        req.lookback_days = lookback_query
+
     from services.backtest_engine import replay_period_loading, BacktestDataset, replay_period
 
     # ── 1. Fetch both configs via worker ────────────────────────────────────

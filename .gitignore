@@ -13,3 +13,11 @@ __pycache__/
 *.log
 scripts/data/
 scripts/backfill_output*
+
+# Local debug scratch files (underscore-prefix convention)
+_tmp_*
+worker/_*.json
+*_scratch.*
+# Ad-hoc Chinese-named D1 exports that occasionally leak to repo root
+上市櫃分類.json
+概念股分類.json

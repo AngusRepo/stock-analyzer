@@ -151,10 +151,12 @@ if [ "$WITH_MODAL" = "1" ]; then
   CTOKEN="${ML_CONTROLLER_TOKEN:-sv-controller-2026-prod}"
   URL="${ML_CONTROLLER_URL:-$ML_CONTROLLER_URL_DEFAULT}/admin/modal-deploy"
   NOTE_JSON=$(printf '{"note":"deploy_ml_controller.sh rev=%s"}' "$SERVICE_REV")
-  # Modal deploy can take 3-5 min; local curl timeout 600s
+  # Use mktemp for portable temp file (Windows git-bash /tmp/ may not exist)
+  MODAL_RESP_FILE=$(mktemp -t modal_deploy_resp.XXXXXX.json 2>/dev/null || echo "/tmp/modal_deploy_resp.$$.json")
+  trap 'rm -f "$MODAL_RESP_FILE"' EXIT
   echo "POST $URL"
   set +e
-  HTTP_STATUS=$(curl -sS -o /tmp/modal_deploy_resp.json -w "%{http_code}" \
+  HTTP_STATUS=$(curl -sS -o "$MODAL_RESP_FILE" -w "%{http_code}" \
       -X POST "$URL" \
       -H "X-Controller-Token: $CTOKEN" \
       -H "Content-Type: application/json" \
@@ -164,12 +166,23 @@ if [ "$WITH_MODAL" = "1" ]; then
   set -e
   if [ "$CURL_RC" -ne 0 ] || [ "$HTTP_STATUS" != "200" ]; then
     echo "❌ Modal deploy endpoint failed (curl_rc=$CURL_RC http=$HTTP_STATUS)" >&2
-    echo "Response body:" >&2
-    cat /tmp/modal_deploy_resp.json >&2 || true
+    echo "Response body ($MODAL_RESP_FILE):" >&2
+    cat "$MODAL_RESP_FILE" >&2 || true
     echo "" >&2
     exit 6
   fi
-  MODAL_DURATION=$(python -c "import json,sys; print(json.load(open('/tmp/modal_deploy_resp.json')).get('duration_sec','?'))" 2>/dev/null || echo "?")
+  # Parse duration from response — surface parse failure instead of silent '?'
+  MODAL_DURATION=$(python -c "
+import json, sys
+try:
+    with open('$MODAL_RESP_FILE', encoding='utf-8') as f:
+        d = json.load(f)
+    v = d.get('duration_sec')
+    print(f'{v:.1f}' if isinstance(v, (int, float)) else str(v))
+except Exception as e:
+    print(f'parse_err:{type(e).__name__}', file=sys.stderr)
+    print('unknown')
+" 2>&1)
   echo "✅ Modal deploy succeeded (duration ${MODAL_DURATION}s)"
   MODAL_RESULT="Modal         : redeployed (${MODAL_DURATION}s)"
   echo ""

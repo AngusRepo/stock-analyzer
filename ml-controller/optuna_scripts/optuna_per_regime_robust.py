@@ -106,7 +106,7 @@ def _sharpe_from_trades(trades: list[Trade]) -> Optional[float]:
     if len(trades) < 5:
         return None
     import numpy as np
-    rets = np.array([float(t.net_return_pct or 0) for t in trades])
+    rets = np.array([float(t.profit_ratio or 0) for t in trades])
     if rets.std() == 0:
         return None
     # Approximate annualization: avg trades/year ~ 60 (assuming ~5d hold)
@@ -118,7 +118,7 @@ def _max_drawdown_from_trades(trades: list[Trade]) -> float:
     if not trades:
         return 0.0
     import numpy as np
-    rets = np.array([1 + float(t.net_return_pct or 0) for t in trades])
+    rets = np.array([1 + float(t.profit_ratio or 0) for t in trades])
     equity = np.cumprod(rets)
     peak = np.maximum.accumulate(equity)
     dd = (peak - equity) / peak

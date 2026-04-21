@@ -209,15 +209,20 @@ async function batchGetLatestPrices(db: D1Database, symbols: string[]): Promise<
 }
 
 // ─── Circuit Breaker（三層風控）─────────────────────────────────────────────
+// 2026-04-21 R1 Extract: 7 layer logic 搬到 lib/riskChecks/*.ts
+// Shim 保留原 early-return ordering L1→L2→L3→L4→L6→L7→L5 (M15 known masking).
+// R2 會把 early-return 改成 chain merge (halt=OR, posPct=MIN, conf=MAX).
 
-interface CircuitBreakerState {
-  halt: boolean
-  reason?: string
-  maxPositionPct: number         // 8% 正常，4% 高波動縮減
-  buyConfThreshold: number       // 0.60 正常，0.70 低準確率時提高
-  sellConfThreshold: number      // 0.65 正常，0.70 低準確率時提高
-  momentumZone?: 'RED' | 'YELLOW' | 'GREEN'  // Layer 6 — last applied zone (for logs/UI)
-}
+import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from '../lib/riskTypes'
+import { checkP1Mdd } from '../lib/riskChecks/p1Mdd'
+import { checkP2Accuracy } from '../lib/riskChecks/p2Accuracy'
+import { checkP3MarketRisk } from '../lib/riskChecks/p3MarketRisk'
+import { checkP4Breadth } from '../lib/riskChecks/p4Breadth'
+import { checkP5Losses } from '../lib/riskChecks/p5Losses'
+import { checkP6Momentum } from '../lib/riskChecks/p6Momentum'
+import { checkP7Streak } from '../lib/riskChecks/p7Streak'
+
+type CircuitBreakerState = _CBState
 
 async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVNamespace): Promise<CircuitBreakerState> {
   const cc = cfg.circuit
@@ -262,192 +267,24 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
     buyConfThreshold: effectiveBuy,
     sellConfThreshold: effectiveSell,
   }
+  const deps: LegacyLayerDeps = { defaults, effectiveBuy, effectiveSell }
 
-  // Layer 1: 30 日滾動回撤 > drawdownHalt → 暫停自動交易
-  const { results: snapshots } = await db.prepare(
-    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 30'
-  ).bind(ACCOUNT_ID).all<any>()
-
-  if (snapshots && snapshots.length >= 3) {
-    const values = snapshots.map((s: any) => s.total_value as number)
-    const current  = values[0]
-    const maxValue = Math.max(...values)
-    const drawdown = maxValue > 0 ? (maxValue - current) / maxValue : 0
-
-    // P1-9: MDD-based 動態部位管理（FinLab 槓桿調控公式）
-    // M(k) = gamma * (epsilon_bar - mdd(k)) / (1 - mdd(k))
-    // gamma=1（無槓桿），epsilon_bar=drawdownHalt（最大容忍回撤）
-    // 效果：MDD 增加 → 逐步縮減 maxPositionPct，接近上限時幾乎清倉
-    if (drawdown > cc.drawdownHalt) {
-      console.warn(`[CircuitBreaker] Layer1 HALT: drawdown ${(drawdown * 100).toFixed(1)}% > ${(cc.drawdownHalt * 100).toFixed(0)}%`)
-      // Phase 2: 用 effective threshold 而非 hardcode raised conf
-      const haltConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
-      return { halt: true, reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`, maxPositionPct: 0, buyConfThreshold: haltConf, sellConfThreshold: haltConf }
-    } else if (drawdown > cc.drawdownScaleStart) {
-      // CPPI-style linear scaling (Black & Perold 1992 JEDC):
-      // mult=1.0 at drawdownScaleStart, mult=0.0 at drawdownHalt, linear between.
-      // Replaces FinLab formula M=(ε-DD)/(1-DD) which was dominated by mddMultFloor
-      // across the entire 3%-15% range (effectively a step function, not smooth).
-      const mddMultiplier = Math.max(cc.mddMultFloor, (cc.drawdownHalt - drawdown) / (cc.drawdownHalt - cc.drawdownScaleStart))
-      const adjustedPosPct = cc.maxPositionPct * mddMultiplier
-      // Phase 2: SCALE 階段也用 effective baseline+delta，drawdown 過半才額外加嚴
-      // 2026-04-18 #36: drawdownConfTriggerRatio promoted to KV (was hardcode 0.5)
-      const adjustedConf = drawdown > cc.drawdownHalt * cc.drawdownConfTriggerRatio
-        ? Math.max(cc.drawdownRaisedConf, effectiveBuy)
-        : effectiveBuy
-      console.log(`[CircuitBreaker] Layer1 SCALE: drawdown ${(drawdown * 100).toFixed(1)}% → posPct ${(adjustedPosPct * 100).toFixed(1)}% (mult=${mddMultiplier.toFixed(2)})`)
-      return { ...defaults, maxPositionPct: adjustedPosPct, buyConfThreshold: adjustedConf, reason: `MDD ${(drawdown * 100).toFixed(1)}% 動態縮減` }
-    }
+  // Legacy ordering L1 → L2 → L3 → L4 → L6 → L7 → L5 (M15 known masking).
+  // Each layer returns null (continue) or CircuitBreakerState (terminal early return).
+  // R2 will replace early-return with full-chain merge.
+  const layers: Array<() => Promise<CircuitBreakerState | null>> = [
+    () => checkP1Mdd(db, cfg, deps),
+    () => checkP2Accuracy(db, kv, cfg, deps),
+    () => checkP3MarketRisk(db, cfg, deps),
+    () => checkP4Breadth(db, cfg, deps),
+    () => checkP6Momentum(db, deps),
+    () => checkP7Streak(db, cfg, deps),
+    () => checkP5Losses(db, deps),
+  ]
+  for (const run of layers) {
+    const r = await run()
+    if (r) return r
   }
-
-  // Layer 2: 模型近期準確率 < lowAccuracyThreshold → 提高信心門檻
-  // TODO(M15): Layers 2-7 use early-return → Layer 2 firing masks Layers 3-7.
-  // A more robust design would chain all layers and take the strictest result.
-  // Current ordering: 1(MDD)→2(accuracy)→3(risk)→4(breadth)→6(momentum)→7(streak)→5(losses)
-  // Phase 2 fix: 改讀 ml:adaptive_params.recent_accuracy_30d (single source of truth)
-  // 之前自己 SQL 算 over 20 days 算出 18.6%，跟 adaptive 60% 差距大
-  // 2026-04-18 #36: defaultAccuracy promoted to KV (was hardcode 0.5)
-  const defaultAcc = cc.defaultAccuracy ?? 0.5
-  let recentAcc = defaultAcc
-  if (kv) {
-    try {
-      const { getAdaptiveParams } = await import('../lib/adaptiveConfig')
-      const adaptive = await getAdaptiveParams(kv)
-      if (adaptive?.recent_accuracy_30d != null) {
-        recentAcc = adaptive.recent_accuracy_30d
-      }
-    } catch { /* fallback to local SQL */ }
-  }
-  if (recentAcc === defaultAcc) {
-    // adaptive_params 沒值 → fallback 到本地 SQL（保持 backwards compat）
-    // Sprint 4-3 root cause fix (2026-04-07):
-    // 之前 WHERE direction_correct IS NOT NULL 會納入 -1 (neutral HOLD/NO_SIGNAL)
-    // 把 HOLD 當 wrong 拉低 accuracy 到 18.6% (D1 實測: 161/865)
-    // 正確語意應該對齊 model_accuracy 表的 filter: direction_correct IN (0, 1)
-    // 新結果 161/292 = 55.1% (對齊 adaptive path)
-    const accuracyRow = await db.prepare(`
-      SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
-      FROM predictions
-      WHERE generated_at >= datetime('now', '-30 days')
-      AND direction_correct IN (0, 1)
-    `).first<any>()
-    recentAcc = accuracyRow?.acc ?? defaultAcc
-  }
-  if (recentAcc < cc.lowAccuracyThreshold) {
-    console.warn(`[CircuitBreaker] Layer2: model accuracy ${(recentAcc * 100).toFixed(1)}% < ${(cc.lowAccuracyThreshold * 100).toFixed(0)}%, raising threshold`)
-    // Phase 2: raised conf 也是相對 effective baseline
-    const raisedConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
-    return { ...defaults, buyConfThreshold: raisedConf, sellConfThreshold: raisedConf, reason: `模型近期準確率 ${(recentAcc * 100).toFixed(1)}%` }
-  }
-
-  // Layer 3: 大盤風險 HIGH/VERY_HIGH → 縮減最大部位
-  const marketRisk = await db.prepare(
-    'SELECT risk_level FROM market_risk ORDER BY date DESC LIMIT 1'
-  ).first<any>()
-
-  const riskStr = (marketRisk?.risk_level ?? '').toString().toUpperCase()
-  const isHighVol = riskStr === 'HIGH' || riskStr === 'VERY_HIGH'
-  if (isHighVol) {
-    console.warn(`[CircuitBreaker] Layer3: market risk ${marketRisk?.risk_level}, reducing max position to ${(cc.highVolReducedPosPct * 100).toFixed(0)}%`)
-    return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
-  }
-
-  // Layer 4: 大盤廣度 — 多頭排列 < threshold → 空頭擴散，縮減倉位
-  const breadth = await db.prepare(
-    'SELECT bull_alignment_pct, advance_ratio FROM market_breadth ORDER BY date DESC LIMIT 1'
-  ).first<any>()
-  const bullAlignmentThreshold = cfg.circuit.bullAlignmentThreshold ?? 20
-  if (breadth?.bull_alignment_pct == null) {
-    console.warn('[CircuitBreaker] Layer4: market_breadth missing or NULL — skipping breadth check')
-  } else if (breadth.bull_alignment_pct < bullAlignmentThreshold) {
-    const advRatio = breadth.advance_ratio != null ? ` adv_ratio=${Number(breadth.advance_ratio).toFixed(2)}` : ''
-    console.warn(`[CircuitBreaker] Layer4: bull alignment ${breadth.bull_alignment_pct}% < ${bullAlignmentThreshold}%${advRatio}, reducing position`)
-    return { ...defaults, maxPositionPct: cc.highVolReducedPosPct }
-  }
-
-  // Layer 6: Momentum Crash Zone（Daniel & Moskowitz 2016）
-  // 候選池擁擠度在 36 個月分布中的 percentile rank → 縮減倉位
-  // RED (rank>P90) → posPct × 0.3；YELLOW (P70-P90) → × 0.7；GREEN → 不變
-  // 在 Layer 5 前執行（Layer 5 會 return halt，優先處理行為紀律）
-  try {
-    const { readCurrentZone, ZONE_MULTIPLIER } = await import('../lib/momentumZone')
-    const zoneInfo = await readCurrentZone(db)
-    if (zoneInfo.zone !== 'GREEN') {
-      const mult = ZONE_MULTIPLIER[zoneInfo.zone]
-      const adjusted = defaults.maxPositionPct * mult
-      console.warn(
-        `[CircuitBreaker] Layer6: momentum zone ${zoneInfo.zone} ` +
-        `(date=${zoneInfo.date}, rank=${zoneInfo.percentile_rank?.toFixed(3) ?? 'n/a'}) ` +
-        `→ posPct ${(adjusted * 100).toFixed(1)}% (× ${mult})`
-      )
-      return {
-        ...defaults,
-        maxPositionPct: adjusted,
-        momentumZone: zoneInfo.zone,
-        reason: `動能擁擠 ${zoneInfo.zone}（rank ${((zoneInfo.percentile_rank ?? 0) * 100).toFixed(0)}%）`,
-      }
-    }
-  } catch (e) {
-    console.warn('[CircuitBreaker] Layer6 check failed (non-fatal):', e)
-  }
-
-  // Layer 7: Recent Prediction Streak（nofx-inspired 急性降載）
-  // 查最近 5 筆已驗證 predictions 的 direction_correct
-  // ≥ 4 次錯 → posPct × 0.3（非 halt，避免過度保守）
-  // 與 Layer 2（30 日準確率）互補：Layer 2 慢訊號，Layer 7 急性訊號
-  try {
-    const { results: recent } = await db.prepare(`
-      SELECT direction_correct FROM predictions
-       WHERE direction_correct IN (0, 1)
-       ORDER BY generated_at DESC LIMIT 5
-    `).all<{ direction_correct: number }>()
-    if (recent && recent.length >= 5) {
-      const wrongCount = recent.filter((r: any) => Number(r.direction_correct) === 0).length
-      if (wrongCount >= 4) {
-        // 2026-04-18 #36: layer7ScaleRatio promoted to KV
-        const layer7Scale = cc.layer7ScaleRatio ?? 0.3
-        const adjusted = defaults.maxPositionPct * layer7Scale
-        console.warn(
-          `[CircuitBreaker] Layer7 SCALE: recent streak ${wrongCount}/5 wrong ` +
-          `→ posPct ${(adjusted * 100).toFixed(1)}% (× ${layer7Scale})`
-        )
-        return {
-          ...defaults,
-          maxPositionPct: adjusted,
-          reason: `近 5 筆預測 ${wrongCount} 次錯誤（急性降載）`,
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[CircuitBreaker] Layer7 check failed (non-fatal):', e)
-  }
-
-  // Layer 5: 連續虧損暫停（nofx SafetyMode）— 最近 5 筆平倉中 >= 3 筆虧損 → 暫停 1 天
-  try {
-    const { results: recentSells } = await db.prepare(
-      `SELECT price, note FROM paper_orders WHERE account_id=? AND side='sell' ORDER BY id DESC LIMIT 5`
-    ).bind(ACCOUNT_ID).all<any>()
-    if (recentSells && recentSells.length >= 3) {
-      let lossCount = 0
-      for (const s of recentSells) {
-        try {
-          const n = typeof s.note === 'string' ? JSON.parse(s.note) : s.note
-          const entry = n?.entry_price ?? s.price
-          if (entry > 0 && s.price < entry) lossCount++
-        } catch {
-          // Malformed note JSON — conservatively count as loss (defensive)
-          if (s.price > 0) lossCount++
-        }
-      }
-      if (lossCount >= 3) {
-        console.warn(`[CircuitBreaker] Layer5 HALT: ${lossCount}/${recentSells.length} 近期交易虧損，暫停掛單`)
-        return { halt: true, reason: `連續 ${lossCount} 筆虧損（SafetyMode）`, ...defaults }
-      }
-    }
-  } catch (e) {
-    console.warn('[CircuitBreaker] Layer5 check failed (non-fatal):', e)
-  }
-
   return defaults
 }
 

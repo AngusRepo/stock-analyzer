@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Body
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services.d1_client import query as d1_query
 from services.kv_pusher import push_optuna_result

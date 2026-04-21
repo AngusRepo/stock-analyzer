@@ -30,6 +30,7 @@ const TASK_NAMES: Record<string, string> = {
   // Daily
   'us-leading':               'US Leading',
   'news-analyst':             'News Analyst',
+  'night-repredict':          'Night Re-predict',
   'morning-setup':            'Morning Setup',
   'morning-briefing':         'Morning Briefing',
   'daily-snapshot':           'Daily Snapshot',

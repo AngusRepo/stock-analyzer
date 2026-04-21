@@ -87,6 +87,10 @@ crons = [
   # TW 週一 06:30 = UTC 週日 22:30 → 必須含 Sun(0)，否則週一早上不觸發
   "30 22 * * SUN-THU",   # 06:30 TW (=UTC Sun-Thu 22:30) → 美股先行指標
   "45 22 * * SUN-THU",   # 06:45 TW (=UTC Sun-Thu 22:45) → News Analyst (Batch C)
+  # #47 夜盤 ML re-predict (2026-04-21): 夾在 news-analyst 06:45 與 morning-setup
+  # 07:15 之間。US leading + news 都已 fetch, 重跑 pipeline 可拿到 fresher features
+  # 供 morning-setup 選股。UTC Sun-Thu 23:00 = TW Mon-Fri 07:00.
+  "0 23 * * SUN-THU",    # 07:00 TW → Night Re-predict
   "15 23 * * SUN-THU",   # 07:15 TW (=UTC Sun-Thu 23:15) → Morning Setup（Debate + 掛單）
   "50 23 * * SUN-THU",   # 07:50 TW (=UTC Sun-Thu 23:50) → 盤前攻略 Discord
   "50 0 * * 1-5",        # 08:50 TW (=UTC Mon-Fri 00:50) → 盤前 warmup（ML + Shioaji Proxy）

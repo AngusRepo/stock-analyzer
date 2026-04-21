@@ -32,6 +32,7 @@ const JOB_DEFS: JobDef[] = [
   // ── Daily (all weekday-only) ──────────────────────────────────────────────
   { id: 'us-leading',              name: 'US Leading',              schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
   { id: 'news-analyst',            name: 'News Analyst',            schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
+  { id: 'night-repredict',         name: 'Night Re-predict',        schedule: 'Mon-Fri 07:00', cron: '0 23 * * SUN-THU',  group: 'daily' },
   { id: 'morning-setup',           name: 'Morning Setup',           schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
   { id: 'morning-briefing',        name: 'Morning Briefing',        schedule: 'Mon-Fri 07:50', cron: '50 23 * * SUN-THU', group: 'daily' },
   { id: 'daily-snapshot',          name: 'Daily Snapshot',          schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5',     group: 'daily' },

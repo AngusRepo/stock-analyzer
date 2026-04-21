@@ -32,7 +32,9 @@ const JOB_DEFS: JobDef[] = [
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
   { id: 'obsidian-daily', name: 'Obsidian Sync', schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5', group: 'daily' },
   { id: 'verify', name: 'Verify', schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5', group: 'daily' },
-  { id: 'data-update', name: 'Adapt Params', schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5', group: 'daily' },
+  // 2026-04-21 fix: cron handler writes log key `adapt` (runWithLog('adapt', …))
+  // Dashboard was querying `cron:log:data-update:<date>` → always 404 → red.
+  { id: 'adapt', name: 'Adapt Params', schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5', group: 'daily' },
 
   // Intraday
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Weekdays 09-13h', cron: '* 1-5 * * 1-5', group: 'intraday' },

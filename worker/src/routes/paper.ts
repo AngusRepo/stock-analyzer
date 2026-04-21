@@ -269,9 +269,25 @@ async function checkCircuitBreakers(db: D1Database, cfg: TradingConfig, kv?: KVN
   }
   const deps: LegacyLayerDeps = { defaults, effectiveBuy, effectiveSell }
 
-  // Legacy ordering L1 → L2 → L3 → L4 → L6 → L7 → L5 (M15 known masking).
-  // Each layer returns null (continue) or CircuitBreakerState (terminal early return).
-  // R2 will replace early-return with full-chain merge.
+  // 2026-04-21 R2: KV flag risk:use_chain controls path. Default = v1 (chain).
+  //   v1 (default): runPortfolioChecks — parallel all 7 + MIN/MAX merge. More
+  //                 conservative. Multiple layers can combine (L6 × L7 stack).
+  //   v0: legacy early-return L1→L2→L3→L4→L6→L7→L5 (R1 behavior, rollback).
+  const flag = (await kv?.get('risk:use_chain')) ?? 'v1'
+  if (flag === 'v1') {
+    const { runPortfolioChecks } = await import('../lib/riskChain')
+    const agg = await runPortfolioChecks(db, cfg, kv, deps)
+    return {
+      halt: agg.halt,
+      reason: agg.reason || undefined,
+      maxPositionPct: agg.maxPositionPct,
+      buyConfThreshold: agg.buyConfThreshold,
+      sellConfThreshold: agg.sellConfThreshold,
+      momentumZone: agg.momentumZone,
+    }
+  }
+
+  // v0: legacy early-return path preserved for emergency rollback.
   const layers: Array<() => Promise<CircuitBreakerState | null>> = [
     () => checkP1Mdd(db, cfg, deps),
     () => checkP2Accuracy(db, kv, cfg, deps),

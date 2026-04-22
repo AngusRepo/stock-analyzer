@@ -260,11 +260,19 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         const qf = qfMap.get(b.symbol)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
         // prefix with price line. Previously price line 100% replaced reason.
+        // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
+        // that shouldn't be shown to end users (it's a hint for debate LLM).
         const priceLine = `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`
+        const stripProvenance = (s: string): string => {
+          // Remove "⚠️ Signal Provenance (...): ... Judge on ... context." paragraph.
+          // Preserves zh-TW LLM reason that follows (separated by blank line or period).
+          return s.replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/, '').trim()
+        }
+        const cleanReason = b.reason ? stripProvenance(b.reason) : ''
         const rec = {
           symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
           current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
-          reason: b.reason ? `${priceLine}\n\n${b.reason}` : priceLine,
+          reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? null,
           chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
         }

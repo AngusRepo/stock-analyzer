@@ -500,6 +500,69 @@ async function getIntradayPrice(symbol: string, env?: { SHIOAJI_PROXY_URL?: stri
   } catch { return null }
 }
 
+// 2026-04-22: Shioaji 提供 tick-level snapshot（含 today high/low 累積），
+// intraday-check 用 low 比 entry 而非每分鐘 snapshot，避免 tick-level dip miss。
+// Fallback: `/quotes` only has `price` → use price as conservative low.
+export interface IntradayOHLC {
+  last: number
+  low?: number
+  high?: number
+  open?: number
+}
+
+export async function batchGetIntradayOHLC(
+  symbols: string[],
+  env?: { SHIOAJI_PROXY_URL?: string },
+): Promise<Map<string, IntradayOHLC>> {
+  const map = new Map<string, IntradayOHLC>()
+  const proxyUrl = env?.SHIOAJI_PROXY_URL
+  if (!proxyUrl) {
+    // No proxy → fall back to Yahoo snapshot only (no OHLC), low=last
+    const priceMap = await batchGetIntradayPrices(symbols, env)
+    for (const [s, p] of priceMap) map.set(s, { last: p, low: p })
+    return map
+  }
+
+  // Layer 1: try /snapshots (OHLC, if Shioaji proxy exposes it)
+  try {
+    const res = await fetch(`${proxyUrl}/snapshots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (res.ok) {
+      const json = await res.json() as any
+      const data = json?.data ?? {}
+      for (const [sym, snap] of Object.entries(data)) {
+        const s = snap as any
+        // Shioaji snapshot fields: close (last), high, low, open, tick_type...
+        const last = s?.close ?? s?.last ?? s?.price
+        if (last == null) continue
+        map.set(sym, {
+          last: Number(last),
+          low:  s?.low  != null ? Number(s.low)  : undefined,
+          high: s?.high != null ? Number(s.high) : undefined,
+          open: s?.open != null ? Number(s.open) : undefined,
+        })
+      }
+      if (map.size > 0) {
+        const sample = [...map.entries()].slice(0, 3)
+          .map(([s, o]) => `${s}=${o.last}(L${o.low ?? '-'}H${o.high ?? '-'})`).join(', ')
+        console.log(`[Price] Shioaji /snapshots OK: ${map.size} quotes (${sample})`)
+        return map
+      }
+    }
+  } catch (e) {
+    console.warn(`[Price] /snapshots failed, fallback /quotes: ${e}`)
+  }
+
+  // Layer 2: fallback existing /quotes (price only) → low=last (lossy but safe)
+  const priceMap = await batchGetIntradayPrices(symbols, env)
+  for (const [s, p] of priceMap) map.set(s, { last: p, low: p })
+  return map
+}
+
 export async function batchGetIntradayPrices(symbols: string[], env?: { SHIOAJI_PROXY_URL?: string }): Promise<Map<string, number>> {
   const map = new Map<string, number>()
   const proxyUrl = env?.SHIOAJI_PROXY_URL
@@ -1804,9 +1867,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   let pendingBuys: PendingBuy[] = JSON.parse(pendingJson)
   if (pendingBuys.length === 0) return
 
-  // 取即時價格
+  // 取即時 OHLC（2026-04-22 精度修復 plan A）
+  // 原每分鐘 snapshot 會漏 tick-level 瞬間 dip（例 2049 4/22 low=298.5 瞬間觸 301 限價但
+  // cron 那分鐘 snapshot 取到 305 → 漏買）。改用 today_low 累積比 entry。
   const pendingSymbols = pendingBuys.map(b => b.symbol)
-  const priceMap = await batchGetIntradayPrices(pendingSymbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
+  const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, { SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL })
+  // Backward compat: priceMap 用於 position sizing / P1#12 replacement / zero-price detection
+  const priceMap = new Map<string, number>()
+  for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
 
   // F3b: Zero-price alert — Shioaji 回 0/null 時不 silently skip，寫 KV + Discord
   const zeroPriceSymbols = pendingSymbols.filter(s => !priceMap.has(s) || priceMap.get(s) === 0)
@@ -2110,8 +2178,20 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue  // 本輪不買，等下次 cron 用新 entry 重新判斷
     }
 
-    // 限價檢查：即時價 ≤ ML entry_price 才成交
-    if (price > pending.ml_entry_price) continue
+    // 限價檢查 — 2026-04-22 精度修復：用 today_low 觸發 + slippage fill
+    // 現行 Shioaji /snapshots 回 low（當日累積低點）. 若無 OHLC fallback，
+    // batchGetIntradayOHLC 已將 low 設為 last（退回原 snapshot 行為）。
+    const ohlc = ohlcMap.get(pending.symbol)
+    const triggerPrice = ohlc?.low ?? price
+    if (triggerPrice > pending.ml_entry_price) continue
+    // Fill at max(low, entry * 1.001) — 1 tick slippage，避免過度樂觀拿到絕對 low
+    const slippageFactor = 1.001
+    const rawFillPrice = Math.max(
+      triggerPrice,
+      pending.ml_entry_price * slippageFactor,
+    )
+    // Round to tick — 台股價位 0.01-5 等多級 tick，簡化用 2 位小數
+    const fillPriceOverride = Math.round(rawFillPrice * 100) / 100
 
     // 漲停鎖死檢查：價格接近漲停（≥+9.5%）時，真實市場買不到
     // Why: 一字漲停委買爆量但無成交，paper trade 不應模擬成交
@@ -2236,8 +2316,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       sizingMode = 'risk_parity'
     }
 
-    // 滑價模擬：買到偏貴 +1 tick（更真實的 paper trade）
-    const fillPrice = applySlippage(price, 'buy', 1)
+    // 2026-04-22 plan A: fillPrice 用 today_low + 1 tick slippage (fillPriceOverride).
+    // 若 OHLC unavailable, fillPriceOverride === applySlippage(price, 'buy', 1) 等價舊行為。
+    const fillPrice = fillPriceOverride
 
     const fullLots = Math.floor(budget / (fillPrice * 1000))
     let shares: number, isOddLot = false

@@ -1591,18 +1591,6 @@ app.post('/api/admin/trigger/:task', async (c) => {
       const r = await computeSectorLeaders(c.env.DB)
       return `sectors=${r.sectorCount} leaders=${r.leaderCount}`
     },
-    'night-repredict': async () => {
-      if (!c.env.ML_CONTROLLER_URL) return 'SKIP: no ML_CONTROLLER_URL'
-      const { twToday } = await import('./lib/dateUtils')
-      const twDate = twToday()
-      const headers: Record<string, string> = { 'Content-Length': '0' }
-      if (c.env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = c.env.ML_CONTROLLER_SECRET
-      // fire-and-forget manual trigger
-      fetch(`${c.env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
-        method: 'POST', headers, signal: AbortSignal.timeout(30_000),
-      }).catch(e => console.warn('[night-repredict] manual trigger error:', e))
-      return `triggered pipeline/v2/run?date=${twDate}`
-    },
     // force_monthly=true 觸發完整月度 retrain（含 feature selection）
     // fire-and-forget：postController 在 background 跑，不等 ~14min prep 回應
     retrain: async () => {
@@ -3154,25 +3142,6 @@ export default {
         const { runDailyNewsAnalysis } = await import('./lib/newsAnalyst')
         const report = await runDailyNewsAnalysis(env as any)
         return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
-      })
-    } else if (cron === '0 23 * * SUN-THU') {
-      // #47 Night re-predict (2026-04-21): 07:00 TW weekday.
-      // us-leading (06:30) + news-analyst (06:45) finished → fresher features.
-      // Re-triggers full pipeline so morning-setup (07:15) reads latest predictions.
-      // Fire-and-forget — Worker doesn't wait for Modal completion.
-      runWithLog('night-repredict', async () => {
-        if (!env.ML_CONTROLLER_URL) return 'SKIP: no ML_CONTROLLER_URL'
-        const { twToday } = await import('./lib/dateUtils')
-        const twDate = twToday()
-        const headers: Record<string, string> = { 'Content-Length': '0' }
-        if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
-        // fire-and-forget with generous timeout budget (pipeline 5-10 min typical)
-        ctx.waitUntil(
-          fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
-            method: 'POST', headers, signal: AbortSignal.timeout(30_000),
-          }).catch(e => console.warn('[night-repredict] fire-and-forget error:', e))
-        )
-        return `triggered pipeline/v2/run?date=${twDate}`
       })
     } else if (cron === '50 23 * * SUN-THU') {
       runWithLog('morning-briefing', async () => {

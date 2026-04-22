@@ -258,10 +258,14 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
+        // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
+        // prefix with price line. Previously price line 100% replaced reason.
+        const priceLine = `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`
         const rec = {
           symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
           current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
-          reason: `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`,
+          reason: b.reason ? `${priceLine}\n\n${b.reason}` : priceLine,
+          watch_points: b.watch_points ?? null,
           chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
         }
         return (

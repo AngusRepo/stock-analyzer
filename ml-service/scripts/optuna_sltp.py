@@ -44,9 +44,12 @@ except ImportError:
 
 def load_orders(csv_path: str) -> pl.DataFrame:
     """Load paper_orders from CSV."""
-    df = pl.read_csv(csv_path)
-    df = df.with_columns(pl.col("created_at").str.to_datetime())
-    return df.sort("created_at")
+    return (
+        pl.scan_csv(csv_path)
+        .with_columns(pl.col("created_at").str.to_datetime(strict=False))
+        .sort("created_at")
+        .collect()
+    )
 
 
 def load_orders_from_d1(db_url: str, token: str) -> pl.DataFrame:

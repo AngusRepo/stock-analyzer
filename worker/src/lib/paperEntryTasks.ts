@@ -6,19 +6,24 @@ import {
   getCurrentRegime,
   isDayTradeAllowed,
   logRegimeShadow,
+  recordSellSettlement,
 } from './paperMarketData'
 import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { buildSellOrderNote } from './paperOrderAccounting'
 import { forceDayTradeClose, pollIntradayStopLoss } from './paperExitTasks'
 import {
   loadPendingBuySnapshot,
   markPendingBuyExecutionEvents,
-  markPendingBuysFilled,
+  persistPendingBuyActiveState,
   type PendingBuy,
 } from './pendingBuyStore'
-import type { PendingBuyExecutionEvent } from './pendingBuyExecutionState'
+import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
 import { checkCircuitBreakers, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTradeExecutionPolicy'
+import { appendPendingBuyExecutionNote } from './pendingBuyExecutionState'
+import { formatExecutionStatusEvent } from './executionEvent'
+import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -185,7 +190,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
 
     const { results: fullPositions } = await env.DB.prepare(`
-      SELECT symbol, shares, avg_cost, entry_date, entry_price,
+      SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
              initial_stop, tp1_price, tp1_hit, highest_since_entry
       FROM paper_positions WHERE account_id=? AND shares>0
     `).bind(ACCOUNT_ID).all<any>()
@@ -256,9 +261,20 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const sellTax = calcTax(sellValue, cfg)
       const sellComm = calcCommission(sellValue, cfg)
       const sellProceeds = sellValue - sellTax - sellComm
+      const sellNote = buildSellOrderNote({
+        reason: 'auto_swap',
+        weakness_score: Math.round(weakest.score * 10) / 10,
+        replaced_by: pending.symbol,
+        entry_date: weakPos.entry_date ?? null,
+      }, {
+        entryPrice: weakPos.entry_price ?? weakPos.avg_cost,
+        exitPrice: sellPrice,
+        shares: weakPos.shares,
+        commission: sellComm,
+        tax: sellTax,
+      })
 
       await env.DB.batch([
-        env.DB.prepare("UPDATE paper_accounts SET cash = cash + ?, updated_at=datetime('now') WHERE id=?").bind(sellProceeds, ACCOUNT_ID),
         env.DB.prepare(`
           INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
@@ -270,11 +286,23 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           sellPrice,
           sellComm,
           sellTax,
-          -sellProceeds,
-          `SWAP_OUT: weakness=${weakest.score.toFixed(1)}, replaced by ${pending.symbol}`,
+          sellProceeds,
+          sellNote,
         ),
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, weakest.symbol),
       ])
+      const swapOrderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, weakest.symbol, sellProceeds)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: weakest.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'filled',
+        reason: 'auto_swap',
+        detail: { replaced_by: pending.symbol, weakness_score: Math.round(weakest.score * 10) / 10 },
+        orderId: swapOrderId,
+        source: 'auto_swap',
+      })
       acc.cash += sellProceeds
 
       weaknessScores.shift()
@@ -361,6 +389,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   let stateChanged = false
   const executionEvents: PendingBuyExecutionEvent[] = []
+  const executionAuditEvents: { symbol: string; status: string; reason: string; detail?: string | null }[] = []
+  const recordExecutionEvent = (
+    symbol: string,
+    status: PendingBuyTerminalExecutionStatus,
+    reason: string,
+    detail?: string | null,
+  ) => {
+    executionEvents.push({ symbol, status, reason })
+    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+  }
+  const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
+    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+  }
   for (const pending of [...pendingBuys]) {
     if ((pending.debate_verdict ?? 'PENDING') === 'PENDING') continue
     const price = priceMap.get(pending.symbol)
@@ -368,7 +409,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     if (blockedSymbols.has(pending.symbol)) {
       console.warn(`[Intraday] ${pending.symbol} 屬於懲罰/注意/下市風險清單，移出待買清單`)
-      executionEvents.push({ symbol: pending.symbol, status: 'skipped', reason: 'blocked_symbol' })
+      recordExecutionEvent(pending.symbol, 'skipped', 'blocked_symbol')
       stateChanged = true
       continue
     }
@@ -400,18 +441,32 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         ;(pendingBuys[idx] as any).retry_count = preTrade.retryCount ?? ((pending as any).retry_count ?? 0) + 1
         pendingBuys[idx].ml_entry_price = preTrade.nextEntryPrice
         pendingBuys[idx].ml_stop_loss = preTrade.nextStopLoss ?? pending.ml_stop_loss
+        pendingBuys[idx] = appendPendingBuyExecutionNote(
+          pendingBuys[idx],
+          formatExecutionStatusEvent('requote', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`),
+        ) as PendingBuy
+        recordExecutionNote(pending.symbol, 'requote', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`)
       }
       console.log(`[PreTrade] requote ${pending.symbol}: ${pending.ml_entry_price} -> ${preTrade.nextEntryPrice} (${preTrade.reason})`)
       stateChanged = true
       continue
     }
     if (preTrade.action === 'DEFER') {
+      const idx = pendingBuys.findIndex((b) => b.symbol === pending.symbol)
+      if (idx >= 0) {
+        pendingBuys[idx] = appendPendingBuyExecutionNote(
+          pendingBuys[idx],
+          formatExecutionStatusEvent('deferred', preTrade.reason),
+        ) as PendingBuy
+        recordExecutionNote(pending.symbol, 'deferred', preTrade.reason)
+        stateChanged = true
+      }
       console.log(`[PreTrade] defer ${pending.symbol}: ${preTrade.reason}`)
       continue
     }
     if (preTrade.action === 'SKIP') {
       console.log(`[PreTrade] skip ${pending.symbol}: ${preTrade.reason}`)
-      executionEvents.push({ symbol: pending.symbol, status: 'skipped', reason: preTrade.reason })
+      recordExecutionEvent(pending.symbol, 'skipped', preTrade.reason)
       stateChanged = true
       continue
     }
@@ -427,7 +482,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     if (await hasFilledBuyToday(env, pending.symbol, today)) {
       console.log(`[Intraday] ${pending.symbol}: already filled today, removing stale pending buy`)
-      executionEvents.push({ symbol: pending.symbol, status: 'filled', reason: 'already_filled_today' })
+      recordExecutionEvent(pending.symbol, 'filled', 'already_filled_today')
       stateChanged = true
       continue
     }
@@ -524,7 +579,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const intent = await acquirePaperBuyIntent(env, today, pending.symbol)
     if (!intent.acquired) {
       console.log(`[Intraday] ${pending.symbol}: duplicate buy intent, skip`)
-      executionEvents.push({ symbol: pending.symbol, status: 'skipped', reason: 'duplicate_buy_intent' })
+      recordExecutionEvent(pending.symbol, 'skipped', 'duplicate_buy_intent')
       stateChanged = true
       continue
     }
@@ -610,6 +665,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     await env.DB.prepare(
       "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'buy', ?, ?, ?)",
     ).bind(ACCOUNT_ID, autoOrderId?.id ?? 0, pending.symbol, totalCost, today, settleDate).run()
+    await recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol: pending.symbol,
+      side: 'buy',
+      eventType: 'paper_order',
+      status: 'filled',
+      reason: 'paper_order_created',
+      detail: { intent_key: intent.intentKey, shares, fill_price: fillPrice, total_cost: totalCost },
+      orderId: autoOrderId?.id ?? null,
+      source: 'auto_ml',
+    })
 
     ;(acc as any).cash -= totalCost
     dailyBuyTotal += totalCost
@@ -657,13 +723,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\nSL $${initialStop.toFixed(1)} | TP1 $${tp1Price.toFixed(1)} | TP2 $${tp2Price.toFixed(1)}`,
     )
 
-    executionEvents.push({ symbol: pending.symbol, status: 'filled', reason: 'paper_order_created' })
+    recordExecutionEvent(pending.symbol, 'filled', 'paper_order_created')
     stateChanged = true
   }
 
   if (executionEvents.length > 0) {
-    await markPendingBuyExecutionEvents(env, today, pendingBuys, executionEvents, { stage: 'intraday_check' })
+    await markPendingBuyExecutionEvents(env, today, pendingBuys, executionEvents, { stage: 'intraday_check', execution_events: executionAuditEvents })
   } else if (stateChanged) {
-    await markPendingBuysFilled(env, today, pendingBuys, { stage: 'intraday_check' })
+    await persistPendingBuyActiveState(env, today, pendingBuys, { stage: 'intraday_check', execution_events: executionAuditEvents })
   }
 }

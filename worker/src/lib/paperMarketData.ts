@@ -84,7 +84,7 @@ export async function recordSellSettlement(
   accountId: number,
   symbol: string,
   proceeds: number,
-): Promise<void> {
+): Promise<number | null> {
   const { getSettlementDate } = await import('./dateUtils')
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const settleDate = await getSettlementDate(todayStr, kv)
@@ -95,6 +95,7 @@ export async function recordSellSettlement(
   await db.prepare(
     "INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date) VALUES (?, ?, ?, 'sell', ?, ?, ?)",
   ).bind(accountId, lastOrder?.id ?? 0, symbol, proceeds, todayStr, settleDate).run()
+  return lastOrder?.id ?? null
 }
 
 export async function isDayTradeAllowed(

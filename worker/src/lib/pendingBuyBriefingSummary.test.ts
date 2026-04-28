@@ -10,13 +10,14 @@ function assert(condition: unknown, message: string): void {
     label: '已收斂',
     active_count: 0,
     total_count: 3,
-    execution_counts: { pending: 0, filled: 1, skipped: 2, cancelled: 0, expired: 0 },
+    execution_counts: { pending: 0, filled: 1, skipped: 1, cancelled: 0, expired: 1 },
     debate_counts: { pending: 0, completed: 3, failed: 0, skipped: 0 },
   })
 
   assert(text.includes('**已收斂**'), 'closed briefing should explain the state')
   assert(text.includes('filled 1'), 'closed briefing should include filled count')
-  assert(text.includes('skipped 2'), 'closed briefing should include skipped count')
+  assert(text.includes('skipped 1'), 'closed briefing should include skipped count')
+  assert(text.includes('expired 1'), 'closed briefing should include expired count')
 }
 
 {

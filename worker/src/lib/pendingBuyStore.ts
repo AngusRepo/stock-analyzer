@@ -1,8 +1,10 @@
 import type { Bindings } from '../types'
 import {
   applyPendingBuyExecutionEvents,
+  applyPendingBuySlaExpiry,
   type PendingBuyExecutionEvent,
 } from './pendingBuyExecutionState'
+import { recordPaperExecutionEvents } from './paperExecutionEvents'
 
 export type PendingBuyRunStatus =
   | 'ready'
@@ -429,7 +431,7 @@ export async function appendPendingBuy(
   })
 }
 
-export async function markPendingBuysFilled(
+export async function persistPendingBuyActiveState(
   env: Bindings,
   tradeDate: string,
   remaining: PendingBuy[],
@@ -449,6 +451,8 @@ export async function markPendingBuysFilled(
   })
 }
 
+export const markPendingBuysFilled = persistPendingBuyActiveState
+
 export async function markPendingBuyExecutionEvents(
   env: Bindings,
   tradeDate: string,
@@ -459,6 +463,9 @@ export async function markPendingBuyExecutionEvents(
   if (events.length === 0) return
   const snapshot = await loadPendingBuySnapshot(env, tradeDate, { allowFallbackRecent: false })
   const transition = applyPendingBuyExecutionEvents(pendingBuys, events)
+  const parsedRunId = Number(snapshot.meta?.run_id)
+  const pendingRunId = Number.isFinite(parsedRunId) && parsedRunId > 0 ? parsedRunId : null
+  const auditEvents = Array.isArray(meta?.execution_events) ? meta.execution_events as Array<Record<string, unknown>> : []
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate: typeof snapshot.meta?.source_reco_date === 'string' ? String(snapshot.meta?.source_reco_date) : tradeDate,
@@ -472,4 +479,72 @@ export async function markPendingBuyExecutionEvents(
       ...(meta ?? {}),
     },
   })
+  await recordPaperExecutionEvents(env, events.map((event) => {
+    const auditEvent = auditEvents.find((candidate) =>
+      candidate.symbol === event.symbol
+      && candidate.status === event.status
+      && candidate.reason === event.reason
+    )
+    return {
+      tradeDate,
+      symbol: event.symbol,
+      eventType: 'pending_buy',
+      status: event.status,
+      reason: event.reason,
+      detail: auditEvent?.detail ? { detail: auditEvent.detail } : null,
+      pendingRunId,
+      source: typeof meta?.stage === 'string' ? meta.stage : 'pending_buy',
+    }
+  }))
+}
+
+function previousDate(dateStr: string, offsetDays: number): string {
+  return new Date(new Date(`${dateStr}T00:00:00Z`).getTime() - offsetDays * 86400_000)
+    .toISOString()
+    .slice(0, 10)
+}
+
+function normalizeDebateStatus(value: unknown): PendingBuyDebateStatus {
+  return value === 'failed' || value === 'skipped' ? value : 'completed'
+}
+
+export async function expirePendingBuysForDate(
+  env: Bindings,
+  tradeDate: string,
+  reason = 'stale_pending_buy_sla',
+): Promise<number> {
+  const snapshot = await loadPendingBuySnapshot(env, tradeDate, { allowFallbackRecent: false })
+  if (snapshot.pendingBuys.length === 0) return 0
+
+  const transition = applyPendingBuySlaExpiry(snapshot.pendingBuys, reason)
+  if (!transition.changed) return 0
+
+  await replacePendingBuyState(env, {
+    tradeDate,
+    sourceRecoDate: typeof snapshot.meta?.source_reco_date === 'string' ? String(snapshot.meta.source_reco_date) : tradeDate,
+    status: 'ready',
+    debateStatus: normalizeDebateStatus(snapshot.meta?.debate_status),
+    pendingBuys: transition.allItems as PendingBuy[],
+    kvPendingBuys: transition.activeItems as PendingBuy[],
+    meta: {
+      previous_source: snapshot.source,
+      stage: 'sla_expiry',
+      expiry_reason: reason,
+      execution_summary: transition.summary,
+    },
+  })
+
+  return transition.summary.expired
+}
+
+export async function expireRecentPendingBuys(
+  env: Bindings,
+  beforeDate: string,
+  lookbackDays = 4,
+): Promise<number> {
+  let expired = 0
+  for (let offset = 1; offset <= lookbackDays; offset += 1) {
+    expired += await expirePendingBuysForDate(env, previousDate(beforeDate, offset), 'stale_previous_session')
+  }
+  return expired
 }

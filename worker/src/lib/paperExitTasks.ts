@@ -11,6 +11,8 @@ import {
   recordSellSettlement,
 } from './paperMarketData'
 import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
+import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 
@@ -99,6 +101,11 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const commission = calcCommission(txValue, cfg)
     const tax = calcTax(txValue, cfg, true)
     const proceeds = txValue - commission - tax
+    const entryPrice = pos.entry_price ?? pos.avg_cost
+    const sellNote = buildSellOrderNote({
+      reason: `[13:25 daytrade force close] ${decision.reason}`,
+      entry_date: pos.entry_date,
+    }, { entryPrice, exitPrice: price, shares, commission, tax })
 
     await env.DB.batch([
       env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
@@ -116,15 +123,22 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
         tax,
         proceeds,
         null,
-        JSON.stringify({
-          reason: `[13:25 daytrade force close] ${decision.reason}`,
-          entry_price: pos.entry_price ?? pos.avg_cost,
-          entry_date: pos.entry_date,
-        }),
+        sellNote,
       ),
     ])
-    await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
-    const pnl = (price - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
+    const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+    await recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol: pos.symbol,
+      side: 'sell',
+      eventType: 'paper_order',
+      status: 'filled',
+      reason: 'daytrade_force_close',
+      detail: { shares, price, proceeds, exit_reason: decision.reason },
+      orderId,
+      source: 'daytrade_force_close',
+    })
+    const pnl = (price - entryPrice) / entryPrice
     console.log(`[DayTrade] 13:25 force close ${pos.symbol} ${shares} @ ${price} ${(pnl * 100).toFixed(1)}%`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,
@@ -215,6 +229,13 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
+      const entryPx = pos.entry_price ?? pos.avg_cost
+      const daysHeld = pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null
+      const sellNote = buildSellOrderNote({
+        reason: decision.reason,
+        entry_date: pos.entry_date,
+        days_held: daysHeld,
+      }, { entryPrice: entryPx, exitPrice: currentPrice, shares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
@@ -233,18 +254,22 @@ export async function runEODExit(env: Bindings): Promise<void> {
           proceeds,
           sellRecMap.get(pos.symbol)?.signal ?? 'EXIT',
           sellRecMap.get(pos.symbol)?.confidence ?? null,
-          JSON.stringify({
-            reason: decision.reason,
-            entry_price: pos.entry_price,
-            entry_date: pos.entry_date,
-            days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null,
-          }),
+          sellNote,
         ),
       ])
-      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
-      const entryPx = pos.entry_price ?? pos.avg_cost
+      const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: eodToday,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'filled',
+        reason: 'eod_exit',
+        detail: { shares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        orderId,
+        source: 'eod_exit',
+      })
       const exitPnl = (currentPrice - entryPx) / entryPx
-      const daysHeld = pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
       console.log(`[EODExit] full sell ${pos.symbol} ${shares} @ ${currentPrice} entry=${entryPx} days=${daysHeld} pnl=${(exitPnl * 100).toFixed(1)}% ${decision.reason}`)
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
@@ -258,6 +283,12 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
+      const entryPx = pos.entry_price ?? pos.avg_cost
+      const sellNote = buildSellOrderNote({
+        reason: decision.reason,
+        entry_date: pos.entry_date,
+        days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null,
+      }, { entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare(`
@@ -270,10 +301,21 @@ export async function runEODExit(env: Bindings): Promise<void> {
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_tp1', 'TP1', ?, ?)
-        `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, currentPrice, commission, tax, proceeds, null, decision.reason),
+        `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, currentPrice, commission, tax, proceeds, null, sellNote),
       ])
-      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
-      const tp1Pnl = (currentPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
+      const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: eodToday,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'filled',
+        reason: 'eod_tp1',
+        detail: { shares: sellShares, remaining_shares: remainingShares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        orderId,
+        source: 'eod_tp1',
+      })
+      const tp1Pnl = (currentPrice - entryPx) / entryPx
       console.log(`[EODExit] TP1 ${pos.symbol} ${sellShares} @ ${currentPrice}`)
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
@@ -376,6 +418,11 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
+      const entryPx = pos.entry_price ?? pos.avg_cost
+      const sellNote = buildSellOrderNote({
+        reason: `[intraday] ${decision.reason} (mkt=${currentPrice}, -1 tick fill)`,
+        entry_date: pos.entry_date,
+      }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
@@ -393,16 +440,23 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
           tax,
           proceeds,
           null,
-          JSON.stringify({
-            reason: `[intraday] ${decision.reason} (mkt=${currentPrice}, -1 tick fill)`,
-            entry_price: pos.entry_price ?? pos.avg_cost,
-            entry_date: pos.entry_date,
-          }),
+          sellNote,
         ),
       ])
-      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: intradayToday,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'filled',
+        reason: 'intraday_exit',
+        detail: { shares, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason },
+        orderId,
+        source: 'intraday_exit',
+      })
       console.warn(`[Intraday] full sell ${pos.symbol} ${shares} @ ${sellFillPrice} (mkt ${currentPrice}) ${decision.reason}`)
-      const intradayPnl = (sellFillPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
+      const intradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
         env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice, `盤中賣出: ${decision.reason}`, intradayPnl),
@@ -415,6 +469,11 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
+      const entryPx = pos.entry_price ?? pos.avg_cost
+      const sellNote = buildSellOrderNote({
+        reason: `[intraday] ${decision.reason}`,
+        entry_date: pos.entry_date,
+      }, { entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare(`
@@ -437,16 +496,23 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
           tax,
           proceeds,
           null,
-          JSON.stringify({
-            reason: `[intraday] ${decision.reason}`,
-            entry_price: pos.entry_price ?? pos.avg_cost,
-            entry_date: pos.entry_date,
-          }),
+          sellNote,
         ),
       ])
-      await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: intradayToday,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'filled',
+        reason: 'intraday_tp1',
+        detail: { shares: sellShares, remaining_shares: remainingShares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        orderId,
+        source: 'intraday_tp1',
+      })
       console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares} 股 @ ${currentPrice} | ${decision.reason}`)
-      const tp1IntradayPnl = (currentPrice - (pos.entry_price ?? pos.avg_cost)) / (pos.entry_price ?? pos.avg_cost)
+      const tp1IntradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
         env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, sellShares, currentPrice, `盤中 TP1，剩餘 ${remainingShares} 股`, tp1IntradayPnl),

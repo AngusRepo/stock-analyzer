@@ -1,8 +1,12 @@
+import { formatDebateEvent, formatExecutionStatusEvent } from './executionEvent'
+
 export type PendingBuyExecutionStatus = 'pending' | 'filled' | 'skipped' | 'cancelled' | 'expired'
 export type PendingBuyTerminalExecutionStatus = Exclude<PendingBuyExecutionStatus, 'pending'>
 
 export interface PendingBuyExecutionItem {
   symbol: string
+  debate_status?: string | null
+  debate_verdict?: string | null
   execution_status?: PendingBuyExecutionStatus | null
   watch_points?: string[]
 }
@@ -35,6 +39,16 @@ export function isPendingBuyTerminal(status: PendingBuyExecutionStatus | null | 
   return TERMINAL_STATUSES.includes(status as PendingBuyTerminalExecutionStatus)
 }
 
+export function appendPendingBuyExecutionNote<T extends PendingBuyExecutionItem>(item: T, note: string): T {
+  const points = Array.isArray(item.watch_points) ? item.watch_points : []
+  if (points.includes(note)) return { ...item, execution_status: item.execution_status ?? 'pending' }
+  return {
+    ...item,
+    execution_status: item.execution_status ?? 'pending',
+    watch_points: [...points, note],
+  }
+}
+
 export function applyPendingBuyExecutionEvents(
   items: PendingBuyExecutionItem[],
   events: PendingBuyExecutionEvent[],
@@ -51,10 +65,7 @@ export function applyPendingBuyExecutionEvents(
     return {
       ...item,
       execution_status: event.status,
-      watch_points: [
-        ...(Array.isArray(item.watch_points) ? item.watch_points : []),
-        `execution:${event.status}:${event.reason}`,
-      ],
+      watch_points: appendPendingBuyExecutionNote(item, formatExecutionStatusEvent(event.status, event.reason)).watch_points,
     }
   })
 
@@ -64,4 +75,44 @@ export function applyPendingBuyExecutionEvents(
     summary,
     changed,
   }
+}
+
+export function applyPendingBuyDebateFailure(
+  items: PendingBuyExecutionItem[],
+  reason: string,
+): PendingBuyExecutionTransition {
+  const summary = emptySummary()
+  let changed = false
+
+  const allItems = items.map((item) => {
+    if (isPendingBuyTerminal(item.execution_status)) {
+      return { ...item, execution_status: item.execution_status ?? 'pending' }
+    }
+
+    changed = true
+    summary.skipped += 1
+    return appendPendingBuyExecutionNote(appendPendingBuyExecutionNote({
+      ...item,
+      debate_status: 'failed',
+      debate_verdict: item.debate_verdict ?? 'PENDING',
+      execution_status: 'skipped' as const,
+    }, formatDebateEvent('failed', reason)), formatExecutionStatusEvent('skipped', reason))
+  })
+
+  return {
+    allItems,
+    activeItems: allItems.filter((item) => !isPendingBuyTerminal(item.execution_status)),
+    summary,
+    changed,
+  }
+}
+
+export function applyPendingBuySlaExpiry(
+  items: PendingBuyExecutionItem[],
+  reason: string,
+): PendingBuyExecutionTransition {
+  const events = items
+    .filter((item) => !isPendingBuyTerminal(item.execution_status))
+    .map((item) => ({ symbol: item.symbol, status: 'expired' as const, reason }))
+  return applyPendingBuyExecutionEvents(items, events)
 }

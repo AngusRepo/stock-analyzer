@@ -40,10 +40,16 @@ except ImportError:
 
 def load_from_csvs(orders_csv: str, predictions_csv: str) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Load paper_orders and predictions from CSV."""
-    orders = pl.read_csv(orders_csv)
-    orders = orders.with_columns(pl.col("created_at").str.to_datetime())
-    predictions = pl.read_csv(predictions_csv)
-    predictions = predictions.with_columns(pl.col("generated_at").str.to_datetime())
+    orders = (
+        pl.scan_csv(orders_csv)
+        .with_columns(pl.col("created_at").str.to_datetime(strict=False))
+        .collect()
+    )
+    predictions = (
+        pl.scan_csv(predictions_csv)
+        .with_columns(pl.col("generated_at").str.to_datetime(strict=False))
+        .collect()
+    )
     return orders, predictions
 
 

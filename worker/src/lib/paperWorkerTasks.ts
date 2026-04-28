@@ -3,6 +3,8 @@ import { formatDailySummary, sendDiscordNotification } from './notify'
 import { batchGetLatestPrices, recordSellSettlement } from './paperMarketData'
 import { batchGetIntradayPrices } from './paperIntradayData'
 import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { buildSellOrderNote } from './paperOrderAccounting'
+import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 
 const ACCOUNT_ID = 1
@@ -129,6 +131,14 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     cagr,
   ).run()
 
+  const { auditPaperSnapshotConsistency } = await import('./paperSnapshotAudit')
+  await auditPaperSnapshotConsistency(env, {
+    date: today,
+    cash: updatedAcc.cash,
+    positionsValue: finalPosValue,
+    totalValue,
+  })
+
   console.log(`[Snapshot] total_value=NT$${Math.round(totalValue).toLocaleString()} pnl=${pnlPct.toFixed(2)}%`)
 
   const todayOrderCount = await env.DB.prepare(
@@ -171,6 +181,10 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
   const name = pos?.name ?? symbol
   const entryPrice = pos?.entry_price ?? pos?.avg_cost ?? price
   const daysHeld = pos?.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
+  const sellNote = buildSellOrderNote(
+    { reason, entry_date: pos?.entry_date, days_held: daysHeld },
+    { entryPrice, exitPrice: sellPrice, shares, commission, tax },
+  )
 
   await env.DB.batch([
     env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, symbol),
@@ -188,10 +202,20 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
       tax,
       proceeds,
       source,
-      JSON.stringify({ reason, entry_price: entryPrice, entry_date: pos?.entry_date, days_held: daysHeld }),
+      sellNote,
     ),
   ])
-  await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, symbol, proceeds)
+  const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, symbol, proceeds)
+  await recordPaperExecutionEvent(env, {
+    symbol,
+    side: 'sell',
+    eventType: 'paper_order',
+    status: 'filled',
+    reason,
+    detail: { shares, sell_price: sellPrice, proceeds, days_held: daysHeld },
+    orderId,
+    source,
+  })
 
   console.log(`[Rescore-Sell] ${symbol} ${shares} 股 @ ${sellPrice} | entry=${entryPrice} | held=${daysHeld}d | ${reason}`)
 }

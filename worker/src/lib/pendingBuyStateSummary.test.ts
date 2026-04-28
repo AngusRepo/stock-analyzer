@@ -17,18 +17,18 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
     status: 'ready',
     debate_status: 'completed',
     candidate_count: 3,
-    execution_counts: { filled: 1, skipped: 2 },
+    execution_counts: { skipped: 2, cancelled: 1 },
     debate_counts: { completed: 3 },
   })
 
-  assert(summary.state === 'closed', 'terminal-only run should be closed')
-  assert(summary.active_count === 0, 'closed run should have no active items')
+  assert(summary.state === 'skipped', 'skipped-only run should be explicit')
+  assert(summary.active_count === 0, 'terminal run should have no active items')
   assert(summary.total_count === 3, 'total count should include terminal items')
   assertDeepEqual(summary.execution_counts, {
     pending: 0,
-    filled: 1,
+    filled: 0,
     skipped: 2,
-    cancelled: 0,
+    cancelled: 1,
     expired: 0,
   }, 'execution counts should be normalized')
 }
@@ -39,7 +39,7 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   ], { status: 'ready', debate_status: 'pending', candidate_count: 1 })
 
   assert(summary.state === 'debate_pending', 'pending debate should be explicit')
-  assert(summary.label === '等待辯論', 'pending debate should have zh-TW label')
+  assert(summary.label === 'Base ready / 辯論中', 'pending debate should have zh-TW label')
 }
 
 {
@@ -55,5 +55,18 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
 {
   const summary = buildPendingBuyStateSummary([], { status: 'error', error_message: 'pipeline failed' })
   assert(summary.state === 'error', 'error run should stay error')
-  assert(summary.label === '異常', 'error should have zh-TW label')
+  assert(summary.label === '流程失敗', 'error should have zh-TW label')
+}
+
+{
+  const summary = buildPendingBuyStateSummary([], {
+    status: 'ready',
+    debate_status: 'completed',
+    candidate_count: 1,
+    execution_counts: { expired: 1 },
+    debate_counts: { completed: 1 },
+  })
+
+  assert(summary.state === 'expired', 'expired-only run should be explicit')
+  assert(summary.label === '已過期', 'expired should have zh-TW label')
 }

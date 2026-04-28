@@ -18,7 +18,7 @@ export function formatPendingBuyBriefing(
   state: PendingBuyStateSummary,
 ): string {
   const exec = state.execution_counts
-  const header = `**${state.label}** | active ${state.active_count}/${state.total_count} | filled ${exec.filled} | skipped ${exec.skipped} | cancelled ${exec.cancelled}`
+  const header = `**${state.label}** | active ${state.active_count}/${state.total_count} | filled ${exec.filled} | skipped ${exec.skipped} | cancelled ${exec.cancelled} | expired ${exec.expired}`
 
   if (!items.length) {
     if (state.state === 'closed') return `${header}\n今日候選已全部收斂，請以 execution 結果與 intraday log 為準。`

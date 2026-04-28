@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+# Freqtrade strategy callbacks are pandas-native; this adapter is the only
+# intentional pandas boundary outside StockVision's Polars/NumPy pipeline.
 import pandas as pd
 from freqtrade.strategy import IStrategy, DecimalParameter, IntParameter
 from freqtrade.persistence import Trade

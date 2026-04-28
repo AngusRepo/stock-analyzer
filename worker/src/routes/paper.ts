@@ -22,6 +22,8 @@ import {
   calcCommission,
   calcTax,
 } from '../lib/paperTradeMath'
+import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
+import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import type { RescoreSellParams } from '../lib/paperWorkerTasks'
 import { loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
@@ -190,17 +192,12 @@ paper.get('/orders', async (c) => {
 
 paper.get('/realized', async (c) => {
   const { results: sells } = await c.env.DB.prepare(
-    'SELECT symbol, price, shares, note, created_at FROM paper_orders WHERE account_id=? AND side=? ORDER BY created_at ASC'
+    'SELECT symbol, price, shares, commission, tax, note, created_at FROM paper_orders WHERE account_id=? AND side=? ORDER BY created_at ASC'
   ).bind(ACCOUNT_ID, 'sell').all<any>()
 
   let totalPnl = 0
   for (const sell of (sells ?? [])) {
-    let entryPrice = sell.price
-    try {
-      const note = typeof sell.note === 'string' ? JSON.parse(sell.note) : sell.note
-      if (note?.entry_price) entryPrice = note.entry_price
-    } catch { /* use sell.price as fallback */ }
-    totalPnl += (sell.price - entryPrice) * (sell.shares ?? 0)
+    totalPnl += estimateSellOrderRealizedPnl(sell) ?? 0
   }
 
   return c.json({ status: 'success', totalRealizedPnl: totalPnl, tradeCount: (sells ?? []).length })
@@ -210,7 +207,7 @@ paper.get('/realized', async (c) => {
 
 paper.get('/journal', async (c) => {
   const { results: allOrders } = await c.env.DB.prepare(
-    'SELECT symbol, side, price, shares, note, created_at FROM paper_orders WHERE account_id=? ORDER BY created_at ASC'
+    'SELECT symbol, side, price, shares, commission, tax, note, created_at FROM paper_orders WHERE account_id=? ORDER BY created_at ASC'
   ).bind(ACCOUNT_ID).all<any>()
 
   if (!allOrders?.length) return c.json({ status: 'success', metrics: null })
@@ -227,13 +224,30 @@ paper.get('/journal', async (c) => {
     } else if (order.side === 'sell') {
       let remainShares = order.shares ?? 0
       const q = buyQueues.get(order.symbol) ?? []
+      const note = parseSellOrderNote(order.note)
+      const realizedPnl = estimateSellOrderRealizedPnl(order)
+
+      if (realizedPnl != null) {
+        let holdDays = Number(note.days_held ?? 0)
+        while (remainShares > 0 && q.length > 0) {
+          const buy = q[0]
+          const matched = Math.min(remainShares, buy.shares)
+          if (!Number.isFinite(holdDays) || holdDays <= 0) {
+            holdDays = Math.max(1, Math.round(
+              (new Date(order.created_at).getTime() - new Date(buy.date).getTime()) / 86400000
+            ))
+          }
+          buy.shares -= matched
+          remainShares -= matched
+          if (buy.shares <= 0) q.shift()
+        }
+        trades.push({ symbol: order.symbol, pnl: realizedPnl, holdDays: Number.isFinite(holdDays) ? holdDays : 0 })
+        continue
+      }
 
       // Try entry_price from note first
       let noteEntry: number | null = null
-      try {
-        const note = typeof order.note === 'string' ? JSON.parse(order.note) : order.note
-        if (note?.entry_price) noteEntry = note.entry_price
-      } catch { /* ignore */ }
+      if (Number.isFinite(Number(note.entry_price))) noteEntry = Number(note.entry_price)
 
       while (remainShares > 0 && q.length > 0) {
         const buy = q[0]
@@ -316,6 +330,17 @@ paper.get('/pending-buys', async (c) => {
     state,
     pendingBuys: snapshot.pendingBuys,
   })
+})
+
+// GET /api/paper/execution-events — unified paper execution audit trail.
+
+paper.get('/execution-events', async (c) => {
+  const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 300)
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM paper_execution_events WHERE account_id=? ORDER BY created_at DESC LIMIT ?',
+  ).bind(ACCOUNT_ID, limit).all<any>().catch(() => ({ results: [] as any[] }))
+
+  return c.json({ status: 'success', events: results ?? [] })
 })
 
 // POST /api/paper/buy — manual paper buy.
@@ -411,6 +436,18 @@ paper.post('/buy', async (c) => {
     VALUES (?, ?, ?, 'buy', ?, ?, ?)
   `).bind(ACCOUNT_ID, lastOrder?.id ?? 0, symbol, totalCost, todayStr, settlementDate).run()
 
+  await recordPaperExecutionEvent(c.env, {
+    tradeDate: todayStr,
+    symbol,
+    side: 'buy',
+    eventType: 'paper_order',
+    status: 'filled',
+    reason: 'manual_buy',
+    detail: { shares: sharesRaw, price, total_cost: totalCost },
+    orderId: lastOrder?.id ?? null,
+    source,
+  })
+
   return c.json({
     status: 'success',
     action: 'buy',
@@ -471,11 +508,16 @@ paper.post('/sell', async (c) => {
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const settlementDate = await getSettlementDate(todayStr, c.env.KV)
 
+  const sellNote = buildSellOrderNote(
+    { memo: note ?? null, entry_date: pos.entry_date ?? null },
+    { entryPrice: pos.avg_cost, exitPrice: price, shares: sharesRaw, commission, tax },
+  )
+
   const sellOrderInsert = c.env.DB.prepare(`
     INSERT INTO paper_orders
       (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
     VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, note ?? null)
+  `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, sellNote)
 
   await c.env.DB.batch([
     // Update or delete position row depending on remaining shares.
@@ -500,6 +542,18 @@ paper.post('/sell', async (c) => {
     INSERT INTO paper_settlements (account_id, order_id, symbol, side, amount, trade_date, settlement_date)
     VALUES (?, ?, ?, 'sell', ?, ?, ?)
   `).bind(ACCOUNT_ID, lastSellOrder?.id ?? 0, symbol, proceeds, todayStr, settlementDate).run()
+
+  await recordPaperExecutionEvent(c.env, {
+    tradeDate: todayStr,
+    symbol,
+    side: 'sell',
+    eventType: 'paper_order',
+    status: 'filled',
+    reason: 'manual_sell',
+    detail: { shares: sharesRaw, price, proceeds, realized_pnl: Math.round(realizedPnl) },
+    orderId: lastSellOrder?.id ?? null,
+    source,
+  })
 
   return c.json({
     status: 'success',

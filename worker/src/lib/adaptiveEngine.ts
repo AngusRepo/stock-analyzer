@@ -13,6 +13,7 @@
 
 import type { AdaptiveParams } from './adaptiveConfig'
 import { getAdaptiveParams, setAdaptiveParams } from './adaptiveConfig'
+import { summarizeSellOrderLosses } from './paperOrderAccounting'
 
 // ── Phase A 改寫：所有 daily formula 從 trading:config.L2_formula 讀係數 ─────
 // 不再 hardcode，公式 inputs 全來自 KV，讓未來 Optuna L2 search 可介入
@@ -120,10 +121,11 @@ async function queryAdaptiveInputs(env: { DB: D1Database; KV: KVNamespace }) {
   `).all<any>().catch(() => ({ results: [] as any[] }))
 
   const fiveDaysAgo = new Date(Date.now() + 8 * 3600_000 - 5 * 86400_000).toISOString().slice(0, 10)
-  const recentOrders = await env.DB.prepare(`
-    SELECT SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losses, COUNT(*) as total
-    FROM paper_orders WHERE side='sell' AND created_at >= ? AND realized_pnl IS NOT NULL
-  `).bind(fiveDaysAgo).first<{ losses: number | null; total: number | null }>().catch(() => null)
+  const { results: recentSellRows } = await env.DB.prepare(`
+    SELECT price, shares, commission, tax, note
+    FROM paper_orders WHERE side='sell' AND created_at >= ?
+  `).bind(fiveDaysAgo).all<any>().catch(() => ({ results: [] as any[] }))
+  const recentOrders = summarizeSellOrderLosses(recentSellRows ?? [])
 
   // RRG Quadrant 分布（多數 Lagging → 提高門檻）
   const { results: qDistRows } = await env.DB.prepare(`
@@ -142,8 +144,8 @@ async function queryAdaptiveInputs(env: { DB: D1Database; KV: KVNamespace }) {
     accuracy30d: accGlobal?.avg_acc ?? 0.6,
     rows30d:     rows30d ?? [],
     rows90d:     rows90d ?? [],
-    losses5d:    recentOrders?.losses ?? 0,
-    total5d:     recentOrders?.total ?? 0,
+    losses5d:    recentOrders.losses,
+    total5d:     recentOrders.total,
     quadrantDist: qDist,
     quadrantTotal: qTotal,
   }

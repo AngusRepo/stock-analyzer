@@ -5,6 +5,7 @@ import {
 } from './debateTrader'
 import { sendDiscordNotification } from './notify'
 import {
+  expireRecentPendingBuys,
   loadPendingBuySnapshot,
   replacePendingBuyState,
   type PendingBuy,
@@ -12,6 +13,10 @@ import {
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
+import {
+  applyPendingBuyDebateFailure,
+  isPendingBuyTerminal,
+} from './pendingBuyExecutionState'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
@@ -67,6 +72,40 @@ interface AlphaForecastContext {
     skip?: boolean
     flags?: string[]
   }
+}
+
+async function persistPendingDebateFailure(
+  env: Bindings,
+  tradeDate: string,
+  snapshot: Awaited<ReturnType<typeof loadPendingBuySnapshot>>,
+  pendingItems: PendingBuy[],
+  reason: string,
+): Promise<string> {
+  const transition = applyPendingBuyDebateFailure(pendingItems, reason)
+  const failedBySymbol = new Map(transition.allItems.map((item) => [item.symbol, item as PendingBuy]))
+  const nextPendingBuys = snapshot.pendingBuys.map((item) => failedBySymbol.get(item.symbol) ?? item)
+  const activeItems = nextPendingBuys.filter((item) => !isPendingBuyTerminal(item.execution_status))
+  const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
+    ? String(snapshot.meta.source_reco_date)
+    : tradeDate
+
+  await replacePendingBuyState(env, {
+    tradeDate,
+    sourceRecoDate,
+    status: 'ready',
+    debateStatus: 'failed',
+    errorMessage: reason,
+    pendingBuys: nextPendingBuys,
+    kvPendingBuys: activeItems,
+    meta: {
+      stage: 'debate_async',
+      failure_reason: reason,
+      execution_summary: transition.summary,
+      failed_symbols: pendingItems.map((item) => item.symbol),
+    },
+  })
+
+  return `debate_failed_closed=${pendingItems.length} reason=${reason} active=${activeItems.length}`
 }
 
 function getTwDate(offsetDays = 0): string {
@@ -464,6 +503,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   console.log('[MorningSetup] Starting...')
   const cfg = await getTradingConfig(env.KV)
   const pendingDate = getTwDate()
+  const expiredStale = await expireRecentPendingBuys(env, pendingDate).catch((error) => {
+    console.warn('[MorningSetup] stale pending buy expiry failed:', error)
+    return 0
+  })
+  if (expiredStale > 0) console.log(`[MorningSetup] expired ${expiredStale} stale pending buys`)
   const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
   console.log(
     `[MorningSetup] circuit halt=${cb.halt} buyConfThreshold=${cb.buyConfThreshold} maxPositionPct=${cb.maxPositionPct} reason=${cb.reason ?? 'none'}`,
@@ -758,7 +802,9 @@ export async function reconcilePendingBuyDebates(
     (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
   )
   if (!pendingItems.length) return 'no_pending_debate'
-  if (!env.ML_CONTROLLER_URL) return 'skip:no_controller'
+  if (!env.ML_CONTROLLER_URL) {
+    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'no_controller')
+  }
 
   const cfg = await getTradingConfig(env.KV)
   const { usContextStr, newsContextStr, taifexContextStr } = await loadMacroContext(env, tradeDate)
@@ -791,20 +837,7 @@ export async function reconcilePendingBuyDebates(
     : tradeDate
 
   if (!results || results.size === 0) {
-    await replacePendingBuyState(env, {
-      tradeDate,
-      sourceRecoDate,
-      status: 'ready',
-      debateStatus: 'failed',
-      errorMessage: 'debate_batch_unavailable',
-      pendingBuys: snapshot.pendingBuys.map((item) =>
-        pendingItems.some((pending) => pending.symbol === item.symbol)
-          ? { ...item, debate_status: 'failed' }
-          : item,
-      ),
-      meta: { stage: 'debate_async' },
-    })
-    return 'debate_unavailable'
+    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'debate_batch_unavailable')
   }
 
   const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
@@ -819,7 +852,8 @@ export async function reconcilePendingBuyDebates(
     }
     if (!debate) {
       failedCount += 1
-      nextPendingBuys.push({ ...item, debate_status: 'failed' })
+      const transition = applyPendingBuyDebateFailure([item], 'debate_missing')
+      nextPendingBuys.push(transition.allItems[0] as PendingBuy)
       continue
     }
     if (debate.verdict === 'REJECT') continue

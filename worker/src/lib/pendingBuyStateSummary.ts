@@ -2,8 +2,12 @@ export type PendingBuyVisibleState =
   | 'empty'
   | 'halted'
   | 'error'
+  | 'base_ready'
   | 'debate_pending'
   | 'ready_to_execute'
+  | 'filled'
+  | 'skipped'
+  | 'expired'
   | 'closed'
 
 export interface PendingBuyStateItem {
@@ -64,6 +68,16 @@ function normalizeDebateCounts(
   }
 }
 
+function terminalStateLabel(
+  executionCounts: PendingBuyStateSummary['execution_counts'],
+): Pick<PendingBuyStateSummary, 'state' | 'label'> {
+  const { filled, skipped, cancelled, expired } = executionCounts
+  if (filled > 0 && skipped + cancelled + expired === 0) return { state: 'filled', label: '已成交' }
+  if (expired > 0 && filled + skipped + cancelled === 0) return { state: 'expired', label: '已過期' }
+  if (filled === 0 && expired === 0 && skipped + cancelled > 0) return { state: 'skipped', label: '已跳過' }
+  return { state: 'closed', label: '已收斂' }
+}
+
 export function buildPendingBuyStateSummary(
   activeItems: PendingBuyStateItem[],
   meta: PendingBuyStateMeta | null | undefined,
@@ -78,7 +92,7 @@ export function buildPendingBuyStateSummary(
   if (runStatus === 'error') {
     return {
       state: 'error',
-      label: '異常',
+      label: '流程失敗',
       active_count: activeItems.length,
       total_count: totalCount,
       execution_counts: executionCounts,
@@ -99,16 +113,20 @@ export function buildPendingBuyStateSummary(
   }
 
   let state: PendingBuyVisibleState = 'empty'
-  let label = '無候選'
+  let label = '沒有候選'
   if (activeItems.length === 0 && terminalCount > 0) {
-    state = 'closed'
-    label = '已收斂'
-  } else if (debateStatus === 'pending' || debateCounts.pending > 0) {
+    const terminal = terminalStateLabel(executionCounts)
+    state = terminal.state
+    label = terminal.label
+  } else if (activeItems.length > 0 && (debateStatus === 'pending' || debateCounts.pending > 0)) {
     state = 'debate_pending'
-    label = '等待辯論'
+    label = 'Base ready / 辯論中'
   } else if (activeItems.length > 0) {
     state = 'ready_to_execute'
-    label = '待執行'
+    label = 'Ready / 等待執行'
+  } else if (totalCount > 0) {
+    state = 'base_ready'
+    label = 'Base ready'
   }
 
   return {

@@ -12,6 +12,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { explainExecutionEvent } from '@/lib/executionEvent'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -270,6 +271,8 @@ function normalizeWatchPoint(point: string): string {
   if (point.startsWith('Market structure:')) {
     return `${point}。白話：POC 是近期量能重心，fair value 是合理價格帶，location 用來判斷追高或折價。`
   }
+  const executionExplanation = explainExecutionEvent(point)
+  if (executionExplanation) return executionExplanation
   return point
 }
 

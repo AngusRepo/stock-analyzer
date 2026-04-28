@@ -10,10 +10,37 @@ export interface PaperOrderIntent {
   acquired: boolean
   intentKey: string
   fallback: boolean
+  recovered?: boolean
+  reason?: string
+}
+
+export interface PaperOrderIntentRow {
+  status: string
+  updated_at: string | null
 }
 
 export function buildPaperBuyIntentKey(tradeDate: string, symbol: string): string {
   return `${ACCOUNT_ID}:${tradeDate}:${symbol}:buy:auto_ml`
+}
+
+function parseD1Date(value: string | null | undefined): number | null {
+  if (!value) return null
+  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`
+  const ts = new Date(normalized).getTime()
+  return Number.isFinite(ts) ? ts : null
+}
+
+export function shouldRecoverPaperBuyIntent(
+  row: PaperOrderIntentRow | null | undefined,
+  now = new Date(),
+  staleMs = 15 * 60_000,
+): boolean {
+  if (!row) return false
+  if (row.status === 'failed') return true
+  if (row.status !== 'running') return false
+  const updatedAt = parseD1Date(row.updated_at)
+  if (updatedAt == null) return false
+  return now.getTime() - updatedAt >= staleMs
 }
 
 export async function acquirePaperBuyIntent(
@@ -28,11 +55,28 @@ export async function acquirePaperBuyIntent(
         (intent_key, account_id, trade_date, symbol, side, source, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'buy', 'auto_ml', 'running', datetime('now'), datetime('now'))`,
     ).bind(intentKey, ACCOUNT_ID, tradeDate, symbol).run()
-    return {
-      acquired: Number(result.meta?.changes ?? 0) > 0,
-      intentKey,
-      fallback: false,
+    if (Number(result.meta?.changes ?? 0) > 0) {
+      return { acquired: true, intentKey, fallback: false }
     }
+
+    const existing = await env.DB.prepare(
+      'SELECT status, updated_at FROM paper_order_intents WHERE intent_key=? LIMIT 1',
+    ).bind(intentKey).first<PaperOrderIntentRow>()
+    if (!shouldRecoverPaperBuyIntent(existing)) {
+      return { acquired: false, intentKey, fallback: false, reason: existing?.status ?? 'duplicate' }
+    }
+
+    const recover = await env.DB.prepare(
+      `UPDATE paper_order_intents
+          SET status='running', order_id=NULL, error_message=NULL, updated_at=datetime('now')
+        WHERE intent_key=?
+          AND (
+            status='failed'
+            OR (status='running' AND updated_at <= datetime('now', '-15 minutes'))
+          )`,
+    ).bind(intentKey).run()
+    const recovered = Number(recover.meta?.changes ?? 0) > 0
+    return { acquired: recovered, intentKey, fallback: false, recovered, reason: recovered ? 'recovered' : existing?.status ?? 'duplicate' }
   } catch (error) {
     if (!isMissingTableError(error)) throw error
     return { acquired: true, intentKey, fallback: true }

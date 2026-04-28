@@ -23,6 +23,7 @@ import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
 import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
+import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -233,14 +234,17 @@ function PortfolioSummary() {
 
 // ─── Today's ML Signals ─────────────────────────────────────────────────────
 
-function PendingBuyStateBadges({ state, stale }: { state?: any; stale?: boolean }) {
+function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: boolean; meta?: any }) {
   const execution = state?.execution_counts ?? {}
+  const events = Array.isArray(meta?.execution_events) ? meta.execution_events.slice(-3) : []
   const stateClass =
     state?.state === 'ready_to_execute' ? 'border-emerald-500/30 text-emerald-400'
       : state?.state === 'debate_pending' ? 'border-sky-500/30 text-sky-400'
-        : state?.state === 'closed' ? 'border-zinc-500/30 text-zinc-300'
-          : state?.state === 'error' || state?.state === 'halted' ? 'border-red-500/40 text-red-300'
-            : 'border-muted-foreground/30 text-muted-foreground'
+        : state?.state === 'filled' ? 'border-teal-500/30 text-teal-300'
+          : state?.state === 'skipped' || state?.state === 'expired' || state?.state === 'closed' ? 'border-zinc-500/30 text-zinc-300'
+            : state?.state === 'error' || state?.state === 'halted' ? 'border-red-500/40 text-red-300'
+              : state?.state === 'base_ready' ? 'border-amber-500/30 text-amber-300'
+                : 'border-muted-foreground/30 text-muted-foreground'
 
   return (
     <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
@@ -265,12 +269,30 @@ function PendingBuyStateBadges({ state, stale }: { state?: any; stale?: boolean 
           cancelled {execution.cancelled}
         </Badge>
       )}
+      {(execution.expired ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-400">
+          expired {execution.expired}
+        </Badge>
+      )}
       {stale && (
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/40 text-amber-400">
           stale
         </Badge>
       )}
       {state?.error_message && <span className="text-red-300/80">{state.error_message}</span>}
+      {events.map((event: any, idx: number) => {
+        const raw = formatExecutionEvent({
+          kind: 'execution',
+          status: event.status,
+          reason: event.reason,
+          detail: event.detail,
+        })
+        return (
+          <span key={`${event.symbol}-${event.status}-${idx}`} className="text-muted-foreground/70">
+            {event.symbol} {explainExecutionEvent(raw) ?? `${event.status}: ${event.reason}`}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -286,6 +308,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const showingDate = pbData?.date ?? ''
   const isStalePending = Boolean(pbData?.is_stale)
   const pendingState = pbData?.state
+  const pendingMeta = pbData?.meta
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -305,7 +328,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     return (
       <div className="space-y-2">
         <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys</div>
-        <PendingBuyStateBadges state={pendingState} stale={isStalePending} />
+        <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
         <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
       </div>
     )
@@ -314,7 +337,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
-      <PendingBuyStateBadges state={pendingState} stale={isStalePending} />
+      <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,

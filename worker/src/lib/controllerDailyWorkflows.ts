@@ -66,12 +66,12 @@ export async function runModelIcTrackerChain(env: Bindings) {
       timeoutMs: 60_000,
     })
     if (promoRes.ok) {
-      const pd = await promoRes.json() as any
-      const transitions = (pd.actions || [])
+      const promoteDecision = await promoRes.json() as any
+      const transitions = (promoteDecision.actions || [])
         .filter((a: any) => a.transition !== 'promote_blocked')
         .map((a: any) => `${a.model}:${a.transition}`)
         .join(',') || 'none'
-      stage4 = `applied=${pd.applied_count}/${pd.actions_count} [${transitions}]`
+      stage4 = `applied=${promoteDecision.applied_count}/${promoteDecision.actions_count} [${transitions}]`
     } else {
       stage4 = `chain failed HTTP ${promoRes.status}`
     }

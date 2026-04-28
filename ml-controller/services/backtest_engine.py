@@ -56,7 +56,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import polars as pl
@@ -750,6 +750,8 @@ class Candidate:
     # 2026-04-20 #31 Mode B: real ML confidence loaded from D1 historical
     # predictions (None when running Mode A or no historical row available).
     confidence: Optional[float] = None
+    alpha_context: dict[str, Any] = field(default_factory=dict)
+    alpha_allocation: dict[str, Any] = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -841,6 +843,75 @@ class MLPredictionsCache:
 # ─────────────────────────────────────────────────────────────────────────────
 # Scoring (pure function — all inputs are preloaded arrays)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def apply_alpha_framework_to_candidates(
+    candidates: list[Candidate],
+    *,
+    alpha_policy: dict | None,
+    regime_label: str | None,
+    payload_by_symbol: dict[str, dict] | None = None,
+    regime_surface: dict | None = None,
+    slate_size: int | None = None,
+    buy_signal_count: int | None = None,
+) -> list[Candidate]:
+    """Apply alpha bucket allocation to replay candidates before entry simulation."""
+    if not candidates or not alpha_policy:
+        return candidates
+
+    from services.alpha_framework import (
+        apply_alpha_context,
+        build_alpha_context,
+        normalize_alpha_policy,
+        regime_aware_allocate,
+    )
+
+    policy = normalize_alpha_policy(alpha_policy)
+    rows: list[dict[str, Any]] = []
+    by_symbol = {candidate.symbol: candidate for candidate in candidates}
+    for candidate in candidates:
+        row = {
+            "symbol": candidate.symbol,
+            "current_price": candidate.close,
+            "score": candidate.combined_score,
+            "chip_score": candidate.chip_score,
+            "tech_score": candidate.tech_score,
+            "momentum_score": candidate.momentum_score,
+            "confidence": candidate.confidence if candidate.confidence is not None else 0.5,
+            "has_buy_signal": candidate.has_buy_signal,
+            "watch_points": [],
+        }
+        ml = {"confidence": row["confidence"], "forecast_pct": 0.0}
+        ctx = build_alpha_context(
+            row,
+            ml,
+            (payload_by_symbol or {}).get(candidate.symbol),
+            regime_label,
+            regime_surface=regime_surface,
+            policy=policy,
+        )
+        apply_alpha_context(row, ml, ctx)
+        candidate.alpha_context = row.get("alpha_context") or {}
+        rows.append(row)
+
+    allocated = regime_aware_allocate(
+        rows,
+        regime_label,
+        slate_size=slate_size,
+        policy=policy,
+        regime_surface=regime_surface,
+    )
+    selected_count = max(1, buy_signal_count or slate_size or policy["allocation"]["slate_size"])
+    selected = {row["symbol"]: row for row in allocated[:selected_count]}
+    ordered: list[Candidate] = []
+    for row in allocated:
+        candidate = by_symbol[row["symbol"]]
+        candidate.combined_score = float(row.get("score") or candidate.combined_score)
+        candidate.alpha_context = row.get("alpha_context") or candidate.alpha_context
+        candidate.alpha_allocation = row.get("alpha_allocation") or {}
+        candidate.has_buy_signal = 1 if row["symbol"] in selected else 0
+        ordered.append(candidate)
+    return ordered
+
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -1340,6 +1411,9 @@ def replay_screener_for_date(
     screener: ScreenerParams,
     ranking: RankingParams,
     lookback_days: int = 22,
+    alpha_policy: dict | None = None,
+    regime_label: str | None = None,
+    regime_surface: dict | None = None,
 ) -> list[Candidate]:
     """
     Replay the Worker bottom-up screener for one decision date T.
@@ -1372,6 +1446,7 @@ def replay_screener_for_date(
 
     market_return_5d = _calc_market_return_5d(dataset, date)
     scored: list[Candidate] = []
+    alpha_payload_by_symbol: dict[str, dict] = {}
 
     # Preload stocks sector lookup
     sector_map = dict(zip(
@@ -1412,6 +1487,23 @@ def replay_screener_for_date(
         base, chip_s, tech_s, mom_s, reasons = score_multi_factor_np(
             pnp, cnp, market_return_5d, screener
         )
+        if alpha_policy:
+            alpha_payload_by_symbol[symbol] = {
+                "prices": [
+                    {
+                        "close": float(close),
+                        "high": float(high),
+                        "low": float(low),
+                        "volume": float(volume),
+                    }
+                    for close, high, low, volume in zip(
+                        pnp["close"],
+                        pnp["high"],
+                        pnp["low"],
+                        pnp["volume"],
+                    )
+                ],
+            }
 
         scored.append(Candidate(
             symbol=symbol,
@@ -1464,8 +1556,22 @@ def replay_screener_for_date(
 
     # Promote top_k to has_buy_signal = 1
     if ranking.enabled:
-        for c in final_candidates[: ranking.top_k]:
-            c.has_buy_signal = 1
+        if alpha_policy:
+            from services.alpha_framework import normalize_alpha_policy
+
+            policy = normalize_alpha_policy(alpha_policy)
+            final_candidates = apply_alpha_framework_to_candidates(
+                final_candidates,
+                alpha_policy=policy,
+                regime_label=regime_label,
+                regime_surface=regime_surface,
+                payload_by_symbol=alpha_payload_by_symbol,
+                slate_size=max(ranking.top_k, int(policy["allocation"]["slate_size"])),
+                buy_signal_count=ranking.top_k,
+            )
+        else:
+            for c in final_candidates[: ranking.top_k]:
+                c.has_buy_signal = 1
 
     return final_candidates
 
@@ -3254,6 +3360,7 @@ class BacktestMetrics:
     # Raw data for downstream analysis
     equity_curve: list[tuple[str, float]] = field(default_factory=list)  # (date, equity)
     trades: list[Trade] = field(default_factory=list)
+    partition_returns: list[float] = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3343,6 +3450,35 @@ def _compute_cagr(initial: float, final: float, start: str, end: str) -> Optiona
     except (ValueError, TypeError):
         return None
     return (final / initial) ** (1 / years) - 1
+
+
+def compute_trade_partition_returns(
+    trades: list[Trade],
+    n_partitions: int = 6,
+) -> list[float]:
+    """Time-ordered compound trade returns for CSCV/PBO candidate comparison."""
+    if n_partitions <= 0:
+        raise ValueError("n_partitions must be positive")
+    if not trades:
+        return [0.0 for _ in range(n_partitions)]
+
+    sorted_trades = sorted(
+        trades,
+        key=lambda t: (str(t.exit_date or ""), str(t.entry_date or ""), str(t.symbol or "")),
+    )
+    buckets: list[list[float]] = [[] for _ in range(n_partitions)]
+    total = len(sorted_trades)
+    for idx, trade in enumerate(sorted_trades):
+        bucket_idx = min((idx * n_partitions) // total, n_partitions - 1)
+        buckets[bucket_idx].append(float(trade.profit_ratio or 0.0))
+
+    out: list[float] = []
+    for bucket in buckets:
+        equity = 1.0
+        for ret in bucket:
+            equity *= 1.0 + ret
+        out.append(round(equity - 1.0, 10))
+    return out
 
 
 def _apply_sanity_flags(m: BacktestMetrics) -> None:
@@ -3489,6 +3625,7 @@ def compute_metrics(
 
     # Sanity flags (reject overfit Optuna trials)
     _apply_sanity_flags(m)
+    m.partition_returns = compute_trade_partition_returns(trades)
 
     return m
 
@@ -3997,6 +4134,12 @@ def replay_period(
                 date=day,
                 screener=screener_p,
                 ranking=ranking_p,
+                alpha_policy=(params or {}).get("alphaFramework") or (params or {}).get("alpha_framework"),
+                regime_label=(
+                    market_state.get_risk(day).risk_level
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else regime_label
+                ),
             )
             prev_decision_date = day
 

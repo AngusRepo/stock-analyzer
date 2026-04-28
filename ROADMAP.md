@@ -59,10 +59,10 @@
 
 ### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore) ✅
 - **What**: 30d accuracy < 0.45 for 2 consecutive weeks → downweight to 0.05x. Restore > 0.55 → back to 1.0x. Balance guard: min 3 price + 3 feature models active. Substitute library with matching rules
-- **Where**: `ml-service/app/model_lifecycle.py` + `ml-controller/services/lifecycle_service.py` + `ml-controller/routers/lifecycle.py` + `ml-service/app/ensemble.py` lifecycle_weights param
+- **Where**: `universal/model_pool.json` + `ml-controller/routers/model_pool.py` + `ml-controller/services/model_ic_tracker.py` + `ml-controller/services/lifecycle_promotion_gate.py` + `worker/src/lib/controllerDailyWorkflows.ts`
 - **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause → candidate match)
 - **Expected**: Ensemble quality auto-maintained
-- **Impl**: D1 model_lifecycle_state + model_lifecycle_events tables. Worker reads lifecycle weights → passes to predict payload → ensemble applies lifecycle_mult. Weekly check in Sunday cron (after retrain). Admin taskMap for manual trigger
+- **Impl**: Weekly `model-ic-tracker` cron calls `/model_pool/compute_weekly_ic`, then `/model_pool/promote_check`; lifecycle state, events, lineage, weights, shadow / promote / degrade decisions live in `model_pool.json`.
 
 ### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna ✅
 - **What**: IC audit weak features excluded during retrain. Optuna 20-trial search per model (XGB/CatBoost/ExtraTrees/LightGBM)

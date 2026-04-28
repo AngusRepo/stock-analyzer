@@ -31,7 +31,10 @@ def _get_bucket():
         from google.cloud import storage
     except ImportError:
         return None
-    return storage.Client().bucket(os.environ.get("GCS_BUCKET_NAME", "stockvision-models"))
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if not bucket_name:
+        raise RuntimeError("GCS_BUCKET_NAME not configured")
+    return storage.Client().bucket(bucket_name)
 
 
 def _load_feature_pool() -> dict:

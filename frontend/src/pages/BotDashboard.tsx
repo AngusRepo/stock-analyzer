@@ -17,7 +17,8 @@ import {
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { BotThemeFlowPanel, RecommendationCard } from '@/components/DailyRecommendationPanel'
+import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
 import { Input } from '@/components/ui/input'
@@ -114,13 +115,15 @@ function PortfolioSummary() {
   const sellOrderCount = realizedData?.tradeCount ?? 0
 
   const acc = account?.account ?? account ?? {}
-  const cash = acc?.cash ?? 0
-  const initialCash = acc?.initial_cash ?? 1_000_000
+  const positionSummary = positions?.summary ?? null
+  const cash = positionSummary?.cash ?? acc?.cash ?? 0
+  const initialCash = acc?.initial_cash ?? positionSummary?.initial_cash ?? 1_000_000
   const posArr = positions?.positions ?? positions ?? []
   const positionValue = Array.isArray(posArr)
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
     : 0
-  const totalAssets = cash + positionValue
+  const totalAssets = positionSummary?.total_value ?? (cash + positionValue)
+  const netUnsettledSettlement = positionSummary?.net_unsettled_settlement ?? 0
   const totalReturn = initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
@@ -182,6 +185,11 @@ function PortfolioSummary() {
         <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">總資產</div>
         <div className="text-3xl font-mono font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
         <span className={`text-sm font-mono font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+        {netUnsettledSettlement !== 0 && (
+          <div className="text-[11px] text-muted-foreground/70 mt-1">
+            含未交割 {netUnsettledSettlement > 0 ? '+' : ''}${fmt(Math.round(netUnsettledSettlement))}
+          </div>
+        )}
       </div>
       {/* 指標列 */}
       {[
@@ -225,6 +233,48 @@ function PortfolioSummary() {
 
 // ─── Today's ML Signals ─────────────────────────────────────────────────────
 
+function PendingBuyStateBadges({ state, stale }: { state?: any; stale?: boolean }) {
+  const execution = state?.execution_counts ?? {}
+  const stateClass =
+    state?.state === 'ready_to_execute' ? 'border-emerald-500/30 text-emerald-400'
+      : state?.state === 'debate_pending' ? 'border-sky-500/30 text-sky-400'
+        : state?.state === 'closed' ? 'border-zinc-500/30 text-zinc-300'
+          : state?.state === 'error' || state?.state === 'halted' ? 'border-red-500/40 text-red-300'
+            : 'border-muted-foreground/30 text-muted-foreground'
+
+  return (
+    <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+      <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${stateClass}`}>
+        {state?.label ?? 'pending buys'}
+      </Badge>
+      <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-400">
+        active {state?.active_count ?? 0}/{state?.total_count ?? 0}
+      </Badge>
+      {(execution.filled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-cyan-500/30 text-cyan-300">
+          filled {execution.filled}
+        </Badge>
+      )}
+      {(execution.skipped ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          skipped {execution.skipped}
+        </Badge>
+      )}
+      {(execution.cancelled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-300">
+          cancelled {execution.cancelled}
+        </Badge>
+      )}
+      {stale && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/40 text-amber-400">
+          stale
+        </Badge>
+      )}
+      {state?.error_message && <span className="text-red-300/80">{state.error_message}</span>}
+    </div>
+  )
+}
+
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   // T2 過濾後的掛單（非 raw recommendations）
   const { data: pbData, isLoading } = useQuery({
@@ -234,6 +284,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   })
   const buys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
   const showingDate = pbData?.date ?? ''
+  const isStalePending = Boolean(pbData?.is_stale)
+  const pendingState = pbData?.state
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -250,12 +302,19 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
   if (!buys.length) {
-    return <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+    return (
+      <div className="space-y-2">
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys</div>
+        <PendingBuyStateBadges state={pendingState} stale={isStalePending} />
+        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+      </div>
+    )
   }
 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
+      <PendingBuyStateBadges state={pendingState} stale={isStalePending} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
@@ -279,6 +338,17 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
             <RecommendationCard rec={rec} rank={idx + 1} />
+            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] font-mono text-muted-foreground">
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                <span>execution: {b.execution_status ?? 'pending'}</span>
+                <span>debate: {b.debate_status ?? 'pending'}</span>
+                <span>source: {b.source ?? 'morning_setup'}</span>
+                <span>retry: {b.retry_count ?? 0}</span>
+              </div>
+              <div className="mt-1 text-muted-foreground/70">
+                base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
+              </div>
+            </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
               className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
@@ -305,7 +375,13 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">尚無推薦</div>
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 推薦（未經 T2 篩選）</div>
+      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 尚未產出 T2 pending buys，暫以 Daily Recommendations 觀察清單顯示</div>
+      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
+          source: daily recommendations
+        </Badge>
+        <span className="text-muted-foreground/70">這裡依 recommendation rank 顯示，不是依 score 重新排序。</span>
+      </div>
       {recs.slice(0, 12).map((r: any, idx: number) => (
         <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
           <RecommendationCard rec={r} rank={idx + 1} />
@@ -731,15 +807,15 @@ function BacktestCard() {
   }
 
   const metrics = [
-    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1 },
-    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5 },
-    { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15 },
-    { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5 },
-    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5 },
-    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0 },
-    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1 },
-    { label: 'Trades', value: data.total_trades ?? '-', good: true },
-    { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0 },
+    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1, hint: '每承擔一單位波動換到多少超額報酬；>1 才算有基本效率。' },
+    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5, hint: '只看下跌波動的風險調整報酬；比 Sharpe 更貼近實際痛感。' },
+    { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15, hint: '歷史最大資金回撤；代表策略最壞連續虧損壓力。' },
+    { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5, hint: '交易勝率；要搭配 PF/Expectancy 看，單獨高不一定好。' },
+    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5, hint: '總獲利 / 總虧損；>1 表示有正收益，>1.5 較健康。' },
+    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0, hint: '年化複合報酬；用來比較不同期間策略。' },
+    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1, hint: 'CAGR / MDD；衡量報酬是否值得承受最大回撤。' },
+    { label: 'Trades', value: data.total_trades ?? '-', good: true, hint: '樣本數；太少時 Sharpe、勝率、PF 都容易失真。' },
+    { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0, hint: '每筆交易平均期望值；>0 才代表長期下注有正期望。' },
   ]
 
   // MC MDD verdict badge
@@ -764,13 +840,17 @@ function BacktestCard() {
       <CardContent>
         <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
-            <div key={m.label} className="text-center">
+            <div key={m.label} className="text-center" title={m.hint}>
               <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{m.label}</div>
               <div className={`text-sm font-mono mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
                 {m.value}
               </div>
             </div>
-          ))}
+            ))}
+        </div>
+        <div className="mt-3 rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-[10px] leading-relaxed text-muted-foreground/80">
+          <div className="mb-1 font-medium text-foreground/70">怎麼讀這張卡</div>
+          <div>先看 MDD / Calmar 判斷風險是否可承受，再看 Sharpe / Sortino 判斷報酬品質，最後用 PF / Expectancy 確認每筆交易是否真的有正期望；Trades 太少時所有結論都只能當觀察，不應直接 go-live。</div>
         </div>
         {/* MC + PBO go-live verdicts */}
         {(mcVerdict || pboVerdict) && (
@@ -798,7 +878,7 @@ function BacktestCard() {
 // ─── Adaptive Params Card ────────────────────────────────────────────────────
 
 function AdaptiveParamsCard() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['adaptive', 'params'],
     queryFn: adaptiveApi.get,
     staleTime: 5 * 60_000,
@@ -813,6 +893,21 @@ function AdaptiveParamsCard() {
           </CardTitle>
         </CardHeader>
         <CardContent><p className="text-muted-foreground/60 text-xs">Loading...</p></CardContent>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card className="bg-card border-border backdrop-blur-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <Cpu className="w-4 h-4" /> Adaptive Params
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-red-400 text-xs">載入失敗：{error instanceof Error ? error.message : 'unknown error'}</p>
+        </CardContent>
       </Card>
     )
   }

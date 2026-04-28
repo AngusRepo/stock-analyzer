@@ -1,30 +1,12 @@
-"""
-verify_pipeline.py — LangGraph StateGraph for prediction verification pipeline
-2026-04-08 audit Phase 5.4 (D-2 verify port)
-
-Replaces worker predictionVerifier.ts. Runs on schedule (TW 19:00) to verify
-predictions generated 5+ days ago and refresh model_accuracy / trade_performance.
-
-Linear graph:
-  load_pending
-    → fetch_bars_and_simulate   (verify_service.run_verify_pipeline inner loop)
-    → write_back_predictions    (batched UPDATE)
-    → update_model_accuracy     (groups × periods)
-    → update_trade_performance  (groups × periods)
-    → arf_feedback              (POST to ml-service for LinUCB online update)
-    → END
-
-State carries summary metrics across nodes. ARF feedback is a fire-and-forget
-hop (not blocking).
-"""
 from __future__ import annotations
+
 import asyncio
 import logging
 import operator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
 from services import verify_service
 from services.modal_client import batch_update_arf
@@ -32,83 +14,91 @@ from services.modal_client import batch_update_arf
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# State schema
-# ─────────────────────────────────────────────────────────────────────────────
-
 class VerifyStateV2(TypedDict, total=False):
-    """Verify pipeline state."""
     run_date: str
     lookback_days: int
     limit: int
-
-    # Output from verify_service.run_verify_pipeline
+    pending_predictions: list[dict]
+    market_risk: dict
+    verify_updates: list[dict]
+    arf_feedback_items: list[dict]
     pending: int
     verified: int
     correct: int
     total_pnl_pct: float
     model_accuracy_groups: int
     trade_performance_groups: int
-    arf_feedback_items: list[dict]
-
-    # ARF feedback result (optional)
     arf_updated: int
-
-    # Metrics / errors
     metrics: dict
     errors: Annotated[list[str], operator.add]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Nodes
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def node_run_verify(state: VerifyStateV2) -> dict:
-    """
-    Run the full verify_service pipeline in one shot.
-
-    verify_service.run_verify_pipeline already encapsulates:
-      - load_pending_predictions
-      - per-prediction bar fetch + simulate_trade
-      - batch write_verified_predictions
-      - update_model_accuracy
-      - update_trade_performance
-    """
-    logger.info("[Verify V2] node_run_verify")
-    t0 = datetime.now(timezone.utc)
-
+async def node_load_pending(state: VerifyStateV2) -> dict:
+    logger.info("[Verify V2] node_load_pending")
     lookback_days = int(state.get("lookback_days") or 5)
     limit = int(state.get("limit") or 200)
-
-    # verify_service is sync (D1 REST + pure loop) → run in thread executor
-    loop = asyncio.get_event_loop()
-    try:
-        result = await loop.run_in_executor(
-            None,
-            verify_service.run_verify_pipeline,
-            lookback_days,
-            limit,
-        )
-    except Exception as e:
-        logger.error(f"[Verify V2] node_run_verify failed: {e}", exc_info=True)
-        return {"errors": [f"verify_service failed: {e}"]}
-
-    duration_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
+    pending = await asyncio.to_thread(
+        verify_service.load_pending_predictions,
+        lookback_days,
+        limit,
+    )
+    market_risk = await asyncio.to_thread(verify_service.load_market_risk)
     return {
-        **result,
-        "metrics": {
-            **(state.get("metrics") or {}),
-            "verify_duration_ms": duration_ms,
-        },
+        "pending_predictions": pending,
+        "market_risk": market_risk,
+        "pending": len(pending),
     }
 
 
-async def node_arf_feedback(state: VerifyStateV2) -> dict:
-    """
-    Push ARF/LinUCB feedback to ml-service for online learning update.
+async def node_simulate_predictions(state: VerifyStateV2) -> dict:
+    logger.info("[Verify V2] node_simulate_predictions")
+    pending = state.get("pending_predictions") or []
+    if not pending:
+        return {
+            "verify_updates": [],
+            "arf_feedback_items": [],
+            "verified": 0,
+            "correct": 0,
+            "total_pnl_pct": 0.0,
+        }
 
-    Non-blocking: failures here do not fail the verify pipeline.
-    """
+    prepared = await asyncio.to_thread(
+        verify_service.prepare_verification_updates,
+        pending,
+        state.get("market_risk") or {},
+    )
+    summary = verify_service.summarize_verification_updates(
+        len(pending),
+        prepared.get("verify_updates") or [],
+    )
+    return {
+        "verify_updates": prepared.get("verify_updates") or [],
+        "arf_feedback_items": prepared.get("arf_feedback_items") or [],
+        "errors": prepared.get("errors") or [],
+        **summary,
+    }
+
+
+async def node_write_verified(state: VerifyStateV2) -> dict:
+    logger.info("[Verify V2] node_write_verified")
+    updates = state.get("verify_updates") or []
+    written = await asyncio.to_thread(verify_service.write_verified_predictions, updates)
+    return {"metrics": {**(state.get("metrics") or {}), "verified_rows_written": written}}
+
+
+async def node_update_model_accuracy(state: VerifyStateV2) -> dict:
+    logger.info("[Verify V2] node_update_model_accuracy")
+    count = await asyncio.to_thread(verify_service.update_model_accuracy)
+    return {"model_accuracy_groups": count}
+
+
+async def node_update_trade_performance(state: VerifyStateV2) -> dict:
+    logger.info("[Verify V2] node_update_trade_performance")
+    count = await asyncio.to_thread(verify_service.update_trade_performance)
+    return {"trade_performance_groups": count}
+
+
+async def node_arf_feedback(state: VerifyStateV2) -> dict:
     logger.info("[Verify V2] node_arf_feedback")
     items = state.get("arf_feedback_items") or []
     if not items:
@@ -116,34 +106,35 @@ async def node_arf_feedback(state: VerifyStateV2) -> dict:
 
     try:
         results = await batch_update_arf(items)
-        # results is a list of per-item responses from ml-service /arf/update
         updated = sum(
             1 for r in results
             if isinstance(r, dict) and (r.get("status") == "ok" or r.get("updated"))
         )
-        logger.info(f"[Verify V2] ARF feedback: {updated}/{len(items)} updated")
+        logger.info("[Verify V2] ARF feedback: %s/%s updated", updated, len(items))
         return {"arf_updated": updated}
     except Exception as e:
-        logger.warning(f"[Verify V2] ARF feedback failed (non-blocking): {e}")
+        logger.warning("[Verify V2] ARF feedback failed (non-blocking): %s", e)
         return {"errors": [f"arf_feedback non-fatal: {e}"], "arf_updated": 0}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Build graph
-# ─────────────────────────────────────────────────────────────────────────────
 
 _verify_graph_singleton: Any = None
 
 
 def build_verify_graph():
-    """Build and compile the verify StateGraph."""
     g = StateGraph(VerifyStateV2)
-
-    g.add_node("run_verify",   node_run_verify)
+    g.add_node("load_pending", node_load_pending)
+    g.add_node("simulate_predictions", node_simulate_predictions)
+    g.add_node("write_verified", node_write_verified)
+    g.add_node("update_model_accuracy", node_update_model_accuracy)
+    g.add_node("update_trade_performance", node_update_trade_performance)
     g.add_node("arf_feedback", node_arf_feedback)
 
-    g.set_entry_point("run_verify")
-    g.add_edge("run_verify",   "arf_feedback")
+    g.set_entry_point("load_pending")
+    g.add_edge("load_pending", "simulate_predictions")
+    g.add_edge("simulate_predictions", "write_verified")
+    g.add_edge("write_verified", "update_model_accuracy")
+    g.add_edge("update_model_accuracy", "update_trade_performance")
+    g.add_edge("update_trade_performance", "arf_feedback")
     g.add_edge("arf_feedback", END)
 
     compiled = g.compile()
@@ -152,39 +143,18 @@ def build_verify_graph():
 
 
 def get_verify_graph():
-    """Lazy singleton."""
     global _verify_graph_singleton
     if _verify_graph_singleton is None:
         _verify_graph_singleton = build_verify_graph()
     return _verify_graph_singleton
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Public runner
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def run_verify_v2(
     run_date: str = "",
     lookback_days: int = 5,
     limit: int = 200,
 ) -> dict:
-    """
-    Execute the verify pipeline V2.
-
-    Args:
-        run_date: TW date YYYY-MM-DD (informational only; verify logic is cutoff-based)
-        lookback_days: how old predictions must be to verify (default 5)
-        limit: max predictions per run (default 200)
-
-    Returns:
-        {
-          status, run_date, pending, verified, correct,
-          total_pnl_pct, model_accuracy_groups, trade_performance_groups,
-          arf_updated, metrics, errors
-        }
-    """
     if not run_date:
-        from datetime import timedelta
         tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
         run_date = tw_now.strftime("%Y-%m-%d")
 
@@ -202,12 +172,8 @@ async def run_verify_v2(
     try:
         final_state = await graph.ainvoke(initial_state)
     except Exception as e:
-        logger.error(f"[Verify V2] Graph ainvoke failed: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "run_date": run_date,
-            "errors": [str(e)],
-        }
+        logger.error("[Verify V2] Graph ainvoke failed: %s", e, exc_info=True)
+        return {"status": "error", "run_date": run_date, "errors": [str(e)]}
 
     duration_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
     status = "error" if final_state.get("errors") else "ok"

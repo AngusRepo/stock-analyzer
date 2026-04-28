@@ -19,6 +19,8 @@ from typing import Literal
 import warnings
 warnings.filterwarnings("ignore")
 
+from .ft_transformer import build_ft_transformer, rebuild_ft_transformer_from_bundle
+
 
 @dataclass
 class ModelPrediction:
@@ -106,7 +108,12 @@ def _fallback_model(name: str, prices: np.ndarray, horizon: int, reason: str) ->
 
 
 # ─── Model 1: Kalman Filter（自適應線性狀態空間模型）────────────────────────────
-def run_kalman_filter(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> ModelPrediction:
+def run_kalman_filter(
+    prices: np.ndarray,
+    horizon: int = 14,
+    stock_id: int = 0,
+    hyperparams: dict | None = None,
+) -> ModelPrediction:
     """
     Kalman Filter — 每一天都在更新自己的參數，無需週期重訓。
 
@@ -122,17 +129,21 @@ def run_kalman_filter(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) 
         return _fallback_model("KalmanFilter", prices, horizon, "insufficient data")
 
     n = len(prices)
+    hp = hyperparams or {}
+    process_noise = max(1e-8, float(hp.get("process_noise", 0.01)))
+    observation_noise = max(1e-8, float(hp.get("observation_noise", 1.0)))
+    init_cov_scale = max(1e-8, float(hp.get("init_cov_scale", 1.0)))
     diffs         = np.diff(prices[-60:] if n >= 61 else prices)
     sigma_obs     = float(np.std(diffs)) + 1e-8
     sigma_trend   = sigma_obs * 0.1
 
     F = np.array([[1.0, 1.0], [0.0, 1.0]])
     H = np.array([[1.0, 0.0]])
-    Q = np.array([[sigma_obs**2 * 0.01, 0.0], [0.0, sigma_trend**2]])
-    R = np.array([[sigma_obs**2]])
+    Q = np.array([[sigma_obs**2 * process_noise, 0.0], [0.0, sigma_trend**2 * process_noise / 0.01]])
+    R = np.array([[sigma_obs**2 * observation_noise]])
 
     x = np.array([[float(prices[0])], [0.0]])
-    P = np.eye(2) * sigma_obs**2
+    P = np.eye(2) * sigma_obs**2 * init_cov_scale
 
     filtered_prices, filtered_trends = [], []
     for price in prices:
@@ -257,7 +268,12 @@ def run_dlinear(prices: np.ndarray, horizon: int = 14) -> ModelPrediction:
 
 
 # ─── Model 3: Markov-Switching AR（Regime 自動翻轉模型）──────────────────────
-def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> ModelPrediction:
+def run_markov_switching(
+    prices: np.ndarray,
+    horizon: int = 14,
+    stock_id: int = 0,
+    hyperparams: dict | None = None,
+) -> ModelPrediction:
     """
     Markov-Switching Autoregression — 取代 N-HiTS (#13)
 
@@ -273,9 +289,25 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
     Fallback：MLE 不收斂時降級為 simple momentum model
     """
     MODEL_NAME = "MarkovSwitching"
+    hp = hyperparams or {}
+    n_regimes = max(2, min(5, int(hp.get("n_regimes", 2))))
+    ar_order = max(1, min(3, int(hp.get("ar_order", 2))))
+    switching_vol = bool(hp.get("switching_vol", True))
 
     if len(prices) < 60:
         return _fallback_model(MODEL_NAME, prices, horizon, "insufficient data")
+
+    def _params_to_dict(res) -> dict[str, float]:
+        params = getattr(res, "params", None)
+        if params is None:
+            return {}
+        if hasattr(params, "to_dict"):
+            return {str(k): float(v) for k, v in params.to_dict().items()}
+        names = getattr(res, "param_names", None) or getattr(getattr(res, "model", None), "param_names", None)
+        raw = np.asarray(params).reshape(-1)
+        if names is not None and len(names) == len(raw):
+            return {str(k): float(v) for k, v in zip(names, raw.tolist())}
+        return {}
 
     try:
         from statsmodels.tsa.regime_switching.markov_autoregression import MarkovAutoregression
@@ -291,8 +323,8 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
             raise ValueError("too few returns for MS-AR")
 
         mod = MarkovAutoregression(
-            log_returns, k_regimes=2, order=2,
-            switching_ar=True, switching_variance=True,
+            log_returns, k_regimes=n_regimes, order=ar_order,
+            switching_ar=True, switching_variance=switching_vol,
         )
         res = mod.fit(maxiter=200, disp=False, search_reps=20)
 
@@ -303,8 +335,10 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
         regime_probs = smoothed[-1]  # [P(regime0), P(regime1)]
 
         # 判斷哪個 regime 是 bull（drift 較高的）
-        regime_means = [res.params.get(f"const[{i}]", 0.0) for i in range(2)]
+        params_map = _params_to_dict(res)
+        regime_means = [params_map.get(f"const[{i}]", 0.0) for i in range(n_regimes)]
         bull_regime = int(np.argmax(regime_means))
+        bear_regime = int(np.argmin(regime_means))
         bull_prob = float(regime_probs[bull_regime])
 
         # 方向 + 信心
@@ -312,15 +346,16 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
         direction_strength = abs(bull_prob - 0.5) * 2  # 0~1
 
         # Forecast：用當前 regime 的 AR 參數外推
-        last_returns = log_returns[-2:]
+        last_returns = log_returns[-ar_order:]
         forecast_returns = []
         r = last_returns.copy()
         # 用 regime-conditional AR 參數做 horizon-step 外推
         ar_params = []
-        for lag in range(1, 3):
-            key = f"ar.L{lag}[{bull_regime if is_up else 1 - bull_regime}]"
-            ar_params.append(res.params.get(key, 0.0))
-        drift = regime_means[bull_regime if is_up else 1 - bull_regime]
+        active_regime = bull_regime if is_up else bear_regime
+        for lag in range(1, ar_order + 1):
+            key = f"ar.L{lag}[{active_regime}]"
+            ar_params.append(params_map.get(key, 0.0))
+        drift = regime_means[active_regime]
 
         for _ in range(horizon):
             next_r = drift
@@ -345,11 +380,12 @@ def run_markov_switching(prices: np.ndarray, horizon: int = 14, stock_id: int = 
                 continue
             seg_ret = np.diff(np.log(prices[:seg_end]))[-lookback:]
             try:
-                m = MarkovAutoregression(seg_ret, k_regimes=2, order=2,
-                                         switching_ar=True, switching_variance=True)
+                m = MarkovAutoregression(seg_ret, k_regimes=n_regimes, order=ar_order,
+                                         switching_ar=True, switching_variance=switching_vol)
                 r_fit = m.fit(maxiter=100, disp=False, search_reps=5)
                 sp = np.asarray(r_fit.smoothed_marginal_probabilities)  # 2026-04-17 #1 fix
-                rm = [r_fit.params.get(f"const[{j}]", 0.0) for j in range(2)]
+                pmap = _params_to_dict(r_fit)
+                rm = [pmap.get(f"const[{j}]", 0.0) for j in range(n_regimes)]
                 br = int(np.argmax(rm))
                 pred_up = float(sp[-1, br]) > 0.5
                 actual_up = prices[min(seg_end + 4, n - 1)] > prices[seg_end - 1]
@@ -1061,6 +1097,147 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
 
 
 # ─── GARCH 波動率預測（helper，不輸出 ModelPrediction）──────────────────────
+def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
+                       prices: np.ndarray, horizon: int = 14,
+                       stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
+    """
+    FT-Transformer serving contract cleanup.
+
+    If a saved bundle exists, always rebuild that exact bundle architecture.
+    Regression bundles must never silently fall back into legacy classifier retraining.
+    Legacy classifier training is only kept as a last-resort fallback for the old
+    /predict path until the controller fully converges to V2.
+    """
+    if len(X) < 30:
+        return _fallback_model("FT-Transformer", prices, horizon, "insufficient data")
+
+    try:
+        import torch
+        import torch.nn as nn
+        from .model_store import load_model, save_model, is_model_fresh, feature_names_match
+    except ImportError:
+        result = run_lightgbm(X, y, X_latest, prices, horizon, stock_id, feature_names)
+        return ModelPrediction(
+            model_name="FT-Transformer",
+            direction=result.direction,
+            confidence=round(result.confidence * 0.9, 3),
+            forecast_pct=result.forecast_pct,
+            forecasts=result.forecasts,
+            direction_accuracy=result.direction_accuracy,
+        )
+
+    feature_names = feature_names or []
+    n_features = X.shape[1]
+    split = int(len(X) * 0.8)
+    X_test, y_test = X[split:], y[split:]
+
+    model = None
+    scaler = None
+    model_type = "classification"
+
+    for sid in [0, stock_id] if stock_id > 0 else [0]:
+        stored, meta = load_model(sid, "FT-Transformer")
+        if not (
+            stored is not None
+            and is_model_fresh(meta)
+            and feature_names_match(meta, feature_names)
+            and isinstance(stored, dict)
+            and "state_dict" in stored
+        ):
+            continue
+        try:
+            scaler = stored.get("scaler")
+            if scaler is None:
+                raise ValueError("bundle missing scaler")
+            model, model_type, _arch = rebuild_ft_transformer_from_bundle(stored)
+            print(
+                f"[FT-Transformer] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} "
+                f"{model_type} bundle"
+            )
+            break
+        except Exception as e:
+            print(f"[FT-Transformer] bundle load failed for sid={sid}: {e}")
+            model = None
+            scaler = None
+
+    if model is None:
+        from sklearn.preprocessing import StandardScaler as SS
+
+        scaler = SS()
+        X_train = scaler.fit_transform(X[:split]).astype(np.float32)
+        y_train = y[:split].astype(np.int64)
+
+        model, legacy_arch = build_ft_transformer(n_features, "classification")
+        opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+        crit = nn.CrossEntropyLoss()
+
+        model.train()
+        for _epoch in range(60):
+            idx = np.random.permutation(len(X_train))
+            for s in range(0, len(X_train), 32):
+                bi = idx[s:s+32]
+                xb = torch.tensor(X_train[bi])
+                yb = torch.tensor(y_train[bi])
+                loss = crit(model(xb), yb)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+        model.eval()
+        model_type = "classification"
+
+        if stock_id > 0:
+            bundle = {
+                "state_dict": model.state_dict(),
+                "scaler": scaler,
+                "n_features": n_features,
+                "model_type": model_type,
+                "arch": legacy_arch,
+            }
+            save_model(stock_id, "FT-Transformer", bundle, feature_names, len(X))
+
+    with torch.no_grad():
+        X_test_scaled = scaler.transform(X_test).astype(np.float32) if len(X_test) > 0 else np.empty((0, n_features), dtype=np.float32)
+        X_latest_scaled = scaler.transform(X_latest.reshape(1, -1)).astype(np.float32)
+
+        if model_type == "regression":
+            logits_t = model(torch.tensor(X_test_scaled)) if len(X_test_scaled) > 0 else None
+            pred_latest = float(model(torch.tensor(X_latest_scaled)).reshape(-1)[0].item())
+            pred_latest = float(np.clip(pred_latest, 0.0, 1.0))
+            up_prob = pred_latest
+            if logits_t is not None and len(y_test) > 0:
+                preds_t = np.clip(logits_t.detach().cpu().numpy().reshape(-1), 0.0, 1.0)
+                dir_acc = float(np.mean((preds_t > 0.5) == y_test))
+            else:
+                dir_acc = 0.5
+        else:
+            logits_t = model(torch.tensor(X_test_scaled)) if len(X_test_scaled) > 0 else None
+            proba_lat = torch.softmax(model(torch.tensor(X_latest_scaled)), dim=-1).detach().cpu().numpy()[0]
+            up_prob = float(proba_lat[1]) if len(proba_lat) > 1 else 0.5
+            if logits_t is not None and len(y_test) > 0:
+                preds_t = torch.argmax(logits_t, dim=-1).detach().cpu().numpy()
+                dir_acc = float(np.mean(preds_t == y_test))
+            else:
+                dir_acc = 0.5
+
+    direction = "up" if up_prob > 0.5 else "down"
+    confidence = max(up_prob, 1 - up_prob)
+    pct = (up_prob - 0.5) * 2 * 0.05
+    forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
+    std = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
+    last_date = datetime.now()
+    dates = _add_trading_days(last_date, horizon)
+    forecasts = _make_forecast_points(forecast_vals, std, dates)
+
+    return ModelPrediction(
+        model_name="FT-Transformer",
+        direction=direction,
+        confidence=round(confidence, 3),
+        forecast_pct=round(pct, 4),
+        forecasts=forecasts,
+        direction_accuracy=round(dir_acc, 3),
+    )
+
+
 def run_garch_volatility(prices: np.ndarray, horizon: int = 5) -> float:
     """
     GARCH(1,1) 預測未來 horizon 天的條件波動率（以價格單位回傳）。

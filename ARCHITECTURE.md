@@ -6,6 +6,12 @@
 
 ## System Overview
 
+> Chronos baseline note:
+> In the current repo/runtime, the Chronos path refers to
+> `amazon/chronos-t5-tiny` running as a CPU zero-shot baseline.
+> It is not a larger promoted Chronos variant, and changing Chronos size
+> should be treated as a separate architecture and cost decision.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        DATA LAYER (17:30 TW)                            │

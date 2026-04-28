@@ -28,9 +28,17 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_CONTROLLER_DIR = Path(__file__).resolve().parent.parent
+if str(_CONTROLLER_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
 # Default search space — 28 dims. Caller (endpoint) should prefer KV override.
@@ -76,6 +84,45 @@ DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
 ]
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+@dataclass(frozen=True)
+class OptunaL2Policy:
+    """Runtime-tunable guardrails for L2 Optuna candidate selection."""
+
+    min_trades: int = 5
+    dd_penalty: float = 2.0
+    pbo_max_candidates: int = 50
+    pbo_min_partitions: int = 4
+
+    @classmethod
+    def from_env(cls) -> "OptunaL2Policy":
+        return cls(
+            min_trades=_env_int("OPTUNA_L2_MIN_TRADES", cls.min_trades),
+            dd_penalty=_env_float("OPTUNA_L2_DD_PENALTY", cls.dd_penalty),
+            pbo_max_candidates=_env_int("OPTUNA_L2_PBO_MAX_CANDIDATES", cls.pbo_max_candidates),
+            pbo_min_partitions=_env_int("OPTUNA_L2_PBO_MIN_PARTITIONS", cls.pbo_min_partitions),
+        )
+
+
 def _set_nested(d: dict, path: str, value: Any) -> None:
     """Set d[k1][k2]...[kN] = value for dot-notation `path`; creates intermediate dicts."""
     keys = path.split(".")
@@ -103,16 +150,99 @@ def _suggest(trial: "optuna.Trial", dim: dict[str, Any]) -> Any:
     raise ValueError(f"optuna_l2_sensitivity: unsupported search type '{dim_type}'")
 
 
+def _strategy_returns_by_partition_from_trials(
+    trials: list[Any],
+    *,
+    max_candidates: int | None = None,
+    min_partitions: int | None = None,
+) -> dict[str, list[float]]:
+    """Extract equal-length candidate partition returns for CSCV rank-logit PBO."""
+    policy = OptunaL2Policy.from_env()
+    max_candidates = max_candidates if max_candidates is not None else policy.pbo_max_candidates
+    min_partitions = min_partitions if min_partitions is not None else policy.pbo_min_partitions
+    candidates: list[tuple[float, int, list[float]]] = []
+    expected_len: int | None = None
+
+    for trial in trials:
+        value = getattr(trial, "value", None)
+        attrs = getattr(trial, "user_attrs", {}) or {}
+        raw_returns = attrs.get("partition_returns")
+        if value is None or not isinstance(raw_returns, list):
+            continue
+        if len(raw_returns) < min_partitions:
+            continue
+        partition_returns = [float(v) for v in raw_returns]
+        if expected_len is None:
+            expected_len = len(partition_returns)
+        if len(partition_returns) != expected_len:
+            continue
+        candidates.append((float(value), int(getattr(trial, "number", 0)), partition_returns))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return {
+        f"trial_{number}": partition_returns
+        for _, number, partition_returns in candidates[:max_candidates]
+    }
+
+
+def _pbo_audit_from_strategy_returns(
+    strategy_returns_by_partition: dict[str, list[float]],
+) -> dict[str, Any]:
+    """Run CSCV rank-logit PBO on Optuna candidate partition returns."""
+    from services.pbo_service import _run_cscv_rank_logit_pbo
+
+    result = _run_cscv_rank_logit_pbo(strategy_returns_by_partition)
+    pbo_value = 1.0 if not strategy_returns_by_partition else float(result.pbo)
+    return {
+        "method": result.method,
+        "pbo": round(pbo_value, 6),
+        "go_live_verdict": result.go_live_verdict,
+        "verdict_reason": result.verdict_reason,
+        "n_partitions": result.n_partitions,
+        "n_combinations": result.n_combinations,
+        "n_candidates": len(strategy_returns_by_partition),
+        "oos_mean_return": round(float(result.oos_mean_return), 6),
+        "degradation": round(float(result.degradation), 6),
+        "selected_strategy_counts": result.selected_strategy_counts,
+    }
+
+
+def _l2_push_allowed(
+    *,
+    push_kv: bool,
+    dry_run: bool,
+    best_params_nested: dict[str, Any] | None,
+    pbo_audit: dict[str, Any] | None,
+) -> bool:
+    if not push_kv or dry_run or not best_params_nested:
+        return False
+    return str((pbo_audit or {}).get("go_live_verdict") or "").upper() == "PASS"
+
+
+def _score_l2_trial(
+    *,
+    sharpe: float,
+    max_drawdown: float,
+    n_trades: int,
+    policy: OptunaL2Policy,
+) -> float:
+    """Score a Mode B replay trial with policy-driven guardrails."""
+    if n_trades < policy.min_trades:
+        return -1.0
+    return sharpe - policy.dd_penalty * max_drawdown
+
+
 def run_l2_sensitivity_search(
     search_space: Optional[list[dict[str, Any]]],
     start_date: str,
     end_date: str,
     baseline_config: dict,
     n_trials: int = 50,
-    dd_penalty: float = 2.0,
+    dd_penalty: float | None = None,
     initial_capital: float = 1_000_000.0,
     sampler_name: str = "nsga2",
     seed: int = 42,
+    policy: OptunaL2Policy | None = None,
 ) -> dict[str, Any]:
     """NSGA-II (or TPE) search over L2 dims against Mode B replay.
 
@@ -136,6 +266,15 @@ def run_l2_sensitivity_search(
     """
     import optuna  # lazy; Cloud Run image has it
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    policy = policy or OptunaL2Policy.from_env()
+    if dd_penalty is not None:
+        policy = OptunaL2Policy(
+            min_trades=policy.min_trades,
+            dd_penalty=float(dd_penalty),
+            pbo_max_candidates=policy.pbo_max_candidates,
+            pbo_min_partitions=policy.pbo_min_partitions,
+        )
 
     space = list(search_space or DEFAULT_SEARCH_SPACE)
     if not space:
@@ -181,13 +320,19 @@ def run_l2_sensitivity_search(
         sharpe   = float(getattr(result, "sharpe", None) or 0.0)
         max_dd   = float(getattr(result, "max_drawdown", 0.0) or 0.0)
         n_trades = int(getattr(result, "total_trades", 0) or 0)
+        partition_returns = getattr(result, "partition_returns", None) or []
 
         # Min-trade guard — avoid rewarding "no-trade high-sharpe" degenerate solutions
-        if n_trades < 5:
+        if n_trades < policy.min_trades:
             logger.info(f"[L2 Optuna] trial {trial.number} only {n_trades} trades → penalized")
-            return -1.0
 
-        score = sharpe - dd_penalty * max_dd
+        score = _score_l2_trial(
+            sharpe=sharpe,
+            max_drawdown=max_dd,
+            n_trades=n_trades,
+            policy=policy,
+        )
+        trial.set_user_attr("partition_returns", partition_returns)
         logger.info(
             f"[L2 Optuna] trial {trial.number} sharpe={sharpe:.3f} "
             f"dd={max_dd:.3f} trades={n_trades} score={score:.3f}"
@@ -218,13 +363,33 @@ def run_l2_sensitivity_search(
         _set_nested(nested, "L2_formula.pf_quality_90d_weight",
                     1.0 - best.params["pf_quality_30d_weight"])
 
+    strategy_returns_by_partition = _strategy_returns_by_partition_from_trials(
+        study.trials,
+        max_candidates=policy.pbo_max_candidates,
+        min_partitions=policy.pbo_min_partitions,
+    )
+    pbo_audit = _pbo_audit_from_strategy_returns(strategy_returns_by_partition)
+
     return {
         "best_value": best.value,
         "best_params": dict(best.params),
         "best_params_nested": nested,
         "n_trials": len(study.trials),
+        "strategy_returns_by_partition": strategy_returns_by_partition,
+        "pbo_audit": pbo_audit,
+        "policy": {
+            "min_trades": policy.min_trades,
+            "dd_penalty": policy.dd_penalty,
+            "pbo_max_candidates": policy.pbo_max_candidates,
+            "pbo_min_partitions": policy.pbo_min_partitions,
+        },
         "all_trials": [
-            {"number": t.number, "value": t.value, "params": dict(t.params)}
+            {
+                "number": t.number,
+                "value": t.value,
+                "params": dict(t.params),
+                "partition_returns": t.user_attrs.get("partition_returns"),
+            }
             for t in study.trials if t.value is not None
         ],
     }

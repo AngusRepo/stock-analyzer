@@ -7,8 +7,7 @@ POST /pipeline/v2/run → Triggers the Cloud Run Job `pipeline-v2` which runs th
 
 History:
   - 2026-04-07 LangGraph A+B refactor (fake → real StateGraph in controller)
-  - 2026-04-08 Part 5 Option A: fire-and-forget asyncio.create_task + callback
-  - 2026-04-16: Fire-and-forget replaced by Cloud Run Job handoff — Service
+  - 2026-04-16: Cloud Run Job handoff replaced request-scoped background work.
                 container idle-kills after ~15 min and silently truncated every
                 pipeline since 4/13, leaving bot with 4 trading days of 0 orders.
                 The Job has its own lifecycle and runs to completion.
@@ -24,15 +23,12 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from services.cloud_run_jobs_client import CloudRunJobsClient
+from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
-WORKER_URL = os.environ.get(
-    "STOCKVISION_WORKER_URL",
-    "https://stockvision-worker.angus-solo-dev.workers.dev",
-)
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 # Shared module-level Jobs client — the underlying gRPC channel is reusable
@@ -53,6 +49,12 @@ async def _callback_worker(
     payload: dict, client: httpx.AsyncClient | None = None
 ) -> None:
     """POST to Worker /api/admin/cron-callback. Best-effort; never raises."""
+    if not WORKER_URL:
+        logger.warning(
+            "[Pipeline callback] STOCKVISION_WORKER_URL missing; skip callback for task=%s",
+            payload.get("task"),
+        )
+        return
     url = f"{WORKER_URL.rstrip('/')}/api/admin/cron-callback"
     headers = {"Content-Type": "application/json"}
     if WORKER_AUTH:
@@ -147,6 +149,16 @@ async def trigger_pipeline_v2(
         execution = _jobs_client.run_job(
             env_overrides={"PIPELINE_RUN_DATE": date} if date else None,
         )
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "pipeline-v2 already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "date": date or "today",
+            },
+        ) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("[Pipeline V2] Failed to trigger Job execution")
         raise HTTPException(

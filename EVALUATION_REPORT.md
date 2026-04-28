@@ -111,7 +111,7 @@
 **D1 REST API 的暴露面**：Cloudflare D1 目前只靠 Worker 的 auth middleware 保護。如果 Worker domain 被掃描到且有任何 auth bypass 漏洞，38 個 table 的資料全部暴露。建議：
 1. 加入 IP whitelist（Cloudflare Access）作為第二層防護
 2. D1 的敏感 table（paper_accounts, paper_orders）考慮欄位級加密（cost_price, shares）
-3. Admin token `sv-stockvision-2026-prod` 應定期 rotate（建議 90 天）
+3. Admin token 應定期 rotate（建議 90 天），不要在文件中記錄實際值
 
 **Local Tunnel 暴露風險**：Debate 使用 Local Tunnel 連接本機 Claude Opus。Local Tunnel 的 URL 是臨時的但可預測，且沒有 TLS 憑證釘選。建議：
 1. Tunnel URL 加 bearer token 驗證

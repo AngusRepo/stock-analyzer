@@ -52,13 +52,15 @@ State-space (KalmanFilter, MarkovSwitching) handled by Stage 6.
 from __future__ import annotations
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-GCS_BUCKET = "stockvision-models"
+GCS_BUCKET = os.environ.get("GCS_BUCKET_NAME", "").strip()
 GCS_POOL_KEY = "universal/model_pool.json"
+GCS_STATE_SPACE_PREFIX = "per_stock_state_space"
 
 SCHEMA_VERSION = "1.0"
 
@@ -90,8 +92,8 @@ MIN_ACTIVE_PER_FAMILY = {
 # Stage 6.3 future: Optuna search replaces these with Pareto-optimal values.
 DEFAULT_STATE_SPACE_HYPERPARAMS = {
     "KalmanFilter": {
-        "process_noise":      1e-4,    # Q matrix scalar (state evolution variance)
-        "observation_noise":  1e-2,    # R matrix scalar (measurement variance)
+        "process_noise":      0.01,    # Q matrix scalar (state evolution variance)
+        "observation_noise":  1.0,     # R matrix scalar (measurement variance)
         "init_cov_scale":     1.0,     # P0 initial uncertainty scale
         "smoothing":          False,    # forward-only (online), no Kalman smoother
     },
@@ -99,7 +101,7 @@ DEFAULT_STATE_SPACE_HYPERPARAMS = {
         "n_regimes":          2,        # bull / bear (or trending / mean-reverting)
         "transition_prior":   0.95,     # diagonal prior (regime persistence)
         "switching_vol":      True,     # volatility differs per regime (vs only mean)
-        "ar_order":           1,        # AR(1) within each regime
+        "ar_order":           2,        # AR(2) within each regime
     },
 }
 
@@ -112,6 +114,9 @@ def gcs_path_for(model_name: str, version: str) -> str:
     """e.g. ('XGBoost', 'v1') → 'universal/xgboost/v1.joblib'"""
     if model_name not in MANAGED_MODELS:
         raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
+    if model_name in DEFAULT_STATE_SPACE_HYPERPARAMS:
+        folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
+        return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
     _, _, ext = MANAGED_MODELS[model_name]
     folder = model_name.lower().replace("-", "_")
     return f"universal/{folder}/{version}.{ext}"
@@ -130,8 +135,7 @@ def gcs_metadata_path_for(model_name: str, version: str) -> str:
 def load_pool() -> Optional[dict]:
     """Load current model_pool.json from GCS. None if missing."""
     try:
-        from google.cloud import storage
-        bucket = storage.Client().bucket(GCS_BUCKET)
+        bucket = _get_bucket()
         blob = bucket.blob(GCS_POOL_KEY)
         if not blob.exists():
             return None
@@ -143,9 +147,8 @@ def load_pool() -> Optional[dict]:
 
 def save_pool(pool: dict) -> None:
     """Write model_pool.json to GCS with updated last_updated timestamp."""
-    from google.cloud import storage
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
     bucket.blob(GCS_POOL_KEY).upload_from_string(
         json.dumps(pool, indent=2, ensure_ascii=False),
         content_type="application/json",
@@ -392,9 +395,6 @@ def get_lifecycle_weight(model_name: str, pool: Optional[dict] = None) -> float:
 # Stage 6 state-space helpers (per-stock state, shared hyperparams)
 # ─────────────────────────────────────────────────────────────────────────────
 
-GCS_STATE_SPACE_PREFIX = "per_stock_state_space"
-
-
 def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
     """e.g. ('KalmanFilter', 'v1') → 'per_stock_state_space/kalman/hyperparams_v1.json'
 
@@ -418,8 +418,7 @@ def load_state_space_hyperparams(model_name: str, version: str = "v1") -> dict:
     if model_name not in DEFAULT_STATE_SPACE_HYPERPARAMS:
         raise ValueError(f"{model_name} is not a state-space model")
     try:
-        from google.cloud import storage
-        bucket = storage.Client().bucket(GCS_BUCKET)
+        bucket = _get_bucket()
         path = state_space_hyperparams_path(model_name, version)
         blob = bucket.blob(path)
         if blob.exists():
@@ -446,8 +445,7 @@ def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: st
         # Allow extras but warn — accommodates future schema migration
         logger.warning(f"[ModelPool] Unexpected hyperparam keys for {model_name}: {extra}")
 
-    from google.cloud import storage
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
     path = state_space_hyperparams_path(model_name, version)
     payload = dict(hyperparams)
     payload["_meta"] = {
@@ -480,11 +478,18 @@ def list_legacy_artifacts() -> list[dict]:
     Action is 'rename' (legacy → versioned), 'already_versioned' (no-op),
     or 'missing' (artifact not in GCS yet).
     """
-    from google.cloud import storage
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
     out = []
     for name, (_mt, _bf, ext) in MANAGED_MODELS.items():
         target_path = gcs_path_for(name, "v1")
+        if name in DEFAULT_STATE_SPACE_HYPERPARAMS:
+            out.append({
+                "model": name,
+                "current_path": target_path,
+                "target_path": target_path,
+                "action": "state_space_hyperparams",
+            })
+            continue
         # Already versioned?
         if bucket.blob(target_path).exists():
             out.append({
@@ -525,15 +530,12 @@ def list_legacy_artifacts() -> list[dict]:
 def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
     """Copy legacy flat-file artifacts to versioned layout.
 
-    NOTE: This is a copy (not move) — original legacy paths kept for fallback
-    so existing predict_stock_v2 keeps working until it migrates to read
-    from model_pool.json. Stage 4 (after promote logic lands) will write a
-    deprecate-and-remove follow-up.
+    NOTE: This is a copy (not move); original legacy paths are kept as a
+    conservative fallback while production consumers read model_pool.json.
 
     dry_run=True: report only, no GCS writes.
     """
-    from google.cloud import storage
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
 
     plan = list_legacy_artifacts()
     actions_taken = []
@@ -570,3 +572,8 @@ def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
                 logger.warning(f"[ModelPool] Metadata copy failed {src_meta}→{tgt_meta}: {e}")
 
     return {"dry_run": dry_run, "plan": plan, "actions": actions_taken}
+def _get_bucket():
+    if not GCS_BUCKET:
+        raise RuntimeError("GCS_BUCKET_NAME not configured")
+    from google.cloud import storage
+    return storage.Client().bucket(GCS_BUCKET)

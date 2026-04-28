@@ -14,6 +14,13 @@ from typing import Optional
 from services.backtest_service import run_full_backtest
 from services.monte_carlo_service import run_monte_carlo_mdd
 from services.pbo_service import run_pbo_analysis
+from services.alpha_evidence_runner import run_alpha_candidate_evidence
+from services.promotion_service import (
+    evaluate_alpha_policy_evidence_gate,
+    evaluate_latest_alpha_policy_gate,
+    evaluate_latest_promotion_gate,
+)
+from services.backtest_result_store import persist_replay_backtest
 from services.backtest_engine import (
     replay_period_loading,
     diagnose_replay_for_date,
@@ -48,18 +55,27 @@ async def trigger_monte_carlo(
     n: int = Query(default=1000, ge=100, le=10000, description="Number of simulations"),
     source: str = Query(default="paper", pattern="^(paper|backtest)$",
                         description="Data source: paper (real trades) or backtest"),
+    method: str = Query(default="block_bootstrap", pattern="^(block_bootstrap|regime_block_bootstrap|iid_shuffle)$",
+                        description="Simulation method; regime/block bootstrap preserves clustered loss streaks"),
+    block_size: int | None = Query(default=None, ge=1, le=60,
+                                   description="Optional moving-block size for block bootstrap"),
 ):
     """
     P0#5 Monte Carlo MDD Simulation:
     1. Fetch completed trades (paper_orders FIFO paired, or backtest results)
-    2. Shuffle trade sequence N times
+    2. Simulate trade paths N times (block bootstrap by default; iid_shuffle kept for legacy comparison)
     3. Compute MDD for each permutation
     4. Report 95th/99th percentile worst-case MDD
     5. Go-live verdict: PASS (<20%) / CAUTION (20-30%) / FAIL (>30%)
     """
-    logger.info(f"[MonteCarlo] Triggered: source={source}, n={n}")
+    logger.info(f"[MonteCarlo] Triggered: source={source}, n={n}, method={method}, block_size={block_size}")
     try:
-        return await run_monte_carlo_mdd(n_simulations=n, source=source)
+        return await run_monte_carlo_mdd(
+            n_simulations=n,
+            source=source,
+            method=method,
+            block_size=block_size,
+        )
     except Exception as e:
         logger.exception("[MonteCarlo] Pipeline failed")
         return {"status": "error", "error": str(e)}
@@ -81,6 +97,19 @@ class ReplayRequest(BaseModel):
         description="Subset filter for smoke tests. None = full universe (~2346 stocks).",
     )
     verbose: bool = Field(default=False)
+    persist_results: bool = Field(
+        default=False,
+        description="Persist replay result into D1 backtest_results for promotion gates.",
+    )
+    persist_confirm: bool = Field(
+        default=False,
+        description="Required with persist_results=true to avoid accidental promotion-gate writes.",
+    )
+    parity_audit: Optional[dict] = Field(
+        default=None,
+        description="Worker/API parity audit to persist with promotion-grade replay rows. "
+                    "Promotion gates fail closed unless worker_parity.decision == PASS.",
+    )
     regime_label: Optional[str] = Field(
         default=None,
         description="#28b T2.4: apply params.sltp_per_regime[canonical_label] overlay "
@@ -88,6 +117,66 @@ class ReplayRequest(BaseModel):
                     "'bear' / 'bear_market' / 'volatile' / 'sideways' (case-insensitive). "
                     "None = flat sltp (backward-compat).",
     )
+
+
+class AlphaPromotionGateRequest(BaseModel):
+    candidate: dict = Field(
+        default_factory=dict,
+        description="Alpha policy candidate metadata from /optuna/alpha_framework or Worker sandbox metadata.",
+    )
+    source: str = Field(default="backtest", pattern="^(backtest)$")
+    pbo_source: Optional[str] = Field(default=None, pattern="^(backtest|optuna_l2)$")
+    evidence: Optional[dict] = Field(
+        default=None,
+        description="Candidate-specific evidence bundle {candidate_id, backtest, monte_carlo, pbo}. "
+                    "When provided, gate does not read latest global artifacts.",
+    )
+
+
+class AlphaEvidenceRequest(BaseModel):
+    candidate: dict = Field(
+        default_factory=dict,
+        description="Alpha framework sandbox/challenger candidate.",
+    )
+    start_date: str = Field(..., description="Inclusive start 'YYYY-MM-DD'")
+    end_date: str = Field(..., description="Inclusive end 'YYYY-MM-DD'")
+    baseline_config: dict = Field(
+        default_factory=dict,
+        description="Current champion trading:config. Candidate config is deep-merged over this.",
+    )
+    initial_capital: float = Field(default=1_000_000)
+    mode: str = Field(default="B", pattern="^(B)$")
+    symbols: Optional[list[str]] = Field(default=None)
+    mc_simulations: int = Field(default=1000, ge=100, le=10000)
+    parity_audit: Optional[dict] = Field(
+        default=None,
+        description="Worker/API parity audit. Gate fails closed if worker_parity.decision is not PASS.",
+    )
+
+
+@router.post("/alpha-evidence")
+def post_alpha_evidence(req: AlphaEvidenceRequest = Body(...)):
+    """Generate candidate-specific alpha evidence. Read-only: no D1/KV/promote writes."""
+    logger.info("[AlphaEvidence] Running candidate-specific replay/MC/PBO")
+    try:
+        return {
+            "status": "ok",
+            **run_alpha_candidate_evidence(
+                req.candidate,
+                start_date=req.start_date,
+                end_date=req.end_date,
+                baseline_config=req.baseline_config,
+                initial_capital=req.initial_capital,
+                mode=req.mode,
+                symbols=req.symbols,
+                mc_simulations=req.mc_simulations,
+                parity_audit=req.parity_audit,
+                alpha_replay_applied=True,
+            ),
+        }
+    except Exception as e:
+        logger.exception("[AlphaEvidence] Evaluation failed")
+        return {"status": "error", "error": str(e)}
 
 
 @router.post("/replay")
@@ -132,10 +221,20 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             regime_label=req.regime_label,
         )
 
+        persist_result = None
+        if req.persist_results:
+            if not req.persist_confirm:
+                return {
+                    "status": "error",
+                    "error": "persist_results=true requires persist_confirm=true",
+                }
+            persist_result = persist_replay_backtest(metrics, parity_audit=req.parity_audit)
+
         # Serialize BacktestMetrics to JSON-safe dict
         return {
             "status": "ok",
             "mode": metrics.mode,
+            "persist_result": persist_result,
             "timerange": f"{metrics.start_date}~{metrics.end_date}",
             "initial_capital": metrics.initial_capital,
             "final_equity": round(metrics.final_equity, 2),
@@ -162,6 +261,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             "realism_warnings": metrics.realism_warnings,
             "absolute_confidence": metrics.absolute_confidence,
             "sanity_flags": metrics.sanity_flags,
+            "partition_returns": metrics.partition_returns,
             # Truncate heavy fields for HTTP response (full lists are in memory still)
             "trades_sample": [
                 {
@@ -169,6 +269,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
                     "entry": t.entry_date, "exit": t.exit_date,
                     "entry_px": round(t.entry_price, 2), "exit_px": round(t.exit_price, 2),
                     "shares": t.shares, "pnl": round(t.profit_ratio, 4),
+                    "entry_regime": t.entry_regime,
                     "reason": t.exit_reason, "days": t.days_held,
                 }
                 for t in metrics.trades[:50]
@@ -274,4 +375,53 @@ async def trigger_pbo(
         return await run_pbo_analysis(n_partitions=partitions, source=source)
     except Exception as e:
         logger.exception("[PBO] Pipeline failed")
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/promotion-gate")
+async def get_promotion_gate(
+    source: str = Query(default="backtest", pattern="^(paper|backtest)$",
+                        description="Risk source for Monte Carlo rows"),
+    pbo_source: str | None = Query(default=None, pattern="^(paper|backtest|optuna_l2)$",
+                                   description="PBO row source; defaults to source"),
+):
+    """
+    Read-only production promotion gate.
+
+    Joins latest Mode B backtest, Monte Carlo, and PBO rows, then returns a
+    fail-closed PASS/FAIL decision. This endpoint never promotes by itself.
+    """
+    logger.info(f"[PromotionGate] Evaluating latest gate: source={source}")
+    try:
+        return {"status": "ok", **evaluate_latest_promotion_gate(source=source, pbo_source=pbo_source)}
+    except Exception as e:
+        logger.exception("[PromotionGate] Evaluation failed")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/alpha-promotion-gate")
+async def post_alpha_promotion_gate(req: AlphaPromotionGateRequest = Body(...)):
+    """
+    Read-only alpha policy promotion gate.
+
+    Candidate must include alpha outcome provenance (sample_count/regime_counts)
+    and still pass the same Mode B + Monte Carlo + PBO gates as other
+    production-bound changes. This endpoint never promotes by itself.
+    """
+    logger.info("[AlphaPromotionGate] Evaluating alpha framework candidate")
+    try:
+        return {
+            "status": "ok",
+            **(
+                evaluate_alpha_policy_evidence_gate(req.candidate, req.evidence)
+                if req.evidence
+                else evaluate_latest_alpha_policy_gate(
+                    req.candidate,
+                    source=req.source,
+                    pbo_source=req.pbo_source,
+                )
+            ),
+        }
+    except Exception as e:
+        logger.exception("[AlphaPromotionGate] Evaluation failed")
         return {"status": "error", "error": str(e)}

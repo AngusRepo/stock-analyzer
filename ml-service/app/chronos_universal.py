@@ -12,7 +12,7 @@ Key differences from per-call version:
   list of forecasts. Caller (daily_pipeline_v2.node_ml_predict) invokes
   once for the entire watchlist instead of 33 per-stock calls.
 - Zero GCS artifact — foundation model is zero-shot. Only a
-  gs://stockvision-models/universal/chronos/v{N}_config.json is stored
+gs://{GCS_BUCKET_NAME}/universal/chronos/v{N}_config.json is stored
   as version marker for ML_POOL lifecycle tracking (Stage 1+).
 
 Caller contract:
@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 
 # Default model — chronos-t5-tiny: 8M params, CPU-friendly
 # Swap to chronos-t5-mini (20M) or chronos-t5-small (46M) if accuracy needs
+#
+# Production guardrail:
+# StockVision 目前部署中的 Chronos 路徑是 amazon/chronos-t5-tiny。
+# 它是 CPU-friendly 的 zero-shot baseline，不是更大的 Chronos 變體；
+# 任何升級到 mini/small/其他 checkpoint 的動作，都應視為新的架構/
+# 成本決策，而不是默認優化。
 _DEFAULT_MODEL_ID = "amazon/chronos-t5-tiny"
 
 # Min samples required before we attempt forecasting (short series → noise)
@@ -134,6 +140,10 @@ def chronos_batch_predict(
       and chronos-t5-tiny inference is ~0.2-0.5s per series on CPU.
       Future optimization: tensor padding + single .predict() call if
       watchlist growth makes per-call overhead matter.
+
+    Guardrail:
+      Production default is chronos-t5-tiny on purpose. Do not silently
+      promote this to larger Chronos checkpoints without explicit review.
     """
     # Fail-safe: missing chronos dependency → return error rows rather than crash
     try:
@@ -166,6 +176,7 @@ def chronos_batch_predict(
 CURRENT_CONFIG = {
     "version": "v1",
     "model_id": _DEFAULT_MODEL_ID,
+    "production_baseline_note": "Current deployed Chronos path uses amazon/chronos-t5-tiny CPU zero-shot baseline; larger Chronos variants are not the accepted default.",
     "horizon_default": 5,
     "num_samples_default": 20,
     "min_context": _MIN_CONTEXT,

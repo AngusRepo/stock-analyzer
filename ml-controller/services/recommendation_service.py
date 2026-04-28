@@ -12,6 +12,8 @@ Direct port of worker/src/lib/dailyRecommendation.ts:540-758 core logic:
 from __future__ import annotations
 import json
 import logging
+import math
+from numbers import Integral, Real
 from typing import Any, Optional
 
 from services import d1_client
@@ -31,8 +33,51 @@ from services._predictions_schema import (
     COL_SIGNAL_RAW,
     INSERT_PREDICTIONS_SQL,
 )
+from services.alpha_framework import (
+    apply_alpha_context,
+    build_alpha_context,
+    normalize_alpha_policy,
+    regime_aware_allocate,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
+    """Align prediction dedupe with the pipeline business date when available."""
+    if run_date:
+        return f"date({COL_GENERATED_AT}, '+8 hours') = ?", [run_date]
+    return f"date({COL_GENERATED_AT}) = date('now')", []
+
+
+def _sanitize_non_finite(value: Any) -> tuple[Any, int]:
+    """Convert NaN/Inf values to None before JSON encoding / HTTP transport."""
+    if value is None or isinstance(value, (str, bool)):
+        return value, 0
+    if isinstance(value, Integral):
+        return int(value), 0
+    if isinstance(value, Real):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None, 1
+        return numeric, 0
+    if isinstance(value, dict):
+        sanitized: dict[Any, Any] = {}
+        replaced = 0
+        for key, nested in value.items():
+            sanitized_value, nested_replaced = _sanitize_non_finite(nested)
+            sanitized[key] = sanitized_value
+            replaced += nested_replaced
+        return sanitized, replaced
+    if isinstance(value, (list, tuple, set)):
+        sanitized_list: list[Any] = []
+        replaced = 0
+        for nested in value:
+            sanitized_value, nested_replaced = _sanitize_non_finite(nested)
+            sanitized_list.append(sanitized_value)
+            replaced += nested_replaced
+        return sanitized_list, replaced
+    return value, 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +104,48 @@ def calculate_ml_score(prediction: dict) -> float:
         score += 2
     score = max(0.0, min(30.0, score))
     return round(score * 10) / 10
+
+
+def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) -> dict:
+    """Normalize recommendation-facing ML fields to a single source of truth.
+
+    When ensemble_v2 is enabled and present, downstream scoring/reasoning/storage
+    should read signal/confidence/forecast from ensemble_v2 instead of the legacy
+    rank_to_signal path. This keeps filter, score, and displayed signal aligned.
+    """
+    if not ml:
+        return {
+            "signal": None,
+            "confidence": 0.0,
+            "forecast_pct": 0.0,
+            "signal_source": "missing",
+            "signal_raw": None,
+        }
+
+    legacy_signal = ml.get("signal")
+    legacy_conf = (ml.get("confidence") if ml.get("confidence") is not None else 0.0) or 0.0
+    legacy_forecast = (ml.get("forecast_pct") if ml.get("forecast_pct") is not None else 0.0) or 0.0
+
+    if use_ensemble_v2:
+        ev2 = ml.get("ensemble_v2") or {}
+        if ev2.get("signal"):
+            confidence = ev2.get("confidence") if ev2.get("confidence") is not None else legacy_conf
+            forecast_pct = ev2.get("forecast_pct") if ev2.get("forecast_pct") is not None else legacy_forecast
+            return {
+                "signal": ev2.get("signal"),
+                "confidence": confidence,
+                "forecast_pct": forecast_pct,
+                "signal_source": ev2.get("signal_source") or "ensemble_v2",
+                "signal_raw": ev2.get("signal_raw") or legacy_signal,
+            }
+
+    return {
+        "signal": legacy_signal,
+        "confidence": legacy_conf,
+        "forecast_pct": legacy_forecast,
+        "signal_source": "legacy",
+        "signal_raw": legacy_signal,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,13 +197,16 @@ def build_reason(s: dict) -> str:
 
     # ── ML 面 ──
     sig = (s.get("_signal") or "").upper()
+    vote_summary = s.get("ml_vote_summary")
     total = s.get("ml_models_total") or 0
     up = s.get("ml_models_up") or 0
     down = s.get("ml_models_down") or 0
     forecast_pct = s.get("ml_forecast_pct") or 0
     fp_str = f"{'+' if forecast_pct > 0 else ''}{forecast_pct * 100:.1f}%"
 
-    if total == 0:
+    if vote_summary:
+        ml_reason = vote_summary
+    elif total == 0:
         ml_reason = "ML 尚未分析"
     elif "STRONG_BUY" in sig:
         ml_reason = f"ML 強烈看多（{up}/{total}看漲，預期{fp_str}）"
@@ -183,13 +273,8 @@ def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | No
     mathematically equivalent to legacy signal, so migration is no-op until
     IC tracker accumulates time-series IC (Stage 2 cron, ~3-4 weeks).
     """
-    if not ml:
-        return None
-    if use_ensemble_v2:
-        ev2 = ml.get("ensemble_v2") or {}
-        if ev2.get("signal"):
-            return ev2["signal"].upper()
-    return (ml.get("signal") or "").upper() or None
+    eff = _effective_prediction_view(ml, use_ensemble_v2=use_ensemble_v2)
+    return (eff.get("signal") or "").upper() or None
 
 
 def _is_use_ensemble_v2() -> bool:
@@ -204,12 +289,212 @@ def _is_use_ensemble_v2() -> bool:
         return True
 
 
+def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | None]:
+    """Build controller-owned screener seed scores when the legacy screener row is absent."""
+    prices = payload.get("prices") or []
+    indicators = payload.get("indicators") or []
+    chips = payload.get("chips") or []
+    latest_price = prices[-1].get("close") if prices else None
+    latest_ind = indicators[-1] if indicators else {}
+
+    recent_chips = chips[-5:]
+    foreign_net_5d = sum((c.get("foreign_net") or 0) for c in recent_chips)
+    trust_net_5d = sum((c.get("trust_net") or 0) for c in recent_chips)
+    net_5d = foreign_net_5d + trust_net_5d
+
+    recent_prices = prices[-20:]
+    avg_volume = 0.0
+    if recent_prices:
+        volumes = [float(p.get("volume") or 0) for p in recent_prices]
+        avg_volume = sum(volumes) / max(1, len(volumes))
+    chip_intensity = (net_5d / max(avg_volume, 1.0)) if avg_volume else 0.0
+
+    if chip_intensity > 0.20:
+        chip_score = 36.0
+    elif chip_intensity > 0.10:
+        chip_score = 28.0
+    elif chip_intensity > 0.05:
+        chip_score = 20.0
+    elif chip_intensity > 0:
+        chip_score = 12.0
+    elif chip_intensity > -0.05:
+        chip_score = 5.0
+    else:
+        chip_score = 0.0
+
+    rsi = latest_ind.get("rsi14")
+    macd_hist = latest_ind.get("macdHist") or latest_ind.get("macd_hist") or 0
+    ma20 = latest_ind.get("ma20")
+    tech_score = 0.0
+    if isinstance(rsi, Real):
+        if 55 <= float(rsi) <= 75:
+            tech_score += 12.0
+        elif 40 <= float(rsi) < 55:
+            tech_score += 8.0
+        elif 75 < float(rsi) <= 85:
+            tech_score += 6.0
+        else:
+            tech_score += 3.0
+    if macd_hist and float(macd_hist) > 0:
+        tech_score += 8.0
+    if latest_price and ma20 and float(latest_price) > float(ma20):
+        tech_score += 10.0
+
+    return min(40.0, chip_score), min(30.0, tech_score), latest_price
+
+
+def build_screener_seed_recommendations(
+    active_stocks: list[dict],
+    payloads: list[dict],
+    run_date: str,
+) -> list[dict]:
+    """
+    Seed daily recommendations from controller-owned payloads when the legacy
+    screener has not pre-populated daily_recommendations.
+    """
+    payload_by_sym = {p.get("symbol"): p for p in payloads if p.get("symbol")}
+    seeds: list[dict] = []
+    for stock in active_stocks:
+        symbol = stock.get("symbol")
+        if not symbol:
+            continue
+        payload = payload_by_sym.get(symbol) or {}
+        chip_score, tech_score, latest_price = _score_seed_row_from_payload(payload)
+        seeds.append({
+            "date": run_date,
+            "stock_id": stock.get("id"),
+            "symbol": symbol,
+            "name": stock.get("name") or symbol,
+            "sector": stock.get("sector"),
+            "industry": stock.get("industry"),
+            "rank": 0,
+            "score": round((chip_score + tech_score) * 10) / 10,
+            "chip_score": chip_score,
+            "tech_score": tech_score,
+            "ml_score": 0.0,
+            "signal": None,
+            "confidence": None,
+            "reason": "controller_seed",
+            "watch_points": ["controller_seed"],
+            "has_buy_signal": 0,
+            "current_price": latest_price,
+        })
+    logger.info("[recommendation_service] Built %s controller screener seed rows", len(seeds))
+    return seeds
+
+
+def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str, int]) -> str:
+    """Build recommendation-facing ML text from the same source used for scoring."""
+    signal = str(eff_ml.get("signal") or "").upper()
+    source = str(eff_ml.get("signal_source") or "")
+    forecast_pct = float(eff_ml.get("forecast_pct") or 0.0)
+    forecast_text = f"{forecast_pct * 100:+.1f}%"
+    ev2 = (ml or {}).get("ensemble_v2") or {}
+
+    if source in {"ranking_promotion", "ensemble_v2_topk_policy"} or (ml or {}).get("topk_forced"):
+        raw = eff_ml.get("signal_raw") or ev2.get("signal_raw") or "HOLD"
+        avg_rank = ev2.get("avg_rank")
+        avg_rank_text = f"{float(avg_rank):.3f}" if isinstance(avg_rank, Real) else "n/a"
+        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
+
+    contributors = ev2.get("contributing_models") or []
+    if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
+        return "V2 模型池暫無正 IC 權重，先以觀望處理，等待 verify/IC 樣本補齊"
+    if contributors:
+        label = "看多" if "BUY" in signal else "觀望" if signal == "HOLD" else "偏空"
+        return f"V2 模型池{label}（{len(contributors)} 模型有權重，預期 {forecast_text}）"
+
+    total = legacy_counts.get("total", 0)
+    up = legacy_counts.get("up", 0)
+    down = legacy_counts.get("down", 0)
+    if total <= 0:
+        return "ML 資料不足"
+    if "BUY" in signal:
+        return f"ML 看多（{up}/{total} 看漲，預期 {forecast_text}）"
+    if signal == "HOLD":
+        if up > down:
+            return f"ML 觀望（{up}/{total} 偏多但共識未達門檻）"
+        if down > up:
+            return f"ML 觀望（{down}/{total} 偏空，暫不追價）"
+        return f"ML 觀望（多空分歧 {up}/{down}）"
+    return "ML 偏空"
+
+
+def build_reason(s: dict) -> str:
+    """Build clean Traditional Chinese explanation for recommendation cards."""
+    fnet = float(s.get("foreign_net_5d") or 0.0)
+    tnet = float(s.get("trust_net_5d") or 0.0)
+    net_amount = fnet + tnet
+    if net_amount > 5:
+        chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
+    elif net_amount > 1:
+        chip_reason = f"法人買超 {net_amount:.1f} 億"
+    elif net_amount > 0:
+        chip_reason = "法人小幅買超"
+    elif net_amount > -1:
+        chip_reason = "法人買賣超接近平衡"
+    else:
+        chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
+
+    rsi = float(s.get("rsi14") or 0.0)
+    macd_up = float(s.get("macd_hist") or 0.0) > 0
+    above_ma = bool(s.get("current_price")) and bool(s.get("ma20")) and float(s["current_price"]) > float(s["ma20"])
+    tech_parts: list[str] = []
+    if rsi > 0:
+        if rsi > 75:
+            tech_parts.append(f"RSI {rsi:.0f} 偏熱")
+        elif rsi >= 55:
+            tech_parts.append(f"RSI {rsi:.0f} 健康")
+        elif rsi >= 40:
+            tech_parts.append(f"RSI {rsi:.0f} 中性")
+        else:
+            tech_parts.append(f"RSI {rsi:.0f} 偏弱")
+    tech_parts.append("MACD 多頭" if macd_up else "MACD 偏弱")
+    tech_parts.append("站穩月線" if above_ma else "月線下方")
+    tech_reason = "、".join(tech_parts)
+
+    ml_reason = s.get("ml_vote_summary") or "ML 資料不足"
+    return f"【籌碼】{chip_reason}｜【技術】{tech_reason}｜【ML】{ml_reason}"
+
+
+def build_watch_points(s: dict) -> list[str]:
+    """Build concise risk watch points used when LLM reasons are unavailable."""
+    points: list[str] = []
+    rsi = float(s.get("rsi14") or 50.0)
+    conf = float(s.get("ml_confidence") or 0.0)
+    sig = str(s.get("_signal") or "").upper()
+    forecast_pct = float(s.get("ml_forecast_pct") or 0.0)
+
+    if rsi > 80:
+        points.append("RSI 過熱，避免追高")
+    elif rsi > 75:
+        points.append("RSI 偏熱，留意短線震盪")
+    if float(s.get("macd_hist") or 0.0) < 0 and float(s.get("current_price") or 0.0) > float(s.get("ma20") or 0.0):
+        points.append("價格站上月線但 MACD 偏弱，需確認量能延續")
+    if float(s.get("foreign_net_5d") or 0.0) < 0:
+        points.append("外資近 5 日偏賣，籌碼需再確認")
+    if float(s.get("trust_net_5d") or 0.0) < 0 < float(s.get("foreign_net_5d") or 0.0):
+        points.append("外資與投信方向不一致")
+    if "BUY" in sig and forecast_pct < 0:
+        points.append("ML 訊號與預期報酬矛盾，禁止直接追價")
+    elif conf < 0.45:
+        points.append("ML 信心偏低，僅能觀察")
+    elif sig == "HOLD":
+        points.append("ML 尚未形成買進共識")
+    if not points:
+        points.append("留意盤前大盤、量能與開盤價是否支持進場")
+    return points
+
+
 def filter_and_score_recommendations(
     screener_recs: list[dict],
     predictions: dict[str, dict],   # symbol → ml result from ml-service
     payloads: list[dict],            # PredictPayload as dict (for reason data)
     persona_opinions: dict | None = None,  # symbol → {trust:{...}, retail:{...}}
     persona_weight: float = 1.0,   # 0 = disable, 1 = default, 0.5 = shadow mode
+    regime_label: str | None = None,
+    regime_surface: dict | None = None,
+    alpha_policy: dict | None = None,
 ) -> tuple[list[dict], int]:
     """
     Returns (final_recs, sell_filtered_count).
@@ -254,7 +539,8 @@ def filter_and_score_recommendations(
     for rec in screener_recs:
         symbol = rec["symbol"]
         ml = predictions.get(symbol)
-        sig = _effective_signal(ml, use_ensemble_v2=use_ev2)
+        eff_ml = _effective_prediction_view(ml, use_ensemble_v2=use_ev2)
+        sig = (eff_ml.get("signal") or "").upper() or None
 
         # Filter SELL / NO_SIGNAL
         if sig and ("SELL" in sig or sig == "NO_SIGNAL"):
@@ -262,7 +548,7 @@ def filter_and_score_recommendations(
             continue
 
         # ML score
-        ml_score = calculate_ml_score(ml) if ml else 0.0
+        ml_score = calculate_ml_score(eff_ml) if ml else 0.0
         chip_score = rec.get("chip_score") or 0
         tech_score = rec.get("tech_score") or 0
 
@@ -325,6 +611,11 @@ def filter_and_score_recommendations(
                     elif direction == "down":
                         ml_models_down += 1
 
+        ml_vote_summary = build_ml_vote_summary(
+            ml,
+            eff_ml,
+            {"total": ml_models_total, "up": ml_models_up, "down": ml_models_down},
+        )
         reason_data = {
             "foreign_consecutive": 0,  # TODO: compute consec from chips if needed
             "foreign_net_5d": foreign_net_5d,
@@ -333,16 +624,18 @@ def filter_and_score_recommendations(
             "macd_hist": latest_ind.get("macdHist"),
             "current_price": current_price,
             "ma20": latest_ind.get("ma20"),
-            "_signal": ml.get("signal") if ml else None,
-            "ml_confidence": (ml.get("confidence") if ml else 0) or 0,
-            "ml_forecast_pct": (ml.get("forecast_pct") if ml else 0) or 0,
+            "_signal": eff_ml.get("signal"),
+            "ml_confidence": eff_ml.get("confidence") or 0,
+            "ml_forecast_pct": eff_ml.get("forecast_pct") or 0,
             "ml_models_total": ml_models_total,
             "ml_models_up": ml_models_up,
             "ml_models_down": ml_models_down,
+            "ml_vote_summary": ml_vote_summary,
         }
 
-        final.append({
+        row = {
             "date": rec["date"],
+            "stock_id": rec.get("stock_id"),
             "symbol": symbol,
             "rec_id": rec.get("id"),
             "name": rec.get("name"),
@@ -354,8 +647,11 @@ def filter_and_score_recommendations(
             "persona_score": persona_score,
             "persona_applied": persona_applied,  # None if no persona data
             "score": total_score,
-            "signal": ml.get("signal") if ml else None,
-            "confidence": ml.get("confidence") if ml else None,
+            "signal": eff_ml.get("signal"),
+            "signal_raw": eff_ml.get("signal_raw"),
+            "signal_source": eff_ml.get("signal_source"),
+            "confidence": eff_ml.get("confidence"),
+            "ml_forecast_pct": eff_ml.get("forecast_pct") or 0.0,
             "current_price": current_price,
             "has_buy_signal": 1 if (sig and "BUY" in sig) else 0,
             "reason": build_reason(reason_data),
@@ -364,7 +660,11 @@ def filter_and_score_recommendations(
             "trust_net_5d": trust_net_5d / 1e8,
             "rsi14": latest_ind.get("rsi14"),
             "macd_hist": latest_ind.get("macdHist"),
-        })
+        }
+        if regime_label:
+            alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
+            apply_alpha_context(row, ml, alpha_context)
+        final.append(row)
 
     return final, sell_count
 
@@ -386,10 +686,27 @@ def _signal_tier(sig: Optional[str]) -> float:
     return 0.0
 
 
+def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
+    """Avoid turning a negative/weak ML expectation into a BUY label."""
+    forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct", 0.0))
+    try:
+        forecast = float(forecast_pct or 0.0)
+    except (TypeError, ValueError):
+        forecast = 0.0
+    min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
+    if forecast < min_forecast:
+        row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
+        return False
+    return True
+
+
 def hybrid_ranking_promotion(
     recommendations: list[dict],
     ranking_config: dict,
     ensemble_v2_cfg: dict | None = None,
+    regime_label: str | None = None,
+    regime_surface: dict | None = None,
+    alpha_policy: dict | None = None,
 ) -> list[dict]:
     """
     Sprint 3 P0-4: combined_score = α*screener_norm + β*ml_conf + γ*signal_tier
@@ -409,6 +726,7 @@ def hybrid_ranking_promotion(
     gamma = ranking_config.get("gamma", 0.20)
     screener_denom = ranking_config.get("screenerDenominator", 60.0)
     top_k = ranking_config.get("topK", 3)
+    policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
     boost_conf = float((ensemble_v2_cfg or {}).get("topKConfidenceOverride", 0.72))
     # Always use the higher of KV-driven ranking.promoteMinConf and ensemble_v2
@@ -426,13 +744,24 @@ def hybrid_ranking_promotion(
         scored.append(r)
 
     current_buy = sum(1 for r in scored if r.get("has_buy_signal") == 1)
+    controller_policy_syms = [
+        r.get("symbol")
+        for r in scored
+        if r.get("signal_source") == "ensemble_v2_topk_policy" or r.get("topk_forced")
+    ]
+    if controller_policy_syms:
+        logger.info(
+            f"[Ranking] controller top-K policy already promoted {len(controller_policy_syms)} rows; "
+            f"skip recommendation-layer promotion: {controller_policy_syms}"
+        )
+        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
     if current_buy >= top_k:
         logger.info(f"[Ranking] has_buy_signal={current_buy} >= topK={top_k}, no promotion")
-        return scored
+        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
 
     need_promote = top_k - current_buy
     pool = sorted(
-        [r for r in scored if r.get("has_buy_signal") == 0],
+        [r for r in scored if r.get("has_buy_signal") == 0 and _can_promote_ranking_candidate(r, ranking_config)],
         key=lambda x: x.get("_combined_score", 0),
         reverse=True,
     )[:need_promote]
@@ -441,6 +770,8 @@ def hybrid_ranking_promotion(
     for r in pool:
         r["signal_raw"] = r.get("signal")  # preserve pre-promotion for audit
         r["signal"] = "BUY"                 # make downstream "BUY" checks pass
+        r["signal_source_raw"] = r.get("signal_source")
+        r["signal_source"] = "ranking_promotion"
         r["has_buy_signal"] = 1
         r["confidence"] = max(r.get("confidence") or 0, effective_boost)
         r["ranking_promoted"] = True
@@ -452,14 +783,18 @@ def hybrid_ranking_promotion(
             f"has_buy_signal=1 conf>={effective_boost} "
             f"(current={current_buy} < topK={top_k}): {promoted_syms}"
         )
-    return scored
+    return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # D1 writers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str, int]) -> int:
+def write_predictions_to_d1(
+    predictions: dict[str, dict],
+    stock_id_map: dict[str, int],
+    run_date: str | None = None,
+) -> int:
     """
     Write predictions table.
     predictions: {symbol: ml_result}
@@ -475,10 +810,14 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
         stock_id = stock_id_map.get(symbol)
         if not stock_id:
             continue
+        sanitized_count = 0
+        skipped_model_rows: list[str] = []
         # ML_POOL Plan A migration: ensemble_v2 (8-model w/ R1+R3) drives the
         # stored signal. Legacy 5-feature signal kept in forecast_data for audit.
         legacy_signal = data.get("signal") or "NO_SIGNAL"
-        ev2_signal = (data.get("ensemble_v2") or {}).get("signal")
+        ev2 = data.get("ensemble_v2") or {}
+        ev2_signal = ev2.get("signal")
+        ev2_signal_source = ev2.get("signal_source") or "ensemble_v2"
         raw_signal = (ev2_signal if (use_ev2 and ev2_signal) else legacy_signal) or "NO_SIGNAL"
         if raw_signal == "NO_SIGNAL":
             trade_signal = None
@@ -489,33 +828,48 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
         else:
             trade_signal = "hold"
 
-        forecast_data = json.dumps({
+        forecast_payload, replaced = _sanitize_non_finite({
             "signal": raw_signal,
             "legacy_signal": legacy_signal,                 # 5-feature ensemble (audit trail)
             "ensemble_v2": data.get("ensemble_v2"),         # 8-model R1+R3 (audit trail)
-            "signal_source": "ensemble_v2" if (use_ev2 and ev2_signal) else "legacy",
+            "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
+            "alpha_context": data.get("alpha_context"),
+            "alpha_allocation": data.get("alpha_allocation"),
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
-        }, ensure_ascii=False)
+        })
+        sanitized_count += replaced
+        forecast_data = json.dumps(forecast_payload, ensure_ascii=False)
+        confidence, replaced = _sanitize_non_finite(data.get("confidence"))
+        sanitized_count += replaced
+        entry_price, replaced = _sanitize_non_finite(data.get("entry_price"))
+        sanitized_count += replaced
+        stop_loss, replaced = _sanitize_non_finite(data.get("stop_loss"))
+        sanitized_count += replaced
+        target1, replaced = _sanitize_non_finite(data.get("target1"))
+        sanitized_count += replaced
+        target2, replaced = _sanitize_non_finite(data.get("target2"))
+        sanitized_count += replaced
 
+        delete_date_sql, delete_date_params = _prediction_delete_date_expr(run_date)
         # H2: delete stale before insert
         statements.append((
             f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}='ensemble' "
-            f"AND date({COL_GENERATED_AT})=date('now')",
-            [stock_id],
+            f"AND {delete_date_sql}",
+            [stock_id, *delete_date_params],
         ))
         statements.append((
             INSERT_PREDICTIONS_SQL,
             [
                 stock_id,
                 14,
-                data.get("confidence"),
+                confidence,
                 forecast_data,
-                data.get("entry_price"),
-                data.get("stop_loss"),
-                data.get("target1"),
-                data.get("target2"),
+                entry_price,
+                stop_loss,
+                target1,
+                target2,
                 trade_signal,
                 data.get("feature_version"),
                 raw_signal,
@@ -526,8 +880,8 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
         # Stages 2+3: active rows model_name='{name}'; challenger rows
         # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
         per_model_scores = _extract_per_model_scores_for_d1(data)
-        # Stage 3: also extract challenger scores (5 feature models only;
-        # time-series challengers handled separately in pipeline_v2 future work)
+        # Stage 3: extract challenger scores from feature and pipeline_v2
+        # time-series/state-space shadow predictions.
         challenger_scores = data.get("challenger_rank_scores") or {}
         for ch_name, ch_score in (challenger_scores or {}).items():
             try:
@@ -535,14 +889,23 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
             except (TypeError, ValueError):
                 pass
         for model_name, model_score in per_model_scores.items():
+            safe_model_score, replaced = _sanitize_non_finite(model_score)
+            sanitized_count += replaced
+            if safe_model_score is None:
+                skipped_model_rows.append(model_name)
+                continue
+            per_model_payload, replaced = _sanitize_non_finite(
+                {"signal": raw_signal, "rank_score": safe_model_score, "source": "model_pool_stage2"}
+            )
+            sanitized_count += replaced
             per_model_forecast = json.dumps(
-                {"signal": raw_signal, "rank_score": model_score, "source": "model_pool_stage2"},
+                per_model_payload,
                 ensure_ascii=False,
             )
             statements.append((
                 f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}=? "
-                f"AND date({COL_GENERATED_AT})=date('now')",
-                [stock_id, model_name],
+                f"AND {delete_date_sql}",
+                [stock_id, model_name, *delete_date_params],
             ))
             # Use INSERT with explicit model_name override (INSERT_PREDICTIONS_SQL
             # hardcodes 'ensemble'; build a parallel SQL for per-model name).
@@ -551,17 +914,24 @@ def write_predictions_to_d1(predictions: dict[str, dict], stock_id_map: dict[str
                 [
                     stock_id, model_name,
                     14,                     # horizon
-                    float(model_score),     # direction_accuracy = rank_score
+                    safe_model_score,       # direction_accuracy = rank_score
                     per_model_forecast,
-                    data.get("entry_price"),
-                    data.get("stop_loss"),
-                    data.get("target1"),
-                    data.get("target2"),
+                    entry_price,
+                    stop_loss,
+                    target1,
+                    target2,
                     trade_signal,
                     data.get("feature_version"),
                     raw_signal,
                 ],
             ))
+        if sanitized_count or skipped_model_rows:
+            logger.warning(
+                "[recommendation_service] Sanitized %s non-finite values before D1 write for %s; skipped_model_rows=%s",
+                sanitized_count,
+                symbol,
+                skipped_model_rows or "none",
+            )
 
     if not statements:
         return 0
@@ -644,43 +1014,104 @@ def update_recommendations_in_d1(
     run_date: str,
 ) -> int:
     """
-    Update existing daily_recommendations rows with ml_score / signal / reason / watchPoints / etc.
-    Also delete SELL-filtered rows.
+    Upsert daily_recommendations rows with screener + ML fields.
 
-    Strategy: do an UPDATE per row (D1 batch_execute), then re-rank.
+    The V2 controller owns the fallback seed path, so this writer must create
+    rows when the legacy screener did not pre-populate the table.
     """
     if not recommendations:
         return 0
 
     statements: list[tuple[str, list[Any]]] = []
-    for r in recommendations:
-        statements.append((
-            "UPDATE daily_recommendations SET "
-            "ml_score = ?, score = ?, signal = ?, confidence = ?, "
-            "current_price = ?, has_buy_signal = ?, "
-            "reason = ?, watch_points = ?, "
-            "foreign_net_5d = ?, trust_net_5d = ?, rsi14 = ?, macd_hist = ? "
-            "WHERE date = ? AND symbol = ?",
-            [
-                r.get("ml_score") or 0,
-                r.get("score") or 0,
-                r.get("signal"),
-                r.get("confidence"),
-                r.get("current_price"),
-                r.get("has_buy_signal") or 0,
-                r.get("reason"),
-                json.dumps(r.get("watch_points") or [], ensure_ascii=False),
-                r.get("foreign_net_5d") or 0,
-                r.get("trust_net_5d") or 0,
-                r.get("rsi14"),
-                r.get("macd_hist"),
-                run_date,
+    for idx, r in enumerate(recommendations, start=1):
+        ml_score, replaced_ml = _sanitize_non_finite(r.get("ml_score") or 0)
+        score, replaced_score = _sanitize_non_finite(r.get("score") or 0)
+        confidence, replaced_conf = _sanitize_non_finite(r.get("confidence"))
+        current_price, replaced_price = _sanitize_non_finite(r.get("current_price"))
+        foreign_net_5d, replaced_foreign = _sanitize_non_finite(r.get("foreign_net_5d") or 0)
+        trust_net_5d, replaced_trust = _sanitize_non_finite(r.get("trust_net_5d") or 0)
+        rsi14, replaced_rsi = _sanitize_non_finite(r.get("rsi14"))
+        macd_hist, replaced_macd = _sanitize_non_finite(r.get("macd_hist"))
+        watch_points, replaced_watch = _sanitize_non_finite(r.get("watch_points") or [])
+        sanitized_count = (
+            replaced_ml
+            + replaced_score
+            + replaced_conf
+            + replaced_price
+            + replaced_foreign
+            + replaced_trust
+            + replaced_rsi
+            + replaced_macd
+            + replaced_watch
+        )
+        if sanitized_count:
+            logger.warning(
+                "[recommendation_service] Sanitized %s non-finite recommendation values before D1 update for %s",
+                sanitized_count,
                 r["symbol"],
+            )
+        stock_id = r.get("stock_id")
+        if not stock_id:
+            logger.warning("[recommendation_service] Skip recommendation without stock_id: %s", r.get("symbol"))
+            continue
+        statements.append((
+            """
+            INSERT INTO daily_recommendations (
+                date, stock_id, symbol, name, sector, rank, score, signal,
+                confidence, reason, watch_points, has_buy_signal, current_price,
+                foreign_net_5d, trust_net_5d, rsi14, macd_hist, chip_score,
+                tech_score, ml_score, industry
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date, stock_id) DO UPDATE SET
+                symbol=excluded.symbol,
+                name=excluded.name,
+                sector=excluded.sector,
+                rank=excluded.rank,
+                score=excluded.score,
+                signal=excluded.signal,
+                confidence=excluded.confidence,
+                reason=excluded.reason,
+                watch_points=excluded.watch_points,
+                has_buy_signal=excluded.has_buy_signal,
+                current_price=excluded.current_price,
+                foreign_net_5d=excluded.foreign_net_5d,
+                trust_net_5d=excluded.trust_net_5d,
+                rsi14=excluded.rsi14,
+                macd_hist=excluded.macd_hist,
+                chip_score=excluded.chip_score,
+                tech_score=excluded.tech_score,
+                ml_score=excluded.ml_score,
+                industry=excluded.industry
+            """.strip(),
+            [
+                run_date,
+                stock_id,
+                r["symbol"],
+                r.get("name") or r["symbol"],
+                r.get("sector"),
+                r.get("rank") or idx,
+                score,
+                r.get("signal"),
+                confidence,
+                r.get("reason") or "controller_seed",
+                json.dumps(watch_points, ensure_ascii=False),
+                r.get("has_buy_signal") or 0,
+                current_price,
+                foreign_net_5d,
+                trust_net_5d,
+                rsi14,
+                macd_hist,
+                r.get("chip_score") or 0,
+                r.get("tech_score") or 0,
+                ml_score,
+                r.get("industry"),
             ],
         ))
 
-    result = d1_client.batch_execute(statements)
-    logger.info(f"[recommendation_service] Updated {len(statements)} daily_recommendations rows")
+    if not statements:
+        return 0
+    d1_client.batch_execute(statements)
+    logger.info(f"[recommendation_service] Upserted {len(statements)} daily_recommendations rows")
     return len(statements)
 
 

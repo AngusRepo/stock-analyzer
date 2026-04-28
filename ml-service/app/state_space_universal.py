@@ -124,17 +124,10 @@ def state_space_batch_predict(
             continue
         try:
             arr = np.asarray(prices, dtype=np.float64)
-            # Hyperparams are passed via kwargs the existing runners don't yet
-            # consume (they currently use hardcoded defaults). This is a
-            # forward-compatible call: when models.py:run_kalman_filter is
-            # extended to read hyperparams param, this call upgrades for free.
-            # For Stage 6.2 MVP we accept that the actual computation uses
-            # the in-code defaults; Stage 6.3 / future will refactor runners
-            # to consume `hyperparams` kwarg.
             try:
                 pred = _runner(arr, horizon=horizon, stock_id=0, hyperparams=hyperparams)
             except TypeError:
-                # Existing signature doesn't accept hyperparams kwarg yet
+                # Compatibility fallback for older deployed runners.
                 pred = _runner(arr, horizon=horizon, stock_id=0)
             results.append(_to_dict_shape(pred, model_name, symbol, version))
         except Exception as e:

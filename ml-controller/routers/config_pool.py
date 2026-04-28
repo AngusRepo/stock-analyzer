@@ -13,75 +13,188 @@ which:
      with each config as params. Compare sharpe / win_rate / max_dd.
   4. Update Worker D1 config_lifecycle_state via REST (worker admin endpoint)
      + append event to config_lifecycle_events.
-  5. Apply promote / retire logic based on rolling win count:
-       - Challenger wins (sharpe_delta > 0.2 AND win_rate >= 0.55): +1
-       - Challenger loses (sharpe_delta < 0 OR win_rate < 0.45): +1 loss
-       - 2+ consecutive wins → promote (calls setTradingConfig via worker
+  5. Apply promote / retire logic from services.config_pool_policy:
+       - Challenger wins or loses are evaluated by active policy thresholds.
+       - Consecutive wins → promote (calls setTradingConfig via worker
          /api/admin/optuna-push?prod=1 + X-Confirm-Prod: true — internal
          system trigger, differs from human refactor path).
-       - 2+ consecutive losses OR shadow > 30 days → retire challenger.
+       - Consecutive losses or stale shadow age → retire challenger.
   6. Discord alert on promote / retire / warning.
 
-Threshold / window are KV-tunable via trading:config.optuna_l2 or a future
-config_pool config section. Initial hardcoded constants mirror Plan A.
+Threshold / window are resolved by services.config_pool_policy from
+trading:config configPool / alphaFramework.configPool with audited defaults.
 """
 from __future__ import annotations
 import logging
-import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+import anyio
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
+
+from services.alpha_evidence_runner import run_alpha_candidate_evidence
+from services.alpha_policy_search import load_alpha_outcome_rows
+from services.alpha_quality import evaluate_alpha_quality
+from services.alpha_quality_policy import resolve_alpha_quality_inputs
+from services.config_pool_policy import DEFAULT_CONFIG_POOL_POLICY, ConfigPoolPolicy
+from services.promotion_service import evaluate_alpha_policy_evidence_gate, evaluate_latest_alpha_policy_gate
+from services.worker_config_client import WorkerConfigClientError, worker_fetch
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config_pool", tags=["config_pool"])
 
-# ── Gate thresholds (mirror Plan A model lifecycle) ─────────────────────────
-SHARPE_DELTA_WIN_THRESHOLD = 0.2       # challenger beats champion by ≥0.2 sharpe
-WIN_RATE_FLOOR = 0.55                  # challenger must have ≥55% wins
-WIN_RATE_RETIRE_CEIL = 0.45            # challenger <45% counts as a loss
-CONSECUTIVE_WINS_TO_PROMOTE = 2        # 2 weeks of winning → promote
-CONSECUTIVE_LOSSES_TO_RETIRE = 2       # 2 weeks of losing → retire
-MAX_SHADOW_DAYS = 30                   # retire if shadow > 30 days
-DEFAULT_LOOKBACK_DAYS = 90             # replay window for comparison (90d quarter — longer than 30d to smooth sharpe noise when challenger was searched over 365d)
 
-WORKER_URL_ENV = "STOCKVISION_WORKER_URL"  # match kv_pusher.py convention
-WORKER_AUTH_TOKEN_ENV = "STOCKVISION_AUTH_TOKEN"
+async def fetch_worker_admin(*args, **kwargs) -> dict:
+    try:
+        return await worker_fetch(*args, **kwargs)
+    except WorkerConfigClientError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 class WeeklyEvalRequest(BaseModel):
     """Weekly challenger evaluation request body."""
-    lookback_days: int = Field(default=DEFAULT_LOOKBACK_DAYS, ge=7, le=180)
+    lookback_days: int = Field(default=DEFAULT_CONFIG_POOL_POLICY.lookback_days, ge=7, le=180)
     apply: bool = Field(default=False, description="If true, apply promote/retire transitions + write lifecycle events. Default false = dry-run reporting only. Friday cron explicitly sends apply=true in body.")
     end_date: Optional[str] = None  # default: today TW
 
 
-def _worker_url() -> str:
-    url = os.environ.get(WORKER_URL_ENV)
-    if not url:
-        # Fallback — stockvision worker canonical
-        url = "https://stockvision-worker.angus-solo-dev.workers.dev"
-    return url.rstrip("/")
+class AlphaChallengerRequest(BaseModel):
+    sandbox_id: str = Field(..., description="Worker config sandbox id from source=alpha_framework")
+    apply: bool = Field(default=False, description="false=dry-run gate only; true=set challenger after PASS")
+    confirm: bool = Field(default=False, description="Required with apply=true")
+    source: str = Field(default="backtest", pattern="^(backtest)$")
+    pbo_source: Optional[str] = Field(default=None, pattern="^(backtest|optuna_l2)$")
+    generate_evidence: bool = Field(
+        default=False,
+        description="Run candidate-specific replay, Monte Carlo, and PBO evidence before challenger gate.",
+    )
+    start_date: Optional[str] = Field(default=None, description="Backtest start date when generate_evidence=true.")
+    end_date: Optional[str] = Field(default=None, description="Backtest end date when generate_evidence=true.")
+    initial_capital: float = Field(default=1_000_000, gt=0)
+    mc_simulations: int = Field(default=1000, ge=100, le=10000)
+    parity_audit: Optional[dict] = Field(default=None)
+    evidence: Optional[dict] = Field(
+        default=None,
+        description="Candidate-specific evidence bundle {candidate_id, backtest, monte_carlo, pbo}.",
+    )
+    note: Optional[str] = None
 
 
-async def _worker_fetch(path: str, method: str = "GET", json_body: Optional[dict] = None,
-                        headers: Optional[dict] = None) -> dict:
-    """Helper for worker REST calls from controller side."""
-    import httpx
-    base_headers = {
-        "Authorization": f"Bearer {os.environ.get(WORKER_AUTH_TOKEN_ENV, '')}",
-        "Content-Type": "application/json",
+@router.get("/alpha_quality")
+async def alpha_quality_report(
+    limit: int | None = Query(default=None, ge=100, le=5000),
+    min_samples: int | None = Query(default=None, ge=1, le=1000),
+    min_bucket_samples: int | None = Query(default=None, ge=1, le=500),
+) -> dict:
+    """Read-only quality report for realized alpha bucket outcomes."""
+    config = await fetch_worker_admin("/api/admin/config")
+    resolved = resolve_alpha_quality_inputs(
+        config,
+        limit=limit,
+        min_samples=min_samples,
+        min_bucket_samples=min_bucket_samples,
+    )
+    resolved_limit = resolved["limit"]
+    rows = load_alpha_outcome_rows(limit=resolved_limit)
+    return {
+        "source": "alpha_quality",
+        "limit": resolved_limit,
+        "policy_source": "trading:config.alphaFramework.quality",
+        "query_overrides": resolved["query_overrides"],
+        **evaluate_alpha_quality(
+            rows,
+            min_samples=resolved["min_samples"],
+            min_bucket_samples=resolved["min_bucket_samples"],
+            return_pct_per_r=resolved["return_pct_per_r"],
+            direction_correct_fallback_r=resolved["direction_correct_fallback_r"],
+        ),
     }
-    if headers:
-        base_headers.update(headers)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.request(method, _worker_url() + path,
-                                  headers=base_headers,
-                                  json=json_body)
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, f"Worker {method} {path}: {r.text[:200]}")
-    return r.json()
+
+
+@router.post("/alpha_challenger")
+async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...)):
+    """Gate an alpha_framework sandbox before setting it as config challenger.
+
+    This is intentionally not a production promotion endpoint. It only moves a
+    verified sandbox candidate into the shadow/challenger slot.
+    """
+    sandbox = await fetch_worker_admin(f"/api/admin/config/sandbox/{req.sandbox_id}", method="GET")
+    if sandbox.get("source") != "alpha_framework":
+        return {
+            "status": "rejected",
+            "reason": "sandbox_source_not_alpha_framework",
+            "sandbox_source": sandbox.get("source"),
+        }
+
+    evidence = req.evidence
+    if req.generate_evidence:
+        if not req.start_date or not req.end_date:
+            raise HTTPException(status_code=400, detail="generate_evidence=true requires start_date and end_date")
+        baseline_config = await fetch_worker_admin("/api/admin/config", method="GET")
+        if not isinstance(baseline_config, dict):
+            baseline_config = {}
+
+        evidence = await anyio.to_thread.run_sync(
+            lambda: run_alpha_candidate_evidence(
+                sandbox,
+                start_date=req.start_date or "",
+                end_date=req.end_date or "",
+                baseline_config=baseline_config,
+                initial_capital=req.initial_capital,
+                mc_simulations=req.mc_simulations,
+                parity_audit=req.parity_audit,
+                alpha_replay_applied=True,
+            )
+        )
+
+    gate = (
+        evidence.get("gate")
+        if req.generate_evidence and isinstance(evidence, dict) and isinstance(evidence.get("gate"), dict)
+        else evaluate_alpha_policy_evidence_gate(sandbox, evidence)
+        if evidence
+        else evaluate_latest_alpha_policy_gate(
+            sandbox,
+            source=req.source,
+            pbo_source=req.pbo_source,
+        )
+    )
+    if gate.get("decision") != "PASS":
+        return {
+            "status": "gate_failed",
+            "sandbox_id": req.sandbox_id,
+            "gate": gate,
+            "evidence": evidence,
+        }
+
+    if not req.apply:
+        return {
+            "status": "dry_run",
+            "sandbox_id": req.sandbox_id,
+            "gate": gate,
+            "evidence": evidence,
+            "hint": "Set apply=true and confirm=true to move this alpha policy into challenger.",
+        }
+
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="apply=true requires confirm=true")
+
+    challenger = await fetch_worker_admin(
+        "/api/admin/config/challenger",
+        method="POST",
+        json_body={
+            "sandbox_id": req.sandbox_id,
+            "note": req.note or "alpha_framework gate PASS",
+            "gate": gate,
+        },
+    )
+    return {
+        "status": "applied",
+        "sandbox_id": req.sandbox_id,
+        "gate": gate,
+        "evidence": evidence,
+        "challenger": challenger,
+    }
 
 
 def _canonical_json(v: Any) -> str:
@@ -121,14 +234,6 @@ def _perf_summary(metrics: Any) -> dict:
     }
 
 
-def _is_win(sharpe_delta: float, challenger_win_rate: float) -> bool:
-    return sharpe_delta >= SHARPE_DELTA_WIN_THRESHOLD and challenger_win_rate >= WIN_RATE_FLOOR
-
-
-def _is_loss(sharpe_delta: float, challenger_win_rate: float) -> bool:
-    return sharpe_delta < 0 or challenger_win_rate < WIN_RATE_RETIRE_CEIL
-
-
 @router.post("/weekly_eval")
 async def weekly_eval(
     req: WeeklyEvalRequest = Body(default=WeeklyEvalRequest()),
@@ -162,13 +267,14 @@ async def weekly_eval(
     # ── 1. Fetch both configs via worker ────────────────────────────────────
     # /api/admin/config returns bare config JSON (legacy endpoint). Hash
     # computed client-side below.
-    champion_config = await _worker_fetch("/api/admin/config", method="GET")
+    champion_config = await fetch_worker_admin("/api/admin/config", method="GET")
     if not isinstance(champion_config, dict):
         logger.warning("[config_pool/weekly_eval] unexpected champion config type, defaulting empty")
         champion_config = {}
+    policy = ConfigPoolPolicy.from_config(champion_config)
     champion_hash = _client_hash(champion_config)
 
-    challenger_resp = await _worker_fetch("/api/admin/config/challenger?full=1")
+    challenger_resp = await fetch_worker_admin("/api/admin/config/challenger?full=1")
     if not challenger_resp.get("challenger"):
         return {
             "status": "no_challenger",
@@ -208,7 +314,7 @@ async def weekly_eval(
     max_dd_delta = challenger_perf["max_drawdown"] - champion_perf["max_drawdown"]
 
     # ── 4. Fetch previous state to compute consecutive counters ────────────
-    prev_state_resp = await _worker_fetch("/api/admin/config/challenger/state")
+    prev_state_resp = await fetch_worker_admin("/api/admin/config/challenger/state")
     prev_state = (prev_state_resp.get("state") or {}) if prev_state_resp.get("success") else {}
     consecutive_wins = int(prev_state.get("consecutive_wins", 0))
     consecutive_losses = int(prev_state.get("consecutive_losses", 0))
@@ -218,8 +324,8 @@ async def weekly_eval(
         consecutive_wins = 0
         consecutive_losses = 0
 
-    this_is_win = _is_win(sharpe_delta, challenger_perf["win_rate"])
-    this_is_loss = _is_loss(sharpe_delta, challenger_perf["win_rate"])
+    this_is_win = policy.is_win(sharpe_delta, challenger_perf["win_rate"])
+    this_is_loss = policy.is_loss(sharpe_delta, challenger_perf["win_rate"])
     if this_is_win:
         consecutive_wins += 1
         consecutive_losses = 0
@@ -235,18 +341,11 @@ async def weekly_eval(
     shadow_age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(shadow_since.replace("Z", "+00:00"))).days
 
     # ── 5. Decide action ────────────────────────────────────────────────────
-    action = "hold"  # default — keep shadow-observing
-    action_reason = ""
-
-    if consecutive_wins >= CONSECUTIVE_WINS_TO_PROMOTE:
-        action = "promote"
-        action_reason = f"{consecutive_wins} consecutive wins (sharpe_delta≥{SHARPE_DELTA_WIN_THRESHOLD})"
-    elif consecutive_losses >= CONSECUTIVE_LOSSES_TO_RETIRE:
-        action = "retire"
-        action_reason = f"{consecutive_losses} consecutive losses"
-    elif shadow_age_days > MAX_SHADOW_DAYS:
-        action = "retire"
-        action_reason = f"shadow age {shadow_age_days}d > max {MAX_SHADOW_DAYS}d without conclusive result"
+    action, action_reason = policy.decide_action(
+        consecutive_wins=consecutive_wins,
+        consecutive_losses=consecutive_losses,
+        shadow_age_days=shadow_age_days,
+    )
 
     eval_result = {
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
@@ -257,6 +356,7 @@ async def weekly_eval(
         "challenger_hash": challenger_hash,
         "shadow_since": shadow_since,
         "shadow_age_days": shadow_age_days,
+        "policy": policy.to_dict(),
         "champion_perf": champion_perf,
         "challenger_perf": challenger_perf,
         "sharpe_delta": round(sharpe_delta, 4),
@@ -288,7 +388,7 @@ async def weekly_eval(
     }
 
     # Write state + event via worker admin (single call bundles both)
-    await _worker_fetch("/api/admin/config/challenger/eval_commit", method="POST", json_body={
+    await fetch_worker_admin("/api/admin/config/challenger/eval_commit", method="POST", json_body={
         "state": new_state,
         "event": {
             "event_type": "eval_done",
@@ -303,13 +403,13 @@ async def weekly_eval(
 
     # Execute action if any
     if action == "promote":
-        promote_resp = await _worker_fetch("/api/admin/config/challenger/promote_to_prod",
+        promote_resp = await fetch_worker_admin("/api/admin/config/challenger/promote_to_prod",
                                            method="POST",
                                            headers={"X-Confirm-Prod": "true"},
                                            json_body={"reason": action_reason})
         eval_result["promote_result"] = promote_resp
     elif action == "retire":
-        retire_resp = await _worker_fetch(
+        retire_resp = await fetch_worker_admin(
             f"/api/admin/config/challenger?reason={action_reason.replace(' ', '+')}",
             method="DELETE",
         )

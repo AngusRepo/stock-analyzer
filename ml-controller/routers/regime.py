@@ -36,6 +36,30 @@ class RegimeComputeRequest(BaseModel):
     force_retrain: bool = False       # retrain HMM from history before predict
 
 
+def _extract_regime_surface(info: dict) -> dict:
+    raw = (
+        info.get("regime_surface")
+        or info.get("regime_probabilities")
+        or info.get("probabilities")
+        or info.get("state_probabilities")
+        or {}
+    )
+    if isinstance(raw, list):
+        labels = ["bull_market", "volatile", "sideways", "bear_market"]
+        raw = {label: raw[idx] for idx, label in enumerate(labels) if idx < len(raw)}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            prob = float(value)
+        except (TypeError, ValueError):
+            continue
+        if prob >= 0:
+            out[str(key)] = prob
+    return out
+
+
 def _fetch_market_env_via_payload_builder() -> dict:
     """Use payload_builder.load_market_env which already knows the canonical
     D1 schema (market_risk + stock_prices TAIEX history + ETF 0050 fallback).
@@ -91,6 +115,7 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         reg_idx   = int(info.get("regime_index", 2))
         hmm_state = info.get("hmm_state", -1)
         label_zh  = info.get("label_zh", "")
+        regime_surface = _extract_regime_surface(info)
 
     # Push to Worker KV — source='regime' → worker case handles ml:regime write
     kv_push_ok = False
@@ -102,6 +127,7 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
                 "regime_index":        reg_idx,
                 "hmm_state":           hmm_state,
                 "label_zh":            label_zh,
+                "regime_surface":      regime_surface,
                 "consensus_threshold": info.get("consensus_threshold", 0.60),
                 "weight_multipliers":  info.get("weight_multipliers", {}),
             },
@@ -119,6 +145,7 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         "regime_index":    reg_idx,
         "hmm_state":       hmm_state,
         "label_zh":        label_zh,
+        "regime_surface":  regime_surface,
         "kv_push_ok":      kv_push_ok,
         "computed_at":     info.get("computed_at", datetime.now(TW_TZ).isoformat()),
     }

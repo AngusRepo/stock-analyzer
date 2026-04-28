@@ -4,7 +4,7 @@ model_store.py — 模型持久化框架
 下次 predict 直接載入，不用重新 fit
 
 結構：
-  GCS bucket: stockvision-models/
+  GCS bucket: {GCS_BUCKET_NAME}/
     └── {stock_id}/
           ├── xgboost.joblib
           ├── catboost.joblib
@@ -16,7 +16,7 @@ model_store.py — 模型持久化框架
                 └── ...（週備份）
 
 環境變數：
-  GCS_BUCKET_NAME                     → GCS bucket 名稱（預設 stockvision-models）
+  GCS_BUCKET_NAME                     → GCS bucket 名稱（必填）
   GOOGLE_APPLICATION_CREDENTIALS      → Service Account JSON 路徑
   GOOGLE_APPLICATION_CREDENTIALS_JSON → JSON 內容字串（Modal Secret 注入方式）
     modal_app.py 啟動時會自動把此變數寫到 /tmp/gcs-credentials.json
@@ -38,7 +38,10 @@ def _get_bucket():
     if _bucket is not None:
         return _bucket
 
-    bucket_name = os.getenv("GCS_BUCKET_NAME", "stockvision-models")
+    bucket_name = os.getenv("GCS_BUCKET_NAME")
+    if not bucket_name:
+        logger.warning("[ModelStore] GCS_BUCKET_NAME not set, model persistence disabled")
+        return None
     try:
         from google.cloud import storage
         client = storage.Client()

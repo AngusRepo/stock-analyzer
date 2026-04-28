@@ -7,12 +7,19 @@ dist/
 .env.production
 *.bak
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+.venv-smoke/
 *.pyc
 .modal.toml
 /tmp/
 *.log
 scripts/data/
 scripts/backfill_output*
+frontend/dev-dist/
+ml-service/.test_tmp/
+_external/
 
 # Local debug scratch files (underscore-prefix convention)
 _tmp_*

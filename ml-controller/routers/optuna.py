@@ -26,7 +26,12 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 
 from services.d1_client import query as d1_query
+from services.alpha_quality_policy import alpha_quality_policy
+from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
 from services.kv_pusher import push_optuna_result
+from services.optuna_route_policy import OptunaRoutePolicy
+from services.optuna_script_contracts import get_optuna_script_contract
+from services.worker_config_client import load_active_trading_config
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
 _SCRIPTS_DIR = Path(__file__).parent.parent / "optuna_scripts"
@@ -47,7 +52,44 @@ class OptunaReq(BaseModel):
     end_date: str | None = None    # defaults to today (TW)
 
 
+class AlphaFrameworkOptunaReq(BaseModel):
+    n_trials: int = 200
+    push_kv: bool = True
+    dry_run: bool = False
+    subset_size: int | None = Field(default=None, ge=100, le=5000)
+
+
+def _push_live(req) -> bool:
+    return bool(req.push_kv and not req.dry_run)
+
+
+def _contract_meta(
+    *,
+    source: str,
+    scope: str,
+    sample_scope: str,
+    applies_to_production: bool,
+    push_target: str,
+    effective_fields: list[str] | None = None,
+    excluded_fields: list[str] | None = None,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    script_contract = get_optuna_script_contract(source).to_dict()
+    return {
+        "source": source,
+        "scope": scope,
+        "sample_scope": sample_scope,
+        "script_contract": script_contract,
+        "applies_to_production": applies_to_production,
+        "push_target": push_target,
+        "effective_fields": effective_fields or [],
+        "excluded_fields": excluded_fields or [],
+        "notes": notes or [],
+    }
+
+
 # ─── Helpers: D1 loaders ─────────────────────────────────────────────────────
+
 
 def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
     """For barrier search — D10 fix: use tradable universe, not just watchlist."""
@@ -120,9 +162,13 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
     except ImportError as e:
         raise HTTPException(500, f"optuna_barrier import failed: {e}")
 
-    stocks_data = _load_top_active_stocks_with_prices(min_rows=200, top_n=10)
+    policy = OptunaRoutePolicy.from_env()
+    stocks_data = _load_top_active_stocks_with_prices(
+        min_rows=policy.barrier_min_price_rows,
+        top_n=policy.barrier_top_n,
+    )
     if not stocks_data:
-        raise HTTPException(400, "No active stocks with >= 200 price rows")
+        raise HTTPException(400, f"No active stocks with >= {policy.barrier_min_price_rows} price rows")
 
     all_data = {}
     for s in stocks_data:
@@ -140,9 +186,26 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         push_response = push_optuna_result(
             source="barrier",
             params=best,
-            meta={"n_trials": req.n_trials, "best_score": result.get("best_score"),
-                  "stock_count": len(all_data)},
+            meta={
+                "n_trials": req.n_trials,
+                "best_score": result.get("best_score"),
+                "stock_count": len(all_data),
+                "policy": policy.to_dict(),
+            },
         )
+
+    contract = _contract_meta(
+        source="barrier",
+        scope="production_bound",
+        sample_scope=f"top_{policy.barrier_top_n}_active_stocks_with_>={policy.barrier_min_price_rows}_price_rows",
+        applies_to_production=_push_live(req) and bool(best),
+        push_target="worker_kv_live",
+        effective_fields=list(best.keys()),
+        notes=[
+            "Barrier Optuna currently optimizes on a top-10 active-stock sample, not the full trading universe.",
+            "If pushed live, these params can affect production barrier behavior immediately.",
+        ],
+    )
 
     return {
         "status": "completed",
@@ -151,6 +214,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         "best_score": result.get("best_score"),
         "n_trials": req.n_trials,
         "push": push_response,
+        "contract": contract,
     }
 
 
@@ -165,9 +229,10 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
     except ImportError as e:
         raise HTTPException(500, f"optuna_signal import failed: {e}")
 
-    orders_rows = _load_paper_orders(limit=500)
-    pred_rows = _load_predictions(limit=2000)
-    if len(orders_rows) < 20 or len(pred_rows) < 50:
+    policy = OptunaRoutePolicy.from_env()
+    orders_rows = _load_paper_orders(limit=policy.signal_order_limit)
+    pred_rows = _load_predictions(limit=policy.signal_prediction_limit)
+    if len(orders_rows) < policy.signal_min_orders or len(pred_rows) < policy.signal_min_predictions:
         raise HTTPException(400, f"Insufficient data: orders={len(orders_rows)}, predictions={len(pred_rows)}")
 
     orders = pl.DataFrame(orders_rows)
@@ -181,11 +246,28 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="signal", params=best,
-            meta={"n_trials": req.n_trials, "n_orders": len(orders), "n_predictions": len(predictions)},
+            meta={
+                "n_trials": req.n_trials,
+                "n_orders": len(orders),
+                "n_predictions": len(predictions),
+                "policy": policy.to_dict(),
+            },
         )
+    contract = _contract_meta(
+        source="signal",
+        scope="production_bound",
+        sample_scope="recent_sell_orders_plus_recent_ensemble_predictions",
+        applies_to_production=_push_live(req) and bool(best),
+        push_target="worker_kv_live",
+        effective_fields=list(best.keys()),
+        notes=[
+            "Signal search uses recent paper-order outcomes plus recent ensemble predictions, not a point-in-time full backtest.",
+            "If pushed live, signal thresholds can affect production immediately.",
+        ],
+    )
 
     return {"status": "completed", "source": "signal", "best_params": best,
-            "n_trials": req.n_trials, "push": push_response}
+            "n_trials": req.n_trials, "push": push_response, "contract": contract}
 
 
 # ─── /optuna/sltp ────────────────────────────────────────────────────────────
@@ -240,6 +322,19 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
             },
         )
 
+    contract = _contract_meta(
+        source="sltp",
+        scope="production_bound",
+        sample_scope="paper_backtest_replay_subset",
+        applies_to_production=_push_live(req) and bool(best),
+        push_target="worker_kv_live",
+        effective_fields=list(best.keys()),
+        notes=[
+            "SLTP search replays a subset/window, so results are sensitive to subset_size and date_window.",
+            "If pushed live, these params affect production exits immediately.",
+        ],
+    )
+
     return {
         "status": "completed", "source": "sltp", "best_params": best,
         "n_trials": req.n_trials, "push": push_response,
@@ -252,6 +347,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
         "realism_note": result.get("realism_note"),
+        "contract": contract,
     }
 
 
@@ -297,6 +393,8 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
     # Intentionally NOT including ranking.* — Mode A hardcode override must not leak
     # to production KV. See memory/project_sprint_5_2_hardcode_overrides.md Override #3.
     push_payload = result.get("resolved_screener", {})
+    raw_best = result.get("best_params", {})
+    excluded_fields = [k for k in raw_best.keys() if k.startswith("ranking.")]
 
     push_response = None
     if req.push_kv and not req.dry_run and push_payload:
@@ -320,9 +418,23 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
             },
         )
 
+    contract = _contract_meta(
+        source="screener",
+        scope="production_partial",
+        sample_scope="paper_backtest_replay_subset",
+        applies_to_production=_push_live(req) and bool(push_payload),
+        push_target="worker_kv_live_partial",
+        effective_fields=list(push_payload.keys()),
+        excluded_fields=excluded_fields,
+        notes=[
+            "Screener Optuna may search ranking.* internally, but ranking.* is intentionally excluded from live KV push.",
+            "A successful screener search does not mean ranking weights were promoted to production.",
+        ],
+    )
+
     return {
         "status": "completed", "source": "screener",
-        "best_params": result.get("best_params"),
+        "best_params": raw_best,
         "resolved_screener": push_payload,
         "n_trials": req.n_trials, "push": push_response,
         "pareto_front": result.get("pareto_front", []),
@@ -337,6 +449,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
         "realism_note": result.get("realism_note"),
+        "contract": contract,
     }
 
 
@@ -350,13 +463,14 @@ def run_conformal(req: OptunaReq = Body(default=OptunaReq())):
     except ImportError as e:
         raise HTTPException(500, f"optuna_conformal import failed: {e}")
 
+    policy = OptunaRoutePolicy.from_env()
     rows = d1_query("""
         SELECT direction_accuracy as confidence, direction_correct
         FROM predictions
         WHERE direction_correct IS NOT NULL AND direction_accuracy IS NOT NULL
-        ORDER BY generated_at DESC LIMIT 2000
-    """)
-    if len(rows) < 50:
+        ORDER BY generated_at DESC LIMIT ?
+    """, [policy.conformal_prediction_limit])
+    if len(rows) < policy.conformal_min_labeled_predictions:
         raise HTTPException(400, f"Insufficient labeled predictions: {len(rows)}")
 
     confidences = [float(r["confidence"]) for r in rows]
@@ -370,7 +484,11 @@ def run_conformal(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="conformal", params=best,
-            meta={"n_samples": len(confidences), "best_ece": result.get("best_ece")},
+            meta={
+                "n_samples": len(confidences),
+                "best_ece": result.get("best_ece"),
+                "policy": policy.to_dict(),
+            },
         )
 
     return {"status": "completed", "source": "conformal", "best_params": best,
@@ -388,12 +506,13 @@ def run_risk_params(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_risk_params import failed: {e}")
 
     # Phase 1.5: 改用 paper_daily_snapshots.pnl_pct 作為 daily returns
-    rows = _load_daily_pnl(limit=200)
-    if len(rows) < 20:
+    policy = OptunaRoutePolicy.from_env()
+    rows = _load_daily_pnl(limit=policy.risk_daily_pnl_limit)
+    if len(rows) < policy.risk_min_daily_snapshots:
         raise HTTPException(400, f"Insufficient daily snapshots: {len(rows)}")
 
     trade_returns = [float(r["pnl_pct"]) for r in rows if r.get("pnl_pct") is not None]
-    if len(trade_returns) < 20:
+    if len(trade_returns) < policy.risk_min_daily_returns:
         raise HTTPException(400, f"Insufficient daily returns: {len(trade_returns)}")
 
     logger.info(f"[Optuna/risk_params] {len(trade_returns)} daily returns")
@@ -404,7 +523,7 @@ def run_risk_params(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="risk_params", params=best,
-            meta={"n_returns": len(trade_returns)},
+            meta={"n_returns": len(trade_returns), "policy": policy.to_dict()},
         )
 
     return {"status": "completed", "source": "risk_params", "best_params": best,
@@ -422,8 +541,9 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_rrg import failed: {e}")
 
     # Benchmark from market_risk.twii_close
-    twii_rows = _load_twii_history(limit=500)
-    if len(twii_rows) < 60:
+    policy = OptunaRoutePolicy.from_env()
+    twii_rows = _load_twii_history(limit=policy.rrg_twii_limit)
+    if len(twii_rows) < policy.rrg_min_twii_rows:
         raise HTTPException(400, f"Insufficient TWII benchmark: {len(twii_rows)}")
 
     closes = [float(r["twii_close"]) for r in twii_rows]
@@ -434,16 +554,16 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
         WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= 100
-        ORDER BY cnt DESC LIMIT 10
-    """)
+        GROUP BY s.id HAVING cnt >= ?
+        ORDER BY cnt DESC LIMIT ?
+    """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
     prices_by_stock: dict[str, list[float]] = {}
     for s in top_stocks:
         rows = d1_query(
-            "SELECT close FROM stock_prices WHERE stock_id = ? ORDER BY date ASC LIMIT 500",
-            [s["id"]],
+            "SELECT close FROM stock_prices WHERE stock_id = ? ORDER BY date ASC LIMIT ?",
+            [s["id"], policy.rrg_stock_price_limit],
         )
-        if len(rows) >= 100:
+        if len(rows) >= policy.rrg_top_stock_min_rows:
             prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
 
     if not prices_by_stock:
@@ -457,7 +577,7 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="rrg", params=best,
-            meta={"n_stocks": len(prices_by_stock)},
+            meta={"n_stocks": len(prices_by_stock), "policy": policy.to_dict()},
         )
 
     return {"status": "completed", "source": "rrg", "best_params": best,
@@ -465,6 +585,78 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 
 
 # ─── /optuna/feature_window ──────────────────────────────────────────────────
+
+@router.post("/alpha_framework")
+def run_alpha_framework(req: AlphaFrameworkOptunaReq = Body(default=AlphaFrameworkOptunaReq())):
+    """Alpha framework posterior search from verified alpha_context outcomes."""
+    policy = alpha_quality_policy(load_active_trading_config())
+    quality_policy = policy.to_dict()
+    limit = max(100, min(int(req.subset_size or policy.outcome_limit), 5000))
+    rows = load_alpha_outcome_rows(limit=limit)
+    result = build_alpha_policy_candidate(
+        rows,
+        **policy.to_builder_kwargs(),
+    )
+    contract = _contract_meta(
+        source="alpha_framework",
+        scope="sandbox_challenger",
+        sample_scope=f"latest_{limit}_verified_predictions_with_alpha_context",
+        applies_to_production=False,
+        push_target="worker_kv_sandbox_by_default",
+        effective_fields=["alphaFramework.allocation.weights", "alphaFramework.riskOverlay"],
+        notes=[
+            "Sample and bucket gates default to trading:config.alphaFramework.quality.",
+            "Uses only predictions with alpha_context and verified outcome columns.",
+            "Skips with HTTP 200 when samples are insufficient instead of inventing a policy.",
+            "Worker optuna-push writes sandbox unless explicitly forced to prod with the double gate.",
+        ],
+    )
+
+    if result.get("status") == "skipped":
+        return {
+            **result,
+            "source": "alpha_framework",
+            "n_trials": req.n_trials,
+            "quality_policy": quality_policy,
+            "push": None,
+            "contract": contract,
+        }
+
+    best = result["alphaFramework"]
+    push_response = None
+    if req.push_kv and not req.dry_run:
+        push_response = push_optuna_result(
+            source="alpha_framework",
+            params=best,
+            meta={
+                "status": "completed",
+                "target": "sandbox",
+                "n_trials": req.n_trials,
+                "sample_count": result.get("sample_count"),
+                "regime_counts": result.get("regime_counts"),
+                "bucket_counts": result.get("bucket_counts"),
+                "skipped_count": result.get("skipped_count"),
+                "quality_policy": quality_policy,
+                "risk_overlay_evidence": result.get("risk_overlay_evidence"),
+                "note": "alpha framework posterior policy candidate",
+            },
+        )
+
+    return {
+        "status": "completed",
+        "source": "alpha_framework",
+        "best_params": best,
+        "sample_count": result.get("sample_count"),
+        "regime_counts": result.get("regime_counts"),
+        "bucket_counts": result.get("bucket_counts"),
+        "skipped_count": result.get("skipped_count"),
+        "quality_policy": quality_policy,
+        "risk_overlay_evidence": result.get("risk_overlay_evidence"),
+        "n_trials": req.n_trials,
+        "push": push_response,
+        "contract": contract,
+    }
+
 
 class FtArchReq(BaseModel):
     """FT-T architecture Optuna request (#29)."""
@@ -504,6 +696,19 @@ async def run_ft_arch(req: FtArchReq = Body(default=FtArchReq())):
         "best_params":   result.get("best_params"),
         "n_trials":      result.get("n_trials"),
         "gcs_audit_path": result.get("gcs_audit_path"),
+        "contract": _contract_meta(
+            source="ft_arch",
+            scope="research_only",
+            sample_scope=f"gcs_prefix={req.gcs_prefix}, subset_size={req.subset_size or 'full'}",
+            applies_to_production=False,
+            push_target="none_manual_apply_only",
+            effective_fields=[],
+            excluded_fields=list((result.get("best_params") or {}).keys()),
+            notes=[
+                "FT architecture search does not auto-push to production.",
+                "Winning params still require manual code/application plus retrain before any production effect.",
+            ],
+        ),
     }
 
 
@@ -514,7 +719,7 @@ class L2SensitivityReq(BaseModel):
     end_date: str | None = None     # default: today (TW)
     push_kv: bool = True
     dry_run: bool = False
-    dd_penalty: float = 2.0
+    dd_penalty: float | None = None
     sampler: str = "nsga2"          # 'nsga2' | 'tpe'
 
 
@@ -533,7 +738,7 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     """
     try:
         from optuna_l2_sensitivity import (  # type: ignore
-            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE,
+            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE, _l2_push_allowed,
         )
     except ImportError as e:
         raise HTTPException(500, f"optuna_l2_sensitivity import failed: {e}")
@@ -572,23 +777,48 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         dd_penalty=req.dd_penalty,
         sampler_name=req.sampler,
     )
+    pbo_persist_response = None
+    if not req.dry_run and result.get("pbo_audit"):
+        from services.pbo_audit_store import persist_pbo_audit
+
+        audit_to_persist = {
+            **(result.get("pbo_audit") or {}),
+            "date_range": [start_date, end_date],
+            "best_value": result.get("best_value"),
+            "search_space_source": used_source,
+        }
+        pbo_persist_response = persist_pbo_audit(
+            run_date=datetime.now(TW).strftime("%Y-%m-%d"),
+            source="optuna_l2",
+            audit=audit_to_persist,
+        )
 
     # ── KV push (nested form matches trading:config shape) ──────────────────
     push_response = None
-    if req.push_kv and not req.dry_run and result.get("best_params_nested"):
+    push_skipped_reason = None
+    if _l2_push_allowed(
+        push_kv=req.push_kv,
+        dry_run=req.dry_run,
+        best_params_nested=result.get("best_params_nested"),
+        pbo_audit=result.get("pbo_audit"),
+    ):
         push_response = push_optuna_result(
             source="l2_sensitivity",
             params=result["best_params_nested"],
             meta={
                 "n_trials": req.n_trials,
                 "best_value": result.get("best_value"),
+                "pbo_candidate_count": len(result.get("strategy_returns_by_partition") or {}),
+                "pbo_audit": result.get("pbo_audit"),
                 "start_date": start_date,
                 "end_date": end_date,
                 "sampler": req.sampler,
-                "dd_penalty": req.dd_penalty,
+                "dd_penalty": (result.get("policy") or {}).get("dd_penalty"),
                 "search_space_source": used_source,
             },
         )
+    elif req.push_kv and not req.dry_run:
+        push_skipped_reason = "pbo_audit_not_passed"
 
     return {
         "status": "completed",
@@ -596,9 +826,15 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         "best_value": result.get("best_value"),
         "best_params": result.get("best_params"),
         "n_trials": result.get("n_trials"),
+        "pbo_candidate_count": len(result.get("strategy_returns_by_partition") or {}),
+        "pbo_audit": result.get("pbo_audit"),
+        "policy": result.get("policy"),
+        "strategy_returns_by_partition": result.get("strategy_returns_by_partition"),
         "search_space_source": used_source,
         "date_range": [start_date, end_date],
+        "pbo_persist": pbo_persist_response,
         "push": push_response,
+        "push_skipped_reason": push_skipped_reason,
     }
 
 
@@ -611,8 +847,9 @@ def run_feature_window(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_feature_window import failed: {e}")
 
     # TWII as benchmark for feature window search
-    twii_rows = _load_twii_history(limit=1000)
-    if len(twii_rows) < 100:
+    policy = OptunaRoutePolicy.from_env()
+    twii_rows = _load_twii_history(limit=policy.feature_window_twii_limit)
+    if len(twii_rows) < policy.feature_window_min_twii_rows:
         raise HTTPException(400, f"Insufficient TWII data: {len(twii_rows)}")
 
     closes = [float(r["twii_close"]) for r in twii_rows]
@@ -628,7 +865,7 @@ def run_feature_window(req: OptunaReq = Body(default=OptunaReq())):
         # source='feature_window' 在 Worker 是 501 deferred，這次只回 push response
         push_response = push_optuna_result(
             source="feature_window", params=best,
-            meta={"n_bars": len(closes)},
+            meta={"n_bars": len(closes), "policy": policy.to_dict()},
         )
 
     return {"status": "completed", "source": "feature_window", "best_params": best,
@@ -697,9 +934,23 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
         logger.exception("[Optuna/per_regime] unexpected failure")
         raise HTTPException(500, f"per_regime search failed: {type(e).__name__}: {e}")
 
+    contract = _contract_meta(
+        source="per_regime_robust",
+        scope="sandbox_challenger",
+        sample_scope=f"subset_{req.subset_size}_window_{req.window_days}d_regime_robust_replay",
+        applies_to_production=bool(req.push_kv and not req.dry_run and result.get("push")),
+        push_target="sandbox_or_challenger_only",
+        effective_fields=list((result.get("best_params") or {}).keys()),
+        notes=[
+            "Per-regime Optuna is intended for sandbox/challenger promotion, not direct production overwrite.",
+            "Even when pushed, it should flow through challenger evaluation before champion promotion.",
+        ],
+    )
+
     return {
         "status": "completed",
         "source": "per_regime_robust",
         "dry_run": req.dry_run,
+        "contract": contract,
         **result,
     }

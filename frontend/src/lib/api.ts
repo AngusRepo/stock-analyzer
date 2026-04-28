@@ -1,12 +1,27 @@
 const BASE = import.meta.env.VITE_API_URL ?? '/api'
+export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'
 
 // Fix: 使用 sessionStorage 而非 localStorage 儲存 JWT
 // 原因：localStorage 跨 tab 持久化，XSS 腳本可讀取
 // sessionStorage 僅存活於當前分頁生命週期，關閉分頁即清除，降低 XSS 竊取風險
 // 注意：重新開啟分頁需要重新登入（30分鐘 idle timeout 較合理）
 let _token: string | null = sessionStorage.getItem('sv_token')
-export function setToken(t: string) { _token = t; sessionStorage.setItem('sv_token', t) }
-export function clearToken() { _token = null; sessionStorage.removeItem('sv_token') }
+
+function emitAuthTokenEvent(authenticated: boolean) {
+  window.dispatchEvent(new CustomEvent(AUTH_TOKEN_EVENT, { detail: { authenticated } }))
+}
+
+export function setToken(t: string) {
+  _token = t
+  sessionStorage.setItem('sv_token', t)
+  emitAuthTokenEvent(true)
+}
+
+export function clearToken() {
+  _token = null
+  sessionStorage.removeItem('sv_token')
+  emitAuthTokenEvent(false)
+}
 export function getToken() { return _token }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -170,7 +185,7 @@ export type SchedulerJob = {
   group: 'pipeline_chain' | 'intraday' | 'weekly' | 'daily' | 'monthly'
   chainIndex?: number
   lastRun: string
-  lastStatus: 'success' | 'failed' | 'skip'
+  lastStatus: 'success' | 'failed' | 'running' | 'skip'
   lastDuration: string
   lastError?: string
   nextRun: string
@@ -194,6 +209,46 @@ export type SchedulerStatus = {
 
 export const schedulerApi = {
   status: () => get<SchedulerStatus>('/scheduler/status'),
+}
+
+export type ModelPoolLineageModel = {
+  status?: string
+  version?: string
+  balance_family?: string
+  model_type?: string
+  gcs_path?: string
+  artifact_uri?: string
+  metadata_path?: string
+  metadata_exists?: boolean
+  metadata?: Record<string, unknown> | null
+  weekly_ic?: number[]
+  ic_4w_avg?: number | null
+  consecutive_negative_weeks?: number
+  challenger?: {
+    version?: string
+    status?: string
+    gcs_path?: string
+    metadata_path?: string
+    metadata_exists?: boolean
+    metadata?: Record<string, unknown> | null
+    shadow_since?: string
+    weekly_ic?: number[]
+    ic_4w_avg?: number | null
+  } | null
+}
+
+export type ModelPoolLineage = {
+  status: string
+  schema_version?: string
+  last_updated?: string
+  models: Record<string, ModelPoolLineageModel>
+  events: Array<Record<string, unknown>>
+  error?: string
+}
+
+export const modelPoolApi = {
+  status: () => get<any>('/model-pool/status'),
+  lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),
 }
 
 // 2026-04-21 #43 Cost Tracking API

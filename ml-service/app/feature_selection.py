@@ -25,6 +25,8 @@ from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 from sklearn.metrics import silhouette_score
 
+from app.model_store import _get_bucket
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 1: Silhouette Clustering (保留 V2，不動)
@@ -726,8 +728,9 @@ def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
     gcs_prefix=None → production: writes universal/feature_pool.json + universal/powershap_history/YYYY-MM.json
     gcs_prefix=str  → walk-forward: writes {gcs_prefix}/feature_pool.json ONLY (no monthly snapshot)
     """
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS_BUCKET_NAME not configured or bucket unavailable")
 
     pool_json = json.dumps(pool, ensure_ascii=False, indent=2)
 
@@ -750,8 +753,9 @@ def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
 
 def load_feature_pool() -> Optional[dict]:
     """Load feature_pool.json from GCS."""
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = _get_bucket()
+    if bucket is None:
+        return None
     try:
         blob = bucket.blob("universal/feature_pool.json")
         return json.loads(blob.download_as_text())
@@ -764,10 +768,10 @@ def load_feature_pool() -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_feature_selection_pipeline(
-    max_rounds: int = 100,
-    alpha: float = 0.01,
+    max_rounds: int | None = None,
+    alpha: float | None = None,
     dry_run: bool = False,
-    icir_weight: float = 0.1,  # 2026-04-17 P2: promoted from hardcode; combined_score = tp_score + icir × icir_weight
+    icir_weight: float | None = None,
     train_end_date: str | None = None,  # 2026-04-19 N2: walk-forward — filter dates ≤ this (no future leak)
     gcs_prefix: str | None = None,       # 2026-04-19 N2: walk-forward — write to {prefix}/feature_pool.json
     **_kwargs,  # absorb legacy params (required_power etc.)
@@ -784,9 +788,18 @@ def run_feature_selection_pipeline(
       - Write per-window pool to {gcs_prefix}/feature_pool.json (no monthly snapshot)
     """
     t0 = time.time()
+    from .training_policy import FeatureSelectionPolicy
 
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(
+        {"max_rounds": max_rounds, "alpha": alpha, "icir_weight": icir_weight}
+    )
+    max_rounds = int(selection_params["max_rounds"])
+    alpha = float(selection_params["alpha"])
+    icir_weight = float(selection_params["icir_weight"])
+
+    bucket = _get_bucket()
+    if bucket is None:
+        return {"error": "GCS_BUCKET_NAME not configured or bucket unavailable"}
 
     # ── 1. Load prep data ────────────────────────────────────────────────────
     prep_blobs = sorted(

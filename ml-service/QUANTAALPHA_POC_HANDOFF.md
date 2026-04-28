@@ -33,8 +33,8 @@ Claude / Wei → curl ml-controller endpoints
 ## 全自動 3 步
 
 ```bash
-CTOKEN="${ML_CONTROLLER_TOKEN:-sv-controller-2026-prod}"
-URL="https://ml-controller-530028717113.asia-east1.run.app"
+CTOKEN="${ML_CONTROLLER_TOKEN:?set ML_CONTROLLER_TOKEN first}"
+URL="${ML_CONTROLLER_URL:?set ML_CONTROLLER_URL first}"
 
 # Step 1: Bootstrap — Modal secret + deploy Modal app
 curl -sX POST "$URL/admin/quantaalpha-bootstrap" \

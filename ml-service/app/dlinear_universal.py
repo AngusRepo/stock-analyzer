@@ -19,8 +19,8 @@ Architecture:
   Output: (B, pred_len)   summed forecast
 
 Storage:
-  gs://stockvision-models/universal/dlinear/v{N}.pt   weights + metadata
-  gs://stockvision-models/universal/dlinear/metadata_v{N}.json   training info
+gs://{GCS_BUCKET_NAME}/universal/dlinear/v{N}.pt   weights + metadata
+gs://{GCS_BUCKET_NAME}/universal/dlinear/metadata_v{N}.json   training info
 """
 from __future__ import annotations
 import io
@@ -38,8 +38,16 @@ DEFAULT_SEQ_LEN = 60
 DEFAULT_PRED_LEN = 5
 DEFAULT_KERNEL = 25
 
-GCS_BUCKET = "stockvision-models"
 GCS_WEIGHTS_PREFIX = "universal/dlinear"
+
+
+def _get_bucket():
+    from .model_store import _get_bucket as _shared_get_bucket
+
+    bucket = _shared_get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS bucket not available")
+    return bucket
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,9 +287,7 @@ def train_dlinear(
 def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
     """Save trained DLinear state_dict + metadata to GCS."""
     import torch
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
 
     buf = io.BytesIO()
     torch.save(state_dict, buf)
@@ -300,10 +306,8 @@ def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
 def load_from_gcs(version: str = "v1"):
     """Load DLinear model + metadata from GCS. Returns (model, metadata) or (None, None)."""
     import torch
-    from google.cloud import storage
-
     try:
-        bucket = storage.Client().bucket(GCS_BUCKET)
+        bucket = _get_bucket()
         weights_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/{version}.pt")
         meta_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/metadata_{version}.json")
         if not weights_blob.exists():

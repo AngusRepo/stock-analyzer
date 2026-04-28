@@ -13,6 +13,9 @@
 
 import type { Bindings } from '../types'
 import { sendReportToChannels, type DiscordEmbed } from './notify'
+import { formatPendingBuyBriefing } from './pendingBuyBriefingSummary'
+import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
+import { loadPendingBuySnapshot } from './pendingBuyStore'
 
 export async function generateDailyReport(env: Bindings): Promise<string> {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -177,6 +180,19 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
       ],
     })
   }
+
+  const pendingSnapshot = await loadPendingBuySnapshot(env, twToday, { allowFallbackRecent: false })
+  const pendingState = buildPendingBuyStateSummary(pendingSnapshot.pendingBuys, pendingSnapshot.meta)
+  embeds.push({
+    title: 'Pending Buy State',
+    color: pendingState.state === 'ready_to_execute' ? 0x2ecc71 : pendingState.state === 'closed' ? 0x95a5a6 : 0xf1c40f,
+    description: formatPendingBuyBriefing(pendingSnapshot.pendingBuys, pendingState),
+    fields: [
+      { name: 'Active / Total', value: `${pendingState.active_count}/${pendingState.total_count}`, inline: true },
+      { name: 'Debate', value: JSON.stringify(pendingState.debate_counts), inline: true },
+      { name: 'Execution', value: JSON.stringify(pendingState.execution_counts), inline: true },
+    ],
+  })
 
   // ── 7.5 無標籤股票偵測 ─────────────────────────────────────────────────
   const { results: untaggedStocks } = await env.DB.prepare(`

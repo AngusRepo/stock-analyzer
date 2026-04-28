@@ -8,6 +8,15 @@ const BotDashboard = lazy(() => import('./pages/BotDashboard'))
 const StockReportPage = lazy(() => import('./pages/StockReportPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
+const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
+
+function PageLoader({ label }: { label: string }) {
+  return (
+    <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
+      Loading {label}...
+    </div>
+  )
+}
 
 export default function App() {
   return (
@@ -17,28 +26,33 @@ export default function App() {
         <Route path="/stock/:id" component={Dashboard} />
         <Route path="/unauthorized" component={Unauthorized} />
         <Route path="/report/:symbol">
-          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Report...</div>}>
+          <Suspense fallback={<PageLoader label="Report" />}>
             <StockReportPage />
           </Suspense>
         </Route>
         <Route path="/bot">
-          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Bot Dashboard...</div>}>
+          <Suspense fallback={<PageLoader label="Bot Dashboard" />}>
             <BotDashboard />
           </Suspense>
         </Route>
         <Route path="/pipeline">
-          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Pipeline...</div>}>
+          <Suspense fallback={<PageLoader label="Pipeline" />}>
             <PipelinePage />
           </Suspense>
         </Route>
         <Route path="/scheduler">
-          <Suspense fallback={<div className="flex items-center justify-center h-screen bg-background text-muted-foreground">Loading Scheduler...</div>}>
+          <Suspense fallback={<PageLoader label="Scheduler" />}>
             <SchedulerPage />
           </Suspense>
         </Route>
+        <Route path="/model-pool">
+          <Suspense fallback={<PageLoader label="Model Pool" />}>
+            <ModelPoolPage />
+          </Suspense>
+        </Route>
         <Route>
-          <div className="flex items-center justify-center h-screen text-muted-foreground">
-            <p>頁面不存在</p>
+          <div className="flex h-screen items-center justify-center text-muted-foreground">
+            <p>Page not found</p>
           </div>
         </Route>
       </Switch>

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { authApi, setToken, clearToken, getToken } from '@/lib/api'
+import { AUTH_TOKEN_EVENT, authApi, setToken, clearToken, getToken } from '@/lib/api'
 import { useEffect } from 'react'
 
 export function useAuth() {
@@ -21,6 +21,21 @@ export function useAuth() {
     }
   }, [])
 
+  useEffect(() => {
+    const onTokenChange = (event: Event) => {
+      const authenticated = (event as CustomEvent<{ authenticated?: boolean }>).detail?.authenticated === true
+      if (authenticated) {
+        qc.invalidateQueries({ queryKey: ['auth', 'me'] })
+        return
+      }
+      qc.setQueryData(['auth', 'me'], null)
+      qc.removeQueries({ queryKey: ['auth', 'me'] })
+    }
+
+    window.addEventListener(AUTH_TOKEN_EVENT, onTokenChange)
+    return () => window.removeEventListener(AUTH_TOKEN_EVENT, onTokenChange)
+  }, [qc])
+
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: () => authApi.me(),
@@ -41,7 +56,7 @@ export function useAuth() {
   return {
     user: meQuery.data ?? null,
     loading: meQuery.isLoading,
-    isAuthenticated: !!meQuery.data,
+    isAuthenticated: !!getToken() && !!meQuery.data,
     error: meQuery.error,
     login: () => { window.location.href = authApi.loginUrl() },
     logout: () => logoutMutation.mutate(),

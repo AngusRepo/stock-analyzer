@@ -43,7 +43,7 @@ def load_pending_predictions(lookback_days: int = 5, limit: int = 200) -> list[d
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
-        WHERE p.direction_correct IS NULL
+        WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
           AND p.generated_at < ?
           AND p.forecast_data IS NOT NULL
         ORDER BY p.generated_at ASC
@@ -102,13 +102,6 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
     )
 
     # Neutral — mark as -1 (skipped) and return
-    if predicted_direction == "neutral":
-        d1_client.execute(
-            "UPDATE predictions SET direction_correct=-1, verified_at=datetime('now') WHERE id=?",
-            params=[pred["id"]],
-        )
-        return None
-
     # Predicted price (horizon midpoint, fall back to last)
     forecasts: list = fd.get("forecasts") or []
     predicted_price = None
@@ -140,11 +133,36 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
         actual_direction = "down"
     else:
         actual_direction = "neutral"
-    is_correct = 1 if predicted_direction == actual_direction else 0
-
     price_error_pct = None
     if predicted_price is not None:
         price_error_pct = abs((predicted_price - actual_price) / actual_price) * 100
+
+    # Neutral/HOLD rows are not directional trade calls, but weekly IC needs
+    # actual_return_pct for every per-model rank_score row.
+    if predicted_direction == "neutral":
+        return {
+            "id": pred["id"],
+            "bind": [
+                predicted_direction,
+                predicted_price,
+                actual_direction,
+                actual_price,
+                -1,
+                price_error_pct,
+                market_risk.get("risk_level"),
+                market_risk.get("risk_score"),
+                actual_return_pct,
+                None,
+                None,
+                None,
+                None,
+                None,
+                pred["id"],
+            ],
+            "arf": None,
+        }
+
+    is_correct = 1 if predicted_direction == actual_direction else 0
 
     # ── Simulate trade ───────────────────────────────────────────────────────
     sim: TradeSimulationResult = simulate_trade(
@@ -181,7 +199,9 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
             "symbol": pred.get("symbol"),
             "predicted_direction": predicted_direction,
             "actual_direction": actual_direction,
+            "actual_return_pct": actual_return_pct,
             "realized_pnl_r": sim.trade_pnl_r,
+            "forecast_pct": fd.get("forecast_pct") or 0.0,
             "arf_features": fd.get("arf_features") or [],
             "prediction_id": pred["id"],
         } if (fd.get("arf_features") and len(fd.get("arf_features") or []) > 0) else None,
@@ -195,6 +215,45 @@ def write_verified_predictions(updates: list[dict]) -> int:
     statements = [(UPDATE_VERIFY_SQL, u["bind"]) for u in updates]
     result = d1_client.batch_execute(statements)
     return result.get("changes_total", 0)
+
+
+def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict:
+    """Simulate pending predictions and return batched D1/ARF update payloads."""
+    updates: list[dict] = []
+    arf_batch: list[dict] = []
+    errors: list[str] = []
+
+    for pred in pending:
+        try:
+            result = verify_single_prediction(pred, market_risk)
+            if result is None:
+                continue
+            updates.append(result)
+            if result.get("arf"):
+                arf_batch.append(result["arf"])
+        except Exception as e:
+            msg = f"prediction {pred.get('id')} failed: {e}"
+            logger.error(f"[verify] Failed pred {pred.get('id')}: {e}")
+            errors.append(msg)
+
+    return {
+        "verify_updates": updates,
+        "arf_feedback_items": arf_batch,
+        "errors": errors,
+    }
+
+
+def summarize_verification_updates(pending_count: int, updates: list[dict]) -> dict:
+    """Build stable summary metrics for verified prediction updates."""
+    verified = len(updates)
+    correct = sum(1 for u in updates if u["bind"][4] == 1)
+    total_pnl = sum(u["bind"][10] or 0 for u in updates)
+    return {
+        "pending": pending_count,
+        "verified": verified,
+        "correct": correct,
+        "total_pnl_pct": total_pnl,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -498,43 +557,26 @@ def run_verify_pipeline(lookback_days: int = 5, limit: int = 200) -> dict:
             "arf_feedback_items": [],
         }
 
-    market_risk = load_market_risk()
-    updates: list[dict] = []
-    arf_batch: list[dict] = []
-
-    for pred in pending:
-        try:
-            result = verify_single_prediction(pred, market_risk)
-            if result is None:
-                continue
-            updates.append(result)
-            if result.get("arf"):
-                arf_batch.append(result["arf"])
-        except Exception as e:
-            logger.error(f"[verify] Failed pred {pred.get('id')}: {e}")
+    prepared = prepare_verification_updates(pending, load_market_risk())
+    updates = prepared["verify_updates"]
 
     # Write back all at once (batch)
     write_verified_predictions(updates)
 
-    verified = len(updates)
-    correct = sum(1 for u in updates if u["bind"][4] == 1)
-    total_pnl = sum(u["bind"][10] or 0 for u in updates)  # trade_pnl_pct index
+    summary = summarize_verification_updates(len(pending), updates)
 
-    accuracy_pct = (correct / verified * 100) if verified else 0
+    accuracy_pct = (summary["correct"] / summary["verified"] * 100) if summary["verified"] else 0
     logger.info(
-        f"[verify] Verified {verified}, correct {correct} ({accuracy_pct:.1f}%) "
-        f"total simulated PnL: {total_pnl * 100:.1f}%"
+        f"[verify] Verified {summary['verified']}, correct {summary['correct']} ({accuracy_pct:.1f}%) "
+        f"total simulated PnL: {summary['total_pnl_pct'] * 100:.1f}%"
     )
 
     ma_count = update_model_accuracy()
     tp_count = update_trade_performance()
 
     return {
-        "pending": len(pending),
-        "verified": verified,
-        "correct": correct,
-        "total_pnl_pct": total_pnl,
+        **summary,
         "model_accuracy_groups": ma_count,
         "trade_performance_groups": tp_count,
-        "arf_feedback_items": arf_batch,
+        "arf_feedback_items": prepared["arf_feedback_items"],
     }

@@ -32,6 +32,7 @@ import json as _json
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,37 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
+
+_MODAL_STABLE_MTIME = 1767225600  # 2026-01-01 UTC
+
+
+def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
+    """Copy deploy inputs to /tmp with normalized mtimes for Modal CLI."""
+    src_file = Path(app_path).resolve()
+    src_dir = src_file.parent
+    stable_dir = Path("/tmp/modal_deploy") / src_file.stem
+    if stable_dir.exists():
+        shutil.rmtree(stable_dir)
+    stable_dir.mkdir(parents=True, exist_ok=True)
+
+    stable_file = stable_dir / src_file.name
+    shutil.copy2(src_file, stable_file)
+
+    for rel_dir in ("app", "scripts"):
+        src_rel = src_dir / rel_dir
+        if src_rel.exists():
+            shutil.copytree(src_rel, stable_dir / rel_dir, dirs_exist_ok=True)
+
+    req_file = src_dir / "requirements.txt"
+    if req_file.exists():
+        shutil.copy2(req_file, stable_dir / "requirements.txt")
+
+    targets = [stable_dir, stable_file]
+    targets.extend(stable_dir.rglob("*"))
+    for target in targets:
+        os.utime(target, (_MODAL_STABLE_MTIME, _MODAL_STABLE_MTIME))
+
+    return str(stable_file), str(stable_dir)
 
 _DEFAULT_MODAL_APP_PATH = "/app/ml-service/modal_app.py"
 _DEFAULT_TIMEOUT_SEC = 600  # 10 min — typical Modal deploy is 2-5 min
@@ -95,7 +127,8 @@ def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
             detail="MODAL_TOKEN_ID / MODAL_TOKEN_SECRET not set in Cloud Run env.",
         )
 
-    cmd = ["modal", "deploy", app_path]
+    stable_app_path, stable_dir = _prepare_stable_modal_source(app_path)
+    cmd = ["modal", "deploy", Path(stable_app_path).name]
     logger.info(
         f"[admin/modal-deploy] launching: {' '.join(shlex.quote(p) for p in cmd)} "
         f"(timeout={req.timeout_sec}s note={req.note!r})"
@@ -109,7 +142,7 @@ def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
             timeout=req.timeout_sec,
             # modal CLI reads MODAL_TOKEN_{ID,SECRET} from env automatically
             env={**os.environ},
-            cwd=str(Path(app_path).parent),  # modal deploy reads cwd for relative imports
+            cwd=stable_dir,
         )
     except subprocess.TimeoutExpired as e:
         elapsed = time.time() - start
@@ -131,6 +164,7 @@ def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
         "returncode": proc.returncode,
         "duration_sec": round(elapsed, 1),
         "app_path": app_path,
+        "stable_app_path": stable_app_path,
         "note": req.note,
         "stdout_tail": stdout_tail,
         "stderr_tail": stderr_tail,

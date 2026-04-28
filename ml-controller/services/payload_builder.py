@@ -18,6 +18,46 @@ from services import d1_client, kv_client
 logger = logging.getLogger(__name__)
 
 
+def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
+    """Build legacy PredictRequest lifecycle_weights from model_pool.json.
+
+    model_pool.json is the source of truth. The returned map is only a transport
+    adapter for older prediction code that still accepts lifecycle_weights.
+    """
+    try:
+        import json as _json
+        import os
+        from google.cloud import storage
+
+        bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+        if not bucket_name:
+            return {}
+
+        blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
+        if not blob.exists():
+            return {}
+
+        pool = _json.loads(blob.download_as_text())
+        degraded_dampening = (
+            trading_cfg.get("mlPool", {}).get("degradedDampening")
+            if isinstance(trading_cfg.get("mlPool"), dict)
+            else None
+        )
+        degraded_dampening = float(degraded_dampening if degraded_dampening is not None else 1.0)
+
+        weights: dict[str, float] = {}
+        for name, entry in (pool.get("models") or {}).items():
+            status = entry.get("status", "active")
+            if status == "degraded":
+                weights[name] = degraded_dampening
+            elif status in ("retired", "challenger"):
+                weights[name] = 0.0
+        return weights
+    except Exception as e:
+        logger.warning(f"[payload_builder] model_pool lifecycle weights read failed: {e}")
+        return {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data shapes (match worker payload schema 1:1)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,21 +378,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "max_days": barrier_cfg.get("maxDays"),
     }
 
-    # ── 8. Lifecycle weights from D1 model_lifecycle_state ──────────────────
-    lifecycle_weights: dict[str, float] = {}
-    try:
-        lc_rows = d1_client.query(
-            "SELECT state_json FROM model_lifecycle_state WHERE id=1"
-        )
-        if lc_rows:
-            import json as _json
-            states = _json.loads(lc_rows[0]["state_json"])
-            for name, s in (states or {}).items():
-                wm = s.get("weight_mult")
-                if wm is not None and wm != 1.0:
-                    lifecycle_weights[name] = wm
-    except Exception as e:
-        logger.warning(f"[payload_builder] Lifecycle weights read failed: {e}")
+    # 8. Lifecycle weights from model_pool.json (single source of truth).
+    lifecycle_weights = _load_lifecycle_weights_from_model_pool(trading_cfg)
 
     # ── Build MarketEnv ─────────────────────────────────────────────────────
     market_env = MarketEnv(

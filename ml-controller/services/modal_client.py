@@ -333,7 +333,7 @@ async def batch_predict(payloads: list[dict]) -> list[dict]:
         logger.info(f"[ml_client] HTTP parallel predict × {len(payloads)} → {_ML_SERVICE_URL}")
         # B11 fix (2026-04-08 audit): concurrency 4→20，覆蓋 Part 6 F2 fix 默認值
         # 信號池天生小，concurrency 4 進一步壓縮高 conf 候選數量，疊加 Layer 2 後幾乎過不了
-        return await _http_batch("/predict", payloads, concurrency=20)
+        return await _http_batch("/predict/v2", payloads, concurrency=20)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 

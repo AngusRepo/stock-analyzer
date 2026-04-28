@@ -23,7 +23,7 @@ Architecture:
   → nn.Linear(n_patches * d_model, pred_len)
   → Denormalize
 
-Storage: gs://stockvision-models/universal/patchtst/v{N}.pt
+Storage: gs://{GCS_BUCKET_NAME}/universal/patchtst/v{N}.pt
 """
 from __future__ import annotations
 import io
@@ -45,8 +45,16 @@ DEFAULT_N_HEADS = 8
 DEFAULT_N_LAYERS = 3
 DEFAULT_DROPOUT = 0.1
 
-GCS_BUCKET = "stockvision-models"
 GCS_WEIGHTS_PREFIX = "universal/patchtst"
+
+
+def _get_bucket():
+    from .model_store import _get_bucket as _shared_get_bucket
+
+    bucket = _shared_get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS bucket not available")
+    return bucket
 
 
 def _build_model(
@@ -291,9 +299,7 @@ def train_patchtst(
 
 def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
     import torch
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(GCS_BUCKET)
+    bucket = _get_bucket()
     buf = io.BytesIO()
     torch.save(state_dict, buf)
     buf.seek(0)
@@ -308,10 +314,8 @@ def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
 
 def load_from_gcs(version: str = "v1"):
     import torch
-    from google.cloud import storage
-
     try:
-        bucket = storage.Client().bucket(GCS_BUCKET)
+        bucket = _get_bucket()
         weights_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/{version}.pt")
         meta_blob = bucket.blob(f"{GCS_WEIGHTS_PREFIX}/metadata_{version}.json")
         if not weights_blob.exists():

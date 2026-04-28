@@ -30,8 +30,8 @@ ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
 
 # CF Worker KV read (for debate_model override). ml-controller already has
 # CF_API_TOKEN + KV ID via env.
-CF_ACCOUNT_ID     = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_KV_NAMESPACE_ID = os.environ.get("CF_KV_NAMESPACE_ID", "39dcebcf5b6848c98f269ef9a48dc3f8")
+CF_ACCOUNT_ID     = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_KV_NAMESPACE_ID = os.environ.get("CF_KV_NAMESPACE_ID", "").strip()
 CF_API_TOKEN      = os.environ.get("CF_API_TOKEN", "")
 
 
@@ -46,7 +46,7 @@ async def _get_ml_config(client: httpx.AsyncClient) -> dict:
     if _ml_config_cache is not None and (time.time() - _ml_config_cached_at) < _ML_CONFIG_TTL:
         return _ml_config_cache
     try:
-        if not CF_API_TOKEN:
+        if not (CF_API_TOKEN and CF_ACCOUNT_ID and CF_KV_NAMESPACE_ID):
             _ml_config_cache = {}
             _ml_config_cached_at = time.time()
             return {}

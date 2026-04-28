@@ -27,12 +27,30 @@ except ImportError as _e:
     logging.getLogger(__name__).warning(f"[main] optuna router not loaded: {_e}")
 
 VERSION = "12.3.0"
+RUNTIME_VERSION = "ml-controller-mvc-refactor-2026-04-25"
+CONTROL_PLANE_VERSION = "control-plane-cutover-2026-04-25"
 
 app = FastAPI(title="StockVision ML Controller", version=VERSION)
 
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
+    defaults = [
+        worker_url,
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8787",
+        "http://127.0.0.1:8787",
+    ]
+    return list(dict.fromkeys(origin for origin in defaults if origin))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://stockvision-worker.angus-solo-dev.workers.dev"],
+    allow_origins=_cors_origins(),
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
@@ -89,8 +107,18 @@ if optuna_router:
 
 @app.get("/health")
 def health():
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+    pipeline_job_name = os.environ.get("PIPELINE_JOB_NAME", "").strip()
+    verify_job_name = os.environ.get("VERIFY_JOB_NAME", "").strip()
+    gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
+    gcp_region = os.environ.get("GCP_REGION", "").strip()
     return {
         "status": "ok",
         "version": VERSION,
         "service": "ml-controller",
+        "runtimeVersion": RUNTIME_VERSION,
+        "controlPlaneVersion": CONTROL_PLANE_VERSION,
+        "callbackConfigured": bool(worker_url),
+        "pipelineJobConfigured": all([pipeline_job_name, gcp_project_id, gcp_region]),
+        "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),
     }

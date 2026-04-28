@@ -3,7 +3,7 @@ modal_app.py — StockVision ML Service（Modal 部署入口）
 
 Phase 1 MVC 重構：
   - @modal.function() 定義（predict_single_stock, retrain_single_stock, update_arf_reward）
-  - @modal.asgi_app() 保留向後相容（Worker legacy 路徑）
+  - @modal.asgi_app() 僅保留 HTTP health/audit endpoints，不承擔 production predict owner
   - Cloud Run Controller 透過 .map() / .remote() 呼叫 Modal Functions
 
 使用方式：
@@ -12,6 +12,7 @@ Phase 1 MVC 重構：
 """
 import os
 import modal
+from datetime import datetime
 from pathlib import Path
 
 # ── 本機路徑（deploy 時 Modal 會自動上傳到 container）───────────────────────
@@ -34,16 +35,20 @@ image = (
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
+# Chronos baseline note:
+# Modal image currently preloads amazon/chronos-t5-tiny only. This repo does
+# not treat larger Chronos checkpoints as the default production baseline.
+
 # ── Secret：GCS 憑證 + Cloudflare API（D1+KV，2026-04-07 Phase 1）─────────
 gcs_secret = modal.Secret.from_name("gcs-credentials")
 
 # stockvision-cf 必須先 manual 建立：
 #   modal secret create stockvision-cf \
-#     CF_API_TOKEN=cfut_DzJ8hr6iRf4Sapft9EhfC9fgMNpUaS22PWrGm2Yw780682bf \
-#     CF_ACCOUNT_ID=619a83ac9f20847d9e2f2920823b727d \
-#     CF_D1_DB_ID=6401a5f6-5767-4fa8-a1a7-ec8d4739ac79 \
-#     STOCKVISION_AUTH_TOKEN=sv-stockvision-2026-prod \
-#     STOCKVISION_WORKER_URL=https://stockvision-worker.angus-solo-dev.workers.dev
+#     CF_API_TOKEN=<cloudflare-api-token> \
+#     CF_ACCOUNT_ID=<cloudflare-account-id> \
+#     CF_D1_DB_ID=<cloudflare-d1-db-id> \
+#     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
+#     STOCKVISION_WORKER_URL=<stockvision-worker-url>
 # 若 secret 不存在，from_name 會報錯 → fallback 用空 secret
 try:
     cf_secret = modal.Secret.from_name("stockvision-cf")
@@ -51,11 +56,19 @@ except Exception:
     print("[modal_app] stockvision-cf secret not found, Optuna routes will fail")
     cf_secret = modal.Secret.from_dict({})
 
+runtime_env_secret = modal.Secret.from_dict({
+    key: value
+    for key, value in {
+        "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "stockvision-models").strip(),
+    }.items()
+    if value
+})
+
 # ── App 定義 ──────────────────────────────────────────────────────────────────
 app = modal.App(
     name="stockvision-ml",
     image=image,
-    secrets=[gcs_secret, cf_secret],
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
 )
 
 # ── 共用：GCS 憑證注入 + sys.path 設定 ───────────────────────────────────────
@@ -70,6 +83,79 @@ def _setup_env():
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
     if "/root" not in sys.path:
         sys.path.insert(0, "/root")
+
+
+def _get_gcs_bucket_name() -> str | None:
+    bucket = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket:
+        print("[modal_app] GCS_BUCKET_NAME not set; GCS-dependent persistence/checks will be skipped")
+        return None
+    return bucket
+
+
+def _load_sequence_series_from_gcs(gcs_prefix: str, batch_count: int) -> list[list[float]]:
+    """Load raw close series artifact for universal sequence-model training."""
+    import io
+    import numpy as np
+    from google.cloud import storage
+
+    bucket_name = _get_gcs_bucket_name()
+    if not bucket_name:
+        raise RuntimeError("GCS bucket not configured")
+
+    bucket = storage.Client().bucket(bucket_name)
+    all_series: list[list[float]] = []
+    for i in range(batch_count):
+        blob = bucket.blob(f"{gcs_prefix}/prep/batch_{i}.npz")
+        if not blob.exists():
+            continue
+        buf = io.BytesIO()
+        blob.download_to_file(buf)
+        buf.seek(0)
+        data = np.load(buf, allow_pickle=True)
+        if "series_close" not in data.files:
+            continue
+        batch_series = data["series_close"].tolist()
+        for row in batch_series:
+            if not row:
+                continue
+            all_series.append([float(v) for v in row])
+    return all_series
+
+
+def _load_oos_rank_payload_from_gcs(path: str) -> dict:
+    """Load one split-job OOS rank artifact for final stacker training."""
+    import io
+    import numpy as np
+    from google.cloud import storage
+
+    bucket_name = _get_gcs_bucket_name()
+    if not bucket_name:
+        raise RuntimeError("GCS bucket not configured")
+
+    bucket = storage.Client().bucket(bucket_name)
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise FileNotFoundError(f"OOS artifact not found: {path}")
+
+    buf = io.BytesIO()
+    blob.download_to_file(buf)
+    buf.seek(0)
+    data = np.load(buf, allow_pickle=True)
+    model_names = [str(name) for name in data["model_names"].tolist()]
+    pred_matrix = np.asarray(data["pred_matrix"], dtype=float)
+    predictions = {
+        name: pred_matrix[idx]
+        for idx, name in enumerate(model_names)
+    }
+    return {
+        "group": str(data["group"].tolist()),
+        "version": str(data["version"].tolist()),
+        "predictions": predictions,
+        "y_test": np.asarray(data["y_test"], dtype=float),
+        "dates_test": np.asarray(data["dates_test"]),
+        "path": path,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -91,13 +177,13 @@ def _setup_env():
 def retrain_orchestrator(payload: dict) -> dict:
     """2.0 Flow B: prep 已完成 → [月度: await selection] → await train → await SHAP.
 
-    Cloud Run 呼叫此函數（一次），整條 chain 在 Modal 內完成。
-    Cloud Run 不需要等（fire-and-forget 或 await 都可以）。
+    Cloud Run dispatches one Modal orchestration chain.
+    Cloud Run does not wait for training completion; followup callback closes the loop.
 
     payload:
-        batch_count: int — prep 產生的 batch 數量
-        is_monthly: bool — 是否月度（day 1-7）
-        selection_params: dict — {max_rounds, alpha, required_power}（月度才用）
+        batch_count: int - number of prep batches.
+        is_monthly: bool - whether to run monthly feature selection.
+        selection_params: dict - max_rounds, alpha, required_power, icir_weight.
     """
     _setup_env()
     import time
@@ -105,24 +191,32 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     batch_count = payload.get("batch_count", 5)
     is_monthly = payload.get("is_monthly", False)
-    selection_params = payload.get("selection_params", {
-        "max_rounds": 100, "alpha": 0.01, "required_power": 0.99,
-    })
+    followup_webhook_url = payload.get("followup_webhook_url")
+    gcs_prefix = payload.get("gcs_prefix", "universal")
+    window_id = payload.get("window_id")
+    run_id = payload.get("run_id")
+    lock_key = payload.get("lock_key")
+    run_date = payload.get("run_date")
+    from app.training_policy import FeatureSelectionPolicy
+    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(payload.get("selection_params"))
 
-    # ── P0-3: Defensive GCS batch count validation ────────────────────────────
+    # P0-3: Defensive GCS batch count validation.
     # Cloud Run may pass stale/wrong batch_count (e.g. "1" when actual prep wrote 5).
     # Check actual .npz files in GCS and use the larger value.
     try:
         from google.cloud import storage as _gcs_chk
-        _bucket_chk = _gcs_chk.Client().bucket("stockvision-models")
+        _bucket_name = _get_gcs_bucket_name()
+        if not _bucket_name:
+            raise RuntimeError("GCS bucket not configured")
+        _bucket_chk = _gcs_chk.Client().bucket(_bucket_name)
         actual_batch_count = sum(
             1 for i in range(20)  # cap at 20 to avoid excessive API calls
-            if _bucket_chk.blob(f"universal/prep/batch_{i}.npz").exists()
+            if _bucket_chk.blob(f"{gcs_prefix}/prep/batch_{i}.npz").exists()
         )
         if actual_batch_count > 0 and actual_batch_count != batch_count:
             print(
-                f"[Orchestrator] ⚠️ P0-3 batch_count mismatch: "
-                f"payload={batch_count} vs GCS={actual_batch_count} → using max"
+                f"[Orchestrator] P0-3 batch_count mismatch: "
+                f"payload={batch_count} vs GCS={actual_batch_count} -> using max"
             )
             batch_count = max(batch_count, actual_batch_count)
         else:
@@ -131,10 +225,11 @@ def retrain_orchestrator(payload: dict) -> dict:
         print(f"[Orchestrator] GCS batch count check failed (using payload value {batch_count}): {_e}")
 
     result = {"stages": {}}
+    partial_results: dict[str, dict] = {}
 
-    # ── Stage 1: Feature Selection (月度 only) ────────────────────────────────
+    # Stage 1: Feature Selection (monthly only).
     if is_monthly:
-        print(f"[Orchestrator] Monthly → running feature selection (max {selection_params.get('max_rounds', 100)} rounds)")
+        print(f"[Orchestrator] Monthly -> running feature selection (max {selection_params['max_rounds']} rounds)")
         try:
             fs_result = feature_selection_pipeline.remote(selection_params)
             result["stages"]["feature_selection"] = {
@@ -148,50 +243,307 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] Feature selection failed: {e}")
             result["stages"]["feature_selection"] = {"status": "error", "error": str(e)}
     else:
-        print("[Orchestrator] Non-monthly → skip feature selection")
+        print("[Orchestrator] Non-monthly -> skip feature selection")
         result["stages"]["feature_selection"] = {"status": "skipped"}
 
     # ── Stage 2: Train — 2-container parallel (tree CPU + FT-T GPU) ──────────
-    print(f"[Orchestrator] Training from {batch_count} GCS batches (2-container parallel)...")
-    train_payload = {"batch_count": batch_count}
+    from app.training_finalizer import (
+        expected_oos_artifact_groups,
+        merge_oos_rank_payloads,
+        missing_expected_oos_groups,
+        summarize_training_stage_status,
+        validate_sequence_series,
+    )
+
+    requested_train_groups = list(payload.get("train_model_groups") or ["tree", "ftt", "dlinear", "patchtst"])
+    print(f"[Orchestrator] Training from {batch_count} GCS batches (groups={requested_train_groups})...")
+    sequence_series = list(payload.get("series_close") or [])
+    if not sequence_series and any(g in requested_train_groups for g in ("dlinear", "patchtst")):
+        try:
+            sequence_series = _load_sequence_series_from_gcs(gcs_prefix, batch_count)
+            print(f"[Orchestrator] Loaded {len(sequence_series)} sequence series from GCS for DLinear/PatchTST")
+        except Exception as e:
+            print(f"[Orchestrator] sequence series load failed: {e}")
+            sequence_series = []
+    sequence_series, sequence_report = validate_sequence_series(
+        sequence_series,
+        min_len=int(payload.get("sequence_min_len", 65)),
+    )
+    if any(g in requested_train_groups for g in ("dlinear", "patchtst")):
+        print(f"[Orchestrator] sequence series validation: {sequence_report}")
+    candidate_version = payload.get("candidate_version") or datetime.utcnow().strftime("v%Y%m%d%H%M%S")
+    base_train_payload = {
+        "batch_count": batch_count,
+        "ftt_d_model": payload.get("ftt_d_model", 128),
+        "ftt_n_heads": payload.get("ftt_n_heads", 8),
+        "ftt_n_layers": payload.get("ftt_n_layers", 3),
+        "ftt_dropout": payload.get("ftt_dropout", 0.12),
+        "ftt_max_epochs": payload.get("ftt_max_epochs", 120),
+        "ftt_lr": payload.get("ftt_lr", 2e-4),
+        "ftt_patience": payload.get("ftt_patience", 16),
+        "ftt_batch_size": payload.get("ftt_batch_size", 1024),
+        "ftt_margin": payload.get("ftt_margin", 0.0),
+        "output_model_version": candidate_version,
+        "register_challengers": False,
+    }
+    train_group_specs = {
+        "tree": {
+            "spawn": lambda p: train_tree_models.spawn(p),
+            "payload": lambda: dict(base_train_payload),
+            "mergeable": True,
+            "models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"],
+            "note": "CPU tree models",
+        },
+        "ftt": {
+            "spawn": lambda p: train_ftt_model.spawn(p),
+            "payload": lambda: dict(base_train_payload),
+            "mergeable": True,
+            "models": ["FT-Transformer"],
+            "note": "GPU FT-Transformer regression bundle",
+        },
+        "dlinear": {
+            "spawn": lambda p: train_dlinear_universal.spawn(p),
+            "payload": lambda: {
+                "series_close": sequence_series,
+                "device": payload.get("sequence_device") or "cuda",
+                "version": candidate_version,
+            },
+            "mergeable": False,
+            "models": ["DLinear"],
+            "note": "Universal raw close sequence model",
+        },
+        "patchtst": {
+            "spawn": lambda p: train_patchtst_universal.spawn(p),
+            "payload": lambda: {
+                "series_close": sequence_series,
+                "device": payload.get("sequence_device") or "cuda",
+                "version": candidate_version,
+            },
+            "mergeable": False,
+            "models": ["PatchTST"],
+            "note": "Universal raw close transformer model",
+        },
+    }
+    predict_only_models = {
+        "Chronos": "Zero-shot foundation model; no monthly retrain stage",
+        "KalmanFilter": "Per-stock state-space inference; no universal train artifact",
+        "MarkovSwitching": "Per-stock state-space inference; shared hyperparams only",
+    }
     try:
-        # Spawn both containers in parallel
-        tree_handle = train_tree_models.spawn(train_payload)
-        ftt_handle = train_ftt_model.spawn(train_payload)
-        print("[Orchestrator] Spawned: tree_models (CPU) + ftt_model (L4 GPU)")
+        # Spawn requested training groups in parallel
+        handles: dict[str, object] = {}
+        coverage: dict[str, dict] = {}
+        aux_train = {}
+        for group in requested_train_groups:
+            spec = train_group_specs.get(group)
+            if spec is None:
+                coverage[group] = {"status": "unknown_group"}
+                print(f"[Orchestrator] Unknown train group skipped: {group}")
+                continue
+            group_payload = spec["payload"]()
+            if group in {"dlinear", "patchtst"} and not group_payload.get("series_close"):
+                coverage[group] = {
+                    "status": "skipped",
+                    "models": spec["models"],
+                    "reason": "missing_series_close_artifact",
+                    "sequence_report": sequence_report,
+                    "note": spec["note"],
+                }
+                print(f"[Orchestrator] {group} skipped: missing series_close artifact")
+                continue
+            handles[group] = spec["spawn"](group_payload)
+            coverage[group] = {
+                "status": "running",
+                "models": spec["models"],
+                "mergeable": spec["mergeable"],
+                "note": spec["note"],
+            }
+            print(f"[Orchestrator] Spawned group={group} models={spec['models']}")
 
-        # Wait for both
-        tree_result = tree_handle.get()
-        ftt_result = ftt_handle.get()
-        print(f"[Orchestrator] Tree done: {tree_result.get('elapsed_s', '?')}s / FTT done: {ftt_result.get('elapsed_s', '?')}s")
+        tree_result = {}
+        ftt_result = {}
+        aux_train = {}
+        if handles.get("tree") is not None:
+            tree_result = handles["tree"].get()
+            partial_results["tree"] = tree_result
+            coverage["tree"] = {
+                **coverage.get("tree", {}),
+                "status": "error" if tree_result.get("error") else "ok",
+                "elapsed_s": tree_result.get("elapsed_s"),
+                "error": tree_result.get("error"),
+            }
+        if handles.get("ftt") is not None:
+            ftt_result = handles["ftt"].get()
+            partial_results["ftt"] = ftt_result
+            coverage["ftt"] = {
+                **coverage.get("ftt", {}),
+                "status": "error" if ftt_result.get("error") else "ok",
+                "elapsed_s": ftt_result.get("elapsed_s"),
+                "error": ftt_result.get("error"),
+            }
+        for group in ("dlinear", "patchtst"):
+            if handles.get(group) is not None:
+                aux_train[group] = handles[group].get()
+                partial_results[group] = aux_train[group]
+                coverage[group] = {
+                    **coverage.get(group, {}),
+                    "status": "error" if aux_train[group].get("error") else "ok",
+                    "elapsed_s": aux_train[group].get("elapsed_s"),
+                    "error": aux_train[group].get("error"),
+                }
+                if aux_train[group].get("error"):
+                    print(f"[Orchestrator] Partial train error ({group}): {aux_train[group]['error']}")
 
-        # Merge results + IC tracking from both containers
+        # Merge results + IC tracking from spawned groups
         merged_results = {}
         merged_ic = {}
         circuit_breaker = False
         total_samples = 0
 
-        for partial in [tree_result, ftt_result]:
+        for group, partial in (("tree", tree_result), ("ftt", ftt_result)):
+            if not partial:
+                continue
             if partial.get("error"):
                 print(f"[Orchestrator] ⚠️ Partial train error: {partial['error']}")
                 continue
             total_samples = max(total_samples, partial.get("total_samples", 0))
             for name, r in partial.get("results", {}).items():
-                if not r.get("skipped"):
+                if not r.get("skipped") and not r.get("error"):
                     merged_results[name] = r
             for name, ic in partial.get("ic_tracking", {}).items():
                 merged_ic[name] = ic
                 if not ic.get("passed", True):
                     circuit_breaker = True
 
+        challenger_registrations = {}
+        if payload.get("register_challengers", True):
+            from app.model_pool import register_challenger as _register_challenger
+
+            candidate_models = set(merged_results.keys())
+            for group, model_name in (("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+                partial = aux_train.get(group) or {}
+                if partial and not partial.get("error"):
+                    candidate_models.add(model_name)
+            for model_name in sorted(candidate_models):
+                try:
+                    version = candidate_version
+                    _register_challenger(model_name, version, save=True)
+                    challenger_registrations[model_name] = {
+                        "status": "registered",
+                        "version": version,
+                    }
+                except Exception as e:
+                    challenger_registrations[model_name] = {
+                        "status": "error",
+                        "version": candidate_version,
+                        "error": str(e),
+                    }
+
         result["stages"]["train"] = {
-            "status": "ok",
+            "status": summarize_training_stage_status(coverage),
+            "requested_groups": requested_train_groups,
+            "candidate_version": candidate_version,
+            "group_coverage": coverage,
+            "predict_only_models": predict_only_models,
+            "sequence_report": sequence_report,
             "total_samples": total_samples,
             "ic_tracking": merged_ic,
             "circuit_breaker": circuit_breaker,
+            "challenger_registrations": {
+                **(tree_result.get("challenger_registrations") or {}),
+                **(ftt_result.get("challenger_registrations") or {}),
+                **challenger_registrations,
+            },
             "tree_elapsed_s": tree_result.get("elapsed_s"),
             "ftt_elapsed_s": ftt_result.get("elapsed_s"),
+            "aux_train": {
+                k: {
+                    "status": "ok" if "error" not in v else "error",
+                    "metadata": v.get("metadata"),
+                    "elapsed_s": v.get("elapsed_s"),
+                    "type": v.get("type"),
+                }
+                for k, v in aux_train.items()
+            },
         }
+        try:
+            from app.stacking import save_meta_learner, train_rank_stacker_oof
+
+            oos_payloads = []
+            for group, partial in (("tree", tree_result), ("ftt", ftt_result)):
+                artifact = (partial or {}).get("oos_artifact") or {}
+                artifact_path = artifact.get("path")
+                if not artifact_path:
+                    continue
+                oos_payload = _load_oos_rank_payload_from_gcs(artifact_path)
+                oos_payloads.append(oos_payload)
+                print(f"[Orchestrator] Loaded OOS artifact for stacker: {artifact_path}")
+
+            expected_oos_groups = expected_oos_artifact_groups(requested_train_groups)
+            missing_oos_groups = missing_expected_oos_groups(expected_oos_groups, oos_payloads)
+            if missing_oos_groups:
+                result["stages"]["rank_stacker"] = {
+                    "status": "skipped",
+                    "reason": "missing_oos_artifacts",
+                    "missing_groups": missing_oos_groups,
+                    "expected_groups": expected_oos_groups,
+                    "loaded_groups": [p.get("group") for p in oos_payloads],
+                }
+            else:
+                rows, y_rank, stack_model_order = merge_oos_rank_payloads(oos_payloads)
+                if rows:
+                    rank_bundle = train_rank_stacker_oof(
+                        rows,
+                        y_rank,
+                        model_order=stack_model_order,
+                        min_samples=80,
+                    )
+                    if rank_bundle:
+                        saved = save_meta_learner(rank_bundle, 0)
+                        result["stages"]["rank_stacker"] = {
+                            "status": "ok" if saved else "error",
+                            "saved": bool(saved),
+                            "oos_ic": rank_bundle.get("eval_ic"),
+                            "eval_rmse": rank_bundle.get("eval_rmse"),
+                            "train": rank_bundle.get("train_samples"),
+                            "test": rank_bundle.get("eval_samples"),
+                            "model_order": stack_model_order,
+                            "artifacts": [p.get("path") for p in oos_payloads],
+                        }
+                        merged_results["StackingRank"] = {
+                            "trained": True,
+                            "saved": bool(saved),
+                            "oos_ic": rank_bundle.get("eval_ic"),
+                            "eval_rmse": rank_bundle.get("eval_rmse"),
+                        }
+                        if rank_bundle.get("eval_ic") is not None:
+                            merged_ic["StackingRank"] = {
+                                "oos_ic": rank_bundle.get("eval_ic"),
+                                "oos_samples": rank_bundle.get("eval_samples"),
+                                "passed": float(rank_bundle.get("eval_ic") or 0.0) > 0,
+                            }
+                    else:
+                        result["stages"]["rank_stacker"] = {
+                            "status": "skipped",
+                            "reason": "insufficient_oos_rank_samples",
+                            "model_order": stack_model_order,
+                            "samples": int(len(y_rank)),
+                        }
+                else:
+                    result["stages"]["rank_stacker"] = {
+                        "status": "skipped",
+                        "reason": "missing_oos_artifacts",
+                        "expected_groups": expected_oos_groups,
+                    }
+        except Exception as e:
+            result["stages"]["rank_stacker"] = {"status": "error", "error": str(e)}
+            print(f"[Orchestrator] Rank stacker finalizer failed: {e}")
+
+        stacker_status = (result["stages"].get("rank_stacker") or {}).get("status")
+        if stacker_status != "ok" and result["stages"]["train"].get("status") == "ok":
+            result["stages"]["train"]["status"] = "degraded"
+            result["stages"]["train"]["degraded_reason"] = f"rank_stacker_{stacker_status or 'missing'}"
+
         if circuit_breaker:
             print("[Orchestrator] ⚠️ Circuit breaker: some models IC≤0 — ensemble will auto-zero-weight them")
 
@@ -200,7 +552,10 @@ def retrain_orchestrator(payload: dict) -> dict:
             from google.cloud import storage as _gcs
             import json as _json
             from datetime import datetime as _dt
-            _bucket = _gcs.Client().bucket("stockvision-models")
+            _bucket_name = _get_gcs_bucket_name()
+            if not _bucket_name:
+                raise RuntimeError("GCS bucket not configured")
+            _bucket = _gcs.Client().bucket(_bucket_name)
             _ic_record = {
                 "computed_at": _dt.utcnow().isoformat() + "Z",
                 "models": merged_ic,
@@ -209,11 +564,11 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "source": "orchestrator_merged",
             }
             _ic_json = _json.dumps(_ic_record, indent=2)
-            _bucket.blob("universal/ic_tracking.json").upload_from_string(
+            _bucket.blob(f"{gcs_prefix}/ic_tracking.json").upload_from_string(
                 _ic_json, content_type="application/json"
             )
             _month = _dt.utcnow().strftime("%Y-%m")
-            _bucket.blob(f"universal/ic_history/{_month}.json").upload_from_string(
+            _bucket.blob(f"{gcs_prefix}/ic_history/{_month}.json").upload_from_string(
                 _ic_json, content_type="application/json"
             )
             print(f"[Orchestrator] IC tracking saved (breaker={'ON' if circuit_breaker else 'OFF'}, {len(merged_ic)} models)")
@@ -235,6 +590,64 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
+    if followup_webhook_url:
+        try:
+            import httpx
+
+            train_stage = result.get("stages", {}).get("train", {}) or {}
+            _train_samples = max((p.get("train_samples", 0) or 0) for p in partial_results.values()) if partial_results else 0
+            _feature_count = max((p.get("feature_count", 0) or 0) for p in partial_results.values()) if partial_results else 0
+            _trained_at = next(
+                (p.get("trained_at") for p in partial_results.values() if p.get("trained_at")),
+                None,
+            ) or datetime.utcnow().isoformat() + "Z"
+            payload_out = {
+                "run_id": run_id,
+                "trained_at": _trained_at,
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "is_monthly": is_monthly,
+                "batch_count": batch_count,
+                "gcs_prefix": gcs_prefix,
+                "candidate_version": train_stage.get("candidate_version") or candidate_version,
+                "challenger_registrations": train_stage.get("challenger_registrations") or {},
+                "window_id": window_id,
+                "total_samples": int(train_stage.get("total_samples", 0) or 0),
+                "train_samples": int(_train_samples),
+                "feature_count": int(_feature_count),
+                "elapsed_s": elapsed,
+                "circuit_breaker": bool(train_stage.get("circuit_breaker", False)),
+                "ic_summary": {
+                    name: metrics.get("ic")
+                    for name, metrics in (train_stage.get("ic_tracking", {}) or {}).items()
+                    if isinstance(metrics, dict)
+                },
+                "status": "completed" if train_stage.get("status") == "ok" else "error",
+                "error": train_stage.get("error"),
+                "stages": result.get("stages", {}),
+            }
+            headers = {"Content-Type": "application/json"}
+            token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
+            if token:
+                headers["X-Service-Token"] = token
+            resp = httpx.post(
+                followup_webhook_url,
+                json=payload_out,
+                headers=headers,
+                timeout=15,
+                follow_redirects=True,
+            )
+            if resp.status_code < 200 or resp.status_code >= 300:
+                raise RuntimeError(f"followup webhook returned HTTP {resp.status_code}")
+            result["followup"] = {
+                "status_code": resp.status_code,
+                "url": str(resp.url),
+                "payload_status": payload_out["status"],
+            }
+            print(f"[Orchestrator] followup webhook POST {resp.request.url} -> HTTP {resp.status_code}")
+        except Exception as e:
+            result["followup"] = {"error": str(e), "url": followup_webhook_url}
+            print(f"[Orchestrator] followup webhook failed: {e}")
     print(f"[Orchestrator] Flow B complete in {elapsed}s")
     return result
 
@@ -249,29 +662,23 @@ def retrain_orchestrator(payload: dict) -> dict:
 )
 def predict_single_stock(payload: dict) -> dict:
     """單股推論 — 2.0: regression models + IC-weighted rank_to_signal.
-    Fallback to 1.0 predict_stock if v2 fails (e.g. universal model not yet trained).
+    No v1 fallback: v2 failures must surface as errors for control-plane visibility.
     """
     _setup_env()
-    from app.main import predict_stock_v2, predict_stock, PredictRequest
+    from app.use_cases import predict_stock_v2, PredictRequest
     try:
         req = PredictRequest(**payload)
         return predict_stock_v2(req)
     except Exception as e_v2:
-        # Fallback to 1.0 if v2 fails (e.g. model not found)
-        try:
-            req = PredictRequest(**payload)
-            result = predict_stock(req)
-            result["_fallback"] = f"v2 failed: {e_v2}"
-            return result
-        except Exception as e_v1:
-            return {
-                "stock_id": payload.get("stock_id", 0),
-                "symbol": payload.get("symbol", "?"),
-                "error": f"v2: {e_v2} | v1: {e_v1}",
-                "signal": "NO_SIGNAL",
-                "direction": "neutral",
-                "confidence": 0.0,
-            }
+        print(f"[predict_single_stock] v2 failed for {payload.get('symbol', '?')}: {type(e_v2).__name__}: {e_v2}")
+        return {
+            "stock_id": payload.get("stock_id", 0),
+            "symbol": payload.get("symbol", "?"),
+            "error": f"v2: {type(e_v2).__name__}: {e_v2}",
+            "signal": "NO_SIGNAL",
+            "direction": "neutral",
+            "confidence": 0.0,
+        }
 
 
 @app.function(
@@ -284,7 +691,7 @@ def predict_single_stock(payload: dict) -> dict:
 def retrain_single_stock(payload: dict) -> dict:
     """單股重訓 — Pure Compute。"""
     _setup_env()
-    from app.main import retrain_stock, PredictRequest
+    from app.use_cases import retrain_stock, PredictRequest
     try:
         req = PredictRequest(**payload)
         return retrain_stock(req)
@@ -306,7 +713,7 @@ def retrain_single_stock(payload: dict) -> dict:
 def prep_universal_batch(payload: dict) -> dict:
     """單批 feature engineering → 存 GCS npz。"""
     _setup_env()
-    from app.main import prep_universal_batch as _prep, UniversalPrepRequest
+    from app.use_cases import prep_universal_batch as _prep, UniversalPrepRequest
     try:
         req = UniversalPrepRequest(**payload)
         return _prep(req)
@@ -326,7 +733,7 @@ def train_universal_from_gcs(payload: dict) -> dict:
     Legacy single-container path. Kept for backwards compat.
     """
     _setup_env()
-    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         req = UniversalTrainRequest(**payload)
         train_result = _train(req)
@@ -362,7 +769,7 @@ def train_universal_from_gcs(payload: dict) -> dict:
 def train_tree_models(payload: dict) -> dict:
     """CPU-only: XGBoost + CatBoost + ExtraTrees + LightGBM."""
     _setup_env()
-    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         payload["models_filter"] = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
         req = UniversalTrainRequest(**payload)
@@ -381,7 +788,7 @@ def train_tree_models(payload: dict) -> dict:
 def train_ftt_model(payload: dict) -> dict:
     """GPU L4: FT-Transformer only (uses all features, skip_feature_pool=True)."""
     _setup_env()
-    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         payload["models_filter"] = ["FT-Transformer"]
         payload["skip_feature_pool"] = True  # FT-T benefits from full 106 features
@@ -437,11 +844,14 @@ def ft_transformer_arch_search(payload: dict) -> dict:
         # Audit trail to GCS for traceability
         now_iso = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         gcs_key = f"{gcs_prefix}/ft_arch_optuna_{now_iso}.json"
-        bucket = storage.Client().bucket("stockvision-models")
+        bucket_name = _get_gcs_bucket_name()
+        if not bucket_name:
+            raise RuntimeError("GCS bucket not configured")
+        bucket = storage.Client().bucket(bucket_name)
         bucket.blob(gcs_key).upload_from_string(
             json.dumps(result, indent=2), content_type="application/json",
         )
-        result["gcs_audit_path"] = f"gs://stockvision-models/{gcs_key}"
+        result["gcs_audit_path"] = f"gs://{bucket.name}/{gcs_key}"
         return result
     except Exception as e:
         return {"error": str(e), "type": "ft_arch_search"}
@@ -465,7 +875,7 @@ def train_wf_tree_window(payload: dict) -> dict:
              feature_pool_path (2026-04-19 N2: per-window pool to eliminate look-ahead)
     """
     _setup_env()
-    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         gcs_prefix = f"walk_forward/w{payload['window_id']}"
         # 2026-04-19 N2: default to per-window pool path; orchestrator now writes
@@ -505,7 +915,7 @@ def train_wf_tree_window(payload: dict) -> dict:
 def train_wf_ftt_window(payload: dict) -> dict:
     """GPU walk-forward: FT-Transformer for one window."""
     _setup_env()
-    from app.main import train_universal_from_gcs as _train, UniversalTrainRequest
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
         gcs_prefix = f"walk_forward/w{payload['window_id']}"
         req = UniversalTrainRequest(
@@ -596,7 +1006,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     payload:
         windows: list of {window_id, train_start, train_end, test_start, test_end}
         market_env: dict (full history — each window filters locally)
-        batch_count: int
+        batch_count: int - number of prep batches.
         models: list[str]
         concurrent_windows: int (default 2)
         start_date: str (for GCS path)
@@ -815,7 +1225,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     # Persist to GCS
     try:
         from google.cloud import storage
-        bucket = storage.Client().bucket(os.environ.get("GCS_BUCKET_NAME", "stockvision-models"))
+        bucket_name = _get_gcs_bucket_name()
+        if not bucket_name:
+            raise RuntimeError("GCS bucket not configured")
+        bucket = storage.Client().bucket(bucket_name)
         gcs_path = f"walk_forward/runs/{start_date}_{end_date}.json"
         bucket.blob(gcs_path).upload_from_string(
             json.dumps({
@@ -850,7 +1263,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 def shap_feature_audit(payload: dict) -> dict:
     """SHAP Feature Importance Audit — 跨 5 個 model 評估 feature 重要性。"""
     _setup_env()
-    from app.main import run_shap_audit
+    from app.use_cases import run_shap_audit
     try:
         shap_samples = payload.get("shap_samples", 5000)
         return run_shap_audit(shap_samples=shap_samples)
@@ -878,12 +1291,14 @@ def feature_selection_pipeline(payload: dict) -> dict:
     """
     _setup_env()
     from app.feature_selection import run_feature_selection_pipeline
+    from app.training_policy import FeatureSelectionPolicy
+    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(payload)
     try:
         return run_feature_selection_pipeline(
-            max_rounds=payload.get("max_rounds", 100),
-            alpha=payload.get("alpha", 0.01),
+            max_rounds=selection_params["max_rounds"],
+            alpha=selection_params["alpha"],
             dry_run=payload.get("dry_run", False),
-            icir_weight=payload.get("icir_weight", 0.1),  # 2026-04-18 P2 #37: searchable
+            icir_weight=selection_params["icir_weight"],
         )
     except Exception as e:
         import traceback
@@ -930,7 +1345,13 @@ def train_dlinear_universal(payload: dict) -> dict:
             return result
         version = payload.get("version", "v1")
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
-        return {"saved": saved, "metadata": result["metadata"], "version": version}
+        return {
+            "saved": saved,
+            "metadata": result["metadata"],
+            "version": version,
+            "elapsed_s": result["metadata"].get("elapsed_s"),
+            "type": "dlinear_universal",
+        }
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_dlinear_universal"}
@@ -1007,7 +1428,13 @@ def train_patchtst_universal(payload: dict) -> dict:
             return result
         version = payload.get("version", "v1")
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
-        return {"saved": saved, "metadata": result["metadata"], "version": version}
+        return {
+            "saved": saved,
+            "metadata": result["metadata"],
+            "version": version,
+            "elapsed_s": result["metadata"].get("elapsed_s"),
+            "type": "patchtst_universal",
+        }
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_patchtst_universal"}
@@ -1092,7 +1519,8 @@ def chronos_universal_predict(payload: dict) -> dict:
         series_list: list of {symbol: str, prices: list[float]}
         horizon: int (default 5)
         num_samples: int (default 20)
-        model_id: str (optional override)
+        model_id: str (optional override; production baseline is
+                  amazon/chronos-t5-tiny, not a larger Chronos checkpoint)
 
     Returns:
         {"results": [{symbol, model, forecast_pct, up_prob, confidence,
@@ -1105,6 +1533,9 @@ def chronos_universal_predict(payload: dict) -> dict:
             series_list=payload.get("series_list") or [],
             horizon=payload.get("horizon", 5),
             num_samples=payload.get("num_samples", 20),
+            # Keep the default aligned with app.chronos_universal._DEFAULT_MODEL_ID.
+            # This should remain chronos-t5-tiny unless there is an explicit
+            # architecture decision to change the production Chronos baseline.
             model_id=payload.get("model_id", "amazon/chronos-t5-tiny"),
         )
         return {"results": results, "n_input": len(payload.get("series_list") or []), "n_success": sum(1 for r in results if not r.get("error"))}
@@ -1124,16 +1555,16 @@ def chronos_universal_predict(payload: dict) -> dict:
 def feature_selection_per_window(payload: dict) -> dict:
     """Walk-forward window-scoped feature selection.
 
-    Filters prep data to dates ≤ train_end_date BEFORE running the pipeline,
-    so the resulting pool reflects ONLY the train horizon (no look-ahead).
+    Filters prep data to train_end_date before running the pipeline,
+    so the resulting pool reflects only the train horizon (no look-ahead).
     Writes to {gcs_prefix}/feature_pool.json (no monthly snapshot).
 
     payload:
         window_id (int)
         train_end_date (str, ISO date)
         gcs_prefix (str, e.g., "walk_forward/w0")
-        max_rounds (int, default 60 — lighter than production 100)
-        force_refresh (bool, default False) — if False and pool already exists, skip
+        max_rounds (int, default from FeatureSelectionPolicy window policy)
+        force_refresh (bool, default False) - if False and pool already exists, skip
     """
     _setup_env()
     import time
@@ -1144,12 +1575,17 @@ def feature_selection_per_window(payload: dict) -> dict:
     train_end_date = payload["train_end_date"]
     gcs_prefix = payload["gcs_prefix"].rstrip("/")
     force = bool(payload.get("force_refresh", False))
+    from app.training_policy import FeatureSelectionPolicy
+    selection_params = FeatureSelectionPolicy.from_env().to_window_selection_params(payload)
 
     # Idempotency: skip if pool already exists for this window
     if not force:
         try:
             from google.cloud import storage
-            bucket = storage.Client().bucket("stockvision-models")
+            bucket_name = _get_gcs_bucket_name()
+            if not bucket_name:
+                raise RuntimeError("GCS bucket not configured")
+            bucket = storage.Client().bucket(bucket_name)
             existing = bucket.blob(f"{gcs_prefix}/feature_pool.json")
             if existing.exists():
                 import json as _json
@@ -1168,9 +1604,9 @@ def feature_selection_per_window(payload: dict) -> dict:
 
     try:
         result = run_feature_selection_pipeline(
-            max_rounds=payload.get("max_rounds", 60),
-            alpha=payload.get("alpha", 0.01),
-            icir_weight=payload.get("icir_weight", 0.1),
+            max_rounds=selection_params["max_rounds"],
+            alpha=selection_params["alpha"],
+            icir_weight=selection_params["icir_weight"],
             train_end_date=train_end_date,
             gcs_prefix=gcs_prefix,
         )
@@ -1200,7 +1636,7 @@ def feature_selection_per_window(payload: dict) -> dict:
 def update_arf_reward(payload: dict) -> dict:
     """ARF/LinUCB 驗證更新 — 輕量計算。"""
     _setup_env()
-    from app.main import update_arf, ARFUpdateRequest
+    from app.use_cases import update_arf, ARFUpdateRequest
     try:
         req = ARFUpdateRequest(**payload)
         return update_arf(req)

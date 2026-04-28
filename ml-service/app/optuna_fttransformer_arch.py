@@ -255,14 +255,17 @@ def load_prep_data_from_gcs(gcs_prefix: str = "universal") -> tuple:
     import io
     from google.cloud import storage
 
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if not bucket_name:
+        raise RuntimeError("GCS_BUCKET_NAME not configured")
+    bucket = storage.Client().bucket(bucket_name)
     prefix = f"{gcs_prefix}/prep/"
     blobs = sorted(
         [b for b in bucket.list_blobs(prefix=prefix) if b.name.endswith(".npz")],
         key=lambda b: b.name,
     )
     if not blobs:
-        raise RuntimeError(f"No prep npz at gs://stockvision-models/{prefix}")
+        raise RuntimeError(f"No prep npz at gs://{bucket_name}/{prefix}")
 
     all_X, all_y, all_dates = [], [], []
     for blob in blobs:

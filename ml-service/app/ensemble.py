@@ -60,7 +60,7 @@ def weighted_vote(
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
     trading_config: dict | None = None,       # B12 fix (2026-04-08): KV trading:config（Optuna baseline）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
-    lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
+    lifecycle_weights: dict[str, float] | None = None,  # 來自 model_pool.json
 ) -> EnsembleResult:
     """
     加權投票主邏輯（v12 + LinUCB bandit）：
@@ -532,6 +532,7 @@ def rank_to_signal(
     Returns:
         EnsembleResult with signal/direction/confidence translated from rank
     """
+    eps = 1e-9
     if not rank_scores:
         return _no_signal(current_price, atr, "No rank scores")
 
@@ -546,6 +547,7 @@ def rank_to_signal(
         avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
     else:
         avg_rank = float(np.mean(list(rank_scores.values())))
+    avg_rank = float(np.clip(avg_rank, 0.0, 1.0))
     scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
 
@@ -555,16 +557,16 @@ def rank_to_signal(
     consensus = max(n_bullish, n_bearish) / len(scores)
 
     # Signal translation
-    if avg_rank >= strong_buy_threshold:
+    if avg_rank >= (strong_buy_threshold - eps):
         signal = "STRONG_BUY"
         direction = "up"
-    elif avg_rank >= buy_threshold:
+    elif avg_rank >= (buy_threshold - eps):
         signal = "BUY"
         direction = "up"
-    elif avg_rank <= strong_sell_threshold:
+    elif avg_rank <= (strong_sell_threshold + eps):
         signal = "STRONG_SELL"
         direction = "down"
-    elif avg_rank <= sell_threshold:
+    elif avg_rank <= (sell_threshold + eps):
         signal = "SELL"
         direction = "down"
     else:
@@ -572,16 +574,17 @@ def rank_to_signal(
         direction = "neutral"
 
     # Confidence: use rank directly (0~1) — higher rank = more confident bullish
-    confidence = round(avg_rank, 3)
+    confidence = round(min(1.0, abs(avg_rank - 0.5) * 2.0), 3)
 
     # Signal strength: 1~5 stars based on rank percentile
-    if avg_rank >= 0.90:
+    distance = abs(avg_rank - 0.5)
+    if distance >= 0.40:
         strength = 5
-    elif avg_rank >= 0.80:
+    elif distance >= 0.30:
         strength = 4
-    elif avg_rank >= 0.70:
+    elif distance >= 0.20:
         strength = 3
-    elif avg_rank >= 0.50:
+    elif distance >= 0.10:
         strength = 2
     else:
         strength = 1

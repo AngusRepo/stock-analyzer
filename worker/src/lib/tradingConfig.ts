@@ -7,6 +7,95 @@
 
 // ─── Type ────────────────────────────────────────────────────────────────────
 
+export type AlphaFrameworkRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
+export type AlphaFrameworkBucket =
+  | 'trend_following'
+  | 'mean_reversion'
+  | 'breakout_vol_expansion'
+  | 'defensive_accumulation'
+
+export type AlphaFrameworkBucketWeights = Record<AlphaFrameworkBucket, number>
+
+export interface AlphaFrameworkConfig {
+  riskOverlay: {
+    volatilityExpansionRatio: number
+    volatilityExpansionMin3d: number
+    extremeVolThreshold: number
+    highVolThreshold: number
+    liquidityLowVolume: number
+    liquidityThinVolume: number
+    skipSizingCap: number
+    volatilityExpansionPenalty: number
+    highVolPenalty: number
+    extremeVolPenalty: number
+    thinLiquidityPenalty: number
+    lowLiquidityPenalty: number
+    extendedAboveFairValuePenalty: number
+    fragileStructurePenalty: number
+    constructiveReturnMin: number
+    fragileReturnMax: number
+    extremeVolSkipConfidenceMin: number
+    fairValueRangeLookback: number
+    fairValueAtrMultiplier: number
+    fairValueMinPct: number
+  }
+  allocation: {
+    slateSize: number
+    scoreBoostSpacing: number
+    scoreBoostMin: number
+    scoreRoundDecimals: number
+    weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
+  }
+  classification: {
+    breakoutNearHighRatio: number
+    breakoutReturnMin: number
+    breakoutVolumeRatioMin: number
+    breakoutForecastMin: number
+    trendReturnMin: number
+    trendForecastMin: number
+    meanReversionRsiMax: number
+    meanReversionReturnMax: number
+    meanReversionForecastMin: number
+  }
+  regimeBucketMultipliers: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
+  scoring: {
+    bucketBonus: AlphaFrameworkBucketWeights
+    regimeWeightImpact: number
+    overlayPenaltyImpact: number
+    scoreMin: number
+    scoreMax: number
+    confidenceWeightImpact: number
+    confidencePenaltyImpact: number
+    confidenceMin: number
+    confidenceMax: number
+  }
+  executionOverlay: {
+    sizingMin: number
+    sizingMax: number
+    highVolSizingMultiplier: number
+    extremeVolSizingMultiplier: number
+    thinLiquiditySizingMultiplier: number
+    lowLiquiditySizingMultiplier: number
+    highVolStopMultiplier: number
+    extremeVolStopMultiplier: number
+    meanReversionStopMultiplier: number
+    bullTrendTargetMultiplier: number
+    nonBullTrendTargetMultiplier: number
+    defensiveRiskTargetMultiplier: number
+  }
+  quality: {
+    outcomeLimit: number
+    minSamples: number
+    minRegimeSamples: number
+    minBucketSamples: number
+    posteriorFullConfidenceSamples: number
+    posteriorWeightImpactBps: number
+    minBucketWeightBps: number
+    returnPctPerRBps: number
+    directionCorrectFallbackRBps: number
+  }
+}
+
 export interface TradingConfig {
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
@@ -108,6 +197,7 @@ export interface TradingConfig {
     // 2026-04-18 #36 Round 2 (補齊至 26)
     gapChaseBuffer: number                 // gap-aware 追價 buffer（預設 0.995 = 留 0.5%）
     fillSlippageTicks: number              // 預設下單滑價 tick 數（預設 1）
+    maxEntryPremiumPct: number             // pending buy entry 不可高於最新收盤價的比例（預設 0.01）
   }
   screener: {
     minPrice: number             // 最低股價（預設 15）
@@ -302,6 +392,7 @@ export interface TradingConfig {
     tradingDayMinutes: number            // 台股交易時段分鐘數（預設 270 = 9:00-13:30）
     minutesFractionFloor: number         // minutesSinceOpen/total 下限（預設 0.1 防早盤分母太小）
   }
+  alphaFramework: AlphaFrameworkConfig
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -399,6 +490,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     // Round 2
     gapChaseBuffer: 0.995,
     fillSlippageTicks: 1,
+    maxEntryPremiumPct: 0.01,
   },
   screener: {
     minPrice: 15,
@@ -549,6 +641,140 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     tradingDayMinutes: 270,
     minutesFractionFloor: 0.1,
   },
+  alphaFramework: {
+    riskOverlay: {
+      volatilityExpansionRatio: 1.8,
+      volatilityExpansionMin3d: 0.025,
+      extremeVolThreshold: 0.07,
+      highVolThreshold: 0.035,
+      liquidityLowVolume: 50_000,
+      liquidityThinVolume: 250_000,
+      skipSizingCap: 0.35,
+      volatilityExpansionPenalty: 1.5,
+      highVolPenalty: 3.0,
+      extremeVolPenalty: 8.0,
+      thinLiquidityPenalty: 1.5,
+      lowLiquidityPenalty: 5.0,
+      extendedAboveFairValuePenalty: 1.0,
+      fragileStructurePenalty: 2.0,
+      constructiveReturnMin: 0.015,
+      fragileReturnMax: -0.04,
+      extremeVolSkipConfidenceMin: 0.70,
+      fairValueRangeLookback: 10,
+      fairValueAtrMultiplier: 0.75,
+      fairValueMinPct: 0.01,
+    },
+    allocation: {
+      slateSize: 10,
+      scoreBoostSpacing: 1.0,
+      scoreBoostMin: 0.1,
+      scoreRoundDecimals: 1,
+      weights: {
+        bull: {
+          trend_following: 0.35,
+          breakout_vol_expansion: 0.35,
+          mean_reversion: 0.15,
+          defensive_accumulation: 0.15,
+        },
+        bear: {
+          defensive_accumulation: 0.40,
+          mean_reversion: 0.25,
+          trend_following: 0.20,
+          breakout_vol_expansion: 0.15,
+        },
+        volatile: {
+          defensive_accumulation: 0.45,
+          breakout_vol_expansion: 0.20,
+          trend_following: 0.20,
+          mean_reversion: 0.15,
+        },
+        sideways: {
+          mean_reversion: 0.35,
+          defensive_accumulation: 0.25,
+          breakout_vol_expansion: 0.20,
+          trend_following: 0.20,
+        },
+      },
+    },
+    classification: {
+      breakoutNearHighRatio: 0.995,
+      breakoutReturnMin: 0.03,
+      breakoutVolumeRatioMin: 1.15,
+      breakoutForecastMin: 0.03,
+      trendReturnMin: 0.015,
+      trendForecastMin: 0.0,
+      meanReversionRsiMax: 45.0,
+      meanReversionReturnMax: 0.0,
+      meanReversionForecastMin: 0.0,
+    },
+    regimeBucketMultipliers: {
+      bull: {
+        trend_following: 1.15,
+        breakout_vol_expansion: 1.12,
+        mean_reversion: 0.95,
+        defensive_accumulation: 1.00,
+      },
+      bear: {
+        trend_following: 0.78,
+        breakout_vol_expansion: 0.82,
+        mean_reversion: 0.90,
+        defensive_accumulation: 1.08,
+      },
+      volatile: {
+        trend_following: 0.86,
+        breakout_vol_expansion: 0.92,
+        mean_reversion: 0.84,
+        defensive_accumulation: 1.10,
+      },
+      sideways: {
+        trend_following: 0.92,
+        breakout_vol_expansion: 0.96,
+        mean_reversion: 1.12,
+        defensive_accumulation: 1.00,
+      },
+    },
+    scoring: {
+      bucketBonus: {
+        trend_following: 2.0,
+        mean_reversion: 1.0,
+        breakout_vol_expansion: 3.0,
+        defensive_accumulation: 0.5,
+      },
+      regimeWeightImpact: 10.0,
+      overlayPenaltyImpact: 1.0,
+      scoreMin: -12.0,
+      scoreMax: 8.0,
+      confidenceWeightImpact: 0.25,
+      confidencePenaltyImpact: 0.01,
+      confidenceMin: 0.75,
+      confidenceMax: 1.08,
+    },
+    executionOverlay: {
+      sizingMin: 0.25,
+      sizingMax: 1.25,
+      highVolSizingMultiplier: 0.80,
+      extremeVolSizingMultiplier: 0.55,
+      thinLiquiditySizingMultiplier: 0.85,
+      lowLiquiditySizingMultiplier: 0.45,
+      highVolStopMultiplier: 1.18,
+      extremeVolStopMultiplier: 1.35,
+      meanReversionStopMultiplier: 0.95,
+      bullTrendTargetMultiplier: 1.12,
+      nonBullTrendTargetMultiplier: 1.05,
+      defensiveRiskTargetMultiplier: 0.92,
+    },
+    quality: {
+      outcomeLimit: 1000,
+      minSamples: 30,
+      minRegimeSamples: 6,
+      minBucketSamples: 8,
+      posteriorFullConfidenceSamples: 20,
+      posteriorWeightImpactBps: 1200,
+      minBucketWeightBps: 200,
+      returnPctPerRBps: 200,
+      directionCorrectFallbackRBps: 2500,
+    },
+  },
 }
 
 // ─── KV 讀取（300s cache）──────────────────────────────────────────────────
@@ -558,6 +784,128 @@ const CACHE_TTL_MS = 300_000  // 5 min in-memory cache
 
 let _cached: TradingConfig | null = null
 let _cachedAt = 0
+
+export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig> | any): AlphaFrameworkConfig {
+  const d = DEFAULT_TRADING_CONFIG.alphaFramework
+  const raw = partial ?? {}
+  const rawOverlay = raw.riskOverlay ?? raw.risk_overlay ?? {}
+  const rawAllocation = raw.allocation ?? {}
+  const rawClassification = raw.classification ?? {}
+  const rawRegimeMultipliers = raw.regimeBucketMultipliers ?? raw.regime_bucket_multipliers ?? {}
+  const rawScoring = raw.scoring ?? {}
+  const rawBucketBonus = rawScoring.bucketBonus ?? rawScoring.bucket_bonus ?? {}
+  const rawExecution = raw.executionOverlay ?? raw.execution_overlay ?? {}
+  const rawQuality = raw.quality ?? {}
+  const rawWeights = rawAllocation.weights ?? {}
+  const mergeWeights = (regime: AlphaFrameworkRegime): AlphaFrameworkBucketWeights => ({
+    ...d.allocation.weights[regime],
+    ...(rawWeights[regime] ?? {}),
+  })
+  const mergeRegimeMultipliers = (regime: AlphaFrameworkRegime): AlphaFrameworkBucketWeights => ({
+    ...d.regimeBucketMultipliers[regime],
+    ...(rawRegimeMultipliers[regime] ?? {}),
+  })
+  const mergeBucketBonus = (): AlphaFrameworkBucketWeights => ({
+    ...d.scoring.bucketBonus,
+    ...rawBucketBonus,
+  })
+  return {
+    riskOverlay: {
+      ...d.riskOverlay,
+      volatilityExpansionRatio: rawOverlay.volatilityExpansionRatio ?? rawOverlay.volatility_expansion_ratio ?? d.riskOverlay.volatilityExpansionRatio,
+      volatilityExpansionMin3d: rawOverlay.volatilityExpansionMin3d ?? rawOverlay.volatility_expansion_min_3d ?? d.riskOverlay.volatilityExpansionMin3d,
+      extremeVolThreshold: rawOverlay.extremeVolThreshold ?? rawOverlay.extreme_vol_threshold ?? d.riskOverlay.extremeVolThreshold,
+      highVolThreshold: rawOverlay.highVolThreshold ?? rawOverlay.high_vol_threshold ?? d.riskOverlay.highVolThreshold,
+      liquidityLowVolume: rawOverlay.liquidityLowVolume ?? rawOverlay.liquidity_low_volume ?? d.riskOverlay.liquidityLowVolume,
+      liquidityThinVolume: rawOverlay.liquidityThinVolume ?? rawOverlay.liquidity_thin_volume ?? d.riskOverlay.liquidityThinVolume,
+      skipSizingCap: rawOverlay.skipSizingCap ?? rawOverlay.skip_sizing_cap ?? d.riskOverlay.skipSizingCap,
+      volatilityExpansionPenalty: rawOverlay.volatilityExpansionPenalty ?? rawOverlay.volatility_expansion_penalty ?? d.riskOverlay.volatilityExpansionPenalty,
+      highVolPenalty: rawOverlay.highVolPenalty ?? rawOverlay.high_vol_penalty ?? d.riskOverlay.highVolPenalty,
+      extremeVolPenalty: rawOverlay.extremeVolPenalty ?? rawOverlay.extreme_vol_penalty ?? d.riskOverlay.extremeVolPenalty,
+      thinLiquidityPenalty: rawOverlay.thinLiquidityPenalty ?? rawOverlay.thin_liquidity_penalty ?? d.riskOverlay.thinLiquidityPenalty,
+      lowLiquidityPenalty: rawOverlay.lowLiquidityPenalty ?? rawOverlay.low_liquidity_penalty ?? d.riskOverlay.lowLiquidityPenalty,
+      extendedAboveFairValuePenalty: rawOverlay.extendedAboveFairValuePenalty ?? rawOverlay.extended_above_fair_value_penalty ?? d.riskOverlay.extendedAboveFairValuePenalty,
+      fragileStructurePenalty: rawOverlay.fragileStructurePenalty ?? rawOverlay.fragile_structure_penalty ?? d.riskOverlay.fragileStructurePenalty,
+      constructiveReturnMin: rawOverlay.constructiveReturnMin ?? rawOverlay.constructive_return_min ?? d.riskOverlay.constructiveReturnMin,
+      fragileReturnMax: rawOverlay.fragileReturnMax ?? rawOverlay.fragile_return_max ?? d.riskOverlay.fragileReturnMax,
+      extremeVolSkipConfidenceMin: rawOverlay.extremeVolSkipConfidenceMin ?? rawOverlay.extreme_vol_skip_confidence_min ?? d.riskOverlay.extremeVolSkipConfidenceMin,
+      fairValueRangeLookback: rawOverlay.fairValueRangeLookback ?? rawOverlay.fair_value_range_lookback ?? d.riskOverlay.fairValueRangeLookback,
+      fairValueAtrMultiplier: rawOverlay.fairValueAtrMultiplier ?? rawOverlay.fair_value_atr_multiplier ?? d.riskOverlay.fairValueAtrMultiplier,
+      fairValueMinPct: rawOverlay.fairValueMinPct ?? rawOverlay.fair_value_min_pct ?? d.riskOverlay.fairValueMinPct,
+    },
+    allocation: {
+      ...d.allocation,
+      ...rawAllocation,
+      slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
+      scoreBoostSpacing: rawAllocation.scoreBoostSpacing ?? rawAllocation.score_boost_spacing ?? d.allocation.scoreBoostSpacing,
+      scoreBoostMin: rawAllocation.scoreBoostMin ?? rawAllocation.score_boost_min ?? d.allocation.scoreBoostMin,
+      scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
+      weights: {
+        bull: mergeWeights('bull'),
+        bear: mergeWeights('bear'),
+        volatile: mergeWeights('volatile'),
+        sideways: mergeWeights('sideways'),
+      },
+    },
+    classification: {
+      ...d.classification,
+      breakoutNearHighRatio: rawClassification.breakoutNearHighRatio ?? rawClassification.breakout_near_high_ratio ?? d.classification.breakoutNearHighRatio,
+      breakoutReturnMin: rawClassification.breakoutReturnMin ?? rawClassification.breakout_return_min ?? d.classification.breakoutReturnMin,
+      breakoutVolumeRatioMin: rawClassification.breakoutVolumeRatioMin ?? rawClassification.breakout_volume_ratio_min ?? d.classification.breakoutVolumeRatioMin,
+      breakoutForecastMin: rawClassification.breakoutForecastMin ?? rawClassification.breakout_forecast_min ?? d.classification.breakoutForecastMin,
+      trendReturnMin: rawClassification.trendReturnMin ?? rawClassification.trend_return_min ?? d.classification.trendReturnMin,
+      trendForecastMin: rawClassification.trendForecastMin ?? rawClassification.trend_forecast_min ?? d.classification.trendForecastMin,
+      meanReversionRsiMax: rawClassification.meanReversionRsiMax ?? rawClassification.mean_reversion_rsi_max ?? d.classification.meanReversionRsiMax,
+      meanReversionReturnMax: rawClassification.meanReversionReturnMax ?? rawClassification.mean_reversion_return_max ?? d.classification.meanReversionReturnMax,
+      meanReversionForecastMin: rawClassification.meanReversionForecastMin ?? rawClassification.mean_reversion_forecast_min ?? d.classification.meanReversionForecastMin,
+    },
+    regimeBucketMultipliers: {
+      bull: mergeRegimeMultipliers('bull'),
+      bear: mergeRegimeMultipliers('bear'),
+      volatile: mergeRegimeMultipliers('volatile'),
+      sideways: mergeRegimeMultipliers('sideways'),
+    },
+    scoring: {
+      ...d.scoring,
+      bucketBonus: mergeBucketBonus(),
+      regimeWeightImpact: rawScoring.regimeWeightImpact ?? rawScoring.regime_weight_impact ?? d.scoring.regimeWeightImpact,
+      overlayPenaltyImpact: rawScoring.overlayPenaltyImpact ?? rawScoring.overlay_penalty_impact ?? d.scoring.overlayPenaltyImpact,
+      scoreMin: rawScoring.scoreMin ?? rawScoring.score_min ?? d.scoring.scoreMin,
+      scoreMax: rawScoring.scoreMax ?? rawScoring.score_max ?? d.scoring.scoreMax,
+      confidenceWeightImpact: rawScoring.confidenceWeightImpact ?? rawScoring.confidence_weight_impact ?? d.scoring.confidenceWeightImpact,
+      confidencePenaltyImpact: rawScoring.confidencePenaltyImpact ?? rawScoring.confidence_penalty_impact ?? d.scoring.confidencePenaltyImpact,
+      confidenceMin: rawScoring.confidenceMin ?? rawScoring.confidence_min ?? d.scoring.confidenceMin,
+      confidenceMax: rawScoring.confidenceMax ?? rawScoring.confidence_max ?? d.scoring.confidenceMax,
+    },
+    executionOverlay: {
+      ...d.executionOverlay,
+      sizingMin: rawExecution.sizingMin ?? rawExecution.sizing_min ?? d.executionOverlay.sizingMin,
+      sizingMax: rawExecution.sizingMax ?? rawExecution.sizing_max ?? d.executionOverlay.sizingMax,
+      highVolSizingMultiplier: rawExecution.highVolSizingMultiplier ?? rawExecution.high_vol_sizing_multiplier ?? d.executionOverlay.highVolSizingMultiplier,
+      extremeVolSizingMultiplier: rawExecution.extremeVolSizingMultiplier ?? rawExecution.extreme_vol_sizing_multiplier ?? d.executionOverlay.extremeVolSizingMultiplier,
+      thinLiquiditySizingMultiplier: rawExecution.thinLiquiditySizingMultiplier ?? rawExecution.thin_liquidity_sizing_multiplier ?? d.executionOverlay.thinLiquiditySizingMultiplier,
+      lowLiquiditySizingMultiplier: rawExecution.lowLiquiditySizingMultiplier ?? rawExecution.low_liquidity_sizing_multiplier ?? d.executionOverlay.lowLiquiditySizingMultiplier,
+      highVolStopMultiplier: rawExecution.highVolStopMultiplier ?? rawExecution.high_vol_stop_multiplier ?? d.executionOverlay.highVolStopMultiplier,
+      extremeVolStopMultiplier: rawExecution.extremeVolStopMultiplier ?? rawExecution.extreme_vol_stop_multiplier ?? d.executionOverlay.extremeVolStopMultiplier,
+      meanReversionStopMultiplier: rawExecution.meanReversionStopMultiplier ?? rawExecution.mean_reversion_stop_multiplier ?? d.executionOverlay.meanReversionStopMultiplier,
+      bullTrendTargetMultiplier: rawExecution.bullTrendTargetMultiplier ?? rawExecution.bull_trend_target_multiplier ?? d.executionOverlay.bullTrendTargetMultiplier,
+      nonBullTrendTargetMultiplier: rawExecution.nonBullTrendTargetMultiplier ?? rawExecution.non_bull_trend_target_multiplier ?? d.executionOverlay.nonBullTrendTargetMultiplier,
+      defensiveRiskTargetMultiplier: rawExecution.defensiveRiskTargetMultiplier ?? rawExecution.defensive_risk_target_multiplier ?? d.executionOverlay.defensiveRiskTargetMultiplier,
+    },
+    quality: {
+      ...d.quality,
+      outcomeLimit: rawQuality.outcomeLimit ?? rawQuality.outcome_limit ?? d.quality.outcomeLimit,
+      minSamples: rawQuality.minSamples ?? rawQuality.min_samples ?? d.quality.minSamples,
+      minRegimeSamples: rawQuality.minRegimeSamples ?? rawQuality.min_regime_samples ?? d.quality.minRegimeSamples,
+      minBucketSamples: rawQuality.minBucketSamples ?? rawQuality.min_bucket_samples ?? d.quality.minBucketSamples,
+      posteriorFullConfidenceSamples: rawQuality.posteriorFullConfidenceSamples ?? rawQuality.posterior_full_confidence_samples ?? d.quality.posteriorFullConfidenceSamples,
+      posteriorWeightImpactBps: rawQuality.posteriorWeightImpactBps ?? rawQuality.posterior_weight_impact_bps ?? d.quality.posteriorWeightImpactBps,
+      minBucketWeightBps: rawQuality.minBucketWeightBps ?? rawQuality.min_bucket_weight_bps ?? d.quality.minBucketWeightBps,
+      returnPctPerRBps: rawQuality.returnPctPerRBps ?? rawQuality.return_pct_per_r_bps ?? d.quality.returnPctPerRBps,
+      directionCorrectFallbackRBps: rawQuality.directionCorrectFallbackRBps ?? rawQuality.direction_correct_fallback_r_bps ?? d.quality.directionCorrectFallbackRBps,
+    },
+  }
+}
 
 /** Deep merge: KV 值覆蓋 defaults，缺失欄位自動 fallback */
 function mergeConfig(partial: Partial<any>): TradingConfig {
@@ -588,6 +936,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     risk: { ...d.risk, ...partial.risk },
     intraday: { ...d.intraday, ...partial.intraday },
     momentum: { ...d.momentum, ...partial.momentum },
+    alphaFramework: mergeAlphaFrameworkConfig(partial.alphaFramework ?? partial.alpha_framework),
   }
 }
 
@@ -792,6 +1141,7 @@ export interface SandboxEntry {
   bytes: number
   push_id?: string
   note?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface SandboxRecord {
@@ -802,6 +1152,7 @@ export interface SandboxRecord {
   bytes: number
   push_id?: string
   note?: string
+  metadata?: Record<string, unknown>
 }
 
 /** Write a sandbox entry. Never touches prod trading:config or its snapshot chain. */
@@ -809,7 +1160,7 @@ export async function writeSandbox(
   kv: KVNamespace,
   source: string,
   config: TradingConfig,
-  meta?: { push_id?: string; note?: string },
+  meta?: { push_id?: string; note?: string; metadata?: Record<string, unknown> },
 ): Promise<string> {
   const pushed_at = new Date().toISOString()
   const hash = await hashConfig(config)
@@ -818,6 +1169,7 @@ export async function writeSandbox(
     config, source, pushed_at, hash,
     push_id: meta?.push_id,
     note: meta?.note,
+    metadata: meta?.metadata,
   })
   const bytes = body.length
 
@@ -831,6 +1183,7 @@ export async function writeSandbox(
     id, pushed_at, source, hash, bytes,
     push_id: meta?.push_id,
     note: meta?.note,
+    metadata: meta?.metadata,
   }
   idx.unshift(entry)
   const trimmed = idx.slice(0, SANDBOX_MAX_ENTRIES)
@@ -999,6 +1352,8 @@ export async function restoreSnapshot(
 
 export function validateTradingConfig(config: TradingConfig): string[] {
   const errors: string[] = []
+  const isFiniteNumber = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value)
   if (config.exit.hardStopPct > 0 || config.exit.hardStopPct < -0.30)
     errors.push('hardStopPct must be between -0.30 and 0')
   if (config.circuit.maxPositionPct < 0.01 || config.circuit.maxPositionPct > 0.50)
@@ -1024,6 +1379,219 @@ export function validateTradingConfig(config: TradingConfig): string[] {
   if (l2?.confidence_effective_clip_lo != null && l2?.confidence_effective_clip_hi != null) {
     if (l2.confidence_effective_clip_lo >= l2.confidence_effective_clip_hi)
       errors.push(`confidence clip lo (${l2.confidence_effective_clip_lo}) must be < hi (${l2.confidence_effective_clip_hi})`)
+  }
+  const alpha = config.alphaFramework
+  const overlay = alpha?.riskOverlay
+  const allocation = alpha?.allocation
+  const classification = alpha?.classification
+  const regimeBucketMultipliers = alpha?.regimeBucketMultipliers
+  const scoring = alpha?.scoring
+  const executionOverlay = alpha?.executionOverlay
+  const quality = alpha?.quality
+  if (!overlay) {
+    errors.push('alphaFramework.riskOverlay is required')
+  } else {
+    if (!isFiniteNumber(overlay.volatilityExpansionRatio) || overlay.volatilityExpansionRatio < 0.5 || overlay.volatilityExpansionRatio > 5)
+      errors.push('alphaFramework.riskOverlay.volatilityExpansionRatio must be 0.5-5')
+    if (!isFiniteNumber(overlay.volatilityExpansionMin3d) || overlay.volatilityExpansionMin3d < 0 || overlay.volatilityExpansionMin3d > 0.30)
+      errors.push('alphaFramework.riskOverlay.volatilityExpansionMin3d must be 0-0.30')
+    if (!isFiniteNumber(overlay.highVolThreshold) || overlay.highVolThreshold <= 0 || overlay.highVolThreshold > 0.30)
+      errors.push('alphaFramework.riskOverlay.highVolThreshold must be >0 and <=0.30')
+    if (!isFiniteNumber(overlay.extremeVolThreshold) || overlay.extremeVolThreshold <= overlay.highVolThreshold || overlay.extremeVolThreshold > 0.50)
+      errors.push('alphaFramework.riskOverlay.extremeVolThreshold must be > highVolThreshold and <=0.50')
+    if (!isFiniteNumber(overlay.liquidityLowVolume) || overlay.liquidityLowVolume < 0)
+      errors.push('alphaFramework.riskOverlay.liquidityLowVolume must be >= 0')
+    if (!isFiniteNumber(overlay.liquidityThinVolume) || overlay.liquidityThinVolume < overlay.liquidityLowVolume)
+      errors.push('alphaFramework.riskOverlay.liquidityThinVolume must be >= liquidityLowVolume')
+    if (!isFiniteNumber(overlay.skipSizingCap) || overlay.skipSizingCap < 0.05 || overlay.skipSizingCap > 1)
+      errors.push('alphaFramework.riskOverlay.skipSizingCap must be 0.05-1')
+    const penaltyKeys: (keyof AlphaFrameworkConfig['riskOverlay'])[] = [
+      'volatilityExpansionPenalty',
+      'highVolPenalty',
+      'extremeVolPenalty',
+      'thinLiquidityPenalty',
+      'lowLiquidityPenalty',
+      'extendedAboveFairValuePenalty',
+      'fragileStructurePenalty',
+    ]
+    for (const key of penaltyKeys) {
+      const value = overlay[key]
+      if (!isFiniteNumber(value) || value < 0 || value > 50)
+        errors.push(`alphaFramework.riskOverlay.${key} must be 0-50`)
+    }
+    if (!isFiniteNumber(overlay.constructiveReturnMin) || overlay.constructiveReturnMin < -0.50 || overlay.constructiveReturnMin > 0.50)
+      errors.push('alphaFramework.riskOverlay.constructiveReturnMin must be -0.50-0.50')
+    if (!isFiniteNumber(overlay.fragileReturnMax) || overlay.fragileReturnMax < -0.50 || overlay.fragileReturnMax > 0.50)
+      errors.push('alphaFramework.riskOverlay.fragileReturnMax must be -0.50-0.50')
+    if (!isFiniteNumber(overlay.extremeVolSkipConfidenceMin) || overlay.extremeVolSkipConfidenceMin < 0 || overlay.extremeVolSkipConfidenceMin > 1)
+      errors.push('alphaFramework.riskOverlay.extremeVolSkipConfidenceMin must be 0-1')
+    if (!Number.isInteger(overlay.fairValueRangeLookback) || overlay.fairValueRangeLookback < 1 || overlay.fairValueRangeLookback > 60)
+      errors.push('alphaFramework.riskOverlay.fairValueRangeLookback must be an integer between 1 and 60')
+    if (!isFiniteNumber(overlay.fairValueAtrMultiplier) || overlay.fairValueAtrMultiplier < 0 || overlay.fairValueAtrMultiplier > 10)
+      errors.push('alphaFramework.riskOverlay.fairValueAtrMultiplier must be 0-10')
+    if (!isFiniteNumber(overlay.fairValueMinPct) || overlay.fairValueMinPct < 0 || overlay.fairValueMinPct > 0.50)
+      errors.push('alphaFramework.riskOverlay.fairValueMinPct must be 0-0.50')
+  }
+  if (!allocation) {
+    errors.push('alphaFramework.allocation is required')
+  } else {
+    if (!Number.isInteger(allocation.slateSize) || allocation.slateSize < 1 || allocation.slateSize > 30)
+      errors.push('alphaFramework.allocation.slateSize must be an integer between 1 and 30')
+    if (!isFiniteNumber(allocation.scoreBoostSpacing) || allocation.scoreBoostSpacing < 0 || allocation.scoreBoostSpacing > 10)
+      errors.push('alphaFramework.allocation.scoreBoostSpacing must be 0-10')
+    if (!isFiniteNumber(allocation.scoreBoostMin) || allocation.scoreBoostMin < 0 || allocation.scoreBoostMin > 10)
+      errors.push('alphaFramework.allocation.scoreBoostMin must be 0-10')
+    if (!Number.isInteger(allocation.scoreRoundDecimals) || allocation.scoreRoundDecimals < 0 || allocation.scoreRoundDecimals > 6)
+      errors.push('alphaFramework.allocation.scoreRoundDecimals must be an integer between 0 and 6')
+    const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']
+    const buckets: AlphaFrameworkBucket[] = [
+      'trend_following',
+      'mean_reversion',
+      'breakout_vol_expansion',
+      'defensive_accumulation',
+    ]
+    for (const regime of regimes) {
+      const weights = allocation.weights?.[regime]
+      if (!weights) {
+        errors.push(`alphaFramework.allocation.weights.${regime} is required`)
+        continue
+      }
+      let sum = 0
+      for (const bucket of buckets) {
+        const value = weights[bucket]
+        if (!isFiniteNumber(value) || value < 0)
+          errors.push(`alphaFramework.allocation.weights.${regime}.${bucket} must be a non-negative number`)
+        else
+          sum += value
+      }
+      if (sum <= 0)
+        errors.push(`alphaFramework.allocation.weights.${regime} must have positive total weight`)
+    }
+  }
+  if (!classification) {
+    errors.push('alphaFramework.classification is required')
+  } else {
+    if (!isFiniteNumber(classification.breakoutNearHighRatio) || classification.breakoutNearHighRatio < 0.80 || classification.breakoutNearHighRatio > 1)
+      errors.push('alphaFramework.classification.breakoutNearHighRatio must be 0.80-1')
+    if (!isFiniteNumber(classification.breakoutReturnMin) || classification.breakoutReturnMin < -0.50 || classification.breakoutReturnMin > 0.50)
+      errors.push('alphaFramework.classification.breakoutReturnMin must be -0.50-0.50')
+    if (!isFiniteNumber(classification.breakoutVolumeRatioMin) || classification.breakoutVolumeRatioMin <= 0 || classification.breakoutVolumeRatioMin > 10)
+      errors.push('alphaFramework.classification.breakoutVolumeRatioMin must be >0 and <=10')
+    if (!isFiniteNumber(classification.breakoutForecastMin) || classification.breakoutForecastMin < -0.50 || classification.breakoutForecastMin > 0.50)
+      errors.push('alphaFramework.classification.breakoutForecastMin must be -0.50-0.50')
+    if (!isFiniteNumber(classification.trendReturnMin) || classification.trendReturnMin < -0.50 || classification.trendReturnMin > 0.50)
+      errors.push('alphaFramework.classification.trendReturnMin must be -0.50-0.50')
+    if (!isFiniteNumber(classification.trendForecastMin) || classification.trendForecastMin < -0.50 || classification.trendForecastMin > 0.50)
+      errors.push('alphaFramework.classification.trendForecastMin must be -0.50-0.50')
+    if (!isFiniteNumber(classification.meanReversionRsiMax) || classification.meanReversionRsiMax < 1 || classification.meanReversionRsiMax > 99)
+      errors.push('alphaFramework.classification.meanReversionRsiMax must be 1-99')
+    if (!isFiniteNumber(classification.meanReversionReturnMax) || classification.meanReversionReturnMax < -0.50 || classification.meanReversionReturnMax > 0.50)
+      errors.push('alphaFramework.classification.meanReversionReturnMax must be -0.50-0.50')
+    if (!isFiniteNumber(classification.meanReversionForecastMin) || classification.meanReversionForecastMin < -0.50 || classification.meanReversionForecastMin > 0.50)
+      errors.push('alphaFramework.classification.meanReversionForecastMin must be -0.50-0.50')
+  }
+  if (!regimeBucketMultipliers) {
+    errors.push('alphaFramework.regimeBucketMultipliers is required')
+  } else {
+    const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']
+    const buckets: AlphaFrameworkBucket[] = [
+      'trend_following',
+      'mean_reversion',
+      'breakout_vol_expansion',
+      'defensive_accumulation',
+    ]
+    for (const regime of regimes) {
+      const multipliers = regimeBucketMultipliers[regime]
+      if (!multipliers) {
+        errors.push(`alphaFramework.regimeBucketMultipliers.${regime} is required`)
+        continue
+      }
+      for (const bucket of buckets) {
+        const value = multipliers[bucket]
+        if (!isFiniteNumber(value) || value < 0 || value > 3)
+          errors.push(`alphaFramework.regimeBucketMultipliers.${regime}.${bucket} must be 0-3`)
+      }
+    }
+  }
+  if (!scoring) {
+    errors.push('alphaFramework.scoring is required')
+  } else {
+    const buckets: AlphaFrameworkBucket[] = [
+      'trend_following',
+      'mean_reversion',
+      'breakout_vol_expansion',
+      'defensive_accumulation',
+    ]
+    for (const bucket of buckets) {
+      const value = scoring.bucketBonus?.[bucket]
+      if (!isFiniteNumber(value) || value < 0 || value > 20)
+        errors.push(`alphaFramework.scoring.bucketBonus.${bucket} must be 0-20`)
+    }
+    if (!isFiniteNumber(scoring.regimeWeightImpact) || scoring.regimeWeightImpact < 0 || scoring.regimeWeightImpact > 50)
+      errors.push('alphaFramework.scoring.regimeWeightImpact must be 0-50')
+    if (!isFiniteNumber(scoring.overlayPenaltyImpact) || scoring.overlayPenaltyImpact < 0 || scoring.overlayPenaltyImpact > 5)
+      errors.push('alphaFramework.scoring.overlayPenaltyImpact must be 0-5')
+    if (!isFiniteNumber(scoring.scoreMin) || !isFiniteNumber(scoring.scoreMax) || scoring.scoreMin > scoring.scoreMax)
+      errors.push('alphaFramework.scoring.scoreMin must be <= scoreMax')
+    if (!isFiniteNumber(scoring.confidenceMin) || !isFiniteNumber(scoring.confidenceMax) || scoring.confidenceMin > scoring.confidenceMax)
+      errors.push('alphaFramework.scoring.confidenceMin must be <= confidenceMax')
+  }
+  if (!executionOverlay) {
+    errors.push('alphaFramework.executionOverlay is required')
+  } else {
+    if (!isFiniteNumber(executionOverlay.sizingMin) || !isFiniteNumber(executionOverlay.sizingMax) || executionOverlay.sizingMin < 0 || executionOverlay.sizingMin > executionOverlay.sizingMax || executionOverlay.sizingMax > 3)
+      errors.push('alphaFramework.executionOverlay.sizingMin/sizingMax must be 0-3 and min<=max')
+    const multiplierKeys: (keyof AlphaFrameworkConfig['executionOverlay'])[] = [
+      'highVolSizingMultiplier',
+      'extremeVolSizingMultiplier',
+      'thinLiquiditySizingMultiplier',
+      'lowLiquiditySizingMultiplier',
+      'highVolStopMultiplier',
+      'extremeVolStopMultiplier',
+      'meanReversionStopMultiplier',
+      'bullTrendTargetMultiplier',
+      'nonBullTrendTargetMultiplier',
+      'defensiveRiskTargetMultiplier',
+    ]
+    for (const key of multiplierKeys) {
+      const value = executionOverlay[key]
+      if (!isFiniteNumber(value) || value <= 0 || value > 5)
+        errors.push(`alphaFramework.executionOverlay.${key} must be >0 and <=5`)
+    }
+  }
+  if (!quality) {
+    errors.push('alphaFramework.quality is required')
+  } else {
+    if (!Number.isInteger(quality.outcomeLimit) || quality.outcomeLimit < 100 || quality.outcomeLimit > 5000)
+      errors.push('alphaFramework.quality.outcomeLimit must be an integer between 100 and 5000')
+    if (!Number.isInteger(quality.minSamples) || quality.minSamples < 1 || quality.minSamples > 1000)
+      errors.push('alphaFramework.quality.minSamples must be an integer between 1 and 1000')
+    if (!Number.isInteger(quality.minRegimeSamples) || quality.minRegimeSamples < 1 || quality.minRegimeSamples > 500)
+      errors.push('alphaFramework.quality.minRegimeSamples must be an integer between 1 and 500')
+    if (!Number.isInteger(quality.minBucketSamples) || quality.minBucketSamples < 1 || quality.minBucketSamples > 500)
+      errors.push('alphaFramework.quality.minBucketSamples must be an integer between 1 and 500')
+    if (!Number.isInteger(quality.posteriorFullConfidenceSamples) || quality.posteriorFullConfidenceSamples < 1 || quality.posteriorFullConfidenceSamples > 1000)
+      errors.push('alphaFramework.quality.posteriorFullConfidenceSamples must be an integer between 1 and 1000')
+    if (!Number.isInteger(quality.posteriorWeightImpactBps) || quality.posteriorWeightImpactBps < 0 || quality.posteriorWeightImpactBps > 10000)
+      errors.push('alphaFramework.quality.posteriorWeightImpactBps must be an integer between 0 and 10000')
+    if (!Number.isInteger(quality.minBucketWeightBps) || quality.minBucketWeightBps < 0 || quality.minBucketWeightBps > 2500)
+      errors.push('alphaFramework.quality.minBucketWeightBps must be an integer between 0 and 2500')
+    if (!Number.isInteger(quality.returnPctPerRBps) || quality.returnPctPerRBps < 1 || quality.returnPctPerRBps > 10000)
+      errors.push('alphaFramework.quality.returnPctPerRBps must be an integer between 1 and 10000')
+    if (!Number.isInteger(quality.directionCorrectFallbackRBps) || quality.directionCorrectFallbackRBps < 0 || quality.directionCorrectFallbackRBps > 10000)
+      errors.push('alphaFramework.quality.directionCorrectFallbackRBps must be an integer between 0 and 10000')
+    if (
+      Number.isInteger(quality.minSamples) &&
+      Number.isInteger(quality.minBucketSamples) &&
+      quality.minBucketSamples > quality.minSamples
+    )
+      errors.push('alphaFramework.quality.minBucketSamples must be <= minSamples')
+    if (
+      Number.isInteger(quality.minSamples) &&
+      Number.isInteger(quality.minRegimeSamples) &&
+      quality.minRegimeSamples > quality.minSamples
+    )
+      errors.push('alphaFramework.quality.minRegimeSamples must be <= minSamples')
   }
   return errors
 }

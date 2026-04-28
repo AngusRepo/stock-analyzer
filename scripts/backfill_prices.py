@@ -25,8 +25,8 @@ except ImportError:
     sys.exit(1)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-CF_ACCOUNT_ID = "619a83ac9f20847d9e2f2920823b727d"
-D1_DB_ID = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+D1_DB_ID = os.environ.get("CF_D1_DB_ID", "").strip()
 BATCH_SIZE = 20       # yfinance download batch
 PERIOD = "1y"
 
@@ -34,7 +34,7 @@ def get_cf_token():
     """Get CF API token from wrangler config."""
     # Try env var first
     token = os.environ.get("CLOUDFLARE_API_TOKEN")
-    if token:
+    if token and CF_ACCOUNT_ID and D1_DB_ID:
         return token
     # Try wrangler whoami to check auth
     result = subprocess.run("npx wrangler whoami", shell=True, capture_output=True, text=True,
@@ -72,7 +72,7 @@ def d1_query(sql, token=None):
 
 def d1_batch_sql(statements, token):
     """Execute batch SQL via D1 REST API."""
-    if not token:
+    if not (token and CF_ACCOUNT_ID and D1_DB_ID):
         # Wrangler fallback: write to file
         tmpfile = "/tmp/backfill_batch.sql"
         with open(tmpfile, "w", encoding='utf-8') as f:
@@ -98,7 +98,7 @@ def main():
     print("=== StockVision yfinance Backfill ===\n")
 
     token = get_cf_token()
-    if token:
+    if token and CF_ACCOUNT_ID and D1_DB_ID:
         print(f"Using CF API token (direct REST)")
     else:
         print("Using wrangler fallback (slower)")

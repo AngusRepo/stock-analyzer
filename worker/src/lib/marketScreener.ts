@@ -111,8 +111,8 @@ async function loadMarketDataFromD1(
       max: r.high,
       min: r.low,
       close: r.close,
-      spread: 0,            // unused by scoreMultiFactor
-      Trading_turnover: 0,  // unused
+      spread: 0,
+      Trading_turnover: 0,
     })
   }
 
@@ -916,7 +916,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
   // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
-  // Part 5 memory 裡 cfg.rrg.*Bonus/Penalty 是 dead code：schema + optuna push 有
+  // RRG bonus config is consumed below from trading config / Optuna pushes.
   // 但沒 consumer。這裡接上：讀 ml-controller 寫的 sector_flow (classification='theme'
   // + 最新 date + 非空 quadrant)，把每檔候選股的 top concept tag 對應到 quadrant，
   // 然後用 cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}

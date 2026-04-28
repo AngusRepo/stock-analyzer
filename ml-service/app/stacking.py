@@ -1,59 +1,255 @@
+"""V2 rank stacking meta-learner.
+
+The production contract is rank-regression:
+  - Level-0 inputs are model rank scores in [0, 1].
+  - Level-1 output is a stacked rank score in [0, 1].
+  - Missing model scores are neutral 0.5.
+
+Legacy direction APIs are kept only as compatibility wrappers for old /predict.
 """
-stacking.py — Stacking Meta-Learner（Layer 2 Ensemble）
 
-架構：
-  Level 0：10 個基礎模型各自輸出 [up_prob, forecast_pct, confidence]
-  Level 1：Logistic Regression（L2）學習最佳組合方式
+from __future__ import annotations
 
-優點（vs 加權投票）：
-  - 能學到「當 KalmanFilter 和 XGBoost 同時看漲但 LightGBM 看跌時，
-    過去結果是什麼」這種交叉效應
-  - 動態捕捉模型間的互補與衝突模式
-  - 比固定權重更能適應不同市況
-
-訓練策略：OOF（Out-Of-Fold）時序交叉驗證
-  - 避免 data leakage（Level 0 模型不能看到 Level 1 的訓練資料）
-  - 4 個 expanding window folds
-  - 每次 retrain 時重新訓練 meta-learner
-  - 儲存至 GCS，predict 時載入
-"""
-import numpy as np
-import json
 import io
+import json
 import logging
 from typing import Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
-# ── 模型順序（固定，確保 meta-features 的欄位順序一致）────────────────────────
 MODEL_ORDER = [
-    "KalmanFilter", "DLinear", "MarkovSwitching", "PatchTST", "Chronos",
-    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
+    "XGBoost",
+    "CatBoost",
+    "ExtraTrees",
+    "LightGBM",
+    "FT-Transformer",
+    "Chronos",
+    "DLinear",
+    "PatchTST",
+    "KalmanFilter",
+    "MarkovSwitching",
 ]
-META_FEATURE_DIM = len(MODEL_ORDER) * 3   # 每個模型 3 個特徵：up_prob, |pct|, confidence
+META_FEATURE_DIM = len(MODEL_ORDER)
+STACKER_VERSION = "v2_rank_stacker"
 
 
-# ── Meta-Feature 建構 ─────────────────────────────────────────────────────────
-def build_meta_features(predictions: list) -> np.ndarray:
-    """
-    把 9 個模型的 ModelPrediction 壓縮成 meta-feature 向量
-    每個模型：[up_prob, normalized_|forecast_pct|, confidence]
-    缺失的模型填 [0.5, 0.0, 0.5]（中立值）
-    """
+def _resolve_model_order(model_order: list[str] | None = None) -> list[str]:
+    order = [name for name in (model_order or MODEL_ORDER) if name]
+    return order or list(MODEL_ORDER)
+
+
+def build_rank_meta_features(
+    rank_scores: dict[str, float],
+    model_order: list[str] | None = None,
+) -> np.ndarray:
+    """Build one rank feature per model; missing inputs are neutral."""
+    order = _resolve_model_order(model_order)
+    return np.array(
+        [float(np.clip(rank_scores.get(name, 0.5), 0.0, 1.0)) for name in order],
+        dtype=np.float32,
+    )
+
+
+def _rows_to_matrix(
+    rows: list[dict[str, float]] | np.ndarray,
+    model_order: list[str],
+) -> np.ndarray:
+    if isinstance(rows, np.ndarray):
+        arr = np.asarray(rows, dtype=np.float32)
+        if arr.ndim != 2:
+            raise ValueError("rank score matrix must be 2D")
+        if arr.shape[1] != len(model_order):
+            raise ValueError(f"rank score width {arr.shape[1]} != model_order {len(model_order)}")
+        return np.clip(arr, 0.0, 1.0)
+    if not rows:
+        return np.empty((0, len(model_order)), dtype=np.float32)
+    return np.vstack([build_rank_meta_features(row, model_order) for row in rows]).astype(np.float32)
+
+
+def build_oos_rank_rows(
+    oos_rank_predictions: dict[str, np.ndarray],
+    target_len: int,
+    model_order: list[str] | None = None,
+    min_models: int = 2,
+) -> tuple[list[dict[str, float]], list[str]]:
+    """Align OOS rank predictions into row-wise stacker training inputs."""
+    preferred_order = _resolve_model_order(model_order)
+    selected_order: list[str] = []
+    cleaned: dict[str, np.ndarray] = {}
+    for name in preferred_order:
+        if name not in oos_rank_predictions:
+            continue
+        arr = np.asarray(oos_rank_predictions[name], dtype=float).reshape(-1)
+        if len(arr) != target_len:
+            raise ValueError(f"{name} OOS prediction length {len(arr)} != target length {target_len}")
+        selected_order.append(name)
+        cleaned[name] = np.clip(arr, 0.0, 1.0)
+
+    if len(selected_order) < min_models:
+        return [], selected_order
+
+    rows = [
+        {name: float(cleaned[name][i]) for name in selected_order}
+        for i in range(target_len)
+    ]
+    return rows, selected_order
+
+
+def train_rank_stacker_oof(
+    oof_rank_scores: list[dict[str, float]] | np.ndarray,
+    target_rank: np.ndarray,
+    model_order: list[str] | None = None,
+    min_samples: int = 80,
+) -> Optional[dict]:
+    """Train an honest v2 rank stacker from OOF base-model rank scores."""
+    from scipy.stats import spearmanr
+    from sklearn.linear_model import RidgeCV
+    from sklearn.preprocessing import StandardScaler
+
+    order = _resolve_model_order(model_order)
+    X = _rows_to_matrix(oof_rank_scores, order)
+    y = np.asarray(target_rank, dtype=np.float32).reshape(-1)
+    valid = np.isfinite(y)
+    if len(X) != len(y):
+        raise ValueError(f"rank score rows {len(X)} != targets {len(y)}")
+    X, y = X[valid], y[valid]
+    y = np.clip(y, 0.0, 1.0)
+    if len(X) < min_samples:
+        logger.info("[RankStacking] insufficient OOF samples: %s < %s", len(X), min_samples)
+        return None
+
+    split = max(1, int(len(X) * 0.8))
+    if len(X) - split < 10:
+        split = max(1, len(X) - 10)
+    X_train, X_eval = X[:split], X[split:]
+    y_train, y_eval = y[:split], y[split:]
+
+    scaler = StandardScaler()
+    Xs_train = scaler.fit_transform(X_train)
+    model = RidgeCV(alphas=np.array([0.01, 0.1, 1.0, 10.0], dtype=np.float64))
+    model.fit(Xs_train, y_train)
+
+    eval_ic = None
+    eval_rmse = None
+    if len(X_eval) > 0:
+        pred_eval = np.clip(model.predict(scaler.transform(X_eval)), 0.0, 1.0)
+        eval_rmse = float(np.sqrt(np.mean((pred_eval - y_eval) ** 2)))
+        if len(np.unique(y_eval)) > 1 and len(np.unique(pred_eval)) > 1:
+            eval_ic = float(spearmanr(pred_eval, y_eval).correlation)
+
+    full_scaler = StandardScaler()
+    full_model = RidgeCV(alphas=np.array([0.01, 0.1, 1.0, 10.0], dtype=np.float64))
+    full_model.fit(full_scaler.fit_transform(X), y)
+
+    return {
+        "model": full_model,
+        "scaler": full_scaler,
+        "model_order": order,
+        "meta_feature_dim": len(order),
+        "target_type": "rank",
+        "model_family": "ridge_rank_stacker",
+        "stacker_version": STACKER_VERSION,
+        "train_samples": int(len(X)),
+        "eval_samples": int(len(X_eval)),
+        "eval_ic": None if eval_ic is None or not np.isfinite(eval_ic) else round(eval_ic, 4),
+        "eval_rmse": None if eval_rmse is None else round(eval_rmse, 4),
+    }
+
+
+def rank_meta_predict(rank_scores: dict[str, float], bundle: dict | None) -> float | None:
+    """Return stacked rank in [0, 1], or None when no valid bundle exists."""
+    if not bundle or bundle.get("target_type") != "rank":
+        return None
+    try:
+        order = _resolve_model_order(bundle.get("model_order"))
+        feat = build_rank_meta_features(rank_scores, order).reshape(1, -1)
+        scaled = bundle["scaler"].transform(feat)
+        return float(np.clip(bundle["model"].predict(scaled)[0], 0.0, 1.0))
+    except Exception as e:
+        logger.warning("[RankStacking] rank_meta_predict failed: %s", e)
+        return None
+
+
+def apply_rank_stacker(
+    rank_scores: dict[str, float],
+    bundle: dict | None,
+    ic_weights: dict[str, float] | None = None,
+    min_eval_ic: float = 0.0,
+) -> tuple[dict[str, float], dict[str, float], dict]:
+    """Append a validated v2 rank stacker score for rank_to_signal."""
+    scores_out = dict(rank_scores)
+    weights_out = dict(ic_weights or {})
+    if not bundle or bundle.get("target_type") != "rank":
+        return scores_out, weights_out, {"applied": False, "reason": "not_v2_rank_bundle"}
+
+    eval_ic_raw = bundle.get("eval_ic")
+    try:
+        eval_ic = float(eval_ic_raw)
+    except (TypeError, ValueError):
+        eval_ic = 0.0
+    if not np.isfinite(eval_ic) or eval_ic <= min_eval_ic:
+        return scores_out, weights_out, {"applied": False, "reason": "non_positive_eval_ic", "eval_ic": eval_ic_raw}
+
+    stacked_rank = rank_meta_predict(rank_scores, bundle)
+    if stacked_rank is None:
+        return scores_out, weights_out, {"applied": False, "reason": "prediction_failed", "eval_ic": eval_ic}
+
+    scores_out["StackingRank"] = float(np.clip(stacked_rank, 0.0, 1.0))
+    weights_out["StackingRank"] = eval_ic
+    return scores_out, weights_out, {
+        "applied": True,
+        "rank": scores_out["StackingRank"],
+        "eval_ic": eval_ic,
+        "model_order": _resolve_model_order(bundle.get("model_order")),
+    }
+
+
+def build_meta_features(predictions: list, model_order: list[str] | None = None) -> np.ndarray:
+    """Compatibility feature builder for legacy direction stacker callers."""
+    order = _resolve_model_order(model_order)
     pred_map = {p.model_name: p for p in predictions}
-    meta = []
-    for name in MODEL_ORDER:
+    meta: list[float] = []
+    for name in order:
         p = pred_map.get(name)
         if p is None:
             meta.extend([0.5, 0.0, 0.5])
         else:
             up_prob = p.confidence if p.direction == "up" else (1.0 - p.confidence)
-            pct_norm = min(abs(p.forecast_pct) * 20, 1.0)  # 5% 漲跌對應 1.0
-            meta.extend([up_prob, pct_norm, p.confidence])
+            pct_norm = min(abs(float(p.forecast_pct)) * 20.0, 1.0)
+            meta.extend([float(up_prob), pct_norm, float(p.confidence)])
     return np.array(meta, dtype=float)
 
 
-# ── OOF 訓練 ──────────────────────────────────────────────────────────────────
+def meta_predict(predictions: list, bundle: dict | None) -> tuple[str | None, float | None]:
+    """Compatibility wrapper for legacy weighted_vote direction correction."""
+    if bundle is None:
+        return None, None
+    try:
+        if bundle.get("target_type") == "rank":
+            rank_scores = {}
+            for p in predictions:
+                if p.direction == "up":
+                    rank_scores[p.model_name] = float(np.clip(p.confidence, 0.0, 1.0))
+                else:
+                    rank_scores[p.model_name] = float(np.clip(1.0 - p.confidence, 0.0, 1.0))
+            rank = rank_meta_predict(rank_scores, bundle)
+            if rank is None:
+                return None, None
+            return ("up" if rank > 0.5 else "down"), max(rank, 1.0 - rank)
+
+        model_order = bundle.get("model_order") if isinstance(bundle, dict) else None
+        feat = build_meta_features(predictions, model_order=model_order).reshape(1, -1)
+        scaled = bundle["scaler"].transform(feat)
+        proba = bundle["model"].predict_proba(scaled)[0]
+        up_p = float(proba[1])
+        return ("up" if up_p > 0.5 else "down"), max(up_p, 1.0 - up_p)
+    except Exception as e:
+        logger.warning("[Stacking] meta_predict failed: %s", e)
+        return None, None
+
+
 def train_meta_learner_oof(
     X: np.ndarray,
     y: np.ndarray,
@@ -61,194 +257,62 @@ def train_meta_learner_oof(
     feature_names: list,
     stock_id: int,
 ) -> Optional[dict]:
+    """Compatibility entrypoint.
+
+    The old implementation trained a binary direction classifier here. That is
+    intentionally removed. Call train_rank_stacker_oof() with OOF rank scores.
     """
-    用 OOF 時序交叉驗證訓練 meta-learner。
-    X, y：特徵矩陣和標籤（來自 get_features()）
-    prices：完整收盤價序列
-    回傳 {"model": LR, "scaler": StandardScaler} 或 None
-    """
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.preprocessing import StandardScaler
-
-    n = len(X)
-    if n < 80:
-        logger.info(f"[Stacking] 樣本不足（{n}），跳過 OOF 訓練")
-        return None
-
-    # ── 延遲 import，避免 loop 外的 import 失敗整個模組 ─────────────────────
-    try:
-        from xgboost import XGBClassifier
-        from catboost import CatBoostClassifier
-        from sklearn.ensemble import ExtraTreesClassifier
-        from .models import run_kalman_filter, run_dlinear
-    except ImportError as e:
-        logger.warning(f"[Stacking] import 失敗: {e}")
-        return None
-
-    n_folds    = 4
-    fold_size  = n // (n_folds + 1)
-    meta_X_all, meta_y_all = [], []
-
-    for fold in range(n_folds):
-        train_end = fold_size * (fold + 1)
-        val_end   = min(train_end + fold_size, n)
-        if val_end - train_end < 5 or train_end < 30:
-            continue
-
-        X_tr, y_tr = X[:train_end], y[:train_end]
-        X_val       = X[train_end:val_end]
-        y_val       = y[train_end:val_end]
-
-        # ── 訓練 Level-0 特徵模型（輕量版，用於 OOF）────────────────────────
-        fold_models = {}
-        _simple_kwargs = dict(random_state=42, n_jobs=-1)
-
-        try:
-            m = XGBClassifier(n_estimators=80, max_depth=4, learning_rate=0.05,
-                              use_label_encoder=False, eval_metric="logloss",
-                              random_state=42, verbosity=0)
-            m.fit(X_tr, y_tr); fold_models["XGBoost"] = m
-        except Exception as e: logger.warning(f"[Stacking] XGBoost OOF fold failed: {e}")
-
-        try:
-            m = CatBoostClassifier(iterations=80, depth=4, learning_rate=0.05,
-                                   loss_function="Logloss", random_seed=42, verbose=0)
-            m.fit(X_tr, y_tr); fold_models["CatBoost"] = m
-        except Exception as e: logger.warning(f"[Stacking] CatBoost OOF fold failed: {e}")
-
-        try:
-            m = ExtraTreesClassifier(n_estimators=80, max_depth=5, **_simple_kwargs)
-            m.fit(X_tr, y_tr); fold_models["ExtraTrees"] = m
-        except Exception as e: logger.warning(f"[Stacking] ExtraTrees OOF fold failed: {e}")
-
-        # LightGBM：輕量版 OOF
-        try:
-            import lightgbm as lgb
-            m = lgb.LGBMClassifier(
-                n_estimators=80, max_depth=4, learning_rate=0.05,
-                num_leaves=15, class_weight="balanced",
-                random_state=42, verbose=-1,
-            )
-            m.fit(X_tr, y_tr); fold_models["LightGBM"] = m
-        except Exception as e: logger.warning(f"[Stacking] LightGBM OOF fold failed: {e}")
-
-        # ── 對每個驗證樣本建立 meta-features ────────────────────────────────
-        from .models import ModelPrediction
-        for i in range(len(X_val)):
-            fold_preds = []
-
-            # 特徵模型：直接從已訓練模型取機率
-            for name, mdl in fold_models.items():
-                try:
-                    proba = mdl.predict_proba(X_val[i:i+1])[0]
-                    up_p  = float(proba[1])
-                    fold_preds.append(ModelPrediction(
-                        model_name=name,
-                        direction="up" if up_p > 0.5 else "down",
-                        confidence=max(up_p, 1 - up_p),
-                        forecast_pct=(up_p - 0.5) * 0.1,
-                        direction_accuracy=0.5,
-                    ))
-                except Exception:
-                    pass
-
-            # 純價格模型：用此時點之前的價格序列
-            price_idx = int(len(prices) * train_end / n) + i
-            p_seg = prices[:max(40, price_idx)]
-            for fn, fname in [
-                (run_kalman_filter, "KalmanFilter"),
-                (run_dlinear,       "DLinear"),
-            ]:
-                try:
-                    fold_preds.append(fn(p_seg, horizon=14))
-                except Exception:
-                    pass
-
-            meta_X_all.append(build_meta_features(fold_preds))
-            meta_y_all.append(int(y_val[i]))
-
-    if len(meta_X_all) < 20:
-        logger.info(f"[Stacking] OOF 樣本太少（{len(meta_X_all)}），跳過")
-        return None
-
-    meta_X = np.array(meta_X_all)
-    meta_y = np.array(meta_y_all)
-
-    # H6 fix: temporal 80/20 split for honest OOF evaluation
-    split = int(len(meta_X) * 0.8)
-    meta_X_train, meta_X_eval = meta_X[:split], meta_X[split:]
-    meta_y_train, meta_y_eval = meta_y[:split], meta_y[split:]
-
-    scaler_eval = StandardScaler()
-    meta_Xs_train = scaler_eval.fit_transform(meta_X_train)
-    meta_Xs_eval  = scaler_eval.transform(meta_X_eval)
-
-    # C=1.0（10 模型 × 3 特徵 = 30 維輸入）
-    # lbfgs solver 在中等維度比 liblinear 收斂更穩定
-    # max_iter=500 確保收斂
-    meta_model = LogisticRegression(
-        penalty="l2", C=1.0, solver="lbfgs",
-        max_iter=500, random_state=42,
+    logger.info(
+        "[RankStacking] train_meta_learner_oof is disabled for raw feature matrices; "
+        "use train_rank_stacker_oof with OOF rank scores"
     )
-    meta_model.fit(meta_Xs_train, meta_y_train)
-    oof_acc = meta_model.score(meta_Xs_eval, meta_y_eval)
-    logger.info(f"[Stacking] Meta-learner OOF holdout acc={oof_acc:.3f} (eval={len(meta_y_eval)}, train={len(meta_y_train)})")
-
-    # Retrain on full data for production use
-    scaler    = StandardScaler()
-    meta_Xs   = scaler.fit_transform(meta_X)
-    meta_model.fit(meta_Xs, meta_y)
-    logger.info(f"[Stacking] Meta-learner 已用全量 {len(meta_y)} 筆重新訓練")
-    return {"model": meta_model, "scaler": scaler}
+    return None
 
 
-# ── 推論 ──────────────────────────────────────────────────────────────────────
-def meta_predict(predictions: list, bundle: dict | None) -> tuple[str | None, float | None]:
-    """
-    用訓練好的 meta-learner 輸出最終方向和機率。
-    回傳 (direction, up_probability) 或 (None, None) 表示 fallback
-    """
-    if bundle is None:
-        return None, None
-    try:
-        feat   = build_meta_features(predictions).reshape(1, -1)
-        scaled = bundle["scaler"].transform(feat)
-        proba  = bundle["model"].predict_proba(scaled)[0]
-        up_p   = float(proba[1])
-        return ("up" if up_p > 0.5 else "down"), max(up_p, 1 - up_p)
-    except Exception as e:
-        logger.warning(f"[Stacking] meta_predict 失敗: {e}")
-        return None, None
-
-
-# ── GCS 持久化 ────────────────────────────────────────────────────────────────
 def save_meta_learner(bundle: dict, stock_id: int) -> bool:
     from .model_store import _get_bucket
+
     try:
+        import datetime as _dt
         import joblib
+
         bucket = _get_bucket()
         if not bucket:
             return False
         buf = io.BytesIO()
-        joblib.dump(bundle, buf); buf.seek(0)
+        joblib.dump(bundle, buf)
+        buf.seek(0)
         bucket.blob(f"{stock_id}/stacking_meta.joblib").upload_from_file(buf)
-        import datetime as _dt
-        meta = {"stock_id": stock_id,
-                "trained_at": _dt.datetime.utcnow().isoformat(),
-                "meta_feature_dim": META_FEATURE_DIM}
+        model_order = _resolve_model_order(bundle.get("model_order") if isinstance(bundle, dict) else None)
+        meta = {
+            "stock_id": stock_id,
+            "trained_at": _dt.datetime.utcnow().isoformat(),
+            "meta_feature_dim": int(bundle.get("meta_feature_dim") or len(model_order)),
+            "model_order": model_order,
+            "model_count": len(model_order),
+            "target_type": bundle.get("target_type", "rank"),
+            "model_family": bundle.get("model_family", "ridge_rank_stacker"),
+            "stacker_version": bundle.get("stacker_version", STACKER_VERSION),
+            "eval_ic": bundle.get("eval_ic"),
+            "eval_rmse": bundle.get("eval_rmse"),
+        }
         bucket.blob(f"{stock_id}/metadata_stacking.json").upload_from_string(
-            json.dumps(meta), content_type="application/json")
-        logger.info(f"[Stacking] stock {stock_id} meta-learner 已存入 GCS")
+            json.dumps(meta),
+            content_type="application/json",
+        )
+        logger.info("[RankStacking] saved stock %s meta-learner to GCS", stock_id)
         return True
     except Exception as e:
-        logger.error(f"[Stacking] GCS save 失敗: {e}")
+        logger.error("[RankStacking] GCS save failed: %s", e)
         return False
 
 
 def load_meta_learner(stock_id: int) -> Optional[dict]:
     from .model_store import _get_bucket, is_model_fresh
+
     try:
         import joblib
+
         bucket = _get_bucket()
         if not bucket:
             return None
@@ -262,10 +326,16 @@ def load_meta_learner(stock_id: int) -> Optional[dict]:
         if not model_blob.exists():
             return None
         buf = io.BytesIO()
-        model_blob.download_to_file(buf); buf.seek(0)
+        model_blob.download_to_file(buf)
+        buf.seek(0)
         bundle = joblib.load(buf)
-        logger.info(f"[Stacking] 已從 GCS 載入 stock {stock_id} meta-learner")
+        if isinstance(bundle, dict):
+            bundle.setdefault("model_order", meta.get("model_order") or list(MODEL_ORDER))
+            bundle.setdefault("meta_feature_dim", meta.get("meta_feature_dim") or len(bundle["model_order"]))
+            bundle.setdefault("target_type", meta.get("target_type", "rank"))
+            bundle.setdefault("stacker_version", meta.get("stacker_version", STACKER_VERSION))
+        logger.info("[RankStacking] loaded stock %s meta-learner from GCS", stock_id)
         return bundle
     except Exception as e:
-        logger.warning(f"[Stacking] GCS load 失敗: {e}")
+        logger.warning("[RankStacking] GCS load failed: %s", e)
         return None

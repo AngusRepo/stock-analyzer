@@ -13,7 +13,10 @@ import os
 import logging
 from typing import Any, Optional
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:  # allow pure domain tests to import services without HTTP deps
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,8 @@ def _check_env():
 def _post(body: dict, timeout: float = 60.0) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
     _check_env()
+    if httpx is None:
+        raise RuntimeError("D1 request failed: httpx not installed")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
         f"/d1/database/{CF_D1_DB_ID}/query"

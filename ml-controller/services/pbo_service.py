@@ -12,6 +12,8 @@ Combinatorial Purged Cross-Validation (CPCV):
 
 Data source: backtest trades (from backtest_results) or paper_orders
 """
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -22,7 +24,10 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:  # keep pure PBO math unit-testable without HTTP deps
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,7 @@ PURGE_DAYS = 5                  # days to purge at partition boundaries
 
 @dataclass
 class PBOResult:
+    method: str = "cpcv_single_strategy_proxy"
     n_partitions: int = 0
     n_combinations: int = 0     # C(S, S/2) total combinations evaluated
     n_trades: int = 0
@@ -56,6 +62,9 @@ class PBOResult:
     verdict_reason: str = ""
     sampled: bool = False       # True if combinations were randomly sampled
     partition_details: list = field(default_factory=list)
+    logit_values: list[float] = field(default_factory=list)
+    oos_rank_percentiles: list[float] = field(default_factory=list)
+    selected_strategy_counts: dict[str, int] = field(default_factory=dict)
 
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
@@ -142,6 +151,128 @@ def _compute_partition_return(trades: list[dict]) -> float:
     for t in trades:
         equity *= (1 + t["profit_ratio"])
     return equity - 1.0  # total return as fraction
+
+
+def _compound_return(returns: list[float]) -> float:
+    equity = 1.0
+    for ret in returns:
+        equity *= 1.0 + float(ret)
+    return equity - 1.0
+
+
+def _rank_percentile(score: float, all_scores: list[float]) -> float:
+    """Return Bailey-style relative rank percentile: worst ~= 0, best ~= 1."""
+    sorted_scores = sorted(float(s) for s in all_scores)
+    ranks = [i + 1 for i, candidate in enumerate(sorted_scores) if candidate == float(score)]
+    if not ranks:
+        return 0.0
+    average_rank = sum(ranks) / len(ranks)
+    return average_rank / (len(sorted_scores) + 1)
+
+
+def _run_cscv_rank_logit_pbo(
+    strategy_returns_by_partition: dict[str, list[float]],
+) -> PBOResult:
+    """
+    Industry-grade CSCV rank-logit PBO core.
+
+    For each train/test partition split, select the best in-sample strategy,
+    rank that same strategy out-of-sample against all candidates, then count
+    how often its logit-rank falls below zero.
+    """
+    cleaned = {
+        name: [float(v) for v in values]
+        for name, values in strategy_returns_by_partition.items()
+        if isinstance(values, list) and values
+    }
+    result = PBOResult(method="cscv_rank_logit")
+    if len(cleaned) < 2:
+        result.go_live_verdict = "FAIL"
+        result.verdict_reason = "CSCV PBO requires at least 2 strategy candidates"
+        return result
+
+    n_partitions = len(next(iter(cleaned.values())))
+    if n_partitions < 4 or any(len(values) != n_partitions for values in cleaned.values()):
+        result.n_partitions = n_partitions
+        result.go_live_verdict = "FAIL"
+        result.verdict_reason = "CSCV PBO requires >=4 equal-length partition returns"
+        return result
+
+    result.n_partitions = n_partitions
+    partition_indices = list(range(n_partitions))
+    half = n_partitions // 2
+    combos = list(combinations(partition_indices, half))
+    result.n_combinations = len(combos)
+
+    selected_is_returns: list[float] = []
+    selected_oos_returns: list[float] = []
+    selected_counts: dict[str, int] = {}
+    logits: list[float] = []
+    rank_percentiles: list[float] = []
+
+    for train_indices in combos:
+        test_indices = [i for i in partition_indices if i not in train_indices]
+        is_scores = {
+            name: _compound_return([values[i] for i in train_indices])
+            for name, values in cleaned.items()
+        }
+        selected_name = max(is_scores, key=is_scores.get)
+        oos_scores = {
+            name: _compound_return([values[i] for i in test_indices])
+            for name, values in cleaned.items()
+        }
+        omega = _rank_percentile(oos_scores[selected_name], list(oos_scores.values()))
+        omega = min(max(omega, 1e-9), 1 - 1e-9)
+        logits.append(math.log(omega / (1.0 - omega)))
+        rank_percentiles.append(omega)
+        selected_is_returns.append(is_scores[selected_name])
+        selected_oos_returns.append(oos_scores[selected_name])
+        selected_counts[selected_name] = selected_counts.get(selected_name, 0) + 1
+
+    result.logit_values = [round(v, 6) for v in logits]
+    result.oos_rank_percentiles = [round(v, 6) for v in rank_percentiles]
+    result.selected_strategy_counts = selected_counts
+    result.n_oos_negative = sum(1 for value in logits if value <= 0.0)
+    result.pbo = result.n_oos_negative / len(logits) if logits else 1.0
+    result.is_mean_return = statistics.mean(selected_is_returns) if selected_is_returns else 0.0
+    result.oos_mean_return = statistics.mean(selected_oos_returns) if selected_oos_returns else 0.0
+    result.oos_median_return = statistics.median(selected_oos_returns) if selected_oos_returns else 0.0
+    result.degradation = result.is_mean_return - result.oos_mean_return
+
+    if result.pbo < 0.50 and result.oos_mean_return > 0.0:
+        result.go_live_verdict = "PASS"
+        result.verdict_reason = (
+            f"CSCV rank-logit PBO = {result.pbo:.1%} < 50%; "
+            f"selected OOS mean return = {result.oos_mean_return:.2%}."
+        )
+    else:
+        result.go_live_verdict = "FAIL"
+        result.verdict_reason = (
+            f"CSCV rank-logit PBO = {result.pbo:.1%}; "
+            f"selected OOS mean return = {result.oos_mean_return:.2%}."
+        )
+    return result
+
+
+def _extract_strategy_partition_returns(raw: dict) -> dict[str, list[float]]:
+    candidates = raw.get("strategy_returns_by_partition") or raw.get("candidate_partition_returns")
+    if isinstance(candidates, dict):
+        return {
+            str(name): [float(v) for v in values]
+            for name, values in candidates.items()
+            if isinstance(values, list)
+        }
+    if isinstance(candidates, list):
+        extracted = {}
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("strategy") or item.get("trial_id")
+            values = item.get("partition_returns") or item.get("returns")
+            if name is not None and isinstance(values, list):
+                extracted[str(name)] = [float(v) for v in values]
+        return extracted
+    return {}
 
 
 def _run_cpcv(
@@ -310,11 +441,14 @@ async def run_pbo_analysis(
     """
     if not CF_API_TOKEN:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
+    if httpx is None:
+        return {"error": "httpx not installed", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
         # ── Step 1: Fetch trade data ──
         trades: list[dict] = []
         trades_truncated = False
+        strategy_partition_returns: dict[str, list[float]] = {}
 
         if source == "backtest":
             logger.info("[PBO] Fetching backtest trades from D1...")
@@ -327,14 +461,15 @@ async def run_pbo_analysis(
                 return {"error": "No backtest results found", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
-            trades = raw.get("trades", [])
+            strategy_partition_returns = _extract_strategy_partition_returns(raw)
+            trades = [] if strategy_partition_returns else raw.get("trades", [])
 
-            if not trades:
+            if not trades and not strategy_partition_returns:
                 return {"error": "No trade details in backtest results", "status": "failed"}
 
             # Warn if trades were truncated (backtest stores max 500)
             total_from_summary = raw.get("summary", {}).get("total_trades", 0)
-            if total_from_summary > len(trades):
+            if trades and total_from_summary > len(trades):
                 trades_truncated = True
                 logger.warning(
                     f"[PBO] Trades truncated: {len(trades)}/{total_from_summary}. "
@@ -366,24 +501,34 @@ async def run_pbo_analysis(
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
 
-        if len(trades) < n_partitions * 3:
+        if strategy_partition_returns:
+            logger.info(
+                f"[PBO] Running CSCV rank-logit on {len(strategy_partition_returns)} candidates..."
+            )
+            pbo = _run_cscv_rank_logit_pbo(strategy_partition_returns)
+        elif len(trades) < n_partitions * 3:
             return {
                 "error": f"Only {len(trades)} trades, need >= {n_partitions * 3} for {n_partitions} partitions",
                 "status": "failed",
             }
 
         # ── Step 2: Run CPCV ──
-        logger.info(f"[PBO] {len(trades)} trades, {n_partitions} partitions...")
-        pbo = _run_cpcv(trades, n_partitions)
+        if not strategy_partition_returns:
+            logger.info(f"[PBO] {len(trades)} trades, {n_partitions} partitions...")
+            pbo = _run_cpcv(trades, n_partitions)
 
         # ── Step 3: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         raw_json = json.dumps({
+            "method": pbo.method,
             "partition_details": pbo.partition_details,
             "n_combinations": pbo.n_combinations,
             "oos_mean_return": pbo.oos_mean_return,
             "is_mean_return": pbo.is_mean_return,
+            "logit_values": pbo.logit_values,
+            "oos_rank_percentiles": pbo.oos_rank_percentiles,
+            "selected_strategy_counts": pbo.selected_strategy_counts,
             "source": source,
         }, ensure_ascii=False)
 
@@ -406,6 +551,7 @@ async def run_pbo_analysis(
             "status": "success" if success else "d1_write_failed",
             "run_date": today,
             "source": source,
+            "method": pbo.method,
             "n_partitions": pbo.n_partitions,
             "n_combinations": pbo.n_combinations,
             "n_trades": pbo.n_trades,

@@ -24,6 +24,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.pregel.types import RetryPolicy
 
 from services import d1_client, kv_client
+from services.ensemble_v2 import attach_ensemble_v2
 from services.payload_builder import (
     PredictPayload,
     load_active_stocks,
@@ -32,6 +33,7 @@ from services.payload_builder import (
 )
 from services.modal_client import batch_predict
 from services.recommendation_service import (
+    build_screener_seed_recommendations,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
     write_predictions_to_d1,
@@ -71,7 +73,7 @@ class PipelineStateV2(TypedDict, total=False):
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
-    lifecycle_weights: dict                 # from D1 model_lifecycle_state
+    lifecycle_weights: dict                 # from model_pool.json
     trading_config: dict                    # B12 fix: full KV trading:config (sltp/signal/circuit)
 
     # Computed
@@ -190,14 +192,79 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     # Parallel: feature + Chronos + DLinear + PatchTST + Kalman + Markov
     # 6-way asyncio.gather (Stage 0.1+0.2+0.3 + 6.2)
+    model_status, active_versions, challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+
+    async def _skip_batch(reason: str) -> dict:
+        return {"error": reason, "results": []}
+
     feat_task = batch_predict(payloads)
-    chronos_task = modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
-    dlinear_task = modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version="v1")
-    patchtst_task = modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version="v1")
-    kalman_task = modal_client.kalman_batch_predict(chronos_series, horizon=5, version="v1")
-    markov_task = modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version="v1")
-    results, chronos_raw, dlinear_raw, patchtst_raw, kalman_raw, markov_raw = await asyncio.gather(
-        feat_task, chronos_task, dlinear_task, patchtst_task, kalman_task, markov_task,
+    chronos_task = (
+        modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
+        if model_status.get("Chronos", "active") in ("active", "degraded")
+        else _skip_batch("Chronos retired by model_pool")
+    )
+    dlinear_task = (
+        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
+        if model_status.get("DLinear", "active") in ("active", "degraded")
+        else _skip_batch("DLinear retired by model_pool")
+    )
+    patchtst_task = (
+        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
+        if model_status.get("PatchTST", "active") in ("active", "degraded")
+        else _skip_batch("PatchTST retired by model_pool")
+    )
+    kalman_task = (
+        modal_client.kalman_batch_predict(chronos_series, horizon=5, version=active_versions.get("KalmanFilter", "v1"))
+        if model_status.get("KalmanFilter", "active") in ("active", "degraded")
+        else _skip_batch("KalmanFilter retired by model_pool")
+    )
+    markov_task = (
+        modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version=active_versions.get("MarkovSwitching", "v1"))
+        if model_status.get("MarkovSwitching", "active") in ("active", "degraded")
+        else _skip_batch("MarkovSwitching retired by model_pool")
+    )
+    dlinear_ch_task = (
+        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
+        if challenger_versions.get("DLinear")
+        else _skip_batch("DLinear challenger absent")
+    )
+    patchtst_ch_task = (
+        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["PatchTST"])
+        if challenger_versions.get("PatchTST")
+        else _skip_batch("PatchTST challenger absent")
+    )
+    kalman_ch_task = (
+        modal_client.kalman_batch_predict(chronos_series, horizon=5, version=challenger_versions["KalmanFilter"])
+        if challenger_versions.get("KalmanFilter")
+        else _skip_batch("KalmanFilter challenger absent")
+    )
+    markov_ch_task = (
+        modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version=challenger_versions["MarkovSwitching"])
+        if challenger_versions.get("MarkovSwitching")
+        else _skip_batch("MarkovSwitching challenger absent")
+    )
+    (
+        results,
+        chronos_raw,
+        dlinear_raw,
+        patchtst_raw,
+        kalman_raw,
+        markov_raw,
+        dlinear_ch_raw,
+        patchtst_ch_raw,
+        kalman_ch_raw,
+        markov_ch_raw,
+    ) = await asyncio.gather(
+        feat_task,
+        chronos_task,
+        dlinear_task,
+        patchtst_task,
+        kalman_task,
+        markov_task,
+        dlinear_ch_task,
+        patchtst_ch_task,
+        kalman_ch_task,
+        markov_ch_task,
         return_exceptions=True,
     )
 
@@ -213,6 +280,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.info(
             f"[Pipeline V2] Chronos universal: {len(chronos_map)}/{len(chronos_series)} succeeded"
         )
+    elif isinstance(chronos_raw, dict) and chronos_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] Chronos skipped: {chronos_raw.get('error')}")
     else:
         logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
 
@@ -231,6 +300,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             )
         else:
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
+    elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] DLinear skipped: {dlinear_raw.get('error')}")
     else:
         logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
 
@@ -249,8 +320,27 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             )
         else:
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
+    elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] PatchTST skipped: {patchtst_raw.get('error')}")
     else:
         logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
+
+    def _drain_ts_result(raw, name: str, series: list[dict]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        if isinstance(raw, BaseException):
+            logger.warning(f"[Pipeline V2] {name} batch failed entirely: {raw}")
+            return out
+        if isinstance(raw, dict) and not raw.get("error"):
+            for row in raw.get("results") or []:
+                sym = row.get("symbol")
+                if sym and not row.get("error"):
+                    out[sym] = row
+            logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(series)} succeeded")
+        elif isinstance(raw, dict) and raw.get("results") == []:
+            logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
+        else:
+            logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
+        return out
 
     # Stage 6.2: KalmanFilter + MarkovSwitching state-space (per-stock loop, shared hyperparams)
     def _drain_state_space(raw, name: str) -> dict[str, dict]:
@@ -264,42 +354,161 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 if sym and not r.get("error"):
                     out[sym] = r
             logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded")
+        elif isinstance(raw, dict) and raw.get("results") == []:
+            logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
         else:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
 
+    dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", chronos_series)
+    patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", chronos_series)
+    kalman_ch_map = _drain_state_space(kalman_ch_raw, "KalmanFilter::challenger")
+    markov_ch_map = _drain_state_space(markov_ch_raw, "MarkovSwitching::challenger")
+
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
         return {"predictions": {}}
 
+    def _attach_alt_sources(row: dict, sym: str) -> None:
+        if sym in chronos_map:
+            row["chronos"] = chronos_map[sym]
+        if sym in dlinear_map:
+            row["dlinear"] = dlinear_map[sym]
+        if sym in patchtst_map:
+            row["patchtst"] = patchtst_map[sym]
+        if sym in kalman_map:
+            row["kalman_filter"] = kalman_map[sym]
+        if sym in markov_map:
+            row["markov_switching"] = markov_map[sym]
+
+    def _attach_challenger_shadow(row: dict, sym: str) -> None:
+        challenger_scores = row.setdefault("challenger_rank_scores", {})
+        if sym in dlinear_ch_map and dlinear_ch_map[sym].get("forecast_pct") is not None:
+            challenger_scores["DLinear"] = _ts_to_rank(float(dlinear_ch_map[sym]["forecast_pct"]))
+        if sym in patchtst_ch_map and patchtst_ch_map[sym].get("forecast_pct") is not None:
+            challenger_scores["PatchTST"] = _ts_to_rank(float(patchtst_ch_map[sym]["forecast_pct"]))
+        if sym in kalman_ch_map and kalman_ch_map[sym].get("forecast_pct") is not None:
+            challenger_scores["KalmanFilter"] = _ts_to_rank(float(kalman_ch_map[sym]["forecast_pct"]))
+        if sym in markov_ch_map and markov_ch_map[sym].get("forecast_pct") is not None:
+            challenger_scores["MarkovSwitching"] = _ts_to_rank(float(markov_ch_map[sym]["forecast_pct"]))
+        if not challenger_scores:
+            row.pop("challenger_rank_scores", None)
+
+    def _last_close(payload: dict) -> float:
+        prices = payload.get("prices") or []
+        if prices:
+            return float(prices[-1].get("close") or prices[-1].get("adj_close") or 0.0)
+        return 0.0
+
+    def _signal_from_forecast(forecast_pct: float) -> str:
+        if forecast_pct >= 0.03:
+            return "STRONG_BUY"
+        if forecast_pct >= 0.01:
+            return "BUY"
+        if forecast_pct <= -0.03:
+            return "STRONG_SELL"
+        if forecast_pct <= -0.01:
+            return "SELL"
+        return "HOLD"
+
+    def _build_alt_only_prediction(sym: str, payload: dict, feature_error: str | None) -> dict | None:
+        sources = [
+            ("Chronos", chronos_map.get(sym)),
+            ("DLinear", dlinear_map.get(sym)),
+            ("PatchTST", patchtst_map.get(sym)),
+            ("KalmanFilter", kalman_map.get(sym)),
+            ("MarkovSwitching", markov_map.get(sym)),
+        ]
+        usable = [(name, row) for name, row in sources if row and row.get("forecast_pct") is not None]
+        if not usable:
+            return None
+
+        forecasts = [float(row["forecast_pct"]) for _, row in usable]
+        forecast_pct = sum(forecasts) / len(forecasts)
+        confidence_values = [
+            float(row.get("confidence"))
+            for _, row in usable
+            if row.get("confidence") is not None
+        ]
+        confidence = (
+            sum(confidence_values) / len(confidence_values)
+            if confidence_values
+            else min(0.75, 0.5 + abs(forecast_pct) * 4.0)
+        )
+        current_price = _last_close(payload)
+        atr = current_price * 0.02 if current_price > 0 else 0.0
+        upside = max(0.01, forecast_pct)
+        downside = max(0.03, abs(forecast_pct) * 0.75)
+
+        return {
+            "stock_id": payload.get("stock_id", 0),
+            "symbol": sym,
+            "current_price": current_price,
+            "signal": _signal_from_forecast(forecast_pct),
+            "direction": "up" if forecast_pct > 0 else "down" if forecast_pct < 0 else "neutral",
+            "confidence": round(max(0.0, min(1.0, confidence)), 4),
+            "consensus": len(usable),
+            "forecast_pct": round(forecast_pct, 6),
+            "forecast_range": [round(min(forecasts), 6), round(max(forecasts), 6)],
+            "signal_strength": round(abs(forecast_pct), 6),
+            "reasoning": "Feature-model fallback: alternate universal/state-space models available",
+            "entry_price": round(current_price, 2) if current_price > 0 else None,
+            "stop_loss": round(current_price * (1 - downside), 2) if current_price > 0 else None,
+            "target1": round(current_price * (1 + max(0.03, upside)), 2) if current_price > 0 else None,
+            "target2": round(current_price * (1 + max(0.06, upside * 1.8)), 2) if current_price > 0 else None,
+            "models": [name for name, _ in usable],
+            "features_used": [],
+            "feature_version": "alternate_only_fallback",
+            "rank_scores": {},
+            "model_errors": [feature_error] if feature_error else None,
+        }
+
+    feature_by_symbol: dict[str, dict] = {}
+    feature_errors_by_symbol: dict[str, str] = {}
+    for row in results:
+        sym = row.get("symbol")
+        if not sym:
+            continue
+        if row.get("error"):
+            feature_errors_by_symbol[sym] = str(row.get("error"))
+            continue
+        feature_by_symbol[sym] = row
+
     pred_map: dict[str, dict] = {}
-    for r in results:
-        sym = r.get("symbol")
-        if sym and not r.get("error"):
-            # Attach all 5 alternate-source forecasts when available
-            if sym in chronos_map:
-                r["chronos"] = chronos_map[sym]
-            if sym in dlinear_map:
-                r["dlinear"] = dlinear_map[sym]
-            if sym in patchtst_map:
-                r["patchtst"] = patchtst_map[sym]
-            if sym in kalman_map:
-                r["kalman_filter"] = kalman_map[sym]
-            if sym in markov_map:
-                r["markov_switching"] = markov_map[sym]
-            pred_map[sym] = r
+    alt_fallback_count = 0
+    for payload in payloads:
+        sym = payload.get("symbol") if isinstance(payload, dict) else None
+        if not sym:
+            continue
+        row = feature_by_symbol.get(sym)
+        if row is None:
+            row = _build_alt_only_prediction(sym, payload, feature_errors_by_symbol.get(sym))
+            if row is None:
+                continue
+            alt_fallback_count += 1
+        _attach_alt_sources(row, sym)
+        _attach_challenger_shadow(row, sym)
+        pred_map[sym] = row
 
     error_count = sum(1 for r in results if r.get("error"))
+    if error_count:
+        sample_errors = [
+            f"{sym}: {err}" for sym, err in list(feature_errors_by_symbol.items())[:5]
+        ]
+        logger.warning(f"[Pipeline V2] Feature batch returned {error_count} row errors; sample={sample_errors}")
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
         f"{error_count} errors, chronos={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
-        f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}"
+        f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
+        f"alt_fallback={alt_fallback_count}, "
+        f"pool_versions={'ok' if pool_versions_loaded else 'fallback'}, "
+        f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
     # ── A: ML_POOL ensemble merge (5 feature + 3 time-series with lifecycle) ──
@@ -340,8 +549,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 if cur in ("BUY", "STRONG_BUY"):
                     continue  # natural buy signal; leave as-is
                 ev2["signal_raw"] = cur  # preserve pre-override for audit
+                ev2["signal_source_raw"] = ev2.get("signal_source", "ensemble_v2")
                 ev2["signal"] = "BUY"
                 ev2["confidence_override"] = top_k_conf
+                ev2["confidence"] = max(float(ev2.get("confidence", 0.0) or 0.0), top_k_conf)
+                ev2["signal_source"] = "ensemble_v2_topk_policy"
                 ev2["topk_forced"] = True
                 forced.append(sym)
             if forced:
@@ -360,6 +572,48 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[str, str], bool]:
+    """Load active/challenger versions for batch predictors.
+
+    Returns (status_by_model, active_version_by_model, challenger_version_by_model, used_pool).
+    Missing pool falls back to v1 active behavior.
+    """
+    import json as _json
+    import os
+
+    active_defaults = {
+        "DLinear": "v1",
+        "PatchTST": "v1",
+        "KalmanFilter": "v1",
+        "MarkovSwitching": "v1",
+    }
+    try:
+        from google.cloud import storage
+
+        bucket_name = os.getenv("GCS_BUCKET_NAME")
+        if not bucket_name:
+            return {}, active_defaults, {}, False
+        blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
+        if not blob.exists():
+            return {}, active_defaults, {}, False
+
+        pool = _json.loads(blob.download_as_text())
+        status: dict[str, str] = {}
+        active_versions = dict(active_defaults)
+        challenger_versions: dict[str, str] = {}
+        for name, entry in (pool.get("models") or {}).items():
+            status[name] = entry.get("status", "active")
+            if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
+                active_versions[name] = entry["version"]
+            challenger = entry.get("challenger") or {}
+            if challenger.get("version"):
+                challenger_versions[name] = challenger["version"]
+        return status, active_versions, challenger_versions, True
+    except Exception as e:
+        logger.warning(f"[Pipeline V2] model_pool version load failed: {e}")
+        return {}, active_defaults, {}, False
+
+
 def _load_pool_and_ic():
     """Synchronous loader (called via asyncio.to_thread).
 
@@ -376,9 +630,14 @@ def _load_pool_and_ic():
         hardcoded defaults matching ml-service ensemble.rank_to_signal.
     """
     import json as _json
+    import os
     try:
         from google.cloud import storage
-        bucket = storage.Client().bucket("stockvision-models")
+        bucket_name = os.getenv("GCS_BUCKET_NAME")
+        if not bucket_name:
+            logger.warning("[Pipeline V2] GCS_BUCKET_NAME not set; skip model pool / IC load")
+            return {}, {}, 1.0, {}, False
+        bucket = storage.Client().bucket(bucket_name)
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
             return {}, {}, 1.0, {}, False
@@ -410,23 +669,6 @@ def _load_pool_and_ic():
         return {}, {}, 1.0, {}, False
 
 
-def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: float = 1.0) -> float:
-    """ML_POOL R1+R3 ensemble weight for one model.
-
-    Mirror of ml-service `model_pool.compute_weight` so ml-controller doesn't
-    need to import ml-service.
-
-    weight = max(0, ic) × status_filter × (degraded_dampening if degraded else 1)
-    """
-    status_filter = {"active": 1.0, "degraded": 1.0, "challenger": 0.0, "retired": 0.0}.get(status, 0.0)
-    if status_filter == 0.0:
-        return 0.0
-    base = max(0.0, ic_value)
-    if status == "degraded":
-        base *= float(degraded_dampening)
-    return base
-
-
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
     """Sigmoid map for time-series forecast → rank-like 0~1 (mirror of
     ml-service ensemble.time_series_to_rank)."""
@@ -441,76 +683,7 @@ def _attach_ensemble_v2(
     degraded_dampening: float,
     ev2_cfg: dict | None = None,
 ) -> None:
-    """Merge feature rank_scores + time-series sigmoid into a single weighted
-    avg, applying R1+R3 ensemble weight: max(0, ic) × status_filter × dampening.
-
-    2026-04-19 hybrid (replaces hardcoded 0.0/0.1/1.0 lifecycle multipliers):
-      active:     max(0, ic) — pure IC weight
-      degraded:   max(0, ic) × degraded_dampening (KV-driven, default 1.0)
-      challenger: 0 (shadow predict only)
-      retired:    0 (excluded)
-
-    Mutates pred to add pred["ensemble_v2"] = {avg_rank, signal,
-    contributing_models, weights}.
-    """
-    feat_ranks = pred.get("rank_scores") or {}
-    if not feat_ranks:
-        return  # predict_stock_v2 must have failed
-    merged: dict[str, float] = dict(feat_ranks)
-    # 10-model merge: 5 feature + 3 time-series + 2 state-space
-    _SRC_KEY_MODEL = (
-        ("chronos",          "Chronos"),
-        ("dlinear",          "DLinear"),
-        ("patchtst",         "PatchTST"),
-        ("kalman_filter",    "KalmanFilter"),       # Stage 6.2
-        ("markov_switching", "MarkovSwitching"),    # Stage 6.2
-    )
-    for src_key, model_name in _SRC_KEY_MODEL:
-        sig = pred.get(src_key) or {}
-        if sig.get("forecast_pct") is None:
-            continue
-        merged[model_name] = _ts_to_rank(float(sig["forecast_pct"]))
-
-    # R1+R3 weights: max(0, ic) × status_filter × dampening_if_degraded
-    weights: dict[str, float] = {}
-    for name in merged:
-        status = model_status.get(name, "active")  # missing pool entry = active default
-        ic_value = ic_weights.get(name, 0.0)
-        weights[name] = _compute_lifecycle_weight(status, ic_value, degraded_dampening)
-
-    # Weighted avg with fallback to plain mean if all weights == 0
-    weight_total = sum(weights.values())
-    if weight_total > 0:
-        avg = sum(merged[n] * weights[n] for n in merged) / weight_total
-    else:
-        avg = sum(merged.values()) / max(len(merged), 1)
-
-    # Translate to signal label — KV-driven thresholds (#B Option 1 2026-04-21),
-    # defaults mirror ml-service ensemble.rank_to_signal for backwards compat.
-    cfg = ev2_cfg or {}
-    sb_th = float(cfg.get("strongBuyThreshold", 0.85))
-    b_th = float(cfg.get("buyThreshold", 0.70))
-    ss_th = float(cfg.get("strongSellThreshold", 0.15))
-    s_th = float(cfg.get("sellThreshold", 0.30))
-    if avg >= sb_th:
-        label = "STRONG_BUY"
-    elif avg >= b_th:
-        label = "BUY"
-    elif avg <= ss_th:
-        label = "STRONG_SELL"
-    elif avg <= s_th:
-        label = "SELL"
-    else:
-        label = "HOLD"
-
-    pred["ensemble_v2"] = {
-        "avg_rank": round(avg, 4),
-        "signal": label,
-        "contributing_models": sorted(merged.keys()),
-        "weights": {k: round(v, 6) for k, v in weights.items()},
-        "weight_formula": "max(0,ic) × status_filter × dampening_if_degraded",
-    }
-
+    attach_ensemble_v2(pred, model_status, ic_weights, degraded_dampening, ev2_cfg)
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """
@@ -662,26 +835,65 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     except Exception:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
+    try:
+        regime_label = kv_client.get("ml:regime")
+    except Exception:
+        regime_label = None
+    try:
+        regime_meta = kv_client.get_json("ml:regime:meta", default={}) or {}
+        regime_surface = (
+            regime_meta.get("regime_surface")
+            or regime_meta.get("regime_probabilities")
+            or regime_meta.get("probabilities")
+            or {}
+        )
+    except Exception:
+        regime_surface = {}
+
+    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
+    screener_recs = state["screener_recs"]
+    if not screener_recs:
+        screener_recs = build_screener_seed_recommendations(
+            state.get("active_stocks") or [],
+            state.get("payloads") or [],
+            state["run_date"],
+        )
+        logger.info("[Pipeline V2] Screener seed fallback active: %s rows", len(screener_recs))
 
     final, sell_count = filter_and_score_recommendations(
-        state["screener_recs"],
+        screener_recs,
         state["predictions"],
         state["payloads"],
         persona_opinions=state.get("persona_opinions") or {},
         persona_weight=persona_weight,
+        regime_label=regime_label,
+        regime_surface=regime_surface,
+        alpha_policy=alpha_policy,
     )
 
     # Hybrid ranking from KV trading:config.ranking
-    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
     ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
-    final = hybrid_ranking_promotion(final, ranking_cfg, ev2_cfg)
+    final = hybrid_ranking_promotion(
+        final,
+        ranking_cfg,
+        ev2_cfg,
+        regime_label=regime_label,
+        regime_surface=regime_surface,
+        alpha_policy=alpha_policy,
+    )
+    for row in final:
+        allocation = row.get("alpha_allocation")
+        symbol = row.get("symbol")
+        if allocation and symbol in state["predictions"]:
+            state["predictions"][symbol]["alpha_allocation"] = allocation
 
     # Track which symbols were filtered out (for D1 delete in write_d1)
     final_syms = {r["symbol"] for r in final}
-    filtered_syms = [r["symbol"] for r in state["screener_recs"] if r["symbol"] not in final_syms]
+    filtered_syms = [r["symbol"] for r in screener_recs if r["symbol"] not in final_syms]
 
     logger.info(
         f"[Pipeline V2] Recommend done: {len(final)} kept, {sell_count} SELL filtered"
@@ -726,7 +938,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     # 1. Predictions
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
-    predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map)
+    predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
 
     # 2. Merge LLM reasons into recommendations (overwrite template)
     final = state["final_recommendations"]
@@ -740,12 +952,29 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     # 5. Re-rank
     re_rank_recommendations(run_date)
+    alpha_bucket_counts: dict[str, int] = {}
+    alpha_selected_bucket_counts: dict[str, int] = {}
+    alpha_skip_count = 0
+    for row in final:
+        ctx = row.get("alpha_context") or {}
+        bucket = ctx.get("edge_bucket")
+        if bucket:
+            alpha_bucket_counts[bucket] = alpha_bucket_counts.get(bucket, 0) + 1
+        allocation = row.get("alpha_allocation") or {}
+        allocation_bucket = allocation.get("bucket")
+        if allocation.get("selected") and allocation_bucket:
+            alpha_selected_bucket_counts[allocation_bucket] = alpha_selected_bucket_counts.get(allocation_bucket, 0) + 1
+        if (ctx.get("risk_overlay") or {}).get("skip"):
+            alpha_skip_count += 1
 
     metrics = {
         "predictions_written": predictions_written,
         "recommendations_updated": rec_updated,
         "sell_deleted": sell_deleted,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
+        "alpha_bucket_counts": alpha_bucket_counts,
+        "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
+        "alpha_skip_count": alpha_skip_count,
     }
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}

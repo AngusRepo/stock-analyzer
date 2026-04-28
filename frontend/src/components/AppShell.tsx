@@ -21,6 +21,7 @@ import { Sheet, SheetContent } from '@/components/ui/sheet'
 import {
   LayoutDashboard, Bot, Menu,
   Bell, Search, LogIn, LogOut, Clock,
+  Boxes,
 } from 'lucide-react'
 
 // ── Nav items ─────────────────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
   { label: 'Bot Trading', icon: Bot, href: '/bot' },
   { label: 'Scheduler', icon: Clock, href: '/scheduler', adminOnly: true },
+  { label: 'Model Pool', icon: Boxes, href: '/model-pool', adminOnly: true },
 ] as const
 
 // ── Market Ticker ─────────────────────────────────────────────────────────────

@@ -1,17 +1,18 @@
 """
-routers/model_pool.py — ML Model Pool management endpoints (Plan A).
+ML Model Pool management endpoints (Plan A).
 
 2026-04-19 Stage 0.x bootstrap:
-  POST /model_pool/train_dlinear   — train universal DLinear from D1 close
+  POST /model_pool/train_dlinear   -> train universal DLinear from D1 close
 
 Future ML_POOL Stage 1+:
-  GET  /model_pool/status          — read model_pool.json
-  POST /model_pool/promote/{name}  — manual challenger → active
-  POST /model_pool/retire/{name}   — manual active → retired
-  GET  /model_pool/lifecycle/{name} — model_lifecycle_events history
+  GET  /model_pool/status           -> read model_pool.json
+  POST /model_pool/promote/{name}   -> manual challenger -> active
+  POST /model_pool/retire/{name}    -> manual active -> retired
+  POST /model_pool/promote_check    -> apply lifecycle transitions in model_pool.json
 """
 from __future__ import annotations
 import logging
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -22,15 +23,74 @@ from pydantic import BaseModel
 from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
+from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def _bucket_name() -> str:
+    name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not name:
+        raise HTTPException(status_code=500, detail="GCS_BUCKET_NAME not configured")
+    return name
+
+
+def _bucket_uri(path: str) -> str:
+    return f"gs://{_bucket_name()}/{path.lstrip('/')}"
+
+
+def _model_artifact_path(model_name: str, version: str) -> str:
+    if model_name == "KalmanFilter":
+        return f"per_stock_state_space/kalman/hyperparams_{version}.json"
+    if model_name == "MarkovSwitching":
+        return f"per_stock_state_space/markov_switching/hyperparams_{version}.json"
+    ext_map = {
+        "XGBoost": "joblib",
+        "CatBoost": "joblib",
+        "ExtraTrees": "joblib",
+        "LightGBM": "joblib",
+        "FT-Transformer": "joblib",
+        "Chronos": "json",
+        "DLinear": "pt",
+        "PatchTST": "pt",
+    }
+    ext = ext_map.get(model_name)
+    if ext is None:
+        raise HTTPException(status_code=400, detail=f"Unknown model {model_name}")
+    folder = model_name.lower().replace("-", "_")
+    return f"universal/{folder}/{version}.{ext}"
+
+
+def _model_metadata_path(model_name: str, version: str) -> str:
+    if model_name in {"KalmanFilter", "MarkovSwitching"}:
+        return _model_artifact_path(model_name, version)
+    folder = model_name.lower().replace("-", "_")
+    return f"universal/{folder}/metadata_{version}.json"
+
+
+def _metadata_summary(raw: dict) -> dict:
+    keep = (
+        "version",
+        "model_name",
+        "trained_at",
+        "saved_at",
+        "feature_count",
+        "selected_feature_count",
+        "feature_selection",
+        "best_params",
+        "metrics",
+        "dataset_snapshot",
+        "train_range",
+        "validation_range",
+    )
+    return {key: raw[key] for key in keep if key in raw}
+
+
+# ---------------------------------------------------------------------------
 # DLinear universal training
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 class TrainDLinearRequest(BaseModel):
@@ -54,14 +114,13 @@ async def train_dlinear(req: TrainDLinearRequest):
     """One-shot universal DLinear training.
 
     Loads close prices for up to max_stocks tradable stocks (delisted_date
-    NULL + ≥min_history_days history), forwards to Modal train function,
+    NULL + min_history_days history), forwards to Modal train function,
     returns saved GCS paths + training metadata.
     """
     if not req.confirm:
         raise HTTPException(
             status_code=400,
-            detail="train_dlinear requires confirm=true — overwrites "
-                   f"gs://stockvision-models/universal/dlinear/{req.version}.pt",
+            detail="train_dlinear requires confirm=true -> overwrites " + _bucket_uri(f"universal/dlinear/{req.version}.pt"),
         )
 
     t0 = time.time()
@@ -71,7 +130,7 @@ async def train_dlinear(req: TrainDLinearRequest):
         datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)
     ).date().isoformat()
 
-    # ── 1. Pull close per stock (single GROUP_CONCAT-free query, in-Python group) ──
+    # 1. Pull close per stock (single GROUP_CONCAT-free query, in-Python group)
     # Query all (symbol, date, close) within lookback for tradable stocks,
     # group in Python to avoid SQLite GROUP_CONCAT row limits.
     sql = """
@@ -104,7 +163,7 @@ async def train_dlinear(req: TrainDLinearRequest):
     if not series_close:
         raise HTTPException(
             status_code=400,
-            detail=f"0 stocks with ≥{req.min_history_days}d history in window",
+            detail=f"0 stocks with >= {req.min_history_days}d history in window",
         )
 
     logger.info(
@@ -112,7 +171,7 @@ async def train_dlinear(req: TrainDLinearRequest):
         f"(window {start_date}~{end_date}, min_history={req.min_history_days})"
     )
 
-    # ── 2. Modal training ────────────────────────────────────────────────────
+    # 2. Modal training
     try:
         result = await modal_client.train_dlinear_universal(
             series_close=series_close,
@@ -155,9 +214,9 @@ async def train_dlinear(req: TrainDLinearRequest):
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Status / read-only (placeholders for ML_POOL Stage 1+)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 # 2026-04-19 ML_POOL Stage 0.3: PatchTST universal training (parallel structure to DLinear)
@@ -190,8 +249,7 @@ async def train_patchtst(req: TrainPatchTSTRequest):
     if not req.confirm:
         raise HTTPException(
             status_code=400,
-            detail="train_patchtst requires confirm=true — overwrites "
-                   f"gs://stockvision-models/universal/patchtst/{req.version}.pt",
+            detail="train_patchtst requires confirm=true -> overwrites " + _bucket_uri(f"universal/patchtst/{req.version}.pt"),
         )
 
     t0 = time.time()
@@ -229,7 +287,7 @@ async def train_patchtst(req: TrainPatchTSTRequest):
     if not series_close:
         raise HTTPException(
             status_code=400,
-            detail=f"0 stocks with ≥{req.min_history_days}d history in window",
+            detail=f"0 stocks with >= {req.min_history_days}d history in window",
         )
 
     logger.info(
@@ -285,15 +343,15 @@ async def train_patchtst(req: TrainPatchTSTRequest):
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Stage 3: Challenger registration / discard (manual triggers; auto-register
 # on retrain success will be wired in Stage 4 promote-gate work)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 class RegisterChallengerRequest(BaseModel):
     model_name: str            # one of MANAGED_MODELS keys
-    version: str               # e.g. "v2" — must differ from active
+    version: str               # e.g. "v2" -> must differ from active
     confirm: bool = False
 
 
@@ -302,7 +360,7 @@ async def register_challenger(req: RegisterChallengerRequest):
     """Mark a model version as challenger (shadow mode).
 
     Caller must have already trained + saved the artifact at the implied
-    GCS path (universal/{model_lower}/v{N}.{ext}). This endpoint only
+    GCS path. This endpoint only
     writes the bookkeeping entry to model_pool.json so predict_stock_v2
     knows to also load + inference with the challenger.
 
@@ -318,7 +376,7 @@ async def register_challenger(req: RegisterChallengerRequest):
     from datetime import datetime, timezone
     from google.cloud import storage
 
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized; run /init first")
@@ -332,15 +390,7 @@ async def register_challenger(req: RegisterChallengerRequest):
             detail=f"{req.model_name} active is already {req.version}; challenger must differ",
         )
 
-    # Determine extension (mirror MANAGED_MODELS)
-    ext_map = {
-        "XGBoost": "joblib", "CatBoost": "joblib", "ExtraTrees": "joblib",
-        "LightGBM": "joblib", "FT-Transformer": "joblib",
-        "Chronos": "json", "DLinear": "pt", "PatchTST": "pt",
-    }
-    ext = ext_map.get(req.model_name, "joblib")
-    folder = req.model_name.lower().replace("-", "_")
-    target_path = f"universal/{folder}/{req.version}.{ext}"
+    target_path = _model_artifact_path(req.model_name, req.version)
 
     # Verify artifact exists at expected path
     if not bucket.blob(target_path).exists():
@@ -388,7 +438,7 @@ async def discard_challenger(req: DiscardChallengerRequest):
     import json as _json
     from datetime import datetime, timezone
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized")
@@ -415,15 +465,15 @@ async def discard_challenger(req: DiscardChallengerRequest):
     return {"status": "discarded", "model": req.model_name, "removed": removed}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Stage 2: Weekly IC tracker (cron-driven)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 class ComputeWeeklyICRequest(BaseModel):
     lookback_days: int = 7              # Friday cron rolls last 7 days of verified rows
     history_max: int = 26               # cap weekly_ic array (~6 months rolling)
-    min_samples: int = 50               # IC noise floor — skip if fewer obs/model
+    min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
     update_pool: bool = True            # write back to model_pool.json
 
 
@@ -435,12 +485,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     Reads:
       D1 predictions WHERE
-        model_name IN (8 managed model names)
+        model_name IN (10 managed model names)
         AND verified_at IS NOT NULL
         AND generated_at >= datetime('now','-7 days')
 
     Writes:
-      gs://stockvision-models/universal/model_pool.json
+      gs://<configured bucket>/universal/model_pool.json
         models[name].weekly_ic.append(this_week_ic)
         models[name].ic_4w_avg = mean(weekly_ic[-4:])
         models[name].consecutive_negative_weeks (incr if < 0 else 0)
@@ -450,20 +500,20 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     """
     import json as _json
     from datetime import datetime, timezone
-    import math
     from google.cloud import storage
+    from services.model_ic_tracker import (
+        apply_weekly_ic_to_pool,
+        compute_weekly_ic_from_rows,
+        tracked_model_names,
+    )
 
     t0 = time.time()
-    managed_models = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-                      "Chronos", "DLinear", "PatchTST")
-    # Stage 3: also track challenger rows (model_name='{name}::challenger')
-    challenger_models = tuple(f"{n}::challenger" for n in managed_models)
-    all_tracked = managed_models + challenger_models
+    all_tracked = tracked_model_names()
 
-    # ── 1. Pull verified per-model rows from D1 ──────────────────────────────
+    # 1. Pull verified per-model rows from D1.
     placeholders = ",".join(["?"] * len(all_tracked))
     sql = f"""
-        SELECT model_name, direction_accuracy, actual_return_pct, generated_at
+        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, generated_at
         FROM predictions
         WHERE model_name IN ({placeholders})
           AND actual_return_pct IS NOT NULL
@@ -471,91 +521,23 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
           AND generated_at >= datetime('now', ?)
     """
     rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
-    by_model: dict[str, list[tuple[float, float]]] = {n: [] for n in all_tracked}
-    for r in rows:
-        try:
-            score = float(r["direction_accuracy"])
-            actual = float(r["actual_return_pct"])
-        except (TypeError, ValueError):
-            continue
-        if math.isnan(score) or math.isnan(actual):
-            continue
-        by_model[r["model_name"]].append((score, actual))
+    per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
 
-    # ── 2. Spearman IC per model ─────────────────────────────────────────────
-    def _spearman(pairs: list[tuple[float, float]]) -> float | None:
-        n = len(pairs)
-        if n < 2:
-            return None
-        # Rank both arrays (average rank for ties — stats.spearmanr equivalent)
-        xs = [p[0] for p in pairs]
-        ys = [p[1] for p in pairs]
-        x_rank = _rank_avg_ties(xs)
-        y_rank = _rank_avg_ties(ys)
-        # Pearson on ranks = Spearman
-        mx = sum(x_rank) / n
-        my = sum(y_rank) / n
-        num = sum((x_rank[i] - mx) * (y_rank[i] - my) for i in range(n))
-        denx = math.sqrt(sum((x - mx) ** 2 for x in x_rank))
-        deny = math.sqrt(sum((y - my) ** 2 for y in y_rank))
-        if denx == 0 or deny == 0:
-            return None
-        return num / (denx * deny)
-
-    per_model_ic: dict[str, dict] = {}
-    for name in all_tracked:
-        pairs = by_model[name]
-        if len(pairs) < req.min_samples:
-            per_model_ic[name] = {"status": "insufficient_samples", "n_samples": len(pairs)}
-            continue
-        ic = _spearman(pairs)
-        per_model_ic[name] = {
-            "status": "computed",
-            "ic": round(ic, 6) if ic is not None else None,
-            "n_samples": len(pairs),
-        }
-
-    # ── 3. Update model_pool.json ────────────────────────────────────────────
+    # 3. Update model_pool.json.
     # Active rows update entry.weekly_ic; challenger rows update
     # entry.challenger.weekly_ic (separate IC history per shadow version).
     pool_changes: dict[str, dict] = {}
     if req.update_pool:
         try:
-            bucket = storage.Client().bucket("stockvision-models")
+            bucket = storage.Client().bucket(_bucket_name())
             pool_blob = bucket.blob("universal/model_pool.json")
             if pool_blob.exists():
                 pool = _json.loads(pool_blob.download_as_text())
-                changed = False
-                for tracked_name in all_tracked:
-                    info = per_model_ic.get(tracked_name, {})
-                    ic = info.get("ic")
-                    if ic is None:
-                        continue
-                    is_challenger = tracked_name.endswith("::challenger")
-                    base_name = tracked_name.replace("::challenger", "")
-                    entry = pool.get("models", {}).get(base_name)
-                    if not entry:
-                        continue
-                    target = entry.get("challenger") if is_challenger else entry
-                    if target is None:
-                        continue  # Challenger IC found in D1 but pool entry has no challenger registered
-                    target.setdefault("weekly_ic", [])
-                    target["weekly_ic"].append(ic)
-                    if len(target["weekly_ic"]) > req.history_max:
-                        target["weekly_ic"] = target["weekly_ic"][-req.history_max:]
-                    last4 = target["weekly_ic"][-4:]
-                    target["ic_4w_avg"] = round(sum(last4) / len(last4), 6)
-                    if ic < 0:
-                        target["consecutive_negative_weeks"] = (target.get("consecutive_negative_weeks") or 0) + 1
-                    else:
-                        target["consecutive_negative_weeks"] = 0
-                    pool_changes[tracked_name] = {
-                        "ic": ic,
-                        "ic_4w_avg": target["ic_4w_avg"],
-                        "consecutive_negative_weeks": target["consecutive_negative_weeks"],
-                        "history_len": len(target["weekly_ic"]),
-                    }
-                    changed = True
+                pool_changes, changed = apply_weekly_ic_to_pool(
+                    pool,
+                    per_model_ic,
+                    history_max=req.history_max,
+                )
                 if changed:
                     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
                     pool_blob.upload_from_string(
@@ -566,12 +548,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
 
-    # ── 4. Stage 5 alerts: weekly summary + decay-detection per-event ────────
-    # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status —
-    # Stage 4 promote gate will own the actual transitions):
-    #   active model w/ consecutive_negative_weeks ≥ 3 → 🟡 demote candidate
-    #   degraded model w/ consecutive_negative_weeks ≥ 6 → 🔴 retire candidate
-    #   degraded model w/ last 2 ic > 0 → 🔵 recovery candidate
+    # 4. Stage 5 alerts: weekly summary + decay-detection per-event
+    # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status;
+    # Stage 4 promote gate owns the actual transitions):
+    #   active model with consecutive_negative_weeks >= 3 -> demote candidate
+    #   degraded model with consecutive_negative_weeks >= 6 -> retire candidate
+    #   degraded model with last 2 ic > 0 -> recovery candidate
     try:
         if discord_alert.is_enabled():
             discord_alert.alert_weekly_ic_summary(per_model_ic, pool_changes)
@@ -594,12 +576,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 def _emit_decay_alerts(pool_changes: dict) -> None:
     """Inspect ic_4w_avg + consecutive_negative_weeks and fire candidate alerts.
 
-    Fires advisory notifications only — does NOT mutate model_pool.json status.
+    Fires advisory notifications only; does NOT mutate model_pool.json status.
     Stage 4 promote/demote gate owns actual lifecycle transitions.
     """
     import json as _json
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         return
@@ -621,9 +603,9 @@ def _emit_decay_alerts(pool_changes: dict) -> None:
                 event="demote",
                 model_name=base_name,
                 from_status="active", to_status="degraded (CANDIDATE)",
-                reason=f"IC 連 {neg} 週 < 0 (4w_avg={ic_4w})",
+                reason=f"IC was negative for {neg} consecutive weeks (4w_avg={ic_4w})",
                 metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
-                          "note": "Advisory — Stage 4 will own actual transition"},
+                          "note": "Advisory only; Stage 4 owns the actual transition"},
             )
         # Degraded model showing 6-week extended decay
         elif target_status == "degraded" and neg >= 6:
@@ -631,9 +613,9 @@ def _emit_decay_alerts(pool_changes: dict) -> None:
                 event="retire",
                 model_name=base_name,
                 from_status="degraded", to_status="retired (CANDIDATE)",
-                reason=f"IC 連 {neg} 週 < 0 (4w_avg={ic_4w})",
+                reason=f"IC was negative for {neg} consecutive weeks (4w_avg={ic_4w})",
                 metrics={"consecutive_negative_weeks": neg, "ic_4w_avg": ic_4w,
-                          "note": "Advisory — Stage 4 will own actual transition"},
+                          "note": "Advisory only; Stage 4 owns the actual transition"},
             )
         # Degraded recovery: last 2 weeks > 0 (read direct weekly_ic since
         # consecutive_negative_weeks resets to 0 on first positive)
@@ -645,34 +627,16 @@ def _emit_decay_alerts(pool_changes: dict) -> None:
                     event="recovery",
                     model_name=base_name,
                     from_status="degraded", to_status="active (CANDIDATE)",
-                    reason=f"IC 連 2 週 > 0 (recent={wkly[-2]:.4f}, {wkly[-1]:.4f})",
+                    reason=f"IC stayed positive for 2 consecutive weeks (recent={wkly[-2]:.4f}, {wkly[-1]:.4f})",
                     metrics={"recent_2_weeks": [round(wkly[-2], 4), round(wkly[-1], 4)],
                               "ic_4w_avg": ic_4w,
-                              "note": "Advisory — Stage 4 will own actual transition"},
+                              "note": "Advisory only; Stage 4 owns the actual transition"},
                 )
 
 
-def _rank_avg_ties(xs: list[float]) -> list[float]:
-    """Rank xs ascending with average-rank tie handling (stats.rankdata equivalent)."""
-    n = len(xs)
-    indexed = sorted(range(n), key=lambda i: xs[i])
-    ranks = [0.0] * n
-    i = 0
-    while i < n:
-        j = i
-        # Group ties
-        while j + 1 < n and xs[indexed[j + 1]] == xs[indexed[i]]:
-            j += 1
-        avg = (i + j + 2) / 2.0  # 1-indexed average
-        for k in range(i, j + 1):
-            ranks[indexed[k]] = avg
-        i = j + 1
-    return ranks
-
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Stage 6: State-space hyperparams pool (KalmanFilter / MarkovSwitching)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 _DEFAULT_STATE_SPACE = {
@@ -724,7 +688,7 @@ async def put_state_space_hyperparams(req: PutStateSpaceHyperparamsRequest):
     import json as _json
     from datetime import datetime, timezone
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     folder = "kalman" if req.model_name == "KalmanFilter" else "markov_switching"
     path = f"per_stock_state_space/{folder}/hyperparams_{req.version}.json"
     payload = dict(req.hyperparams)
@@ -749,7 +713,7 @@ async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
         raise HTTPException(status_code=400, detail=f"{model_name} is not a state-space model")
     import json as _json
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
     blob = bucket.blob(f"per_stock_state_space/{folder}/hyperparams_{version}.json")
     if not blob.exists():
@@ -760,18 +724,28 @@ async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
             "hyperparams": _json.loads(blob.download_as_text())}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Stage 4: Promote / demote / retire / recovery gate (lifecycle owner)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 class PromoteCheckRequest(BaseModel):
     apply: bool = False                # False = dry-run report only
+    confirm: bool = False              # required with apply=true
     min_shadow_weeks: int = 4          # required shadow duration
     promote_margin: float = 0.01       # challenger 4w IC > active 4w IC + margin
-    demote_consec_weeks: int = 3       # active → degraded threshold
-    retire_consec_weeks: int = 6       # degraded → retired threshold
-    recovery_consec_pos_weeks: int = 2 # degraded → active threshold
+    min_challenger_ic: float = 0.0     # challenger must beat this floor
+    discard_failed_challenger: bool = True
+    demote_consec_weeks: int = 3       # active -> degraded threshold
+    retire_consec_weeks: int = 6       # degraded -> retired threshold
+    recovery_consec_pos_weeks: int = 2 # degraded -> active threshold
+    require_promotion_gate: bool = True
+    promotion_gate_source: str = "backtest"
+    promotion_gate_pbo_source: str | None = None
+    require_shadow_ab: bool = True
+    shadow_ab_lookback_days: int = 90
+    require_paper_order_ab: bool = True
+    paper_order_ab_lookback_days: int = 90
 
 
 @router.post("/promote_check")
@@ -779,27 +753,30 @@ async def promote_check(req: PromoteCheckRequest):
     """Stage 4: scan model_pool.json for lifecycle transitions.
 
     Checks (per ML_POOL_ARCHITECTURE.md + 4-state machine):
-      Challenger → Active (promote):
+      Challenger -> Active (promote):
         1. shadow_since older than min_shadow_weeks
         2. challenger.ic_4w_avg > active.ic_4w_avg + promote_margin
         3. challenger.ic_4w_avg > 0
-        4. family balance preserved (≥3 feature + ≥2 time-series active)
-      Active → Degraded (demote):
+        4. family balance preserved (feature + time-series active minimums)
+      Active -> Degraded (demote):
         consecutive_negative_weeks >= demote_consec_weeks
-      Degraded → Retired (retire):
+      Degraded -> Retired (retire):
         consecutive_negative_weeks >= retire_consec_weeks
-      Degraded → Active (recovery):
+      Degraded -> Active (recovery):
         last recovery_consec_pos_weeks weeks all > 0
 
     Returns: {actions: [...], applied: bool, audit: {...}}
     Each action has dry-run preview UNLESS req.apply=True; then mutates pool.
     Stage 5 alerts fire on actual transitions (apply=True path).
     """
+    if req.apply and not req.confirm:
+        raise HTTPException(status_code=400, detail="apply=true requires confirm=true")
+
     import json as _json
     from datetime import datetime, timezone, date as _date
     from google.cloud import storage
 
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized")
@@ -809,13 +786,14 @@ async def promote_check(req: PromoteCheckRequest):
 
     # Family balance baseline: count current actives per family
     def _family_actives(p: dict) -> dict[str, int]:
-        counts = {"feature": 0, "time_series": 0}
+        counts = {"feature": 0, "time_series": 0, "state_space": 0}
         for entry in p.get("models", {}).values():
             if entry.get("status") == "active":
                 fam = entry.get("balance_family", "feature")
                 counts[fam] = counts.get(fam, 0) + 1
         return counts
-    MIN_PER_FAMILY = {"feature": 3, "time_series": 2}
+    MIN_PER_FAMILY = {"feature": 3, "time_series": 2, "state_space": 1}
+    projected_actives = _family_actives(pool)
 
     actions: list[dict] = []
     for name, entry in pool.get("models", {}).items():
@@ -826,12 +804,13 @@ async def promote_check(req: PromoteCheckRequest):
         weekly_ic = entry.get("weekly_ic") or []
         challenger = entry.get("challenger") or {}
 
-        # ── Promote check (challenger → active) ─────────────────────────────
+        # Promote check (challenger -> active)
         if challenger:
             ch_4w = challenger.get("ic_4w_avg")
             shadow_since_str = challenger.get("shadow_since")
             ch_weekly = challenger.get("weekly_ic") or []
             preconds_failed = []
+            shadow_age_days = 0
             if not shadow_since_str:
                 preconds_failed.append("missing shadow_since")
             else:
@@ -844,20 +823,17 @@ async def promote_check(req: PromoteCheckRequest):
                     preconds_failed.append(
                         f"shadow_age={shadow_age_days}d < {req.min_shadow_weeks}w"
                     )
+            if len(ch_weekly) < req.min_shadow_weeks:
+                preconds_failed.append(
+                    f"challenger weekly_ic samples={len(ch_weekly)} < {req.min_shadow_weeks}"
+                )
             if ch_4w is None:
                 preconds_failed.append("challenger ic_4w_avg=null (need 4 wkly samples)")
-            elif ch_4w <= 0:
-                preconds_failed.append(f"challenger ic_4w_avg={ch_4w} ≤ 0")
+            elif ch_4w <= req.min_challenger_ic:
+                preconds_failed.append(f"challenger ic_4w_avg={ch_4w} <= floor {req.min_challenger_ic}")
             if ic_4w is not None and ch_4w is not None and ch_4w <= ic_4w + req.promote_margin:
                 preconds_failed.append(
-                    f"challenger {ch_4w} ≤ active {ic_4w} + margin {req.promote_margin}"
-                )
-            # Family balance: promotion replaces v_old with v_new (no count change)
-            # so only check if current actives are already at minimum
-            actives = _family_actives(pool)
-            if actives.get(family, 0) < MIN_PER_FAMILY.get(family, 0):
-                preconds_failed.append(
-                    f"family balance: {family}={actives.get(family,0)} < min {MIN_PER_FAMILY[family]}"
+                    f"challenger {ch_4w} <= active {ic_4w} + margin {req.promote_margin}"
                 )
 
             if not preconds_failed:
@@ -872,26 +848,70 @@ async def promote_check(req: PromoteCheckRequest):
                     "reason": "All promote preconditions satisfied",
                 })
             else:
+                discard_reason = None
+                has_mature_shadow = (
+                    shadow_since_str
+                    and shadow_age_days >= req.min_shadow_weeks * 7
+                    and len(ch_weekly) >= req.min_shadow_weeks
+                    and ch_4w is not None
+                )
+                if req.discard_failed_challenger and has_mature_shadow:
+                    if ch_4w <= req.min_challenger_ic:
+                        discard_reason = (
+                            f"challenger ic_4w_avg={ch_4w} <= floor {req.min_challenger_ic}"
+                        )
+                    elif ic_4w is not None and ch_4w + req.promote_margin < ic_4w:
+                        discard_reason = (
+                            f"challenger {ch_4w} trails active {ic_4w} by more than margin {req.promote_margin}"
+                        )
+
+                if discard_reason:
+                    actions.append({
+                        "model": name,
+                        "transition": "discard_challenger",
+                        "from": f"challenger:{challenger.get('version')}",
+                        "to": None,
+                        "reason": discard_reason,
+                        "ic_active_4w": ic_4w,
+                        "ic_challenger_4w": ch_4w,
+                        "weekly_ic_count": len(ch_weekly),
+                    })
+                else:
+                    actions.append({
+                        "model": name,
+                        "transition": "promote_blocked",
+                        "preconditions_failed": preconds_failed,
+                        "ic_active_4w": ic_4w,
+                        "ic_challenger_4w": ch_4w,
+                    })
+
+        # Demote check (active -> degraded)
+        if status == "active" and consec_neg >= req.demote_consec_weeks:
+            min_active = MIN_PER_FAMILY.get(family, 0)
+            if projected_actives.get(family, 0) - 1 < min_active:
                 actions.append({
                     "model": name,
-                    "transition": "promote_blocked",
-                    "preconditions_failed": preconds_failed,
-                    "ic_active_4w": ic_4w,
-                    "ic_challenger_4w": ch_4w,
+                    "transition": "demote_blocked",
+                    "from": "active",
+                    "to": "degraded",
+                    "consecutive_negative_weeks": consec_neg,
+                    "reason": (
+                        f"family balance guard: {family} active count would become "
+                        f"{projected_actives.get(family, 0) - 1} < min {min_active}"
+                    ),
+                })
+            else:
+                projected_actives[family] = projected_actives.get(family, 0) - 1
+                actions.append({
+                    "model": name,
+                    "transition": "demote",
+                    "from": "active",
+                    "to": "degraded",
+                    "consecutive_negative_weeks": consec_neg,
+                    "reason": f"IC has been negative for {consec_neg} weeks (threshold={req.demote_consec_weeks})",
                 })
 
-        # ── Demote check (active → degraded) ────────────────────────────────
-        if status == "active" and consec_neg >= req.demote_consec_weeks:
-            actions.append({
-                "model": name,
-                "transition": "demote",
-                "from": "active",
-                "to": "degraded",
-                "consecutive_negative_weeks": consec_neg,
-                "reason": f"IC 連 {consec_neg} 週 < 0 (threshold={req.demote_consec_weeks})",
-            })
-
-        # ── Retire check (degraded → retired) ───────────────────────────────
+        # Retire check (degraded -> retired)
         if status == "degraded" and consec_neg >= req.retire_consec_weeks:
             actions.append({
                 "model": name,
@@ -899,10 +919,10 @@ async def promote_check(req: PromoteCheckRequest):
                 "from": "degraded",
                 "to": "retired",
                 "consecutive_negative_weeks": consec_neg,
-                "reason": f"IC 連 {consec_neg} 週 < 0 (extended threshold={req.retire_consec_weeks})",
+                "reason": f"IC has been negative for {consec_neg} weeks (extended threshold={req.retire_consec_weeks})",
             })
 
-        # ── Recovery check (degraded → active) ──────────────────────────────
+        # Recovery check (degraded -> active)
         if status == "degraded" and len(weekly_ic) >= req.recovery_consec_pos_weeks:
             recent = weekly_ic[-req.recovery_consec_pos_weeks:]
             if all(w > 0 for w in recent):
@@ -912,18 +932,105 @@ async def promote_check(req: PromoteCheckRequest):
                     "from": "degraded",
                     "to": "active",
                     "recent_weeks_ic": recent,
-                    "reason": f"IC 連 {req.recovery_consec_pos_weeks} 週 > 0",
+                    "reason": f"IC stayed positive for {req.recovery_consec_pos_weeks} consecutive weeks",
                 })
 
-    # ── Apply transitions if requested ────────────────────────────────────
+    promotion_gate = None
+    has_promote_action = any(a.get("transition") == "promote" for a in actions)
+    shadow_ab_by_model = None
+    paper_order_ab_by_model = None
+    if has_promote_action and req.require_promotion_gate:
+        try:
+            from services.promotion_service import evaluate_latest_promotion_gate
+
+            promotion_gate = evaluate_latest_promotion_gate(
+                source=req.promotion_gate_source,
+                pbo_source=req.promotion_gate_pbo_source,
+            )
+        except Exception as e:
+            logger.exception("[Stage 4] promotion gate evaluation failed")
+            promotion_gate = {
+                "decision": "FAIL",
+                "passed": False,
+                "failed_gates": ["promotion_gate_exception"],
+                "warnings": [str(e)],
+            }
+    if has_promote_action and req.require_shadow_ab:
+        try:
+            from services.shadow_ab_service import load_shadow_ab_by_model
+
+            shadow_ab_by_model = load_shadow_ab_by_model(lookback_days=req.shadow_ab_lookback_days)
+        except Exception as e:
+            logger.exception("[Stage 4] shadow AB evidence load failed")
+            shadow_ab_by_model = {}
+            if promotion_gate is None:
+                promotion_gate = {
+                    "decision": "PASS",
+                    "passed": True,
+                    "failed_gates": [],
+                    "warnings": [str(e)],
+                }
+    if has_promote_action and req.require_paper_order_ab:
+        try:
+            from services.paper_order_ab_service import load_paper_order_ab_by_model
+
+            paper_order_ab_by_model = load_paper_order_ab_by_model(lookback_days=req.paper_order_ab_lookback_days)
+        except Exception as e:
+            logger.exception("[Stage 4] paper-order AB evidence load failed")
+            paper_order_ab_by_model = {}
+            if promotion_gate is None:
+                promotion_gate = {
+                    "decision": "PASS",
+                    "passed": True,
+                    "failed_gates": [],
+                    "warnings": [str(e)],
+                }
+    if has_promote_action and (req.require_promotion_gate or req.require_shadow_ab or req.require_paper_order_ab):
+        actions = apply_promotion_gate_to_actions(
+            actions,
+            promotion_gate,
+            require_gate=req.require_promotion_gate,
+            require_shadow_ab=req.require_shadow_ab,
+            shadow_ab_by_model=shadow_ab_by_model,
+            require_paper_order_ab=req.require_paper_order_ab,
+            paper_order_ab_by_model=paper_order_ab_by_model,
+        )
+
+    # Apply transitions if requested
     applied_count = 0
     if req.apply:
+        audit_events = pool.setdefault("lifecycle_events", [])
+
+        def _audit(action: dict, from_status: str | None, to_status: str | None) -> None:
+            audit_events.append({
+                "at": datetime.now(timezone.utc).isoformat(),
+                "model": action["model"],
+                "transition": action["transition"],
+                "from": from_status,
+                "to": to_status,
+                "reason": action.get("reason"),
+                "metrics": {
+                    k: action.get(k)
+                    for k in (
+                        "ic_active_4w",
+                        "ic_challenger_4w",
+                        "margin",
+                        "consecutive_negative_weeks",
+                        "recent_weeks_ic",
+                        "weekly_ic_count",
+                    )
+                    if k in action
+                },
+            })
+            if len(audit_events) > 200:
+                del audit_events[:-200]
+
         for action in actions:
             t = action["transition"]
             name = action["model"]
             entry = pool["models"][name]
             if t == "promote":
-                # Move challenger → active; keep history of v_old as "retired" sub-entry
+                # Move challenger -> active; keep history of v_old as "retired" sub-entry
                 ch = entry["challenger"]
                 _retired_history = entry.setdefault("retired_versions", [])
                 _retired_history.append({
@@ -942,6 +1049,7 @@ async def promote_check(req: PromoteCheckRequest):
                 entry.pop("challenger", None)
                 entry.pop("degraded_since", None)
                 applied_count += 1
+                _audit(action, action["from"], action["to"])
                 try:
                     discord_alert.alert_lifecycle(
                         event="promote", model_name=name,
@@ -957,6 +1065,7 @@ async def promote_check(req: PromoteCheckRequest):
                 entry["status"] = "degraded"
                 entry["degraded_since"] = today_iso
                 applied_count += 1
+                _audit(action, "active", "degraded")
                 try:
                     discord_alert.alert_lifecycle(
                         event="demote", model_name=name,
@@ -970,6 +1079,7 @@ async def promote_check(req: PromoteCheckRequest):
                 entry["status"] = "retired"
                 entry["retired_at"] = today_iso
                 applied_count += 1
+                _audit(action, "degraded", "retired")
                 try:
                     discord_alert.alert_lifecycle(
                         event="retire", model_name=name,
@@ -983,6 +1093,7 @@ async def promote_check(req: PromoteCheckRequest):
                 entry["status"] = "active"
                 entry.pop("degraded_since", None)
                 applied_count += 1
+                _audit(action, "degraded", "active")
                 try:
                     discord_alert.alert_lifecycle(
                         event="recovery", model_name=name,
@@ -992,6 +1103,26 @@ async def promote_check(req: PromoteCheckRequest):
                     )
                 except Exception as _e:
                     logger.debug(f"[Stage 4] recovery alert skipped: {_e}")
+            elif t == "discard_challenger":
+                removed = entry.pop("challenger", None)
+                applied_count += 1
+                _audit(action, action.get("from"), None)
+                try:
+                    discord_alert.alert_lifecycle(
+                        event="discard",
+                        model_name=name,
+                        from_status=action.get("from"),
+                        to_status=None,
+                        reason=action["reason"],
+                        metrics={
+                            "ic_active_4w": action.get("ic_active_4w"),
+                            "ic_challenger_4w": action.get("ic_challenger_4w"),
+                            "weekly_ic_count": action.get("weekly_ic_count"),
+                            "removed_version": (removed or {}).get("version"),
+                        },
+                    )
+                except Exception as _e:
+                    logger.debug(f"[Stage 4] discard alert skipped: {_e}")
         if applied_count > 0:
             pool["last_updated"] = datetime.now(timezone.utc).isoformat()
             pool_blob.upload_from_string(
@@ -1008,10 +1139,22 @@ async def promote_check(req: PromoteCheckRequest):
         "thresholds": {
             "min_shadow_weeks": req.min_shadow_weeks,
             "promote_margin": req.promote_margin,
+            "min_challenger_ic": req.min_challenger_ic,
+            "discard_failed_challenger": req.discard_failed_challenger,
             "demote_consec_weeks": req.demote_consec_weeks,
             "retire_consec_weeks": req.retire_consec_weeks,
             "recovery_consec_pos_weeks": req.recovery_consec_pos_weeks,
+            "require_promotion_gate": req.require_promotion_gate,
+            "promotion_gate_source": req.promotion_gate_source,
+            "promotion_gate_pbo_source": req.promotion_gate_pbo_source,
+            "require_shadow_ab": req.require_shadow_ab,
+            "shadow_ab_lookback_days": req.shadow_ab_lookback_days,
+            "require_paper_order_ab": req.require_paper_order_ab,
+            "paper_order_ab_lookback_days": req.paper_order_ab_lookback_days,
         },
+        "promotion_gate": promotion_gate,
+        "shadow_ab_by_model": shadow_ab_by_model,
+        "paper_order_ab_by_model": paper_order_ab_by_model,
     }
 
 
@@ -1021,7 +1164,7 @@ async def status():
     try:
         import json as _json
         from google.cloud import storage
-        bucket = storage.Client().bucket("stockvision-models")
+        bucket = storage.Client().bucket(_bucket_name())
         blob = bucket.blob("universal/model_pool.json")
         if not blob.exists():
             return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
@@ -1030,9 +1173,92 @@ async def status():
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/lineage")
+async def lineage():
+    """Return model_pool lineage pointers plus recent lifecycle events."""
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            return {"status": "not_initialized", "models": {}, "events": []}
+
+        pool = _json.loads(pool_blob.download_as_text())
+        out: dict[str, dict] = {}
+        for name, entry in (pool.get("models") or {}).items():
+            version = entry.get("version")
+            artifact_path = entry.get("gcs_path") or (version and _model_artifact_path(name, version))
+            metadata_path = _model_metadata_path(name, version) if version else None
+            metadata = None
+            metadata_exists = False
+            if metadata_path:
+                metadata_blob = bucket.blob(metadata_path)
+                metadata_exists = metadata_blob.exists()
+                if metadata_exists:
+                    try:
+                        metadata = _metadata_summary(_json.loads(metadata_blob.download_as_text()))
+                    except Exception as e:
+                        metadata = {"read_error": str(e)}
+
+            challenger = entry.get("challenger")
+            challenger_out = None
+            if challenger:
+                ch_version = challenger.get("version")
+                ch_metadata_path = _model_metadata_path(name, ch_version) if ch_version else None
+                ch_metadata_exists = False
+                ch_metadata = None
+                if ch_metadata_path:
+                    ch_metadata_blob = bucket.blob(ch_metadata_path)
+                    ch_metadata_exists = ch_metadata_blob.exists()
+                    if ch_metadata_exists:
+                        try:
+                            ch_metadata = _metadata_summary(_json.loads(ch_metadata_blob.download_as_text()))
+                        except Exception as e:
+                            ch_metadata = {"read_error": str(e)}
+                challenger_out = {
+                    "version": ch_version,
+                    "status": "challenger",
+                    "gcs_path": challenger.get("gcs_path"),
+                    "metadata_path": ch_metadata_path,
+                    "metadata_exists": ch_metadata_exists,
+                    "metadata": ch_metadata,
+                    "shadow_since": challenger.get("shadow_since"),
+                    "weekly_ic": challenger.get("weekly_ic") or [],
+                    "ic_4w_avg": challenger.get("ic_4w_avg"),
+                }
+
+            out[name] = {
+                "status": entry.get("status"),
+                "version": version,
+                "balance_family": entry.get("balance_family"),
+                "model_type": entry.get("model_type"),
+                "gcs_path": artifact_path,
+                "artifact_uri": _bucket_uri(artifact_path) if artifact_path else None,
+                "metadata_path": metadata_path,
+                "metadata_exists": metadata_exists,
+                "metadata": metadata,
+                "weekly_ic": entry.get("weekly_ic") or [],
+                "ic_4w_avg": entry.get("ic_4w_avg"),
+                "consecutive_negative_weeks": entry.get("consecutive_negative_weeks") or 0,
+                "challenger": challenger_out,
+            }
+
+        return {
+            "status": "ok",
+            "schema_version": pool.get("schema_version"),
+            "last_updated": pool.get("last_updated"),
+            "models": out,
+            "events": (pool.get("lifecycle_events") or [])[-100:],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GCS lineage read failed: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Stage 1 bootstrap endpoints (versioning + state machine init)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 class MigrateLegacyRequest(BaseModel):
@@ -1054,7 +1280,7 @@ async def migrate_legacy(req: MigrateLegacyRequest):
             status_code=400,
             detail="Non-dry-run requires confirm=true (writes to GCS)",
         )
-    # Inline import — avoid forcing controller container to load ml-service deps at startup
+    # Inline import to avoid forcing controller container to load ml-service deps at startup.
     import importlib
     import sys
     sys.path.insert(0, "/app")  # ensure ml-service modules importable when colocated
@@ -1070,7 +1296,7 @@ async def migrate_legacy(req: MigrateLegacyRequest):
 def _inline_migrate_via_gcs(dry_run: bool) -> dict:
     """Fallback if ml-service module isn't reachable: minimal inline copy."""
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     legacy_to_versioned = {
         "universal/xgboost.joblib":          "universal/xgboost/v1.joblib",
         "universal/catboost.joblib":         "universal/catboost/v1.joblib",
@@ -1099,7 +1325,7 @@ def _inline_migrate_via_gcs(dry_run: bool) -> dict:
             continue
         try:
             new = bucket.copy_blob(src_blob, bucket, tgt)
-            actions.append({**item, "executed": True, "note": f"copied → {new.name}"})
+            actions.append({**item, "executed": True, "note": f"copied -> {new.name}"})
         except Exception as e:
             actions.append({**item, "executed": False, "note": f"error: {e}"})
     return {"dry_run": dry_run, "actions": actions}
@@ -1112,7 +1338,7 @@ class InitPoolRequest(BaseModel):
 
 @router.post("/init")
 async def init_pool(req: InitPoolRequest):
-    """Initialize model_pool.json with all 8 universal models as 'active' v1.
+    """Initialize model_pool.json with all managed models as 'active' v1.
 
     Idempotent unless overwrite=true. Should run AFTER /migrate_legacy so
     versioned paths exist for the entries this writes.
@@ -1124,7 +1350,7 @@ async def init_pool(req: InitPoolRequest):
         )
     import json as _json
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if pool_blob.exists() and not req.overwrite:
         existing = _json.loads(pool_blob.download_as_text())
@@ -1136,7 +1362,7 @@ async def init_pool(req: InitPoolRequest):
         }
 
     # Inline default pool (mirrors ml-service app/model_pool.py:init_default_pool
-    # without forcing module import here — keep ml-controller decoupled).
+    # without forcing module import here to keep ml-controller decoupled).
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).date().isoformat()
     iso_now = datetime.now(timezone.utc).isoformat()
@@ -1155,19 +1381,11 @@ async def init_pool(req: InitPoolRequest):
         ("MarkovSwitching", "state_space_per_stock",  "state_space", "json"),
     ]
     models = {}
-    for name, mt, bf, ext in managed:
-        folder = name.lower().replace("-", "_")
-        # State-space stores hyperparams under per_stock_state_space/ instead
-        # of universal/, since they're not pooled artifacts.
-        if bf == "state_space":
-            ss_folder = "kalman" if name == "KalmanFilter" else "markov_switching"
-            gcs_path = f"per_stock_state_space/{ss_folder}/hyperparams_v1.json"
-        else:
-            gcs_path = f"universal/{folder}/v1.{ext}"
+    for name, mt, bf, _ext in managed:
         models[name] = {
             "status": "active",
             "version": "v1",
-            "gcs_path": gcs_path,
+            "gcs_path": _model_artifact_path(name, "v1"),
             "model_type": mt,
             "balance_family": bf,
             "promoted_at": today,
@@ -1190,9 +1408,9 @@ async def init_pool(req: InitPoolRequest):
     return {"status": "initialized", "model_count": len(models), "last_updated": iso_now}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Chronos config marker (foundation model — no weights, just a version stub)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Chronos config marker (foundation model, no weights, just a version stub)
+# ---------------------------------------------------------------------------
 
 
 class WriteChronosConfigRequest(BaseModel):
@@ -1216,7 +1434,7 @@ async def write_chronos_config(req: WriteChronosConfigRequest):
     import json as _json
     from datetime import datetime, timezone
     from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = storage.Client().bucket(_bucket_name())
     cfg = {
         "version": req.version,
         "model_id": req.model_id,
@@ -1230,3 +1448,5 @@ async def write_chronos_config(req: WriteChronosConfigRequest):
         _json.dumps(cfg, indent=2), content_type="application/json"
     )
     return {"status": "written", "path": path, "config": cfg}
+
+

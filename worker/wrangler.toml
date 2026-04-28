@@ -13,114 +13,61 @@ binding = "KV"
 id = "39dcebcf5b6848c98f269ef9a48dc3f8"
 preview_id = "9d648bfede1246be8cdbfdafa6b7e6f4"
 
-# ── Cloudflare Queues（斷點續傳用）──────────────────────────────────────────
-# 建立指令（deploy.sh 已自動執行）：
-#   wrangler queues create stockvision-update-queue
-#   wrangler queues create stockvision-ml-queue
-
 [[queues.producers]]
-binding  = "UPDATE_QUEUE"
-queue    = "stockvision-update-queue"
+binding = "UPDATE_QUEUE"
+queue = "stockvision-update-queue"
 
 [[queues.consumers]]
-queue              = "stockvision-update-queue"
-max_batch_size     = 1   # 每次取 1 則訊息（1 批股票）
-max_batch_timeout  = 5   # 最多等 5 秒湊批
-max_retries        = 2   # 失敗重試 2 次
-dead_letter_queue  = "stockvision-update-queue-dlq"
-# ML_QUEUE removed in Phase 3 — ML batch predict now goes through Controller
+queue = "stockvision-update-queue"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 2
+dead_letter_queue = "stockvision-update-queue-dlq"
 
 [ai]
 binding = "AI"
 
 [vars]
 ENVIRONMENT = "production"
-# 前端 Pages 精確 URL（部署完成後填入，用於 CORS 白名單）
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
-
-# 以下 secrets 請用 wrangler secret put 設定：
-# wrangler secret put ML_SERVICE_URL       ← Modal ML endpoint（已從 [vars] 移出）
-# wrangler secret put JWT_SECRET
-# wrangler secret put GOOGLE_CLIENT_ID
-# wrangler secret put GOOGLE_CLIENT_SECRET
-# wrangler secret put ANTHROPIC_API_KEY
-# wrangler secret put FINMIND_TOKEN
-# wrangler secret put RESEND_API_KEY       ← Resend.com 免費帳號，100封/天
-# wrangler secret put ADMIN_EMAIL          ← Bootstrap admin email（第一次登入自動成為 admin）
-# wrangler secret put ML_SERVICE_SECRET    ← 與 Cloud Run 共享密鑰
-# wrangler secret put STOCKVISION_AUTH_TOKEN ← 與 AI Team Worker 共享（Paper Trading auth）
-# （PAGES_ORIGIN 填在上方 [vars]，不需要 secret）
 
 [triggers]
 crons = [
-  # ── 盤中（TW 09:00-13:30）──
-  "* 1-5 * * 1-5",   # 盤中每分鐘：限價買入 + 止損停利巡檢
-  "25 5 * * 1-5",    # 13:25 TW → EOD 收盤前出場檢查
+  # Intraday trading window, TW 09:00-13:30.
+  "* 1-5 * * 1-5",
+  "25 5 * * 1-5",
 
-  # ── 盤中 ML Re-score（Sprint 5.2+: 利用 ml-controller idle capacity）──
-  "0 2 * * 1-5",     # 10:00 TW (=UTC 02:00) → Intraday ML Re-score #1
-  "0 3 * * 1-5",     # 11:00 TW (=UTC 03:00) → Intraday ML Re-score #2
-  "0 4 * * 1-5",     # 12:00 TW (=UTC 04:00) → Intraday ML Re-score #3
-  "30 4 * * 1-5",    # 12:30 TW (=UTC 04:30) → Intraday ML Re-score #4 (收盤前1hr)
+  # Intraday ML re-score, TW 10:00 / 11:00 / 12:00 / 12:30.
+  "0 2 * * 1-5",
+  "0 3 * * 1-5",
+  "0 4 * * 1-5",
+  "30 4 * * 1-5",
 
-  # ── 收盤後 Pipeline（TW 14:20 + 17:30 single trigger）──
-  # H5: 5 個獨立 cron 已合併為單一 pipeline trigger（Controller LangGraph await gates）
-  # 舊的 bulk-fetch/screener/ml/recommendation/verify 仍可透過 /admin/trigger/:task 手動觸發
-  "20 6 * * 1-5",    # 14:20 TW → Daily Snapshot（收盤後立即算 PnL，不需 chip）
-  "15 9 * * 1-5",    # 17:15 TW → ML 預熱（2026-04-08 P0-a fix: 從 17:50 移到 pipeline 前 15 分鐘）
-  "30 9 * * 1-5",    # 17:30 TW → Pipeline trigger（Controller LangGraph: fetch→screen→ml→rec→verify）
-  "20 10 * * 1-5",   # 18:20 TW → Adaptive Engine
-  "50 10 * * 1-5",   # 18:50 TW → HMM Regime Compute (2026-04-17 #30, Sprint 4-2 revisit)
-  "0 11 * * 1-5",    # 19:00 TW → D-2 Verify Pipeline V2 (ml-controller LangGraph)
+  # Daily close pipeline, TW afternoon/evening.
+  "20 6 * * 1-5",
+  "15 9 * * 1-5",
+  "30 9 * * 1-5",
+  "20 10 * * 1-5",
+  "25 10 * * 1-5",
+  "30 10 * * 5",
+  "40 10 * * 1-5",
+  "50 10 * * 1-5",
+  "0 11 * * 1-5",
+  "30 11 * * 5",
 
-  # ── ML_POOL Stage 2 (2026-04-19): Friday weekly IC tracker ──
-  # 19:30 TW Fri — fires AFTER verify cron at 19:00 so today's just-verified
-  # rows from earlier-in-week predictions are included. min_samples=50 →
-  # gracefully reports "insufficient_samples" until ~5 trading days of
-  # per-model rows accumulate post-deploy.
-  "30 11 * * 5",     # 19:30 TW Fri → /model_pool/compute_weekly_ic
-  "25 10 * * 1-5",   # 18:25 TW → 收盤報告推送 Discord
-  "40 10 * * 1-5",   # 18:40 TW → Obsidian daily notes + progress.md sync
-  "30 10 * * 5",     # 18:30 TW (Fri) → P2#16 Weekly AI Audit Report
+  # Morning setup window, TW 06:30-08:50.
+  "30 22 * * SUN-THU",
+  "45 22 * * SUN-THU",
+  "15 23 * * SUN-THU",
+  "50 23 * * SUN-THU",
+  "50 0 * * 1-5",
 
-  # ── 次日盤前（TW 06:30-07:50）──
-  # TW 週一 06:30 = UTC 週日 22:30 → 必須含 Sun(0)，否則週一早上不觸發
-  "30 22 * * SUN-THU",   # 06:30 TW (=UTC Sun-Thu 22:30) → 美股先行指標
-  "45 22 * * SUN-THU",   # 06:45 TW (=UTC Sun-Thu 22:45) → News Analyst (Batch C)
-  # #47 Night re-predict REMOVED 2026-04-22: pipeline recommendation step
-  # depends on same-day chip/technical_indicators data, which only populates
-  # after TW 16:00 close. 07:00 TW → D1 has zero rows for today → 0 recos
-  # → recommendation step errors "no output" → overwrites 17:30 pipeline log
-  # making Dashboard look like 17:30 failed. Real issue was never a 17:30
-  # freshness gap; it's that TW market hasn't opened yet by 07:00.
-  # (ed41852 added, reverted here in 4/22 post-mortem.)
-  "15 23 * * SUN-THU",   # 07:15 TW (=UTC Sun-Thu 23:15) → Morning Setup（Debate + 掛單）
-  "50 23 * * SUN-THU",   # 07:50 TW (=UTC Sun-Thu 23:50) → 盤前攻略 Discord
-  "50 0 * * 1-5",        # 08:50 TW (=UTC Mon-Fri 00:50) → 盤前 warmup（ML + Shioaji Proxy）
+  # Weekly/monthly maintenance.
+  "0 20 * * 6",
+  "0 22 * * 6",
+  "30 22 * * 6",
 
-  # ── 週末維護 ──
-  "0 20 * * 6",      # 週日 04:00 TW (=UTC Sat 20:00) → D1 清理 + Retrain + IC Audit
-  "0 22 * * 6",      # 週日 06:00 TW (=UTC Sat 22:00) → 回測 + MC + PBO
-
-  # ── 每日維護（低負載時段）──
-  "0 19 * * *",      # 每日 03:00 TW (=UTC 19:00) → FinMem debate_memory retention (#18 Phase 2c)
-
-  # ── #28b T1.1 週度 Optuna 重搜 (2026-04-21 — replaces monthly) ──
-  # Business rationale: systematic L/S 業界標準 weekly retune cadence.
-  # Monthly 間隔讓 params 跟 regime drift 漂走 (B2 incident 4/11~4/17 drift
-  # 1.86 sharpe → 1.373). Weekly + Tier 3 challenger gate → drift 不可能再發生。
-  # 30 min 後於 weekly backtest (0 22 * * 6) 之後，讓 backtest 結果可供 Optuna 參考。
-  "30 22 * * 6",     # 週日 06:30 TW (=UTC Sat 22:30) → Weekly Optuna 7-source re-search
-
-  # ── #28b T1.5 事件觸發 Optuna queue processor (每 6 小時) ──
-  # 消化 regime_shift / sharpe_rolling / dd_spike 等 event triggers 塞入的 queue
-  # (lib/optunaQueue.ts). 每批次處理 1 個 pending entry → push sandbox → Wei 手動
-  # promote challenger → Friday 19:30 weekly_eval 走 T3 gate 決定 promote/retire.
-  "0 */6 * * *",     # 每 6 小時（UTC 00/06/12/18 = TW 08/14/20/02）→ Optuna queue drain
+  # Daily retention and Optuna queue drain.
+  "0 19 * * *",
+  "0 */6 * * *",
 ]
-
-# ── 選配：Cron 失敗 Telegram 通知 ─────────────────────────────────────────────
-# 設定後，Cron 失敗會自動推播到你的 Telegram
-# 在 Cloudflare Dashboard > Workers > Settings > Variables 設定（不要放在這裡）
-# TELEGRAM_BOT_TOKEN = "你的 Bot Token"
-# TELEGRAM_CHAT_ID   = "你的 Chat ID"

@@ -1,16 +1,16 @@
 """
-cost_tracker.py — #43 Cost Tracking (2026-04-21)
+cost_tracker.py #43 Cost Tracking (2026-04-21)
 
 Records LLM + Modal cost events into D1 `cost_events` table via CF REST API.
 Fire-and-forget: failures never block the caller.
 
 Rationale (ship-day):
-  QuantaAlpha POC burned $1.43+ Ephemeral + ?? persistent on Modal with zero
-  visibility. Production LLM spend ($24/mo → $1/mo after #45 migration, but
+  QuantaAlpha POC burned $1.43+ ephemeral + persistent Modal cost with zero
+  visibility. Production LLM spend ($24/mo -> $1/mo after #45 migration, but
   growing again post Debate FinMem) also needs tracking. All instrumented
   calls record here so Wei + Discord alerts can see daily / monthly spend.
 
-Pricing table (USD per 1M tokens, input / output — 2026-04 rates):
+Pricing table (USD per 1M tokens, input / output, 2026-04 rates):
   claude-sonnet-4-6:          3.00 / 15.00
   claude-opus-4-7:           15.00 / 75.00
   gemini-3.1-flash-lite:      0.075 / 0.30
@@ -20,7 +20,7 @@ Pricing table (USD per 1M tokens, input / output — 2026-04 rates):
 
 Modal cost estimation (CPU-only functions, post-discount):
   $0.000136 per CPU-second
-  Memory adds ~$0.0000148 per GB-second (ignored — small)
+  Memory adds ~$0.0000148 per GB-second (ignored as small)
 """
 
 from __future__ import annotations

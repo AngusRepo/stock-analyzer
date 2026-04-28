@@ -22,14 +22,18 @@ logger = logging.getLogger("obsidian")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID",   "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "").strip()
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN",   "")
 GITHUB_TOKEN  = os.environ.get("GITHUB_TOKEN",   "")
 GITHUB_REPO_VAULT = os.environ.get("GITHUB_REPO_VAULT", "")  # e.g. "AngusRepo/stockvision-brain"
 GITHUB_REPO_MAIN  = os.environ.get("GITHUB_REPO_MAIN",  "")  # e.g. "AngusRepo/stock-analyzer"
 
-D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+D1_API = (
+    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+    if CF_ACCOUNT_ID and CF_D1_DB_ID
+    else ""
+)
 GITHUB_API = "https://api.github.com"
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
@@ -63,7 +67,7 @@ def _render(template_name: str, **kwargs) -> str:
 # ── D1 Helpers (same pattern as backtest_service.py) ─────────────────────────
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
-    if not CF_API_TOKEN:
+    if not (CF_API_TOKEN and D1_API):
         return []
     body: dict = {"sql": sql}
     if params:

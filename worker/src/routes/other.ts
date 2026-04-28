@@ -967,6 +967,8 @@ recommendations.use('/*', authMiddleware)
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
   let date = c.req.query('date')
+  const requestedDate = date
+  let resolvedFrom: 'requested' | 'today' | 'fallback_prev' = date ? 'requested' : 'today'
   if (!date) {
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     // 先看今天有沒有
@@ -981,25 +983,45 @@ recommendations.get('/daily', async (c) => {
         'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1'
       ).bind(twToday).first<{ date: string }>()
       date = prev?.date ?? twToday
+      if (date !== twToday) resolvedFrom = 'fallback_prev'
     }
   }
+  const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.*, s.market
+    SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data
     FROM daily_recommendations r
     LEFT JOIN stocks s ON s.id = r.stock_id
+    LEFT JOIN predictions p ON p.id = (
+      SELECT p2.id
+        FROM predictions p2
+       WHERE p2.stock_id = r.stock_id
+         AND p2.model_name = 'ensemble'
+         AND date(p2.generated_at, '+8 hours') = r.date
+       ORDER BY p2.generated_at DESC, p2.id DESC
+       LIMIT 1
+    )
     WHERE r.date = ?
     ORDER BY r.rank ASC
     LIMIT 20
   `).bind(date).all<any>()
 
   // 解析 watch_points JSON
-  const recs = (results ?? []).map((r: any) => ({
-    ...r,
-    watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
-  }))
+  const recs = (results ?? []).map((r: any) => {
+    let forecastData: any = {}
+    try { forecastData = JSON.parse(r.prediction_forecast_data ?? '{}') } catch {}
+    return {
+      ...r,
+      alpha_context: forecastData?.alpha_context ?? null,
+      alpha_allocation: forecastData?.alpha_allocation ?? null,
+      watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
+    }
+  })
 
   return c.json({
+    requested_date: requestedOrToday,
     date,
+    is_stale: date !== requestedOrToday,
+    resolved_from: resolvedFrom,
     recommendations: recs,
     generated_at: recs[0]?.created_at ?? null,
   })

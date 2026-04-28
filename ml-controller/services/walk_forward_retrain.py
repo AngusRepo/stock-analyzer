@@ -97,7 +97,10 @@ def _get_bucket():
     except ImportError:
         logger.warning("[WalkForward] google-cloud-storage not installed")
         return None
-    bucket_name = os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        logger.warning("[WalkForward] GCS_BUCKET_NAME not set")
+        return None
     try:
         client = storage.Client()
         return client.bucket(bucket_name)

@@ -107,14 +107,14 @@ def _parse_json_array_from_str(raw: Optional[str], max_items: int = 3) -> str:
 
 # ── KV helpers (reads via CF API) ─────────────────────────────────────────────
 
-_CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-_CF_KV_NS_ID   = os.environ.get("CF_KV_NAMESPACE_ID", "39dcebcf5b6848c98f269ef9a48dc3f8")
+_CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+_CF_KV_NS_ID   = os.environ.get("CF_KV_NAMESPACE_ID", "").strip()
 _CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 
 
 async def _read_max_rounds(client: httpx.AsyncClient) -> int:
     """Read ml:config.debate_max_rounds from KV (bounded 1..3, default 2)."""
-    if not _CF_API_TOKEN:
+    if not (_CF_API_TOKEN and _CF_ACCOUNT_ID and _CF_KV_NS_ID):
         return 2
     try:
         url = (
@@ -134,7 +134,7 @@ async def _read_max_rounds(client: httpx.AsyncClient) -> int:
 
 
 async def _kv_read(client: httpx.AsyncClient, key: str) -> Optional[str]:
-    if not _CF_API_TOKEN:
+    if not (_CF_API_TOKEN and _CF_ACCOUNT_ID and _CF_KV_NS_ID):
         return None
     try:
         url = (
@@ -150,7 +150,7 @@ async def _kv_read(client: httpx.AsyncClient, key: str) -> Optional[str]:
 
 
 async def _kv_write(client: httpx.AsyncClient, key: str, value: str, ttl_seconds: int = 86400) -> bool:
-    if not _CF_API_TOKEN:
+    if not (_CF_API_TOKEN and _CF_ACCOUNT_ID and _CF_KV_NS_ID):
         return False
     try:
         url = (

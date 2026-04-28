@@ -1,6 +1,9 @@
 """Conformal Prediction calibration tests."""
 import pytest
 import numpy as np
+import json
+import uuid
+from pathlib import Path
 
 
 def _import_calibrator():
@@ -60,3 +63,44 @@ class TestConformalCalibrator:
         r_normal = cal.calibrate(forecast_pct=0.05, confidence=0.80, anomaly_score=0.0)
         r_anomaly = cal.calibrate(forecast_pct=0.05, confidence=0.80, anomaly_score=-0.8)
         assert r_anomaly["calibrated_confidence"] <= r_normal["calibrated_confidence"]
+
+
+def test_conformal_save_and_load_prefers_gcs(monkeypatch):
+    from app.conformal import ConformalCalibrator, load_conformal, save_conformal
+
+    tmp_path = Path("ml-service/.test_tmp") / f"conformal-{uuid.uuid4().hex}"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    uploads: dict[str, str] = {}
+
+    class FakeBlob:
+        def __init__(self, name: str):
+            self.name = name
+
+        def exists(self):
+            return self.name in uploads
+
+        def upload_from_string(self, data, content_type=None):
+            uploads[self.name] = data
+
+        def download_as_text(self):
+            return uploads[self.name]
+
+    class FakeBucket:
+        def blob(self, name: str):
+            return FakeBlob(name)
+
+    import app.model_store as model_store
+
+    monkeypatch.setattr(model_store, "_get_bucket", lambda: FakeBucket())
+
+    cal = ConformalCalibrator()
+    cal.update(0.02, 0.03)
+    save_conformal(cal, path=str(tmp_path))
+
+    local_file = tmp_path / "conformal_state.json"
+    local_file.write_text(json.dumps({"residuals": [0.99], "anomaly_residuals": []}))
+
+    loaded = load_conformal(path=str(tmp_path))
+
+    assert "meta/conformal_state.json" in uploads
+    assert loaded.residuals == pytest.approx([0.01])

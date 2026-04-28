@@ -15,7 +15,6 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
-import { RecommendationCard } from '@/components/DailyRecommendationPanel'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
 const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
@@ -98,7 +97,7 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
           <div className="flex gap-4 text-[11px] text-muted-foreground">
             {rec.current_price && <span>現價 <span className="font-mono">${fmt(rec.current_price, 2)}</span></span>}
             {rec.rsi14 && <span>RSI <span className="font-mono">{rec.rsi14.toFixed(1)}</span></span>}
-            {rec.confidence && <span>Conf <span className="font-mono">{(rec.confidence * 100).toFixed(0)}%</span></span>}
+            {rec.confidence && <span>信心度 <span className="font-mono">{(rec.confidence * 100).toFixed(0)}%</span></span>}
           </div>
         </div>
       )}
@@ -122,7 +121,7 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
           {buy.signal ?? 'BUY'}
         </Badge>
         {buy.confidence != null && (
-          <span className="text-xs font-mono text-muted-foreground">conf {(buy.confidence * 100).toFixed(0)}%</span>
+          <span className="text-xs font-mono text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
         )}
         <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(buy.score ?? 0)}</span>
         {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
@@ -210,21 +209,21 @@ export default function PipelinePage() {
         {/* Page header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-bold">Daily Pipeline</h1>
-            <p className="text-xs text-muted-foreground">{recDate} 選股流程總覽</p>
+            <h1 className="text-lg font-bold">每日流程</h1>
+            <p className="text-xs text-muted-foreground">{recDate} 選股與掛單流程總覽</p>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} BUY → {pendingBuys.length} 掛單</span>
+            <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
           </div>
         </div>
 
         {/* Pipeline flow indicator */}
         <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-card border border-border overflow-x-auto">
           {[
-            { label: 'Screener', count: screenerPassed.length, color: 'text-blue-400' },
-            { label: 'ML Predict', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-purple-400' },
-            { label: 'Signal Filter', count: mlBuy.length + mlHold.length, color: 'text-amber-400' },
-            { label: 'T2 Debate', count: pendingBuys.length, color: 'text-primary' },
+            { label: '初篩', count: screenerPassed.length, color: 'text-blue-400' },
+            { label: 'ML 預測', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-purple-400' },
+            { label: '訊號過濾', count: mlBuy.length + mlHold.length, color: 'text-amber-400' },
+            { label: 'T2 辯論', count: pendingBuys.length, color: 'text-primary' },
           ].map((step, i) => (
             <div key={step.label} className="flex items-center gap-2 shrink-0">
               {i > 0 && <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40" />}
@@ -248,8 +247,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={1} icon={Filter}
-                  title="Bottom-Up Screener"
-                  subtitle="全市場 ~882 檔 → 多因子評分（籌碼 0-40 + 技術 0-30 + 動能 0-20）→ 同產業去重 → Top 25"
+                  title="自下而上初篩"
+                  subtitle="全市場約 882 檔 → 多因子評分（籌碼 0-40、技術 0-30、動能 0-20）→ 同產業去重 → 前 25 名"
                   count={screenerPassed.length}
                   color="bg-blue-500/20 text-blue-400"
                 />
@@ -269,8 +268,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={2} icon={Brain}
-                  title="ML Ensemble Predict"
-                  subtitle="6 模型投票（XGBoost + LightGBM + CatBoost × 2 時框）→ signal_score → BUY/HOLD/SELL"
+                  title="ML 集成預測"
+                  subtitle="6 模型投票（XGBoost、LightGBM、CatBoost × 2 時框）→ signal_score → 買進 / 觀望 / 賣出"
                   count={allRecs.filter((r: any) => r.ml_score != null).length}
                   color="bg-purple-500/20 text-purple-400"
                 />
@@ -308,7 +307,7 @@ export default function PipelinePage() {
                   <div>
                     <div className="flex items-center gap-1.5 mb-2">
                       <TrendingDown className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-xs font-medium text-emerald-400">SELL / NO_SIGNAL ({mlSell.length + mlNoSignal.length})</span>
+                      <span className="text-xs font-medium text-emerald-400">賣出 / 無訊號 ({mlSell.length + mlNoSignal.length})</span>
                     </div>
                     <div className="space-y-0.5">
                       {[...mlSell, ...mlNoSignal].map((r: any) => (
@@ -329,8 +328,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={3} icon={Star}
-                  title="Recommendation Filter"
-                  subtitle="BUY + HOLD 保留為觀察清單，SELL / NO_SIGNAL 過濾 → 加入 LLM 推薦理由"
+                  title="推薦過濾"
+                  subtitle="買進與觀望保留為觀察清單，賣出與無訊號過濾 → 補上 LLM 推薦理由"
                   count={mlBuy.length + mlHold.length}
                   color="bg-amber-500/20 text-amber-400"
                 />
@@ -350,8 +349,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={4} icon={Scale}
-                  title="T2 Debate & Order"
-                  subtitle={`Morning Setup debate → RRG 象限過濾 → 限價掛單（${pbDate}）`}
+                  title="T2 辯論與掛單"
+                  subtitle={`Morning Setup 辯論 → RRG 象限過濾 → 限價掛單（${pbDate}）`}
                   count={pendingBuys.length}
                   color="bg-primary/20 text-primary"
                 />
@@ -370,7 +369,7 @@ export default function PipelinePage() {
                 {/* Quadrant filter log */}
                 {qfList.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-border">
-                    <p className="text-xs text-muted-foreground mb-2">RRG Quadrant Filter</p>
+                    <p className="text-xs text-muted-foreground mb-2">RRG 象限過濾結果</p>
                     <div className="flex flex-wrap gap-1.5">
                       {qfList.map((q: any) => {
                         const qColor = q.quadrant === 'Leading' ? 'text-emerald-400' :

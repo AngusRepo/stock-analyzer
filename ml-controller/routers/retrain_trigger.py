@@ -8,13 +8,17 @@ then calls Modal retrain_single_stock for each stock.
 Unlike /batch-retrain (which needs caller to supply payloads),
 this endpoint builds everything server-side from D1.
 """
+import os
 import time
+import json
+import uuid
 import logging
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Body
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, Request
+from pydantic import BaseModel, Field
 from dataclasses import asdict
 
 from services import d1_client, retrain_lock
@@ -26,6 +30,8 @@ from services.payload_builder import (
     _bulk_load_sentiment,
     PredictPayload,
 )
+from services.training_calendar import monthly_revenue_available_date
+from services.training_policy import TrainingPolicy
 from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
 
 logger = logging.getLogger(__name__)
@@ -36,6 +42,7 @@ router = APIRouter(prefix="/retrain", tags=["retrain"])
 # cross-instance races that the old in-memory dict missed. See
 # services.retrain_lock for design (GCS CAS via if_generation_match).
 _LOCK_TTL_SECONDS = 600  # 10 分鐘
+_UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SECONDS", str(12 * 3600)))
 
 
 class RetrainTriggerRequest(BaseModel):
@@ -44,8 +51,80 @@ class RetrainTriggerRequest(BaseModel):
 
 
 class UniversalRetrainTriggerRequest(BaseModel):
-    limit: int = 2500  # max stocks (全市場)
-    force_monthly: bool = False  # 強制跑月度流程（含 feature selection）
+    limit: int = 2500  # max stocks
+    force_monthly: bool = False  # Force monthly flow, including feature selection.
+    train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "ftt", "dlinear", "patchtst"])
+    ftt_d_model: int = 128
+    ftt_n_heads: int = 8
+    ftt_n_layers: int = 3
+    ftt_dropout: float = 0.12
+    ftt_max_epochs: int = 120
+    ftt_lr: float = 2e-4
+    ftt_patience: int = 16
+    ftt_batch_size: int = 1024
+    ftt_margin: float = 0.0
+
+
+def _force_https(url: str) -> str:
+    parsed = urlsplit(url.strip())
+    if parsed.scheme != "http":
+        return url.rstrip("/")
+    host = (parsed.hostname or "").lower()
+    if host in {"localhost", "127.0.0.1"}:
+        return url.rstrip("/")
+    return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment)).rstrip("/")
+
+
+def _build_followup_webhook_url(request: Request | None) -> str:
+    explicit = (
+        os.environ.get("RETRAIN_FOLLOWUP_URL", "").strip()
+        or os.environ.get("ML_CONTROLLER_PUBLIC_URL", "").strip()
+    )
+    if explicit:
+        explicit = _force_https(explicit)
+        if explicit.rstrip("/").endswith("/retrain/followup"):
+            return explicit.rstrip("/")
+        return f"{explicit.rstrip('/')}/retrain/followup"
+    if request is not None:
+        base = _force_https(str(request.base_url).rstrip("/"))
+        return f"{base}/retrain/followup"
+    return "http://localhost/retrain/followup"
+
+
+def _upsert_retrain_status(
+    run_id: str,
+    *,
+    status: str,
+    summary: dict | None = None,
+    source: str = "ml-controller",
+    action: str = "retrain_followup",
+    downstream_notes: str = "",
+) -> None:
+    payload_summary = json.dumps(summary or {}, ensure_ascii=False)
+    sql = """
+        INSERT INTO webhook_log
+          (idempotency_key, received_at, source, action, payload_summary, status, downstream_notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(idempotency_key) DO UPDATE SET
+          received_at = excluded.received_at,
+          source = excluded.source,
+          action = excluded.action,
+          payload_summary = excluded.payload_summary,
+          status = excluded.status,
+          downstream_notes = excluded.downstream_notes
+    """
+    d1_client.execute(
+        sql,
+        [
+            run_id,
+            datetime.now(timezone.utc).isoformat(),
+            source,
+            action,
+            payload_summary,
+            status,
+            downstream_notes,
+        ],
+    )
 
 
 @router.post("/trigger")
@@ -196,6 +275,7 @@ def _volume_bucket(prices: list[dict]) -> int:
 @router.post("/universal")
 async def trigger_universal_retrain(
     req: UniversalRetrainTriggerRequest = Body(default=UniversalRetrainTriggerRequest()),
+    request: Request = None,
 ):
     """
     全市場 universal model retrain trigger.
@@ -207,14 +287,16 @@ async def trigger_universal_retrain(
     """
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    run_id = f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
     # ── Idempotency check (P0-4, persistent via GCS) ─────────────────────────
     run_date = tw_now.date().isoformat()
     lock_key = f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
         lock_key,
-        ttl_seconds=_LOCK_TTL_SECONDS,
+        ttl_seconds=_UNIVERSAL_LOCK_TTL_SECONDS,
         metadata={
+            "run_id": run_id,
             "run_date": run_date,
             "limit": req.limit,
             "force_monthly": req.force_monthly,
@@ -238,6 +320,19 @@ async def trigger_universal_retrain(
         f"[retrain/universal] Lock acquired: {lock_key} (backend={lock_result.backend}, "
         f"reason={lock_result.reason})"
     )
+    _upsert_retrain_status(
+        run_id,
+        status="started",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "limit": req.limit,
+            "force_monthly": req.force_monthly,
+            "lock_backend": lock_result.backend,
+            "lock_ttl_seconds": _UNIVERSAL_LOCK_TTL_SECONDS,
+        },
+        downstream_notes="lock_acquired",
+    )
 
     # ── 1. All stocks (universal covers inactive too for training diversity) ──
     stock_rows = d1_client.query(
@@ -248,6 +343,17 @@ async def trigger_universal_retrain(
     )
     if not stock_rows:
         retrain_lock.release(lock_key)
+        _upsert_retrain_status(
+            run_id,
+            status="prep_failed",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "reason": "no_stocks_found",
+                "limit": req.limit,
+            },
+            downstream_notes="aborted_before_data_load",
+        )
         return {"error": "No stocks found", "total": 0}
 
     stock_ids = [r["id"] for r in stock_rows]
@@ -260,30 +366,26 @@ async def trigger_universal_retrain(
     # ── 2. Shared market env ────────────────────────────────────────────────
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
-    # ── 2a. B-lite regime-conditional training window ────────────────────────
-    # VIX + TWII bias proxy → decide prices lookback.
-    # 後續 #7 HMM→KV 完成後改讀 kv_get("ml:regime")（改 1 行）。
+    # 2a. B-lite regime-conditional training window.
+    # VIX + TWII bias proxy decides prices lookback via TrainingPolicy.
+    # Future HMM/KV regime source should only replace TrainingPolicy inputs.
+    training_policy = TrainingPolicy.from_env()
     vix = getattr(market_env, "us_vix", 18) or 18
     twii_bias = getattr(market_env, "twii_bias", 0) or 0
-    if vix > 25 or twii_bias < -0.05:
-        regime = "bear"
-        prices_lookback = 252    # 1 year — structure shifts fast, old data is toxic
-    elif vix < 18 and twii_bias > 0.02:
-        regime = "bull"
-        prices_lookback = 900    # 3.5 years — long trend, more data helps
-    else:
-        regime = "sideways"
-        prices_lookback = 500    # 2 years — middle ground
-    logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) → prices_lookback={prices_lookback}d")
+    regime, prices_lookback = training_policy.resolve_regime(vix=float(vix), twii_bias=float(twii_bias))
+    logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) -> prices_lookback={prices_lookback}d")
 
-    # ── 2b. Monthly detection + feature pool for prep filtering ──
-    # 2.0 Flow B: feature selection 在 Modal orchestrator 裡 await 完成（不再 fire-and-forget）
-    # Cloud Run 這邊只讀既有 feature_pool.json 給 prep 用
+    # 2b. Monthly detection + feature pool for prep filtering.
+    # Flow B: feature selection runs inside Modal orchestrator.
+    # Cloud Run only prepares feature_pool.json for prep filtering.
     import json as _json
     from google.cloud import storage as _gcs
-    is_monthly = req.force_monthly or tw_now.day <= 7
+    is_monthly = training_policy.is_monthly(force_monthly=req.force_monthly, tw_day=tw_now.day)
     if is_monthly:
-        logger.info("[retrain/universal] Monthly detected (day 1-7) — selection will run in Modal orchestrator")
+        logger.info(
+            "[retrain/universal] Monthly detected "
+            f"(day<={training_policy.monthly_day_cutoff}) -> selection will run in Modal orchestrator"
+        )
 
     # 2026-04-18 A1 fix: prep 一律寫全 106 features，不管月度/非月度。
     # 原邏輯：非月度用 feature_pool.json.active (46) 過濾 → 嚴重 bug：
@@ -324,11 +426,10 @@ async def trigger_universal_retrain(
     )
     for r in (rev_rows or []):
         sid = r["stock_id"]
-        ym = r["date"]  # "YYYY-MM" format
+        ym = r["date"]  # Usually revenue period "YYYY-MM"; full publication date is also accepted.
         if sid not in per_stock_ts_map:
             per_stock_ts_map[sid] = {}
-        # Convert "YYYY-MM" → "YYYY-MM-15" (mid-month anchor for forward-fill join)
-        date_key = f"{ym}-15"
+        date_key = monthly_revenue_available_date(ym)
         if date_key not in per_stock_ts_map[sid]:
             per_stock_ts_map[sid][date_key] = {}
         per_stock_ts_map[sid][date_key]["revenue_yoy"] = r.get("revenue_yoy", 0)
@@ -424,6 +525,19 @@ async def trigger_universal_retrain(
         })
 
     if len(per_stock_payloads) < 10:
+        retrain_lock.release(lock_key)
+        _upsert_retrain_status(
+            run_id,
+            status="prep_failed",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "reason": "usable_stocks_below_threshold",
+                "usable_stocks": len(per_stock_payloads),
+                "stocks_skipped": len(skipped),
+            },
+            downstream_notes="aborted_before_batch_prep",
+        )
         return {"error": f"Usable stocks < 10 ({len(per_stock_payloads)})", "skipped": skipped}
 
     # ── 5b. Cross-sectional features: sector peer returns ────────────────────
@@ -497,6 +611,7 @@ async def trigger_universal_retrain(
             "batch_index": idx,
             "shared_market_history": shared_history,
             "per_stock_ts_map": batch_ps_ts,
+            "gcs_prefix": "universal",
         }
         if active_features:
             prep_payload["active_features"] = active_features
@@ -507,27 +622,71 @@ async def trigger_universal_retrain(
 
     total_rows = sum(r.get("rows", 0) for r in prep_results)
     logger.info(f"[retrain/universal] Prep done: {batch_count} batches, {total_rows} total rows")
+    _upsert_retrain_status(
+        run_id,
+        status="prep_complete",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "is_monthly": is_monthly,
+            "batch_count": batch_count,
+            "total_prep_rows": total_rows,
+            "stocks_sent": len(per_stock_payloads),
+            "stocks_skipped": len(skipped),
+        },
+        downstream_notes="await_orchestrator_dispatch",
+    )
 
     if total_rows < 10000:
         # Abort before orchestrator spawn → release lock so next retry can run.
         logger.warning(f"[retrain/universal] Aborting: total_rows={total_rows} < 10000; releasing lock")
         retrain_lock.release(lock_key)
+        _upsert_retrain_status(
+            run_id,
+            status="prep_failed",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "batch_count": batch_count,
+                "total_prep_rows": total_rows,
+            },
+            downstream_notes="aborted_before_orchestrator",
+        )
         return {
             "error": f"Total prep rows {total_rows} < 10000, aborting train",
             "prep_results": prep_results,
+            "run_id": run_id,
+            "lock_key": lock_key,
         }
 
     # ── 7. Flow B: Modal orchestrator (selection → train → SHAP) ──────────────
     # Cloud Run 觸發一次 Modal retrain_orchestrator，後面全在 Modal 內完成
     from services.modal_client import retrain_orchestrator
+    followup_webhook_url = _build_followup_webhook_url(request)
     logger.info(f"[retrain/universal] Flow B: spawning Modal orchestrator "
-                f"(batches={batch_count}, monthly={is_monthly})")
+                f"(batches={batch_count}, monthly={is_monthly}, followup={followup_webhook_url})")
     try:
         orchestrator_result = await retrain_orchestrator(
             payload={
                 "batch_count": batch_count,
                 "is_monthly": is_monthly,
-                "selection_params": {"max_rounds": 100, "alpha": 0.01},
+                "train_model_groups": req.train_model_groups,
+                "selection_params": training_policy.feature_selection_params(),
+                "training_policy": training_policy.to_dict(),
+                "ftt_d_model": req.ftt_d_model,
+                "ftt_n_heads": req.ftt_n_heads,
+                "ftt_n_layers": req.ftt_n_layers,
+                "ftt_dropout": req.ftt_dropout,
+                "ftt_max_epochs": req.ftt_max_epochs,
+                "ftt_lr": req.ftt_lr,
+                "ftt_patience": req.ftt_patience,
+                "ftt_batch_size": req.ftt_batch_size,
+                "ftt_margin": req.ftt_margin,
+                "followup_webhook_url": followup_webhook_url,
+                "gcs_prefix": "universal",
+                "run_id": run_id,
+                "lock_key": lock_key,
+                "run_date": run_date,
             },
             fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
         )
@@ -536,11 +695,39 @@ async def trigger_universal_retrain(
         # is not blocked by our aborted attempt (matches pre-GCS behavior).
         logger.error(f"[retrain/universal] orchestrator dispatch failed: {orch_err}; releasing lock")
         retrain_lock.release(lock_key)
+        _upsert_retrain_status(
+            run_id,
+            status="dispatch_failed",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "batch_count": batch_count,
+                "total_prep_rows": total_rows,
+                "error": str(orch_err),
+            },
+            downstream_notes="orchestrator_dispatch_error",
+        )
         raise
 
-    # ── Lock held by services.retrain_lock.acquire() above.  Intentionally
-    # kept for the full TTL so cron re-triggers within 10 minutes are skipped.
+    # ── Lock stays held until the Modal followup releases it. The long TTL is
+    # only a safety net if the callback is lost or the orchestrator crashes.
     logger.info(f"[retrain/universal] Lock held: {lock_key} (orchestrator dispatched)")
+    _upsert_retrain_status(
+        run_id,
+        status="orchestrator_dispatched",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "is_monthly": is_monthly,
+            "batch_count": batch_count,
+            "total_prep_rows": total_rows,
+            "followup_webhook_url": followup_webhook_url,
+            "stocks_sent": len(per_stock_payloads),
+            "stocks_skipped": len(skipped),
+            "orchestrator_result": orchestrator_result,
+        },
+        downstream_notes="await_modal_followup",
+    )
 
     elapsed = round(time.time() - t0, 2)
     logger.info(f"[retrain/universal] Done in {elapsed}s")
@@ -554,4 +741,7 @@ async def trigger_universal_retrain(
         "total_prep_rows": total_rows,
         "prep_results": prep_results,
         "orchestrator_result": orchestrator_result,
+        "run_id": run_id,
+        "lock_key": lock_key,
+        "followup_webhook_url": followup_webhook_url,
     }

@@ -296,6 +296,7 @@ export const paperApi = {
   cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
   quadrantFilter:  (date?: string) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`),
   pendingBuys:     () => get<any>('/paper/pending-buys'),
+  gateCalibration: (days = 7) => get<any>(`/paper/gate-calibration?days=${days}`),
 }
 
 export const adaptiveApi = {

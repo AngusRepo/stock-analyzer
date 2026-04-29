@@ -219,6 +219,32 @@ async function syncKvSnapshot(
   )
 }
 
+async function recordPendingBuyAuditEvents(
+  env: Bindings,
+  tradeDate: string,
+  source: string,
+  pendingRunId: number | null,
+  auditEvents: Array<Record<string, unknown>>,
+): Promise<void> {
+  if (auditEvents.length === 0) return
+  await recordPaperExecutionEvents(env, auditEvents.map((event) => ({
+    tradeDate,
+    symbol: typeof event.symbol === 'string' ? event.symbol : null,
+    eventType: 'pending_buy',
+    status: typeof event.status === 'string' ? event.status : 'unknown',
+    reason: typeof event.reason === 'string' ? event.reason : null,
+    detail: event.detail ? { detail: event.detail } : null,
+    pendingRunId,
+    source,
+  })))
+}
+
+function auditEventsFromMeta(meta?: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(meta?.execution_events)
+    ? meta.execution_events as Array<Record<string, unknown>>
+    : []
+}
+
 async function findRunForDate(db: D1Database, tradeDate: string): Promise<PendingBuyRunRow | null> {
   return await db.prepare(
     `SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at
@@ -438,6 +464,8 @@ export async function persistPendingBuyActiveState(
   meta?: Record<string, unknown>,
 ): Promise<void> {
   const snapshot = await loadPendingBuySnapshot(env, tradeDate, { allowFallbackRecent: false })
+  const parsedRunId = Number(snapshot.meta?.run_id)
+  const pendingRunId = Number.isFinite(parsedRunId) && parsedRunId > 0 ? parsedRunId : null
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate: typeof snapshot.meta?.source_reco_date === 'string' ? String(snapshot.meta?.source_reco_date) : tradeDate,
@@ -449,6 +477,13 @@ export async function persistPendingBuyActiveState(
       ...(meta ?? {}),
     },
   })
+  await recordPendingBuyAuditEvents(
+    env,
+    tradeDate,
+    typeof meta?.stage === 'string' ? meta.stage : 'pending_buy',
+    pendingRunId,
+    auditEventsFromMeta(meta),
+  )
 }
 
 export const markPendingBuysFilled = persistPendingBuyActiveState
@@ -465,7 +500,7 @@ export async function markPendingBuyExecutionEvents(
   const transition = applyPendingBuyExecutionEvents(pendingBuys, events)
   const parsedRunId = Number(snapshot.meta?.run_id)
   const pendingRunId = Number.isFinite(parsedRunId) && parsedRunId > 0 ? parsedRunId : null
-  const auditEvents = Array.isArray(meta?.execution_events) ? meta.execution_events as Array<Record<string, unknown>> : []
+  const auditEvents = auditEventsFromMeta(meta)
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate: typeof snapshot.meta?.source_reco_date === 'string' ? String(snapshot.meta?.source_reco_date) : tradeDate,
@@ -496,6 +531,19 @@ export async function markPendingBuyExecutionEvents(
       source: typeof meta?.stage === 'string' ? meta.stage : 'pending_buy',
     }
   }))
+  const terminalEventKeys = new Set(events.map((event) => `${event.symbol}:${event.status}:${event.reason}`))
+  await recordPendingBuyAuditEvents(
+    env,
+    tradeDate,
+    typeof meta?.stage === 'string' ? meta.stage : 'pending_buy',
+    pendingRunId,
+    auditEvents.filter((event) => {
+      const symbol = typeof event.symbol === 'string' ? event.symbol : ''
+      const status = typeof event.status === 'string' ? event.status : ''
+      const reason = typeof event.reason === 'string' ? event.reason : ''
+      return !terminalEventKeys.has(`${symbol}:${status}:${reason}`)
+    }),
+  )
 }
 
 function previousDate(dateStr: string, offsetDays: number): string {

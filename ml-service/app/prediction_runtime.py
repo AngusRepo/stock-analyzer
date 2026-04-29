@@ -536,13 +536,15 @@ def predict_stock(req: PredictRequest) -> dict:
     }
 
 
-_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+_FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+_TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST", "KalmanFilter", "MarkovSwitching"]
+_MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 
 
 def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
     import torch
-    from .ensemble import load_ic_weights, rank_to_signal
+    from .ensemble import load_ic_weights, merge_with_time_series, rank_to_signal
     from .model_store import load_model
     from .model_pool import get_challenger_path, load_pool as _load_pool
 
@@ -561,6 +563,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     )
 
     prices_arr = np.array([float(p["close"]) for p in req.prices])
+    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
 
@@ -615,7 +618,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             return aligned
         return x_latest
 
-    for model_name in _MODEL_NAMES_V2:
+    for model_name in _FEATURE_MODEL_NAMES_V2:
         try:
             status = model_pool_status.get(model_name, "active")
             if status in ("retired", "challenger"):
@@ -656,6 +659,35 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     if not rank_scores:
         raise ValueError(f"All models failed for {req.symbol}: {model_errors}")
 
+    time_series_signals: dict[str, dict] = {}
+    ts_model_fns = [
+        ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, req.stock_id)),
+        ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
+        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, req.stock_id)),
+        ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
+        ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, req.stock_id)),
+    ]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {}
+        for model_name, fn in ts_model_fns:
+            status = model_pool_status.get(model_name, "active")
+            if status in ("retired", "challenger"):
+                model_errors.append(f"{model_name}: skipped by model_pool status={status}")
+                continue
+            futures[executor.submit(fn)] = model_name
+        for future in as_completed(futures):
+            model_name = futures[future]
+            try:
+                pred = future.result()
+                time_series_signals[model_name] = {
+                    "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
+                    "direction": getattr(pred, "direction", None),
+                    "confidence": float(getattr(pred, "confidence", 0.0)),
+                    "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
+                }
+            except Exception as e:
+                model_errors.append(f"{model_name}: {e}")
+
     challenger_rank_scores: dict[str, float] = {}
     challenger_errors: list[str] = []
 
@@ -693,12 +725,13 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             except Exception as e:
                 challenger_errors.append(f"{model_name}: challenger {e}")
 
-    effective_ic_weights: dict[str, float] = {}
-    for model_name in rank_scores:
-        base_weight = max(0.0, (ic_weights or {}).get(model_name, 1.0)) if ic_weights else 1.0
-        if model_pool_status.get(model_name) == "degraded":
-            base_weight *= degraded_dampening
-        effective_ic_weights[model_name] = base_weight
+    rank_scores, effective_ic_weights = merge_with_time_series(
+        rank_scores,
+        time_series_signals,
+        ic_weights=ic_weights,
+        model_status=model_pool_status,
+        degraded_dampening=degraded_dampening,
+    )
 
     rank_stacker_info = {"applied": False, "reason": "not_loaded"}
     try:
@@ -743,6 +776,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "ic_weights": {k: round(v, 4) for k, v in effective_ic_weights.items()} if effective_ic_weights else None,
         "model_pool_status": model_pool_status if pool_snapshot else None,
         "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
+        "time_series_signals": time_series_signals if time_series_signals else None,
         "rank_stacker": rank_stacker_info,
         "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
         "challenger_errors": challenger_errors if challenger_errors else None,

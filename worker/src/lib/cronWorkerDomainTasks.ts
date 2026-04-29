@@ -109,7 +109,7 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     return true
   }
 
-  if (cron === '* 1-5 * * 1-5') {
+  if (['* 1-5 * * 1-5', '* 1-4 * * 1-5', '0-30 5 * * 1-5'].includes(cron)) {
     await runIntradayHeartbeat(env, ctx, twTodayStr)
     return true
   }

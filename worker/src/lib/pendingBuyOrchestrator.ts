@@ -11,6 +11,13 @@ import {
   type PendingBuy,
 } from './pendingBuyStore'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
+import { capEntryToLatestClose } from './entryPricePolicy'
+import {
+  buildMarketStructureWatchPoint,
+  buildMlVoteSummary,
+  buildMlVoteWatchPoint,
+  parsePredictionForecastData,
+} from './recommendationContext'
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import {
@@ -71,6 +78,7 @@ interface AlphaForecastContext {
     liquidity_level?: string
     skip?: boolean
     flags?: string[]
+    structure_detail?: Record<string, unknown>
   }
 }
 
@@ -134,22 +142,16 @@ function clampNumber(value: unknown, lo: number, hi: number, fallback: number): 
 }
 
 function parseAlphaContext(rawForecastData: unknown): AlphaForecastContext | null {
-  if (typeof rawForecastData !== 'string' || !rawForecastData.trim()) return null
-  try {
-    const forecastData = JSON.parse(rawForecastData)
-    const ctx = forecastData?.alpha_context
-    if (!ctx || typeof ctx !== 'object') return null
-    return ctx as AlphaForecastContext
-  } catch {
-    return null
-  }
+  const forecastData = parsePredictionForecastData(rawForecastData)
+  const ctx = forecastData?.alpha_context
+  return ctx && typeof ctx === 'object' ? ctx as AlphaForecastContext : null
 }
 
 function alphaWatchPoint(ctx: AlphaForecastContext | null): string | null {
   if (!ctx) return null
   const risk = ctx.risk_overlay ?? {}
   const sizing = clampNumber(ctx.sizing_multiplier, 0.25, 1.25, 1.0)
-  return `Alpha overlay: ${ctx.edge_bucket ?? 'unknown'} / ${ctx.regime ?? 'unknown'}, sizing x${sizing.toFixed(2)}, risk=${risk.volatility_level ?? 'n/a'}/${risk.liquidity_level ?? 'n/a'}`
+  return `Alpha bucket: ${ctx.edge_bucket ?? 'unknown'}, regime=${ctx.regime ?? 'unknown'}, sizing x${sizing.toFixed(2)}, risk=${risk.volatility_level ?? 'n/a'}/${risk.liquidity_level ?? 'n/a'}`
 }
 
 function calcRiskPct(
@@ -370,7 +372,7 @@ async function collectCooldownSet(kv: KVNamespace, tradeDate: string, buyRecs: B
 function applyRecommendationProvenance(buyRecs: BuyRecommendationRow[]): void {
   for (const rec of buyRecs) {
     try {
-      const forecastData = rec.forecast_data ? JSON.parse(rec.forecast_data) : {}
+      const forecastData = parsePredictionForecastData(rec.forecast_data) ?? {}
       const ensemble = forecastData?.ensemble_v2 ?? {}
       const avgRank = typeof ensemble.avg_rank === 'number' ? ensemble.avg_rank : null
       const avgRankText = avgRank != null ? avgRank.toFixed(3) : '?'
@@ -617,7 +619,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       if (punishedSet.has(rec.symbol)) continue
       if (cooldownSet.has(rec.symbol)) continue
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
-      const alphaContext = parseAlphaContext(rec.forecast_data)
+      const forecastData = parsePredictionForecastData(rec.forecast_data)
+      const alphaContext = parseAlphaContext(forecastData)
+      const mlVoteSummary = buildMlVoteSummary(forecastData)
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -702,20 +706,21 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         }
       }
 
-      const latestClose = Number(rec.latest_close ?? 0)
       const maxPremium = cfg.position.maxEntryPremiumPct ?? 0.01
-      if (latestClose > 0) {
-        const maxEntry = Math.round(latestClose * (1 + maxPremium) * 100) / 100
-        if (adjustedEntry > maxEntry) {
-          const ratio = maxEntry / adjustedEntry
-          adjustedEntry = maxEntry
-          adjustedStop = adjustedStop != null ? Math.round(adjustedStop * ratio * 100) / 100 : adjustedStop
-          adjustedTarget1 = adjustedTarget1 != null ? Math.round(adjustedTarget1 * ratio * 100) / 100 : adjustedTarget1
-          adjustedTarget2 = adjustedTarget2 != null ? Math.round(adjustedTarget2 * ratio * 100) / 100 : adjustedTarget2
-          entryWatchPoints.push(
-            `Entry capped to latest close + ${(maxPremium * 100).toFixed(1)}% (${latestClose} -> ${maxEntry})`,
-          )
-        }
+      const cappedEntry = capEntryToLatestClose({
+        entryPrice: adjustedEntry,
+        stopLoss: adjustedStop,
+        target1: adjustedTarget1,
+        target2: adjustedTarget2,
+        latestClose: rec.latest_close,
+        maxPremiumPct: maxPremium,
+      })
+      adjustedEntry = cappedEntry.entryPrice
+      adjustedStop = cappedEntry.stopLoss
+      adjustedTarget1 = cappedEntry.target1
+      adjustedTarget2 = cappedEntry.target2
+      if (cappedEntry.watchPoint) {
+        entryWatchPoints.push(cappedEntry.watchPoint)
       }
 
       const kellyResult = calcKellyPct(
@@ -741,7 +746,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         reason: rec.reason ?? '',
         watch_points: [
           ...parseWatchPoints(rec.watch_points),
-          ...([alphaWatchPoint(alphaContext)].filter(Boolean) as string[]),
+          ...([
+            alphaWatchPoint(alphaContext),
+            buildMarketStructureWatchPoint(alphaContext),
+            buildMlVoteWatchPoint(mlVoteSummary),
+          ].filter(Boolean) as string[]),
           ...entryWatchPoints,
         ],
         debate_verdict: debateVerdict,

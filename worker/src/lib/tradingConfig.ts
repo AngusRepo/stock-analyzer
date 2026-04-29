@@ -391,6 +391,8 @@ export interface TradingConfig {
     // 2026-04-18 #36 Round 2
     tradingDayMinutes: number            // 台股交易時段分鐘數（預設 270 = 9:00-13:30）
     minutesFractionFloor: number         // minutesSinceOpen/total 下限（預設 0.1 防早盤分母太小）
+    avgVolumeLookbackDays: number        // 量能基準最近 N 日（預設 20）
+    intradayVolumeLotSize: number        // Shioaji total_volume 單位換算股數（預設 1000）
   }
   alphaFramework: AlphaFrameworkConfig
 }
@@ -640,6 +642,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     // Round 2
     tradingDayMinutes: 270,
     minutesFractionFloor: 0.1,
+    avgVolumeLookbackDays: 20,
+    intradayVolumeLotSize: 1000,
   },
   alphaFramework: {
     riskOverlay: {
@@ -1364,6 +1368,14 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('barrier.upperMult must be 0.5-10')
   if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)
     errors.push('barrier.lowerMult must be 0.5-10')
+  if (!isFiniteNumber(config.momentum.minVolumeRatio) || config.momentum.minVolumeRatio < 0 || config.momentum.minVolumeRatio > 5)
+    errors.push('momentum.minVolumeRatio must be 0-5')
+  if (!isFiniteNumber(config.momentum.minRangePosition) || config.momentum.minRangePosition < 0 || config.momentum.minRangePosition > 1)
+    errors.push('momentum.minRangePosition must be 0-1')
+  if (!Number.isInteger(config.momentum.avgVolumeLookbackDays) || config.momentum.avgVolumeLookbackDays < 1 || config.momentum.avgVolumeLookbackDays > 120)
+    errors.push('momentum.avgVolumeLookbackDays must be an integer between 1 and 120')
+  if (!isFiniteNumber(config.momentum.intradayVolumeLotSize) || config.momentum.intradayVolumeLotSize <= 0 || config.momentum.intradayVolumeLotSize > 10_000)
+    errors.push('momentum.intradayVolumeLotSize must be >0 and <=10000')
   // Cross-field: drawdownScaleStart must be < drawdownHalt (otherwise MDD formula
   // produces NaN/Infinity due to negative denominator)
   const cc = config.circuit

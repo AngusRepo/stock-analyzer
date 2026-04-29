@@ -21,6 +21,10 @@ import {
   generateAnalystSummary,
   answerStockQuestion,
 } from '../lib/llm'
+import {
+  buildMlVoteSummary,
+  parsePredictionForecastData,
+} from '../lib/recommendationContext'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -1007,12 +1011,12 @@ recommendations.get('/daily', async (c) => {
 
   // 解析 watch_points JSON
   const recs = (results ?? []).map((r: any) => {
-    let forecastData: any = {}
-    try { forecastData = JSON.parse(r.prediction_forecast_data ?? '{}') } catch {}
+    const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
     return {
       ...r,
       alpha_context: forecastData?.alpha_context ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? null,
+      ml_vote_summary: buildMlVoteSummary(forecastData),
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })

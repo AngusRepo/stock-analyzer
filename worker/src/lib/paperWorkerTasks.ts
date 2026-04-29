@@ -6,6 +6,7 @@ import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
+import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 
 const ACCOUNT_ID = 1
 
@@ -33,7 +34,12 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     if (px) finalPosValue += px * p.shares
   }
 
-  const totalValue = updatedAcc.cash + finalPosValue
+  const settlement = await getUnsettledSettlementSummary(env.DB, ACCOUNT_ID)
+  const totalValue = computePaperTotalValue({
+    settledCash: updatedAcc.cash,
+    positionsValue: finalPosValue,
+    netUnsettledSettlement: settlement.netUnsettledSettlement,
+  })
   const pnl = totalValue - updatedAcc.initial_cash
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 

@@ -24,9 +24,18 @@ import {
 } from '../lib/paperTradeMath'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
-import type { RescoreSellParams } from '../lib/paperWorkerTasks'
+import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
 import { loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
+import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
+import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
+import {
+  appendUniqueWatchPoint,
+  buildMarketStructureWatchPoint,
+  buildMlVoteSummary,
+  buildMlVoteWatchPoint,
+  parsePredictionForecastData,
+} from '../lib/recommendationContext'
 import type { Bindings, Variables } from '../types'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -34,6 +43,66 @@ const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const ACCOUNT_ID = 1
 
 // Market snapshot fetch: Shioaji proxy first, Yahoo fallback second.
+
+async function enrichPendingBuyContext(
+  db: D1Database,
+  pendingBuys: any[],
+  sourceRecoDate: string,
+): Promise<any[]> {
+  if (pendingBuys.length === 0) return pendingBuys
+  const symbols = [...new Set(pendingBuys.map((item) => String(item.symbol ?? '').trim()).filter(Boolean))]
+  if (symbols.length === 0) return pendingBuys
+
+  const placeholders = symbols.map(() => '?').join(',')
+  const { results } = await db.prepare(`
+    SELECT dr.symbol,
+           p.forecast_data AS prediction_forecast_data
+      FROM daily_recommendations dr
+      LEFT JOIN stocks s ON s.symbol = dr.symbol
+      LEFT JOIN predictions p ON p.id = (
+        SELECT p2.id
+          FROM predictions p2
+         WHERE p2.stock_id = s.id
+           AND p2.model_name = 'ensemble'
+           AND date(p2.generated_at, '+8 hours') = dr.date
+         ORDER BY p2.generated_at DESC, p2.id DESC
+         LIMIT 1
+      )
+     WHERE dr.date = ?
+       AND dr.symbol IN (${placeholders})
+  `).bind(sourceRecoDate, ...symbols).all<any>().catch(() => ({ results: [] as any[] }))
+
+  const contextBySymbol = new Map<string, any>()
+  for (const row of results ?? []) {
+    const forecastData = parsePredictionForecastData(row.prediction_forecast_data)
+    if (!forecastData) continue
+    const mlVoteSummary = buildMlVoteSummary(forecastData)
+    contextBySymbol.set(row.symbol, {
+      prediction_forecast_data: row.prediction_forecast_data,
+      alpha_context: forecastData.alpha_context ?? null,
+      alpha_allocation: forecastData.alpha_allocation ?? null,
+      ml_vote_summary: mlVoteSummary,
+      market_watch_point: buildMarketStructureWatchPoint(forecastData.alpha_context),
+      ml_watch_point: buildMlVoteWatchPoint(mlVoteSummary),
+    })
+  }
+
+  return pendingBuys.map((item) => {
+    const context = contextBySymbol.get(item.symbol)
+    if (!context) return item
+    let watchPoints = Array.isArray(item.watch_points) ? item.watch_points : []
+    watchPoints = appendUniqueWatchPoint(watchPoints, context.market_watch_point)
+    watchPoints = appendUniqueWatchPoint(watchPoints, context.ml_watch_point)
+    return {
+      ...item,
+      alpha_context: context.alpha_context,
+      alpha_allocation: context.alpha_allocation,
+      ml_vote_summary: context.ml_vote_summary,
+      prediction_forecast_data: context.prediction_forecast_data,
+      watch_points: watchPoints,
+    }
+  })
+}
 
 // Auth middleware supporting both internal token and approved JWT sessions.
 
@@ -92,9 +161,7 @@ paper.get('/positions', async (c) => {
   ).bind(ACCOUNT_ID).all<any>()
 
 // Intraday pricing ladder during TW market hours (09:00-13:30).
-  const twHour = (new Date().getUTCHours() + 8) % 24
-  const twMin  = new Date().getUTCMinutes()
-  const isMarketOpen = twHour >= 9 && (twHour < 13 || (twHour === 13 && twMin <= 30))
+  const isMarketOpen = isTwIntradayTradingMinute()
 
 // Tier 1: KV intraday snapshots populated by `pollIntradayStopLoss`.
   const intradayMap = new Map<string, number>()
@@ -139,7 +206,12 @@ paper.get('/positions', async (c) => {
     }
   }))
 
-  const totalValue    = acc.cash + totalPositionValue
+  const settlement = await getUnsettledSettlementSummary(c.env.DB, ACCOUNT_ID)
+  const totalValue    = computePaperTotalValue({
+    settledCash: acc.cash,
+    positionsValue: totalPositionValue,
+    netUnsettledSettlement: settlement.netUnsettledSettlement,
+  })
   const totalPnl      = totalValue - acc.initial_cash
   const totalPnlPct   = acc.initial_cash > 0 ? (totalPnl / acc.initial_cash * 100) : 0
 
@@ -149,6 +221,9 @@ paper.get('/positions', async (c) => {
     summary: {
       cash:             Math.round(acc.cash),
       positions_value:  Math.round(totalPositionValue),
+      unsettled_buy_amount: Math.round(settlement.unsettledBuyAmount),
+      unsettled_sell_amount: Math.round(settlement.unsettledSellAmount),
+      net_unsettled_settlement: Math.round(settlement.netUnsettledSettlement),
       total_value:      Math.round(totalValue),
       initial_cash:     acc.initial_cash,
       total_pnl:        Math.round(totalPnl),
@@ -320,6 +395,10 @@ paper.get('/pending-buys', async (c) => {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: true })
   const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
+  const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
+    ? snapshot.meta.source_reco_date
+    : snapshot.date
+  const pendingBuys = await enrichPendingBuyContext(c.env.DB, snapshot.pendingBuys, sourceRecoDate)
   return c.json({
     requested_date: snapshot.requested_date,
     date: snapshot.date,
@@ -328,7 +407,7 @@ paper.get('/pending-buys', async (c) => {
     source: snapshot.source,
     meta: snapshot.meta ?? null,
     state,
-    pendingBuys: snapshot.pendingBuys,
+    pendingBuys,
   })
 })
 
@@ -341,6 +420,52 @@ paper.get('/execution-events', async (c) => {
   ).bind(ACCOUNT_ID, limit).all<any>().catch(() => ({ results: [] as any[] }))
 
   return c.json({ status: 'success', events: results ?? [] })
+})
+
+// GET /api/paper/gate-calibration — recent execution gate distribution.
+
+paper.get('/gate-calibration', async (c) => {
+  const rawDays = Number.parseInt(c.req.query('days') ?? '7', 10)
+  const days = Math.max(1, Math.min(Number.isFinite(rawDays) ? rawDays : 7, 60))
+  const sinceModifier = `-${days} days`
+
+  const { results } = await c.env.DB.prepare(`
+    SELECT
+      status,
+      reason,
+      source,
+      COUNT(*) AS count,
+      MAX(created_at) AS last_seen
+    FROM paper_execution_events
+    WHERE account_id=?
+      AND created_at >= datetime('now', ?)
+    GROUP BY status, reason, source
+    ORDER BY count DESC, last_seen DESC
+  `).bind(ACCOUNT_ID, sinceModifier).all<any>().catch(() => ({ results: [] as any[] }))
+
+  const rows = (results ?? []).map((row: any) => ({
+    status: row.status ?? 'unknown',
+    reason: row.reason ?? 'unknown',
+    source: row.source ?? null,
+    count: Number(row.count ?? 0),
+    last_seen: row.last_seen ?? null,
+  }))
+  const countByStatus = rows.reduce<Record<string, number>>((acc, row) => {
+    acc[row.status] = (acc[row.status] ?? 0) + row.count
+    return acc
+  }, {})
+  const totalEvents = rows.reduce((sum, row) => sum + row.count, 0)
+
+  return c.json({
+    status: 'success',
+    days,
+    total_events: totalEvents,
+    filled_events: countByStatus.filled ?? 0,
+    deferred_events: countByStatus.deferred ?? 0,
+    skipped_events: countByStatus.skipped ?? 0,
+    cancelled_events: countByStatus.cancelled ?? 0,
+    rows,
+  })
 })
 
 // POST /api/paper/buy — manual paper buy.
@@ -573,41 +698,28 @@ paper.post('/sell', async (c) => {
 // POST /api/paper/snapshot — cron-facing snapshot writer.
 
 paper.post('/snapshot', async (c) => {
-  const acc = await c.env.DB.prepare(
-    'SELECT cash, initial_cash FROM paper_accounts WHERE id=?'
-  ).bind(ACCOUNT_ID).first<any>()
-  if (!acc) return c.json({ error: '找不到 paper account' }, 404)
-
-  const { results: positions } = await c.env.DB.prepare(
-    'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0'
-  ).bind(ACCOUNT_ID).all<any>()
-
-  let positionValue = 0
-  for (const pos of (positions ?? [])) {
-    const p = await getLatestPrice(c.env.DB, pos.symbol)
-    if (p) positionValue += p * pos.shares
-  }
-
-  const totalValue = acc.cash + positionValue
-  const pnl        = totalValue - acc.initial_cash
-  const pnlPct     = acc.initial_cash > 0 ? (pnl / acc.initial_cash * 100) : 0
   const today      = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-
-  await c.env.DB.prepare(`
-    INSERT INTO paper_daily_snapshots
-      (account_id, date, cash, positions_value, total_value, pnl, pnl_pct)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account_id, date) DO UPDATE SET
-      cash=excluded.cash, positions_value=excluded.positions_value,
-      total_value=excluded.total_value, pnl=excluded.pnl, pnl_pct=excluded.pnl_pct
-  `).bind(ACCOUNT_ID, today, acc.cash, positionValue, totalValue, pnl, pnlPct).run()
+  await runDailySnapshot(c.env)
+  const snapshot = await c.env.DB.prepare(
+    `SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value,
+            max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr
+       FROM paper_daily_snapshots
+      WHERE account_id=? AND date=?`,
+  ).bind(ACCOUNT_ID, today).first<any>()
 
   return c.json({
     status: 'success',
-    date: today,
-    total_value:     Math.round(totalValue),
-    pnl:             Math.round(pnl),
-    pnl_pct:         Math.round(pnlPct * 100) / 100,
+    date: snapshot?.date ?? today,
+    total_value: snapshot?.total_value != null ? Math.round(snapshot.total_value) : null,
+    pnl: snapshot?.pnl != null ? Math.round(snapshot.pnl) : null,
+    pnl_pct: snapshot?.pnl_pct != null ? Math.round(snapshot.pnl_pct * 100) / 100 : null,
+    benchmark_value: snapshot?.benchmark_value ?? null,
+    twii_value: snapshot?.twii_value ?? null,
+    max_drawdown_to_date: snapshot?.max_drawdown_to_date ?? null,
+    sharpe_30d: snapshot?.sharpe_30d ?? null,
+    sortino_30d: snapshot?.sortino_30d ?? null,
+    calmar: snapshot?.calmar ?? null,
+    cagr: snapshot?.cagr ?? null,
   })
 })
 

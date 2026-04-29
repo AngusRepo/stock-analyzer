@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
-import { RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
+import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
 import { Input } from '@/components/ui/input'
@@ -123,8 +123,8 @@ function PortfolioSummary() {
   const positionValue = Array.isArray(posArr)
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
     : 0
-  const totalAssets = positionSummary?.total_value ?? (cash + positionValue)
   const netUnsettledSettlement = positionSummary?.net_unsettled_settlement ?? 0
+  const totalAssets = positionSummary?.total_value ?? (cash + positionValue + netUnsettledSettlement)
   const totalReturn = initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
@@ -136,7 +136,11 @@ function PortfolioSummary() {
   const daysSinceStart = first?.date
     ? Math.max(1, (Date.now() - new Date(first.date).getTime()) / 86400000)
     : 1
-  const annualizedReturn = daysSinceStart > 0 ? totalReturn * (365 / daysSinceStart) : 0
+  const annualizedReturn = typeof latest?.cagr === 'number' && Number.isFinite(latest.cagr)
+    ? latest.cagr
+    : daysSinceStart > 0
+      ? Math.pow(1 + totalReturn, 365 / daysSinceStart) - 1
+      : 0
 
   // 最大回撤
   const maxDrawdown = snapshots.length > 0
@@ -357,6 +361,10 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? null,
           chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
+          alpha_context: b.alpha_context ?? null,
+          alpha_allocation: b.alpha_allocation ?? null,
+          ml_vote_summary: b.ml_vote_summary ?? null,
+          prediction_forecast_data: b.prediction_forecast_data ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
@@ -397,8 +405,8 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
   if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">尚無推薦</div>
   return (
-    <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 尚未產出 T2 pending buys，暫以 Daily Recommendations 觀察清單顯示</div>
+      <div className="space-y-2">
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 尚未產出 T2 pending buys，暫以 Daily Recommendations 觀察清單顯示</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
@@ -666,6 +674,8 @@ function BotStatusPanel() {
       </div>
 
       {/* Cron Logs → moved to Scheduler Dashboard */}
+      <GateCalibrationPanel />
+
       <div className="text-center py-4 text-muted-foreground text-sm">
         <p>Cron 排程已移至 <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
       </div>
@@ -674,6 +684,78 @@ function BotStatusPanel() {
 }
 
 // ─── Performance Chart（Benchmark overlay + Period selector）────────────────
+
+function GateCalibrationPanel() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['paper', 'gate-calibration', 7],
+    queryFn: () => paperApi.gateCalibration(7),
+    staleTime: 60_000,
+    refetchInterval: isTWMarketOpen() ? 60_000 : false,
+  })
+
+  const rows: any[] = Array.isArray(data?.rows) ? data.rows : []
+  const total = data?.total_events ?? 0
+  const deferred = data?.deferred_events ?? 0
+  const filled = data?.filled_events ?? 0
+  const skipped = data?.skipped_events ?? 0
+  const deferRate = total > 0 ? deferred / total : 0
+  const topRows = rows.slice(0, 5)
+
+  function describeGate(row: any): string {
+    const raw = formatExecutionEvent({
+      kind: 'execution',
+      status: row.status ?? 'unknown',
+      reason: row.reason ?? 'unknown',
+      detail: null,
+    })
+    return explainExecutionEvent(raw) ?? `${row.status}: ${row.reason}`
+  }
+
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-foreground/80">進場卡控校準</div>
+          <div className="mt-1 text-[11px] text-muted-foreground/75">
+            近 7 天統計 execution gate 是否過度保守；這裡看原因分布，不再用感覺判斷。
+          </div>
+        </div>
+        <Badge variant="outline" className={`h-6 text-[10px] ${deferRate > 0.8 ? 'border-amber-500/40 text-amber-300' : 'border-emerald-500/30 text-emerald-300'}`}>
+          defer {(deferRate * 100).toFixed(0)}%
+        </Badge>
+      </div>
+
+      {isLoading ? (
+        <div className="mt-3 text-xs text-muted-foreground/60">Loading...</div>
+      ) : total === 0 ? (
+        <div className="mt-3 text-xs text-muted-foreground/60">近 7 天尚無 execution event，可等下一輪 intraday 後觀察。</div>
+      ) : (
+        <>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            {[
+              { label: 'filled', value: filled, cls: 'text-emerald-300' },
+              { label: 'deferred', value: deferred, cls: 'text-amber-300' },
+              { label: 'skipped', value: skipped, cls: 'text-zinc-300' },
+            ].map((item) => (
+              <div key={item.label} className="rounded-md bg-black/20 px-2 py-1.5">
+                <div className="text-[10px] uppercase text-muted-foreground/60">{item.label}</div>
+                <div className={`font-mono text-sm ${item.cls}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 space-y-1.5">
+            {topRows.map((row, idx) => (
+              <div key={`${row.status}-${row.reason}-${idx}`} className="flex items-start justify-between gap-3 text-[11px]">
+                <span className="leading-relaxed text-muted-foreground/80">{describeGate(row)}</span>
+                <span className="shrink-0 font-mono text-foreground/70">x{row.count}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 const PERIODS = [
   { key: '1W', days: 7, label: '1W' },
@@ -1224,6 +1306,9 @@ export default function BotDashboard() {
               <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
                 <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
               </CardTitle>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
+                {AI_TOP_PICK_EXPLANATION}
+              </p>
             </CardHeader>
             <CardContent className="p-2">
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />

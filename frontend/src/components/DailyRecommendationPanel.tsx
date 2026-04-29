@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Treemap, ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, Cell, ReferenceLine } from 'recharts'
 import { paperApi } from '@/lib/api'
-import { RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
 
 /** 法人金額格式化：< 0.01億 改顯示萬元 */
 function fmtChipAmount(billion: number | null | undefined): string {
@@ -88,6 +88,9 @@ export function DailyRecommendationPanel() {
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             {recData?.date ?? today} · ML + 籌碼 + LLM 綜合評分
+          </p>
+          <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground/80">
+            {AI_TOP_PICK_EXPLANATION}
           </p>
         </div>
         <Button

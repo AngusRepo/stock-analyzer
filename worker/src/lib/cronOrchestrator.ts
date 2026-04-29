@@ -9,6 +9,7 @@ import { executeRescoreSell } from './paperWorkerTasks'
 import { runIntradayCheck } from './paperEntryTasks'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
+import { isTwIntradayTradingMinute } from './twMarketSession'
 
 function twNow() {
   return new Date(Date.now() + 8 * 3600_000)
@@ -103,6 +104,20 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
     await env.KV.put('cron:intraday-heartbeat', twNow().toISOString(), { expirationTtl: 3600 })
     const pendingBefore = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
     const pendingBeforeState = buildPendingBuyStateSummary(pendingBefore.pendingBuys, pendingBefore.meta)
+    if (!isTwIntradayTradingMinute()) {
+      await env.KV.put(
+        `cron:heartbeat:intraday-check:${twTodayStr}`,
+        JSON.stringify({
+          task: 'intraday-check',
+          status: 'skipped',
+          summary: formatPendingBuyCronSummary('heartbeat outside trading window', pendingBeforeState),
+          duration_ms: Date.now() - started,
+          timestamp: new Date().toISOString(),
+        }),
+        { expirationTtl: 7 * 86400 },
+      )
+      return
+    }
     const beforeRow = await env.DB.prepare(
       "SELECT COUNT(*) as cnt FROM paper_orders WHERE created_at >= ? AND side='buy'",
     ).bind(twTodayStr).first<{ cnt: number }>()

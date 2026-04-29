@@ -33,7 +33,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
 
-  { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09-13h per-min', cron: '* 1-5 * * 1-5', group: 'intraday' },
+  { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
   { id: 'intraday-rescore', name: 'Intraday Re-score (10/11/12/12:30)', schedule: '10:00 / 11:00 / 12:00 / 12:30', cron: '0 2,3,4 * * 1-5 + 30 4 * * 1-5', group: 'intraday' },
   { id: 'eod-exit', name: 'EOD Exit', schedule: 'Weekdays 13:25', cron: '25 5 * * 1-5', group: 'intraday' },
 
@@ -58,6 +58,30 @@ const DOW_NAME_TO_NUM: Record<string, number> = {
   SAT: 6,
 }
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
+
+export interface SchedulerDisplayLogCandidate {
+  date: string
+  log?: CronLogEntry
+}
+
+export function selectSchedulerDisplayLogs(candidates: SchedulerDisplayLogCandidate[]): {
+  lastAttempt?: CronLogEntry
+  lastEffective?: CronLogEntry
+} {
+  let lastAttempt: CronLogEntry | undefined
+  let lastEffective: CronLogEntry | undefined
+
+  for (const candidate of candidates) {
+    if (!candidate.log) continue
+    if (!lastAttempt) lastAttempt = candidate.log
+    if (!lastEffective && candidate.log.status !== 'skipped') {
+      lastEffective = candidate.log
+    }
+    if (lastAttempt && lastEffective) break
+  }
+
+  return { lastAttempt, lastEffective }
+}
 
 function formatDuration(durationMs?: number | null): string {
   if (durationMs == null) return 'N/A'
@@ -230,15 +254,12 @@ export async function getSchedulerStatus(env: Bindings) {
   const jobs = JOB_DEFS.map((def) => {
     const todayLog = getDisplayLog(allLogs[today], def.id) ?? inferPipelineChildLog(allLogs[today], def.id)
 
-    let lastLog: CronLogEntry | undefined
-    for (const date of dates) {
-      const log = getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id)
-      if (log?.status === 'skipped') continue
-      if (log) {
-        lastLog = log
-        break
-      }
-    }
+    const displayLogs = dates.map((date) => ({
+      date,
+      log: getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id),
+    }))
+    const { lastAttempt, lastEffective } = selectSchedulerDisplayLogs(displayLogs)
+    const lastLog = lastAttempt ?? lastEffective
 
     const history7d = dates.map((date) => {
       const log = getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id)
@@ -267,6 +288,10 @@ export async function getSchedulerStatus(env: Bindings) {
       group: def.group,
       chainIndex: def.chainIndex,
       lastRun: lastLog?.timestamp ? formatTimestamp(lastLog.timestamp) : 'N/A',
+      lastAttempt: lastAttempt?.timestamp ? formatTimestamp(lastAttempt.timestamp) : 'N/A',
+      lastAttemptStatus: lastAttempt?.status ?? 'none',
+      lastEffectiveRun: lastEffective?.timestamp ? formatTimestamp(lastEffective.timestamp) : 'N/A',
+      lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
       lastDuration,
       lastError: todayLog?.error ?? lastLog?.error,

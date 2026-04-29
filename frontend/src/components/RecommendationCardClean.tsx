@@ -12,7 +12,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { explainExecutionEvent } from '@/lib/executionEvent'
+import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -30,10 +30,31 @@ type AlphaContext = {
   location?: string
 }
 
+type MlVoteSummary = {
+  bullish?: number
+  bearish?: number
+  flat?: number
+  reported?: number
+  missing?: number
+  total?: number
+  forecastPct?: number | null
+  forecast_pct?: number | null
+}
+
+export const AI_TOP_PICK_EXPLANATION =
+  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate boost 是為了讓不同交易 edge 在清單中保持分散，不代表原始 ML 預測報酬。'
+
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return String(value)
+  return numeric.toFixed(decimals)
+}
+
+function fmtOptionalNumber(value: number | string | null | undefined, decimals = 1): string | null {
+  if (value == null || value === '') return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return null
   return numeric.toFixed(decimals)
 }
 
@@ -107,6 +128,11 @@ function labelFor(value: unknown, table?: Record<string, string>): string {
   return ALPHA_BUCKET_TEXT[value]?.label ?? table?.[value] ?? value.replace(/_/g, ' ')
 }
 
+function shortLabelFor(value: unknown, table?: Record<string, string>): string {
+  const label = labelFor(value, table)
+  return label.split('：')[0]
+}
+
 function normalizeWatchPoints(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
   if (typeof raw !== 'string' || !raw.trim()) return []
@@ -123,8 +149,14 @@ function extractValue(text: string, key: string): string | null {
   return match?.[1]?.trim() ?? null
 }
 
+function extractSizing(text: string): number | null {
+  const match = text.match(/sizing\s*x\s*([0-9.]+)/i)
+  const value = Number(match?.[1] ?? NaN)
+  return Number.isFinite(value) ? value : null
+}
+
 function contextFromWatchPoints(points: string[]): AlphaContext | null {
-  const alphaPoint = points.find((point) => point.startsWith('Alpha bucket:'))
+  const alphaPoint = points.find((point) => point.startsWith('Alpha bucket:') || point.startsWith('Alpha overlay:'))
   const structurePoint = points.find((point) => point.startsWith('Market structure:'))
   if (!alphaPoint && !structurePoint) return null
 
@@ -133,10 +165,12 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
   const fairValue = extractValue(structurePoint ?? '', 'fair_value')
   const [fairValueLow, fairValueHigh] = fairValue ? fairValue.split('~') : []
 
+  const legacyAlpha = alphaPoint?.match(/^Alpha (?:bucket|overlay):\s*([^,/]+)(?:\s*\/\s*([^,]+))?/)
+
   return {
-    bucket: alphaPoint?.match(/^Alpha bucket:\s*([^,]+)/)?.[1]?.trim(),
-    regime: extractValue(alphaPoint ?? '', 'regime') ?? undefined,
-    sizing: Number(extractValue(alphaPoint ?? '', 'sizing x') ?? NaN),
+    bucket: legacyAlpha?.[1]?.trim(),
+    regime: extractValue(alphaPoint ?? '', 'regime') ?? legacyAlpha?.[2]?.trim() ?? undefined,
+    sizing: extractSizing(alphaPoint ?? '') ?? undefined,
     volatility,
     liquidity,
     poc: extractValue(structurePoint ?? '', 'POC'),
@@ -144,6 +178,79 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
     fairValueHigh,
     location: extractValue(structurePoint ?? '', 'location') ?? undefined,
   }
+}
+
+function extractMlSummary(reason: unknown): string | null {
+  if (typeof reason !== 'string') return null
+  const bracket = reason.match(/【ML】\s*([^｜\n]+)/)
+  if (bracket?.[1]) return bracket[1].trim()
+  const plain = reason.match(/\[ML\]\s*([^|\n]+)/)
+  return plain?.[1]?.trim() ?? null
+}
+
+function parseForecastData(raw: unknown): any | null {
+  if (!raw) return null
+  if (typeof raw === 'object') return raw
+  if (typeof raw !== 'string') return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
+  if (rec.ml_vote_summary) return rec.ml_vote_summary
+  const forecast = parseForecastData(rec.prediction_forecast_data)
+  const models = Array.isArray(forecast?.models)
+    ? forecast.models.filter((model: any) => String(model?.name ?? model?.model_name ?? '') !== 'StackingRank')
+    : []
+  const weights = forecast?.ensemble_v2?.weights && typeof forecast.ensemble_v2.weights === 'object'
+    ? forecast.ensemble_v2.weights
+    : {}
+  const total = Math.max(Object.keys(weights).length, models.length)
+  if (!forecast || total <= 0) return null
+  const bullish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('up')).length
+  const bearish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('down')).length
+  return {
+    bullish,
+    bearish,
+    flat: Math.max(0, models.length - bullish - bearish),
+    reported: models.length,
+    missing: Math.max(0, total - models.length),
+    total,
+    forecastPct: forecast.ensemble_v2?.forecast_pct ?? null,
+  }
+}
+
+function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
+  if (!summary) return null
+  const total = Number(summary.total ?? 0)
+  if (!Number.isFinite(total) || total <= 0) return null
+  const bullish = Number(summary.bullish ?? 0)
+  const bearish = Number(summary.bearish ?? 0)
+  const missing = Number(summary.missing ?? Math.max(0, total - bullish - bearish - Number(summary.flat ?? 0)))
+  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
+  const forecast = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
+    ? `，預期${forecastRaw >= 0 ? '+' : ''}${forecastRaw.toFixed(1)}%`
+    : ''
+  const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
+  return `${bullish}/${total}看漲、${bearish}/${total}看跌${missingText}${forecast}`
+}
+
+function translateRecommendationReason(reason: unknown): string {
+  if (typeof reason !== 'string') return ''
+  return reason
+    .replace(
+      /Signal Provenance \(ensemble Top-K\): BUY forced at ensemble layer \(signal_raw=([^,)]*), avg_rank=([^)]+)\)\. Judge on business merit and industry context, not raw signal strength\./g,
+      '訊號來源：此檔由 ensemble Top-K 納入，原始訊號為 $1，平均排名 $2；代表它是排序入選，不是模型自然強買。',
+    )
+    .replace(
+      /Signal Provenance \(ranking promoted\): BUY flipped at recommendation layer \(ensemble_v2\.signal=([^,)]*), avg_rank=([^)]+)\)\. Treat as ranking promotion, not a naturally strong BUY\./g,
+      '訊號來源：此檔由推薦層從 $1 提升為買進，平均排名 $2；需用分數、產業脈絡與盤中再評估輔助判讀。',
+    )
+    .trim()
 }
 
 function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
@@ -209,11 +316,16 @@ function ScoreBreakdown({ rec }: { rec: any }) {
         <span>基礎分：籌碼 + 技術 + ML = {fmtNumber(base, 1)}</span>
         <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
         <span>Slate 排序 boost：+{fmtNumber(allocationBoost, 1)}</span>
+        {Math.abs(residual) >= 0.1 && (
+          <span>其他調整：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
+        )}
         <span>最終分數：{fmtNumber(finalScore, 1)}</span>
       </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-        Alpha 調整代表風控與市場狀態對分數的加減；Slate boost 是為了讓不同交易 edge 在清單中保持分散，不是原始 ML 預測報酬。
-      </p>
+      {Math.abs(residual) >= 0.1 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+          其他調整是來源總分與目前可拆解欄位的差額，常見於舊 pending buy 未帶完整 alpha/slate metadata；不是額外 ML 預測報酬。
+        </p>
+      )}
     </div>
   )
 }
@@ -228,23 +340,31 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   const fairValue = context.fairValueLow || context.fairValueHigh
     ? `${fmtNumber(context.fairValueLow, 2)} ~ ${fmtNumber(context.fairValueHigh, 2)}`
     : '-'
+  const sizingText = fmtOptionalNumber(context.sizing, 2)
+  const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
+  const rawAlpha = `Alpha bucket：${shortLabelFor(bucket)}；大盤狀態：${shortLabelFor(regime, REGIME_TEXT)}；部位倍率 ${sizingText ? `x${sizingText}` : '資料不足'}；風險：${shortLabelFor(volatility, VOL_TEXT)} / ${shortLabelFor(liquidity, LIQUIDITY_TEXT)}`
+  const rawStructure = `Market structure：POC=${fmtNumber(context.poc, 2)}；fair value=${fairValue}；位置=${shortLabelFor(location, LOCATION_TEXT)}`
 
   return (
     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.06] p-3">
       <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
         <ShieldCheck className="h-3 w-3" />
-        Alpha / Market Context
+        Alpha / 市場結構解讀
       </p>
       <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
         <span>Alpha bucket：{labelFor(bucket)}</span>
-        <span>Regime：{labelFor(regime)}</span>
-        <span>Sizing：x{fmtNumber(context.sizing, 2)}</span>
-        <span>Score adj：{context.scoreAdjustment == null ? '-' : `${Number(context.scoreAdjustment) >= 0 ? '+' : ''}${fmtNumber(context.scoreAdjustment, 1)}`}</span>
-        <span>波動：{labelFor(volatility)}</span>
-        <span>流動性：{labelFor(liquidity)}</span>
+        <span>大盤狀態：{shortLabelFor(regime, REGIME_TEXT)}</span>
+        <span>部位倍率：{sizingText ? `x${sizingText}` : '資料不足'}</span>
+        <span>Alpha 調整：{scoreAdjText == null ? '資料不足' : `${Number(context.scoreAdjustment) >= 0 ? '+' : ''}${scoreAdjText}`}</span>
+        <span>波動：{shortLabelFor(volatility, VOL_TEXT)}</span>
+        <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
         <span>POC：{fmtNumber(context.poc, 2)}</span>
         <span>Fair value：{fairValue}</span>
-        <span className="sm:col-span-2">價格位置：{labelFor(location)}</span>
+        <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
+      </div>
+      <div className="mt-3 space-y-1 rounded-md border border-sky-500/15 bg-background/60 p-2 font-mono text-[11px] leading-relaxed text-sky-700 dark:text-sky-300">
+        <p>{rawAlpha}</p>
+        <p>{rawStructure}</p>
       </div>
       <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-muted-foreground/85">
         <p>{ALPHA_BUCKET_TEXT[bucket]?.help ?? 'Alpha bucket 是系統判斷這檔股票目前主要 edge 來源的分類。'}</p>
@@ -257,7 +377,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
       </div>
       {context.skip && (
         <p className="mt-2 text-xs font-medium text-amber-600">
-          Risk overlay 已標記 skip：代表風險層不建議自動進場。
+          風控層已標記 skip：代表目前不建議自動進場。
         </p>
       )}
     </div>
@@ -265,15 +385,61 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
 }
 
 function normalizeWatchPoint(point: string): string {
-  if (point.startsWith('Alpha bucket:')) {
-    return `${point}。白話：這是在說目前適合哪一種交易邏輯，會影響 allocation、sizing 與風控。`
+  if (point.startsWith('Alpha bucket:') || point.startsWith('Alpha overlay:')) {
+    const ctx = contextFromWatchPoints([point])
+    const bucket = ctx?.bucket ?? 'unknown'
+    const regime = ctx?.regime ?? 'unknown'
+    const volatility = ctx?.volatility ?? 'unknown'
+    const liquidity = ctx?.liquidity ?? 'unknown'
+    const sizing = ctx?.sizing == null || Number.isNaN(ctx.sizing) ? '-' : `x${fmtNumber(ctx.sizing, 2)}`
+    return `Alpha bucket：${shortLabelFor(bucket)}；大盤狀態：${shortLabelFor(regime, REGIME_TEXT)}；部位倍率：${sizing}；風險：${shortLabelFor(volatility, VOL_TEXT)} / ${shortLabelFor(liquidity, LIQUIDITY_TEXT)}。白話：這是在說目前適合哪一種交易邏輯，會影響 allocation、sizing 與風控。`
   }
   if (point.startsWith('Market structure:')) {
-    return `${point}。白話：POC 是近期量能重心，fair value 是合理價格帶，location 用來判斷追高或折價。`
+    const ctx = contextFromWatchPoints([point])
+    const fairValue = ctx?.fairValueLow || ctx?.fairValueHigh
+      ? `${fmtNumber(ctx?.fairValueLow, 2)} ~ ${fmtNumber(ctx?.fairValueHigh, 2)}`
+      : '-'
+    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是合理價格帶，價格位置用來判斷是否追高或折價。`
+  }
+  if (point.startsWith('ML ensemble:')) {
+    const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
+    const bearish = point.match(/bearish=([^,]+)/)?.[1] ?? '-'
+    const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
+    const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${missing} 未回傳，預期報酬 ${forecast}%。白話：這是 10 組模型的投票覆蓋率與方向，不等於單一模型結論。`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
   return point
+}
+
+function isContextWatchPoint(point: string): boolean {
+  return point.startsWith('Alpha bucket:')
+    || point.startsWith('Alpha overlay:')
+    || point.startsWith('Market structure:')
+    || point.startsWith('ML ensemble:')
+}
+
+function executionWatchPointKey(point: string): string {
+  const event = parseExecutionEvent(point)
+  if (!event) return point.trim()
+  if (event.kind === 'execution' && event.status === 'deferred') {
+    if (event.reason.startsWith('volume_ratio_low')) return 'execution:deferred:volume_ratio_low'
+    if (event.reason.startsWith('momentum_unavailable')) return 'execution:deferred:momentum_unavailable'
+    if (event.reason.startsWith('price_above_entry')) return 'execution:deferred:price_above_entry'
+  }
+  return `${event.kind}:${event.status}:${event.reason}`
+}
+
+function displayWatchPoints(points: string[]): string[] {
+  const latestByKey = new Map<string, string>()
+  for (const point of points) {
+    if (isContextWatchPoint(point)) continue
+    const key = executionWatchPointKey(point)
+    if (latestByKey.has(key)) latestByKey.delete(key)
+    latestByKey.set(key, point)
+  }
+  return [...latestByKey.values()]
 }
 
 export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
@@ -281,7 +447,10 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
   const SigIcon = sig.icon
   const watchPoints = normalizeWatchPoints(rec.watch_points)
+  const noticePoints = displayWatchPoints(watchPoints)
   const alphaContext = alphaContextFromRec(rec, watchPoints)
+  const displayReason = translateRecommendationReason(rec.reason)
+  const mlSummary = formatMlVoteSummary(mlVoteSummaryFromRec(rec)) ?? extractMlSummary(displayReason)
   const chip5dRaw = (rec.foreign_net_5d ?? 0) + (rec.trust_net_5d ?? 0)
   const chipPositive = chip5dRaw > 0
 
@@ -329,6 +498,11 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
                 RSI {fmtNumber(rec.rsi14, 1)}
               </span>
             )}
+            {mlSummary && (
+              <Badge variant="outline" className="max-w-full truncate border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+                ML {mlSummary}
+              </Badge>
+            )}
             {alphaContext?.bucket && (
               <Badge variant="outline" className="gap-1 border-sky-500/40 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-700 dark:text-sky-300">
                 <ShieldCheck className="h-2.5 w-2.5" />
@@ -363,19 +537,26 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
-            <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{rec.reason}</p>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
           </div>
+
+          {mlSummary && (
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
+              <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
+              <p>{mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。</p>
+            </div>
+          )}
 
           <AlphaContextBlock context={alphaContext} />
 
-          {watchPoints.length > 0 && (
+          {noticePoints.length > 0 && (
             <div>
               <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
                 <AlertCircle className="h-3 w-3" />
                 注意事項
               </p>
               <ul className="space-y-1">
-                {watchPoints.map((point, index) => (
+                {noticePoints.map((point, index) => (
                   <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
                     <span className="mt-0.5 shrink-0 text-amber-500">!</span>
                     {normalizeWatchPoint(point)}

@@ -14,6 +14,13 @@ function cleanPart(value: unknown): string {
     .trim()
 }
 
+function normalizeReason(value: unknown): string {
+  return String(value ?? '')
+    .replace(/_/g, ' ')
+    .replace(/-/g, ':')
+    .trim()
+}
+
 export function formatExecutionEvent(event: StructuredExecutionEvent): string {
   const base = `${cleanPart(event.kind)}:${cleanPart(event.status)}:${cleanPart(event.reason)}`
   const detail = cleanPart(event.detail)
@@ -21,7 +28,7 @@ export function formatExecutionEvent(event: StructuredExecutionEvent): string {
 }
 
 export function parseExecutionEvent(raw: string): StructuredExecutionEvent | null {
-  const [kind, status, reason, ...detailParts] = raw.split(':')
+  const [kind, status, reason, ...detailParts] = String(raw ?? '').split(':')
   if ((kind !== 'execution' && kind !== 'debate') || !status || !reason) return null
   return {
     kind,
@@ -31,37 +38,59 @@ export function parseExecutionEvent(raw: string): StructuredExecutionEvent | nul
   }
 }
 
-function humanizeReason(reason: string): string {
-  return reason.replace(/_/g, ' ').replace(/-/g, ':')
+function extractNumber(text: string, pattern: RegExp): string | null {
+  return text.match(pattern)?.[1] ?? null
 }
 
 export function explainExecutionEvent(raw: string): string | null {
   const event = parseExecutionEvent(raw)
   if (!event) return null
-  const reason = humanizeReason(event.reason)
 
-  if (event.kind === 'debate' && event.status === 'failed') {
-    return `辯論未完成：${reason}。白話：controller 或 debate batch 異常時，系統採 fail-closed，不讓未確認候選進場。`
+  const reason = normalizeReason(event.reason)
+  const detail = event.detail ? normalizeReason(event.detail) : null
+  const combined = `${reason} ${detail ?? ''}`.trim()
+
+  if (event.kind === 'debate') {
+    if (event.status === 'failed') {
+      return `辯論流程失敗：${reason}。系統採 fail-closed，不會在辯論未完成時硬下單。`
+    }
+    if (event.status === 'pending') {
+      return `辯論等待中：${reason}。先保留候選，等 verdict 回寫後再進入執行。`
+    }
+    return `辯論狀態：${event.status}，原因 ${reason}。`
   }
 
   if (event.kind !== 'execution') return null
+
   if (event.status === 'deferred') {
-    return `盤中暫緩進場：${reason}。白話：目前價格、風險或動能條件還不夠好，候選保留但先不掛單。`
+    if (/volume ratio low/i.test(combined)) {
+      const ratio = extractNumber(combined, /volume ratio low[: ]+([0-9.]+)/i)
+      return `盤中暫緩進場：量能比${ratio ? ` ${ratio}` : ''}低於門檻，代表目前成交活躍度不足，先不追單。`
+    }
+    if (/price above entry/i.test(combined)) {
+      return '盤中暫緩進場：現價高於允許買入價，避免追高，等待回到合理掛單區間。'
+    }
+    if (/momentum unavailable|trend http 404|snapshot http|http 404/i.test(combined)) {
+      return '盤中資料錯誤：趨勢或動能資料服務沒有回傳有效資料；這是資料品質問題，不是股票本身的看空訊號，所以系統 fail-closed 不進場。'
+    }
+    return `盤中暫緩進場：${reason}。系統判定當下價格、量能或風險條件尚未達到執行標準。`
   }
+
   if (event.status === 'requote') {
-    return `盤中重新報價：${reason}${event.detail ? `，價格調整 ${event.detail}` : ''}。白話：系統沒有追價，改用更保守的限價等待。`
+    return `重新估價：${reason}${detail ? `，${detail}` : ''}。現價與原掛單條件偏離，需重新計算買入價。`
   }
   if (event.status === 'skipped') {
-    return `已跳過進場：${reason}。白話：這檔候選已被風控或執行規則擋下，不會送出買單。`
+    return `略過進場：${reason}。這通常代表候選已過期、辯論未通過或風控條件不允許。`
   }
   if (event.status === 'expired') {
-    return `候選已過期：${reason}。白話：上一輪未完成的 pending buy 已失效，避免隔天沿用舊訊號。`
+    return `掛單過期：${reason}。候選沒有在有效時間內完成進場。`
   }
   if (event.status === 'filled') {
-    return `已成交：${reason}。白話：paper order 已建立，候選已轉成持倉或買入紀錄。`
+    return `已成交：${reason}。Paper order 已完成，並進入持倉與後續風控追蹤。`
   }
   if (event.status === 'cancelled') {
-    return `已取消：${reason}。白話：這筆候選曾進入執行流程，但最後取消。`
+    return `已取消：${reason}。通常是收盤、ROD 清理或系統風控取消。`
   }
+
   return null
 }

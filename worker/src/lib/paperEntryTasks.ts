@@ -21,9 +21,13 @@ import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from
 import { checkCircuitBreakers, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTradeExecutionPolicy'
+import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import { appendPendingBuyExecutionNote } from './pendingBuyExecutionState'
 import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
+import { shouldFailClosedPendingDebate } from './pendingDebateSla'
+import { computeProjectedVolumeRatio } from './preTradeMomentum'
+import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -52,16 +56,30 @@ async function loadPreTradeMomentum(
     })
     const trendData = trendRes.ok ? ((await trendRes.json()) as any) : null
 
+    const avgVolumeLookbackDays = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
     const avgVolRow = await env.DB.prepare(
-      'SELECT AVG(sp.volume) as avg_vol FROM stock_prices sp JOIN stocks s ON s.id=sp.stock_id WHERE s.symbol=? ORDER BY sp.date DESC LIMIT 20',
-    ).bind(symbol).first<any>()
+      `SELECT AVG(volume) as avg_vol
+         FROM (
+           SELECT sp.volume
+             FROM stock_prices sp
+             JOIN stocks s ON s.id=sp.stock_id
+            WHERE s.symbol=?
+            ORDER BY sp.date DESC
+            LIMIT ?
+         )`,
+    ).bind(symbol, avgVolumeLookbackDays).first<any>()
     const avgVol = avgVolRow?.avg_vol ?? 0
     const twNow = new Date(Date.now() + 8 * 3600_000)
     const minutesSinceOpen = Math.max(1, twNow.getUTCHours() * 60 + twNow.getUTCMinutes() - 9 * 60)
     const tradingMin = cfg.momentum?.tradingDayMinutes ?? 270
     const minutesFloor = cfg.momentum?.minutesFractionFloor ?? 0.1
     const timePct = Math.max(minutesFloor, minutesSinceOpen / tradingMin)
-    const volumeRatio = avgVol > 0 ? (snapData.total_volume ?? 0) / (avgVol * timePct) : null
+    const volumeRatio = computeProjectedVolumeRatio({
+      intradayTotalVolume: snapData.total_volume,
+      avgDailyVolumeShares: avgVol,
+      elapsedSessionFraction: timePct,
+      intradayVolumeLotSize: cfg.momentum?.intradayVolumeLotSize ?? 1000,
+    })
     const rangePosition = snapData.high > snapData.low
       ? (price - snapData.low) / (snapData.high - snapData.low)
       : null
@@ -88,15 +106,29 @@ async function hasFilledBuyToday(env: Bindings, symbol: string, today: string): 
 
 export async function runIntradayCheck(env: Bindings): Promise<void> {
   const cfg = await getTradingConfig(env.KV)
-  const twHour = (new Date().getUTCHours() + 8) % 24
-  const twMin = new Date().getUTCMinutes()
-  const isMarketOpen = twHour >= 9 && (twHour < 13 || (twHour === 13 && twMin <= 30))
+  const { hour: twHour, minute: twMin } = getTwClockParts()
+  const isMarketOpen = isTwIntradayTradingMinute()
 
   if (!isMarketOpen) return
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )
+
+  const debateSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
+  const staleDebateItems = debateSnapshot.pendingBuys.filter((item) =>
+    (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
+  )
+  const pendingDebateSlaMinutes = Number((cfg.position as any).pendingDebateSlaMinutes ?? 10)
+  if (staleDebateItems.length > 0 && shouldFailClosedPendingDebate(new Date(), pendingDebateSlaMinutes)) {
+    await markPendingBuyExecutionEvents(
+      env,
+      today,
+      debateSnapshot.pendingBuys,
+      staleDebateItems.map((item) => ({ symbol: item.symbol, status: 'skipped', reason: 'debate_sla_expired' })),
+      { stage: 'debate_sla', reason: 'debate_sla_expired', sla_minutes: pendingDebateSlaMinutes },
+    )
+  }
 
   await pollIntradayStopLoss(env)
 
@@ -161,6 +193,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   const acc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!acc) return
+  const settledCash = Number(acc.cash ?? 0)
   const { getAvailableCash: getAvailCash } = await import('./dateUtils')
   const availableCash = await getAvailCash(env.DB, ACCOUNT_ID)
   ;(acc as any).cash = availableCash
@@ -179,7 +212,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const p = posValueMap.get(pos.symbol) ?? 0
     positionValue += p * pos.shares
   }
-  const totalPortfolio = acc.cash + positionValue
+  const settlement = await getUnsettledSettlementSummary(env.DB, ACCOUNT_ID)
+  const totalPortfolio = computePaperTotalValue({
+    settledCash,
+    positionsValue: positionValue,
+    netUnsettledSettlement: settlement.netUnsettledSettlement,
+  })
   const currentPositionCount = (positions ?? []).length
 
   const maxPos = cfg.position.maxPositions ?? 5
@@ -454,12 +492,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (preTrade.action === 'DEFER') {
       const idx = pendingBuys.findIndex((b) => b.symbol === pending.symbol)
       if (idx >= 0) {
-        pendingBuys[idx] = appendPendingBuyExecutionNote(
+        const nextPending = appendPendingBuyExecutionNote(
           pendingBuys[idx],
           formatExecutionStatusEvent('deferred', preTrade.reason),
         ) as PendingBuy
-        recordExecutionNote(pending.symbol, 'deferred', preTrade.reason)
-        stateChanged = true
+        if ((nextPending.watch_points ?? []).length !== (pendingBuys[idx].watch_points ?? []).length) {
+          pendingBuys[idx] = nextPending
+          recordExecutionNote(pending.symbol, 'deferred', preTrade.reason)
+          stateChanged = true
+        }
       }
       console.log(`[PreTrade] defer ${pending.symbol}: ${preTrade.reason}`)
       continue

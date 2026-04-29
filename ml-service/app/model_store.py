@@ -25,13 +25,27 @@ import os
 import io
 import json
 import logging
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
+
+from .artifact_contract import (
+    ARTIFACT_SCHEMA_VERSION,
+    ArtifactValidationError,
+    build_model_artifact_metadata,
+    validate_model_artifact_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
 # ── GCS 初始化（lazy，避免本機測試時也要裝 google-cloud）──────────────────────
 _bucket = None
+_MODEL_LOAD_CACHE: dict[tuple[str, str | None], tuple[Any, dict]] = {}
+
+
+def clear_model_cache() -> None:
+    """Clear container-local model cache."""
+    _MODEL_LOAD_CACHE.clear()
 
 def _get_bucket():
     global _bucket
@@ -106,17 +120,25 @@ def save_model(
         blob.upload_from_file(buf, content_type="application/octet-stream")
 
         # 寫 metadata
-        meta = {
-            "stock_id": stock_id,
-            "model_name": model_name,
-            "feature_names": feature_names,
-            "feature_medians": feature_medians or {},  # 2026-04-17: P1
-            "sample_count": sample_count,
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "gcs_prefix": prefix,   # 2026-04-18 #32: self-describing path
-        }
-        if extra_metadata:
-            meta.update(extra_metadata)
+        artifact_sha = "sha256:" + hashlib.sha256(buf.getvalue()).hexdigest()
+        extra = dict(extra_metadata or {})
+        training_run_id = str(
+            extra.get("training_run_id")
+            or extra.get("run_id")
+            or f"{prefix}:{model_name}:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        )
+        extra["stock_id"] = stock_id
+        meta = build_model_artifact_metadata(
+            model_name=model_name,
+            feature_names=feature_names,
+            feature_medians=feature_medians or {},
+            sample_count=sample_count,
+            training_run_id=training_run_id,
+            artifact_payload={"joblib_sha256": artifact_sha},
+            gcs_prefix=prefix,
+            extra_metadata=extra,
+        )
+        validate_model_artifact_metadata(meta)
         meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         meta_blob.upload_from_string(json.dumps(meta, ensure_ascii=False), content_type="application/json")
 
@@ -204,6 +226,13 @@ def load_model(
             blob_path = f"{prefix}/{model_name.lower()}.joblib"
             meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
 
+        cache_key = (blob_path, meta_path)
+        cacheable = stock_id == 0 or explicit_path is not None or gcs_prefix is not None
+        if cacheable and cache_key in _MODEL_LOAD_CACHE:
+            cached_model, cached_meta = _MODEL_LOAD_CACHE[cache_key]
+            logger.info(f"[ModelStore] Cache hit {model_name} from {blob_path}")
+            return cached_model, dict(cached_meta)
+
         blob = bucket.blob(blob_path)
         if not blob.exists():
             return None, None
@@ -220,8 +249,26 @@ def load_model(
             meta_blob = bucket.blob(meta_path)
             if meta_blob.exists():
                 metadata = json.loads(meta_blob.download_as_text())
+                if metadata.get("schema_version") == ARTIFACT_SCHEMA_VERSION:
+                    try:
+                        metadata["artifact_contract_report"] = validate_model_artifact_metadata(metadata)
+                    except ArtifactValidationError as exc:
+                        logger.warning(
+                            "[ModelStore] Artifact contract failed for %s: %s report=%s",
+                            model_name,
+                            exc,
+                            exc.report,
+                        )
+                        return None, None
+                elif metadata:
+                    metadata["artifact_contract_report"] = {
+                        "status": "legacy",
+                        "reason": "metadata missing model-artifact-v2 schema",
+                    }
 
         logger.info(f"[ModelStore] Loaded {model_name} from {blob_path} ({'pool' if used_pool else 'legacy/wf'})")
+        if cacheable:
+            _MODEL_LOAD_CACHE[cache_key] = (model, dict(metadata))
         return model, metadata
 
     except Exception as e:

@@ -70,3 +70,32 @@ def test_apply_weekly_ic_updates_active_and_challenger_histories():
     assert pool["models"]["XGBoost"]["challenger"]["consecutive_negative_weeks"] == 0
     assert changes["XGBoost"]["score_sources"] == {"forecast_data.rank_score": 10}
     assert changes["XGBoost::challenger"]["history_len"] == 2
+
+
+def test_apply_weekly_ic_records_sample_diagnostics_even_when_insufficient():
+    pool = {
+        "models": {
+            "XGBoost": {
+                "weekly_ic": [],
+                "ic_4w_avg": None,
+                "consecutive_negative_weeks": 0,
+            }
+        }
+    }
+    per_model_ic = {
+        "XGBoost": {
+            "status": "insufficient_samples",
+            "n_samples": 12,
+            "score_sources": {"forecast_data.rank_score": 12},
+        }
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(pool, per_model_ic, history_max=26)
+
+    assert changed is True
+    assert pool["models"]["XGBoost"]["weekly_ic"] == []
+    assert pool["models"]["XGBoost"]["last_ic_status"] == "insufficient_samples"
+    assert pool["models"]["XGBoost"]["last_ic_sample_count"] == 12
+    assert pool["models"]["XGBoost"]["last_ic_score_sources"] == {"forecast_data.rank_score": 12}
+    assert changes["XGBoost"]["status"] == "insufficient_samples"
+    assert changes["XGBoost"]["n_samples"] == 12

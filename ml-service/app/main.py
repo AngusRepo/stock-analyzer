@@ -216,8 +216,6 @@ async def predict_endpoint(req: PredictRequest, request: Request):
 
 # 2.0 predict path: regression models + IC-weighted `rank_to_signal`.
 # Shared logic should keep converging toward `prediction_runtime.py`.
-#
-# TODO: keep slimming the legacy wrapper surface in `main.py`.
 
 _MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
 
@@ -261,85 +259,8 @@ async def retrain_endpoint(req: PredictRequest, request: Request):
 # 1. `prep_universal_batch(payloads)` writes `universal/prep/batch_{i}.npz`
 # 2. `train_universal_from_gcs()` loads prep batches and trains universal models
 
-class UniversalPrepRequest(BaseModel):
-    """Universal prep request used by ml-controller batch preparation."""
-    payloads: list[dict]
-    barrier_params: dict = {}
-    batch_index: int = 0
-    # Batch-level shared data (avoid duplicating in every payload)
-    shared_market_history: dict = {}    # {date: {risk_score, us_vix, ...}} shared across stocks
-    per_stock_ts_map: dict = {}         # {stock_id_str: {date: {revenue_yoy, margin_balance, ...}}}
-    # V2 Feature Pool: only keep these features in the output (None = keep all)
-    active_features: list[str] | None = None
-    gcs_prefix: str = "universal"
-
-
-class UniversalTrainRequest(BaseModel):
-    """Universal train request consuming prep batches from GCS."""
-    batch_count: int = 5  # Number of prep batch npz files
-    models_filter: list[str] | None = None  # None=all, or ["XGBoost","CatBoost",...] subset
-    skip_feature_pool: bool = False  # True = FT-T mode: use all features, skip pool filter
-    # 2026-04-18 #32 Sprint 6b walk-forward params
-    # When train_start/train_end given: use explicit date range instead of purged split.
-    # test_start/test_end: OOS evaluation range (must be AFTER train_end, can have gap).
-    # gcs_prefix: override default 'universal/' save path. For walk-forward: 'walk_forward/w{id}'.
-    # window_id: identifier stored in model metadata for traceability.
-    train_start: str | None = None
-    train_end: str | None = None
-    test_start: str | None = None
-    test_end: str | None = None
-    gcs_prefix: str | None = None
-    window_id: int | None = None
-    skip_weekly_backup: bool = False  # walk-forward uses window-versioned paths, no weekly needed
-    # 2026-04-19 N2: walk-forward loads per-window pool to eliminate look-ahead bias.
-    # None means legacy `universal/feature_pool.json`. Walk-forward orchestrator passes
-    # {gcs_prefix}/feature_pool.json after running per-window feature_selection.
-    feature_pool_path: str | None = None
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
-    # 2026-04-20 #10 Phase 1 webhook: if set, ml-service POSTs retrain-complete
-    # callback to this URL after GCS save. Controller uses it to trigger downstream
-    # pipeline without keeping a CCD session alive (session kill <2min).
-    # Pattern 1 (see memory/feedback_ccd_session_discipline.md).
-    followup_webhook_url: str | None = None
-
-
-class UniversalRetrainRequest(BaseModel):
-    # Universal retrain request for batched retrain payloads.
-    payloads: list[dict]
-    barrier_params: dict = {}
-
-
-def _extract_series_close_for_sequence_models(
-    prices_data: list[dict],
-    *,
-    seq_len: int = 60,
-    pred_len: int = 5,
-) -> list[float] | None:
-    """Return raw close series for universal sequence models if long enough.
-
-    DLinear / PatchTST universal training currently uses raw close windows and
-    needs at least seq_len + pred_len rows to build one sample.
-    """
-    if len(prices_data) < seq_len + pred_len:
-        return None
-    series: list[float] = []
-    for row in prices_data:
-        close_val = row.get("close")
-        if close_val is None:
-            return None
-        try:
-            series.append(float(close_val))
-        except Exception:
-            return None
-    return series
+UniversalPrepRequest = CentralUniversalPrepRequest
+UniversalTrainRequest = CentralUniversalTrainRequest
 
 
 def prep_universal_batch(req: UniversalPrepRequest) -> dict:

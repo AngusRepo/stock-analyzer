@@ -21,6 +21,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
+from services.cost_tracker import record_modal_call
+from services.modal_client import _modal_resource_spec
 
 logger = logging.getLogger("retrain_followup")
 router = APIRouter()
@@ -43,6 +45,7 @@ class RetrainFollowupPayload(BaseModel):
     elapsed_s: float = 0.0
     circuit_breaker: bool = False
     ic_summary: dict[str, float | None] = Field(default_factory=dict)
+    modal_telemetry: list[dict[str, Any]] = Field(default_factory=list)
     status: str = "completed"
     error: str | None = None
     stages: dict[str, Any] = Field(default_factory=dict)
@@ -57,6 +60,46 @@ def _check_token(request: Request) -> None:
     provided = request.headers.get("X-Service-Token", "")
     if provided != INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="invalid service token")
+
+
+async def _record_modal_telemetry(events: list[dict[str, Any]]) -> dict[str, Any]:
+    recorded = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for event in events or []:
+        function_name = str(event.get("function_name") or "").strip()
+        compute_sec = float(event.get("compute_sec") or 0.0)
+        if not function_name or compute_sec <= 0:
+            skipped += 1
+            continue
+
+        spec = _modal_resource_spec(function_name)
+        meta = dict(event.get("meta") or {})
+        if event.get("wall_sec") is not None:
+            meta["wall_sec"] = float(event["wall_sec"])
+        if event.get("status"):
+            meta["status"] = event.get("status")
+
+        try:
+            await record_modal_call(
+                source=str(event.get("source") or "modal_followup"),
+                function_name=function_name,
+                compute_sec=round(compute_sec, 3),
+                cpu=float(event.get("cpu") or spec["cpu"]),
+                memory_mb=int(event.get("memory_mb") or spec["memory_mb"]),
+                gpu=event.get("gpu", spec.get("gpu")),
+                meta=meta,
+            )
+            recorded += 1
+        except Exception as exc:  # noqa: BLE001 - callback success must not depend on telemetry.
+            errors.append(f"{function_name}: {exc}")
+
+    return {
+        "recorded": recorded,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 @router.post("/retrain/followup")
@@ -103,6 +146,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "elapsed_s": payload.elapsed_s,
             "circuit_breaker": payload.circuit_breaker,
             "ic_summary": payload.ic_summary,
+            "modal_telemetry": payload.modal_telemetry,
             "status": payload.status,
             "error": payload.error,
             "stages": payload.stages,
@@ -148,9 +192,11 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         changes = 0
 
     write_status = "upserted" if changes > 0 else "unchanged"
+    telemetry_status = await _record_modal_telemetry(payload.modal_telemetry)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
-        f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key}"
+        f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key} "
+        f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])}"
     )
 
     return {
@@ -160,6 +206,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "received_at": received_at,
         "action": "retrain_followup",
         "lock_release": lock_release,
+        "modal_telemetry": telemetry_status,
         "summary": {
             "run_id": payload.run_id,
             "trained_at": payload.trained_at,

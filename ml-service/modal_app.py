@@ -12,8 +12,10 @@ Phase 1 MVC 重構：
 """
 import os
 import modal
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from app.modal_telemetry import build_retrain_orchestrator_telemetry
+from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 
 # ── 本機路徑（deploy 時 Modal 會自動上傳到 container）───────────────────────
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
@@ -74,23 +76,11 @@ app = modal.App(
 # ── 共用：GCS 憑證注入 + sys.path 設定 ───────────────────────────────────────
 def _setup_env():
     """在 Modal container 內設定 GCS 憑證和 import path。"""
-    import os, sys
-    creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
-    if creds_json:
-        creds_path = "/tmp/gcs-credentials.json"
-        with open(creds_path, "w") as f:
-            f.write(creds_json)
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
-    if "/root" not in sys.path:
-        sys.path.insert(0, "/root")
+    return setup_modal_container_env()
 
 
 def _get_gcs_bucket_name() -> str | None:
-    bucket = os.environ.get("GCS_BUCKET_NAME", "").strip()
-    if not bucket:
-        print("[modal_app] GCS_BUCKET_NAME not set; GCS-dependent persistence/checks will be skipped")
-        return None
-    return bucket
+    return get_gcs_bucket_name()
 
 
 def _load_sequence_series_from_gcs(gcs_prefix: str, batch_count: int) -> list[list[float]]:
@@ -197,7 +187,12 @@ def retrain_orchestrator(payload: dict) -> dict:
     run_id = payload.get("run_id")
     lock_key = payload.get("lock_key")
     run_date = payload.get("run_date")
-    from app.training_policy import FeatureSelectionPolicy
+    from app.training_policy import (
+        FeatureSelectionPolicy,
+        PREDICT_ONLY_MODEL_NOTES,
+        UniversalTrainingPolicy,
+    )
+    training_policy = UniversalTrainingPolicy.from_env()
     selection_params = FeatureSelectionPolicy.from_env().to_selection_params(payload.get("selection_params"))
 
     # P0-3: Defensive GCS batch count validation.
@@ -255,7 +250,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         validate_sequence_series,
     )
 
-    requested_train_groups = list(payload.get("train_model_groups") or ["tree", "ftt", "dlinear", "patchtst"])
+    requested_train_groups = training_policy.requested_groups(payload)
     print(f"[Orchestrator] Training from {batch_count} GCS batches (groups={requested_train_groups})...")
     sequence_series = list(payload.get("series_close") or [])
     if not sequence_series and any(g in requested_train_groups for g in ("dlinear", "patchtst")):
@@ -267,25 +262,15 @@ def retrain_orchestrator(payload: dict) -> dict:
             sequence_series = []
     sequence_series, sequence_report = validate_sequence_series(
         sequence_series,
-        min_len=int(payload.get("sequence_min_len", 65)),
+        min_len=training_policy.sequence_min_length(payload),
     )
     if any(g in requested_train_groups for g in ("dlinear", "patchtst")):
         print(f"[Orchestrator] sequence series validation: {sequence_report}")
-    candidate_version = payload.get("candidate_version") or datetime.utcnow().strftime("v%Y%m%d%H%M%S")
-    base_train_payload = {
-        "batch_count": batch_count,
-        "ftt_d_model": payload.get("ftt_d_model", 128),
-        "ftt_n_heads": payload.get("ftt_n_heads", 8),
-        "ftt_n_layers": payload.get("ftt_n_layers", 3),
-        "ftt_dropout": payload.get("ftt_dropout", 0.12),
-        "ftt_max_epochs": payload.get("ftt_max_epochs", 120),
-        "ftt_lr": payload.get("ftt_lr", 2e-4),
-        "ftt_patience": payload.get("ftt_patience", 16),
-        "ftt_batch_size": payload.get("ftt_batch_size", 1024),
-        "ftt_margin": payload.get("ftt_margin", 0.0),
-        "output_model_version": candidate_version,
-        "register_challengers": False,
-    }
+    candidate_version = payload.get("candidate_version") or datetime.now(timezone.utc).strftime("v%Y%m%d%H%M%S")
+    base_train_payload = training_policy.to_base_train_payload(
+        {**payload, "batch_count": batch_count},
+        candidate_version=candidate_version,
+    )
     train_group_specs = {
         "tree": {
             "spawn": lambda p: train_tree_models.spawn(p),
@@ -324,11 +309,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             "note": "Universal raw close transformer model",
         },
     }
-    predict_only_models = {
-        "Chronos": "Zero-shot foundation model; no monthly retrain stage",
-        "KalmanFilter": "Per-stock state-space inference; no universal train artifact",
-        "MarkovSwitching": "Per-stock state-space inference; shared hyperparams only",
-    }
+    predict_only_models = dict(PREDICT_ONLY_MODEL_NOTES)
     try:
         # Spawn requested training groups in parallel
         handles: dict[str, object] = {}
@@ -551,13 +532,14 @@ def retrain_orchestrator(payload: dict) -> dict:
         try:
             from google.cloud import storage as _gcs
             import json as _json
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz
             _bucket_name = _get_gcs_bucket_name()
             if not _bucket_name:
                 raise RuntimeError("GCS bucket not configured")
             _bucket = _gcs.Client().bucket(_bucket_name)
+            _now_utc = _dt.now(_tz.utc)
             _ic_record = {
-                "computed_at": _dt.utcnow().isoformat() + "Z",
+                "computed_at": _now_utc.isoformat().replace("+00:00", "Z"),
                 "models": merged_ic,
                 "circuit_breaker": circuit_breaker,
                 "total_samples": total_samples,
@@ -567,7 +549,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             _bucket.blob(f"{gcs_prefix}/ic_tracking.json").upload_from_string(
                 _ic_json, content_type="application/json"
             )
-            _month = _dt.utcnow().strftime("%Y-%m")
+            _month = _now_utc.strftime("%Y-%m")
             _bucket.blob(f"{gcs_prefix}/ic_history/{_month}.json").upload_from_string(
                 _ic_json, content_type="application/json"
             )
@@ -578,8 +560,13 @@ def retrain_orchestrator(payload: dict) -> dict:
         # SHAP (runs after both containers done)
         try:
             print("[Orchestrator] Auto-triggering SHAP audit...")
+            shap_t0 = time.time()
             shap_result = shap_feature_audit.remote({"shap_samples": 10000})
-            result["stages"]["shap"] = {"status": "ok"}
+            result["stages"]["shap"] = {
+                "status": "ok",
+                "elapsed_s": round(time.time() - shap_t0, 1),
+                "keep_count": shap_result.get("keep_count"),
+            }
         except Exception as e:
             print(f"[Orchestrator] SHAP failed (non-blocking): {e}")
             result["stages"]["shap"] = {"status": "error", "error": str(e)}
@@ -600,7 +587,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             _trained_at = next(
                 (p.get("trained_at") for p in partial_results.values() if p.get("trained_at")),
                 None,
-            ) or datetime.utcnow().isoformat() + "Z"
+            ) or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             payload_out = {
                 "run_id": run_id,
                 "trained_at": _trained_at,
@@ -625,6 +612,12 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "status": "completed" if train_stage.get("status") == "ok" else "error",
                 "error": train_stage.get("error"),
                 "stages": result.get("stages", {}),
+                "modal_telemetry": build_retrain_orchestrator_telemetry(
+                    result.get("stages", {}),
+                    total_elapsed_s=elapsed,
+                    is_monthly=bool(is_monthly),
+                    run_id=run_id,
+                ),
             }
             headers = {"Content-Type": "application/json"}
             token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
@@ -682,6 +675,32 @@ def predict_single_stock(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=2,
+    memory=4096,
+    timeout=600,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=4,
+)
+def predict_batch_v2(payload: dict) -> dict:
+    """Chunked v2 prediction.
+
+    Production keeps predict_single_stock as the default path. Controller can
+    opt in via MODAL_PREDICT_BATCH_V2 after live latency benchmarking.
+    """
+    _setup_env()
+    from app.batch_prediction import predict_stock_v2_batch
+
+    payloads = payload.get("payloads") or []
+    results = predict_stock_v2_batch(payloads)
+    return {
+        "results": results,
+        "n_input": len(payloads),
+        "n_error": sum(1 for r in results if r.get("error")),
+    }
+
+
+@app.function(
     cpu=1,
     memory=2048,
     timeout=300,
@@ -730,7 +749,7 @@ def prep_universal_batch(payload: dict) -> dict:
 )
 def train_universal_from_gcs(payload: dict) -> dict:
     """從 GCS 讀 prep npz → concat → 訓練 5 models → 自動觸發 SHAP + Permutation。
-    Legacy single-container path. Kept for backwards compat.
+    Compatibility single-container path for Cloud Run direct train calls.
     """
     _setup_env()
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
@@ -842,7 +861,7 @@ def ft_transformer_arch_search(payload: dict) -> dict:
                             save_path="/tmp/ft_arch_optuna.json")
 
         # Audit trail to GCS for traceability
-        now_iso = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        now_iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         gcs_key = f"{gcs_prefix}/ft_arch_optuna_{now_iso}.json"
         bucket_name = _get_gcs_bucket_name()
         if not bucket_name:

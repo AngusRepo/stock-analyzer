@@ -30,6 +30,8 @@ function familyCounts(models: Record<string, ModelPoolLineageModel>) {
 function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel }) {
   const activeIc = model.weekly_ic ?? []
   const challengerIc = model.challenger?.weekly_ic ?? []
+  const activeRawSamples = model.last_ic_sample_count ?? 0
+  const challengerRawSamples = model.challenger?.last_ic_sample_count ?? 0
 
   return (
     <Card className="border-zinc-800/80">
@@ -85,8 +87,16 @@ function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel
                 <div className="font-mono">{fmt(model.challenger.ic_4w_avg)}</div>
               </div>
               <div>
-                <div className="text-muted-foreground">Weeks</div>
+                <div className="text-muted-foreground">Weekly windows</div>
                 <div className="font-mono">{challengerIc.length}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Raw IC rows</div>
+                <div className="font-mono">{challengerRawSamples}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Last status</div>
+                <div className="font-mono">{fmt(model.challenger.last_ic_status)}</div>
               </div>
             </div>
           </div>
@@ -96,8 +106,19 @@ function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel
           </div>
         )}
 
-        <div className="text-muted-foreground">
-          Active IC samples: <span className="font-mono text-foreground">{activeIc.length}</span>
+        <div className="grid grid-cols-3 gap-2 text-muted-foreground">
+          <div>
+            <div>Raw IC rows</div>
+            <span className="font-mono text-foreground">{activeRawSamples}</span>
+          </div>
+          <div>
+            <div>Weekly windows</div>
+            <span className="font-mono text-foreground">{activeIc.length}</span>
+          </div>
+          <div>
+            <div>Last IC status</div>
+            <span className="font-mono text-foreground">{fmt(model.last_ic_status)}</span>
+          </div>
         </div>
       </CardContent>
     </Card>

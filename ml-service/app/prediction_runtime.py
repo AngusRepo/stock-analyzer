@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 from pydantic import BaseModel
 
+from .artifact_contract import ArtifactValidationError, now_utc_iso, validate_serving_feature_compatibility
 from .arf_aggregator import (
     ARF_STATE_DIR,
     apply_arf_correction,
@@ -217,7 +218,7 @@ def update_arf(req: ARFUpdateRequest) -> dict:
         results["ft_online"] = {"error": str(e)}
 
     return {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": now_utc_iso(),
         "actual_up": req.actual_up,
         "actual_return_pct": actual_return_pct,
         "realized_pnl_r": req.realized_pnl_r,
@@ -596,6 +597,16 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         training_features = (meta or {}).get("feature_names", [])
         training_medians = (meta or {}).get("feature_medians", {})
         if training_features and training_features != feature_names:
+            try:
+                compatibility = validate_serving_feature_compatibility(
+                    training_features=training_features,
+                    serving_features=feature_names,
+                    feature_medians=training_medians,
+                )
+                if compatibility["status"] != "ok":
+                    print(f"[PredictV2] artifact feature compatibility: {compatibility}")
+            except ArtifactValidationError as exc:
+                raise ValueError(f"artifact feature compatibility failed: {exc.report}") from exc
             pred_name_to_idx = {n: i for i, n in enumerate(feature_names)}
             defaults = np.array(
                 [float(training_medians.get(n, 0.0)) for n in training_features],
@@ -960,7 +971,7 @@ def retrain_stock(req: PredictRequest) -> dict:
     return {
         "stock_id": req.stock_id,
         "symbol": req.symbol,
-        "retrained_at": datetime.utcnow().isoformat() + "Z",
+        "retrained_at": now_utc_iso(),
         "feature_count": len(feature_names),
         "features_dropped": len(req.weak_features) if req.weak_features else 0,
         "optuna_models": list(optuna_params.keys()),

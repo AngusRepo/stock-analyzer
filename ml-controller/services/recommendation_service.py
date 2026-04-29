@@ -291,9 +291,9 @@ def _is_use_ensemble_v2() -> bool:
 
 def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | None]:
     """Build controller-owned screener seed scores when the legacy screener row is absent."""
-    prices = payload.get("prices") or []
-    indicators = payload.get("indicators") or []
-    chips = payload.get("chips") or []
+    prices = _sorted_payload_rows(payload, "prices")
+    indicators = _sorted_payload_rows(payload, "indicators")
+    chips = _sorted_payload_rows(payload, "chips")
     latest_price = prices[-1].get("close") if prices else None
     latest_ind = indicators[-1] if indicators else {}
 
@@ -341,6 +341,13 @@ def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | N
         tech_score += 10.0
 
     return min(40.0, chip_score), min(30.0, tech_score), latest_price
+
+
+def _sorted_payload_rows(payload: dict, key: str) -> list[dict]:
+    rows = [row for row in (payload.get(key) or []) if isinstance(row, dict)]
+    if any(row.get("date") for row in rows):
+        return sorted(rows, key=lambda row: str(row.get("date") or ""))
+    return rows
 
 
 def build_screener_seed_recommendations(
@@ -577,15 +584,15 @@ def filter_and_score_recommendations(
         env_for_stock = payload.get("market_env", {}) if payload else {}
 
         # Extract latest indicator values from payload (RSI, MACD, MA20)
-        indicators = payload.get("indicators", []) if payload else []
+        indicators = _sorted_payload_rows(payload, "indicators") if payload else []
         latest_ind = indicators[-1] if indicators else {}
 
         # Latest price from payload
-        prices = payload.get("prices", []) if payload else []
+        prices = _sorted_payload_rows(payload, "prices") if payload else []
         current_price = prices[-1]["close"] if prices else (rec.get("current_price"))
 
         # Foreign / trust net (5d sum from chips)
-        chips = payload.get("chips", []) if payload else []
+        chips = _sorted_payload_rows(payload, "chips") if payload else []
         recent_chips = chips[-5:]
         foreign_net_5d = sum((c.get("foreign_net") or 0) for c in recent_chips)
         trust_net_5d = sum((c.get("trust_net") or 0) for c in recent_chips)

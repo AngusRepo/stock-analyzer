@@ -223,6 +223,9 @@ export type ModelPoolLineageModel = {
   metadata?: Record<string, unknown> | null
   weekly_ic?: number[]
   ic_4w_avg?: number | null
+  last_ic_status?: string | null
+  last_ic_sample_count?: number
+  last_ic_score_sources?: Record<string, number>
   consecutive_negative_weeks?: number
   challenger?: {
     version?: string
@@ -234,6 +237,9 @@ export type ModelPoolLineageModel = {
     shadow_since?: string
     weekly_ic?: number[]
     ic_4w_avg?: number | null
+    last_ic_status?: string | null
+    last_ic_sample_count?: number
+    last_ic_score_sources?: Record<string, number>
   } | null
 }
 

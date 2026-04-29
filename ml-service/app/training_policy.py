@@ -41,6 +41,26 @@ def _coerce_float(value: Any, default: float) -> float:
         return default
 
 
+def _env_str_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    values = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return values or default
+
+
+def _coerce_str_list(value: Any, default: tuple[str, ...]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        parsed = [part.strip() for part in value.split(",") if part.strip()]
+        return parsed or list(default)
+    if isinstance(value, (list, tuple, set)):
+        parsed = [str(part).strip() for part in value if str(part).strip()]
+        return parsed or list(default)
+    return list(default)
+
+
 @dataclass(frozen=True)
 class FeatureSelectionPolicy:
     max_rounds: int = 100
@@ -76,3 +96,74 @@ class FeatureSelectionPolicy:
         overrides = dict(overrides or {})
         overrides.setdefault("max_rounds", self.per_window_max_rounds)
         return self.to_selection_params(overrides)
+
+
+PREDICT_ONLY_MODEL_NOTES = {
+    "Chronos": "Zero-shot foundation model; no monthly retrain stage",
+    "KalmanFilter": "Per-stock state-space inference; no universal train artifact",
+    "MarkovSwitching": "Per-stock state-space inference; shared hyperparams only",
+}
+
+
+@dataclass(frozen=True)
+class UniversalTrainingPolicy:
+    default_train_groups: tuple[str, ...] = ("tree", "ftt", "dlinear", "patchtst")
+    sequence_min_len: int = 65
+    ftt_d_model: int = 128
+    ftt_n_heads: int = 8
+    ftt_n_layers: int = 3
+    ftt_dropout: float = 0.12
+    ftt_max_epochs: int = 120
+    ftt_lr: float = 2e-4
+    ftt_patience: int = 16
+    ftt_batch_size: int = 1024
+    ftt_margin: float = 0.0
+
+    @classmethod
+    def from_env(cls) -> "UniversalTrainingPolicy":
+        return cls(
+            default_train_groups=_env_str_list(
+                "UNIVERSAL_TRAIN_MODEL_GROUPS",
+                cls.default_train_groups,
+            ),
+            sequence_min_len=_env_int("UNIVERSAL_SEQUENCE_MIN_LEN", cls.sequence_min_len),
+            ftt_d_model=_env_int("UNIVERSAL_FTT_D_MODEL", cls.ftt_d_model),
+            ftt_n_heads=_env_int("UNIVERSAL_FTT_N_HEADS", cls.ftt_n_heads),
+            ftt_n_layers=_env_int("UNIVERSAL_FTT_N_LAYERS", cls.ftt_n_layers),
+            ftt_dropout=_env_float("UNIVERSAL_FTT_DROPOUT", cls.ftt_dropout),
+            ftt_max_epochs=_env_int("UNIVERSAL_FTT_MAX_EPOCHS", cls.ftt_max_epochs),
+            ftt_lr=_env_float("UNIVERSAL_FTT_LR", cls.ftt_lr),
+            ftt_patience=_env_int("UNIVERSAL_FTT_PATIENCE", cls.ftt_patience),
+            ftt_batch_size=_env_int("UNIVERSAL_FTT_BATCH_SIZE", cls.ftt_batch_size),
+            ftt_margin=_env_float("UNIVERSAL_FTT_MARGIN", cls.ftt_margin),
+        )
+
+    def requested_groups(self, payload: dict[str, Any] | None = None) -> list[str]:
+        payload = payload or {}
+        return _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
+
+    def sequence_min_length(self, payload: dict[str, Any] | None = None) -> int:
+        payload = payload or {}
+        return _coerce_int(payload.get("sequence_min_len"), self.sequence_min_len)
+
+    def to_base_train_payload(
+        self,
+        payload: dict[str, Any] | None,
+        *,
+        candidate_version: str,
+    ) -> dict[str, float | int | str | bool]:
+        payload = payload or {}
+        return {
+            "batch_count": _coerce_int(payload.get("batch_count"), 5),
+            "ftt_d_model": _coerce_int(payload.get("ftt_d_model"), self.ftt_d_model),
+            "ftt_n_heads": _coerce_int(payload.get("ftt_n_heads"), self.ftt_n_heads),
+            "ftt_n_layers": _coerce_int(payload.get("ftt_n_layers"), self.ftt_n_layers),
+            "ftt_dropout": _coerce_float(payload.get("ftt_dropout"), self.ftt_dropout),
+            "ftt_max_epochs": _coerce_int(payload.get("ftt_max_epochs"), self.ftt_max_epochs),
+            "ftt_lr": _coerce_float(payload.get("ftt_lr"), self.ftt_lr),
+            "ftt_patience": _coerce_int(payload.get("ftt_patience"), self.ftt_patience),
+            "ftt_batch_size": _coerce_int(payload.get("ftt_batch_size"), self.ftt_batch_size),
+            "ftt_margin": _coerce_float(payload.get("ftt_margin"), self.ftt_margin),
+            "output_model_version": candidate_version,
+            "register_challengers": False,
+        }

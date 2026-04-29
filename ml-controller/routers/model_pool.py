@@ -1227,6 +1227,9 @@ async def lineage():
                     "shadow_since": challenger.get("shadow_since"),
                     "weekly_ic": challenger.get("weekly_ic") or [],
                     "ic_4w_avg": challenger.get("ic_4w_avg"),
+                    "last_ic_status": challenger.get("last_ic_status"),
+                    "last_ic_sample_count": challenger.get("last_ic_sample_count") or 0,
+                    "last_ic_score_sources": challenger.get("last_ic_score_sources") or {},
                 }
 
             out[name] = {
@@ -1241,6 +1244,9 @@ async def lineage():
                 "metadata": metadata,
                 "weekly_ic": entry.get("weekly_ic") or [],
                 "ic_4w_avg": entry.get("ic_4w_avg"),
+                "last_ic_status": entry.get("last_ic_status"),
+                "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
+                "last_ic_score_sources": entry.get("last_ic_score_sources") or {},
                 "consecutive_negative_weeks": entry.get("consecutive_negative_weeks") or 0,
                 "challenger": challenger_out,
             }

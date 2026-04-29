@@ -151,9 +151,6 @@ def apply_weekly_ic_to_pool(
     changed = False
 
     for tracked_name, info in per_model_ic.items():
-        ic = info.get("ic")
-        if ic is None:
-            continue
         is_challenger = tracked_name.endswith("::challenger")
         base_name = tracked_name.replace("::challenger", "")
         entry = (pool.get("models") or {}).get(base_name)
@@ -161,6 +158,22 @@ def apply_weekly_ic_to_pool(
             continue
         target = entry.get("challenger") if is_challenger else entry
         if target is None:
+            continue
+
+        target["last_ic_status"] = info.get("status") or ("computed" if info.get("ic") is not None else "unknown")
+        target["last_ic_sample_count"] = int(info.get("n_samples") or 0)
+        target["last_ic_score_sources"] = info.get("score_sources") or {}
+        target["last_ic_error"] = info.get("error")
+
+        ic = info.get("ic")
+        if ic is None:
+            pool_changes[tracked_name] = {
+                "status": target["last_ic_status"],
+                "n_samples": target["last_ic_sample_count"],
+                "score_sources": target["last_ic_score_sources"],
+                "history_len": len(target.get("weekly_ic") or []),
+            }
+            changed = True
             continue
 
         target.setdefault("weekly_ic", [])

@@ -18,9 +18,8 @@ Pricing table (USD per 1M tokens, input / output, 2026-04 rates):
   deepseek-v3:                0.14 / 0.28
   gemma-27b (via Gemini API): 0.05 / 0.10  (approximate)
 
-Modal cost estimation (CPU-only functions, post-discount):
-  $0.000136 per CPU-second
-  Memory adds ~$0.0000148 per GB-second (ignored as small)
+Modal cost estimation:
+  Uses public per-second Modal rates for CPU, memory, and common GPUs.
 """
 
 from __future__ import annotations
@@ -55,7 +54,19 @@ _PRICE_PER_1K: dict[str, tuple[float, float]] = {
     "gemma-27b":                      (0.00005, 0.00010),
 }
 
-_MODAL_CPU_SEC_PRICE = 0.000136
+_MODAL_CPU_CORE_SEC_PRICE = 0.0000131
+_MODAL_MEMORY_GIB_SEC_PRICE = 0.00000222
+_MODAL_GPU_SEC_PRICE: dict[str, float] = {
+    "T4": 0.000164,
+    "L4": 0.000222,
+    "A10": 0.000306,
+    "L40S": 0.000542,
+    "A100-40GB": 0.000583,
+    "A100-80GB": 0.000694,
+    "H100": 0.001097,
+    "H200": 0.001261,
+    "B200": 0.001736,
+}
 
 
 def _est_llm_cost(model: str, tokens_in: int, tokens_out: int) -> float:
@@ -77,9 +88,26 @@ def _est_llm_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return (tokens_in / 1000.0) * pi + (tokens_out / 1000.0) * po
 
 
-def _est_modal_cost(compute_sec: float, cpu: float = 1.0) -> float:
-    """Rough Modal CPU-second cost (ignore memory)."""
-    return max(0.0, float(compute_sec) * float(cpu) * _MODAL_CPU_SEC_PRICE)
+def estimate_modal_cost(
+    *,
+    compute_sec: float,
+    cpu: float = 1.0,
+    memory_mb: int = 0,
+    gpu: Optional[str] = None,
+) -> float:
+    """Estimate Modal cost from aggregate billable compute seconds.
+
+    `compute_sec` should be aggregate container seconds. For Modal map calls,
+    callers should multiply wall-clock seconds by item count or measured
+    container count, not pass controller wall-clock seconds only.
+    """
+    sec = max(0.0, float(compute_sec))
+    cpu_cost = sec * max(0.0, float(cpu)) * _MODAL_CPU_CORE_SEC_PRICE
+    mem_gib = max(0.0, float(memory_mb or 0) / 1024.0)
+    memory_cost = sec * mem_gib * _MODAL_MEMORY_GIB_SEC_PRICE
+    gpu_key = str(gpu or "").upper()
+    gpu_cost = sec * _MODAL_GPU_SEC_PRICE.get(gpu_key, 0.0)
+    return round(cpu_cost + memory_cost + gpu_cost, 6)
 
 
 async def _record(
@@ -158,10 +186,19 @@ async def record_modal_call(
     function_name: str,
     compute_sec: float,
     cpu: float = 1.0,
+    memory_mb: int = 0,
+    gpu: Optional[str] = None,
     meta: Optional[dict] = None,
 ) -> None:
     """Record one Modal function invocation."""
-    est = _est_modal_cost(compute_sec, cpu)
+    est = estimate_modal_cost(
+        compute_sec=compute_sec,
+        cpu=cpu,
+        memory_mb=memory_mb,
+        gpu=gpu,
+    )
+    meta = dict(meta or {})
+    meta.update({"cpu": cpu, "memory_mb": memory_mb, "gpu": gpu})
     await _record(
         source, "modal", function_name,
         compute_sec=compute_sec, est_usd=est, meta=meta,

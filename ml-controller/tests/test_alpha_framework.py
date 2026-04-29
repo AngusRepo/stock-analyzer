@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -42,9 +43,10 @@ def _payload(symbol: str, closes: list[float], rsi: float = 58.0, volume: float 
 
 
 def _payload_with_volumes(symbol: str, closes: list[float], volumes: list[float]) -> dict:
+    start = date(2026, 3, 1)
     prices = [
         {
-            "date": f"2026-03-{idx + 1:02d}",
+            "date": (start + timedelta(days=idx)).isoformat(),
             "close": close,
             "open": close * 0.995,
             "high": close * 1.01,
@@ -136,6 +138,41 @@ def test_market_structure_uses_recent_value_area_not_full_history_vwap():
     assert structure["volume_weighted_price"] == pytest.approx(252.7, abs=3.0)
     assert structure["fair_value_low"] > 230
     assert structure["price_location"] in {"in_fair_value", "above_fair_value"}
+    assert structure["window_start_date"] == "2026-03-31"
+    assert structure["window_end_date"] == "2026-04-09"
+
+
+def test_market_structure_sorts_price_rows_by_date_before_recent_window():
+    old_prices = [100 + idx for idx in range(30)]
+    recent_prices = [250, 252, 251, 253, 252, 254, 253, 255, 254, 253]
+    closes = old_prices + recent_prices
+    volumes = [2_000_000] * len(old_prices) + [800_000] * len(recent_prices)
+    payload = _payload_with_volumes("2330", closes, volumes)
+    payload["prices"] = list(reversed(payload["prices"]))
+
+    overlay = build_risk_overlay(payload, confidence=0.8)
+    structure = overlay.structure_detail
+
+    assert structure["volume_weighted_price"] == pytest.approx(252.7, abs=3.0)
+    assert structure["poc_price"] > 240
+    assert structure["latest_close"] == 253
+    assert structure["window_start_date"] == "2026-03-31"
+    assert structure["window_end_date"] == "2026-04-09"
+
+
+def test_market_structure_rejects_price_source_mismatch():
+    old_prices = [100 + idx for idx in range(30)]
+    recent_prices = [250, 252, 251, 253, 252, 254, 253, 255, 254, 253]
+    closes = old_prices + recent_prices
+    volumes = [2_000_000] * len(old_prices) + [800_000] * len(recent_prices)
+    payload = _payload_with_volumes("2330", closes, volumes)
+
+    overlay = build_risk_overlay(payload, confidence=0.8, expected_current_price=120.0)
+    structure = overlay.structure_detail
+
+    assert structure["structure_status"] == "price_mismatch"
+    assert structure["poc_price"] is None
+    assert structure["latest_close"] == 253
 
 
 def test_apply_alpha_context_adjusts_recommendation_and_prediction_targets():

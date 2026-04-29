@@ -28,6 +28,8 @@ type AlphaContext = {
   fairValueLow?: string | number | null
   fairValueHigh?: string | number | null
   location?: string
+  window?: string | null
+  latestClose?: string | number | null
 }
 
 type MlVoteSummary = {
@@ -177,6 +179,8 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
     fairValueLow,
     fairValueHigh,
     location: extractValue(structurePoint ?? '', 'location') ?? undefined,
+    window: extractValue(structurePoint ?? '', 'window'),
+    latestClose: extractValue(structurePoint ?? '', 'latest_close'),
   }
 }
 
@@ -272,6 +276,10 @@ function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
     fairValueLow: structure.fair_value_low,
     fairValueHigh: structure.fair_value_high,
     location: structure.price_location,
+    window: structure.window_start_date && structure.window_end_date
+      ? `${structure.window_start_date}~${structure.window_end_date}`
+      : undefined,
+    latestClose: structure.latest_close,
   }
 }
 
@@ -342,9 +350,6 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
     : '-'
   const sizingText = fmtOptionalNumber(context.sizing, 2)
   const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
-  const rawAlpha = `Alpha bucket：${shortLabelFor(bucket)}；大盤狀態：${shortLabelFor(regime, REGIME_TEXT)}；部位倍率 ${sizingText ? `x${sizingText}` : '資料不足'}；風險：${shortLabelFor(volatility, VOL_TEXT)} / ${shortLabelFor(liquidity, LIQUIDITY_TEXT)}`
-  const rawStructure = `Market structure：POC=${fmtNumber(context.poc, 2)}；fair value=${fairValue}；位置=${shortLabelFor(location, LOCATION_TEXT)}`
-
   return (
     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.06] p-3">
       <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
@@ -360,11 +365,9 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
         <span>POC：{fmtNumber(context.poc, 2)}</span>
         <span>Fair value：{fairValue}</span>
+        {context.window && <span>計算視窗：{context.window}</span>}
+        {context.latestClose != null && <span>視窗最新價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
-      </div>
-      <div className="mt-3 space-y-1 rounded-md border border-sky-500/15 bg-background/60 p-2 font-mono text-[11px] leading-relaxed text-sky-700 dark:text-sky-300">
-        <p>{rawAlpha}</p>
-        <p>{rawStructure}</p>
       </div>
       <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-muted-foreground/85">
         <p>{ALPHA_BUCKET_TEXT[bucket]?.help ?? 'Alpha bucket 是系統判斷這檔股票目前主要 edge 來源的分類。'}</p>

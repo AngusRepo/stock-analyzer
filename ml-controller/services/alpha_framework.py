@@ -477,22 +477,26 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _extract_closes(payload: dict | None) -> list[float]:
+def _sorted_price_rows(payload: dict | None) -> list[dict]:
     prices = (payload or {}).get("prices") or []
+    rows = [row for row in prices if isinstance(row, dict)]
+    if any(row.get("date") for row in rows):
+        return sorted(rows, key=lambda row: str(row.get("date") or ""))
+    return rows
+
+
+def _extract_closes(payload: dict | None) -> list[float]:
     closes: list[float] = []
-    for row in prices:
-        close = _to_float(row.get("close") if isinstance(row, dict) else None, 0.0)
+    for row in _sorted_price_rows(payload):
+        close = _to_float(row.get("close"), 0.0)
         if close > 0:
             closes.append(close)
     return closes
 
 
 def _extract_volumes(payload: dict | None) -> list[float]:
-    prices = (payload or {}).get("prices") or []
     volumes: list[float] = []
-    for row in prices:
-        if not isinstance(row, dict):
-            continue
+    for row in _sorted_price_rows(payload):
         value = row.get("volume") or row.get("Trading_Volume")
         volumes.append(max(0.0, _to_float(value, 0.0)))
     return volumes
@@ -500,13 +504,12 @@ def _extract_volumes(payload: dict | None) -> list[float]:
 
 def _extract_price_volume_rows(payload: dict | None) -> list[dict[str, float]]:
     rows: list[dict[str, float]] = []
-    for row in (payload or {}).get("prices") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in _sorted_price_rows(payload):
         close = _to_float(row.get("close"), 0.0)
         if close <= 0:
             continue
         rows.append({
+            "date": row.get("date") or "",
             "close": close,
             "high": _to_float(row.get("high"), close),
             "low": _to_float(row.get("low"), close),
@@ -568,20 +571,54 @@ def _liquidity_detail(volumes: list[float]) -> dict[str, float]:
     }
 
 
-def _structure_detail(payload: dict | None, policy: dict | None = None) -> dict[str, Any]:
+def _empty_structure_detail(status: str = "no_price_rows", **extra: Any) -> dict[str, Any]:
+    return {
+        "poc_price": None,
+        "fair_value_low": None,
+        "fair_value_high": None,
+        "price_location": "unknown",
+        "volume_weighted_price": None,
+        "structure_status": status,
+        **extra,
+    }
+
+
+def _price_mismatch_detail(latest: float, expected_current_price: float | None) -> dict[str, Any]:
+    expected = _to_float(expected_current_price, 0.0)
+    if latest <= 0 or expected <= 0:
+        return {"price_mismatch_pct": 0.0, "expected_current_price": expected or None}
+    mismatch = abs(latest - expected) / expected
+    return {
+        "price_mismatch_pct": round(mismatch, 6),
+        "expected_current_price": round(expected, 4),
+    }
+
+
+def _structure_detail(
+    payload: dict | None,
+    policy: dict | None = None,
+    expected_current_price: float | None = None,
+) -> dict[str, Any]:
     policy = normalize_alpha_policy(policy)
     overlay_policy = policy["risk_overlay"]
     rows = _extract_price_volume_rows(payload)
     if not rows:
-        return {
-            "poc_price": None,
-            "fair_value_low": None,
-            "fair_value_high": None,
-            "price_location": "unknown",
-            "volume_weighted_price": None,
-        }
+        return _empty_structure_detail()
     lookback = int(overlay_policy["fair_value_range_lookback"])
     valuation_rows = rows[-lookback:]
+    window_start = str(valuation_rows[0].get("date") or "") if valuation_rows else ""
+    window_end = str(valuation_rows[-1].get("date") or "") if valuation_rows else ""
+    latest = rows[-1]["close"]
+    mismatch = _price_mismatch_detail(latest, expected_current_price)
+    if mismatch["price_mismatch_pct"] > 0.02:
+        return _empty_structure_detail(
+            "price_mismatch",
+            latest_close=round(latest, 4),
+            window_start_date=window_start or None,
+            window_end_date=window_end or None,
+            lookback_rows=len(valuation_rows),
+            **mismatch,
+        )
     total_volume = sum(row["volume"] for row in valuation_rows)
     weighted_price = (
         sum(row["close"] * row["volume"] for row in valuation_rows) / total_volume
@@ -596,7 +633,6 @@ def _structure_detail(payload: dict | None, policy: dict | None = None) -> dict[
     )
     fair_low = weighted_price - fair_half_width
     fair_high = weighted_price + fair_half_width
-    latest = rows[-1]["close"]
     if latest < fair_low:
         location = "below_fair_value"
     elif latest > fair_high:
@@ -609,6 +645,12 @@ def _structure_detail(payload: dict | None, policy: dict | None = None) -> dict[
         "fair_value_high": round(fair_high, 4),
         "price_location": location,
         "volume_weighted_price": round(weighted_price, 4),
+        "latest_close": round(latest, 4),
+        "lookback_rows": len(valuation_rows),
+        "window_start_date": window_start or None,
+        "window_end_date": window_end or None,
+        "structure_status": "ok",
+        **mismatch,
     }
 
 
@@ -686,14 +728,19 @@ def _regime_weight(bucket: AlphaBucket, regime: str, regime_surface: dict | None
     return sum(surface[name] * _to_float(table.get(name, table["sideways"]).get(bucket.value), 1.0) for name in surface)
 
 
-def build_risk_overlay(payload: dict | None, confidence: float, policy: dict | None = None) -> RiskOverlay:
+def build_risk_overlay(
+    payload: dict | None,
+    confidence: float,
+    policy: dict | None = None,
+    expected_current_price: float | None = None,
+) -> RiskOverlay:
     policy = normalize_alpha_policy(policy)
     overlay_policy = policy["risk_overlay"]
     closes = _extract_closes(payload)
     volumes = _extract_volumes(payload)
     volatility_detail = _multi_horizon_volatility(closes)
     liquidity_detail = _liquidity_detail(volumes)
-    structure_detail = _structure_detail(payload, policy=policy)
+    structure_detail = _structure_detail(payload, policy=policy, expected_current_price=expected_current_price)
     vol = max(volatility_detail["vol_10d"], volatility_detail["vol_3d"] * 0.75)
     flags: list[str] = []
     penalty = 0.0
@@ -736,7 +783,7 @@ def build_risk_overlay(payload: dict | None, confidence: float, policy: dict | N
         if ret_5d <= overlay_policy["fragile_return_max"]
         else "neutral"
     )
-    if structure_detail["price_location"] == "above_fair_value" and volatility_level in {"high", "extreme"}:
+    if structure_detail.get("structure_status") == "ok" and structure_detail["price_location"] == "above_fair_value" and volatility_level in {"high", "extreme"}:
         penalty += overlay_policy["extended_above_fair_value_penalty"]
         flags.append("extended_above_fair_value")
     if structure == "fragile":
@@ -774,7 +821,12 @@ def build_alpha_context(
     regime = dominant_regime(regime_label, surface)
     weight = _regime_weight(bucket, regime, surface, policy=policy)
     confidence = _to_float((ml or {}).get("confidence"), _to_float(rec.get("confidence"), 0.0))
-    overlay = build_risk_overlay(payload, confidence, policy=policy)
+    overlay = build_risk_overlay(
+        payload,
+        confidence,
+        policy=policy,
+        expected_current_price=_to_float(rec.get("current_price"), 0.0),
+    )
 
     scoring = policy["scoring"]
     execution_overlay = policy["execution_overlay"]
@@ -858,12 +910,21 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
         f"sizing x{ctx.sizing_multiplier}, risk={ctx.risk_overlay.volatility_level}/{ctx.risk_overlay.liquidity_level}"
     )
     structure = ctx.risk_overlay.structure_detail
-    if structure.get("poc_price") is not None:
+    if structure.get("poc_price") is not None and structure.get("structure_status") == "ok":
         points.append(
             "Market structure: "
             f"POC={structure['poc_price']}, "
             f"fair_value={structure['fair_value_low']}~{structure['fair_value_high']}, "
-            f"location={structure['price_location']}"
+            f"location={structure['price_location']}, "
+            f"window={structure.get('window_start_date') or 'n/a'}~{structure.get('window_end_date') or 'n/a'}, "
+            f"latest_close={structure.get('latest_close') or 'n/a'}"
+        )
+    elif structure.get("structure_status") == "price_mismatch":
+        points.append(
+            "Market structure unavailable: "
+            f"payload latest_close={structure.get('latest_close')}, "
+            f"current_price={structure.get('expected_current_price')}, "
+            "price source mismatch"
         )
     rec["watch_points"] = points
 

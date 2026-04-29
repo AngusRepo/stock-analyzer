@@ -10,6 +10,7 @@ import io
 import json
 import os
 import time
+import hashlib
 from datetime import datetime
 
 import numpy as np
@@ -18,6 +19,12 @@ from joblib import load as joblib_load
 from pydantic import BaseModel
 
 from .ft_transformer import rebuild_ft_transformer_from_bundle
+from .artifact_contract import (
+    build_model_artifact_metadata,
+    build_training_run_manifest,
+    now_utc_iso,
+    validate_model_artifact_metadata,
+)
 from .model_store import _get_bucket, save_model
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 
@@ -85,18 +92,28 @@ def _save_universal_versioned_model(
     buf.seek(0)
     bucket.blob(model_path).upload_from_file(buf, content_type="application/octet-stream")
 
-    meta = {
+    artifact_sha = "sha256:" + hashlib.sha256(buf.getvalue()).hexdigest()
+    extra = dict(extra_metadata or {})
+    extra.update({
         "stock_id": 0,
-        "model_name": model_name,
-        "feature_names": feature_names,
-        "feature_medians": feature_medians or {},
-        "sample_count": sample_count,
-        "trained_at": datetime.utcnow().isoformat() + "Z",
-        "gcs_prefix": "universal",
         "model_pool_version": version,
-    }
-    if extra_metadata:
-        meta.update(extra_metadata)
+    })
+    training_run_id = str(
+        extra.get("training_run_id")
+        or extra.get("run_id")
+        or f"universal:{model_name}:{version}"
+    )
+    meta = build_model_artifact_metadata(
+        model_name=model_name,
+        feature_names=feature_names,
+        feature_medians=feature_medians or {},
+        sample_count=sample_count,
+        training_run_id=training_run_id,
+        artifact_payload={"joblib_sha256": artifact_sha},
+        gcs_prefix="universal",
+        extra_metadata=extra,
+    )
+    validate_model_artifact_metadata(meta)
     bucket.blob(meta_path).upload_from_string(
         json.dumps(meta, ensure_ascii=False),
         content_type="application/json",
@@ -918,7 +935,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     else:
         try:
             ic_record = {
-                "computed_at": datetime.utcnow().isoformat() + "Z",
+                "computed_at": now_utc_iso(),
                 "models": ic_tracking,
                 "circuit_breaker": circuit_breaker_triggered,
                 "train_samples": len(X_train),
@@ -939,7 +956,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 content_type="application/json",
             )
             if not walk_forward_mode:
-                month = datetime.utcnow().strftime("%Y-%m")
+                month = now_utc_iso()[:7]
                 bucket.blob(f"{ic_base_prefix}/ic_history/{month}.json").upload_from_string(
                     ic_json,
                     content_type="application/json",
@@ -964,13 +981,43 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         print(f"[TrainUniversal] feature_medians compute failed: {med_err}")
         feature_medians = {}
 
-    extra_meta = {}
+    training_run_id = str(
+        req.output_model_version
+        or f"{gcs_prefix}:{now_utc_iso().replace(':', '').replace('-', '')}"
+    )
+    manifest_path = f"{gcs_prefix}/manifests/{training_run_id}.json"
+    req_params = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    manifest = build_training_run_manifest(
+        run_id=training_run_id,
+        model_names=list(trained_models.keys()),
+        feature_names=feature_names,
+        dataset={
+            "source": f"{gcs_prefix}/prep",
+            "rows": int(len(X)),
+            "train_rows": int(len(X_train)),
+            "test_rows": int(len(X_test)),
+            "date_min": str(dates_arr.astype(str).min()) if len(dates_arr) else None,
+            "date_max": str(dates_arr.astype(str).max()) if len(dates_arr) else None,
+            "walk_forward": bool(walk_forward_mode),
+        },
+        params=req_params,
+        code_version=os.environ.get("GIT_SHA") or os.environ.get("SOURCE_VERSION") or "unknown",
+    )
+    bucket.blob(manifest_path).upload_from_string(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+        content_type="application/json",
+    )
+
+    extra_meta = {
+        "training_run_id": training_run_id,
+        "training_manifest_path": manifest_path,
+    }
     if walk_forward_mode:
-        extra_meta = {
+        extra_meta.update({
             "window_id": req.window_id,
             "train_range": [req.train_start, req.train_end],
             "test_range": [req.test_start, req.test_end],
-        }
+        })
 
     challenger_registrations: dict[str, dict] = {}
     for model_name, model_obj in trained_models.items():
@@ -1029,7 +1076,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
-    trained_at_iso = datetime.utcnow().isoformat() + "Z"
+    trained_at_iso = now_utc_iso()
 
     if getattr(req, "followup_webhook_url", None):
         try:
@@ -1046,6 +1093,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "circuit_breaker": circuit_breaker_triggered,
                 "ic_summary": {k: v.get("ic") for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
                 "candidate_version": req.output_model_version,
+                "training_run_id": training_run_id,
+                "training_manifest_path": manifest_path,
                 "challenger_registrations": challenger_registrations,
             }
             _headers = {"Content-Type": "application/json"}
@@ -1080,6 +1129,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "challenger_registrations": challenger_registrations,
         "oos_artifact": oos_artifact,
         "trained_at": trained_at_iso,
+        "training_run_id": training_run_id,
+        "training_manifest_path": manifest_path,
     }
 
 

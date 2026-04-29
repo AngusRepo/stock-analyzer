@@ -1166,4 +1166,16 @@ def merge_llm_reasons_into_recommendations(
             if entry.get("reason"):
                 r["reason"] = entry["reason"]
             if entry.get("watchPoints"):
-                r["watch_points"] = entry["watchPoints"]
+                llm_points = [p for p in entry["watchPoints"] if isinstance(p, str) and p.strip()]
+                domain_points = [
+                    p for p in (r.get("watch_points") or [])
+                    if isinstance(p, str)
+                    and (
+                        p.startswith("Alpha bucket:")
+                        or p.startswith("Alpha overlay:")
+                        or p.startswith("Market structure:")
+                        or p.startswith("Market structure unavailable:")
+                        or p.startswith("ML ensemble:")
+                    )
+                ]
+                r["watch_points"] = llm_points + domain_points

@@ -20,6 +20,7 @@ from services.alpha_framework import (  # noqa: E402
 from services import recommendation_service  # noqa: E402
 from services.recommendation_service import filter_and_score_recommendations  # noqa: E402
 from services.recommendation_service import write_predictions_to_d1  # noqa: E402
+from services.recommendation_service import merge_llm_reasons_into_recommendations  # noqa: E402
 
 
 def _payload(symbol: str, closes: list[float], rsi: float = 58.0, volume: float = 1_500_000) -> dict:
@@ -281,6 +282,33 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
     forecast_data = captured["statements"][1][1][3]
     assert '"alpha_context"' in forecast_data
     assert '"edge_bucket": "breakout_vol_expansion"' in forecast_data
+
+
+def test_merge_llm_reasons_preserves_domain_watch_points():
+    rows = [{
+        "symbol": "2330",
+        "reason": "template",
+        "watch_points": [
+            "ML 信心中等，方向未明確，可等待訊號確認",
+            "Alpha bucket: breakout_vol_expansion, regime=bull, sizing x0.9, risk=normal/normal",
+            "Market structure: POC=2265, fair_value=2062~2123, location=above_fair_value, window=2026-04-13~2026-04-27, latest_close=2265",
+        ],
+    }]
+
+    merge_llm_reasons_into_recommendations(
+        rows,
+        {
+            "2330": {
+                "reason": "LLM reason",
+                "watchPoints": ["觀察 2265 支撐", "留意成交量"],
+            }
+        },
+    )
+
+    assert rows[0]["reason"] == "LLM reason"
+    assert rows[0]["watch_points"][:2] == ["觀察 2265 支撐", "留意成交量"]
+    assert any(point.startswith("Alpha bucket:") for point in rows[0]["watch_points"])
+    assert any("window=2026-04-13~2026-04-27" in point for point in rows[0]["watch_points"])
 
 
 def _allocation_row(symbol: str, score: float, bucket: str) -> dict:

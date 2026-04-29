@@ -235,6 +235,10 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   const bullish = Number(summary.bullish ?? 0)
   const bearish = Number(summary.bearish ?? 0)
   const missing = Number(summary.missing ?? Math.max(0, total - bullish - bearish - Number(summary.flat ?? 0)))
+  const reported = Number(summary.reported ?? total - missing)
+  if (reported <= 0 || bullish + bearish + Number(summary.flat ?? 0) <= 0) {
+    return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
+  }
   const forecastRaw = summary.forecastPct ?? summary.forecast_pct
   const forecast = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
     ? `，預期${forecastRaw >= 0 ? '+' : ''}${forecastRaw.toFixed(1)}%`

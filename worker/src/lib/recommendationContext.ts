@@ -10,6 +10,13 @@ export interface MlVoteSummary {
   reason: string | null
 }
 
+export interface PerModelPredictionRow {
+  model_name?: string | null
+  signal_raw?: string | null
+  forecast_data?: unknown
+  direction_accuracy?: number | null
+}
+
 export function parsePredictionForecastData(raw: unknown): Record<string, any> | null {
   if (!raw) return null
   if (typeof raw === 'object') return raw as Record<string, any>
@@ -22,45 +29,81 @@ export function parsePredictionForecastData(raw: unknown): Record<string, any> |
   }
 }
 
-export function buildMlVoteSummary(forecastData: unknown): MlVoteSummary | null {
-  const data = parsePredictionForecastData(forecastData)
-  if (!data) return null
+function normalizeForecastPct(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
+  const pct = Math.abs(raw) <= 1 ? raw * 100 : raw
+  return Math.round(pct * 10) / 10
+}
 
-  const models = Array.isArray(data.models)
-    ? data.models.filter((model: any) => String(model?.name ?? model?.model_name ?? '') !== 'StackingRank')
+function rowSignal(row: PerModelPredictionRow): string {
+  const parsed = parsePredictionForecastData(row.forecast_data)
+  return String(row.signal_raw ?? parsed?.signal ?? '').toUpperCase()
+}
+
+function voteFromSignal(signal: string, score?: number | null): 'bullish' | 'bearish' | 'flat' {
+  if (signal.includes('BUY') || signal.includes('UP') || signal.includes('BULL')) return 'bullish'
+  if (signal.includes('SELL') || signal.includes('DOWN') || signal.includes('BEAR')) return 'bearish'
+  if (typeof score === 'number' && Number.isFinite(score)) {
+    if (score >= 0.55) return 'bullish'
+    if (score <= 0.45) return 'bearish'
+  }
+  return 'flat'
+}
+
+export function buildMlVoteSummary(
+  forecastData: unknown,
+  perModelRows: PerModelPredictionRow[] = [],
+): MlVoteSummary | null {
+  const data = parsePredictionForecastData(forecastData)
+  const cleanRows = perModelRows.filter((row) => {
+    const name = String(row.model_name ?? '')
+    return name && name !== 'ensemble' && !name.includes('::challenger')
+  })
+  if (!data && cleanRows.length === 0) return null
+
+  const models = Array.isArray(data?.models)
+    ? data.models.filter((model: any) => String(model?.name ?? model?.model_name ?? model ?? '') !== 'StackingRank')
     : []
-  const weights = data.ensemble_v2?.weights && typeof data.ensemble_v2.weights === 'object'
+  const weights = data?.ensemble_v2?.weights && typeof data.ensemble_v2.weights === 'object'
     ? data.ensemble_v2.weights as Record<string, unknown>
     : {}
-  const total = Math.max(Object.keys(weights).length, models.length)
+  const total = Math.max(Object.keys(weights).length, models.length, cleanRows.length)
   if (total <= 0) return null
 
   let bullish = 0
   let bearish = 0
   let flat = 0
-  for (const model of models) {
-    const direction = String(model?.direction ?? model?.signal ?? '').toLowerCase()
-    if (direction.includes('up') || direction.includes('buy') || direction.includes('bull')) bullish += 1
-    else if (direction.includes('down') || direction.includes('sell') || direction.includes('bear')) bearish += 1
-    else flat += 1
+  if (cleanRows.length > 0) {
+    for (const row of cleanRows) {
+      const vote = voteFromSignal(rowSignal(row), Number(row.direction_accuracy ?? NaN))
+      if (vote === 'bullish') bullish += 1
+      else if (vote === 'bearish') bearish += 1
+      else flat += 1
+    }
+  } else {
+    for (const model of models) {
+      const direction = typeof model === 'string'
+        ? ''
+        : String(model?.direction ?? model?.signal ?? '').toLowerCase()
+      if (direction.includes('up') || direction.includes('buy') || direction.includes('bull')) bullish += 1
+      else if (direction.includes('down') || direction.includes('sell') || direction.includes('bear')) bearish += 1
+      else flat += 1
+    }
   }
 
-  const forecastRaw = data.ensemble_v2?.forecast_pct ?? data.forecast_pct ?? null
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? Math.round(forecastRaw * 1000) / 1000
-    : null
+  const forecastPct = normalizeForecastPct(data?.ensemble_v2?.forecast_pct ?? data?.forecast_pct ?? null)
   const activeWeightCount = Object.values(weights).filter((value) => Number(value ?? 0) > 0).length
 
   return {
     bullish,
     bearish,
     flat,
-    reported: models.length,
-    missing: Math.max(0, total - models.length),
+    reported: cleanRows.length || models.length,
+    missing: Math.max(0, total - (cleanRows.length || models.length)),
     total,
     forecastPct,
     activeWeightCount,
-    reason: typeof data.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
+    reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
   }
 }
 
@@ -78,7 +121,12 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
   const high = structure.fair_value_high
   const location = structure.price_location ?? 'unknown'
   if (poc == null && low == null && high == null && location === 'unknown') return null
-  return `Market structure: POC=${poc ?? 'n/a'}, fair_value=${low ?? 'n/a'}~${high ?? 'n/a'}, location=${location}`
+  const windowStart = structure.window_start_date
+  const windowEnd = structure.window_end_date
+  const latestClose = structure.latest_close
+  const windowText = windowStart && windowEnd ? `, window=${windowStart}~${windowEnd}` : ''
+  const latestText = latestClose != null ? `, latest_close=${latestClose}` : ''
+  return `Market structure: POC=${poc ?? 'n/a'}, fair_value=${low ?? 'n/a'}~${high ?? 'n/a'}, location=${location}${windowText}${latestText}`
 }
 
 export function appendUniqueWatchPoint(points: string[], next: string | null): string[] {

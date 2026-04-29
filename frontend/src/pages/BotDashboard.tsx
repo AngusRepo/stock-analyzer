@@ -333,7 +333,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <div className="space-y-2">
         <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
-        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+        <div className="rounded-xl border border-muted/40 bg-background/40 p-4 text-xs text-muted-foreground">
+          尚未產出 debate 後的 pending buys。AI Top Picks 不再回退顯示未經 T2/debate 的 daily recommendations。
+        </div>
       </div>
     )
   }

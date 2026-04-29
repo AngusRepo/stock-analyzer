@@ -56,6 +56,7 @@ async function enrichPendingBuyContext(
   const placeholders = symbols.map(() => '?').join(',')
   const { results } = await db.prepare(`
     SELECT dr.symbol,
+           s.id AS stock_id,
            p.forecast_data AS prediction_forecast_data
       FROM daily_recommendations dr
       LEFT JOIN stocks s ON s.symbol = dr.symbol
@@ -72,11 +73,32 @@ async function enrichPendingBuyContext(
        AND dr.symbol IN (${placeholders})
   `).bind(sourceRecoDate, ...symbols).all<any>().catch(() => ({ results: [] as any[] }))
 
+  const stockIds = [...new Set((results ?? []).map((row: any) => Number(row.stock_id)).filter((id: number) => Number.isFinite(id)))]
+  const perModelByStock = new Map<number, any[]>()
+  if (stockIds.length > 0) {
+    const stockPlaceholders = stockIds.map(() => '?').join(',')
+    const { results: perModelRows } = await db.prepare(`
+      SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+        FROM predictions
+       WHERE stock_id IN (${stockPlaceholders})
+         AND model_name != 'ensemble'
+         AND model_name NOT LIKE '%::challenger'
+         AND date(generated_at, '+8 hours') = ?
+       ORDER BY stock_id, model_name
+    `).bind(...stockIds, sourceRecoDate).all<any>().catch(() => ({ results: [] as any[] }))
+    for (const row of perModelRows ?? []) {
+      const stockId = Number(row.stock_id)
+      const list = perModelByStock.get(stockId) ?? []
+      list.push(row)
+      perModelByStock.set(stockId, list)
+    }
+  }
+
   const contextBySymbol = new Map<string, any>()
   for (const row of results ?? []) {
     const forecastData = parsePredictionForecastData(row.prediction_forecast_data)
     if (!forecastData) continue
-    const mlVoteSummary = buildMlVoteSummary(forecastData)
+    const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? [])
     contextBySymbol.set(row.symbol, {
       prediction_forecast_data: row.prediction_forecast_data,
       alpha_context: forecastData.alpha_context ?? null,

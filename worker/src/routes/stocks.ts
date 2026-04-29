@@ -14,6 +14,13 @@ import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { withCache, TTL } from '../lib/cache'
 import { rateLimitMiddleware } from '../lib/rateLimit'
+import {
+  appendUniqueWatchPoint,
+  buildMarketStructureWatchPoint,
+  buildMlVoteSummary,
+  buildMlVoteWatchPoint,
+  parsePredictionForecastData,
+} from '../lib/recommendationContext'
 
 const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -456,12 +463,59 @@ stocks.get('/:id/ai-summary', async (c) => {
     ).bind(id).first<any>().catch(() => null),
   ])
 
+  let recommendation = recRow
+  if (recRow) {
+    const [ensembleRow, perModelRows] = await Promise.all([
+      c.env.DB.prepare(`
+        SELECT forecast_data
+          FROM predictions
+         WHERE stock_id = ?
+           AND model_name = 'ensemble'
+           AND date(generated_at, '+8 hours') = ?
+         ORDER BY generated_at DESC, id DESC
+         LIMIT 1
+      `).bind(id, recRow.date).first<any>().catch(() => null),
+      c.env.DB.prepare(`
+        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+          FROM predictions
+         WHERE stock_id = ?
+           AND model_name != 'ensemble'
+           AND model_name NOT LIKE '%::challenger'
+           AND date(generated_at, '+8 hours') = ?
+         ORDER BY model_name
+      `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
+    ])
+    const forecastData = parsePredictionForecastData(ensembleRow?.forecast_data) ?? {}
+    const mlVoteSummary = buildMlVoteSummary(forecastData, perModelRows)
+    const watchPoints = (() => {
+      try {
+        return JSON.parse(recRow.watch_points ?? '[]')
+      } catch {
+        return []
+      }
+    })()
+    const marketWatchPoint = buildMarketStructureWatchPoint(forecastData.alpha_context)
+    const mlWatchPoint = buildMlVoteWatchPoint(mlVoteSummary)
+    const enrichedWatchPoints = appendUniqueWatchPoint(
+      appendUniqueWatchPoint(Array.isArray(watchPoints) ? watchPoints : [], marketWatchPoint),
+      mlWatchPoint,
+    )
+    recommendation = {
+      ...recRow,
+      prediction_forecast_data: ensembleRow?.forecast_data ?? null,
+      alpha_context: forecastData.alpha_context ?? null,
+      alpha_allocation: forecastData.alpha_allocation ?? null,
+      ml_vote_summary: mlVoteSummary,
+      watch_points: enrichedWatchPoints,
+    }
+  }
+
   return c.json({
     symbol: stock.symbol,
     name: stock.name,
     sector: stock.sector,
     market: stock.market,
-    recommendation: recRow,
+    recommendation,
     tags: tagsRows,
     chip5d: chipRows,
     profile: profileRow,

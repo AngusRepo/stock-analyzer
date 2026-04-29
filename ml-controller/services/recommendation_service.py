@@ -84,10 +84,25 @@ def _sanitize_non_finite(value: Any) -> tuple[Any, int]:
 # ML score calculation (port from dailyRecommendation.ts:558-568)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calculate_ml_score(prediction: dict) -> float:
-    """Compute ml_score 0-30 from prediction signal/confidence/forecast."""
+def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
+    """Compute ml_score 0-30 from actual model evidence.
+
+    Ranking/top-K promotion is an execution/recommendation policy, not a model
+    vote. If lifecycle weighting has no positive contributors, keep the row
+    eligible for downstream T2/debate via signal, but do not inflate ML score.
+    """
     if not prediction:
         return 0.0
+    source = str(prediction.get("signal_source") or "")
+    ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
+    if ev2:
+        weight_total = float(ev2.get("weight_total") or 0.0)
+        contributors = ev2.get("contributing_models") or []
+        ev2_reason = str(ev2.get("reason") or "")
+        if weight_total <= 0 or ev2_reason == "no_positive_lifecycle_weight":
+            return 0.0
+        if source in {"ensemble_v2_topk_policy", "ranking_promotion"} and not contributors:
+            return 0.0
     sig = (prediction.get("signal") or "").upper()
     score = 0.0
     if "STRONG_BUY" in sig:
@@ -303,19 +318,23 @@ def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | N
     net_5d = foreign_net_5d + trust_net_5d
 
     recent_prices = prices[-20:]
+    recent_closes = [float(p.get("close") or 0.0) for p in recent_prices if float(p.get("close") or 0.0) > 0]
     avg_volume = 0.0
     if recent_prices:
         volumes = [float(p.get("volume") or 0) for p in recent_prices]
         avg_volume = sum(volumes) / max(1, len(volumes))
     chip_intensity = (net_5d / max(avg_volume, 1.0)) if avg_volume else 0.0
 
-    if chip_intensity > 0.20:
+    # Use a stricter accumulation scale: 5-day institutional net buy relative
+    # to 20-day average volume. The old 20% threshold made many bull-market
+    # names look almost perfect even without exceptional flow.
+    if chip_intensity > 0.80:
         chip_score = 36.0
-    elif chip_intensity > 0.10:
+    elif chip_intensity > 0.45:
         chip_score = 28.0
-    elif chip_intensity > 0.05:
+    elif chip_intensity > 0.20:
         chip_score = 20.0
-    elif chip_intensity > 0:
+    elif chip_intensity > 0.05:
         chip_score = 12.0
     elif chip_intensity > -0.05:
         chip_score = 5.0
@@ -327,18 +346,27 @@ def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | N
     ma20 = latest_ind.get("ma20")
     tech_score = 0.0
     if isinstance(rsi, Real):
-        if 55 <= float(rsi) <= 75:
-            tech_score += 12.0
-        elif 40 <= float(rsi) < 55:
-            tech_score += 8.0
-        elif 75 < float(rsi) <= 85:
+        rsi_value = float(rsi)
+        if 55 <= rsi_value <= 68:
+            tech_score += 10.0
+        elif 50 <= rsi_value < 55:
             tech_score += 6.0
-        else:
+        elif 45 <= rsi_value < 50:
             tech_score += 3.0
+        elif 68 < rsi_value <= 75:
+            tech_score += 7.0
+        elif 75 < rsi_value <= 85:
+            tech_score += 2.0
+        else:
+            tech_score += 0.0
     if macd_hist and float(macd_hist) > 0:
-        tech_score += 8.0
+        tech_score += 7.0
+    if latest_price and len(recent_closes) >= 5 and float(latest_price) > (sum(recent_closes[-5:]) / 5):
+        tech_score += 3.0
     if latest_price and ma20 and float(latest_price) > float(ma20):
-        tech_score += 10.0
+        tech_score += 5.0
+    if latest_price and len(recent_closes) >= 20 and float(latest_price) > (sum(recent_closes[-20:]) / 20):
+        tech_score += 3.0
 
     return min(40.0, chip_score), min(30.0, tech_score), latest_price
 
@@ -431,7 +459,7 @@ def build_reason(s: dict) -> str:
     """Build clean Traditional Chinese explanation for recommendation cards."""
     fnet = float(s.get("foreign_net_5d") or 0.0)
     tnet = float(s.get("trust_net_5d") or 0.0)
-    net_amount = fnet + tnet
+    net_amount = (fnet + tnet) / 1e8
     if net_amount > 5:
         chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
     elif net_amount > 1:
@@ -554,8 +582,9 @@ def filter_and_score_recommendations(
             sell_count += 1
             continue
 
-        # ML score
-        ml_score = calculate_ml_score(eff_ml) if ml else 0.0
+        # ML score reflects model evidence only; ranking/top-K promotion is
+        # tracked in signal_source/reason but should not inflate ML votes.
+        ml_score = calculate_ml_score(eff_ml, ml) if ml else 0.0
         chip_score = rec.get("chip_score") or 0
         tech_score = rec.get("tech_score") or 0
 

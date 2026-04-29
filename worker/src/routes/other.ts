@@ -1009,14 +1009,36 @@ recommendations.get('/daily', async (c) => {
     LIMIT 20
   `).bind(date).all<any>()
 
+  const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
+  const perModelByStock = new Map<number, any[]>()
+  if (stockIds.length > 0) {
+    const placeholders = stockIds.map(() => '?').join(',')
+    const { results: perModelRows } = await c.env.DB.prepare(`
+      SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+        FROM predictions
+       WHERE stock_id IN (${placeholders})
+         AND model_name != 'ensemble'
+         AND model_name NOT LIKE '%::challenger'
+         AND date(generated_at, '+8 hours') = ?
+       ORDER BY stock_id, model_name
+    `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
+    for (const row of perModelRows ?? []) {
+      const id = Number(row.stock_id)
+      const list = perModelByStock.get(id) ?? []
+      list.push(row)
+      perModelByStock.set(id, list)
+    }
+  }
+
   // 解析 watch_points JSON
   const recs = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
+    const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
     return {
       ...r,
       alpha_context: forecastData?.alpha_context ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? null,
-      ml_vote_summary: buildMlVoteSummary(forecastData),
+      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows),
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })

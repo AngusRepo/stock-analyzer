@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services import recommendation_service  # noqa: E402
 from services import modal_client  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
+    build_reason,
     build_screener_seed_recommendations,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
@@ -81,7 +82,7 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
     assert row["signal_source"] == "ensemble_v2_topk_policy"
     assert row["signal_raw"] == "HOLD"
     assert row["has_buy_signal"] == 1
-    assert row["ml_score"] > 20
+    assert row["ml_score"] == 0
     assert row["stock_id"] == 1
 
 
@@ -111,7 +112,24 @@ def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeyp
 
     assert final[0]["signal"] == "HOLD"
     assert final[0]["ml_forecast_pct"] == 0.0
+    assert final[0]["ml_score"] == 0
     assert "暫無正 IC 權重" in final[0]["reason"]
+
+
+def test_build_reason_formats_chip_raw_shares_as_yi_not_raw_number():
+    reason = build_reason({
+        "foreign_net_5d": 600_000_000,
+        "trust_net_5d": 0,
+        "rsi14": 63,
+        "macd_hist": 0.2,
+        "current_price": 100,
+        "ma20": 95,
+        "ml_vote_summary": "ML 資料不足",
+    })
+
+    assert "600000000" not in reason
+    assert "6.0" in reason
+    assert "億" in reason
 
 
 def test_build_screener_seed_recommendations_from_payloads():

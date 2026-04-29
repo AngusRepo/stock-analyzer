@@ -23,6 +23,25 @@ from .models import ModelPrediction
 
 logger = logging.getLogger("ensemble")
 
+
+def _extract_model_pool_ic(pool: dict) -> dict[str, float]:
+    """Extract serving IC weights from model_pool.json."""
+    weights: dict[str, float] = {}
+    for name, entry in (pool.get("models") or {}).items():
+        ic_value = entry.get("rolling_ic")
+        if ic_value is None:
+            ic_value = entry.get("ic_4w_avg")
+        if ic_value is None:
+            history = entry.get("weekly_ic") or []
+            if history:
+                ic_value = history[-1]
+        try:
+            if ic_value is not None:
+                weights[name] = float(ic_value)
+        except (TypeError, ValueError):
+            continue
+    return weights
+
 @dataclass
 class EnsembleResult:
     # 最終訊號
@@ -390,23 +409,27 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_ic_weights() -> dict[str, float]:
-    """從 GCS 讀 ic_tracking.json，回傳 {model_name: IC} for IC-weighted ensemble。
-    Grinold-Kahn: each signal's contribution ∝ its IC.
-    """
+    """Load serving IC weights from model_pool.json, then legacy sidecar gaps."""
     try:
         from .model_store import _get_bucket
         import json
         bucket = _get_bucket()
         if bucket is None:
             return {}
-        blob = bucket.blob("universal/ic_tracking.json")
-        if not blob.exists():
-            return {}
-        data = json.loads(blob.download_as_text())
-        return {
-            name: info.get("oos_ic", 0.0)
-            for name, info in data.get("models", {}).items()
-        }
+        weights: dict[str, float] = {}
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            weights.update(_extract_model_pool_ic(json.loads(pool_blob.download_as_text())))
+
+        legacy_blob = bucket.blob("universal/ic_tracking.json")
+        if legacy_blob.exists():
+            data = json.loads(legacy_blob.download_as_text())
+            for name, info in (data.get("models") or {}).items():
+                if name in weights:
+                    continue
+                weights[name] = float(info.get("oos_ic", 0.0))
+
+        return weights
     except Exception:
         return {}
 
@@ -540,11 +563,20 @@ def rank_to_signal(
     if ic_weights:
         weighted_sum = 0.0
         weight_total = 0.0
+        has_observed_ic = False
         for name, score in rank_scores.items():
-            w = max(0.0, ic_weights.get(name, 0.0))
+            raw_ic = float(ic_weights.get(name, 0.0) or 0.0)
+            if abs(raw_ic) > 1e-12:
+                has_observed_ic = True
+            w = max(0.0, raw_ic)
             weighted_sum += score * w
             weight_total += w
-        avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
+        if weight_total > 0:
+            avg_rank = weighted_sum / weight_total
+        elif not has_observed_ic:
+            avg_rank = float(np.mean(list(rank_scores.values())))
+        else:
+            avg_rank = 0.5
     else:
         avg_rank = float(np.mean(list(rank_scores.values())))
     avg_rank = float(np.clip(avg_rank, 0.0, 1.0))

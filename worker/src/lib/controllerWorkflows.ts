@@ -16,6 +16,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
 ] as const
 
 export {
+  runModelIcRollingRefresh,
   runModelIcTrackerChain,
   runObsidianDaily,
   runRegimeCompute,

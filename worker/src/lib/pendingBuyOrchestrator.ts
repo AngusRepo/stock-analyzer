@@ -17,6 +17,7 @@ import {
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
+  type PerModelPredictionRow,
 } from './recommendationContext'
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
@@ -35,6 +36,7 @@ import { checkP7Streak } from './riskChecks/p7Streak'
 type CircuitBreakerState = _CBState
 
 interface BuyRecommendationRow {
+  stock_id: number | null
   symbol: string
   name: string | null
   signal: string
@@ -535,7 +537,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const { results } = await env.DB.prepare(`
-      SELECT dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
+      SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
              dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -577,6 +579,28 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         prev_day: prevDay,
       })
       return
+    }
+
+    const stockIds = [...new Set(buyRecs.map((rec) => Number(rec.stock_id)).filter((id) => Number.isFinite(id)))]
+    const perModelByStock = new Map<number, PerModelPredictionRow[]>()
+    if (stockIds.length > 0) {
+      const placeholders = stockIds.map(() => '?').join(',')
+      const { results: perModelRows } = await env.DB.prepare(`
+        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+          FROM predictions
+         WHERE stock_id IN (${placeholders})
+           AND model_name != 'ensemble'
+           AND model_name NOT LIKE '%::challenger'
+           AND date(generated_at, '+8 hours') IN (?, ?)
+         ORDER BY stock_id, model_name, generated_at DESC
+      `).bind(...stockIds, pendingDate, prevDay).all<(PerModelPredictionRow & { stock_id: number | null })>().catch(() => ({ results: [] }))
+      for (const row of perModelRows ?? []) {
+        const id = Number(row.stock_id)
+        if (!Number.isFinite(id)) continue
+        const list = perModelByStock.get(id) ?? []
+        list.push(row)
+        perModelByStock.set(id, list)
+      }
     }
 
     const { newsContextStr, taifex, taifexContextStr } = await loadMacroContext(env, pendingDate)
@@ -621,7 +645,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
-      const mlVoteSummary = buildMlVoteSummary(forecastData)
+      const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
           symbol: rec.symbol,

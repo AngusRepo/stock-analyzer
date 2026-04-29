@@ -188,6 +188,7 @@ def load_model(
         blob_path: str | None = None
         meta_path: str | None = None
         used_pool = False
+        pool_lookup_attempted = False
         if explicit_path is not None:
             blob_path = explicit_path
             # Derive sibling metadata path: e.g. universal/xgboost/v2.joblib
@@ -205,18 +206,26 @@ def load_model(
         elif stock_id == 0:
             # ML_POOL aware: prefer pool entry, fall back to legacy
             try:
-                from .model_pool import get_active_path, gcs_metadata_path_for, get_active_version
-                pool_path = get_active_path(model_name)
+                from .model_pool import get_active_path, gcs_metadata_path_for, get_active_version, load_pool
+                pool_snapshot = load_pool()
+                pool_lookup_attempted = bool(pool_snapshot)
+                pool_path = get_active_path(model_name, pool=pool_snapshot) if pool_snapshot else None
                 if pool_path:
                     candidate = bucket.blob(pool_path)
                     if candidate.exists():
                         blob_path = pool_path
-                        ver = get_active_version(model_name)
+                        ver = get_active_version(model_name, pool=pool_snapshot)
                         if ver:
                             meta_path = gcs_metadata_path_for(model_name, ver)
                         used_pool = True
             except Exception as _e:
                 logger.debug(f"[ModelStore] Pool lookup skipped for {model_name}: {_e}")
+            if blob_path is None and pool_lookup_attempted:
+                logger.warning(
+                    "[ModelStore] model_pool active artifact missing for %s; refusing legacy fallback",
+                    model_name,
+                )
+                return None, None
             if blob_path is None:
                 # Legacy flat-file fallback (kept for safety while ML_POOL bootstraps)
                 blob_path = f"universal/{model_name.lower()}.joblib"

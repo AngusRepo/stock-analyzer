@@ -145,6 +145,7 @@ def apply_weekly_ic_to_pool(
     per_model_ic: dict[str, dict[str, Any]],
     *,
     history_max: int,
+    append_history: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     """Mutate model_pool dict with computed IC values."""
     pool_changes: dict[str, dict[str, Any]] = {}
@@ -171,6 +172,18 @@ def apply_weekly_ic_to_pool(
                 "status": target["last_ic_status"],
                 "n_samples": target["last_ic_sample_count"],
                 "score_sources": target["last_ic_score_sources"],
+                "history_len": len(target.get("weekly_ic") or []),
+            }
+            changed = True
+            continue
+
+        target["rolling_ic"] = ic
+        if not append_history:
+            pool_changes[tracked_name] = {
+                "rolling_ic": ic,
+                "status": target["last_ic_status"],
+                "n_samples": target["last_ic_sample_count"],
+                "score_sources": info.get("score_sources") or {},
                 "history_len": len(target.get("weekly_ic") or []),
             }
             changed = True

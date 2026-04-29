@@ -26,8 +26,8 @@ from .arf_aggregator import (
     save_arf,
 )
 from .ensemble import weighted_vote
-from .features import build_feature_matrix, get_catboost_features, get_features, get_lgbm_features
-from .ft_transformer import rebuild_ft_transformer_from_bundle
+from .features import build_feature_matrix, close_or_adjusted, close_price, get_catboost_features, get_features, get_lgbm_features, safe_float
+from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
 from .linucb_bandit import build_context, compute_dynamic_alpha, linucb_select, load_bandit
 from .models import (
     run_catboost,
@@ -286,7 +286,7 @@ def predict_stock(req: PredictRequest) -> dict:
         req.market_env,
         barrier_params=req.barrier_params or None,
     )
-    prices_arr = np.array([float(p["close"]) for p in req.prices])
+    prices_arr = np.array([close_price(p) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else 0.0
 
@@ -320,7 +320,7 @@ def predict_stock(req: PredictRequest) -> dict:
         ]
     )
 
-    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
+    adj_prices_arr = np.array([close_or_adjusted(p) for p in req.prices])
     x, y, feature_names = get_features(df, target_col="target_dir")
     x_latest = x[-1] if len(x) > 0 else np.zeros(max(len(feature_names), 1))
 
@@ -563,8 +563,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         stock_meta=getattr(req, "stock_meta", None),
     )
 
-    prices_arr = np.array([float(p["close"]) for p in req.prices])
-    adj_prices_arr = np.array([float(p.get("adj_close", p["close"])) for p in req.prices])
+    prices_arr = np.array([close_price(p) for p in req.prices])
+    adj_prices_arr = np.array([close_or_adjusted(p) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
 
@@ -609,7 +609,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 raise ValueError(f"artifact feature compatibility failed: {exc.report}") from exc
             pred_name_to_idx = {n: i for i, n in enumerate(feature_names)}
             defaults = np.array(
-                [float(training_medians.get(n, 0.0)) for n in training_features],
+                [safe_float(training_medians.get(n), 0.0) for n in training_features],
                 dtype=np.float32,
             ).reshape(1, -1)
             aligned = defaults.copy()
@@ -657,7 +657,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 with torch.no_grad():
                     raw = ftt(torch.tensor(x_scaled))
                 if ftt_type == "regression":
-                    pred = float(np.clip(raw.reshape(-1)[0].item(), 0.0, 1.0))
+                    pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
                 else:
                     pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
                 rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
@@ -726,7 +726,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                     with torch.no_grad():
                         raw = ftt_ch(torch.tensor(x_scaled))
                     if ftt_ch_type == "regression":
-                        pred = float(np.clip(raw.reshape(-1)[0].item(), 0.0, 1.0))
+                        pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
                     else:
                         pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
                     challenger_rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
@@ -819,7 +819,7 @@ def retrain_stock(req: PredictRequest) -> dict:
         ]
     )
 
-    prices_arr = np.array([float(p["close"]) for p in req.prices])
+    prices_arr = np.array([close_price(p) for p in req.prices])
     x, y, feature_names = get_features(df, target_col="target_dir")
 
     if req.weak_features:

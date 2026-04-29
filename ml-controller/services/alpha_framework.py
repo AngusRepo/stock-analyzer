@@ -39,8 +39,6 @@ DEFAULT_ALPHA_POLICY: dict[str, Any] = {
     },
     "allocation": {
         "slate_size": 10,
-        "score_boost_spacing": 1.0,
-        "score_boost_min": 0.1,
         "score_round_decimals": 1,
         "weights": {
             "bull": {
@@ -250,14 +248,6 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         _camel_or_snake(raw_alloc, "slateSize", "slate_size", alloc_default["slate_size"]),
         alloc_default["slate_size"],
     ))))
-    score_boost_spacing = max(0.0, min(10.0, _to_float(
-        _camel_or_snake(raw_alloc, "scoreBoostSpacing", "score_boost_spacing", alloc_default["score_boost_spacing"]),
-        alloc_default["score_boost_spacing"],
-    )))
-    score_boost_min = max(0.0, min(10.0, _to_float(
-        _camel_or_snake(raw_alloc, "scoreBoostMin", "score_boost_min", alloc_default["score_boost_min"]),
-        alloc_default["score_boost_min"],
-    )))
     score_round_decimals = int(max(0, min(6, _to_float(
         _camel_or_snake(raw_alloc, "scoreRoundDecimals", "score_round_decimals", alloc_default["score_round_decimals"]),
         alloc_default["score_round_decimals"],
@@ -421,8 +411,6 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         "risk_overlay": overlay,
         "allocation": {
             "slate_size": slate_size,
-            "score_boost_spacing": score_boost_spacing,
-            "score_boost_min": score_boost_min,
             "score_round_decimals": score_round_decimals,
             "weights": weights,
         },
@@ -989,9 +977,9 @@ def regime_aware_allocate(
 ) -> list[dict]:
     """Diversify the top recommendation slate by alpha bucket.
 
-    The function annotates selected rows and applies a bounded score boost so
-    existing D1 `ORDER BY score DESC` ranking preserves the allocation order.
-    It never drops rows; non-selected candidates are appended by original score.
+    The function annotates selected rows and returns them in allocation order.
+    It does not mutate the alpha/model score; portfolio diversification belongs
+    to the selection/ranking layer, not the predictive score.
     """
     if not recommendations or not any(_bucket_of(row) for row in recommendations):
         return recommendations
@@ -1032,15 +1020,7 @@ def regime_aware_allocate(
         if id(row) not in selected_ids
     ]
     ordered = selected + tail
-    max_score = max(_to_float(row.get("score")) for row in recommendations)
-    score_boost_spacing = policy["allocation"]["score_boost_spacing"]
-    score_boost_min = policy["allocation"]["score_boost_min"]
-    score_round_decimals = policy["allocation"]["score_round_decimals"]
     for idx, row in enumerate(selected):
-        original_score = _to_float(row.get("score"))
-        target_score = max_score + ((slate_size - idx) * score_boost_spacing)
-        boost = max(score_boost_min, target_score - original_score)
-        row["score"] = round(original_score + boost, score_round_decimals)
         row["alpha_allocation"] = {
             "selected": True,
             "selection_rank": idx + 1,
@@ -1048,9 +1028,6 @@ def regime_aware_allocate(
             "regime_surface": normalize_regime_surface(regime_label, regime_surface),
             "bucket": _bucket_of(row),
             "quota": quotas.get(_bucket_of(row) or "", 0),
-            "score_boost": round(boost, 4),
-            "score_boost_spacing": score_boost_spacing,
-            "score_round_decimals": score_round_decimals,
         }
     for row in tail:
         bucket = _bucket_of(row)
@@ -1061,6 +1038,5 @@ def regime_aware_allocate(
                 "regime_surface": normalize_regime_surface(regime_label, regime_surface),
                 "bucket": bucket,
                 "quota": quotas.get(bucket, 0),
-                "score_boost": 0.0,
             }
     return ordered

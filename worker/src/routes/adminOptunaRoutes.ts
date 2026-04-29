@@ -201,8 +201,6 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       updatedFields = [
         'alphaFramework.riskOverlay',
         'alphaFramework.allocation.slateSize',
-        'alphaFramework.allocation.scoreBoostSpacing',
-        'alphaFramework.allocation.scoreBoostMin',
         'alphaFramework.allocation.scoreRoundDecimals',
         'alphaFramework.allocation.weights',
         'alphaFramework.classification',

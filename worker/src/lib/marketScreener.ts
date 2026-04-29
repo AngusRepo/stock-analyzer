@@ -410,8 +410,8 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
 /**
  * Step 2: 多因子評分（FinLab 優化版）
  *
- * 籌碼(0-40): 用相對比例（佔日均成交%），不偏向權值股
- * 技術(0-30): RSI 40-80 全給分，超買不扣分（FinLab 驗證）
+ * 籌碼(0-40): 用 5 日法人淨買超 / 20 日均成交金額，避免大型股金額偏誤
+ * 技術(0-30): 趨勢品質分數；高 RSI 只視為動能，不當成無風險滿分
  * 動能(0-20): 超額報酬 + 量能比 + 價格意圖因子 + RSI 鈍化
  */
 // Sprint 6a.7b: exported for cross-runtime parity test
@@ -456,30 +456,30 @@ export function scoreMultiFactor(
     const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
     const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
 
-    // 相對比例分級（消除大小型股偏差）
-    const chipTiers = sc?.chipScoreTiers ?? [36, 28, 20, 12, 5]
-    const chipThresholds = sc?.chipIntensityThresholds ?? [0.20, 0.10, 0.05, 0, -0.05]
-    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]       // 佔日均成交 20%+ 極強
-    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]  // 10%+
-    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]  // 5%+
-    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]  // 正向
+    // 相對比例分級：80%+ ADTV 才接近極端累積，避免牛市中大量候選股都接近滿分。
+    const chipTiers = sc?.chipScoreTiers ?? [32, 24, 16, 8, 2]
+    const chipThresholds = sc?.chipIntensityThresholds ?? [0.80, 0.45, 0.20, 0.05, -0.05]
+    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]
+    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]
+    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]
+    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]
     else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 微賣
     // else 0
 
     if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
 
     // 連續買超天數 bonus
-    const cbBonus = sc?.consecBuyBonusTiers ?? [4, 2]
+    const cbBonus = sc?.consecBuyBonusTiers ?? [3, 1]
     const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
     if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`連買${consecBuyDays}天`) }
     else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
   }
   chip_score = clamp(chip_score, 0, 40)
 
-  // ── P0-2: 技術面 (0-30) — RSI 區間放寬，超買不扣分 ──
+  // ── P0-2: 技術面 (0-30) — 趨勢品質，避免超買股無條件滿分 ──
   let tech_score = 0
 
-  // RSI 14（FinLab 驗證：超買不隱含回調，40-80 全給分）
+  // RSI 14：50-68 是趨勢健康區；75+ 代表動能強但追高風險也升高。
   let rsiValue = 50
   if (prices.length >= 15) {
     const changes14 = prices.slice(-15).map((p, i, arr) =>
@@ -492,13 +492,12 @@ export function scoreMultiFactor(
     const rsi = 100 - 100 / (1 + avgGain / avgLoss)
     rsiValue = rsi
 
-    // 放寬版評分（原本 55-70 才給高分，現在 40-80 都給分）
-    const rsiTiers = sc?.rsiScoreTiers ?? [12, 8, 6, 8, 3]
-    if (rsi >= 55 && rsi <= 75) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[1]
-    else if (rsi >= 40 && rsi < 45) tech_score += rsiTiers[2]
-    else if (rsi > 75) tech_score += rsiTiers[3]  // 超買不扣分，動能延續
-    else if (rsi >= 30 && rsi < 40) tech_score += rsiTiers[4]  // 超賣反彈潛力
+    const rsiTiers = sc?.rsiScoreTiers ?? [10, 6, 4, 2, 2]
+    if (rsi >= 55 && rsi <= 68) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi > 68 && rsi <= 75) { tech_score += rsiTiers[1]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[2]
+    else if (rsi > 75 && rsi <= 85) tech_score += rsiTiers[3]
+    else if (rsi >= 30 && rsi < 45) tech_score += rsiTiers[4]
   }
 
   // MACD（近似 EMA12 - EMA26）
@@ -506,18 +505,18 @@ export function scoreMultiFactor(
     const ma12 = prices.slice(-12).reduce((s, p) => s + p.close, 0) / 12
     const ma26 = prices.slice(-Math.min(26, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(26, prices.length)
     const macdApprox = ma12 - ma26
-    if (macdApprox > 0) { tech_score += 8; reasons.push('MACD 多頭') }
-    else if (macdApprox > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 3
+    if (macdApprox > 0) { tech_score += 6; reasons.push('MACD 多頭') }
+    else if (macdApprox > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 2
   }
 
   // 均線排列
   if (prices.length >= 5) {
     const ma5 = prices.slice(-5).reduce((s, p) => s + p.close, 0) / 5
-    if (latest.close > ma5) tech_score += 3
+    if (latest.close > ma5) tech_score += 1
   }
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
-    if (latest.close > ma20) { tech_score += 4; reasons.push('站上MA20') }
+    if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
   }
 
   // P3-5: NATR 低波動加分（低波動 + 趨勢中 = 穩健上漲）
@@ -534,12 +533,12 @@ export function scoreMultiFactor(
     const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
     const keltnerMult = sc?.keltnerMultiplier ?? 1.5
     if (latest.close > ma20 + keltnerMult * atr14 && atr14 > 0) {
-      tech_score += 3
+      tech_score += 2
       reasons.push('突破肯特納')
     }
 
     // NATR 低波動：< threshold 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
-    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 2
+    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 1
   }
   tech_score = clamp(tech_score, 0, 30)
 

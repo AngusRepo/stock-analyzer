@@ -99,3 +99,32 @@ def test_apply_weekly_ic_records_sample_diagnostics_even_when_insufficient():
     assert pool["models"]["XGBoost"]["last_ic_score_sources"] == {"forecast_data.rank_score": 12}
     assert changes["XGBoost"]["status"] == "insufficient_samples"
     assert changes["XGBoost"]["n_samples"] == 12
+
+
+def test_apply_weekly_ic_can_refresh_rolling_weight_without_appending_history():
+    pool = {
+        "models": {
+            "XGBoost": {
+                "weekly_ic": [0.1],
+                "ic_4w_avg": 0.1,
+                "consecutive_negative_weeks": 0,
+            }
+        }
+    }
+    per_model_ic = {
+        "XGBoost": {"ic": 0.04, "n_samples": 80, "score_sources": {"forecast_data.rank_score": 80}},
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(
+        pool,
+        per_model_ic,
+        history_max=26,
+        append_history=False,
+    )
+
+    assert changed is True
+    assert pool["models"]["XGBoost"]["weekly_ic"] == [0.1]
+    assert pool["models"]["XGBoost"]["ic_4w_avg"] == 0.1
+    assert pool["models"]["XGBoost"]["rolling_ic"] == 0.04
+    assert changes["XGBoost"]["rolling_ic"] == 0.04
+    assert changes["XGBoost"]["history_len"] == 1

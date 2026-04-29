@@ -41,8 +41,6 @@ export interface AlphaFrameworkConfig {
   }
   allocation: {
     slateSize: number
-    scoreBoostSpacing: number
-    scoreBoostMin: number
     scoreRoundDecimals: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
   }
@@ -215,11 +213,11 @@ export interface TradingConfig {
     maxPerIndustry: number       // 同官方產業上限（預設 5）
     correlationThreshold: number // 報酬率去重門檻（預設 0.8）
     correlationWindow: number    // 去重計算天數（預設 60）
-    chipScoreTiers: number[]     // 籌碼分級分數（預設 [36,28,20,12,5]）
-    chipIntensityThresholds: number[] // 籌碼強度門檻（預設 [0.20,0.10,0.05,0,-0.05]）
-    consecBuyBonusTiers: number[]    // 連續買超加分（預設 [4,2]，對應 >=5天, >=3天）
+    chipScoreTiers: number[]     // 籌碼分級分數（預設 [32,24,16,8,2]）
+    chipIntensityThresholds: number[] // 籌碼強度門檻（預設 [0.80,0.45,0.20,0.05,-0.05]）
+    consecBuyBonusTiers: number[]    // 連續買超加分（預設 [3,1]，對應 >=5天, >=3天）
     consecBuyDayThresholds: number[] // 連續買超天數門檻（預設 [5,3]）
-    rsiScoreTiers: number[]          // RSI 分級分數（預設 [12,8,6,8,3]）
+    rsiScoreTiers: number[]          // RSI 分級分數（預設 [10,6,4,2,2]）
     macdNegativeFactor: number       // MACD 負值比較因子（預設 0.5）
     keltnerMultiplier: number        // 肯特納通道 ATR 倍數（預設 1.5）
     natrThreshold: number            // NATR 低波動門檻（預設 3）
@@ -510,11 +508,11 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     maxPerIndustry: 5,
     correlationThreshold: 0.8,
     correlationWindow: 60,
-    chipScoreTiers: [36, 28, 20, 12, 5],
-    chipIntensityThresholds: [0.20, 0.10, 0.05, 0, -0.05],
-    consecBuyBonusTiers: [4, 2],
+    chipScoreTiers: [32, 24, 16, 8, 2],
+    chipIntensityThresholds: [0.80, 0.45, 0.20, 0.05, -0.05],
+    consecBuyBonusTiers: [3, 1],
     consecBuyDayThresholds: [5, 3],
-    rsiScoreTiers: [12, 8, 6, 8, 3],
+    rsiScoreTiers: [10, 6, 4, 2, 2],
     macdNegativeFactor: 0.5,
     keltnerMultiplier: 1.5,
     natrThreshold: 3,
@@ -670,8 +668,6 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     },
     allocation: {
       slateSize: 10,
-      scoreBoostSpacing: 1.0,
-      scoreBoostMin: 0.1,
       scoreRoundDecimals: 1,
       weights: {
         bull: {
@@ -841,8 +837,6 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
       ...d.allocation,
       ...rawAllocation,
       slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
-      scoreBoostSpacing: rawAllocation.scoreBoostSpacing ?? rawAllocation.score_boost_spacing ?? d.allocation.scoreBoostSpacing,
-      scoreBoostMin: rawAllocation.scoreBoostMin ?? rawAllocation.score_boost_min ?? d.allocation.scoreBoostMin,
       scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
       weights: {
         bull: mergeWeights('bull'),
@@ -1449,10 +1443,6 @@ export function validateTradingConfig(config: TradingConfig): string[] {
   } else {
     if (!Number.isInteger(allocation.slateSize) || allocation.slateSize < 1 || allocation.slateSize > 30)
       errors.push('alphaFramework.allocation.slateSize must be an integer between 1 and 30')
-    if (!isFiniteNumber(allocation.scoreBoostSpacing) || allocation.scoreBoostSpacing < 0 || allocation.scoreBoostSpacing > 10)
-      errors.push('alphaFramework.allocation.scoreBoostSpacing must be 0-10')
-    if (!isFiniteNumber(allocation.scoreBoostMin) || allocation.scoreBoostMin < 0 || allocation.scoreBoostMin > 10)
-      errors.push('alphaFramework.allocation.scoreBoostMin must be 0-10')
     if (!Number.isInteger(allocation.scoreRoundDecimals) || allocation.scoreRoundDecimals < 0 || allocation.scoreRoundDecimals > 6)
       errors.push('alphaFramework.allocation.scoreRoundDecimals must be an integer between 0 and 6')
     const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']

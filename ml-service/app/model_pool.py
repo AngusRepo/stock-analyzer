@@ -372,25 +372,6 @@ def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool 
     return entry
 
 
-# Backward-compat shim (older callers expect the lifecycle-only multiplier)
-# Will be removed after Stage 4. Default lifecycle_weight=1.0 for active so
-# callers that haven't migrated still see "active = full weight".
-def get_lifecycle_weight(model_name: str, pool: Optional[dict] = None) -> float:
-    """DEPRECATED — use compute_weight(name, ic_value, pool, degraded_dampening).
-
-    Returns status_filter only (no IC multiplication). Kept for callers that
-    haven't migrated to the new R1+R3 weight formula. Will be removed in
-    Stage 4 follow-up after grep verifies 0 active call sites.
-    """
-    pool = pool or load_pool()
-    if not pool:
-        return 1.0
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        return 1.0
-    return get_status_filter(entry["status"])
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 6 state-space helpers (per-stock state, shared hyperparams)
 # ─────────────────────────────────────────────────────────────────────────────

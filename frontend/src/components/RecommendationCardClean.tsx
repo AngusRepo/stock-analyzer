@@ -20,7 +20,6 @@ type AlphaContext = {
   regime?: string
   sizing?: number | null
   scoreAdjustment?: number | null
-  boost?: number | null
   volatility?: string
   liquidity?: string
   skip?: boolean
@@ -44,7 +43,7 @@ type MlVoteSummary = {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate boost 是為了讓不同交易 edge 在清單中保持分散，不代表原始 ML 預測報酬。'
+  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -244,7 +243,9 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
     ? `，預期${forecastRaw >= 0 ? '+' : ''}${forecastRaw.toFixed(1)}%`
     : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
-  return `${bullish}/${total}看漲、${bearish}/${total}看跌${missingText}${forecast}`
+  const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish - missing))
+  const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
+  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}`
 }
 
 function translateRecommendationReason(reason: unknown): string {
@@ -272,7 +273,6 @@ function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
     regime: alpha.regime,
     sizing: alpha.sizing_multiplier,
     scoreAdjustment: alpha.score_adjustment,
-    boost: rec.alpha_allocation?.score_boost,
     volatility: risk.volatility_level,
     liquidity: risk.liquidity_level,
     skip: risk.skip,
@@ -309,9 +309,8 @@ function ScoreBreakdown({ rec }: { rec: any }) {
   const ml = Number(rec.ml_score ?? 0)
   const base = Math.round((chip + tech + ml) * 10) / 10
   const alphaAdj = Number(rec.alpha_context?.score_adjustment ?? 0)
-  const allocationBoost = Number(rec.alpha_allocation?.score_boost ?? 0)
-  const finalScore = Number(rec.score ?? base + alphaAdj + allocationBoost)
-  const residual = Math.round((finalScore - base - alphaAdj - allocationBoost) * 10) / 10
+  const finalScore = Number(rec.score ?? base + alphaAdj)
+  const residual = Math.round((finalScore - base - alphaAdj) * 10) / 10
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
@@ -320,14 +319,12 @@ function ScoreBreakdown({ rec }: { rec: any }) {
         <span className="font-mono text-foreground">
           {fmtNumber(finalScore, 1)} = {fmtNumber(base, 1)}
           {alphaAdj >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(alphaAdj), 1)}
-          {allocationBoost >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(allocationBoost), 1)}
           {Math.abs(residual) >= 0.1 && `${residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(residual), 1)}`}
         </span>
       </div>
       <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
         <span>基礎分：籌碼 + 技術 + ML = {fmtNumber(base, 1)}</span>
         <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
-        <span>Slate 排序 boost：+{fmtNumber(allocationBoost, 1)}</span>
         {Math.abs(residual) >= 0.1 && (
           <span>其他調整：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
         )}
@@ -335,7 +332,7 @@ function ScoreBreakdown({ rec }: { rec: any }) {
       </div>
       {Math.abs(residual) >= 0.1 && (
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          其他調整是來源總分與目前可拆解欄位的差額，常見於舊 pending buy 未帶完整 alpha/slate metadata；不是額外 ML 預測報酬。
+          其他調整是來源總分與目前可拆解欄位的差額，常見於舊 pending buy 未帶完整 metadata；不是額外 ML 預測報酬。
         </p>
       )}
     </div>
@@ -411,9 +408,10 @@ function normalizeWatchPoint(point: string): string {
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
     const bearish = point.match(/bearish=([^,]+)/)?.[1] ?? '-'
+    const flat = point.match(/flat=([^,]+)/)?.[1] ?? '0'
     const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
     const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
-    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${missing} 未回傳，預期報酬 ${forecast}%。白話：這是 10 組模型的投票覆蓋率與方向，不等於單一模型結論。`
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 中性、${missing} 未回傳，預期報酬 ${forecast}%。白話：中性不是模型沒跑，而是 rank score 落在 0.45~0.55 的觀望區。`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
@@ -421,10 +419,15 @@ function normalizeWatchPoint(point: string): string {
 }
 
 function isContextWatchPoint(point: string): boolean {
-  return point.startsWith('Alpha bucket:')
-    || point.startsWith('Alpha overlay:')
-    || point.startsWith('Market structure:')
-    || point.startsWith('ML ensemble:')
+  const normalized = point.trim()
+  return normalized.startsWith('Alpha bucket:')
+    || normalized.startsWith('Alpha overlay:')
+    || normalized.startsWith('Market structure:')
+    || normalized.startsWith('ML ensemble:')
+    || normalized.startsWith('Alpha bucket：')
+    || normalized.startsWith('Alpha overlay：')
+    || normalized.startsWith('Market structure：')
+    || normalized.startsWith('ML ensemble：')
 }
 
 function executionWatchPointKey(point: string): string {

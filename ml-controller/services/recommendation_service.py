@@ -329,15 +329,15 @@ def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | N
     # to 20-day average volume. The old 20% threshold made many bull-market
     # names look almost perfect even without exceptional flow.
     if chip_intensity > 0.80:
-        chip_score = 36.0
+        chip_score = 32.0
     elif chip_intensity > 0.45:
-        chip_score = 28.0
+        chip_score = 24.0
     elif chip_intensity > 0.20:
-        chip_score = 20.0
+        chip_score = 16.0
     elif chip_intensity > 0.05:
-        chip_score = 12.0
+        chip_score = 8.0
     elif chip_intensity > -0.05:
-        chip_score = 5.0
+        chip_score = 2.0
     else:
         chip_score = 0.0
 
@@ -349,24 +349,24 @@ def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | N
         rsi_value = float(rsi)
         if 55 <= rsi_value <= 68:
             tech_score += 10.0
-        elif 50 <= rsi_value < 55:
-            tech_score += 6.0
-        elif 45 <= rsi_value < 50:
-            tech_score += 3.0
         elif 68 < rsi_value <= 75:
-            tech_score += 7.0
+            tech_score += 6.0
+        elif 45 <= rsi_value < 55:
+            tech_score += 4.0
         elif 75 < rsi_value <= 85:
+            tech_score += 2.0
+        elif 30 <= rsi_value < 45:
             tech_score += 2.0
         else:
             tech_score += 0.0
     if macd_hist and float(macd_hist) > 0:
-        tech_score += 7.0
+        tech_score += 6.0
     if latest_price and len(recent_closes) >= 5 and float(latest_price) > (sum(recent_closes[-5:]) / 5):
-        tech_score += 3.0
+        tech_score += 1.0
     if latest_price and ma20 and float(latest_price) > float(ma20):
-        tech_score += 5.0
-    if latest_price and len(recent_closes) >= 20 and float(latest_price) > (sum(recent_closes[-20:]) / 20):
         tech_score += 3.0
+    if latest_price and len(recent_closes) >= 20 and float(latest_price) > (sum(recent_closes[-20:]) / 20):
+        tech_score += 1.0
 
     return min(40.0, chip_score), min(30.0, tech_score), latest_price
 
@@ -839,6 +839,7 @@ def write_predictions_to_d1(
     Returns count written.
     """
     statements: list[tuple[str, list[Any]]] = []
+    inserted_rows = 0
     use_ev2 = _is_use_ensemble_v2()
     for symbol, data in predictions.items():
         if data.get("error"):
@@ -896,6 +897,11 @@ def write_predictions_to_d1(
             [stock_id, *delete_date_params],
         ))
         statements.append((
+            f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}!='ensemble' "
+            f"AND {delete_date_sql}",
+            [stock_id, *delete_date_params],
+        ))
+        statements.append((
             INSERT_PREDICTIONS_SQL,
             [
                 stock_id,
@@ -911,6 +917,7 @@ def write_predictions_to_d1(
                 raw_signal,
             ],
         ))
+        inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
         # Stages 2+3: active rows model_name='{name}'; challenger rows
@@ -938,11 +945,6 @@ def write_predictions_to_d1(
                 per_model_payload,
                 ensure_ascii=False,
             )
-            statements.append((
-                f"DELETE FROM predictions WHERE {COL_STOCK_ID}=? AND {COL_MODEL_NAME}=? "
-                f"AND {delete_date_sql}",
-                [stock_id, model_name, *delete_date_params],
-            ))
             # Use INSERT with explicit model_name override (INSERT_PREDICTIONS_SQL
             # hardcodes 'ensemble'; build a parallel SQL for per-model name).
             statements.append((
@@ -961,6 +963,7 @@ def write_predictions_to_d1(
                     raw_signal,
                 ],
             ))
+            inserted_rows += 1
         if sanitized_count or skipped_model_rows:
             logger.warning(
                 "[recommendation_service] Sanitized %s non-finite values before D1 write for %s; skipped_model_rows=%s",
@@ -971,13 +974,10 @@ def write_predictions_to_d1(
 
     if not statements:
         return 0
-    result = d1_client.batch_execute(statements)
-    # Each prediction row = 2 statements (delete + insert), so written count is
-    # success_count / 2. With per-model rows, total rows per stock = 1 ensemble
-    # + N per-model = (1 + N) × 2 statements.
-    written = result.get("success_count", result.get("total", 0)) // 2
-    logger.info(f"[recommendation_service] Wrote {written} prediction rows to D1 (incl. per-model)")
-    return written
+    d1_client.batch_execute(statements)
+    # Count inserted rows explicitly because cleanup adds delete-only statements.
+    logger.info(f"[recommendation_service] Wrote {inserted_rows} prediction rows to D1 (incl. per-model)")
+    return inserted_rows
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1166,9 +1166,13 @@ def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) 
 
 
 def re_rank_recommendations(run_date: str) -> None:
-    """Re-rank daily_recommendations by score DESC after filter+promotion."""
+    """Re-rank daily_recommendations after filter+promotion.
+
+    The pipeline writes rows in allocation order. Keep that rank as the primary
+    ordering so slate diversification does not need to inflate predictive score.
+    """
     rows = d1_client.query(
-        "SELECT symbol FROM daily_recommendations WHERE date = ? ORDER BY score DESC",
+        "SELECT symbol FROM daily_recommendations WHERE date = ? ORDER BY rank ASC, score DESC",
         [run_date],
     )
     statements = [

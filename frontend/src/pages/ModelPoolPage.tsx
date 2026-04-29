@@ -59,6 +59,10 @@ function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel
             <div className="font-mono">{fmt(model.ic_4w_avg)}</div>
           </div>
           <div>
+            <div className="text-muted-foreground">Rolling IC</div>
+            <div className="font-mono">{fmt(model.rolling_ic)}</div>
+          </div>
+          <div>
             <div className="text-muted-foreground">Neg weeks</div>
             <div className="font-mono">{fmt(model.consecutive_negative_weeks)}</div>
           </div>
@@ -85,6 +89,10 @@ function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel
               <div>
                 <div className="text-muted-foreground">IC 4w</div>
                 <div className="font-mono">{fmt(model.challenger.ic_4w_avg)}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Rolling IC</div>
+                <div className="font-mono">{fmt(model.challenger.rolling_ic)}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Weekly windows</div>

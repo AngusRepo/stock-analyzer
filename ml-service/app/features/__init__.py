@@ -773,12 +773,12 @@ def build_feature_matrix(
     # ── 12. Stock-level features ─────────────────────────────────────────────
     if stock_meta:
         df = df.with_columns([
-            pl.lit(float(stock_meta.get("sector_encoded", 0))).alias("sector_encoded"),
-            pl.lit(float(stock_meta.get("market_cap_bucket", 2))).alias("market_cap_bucket"),
-            pl.lit(float(stock_meta.get("avg_volume_bucket", 2))).alias("avg_volume_bucket"),
-            pl.lit(float(stock_meta.get("sector_peer_return_1d", 0))).alias("sector_peer_return_1d"),
-            pl.lit(float(stock_meta.get("sector_peer_return_5d", 0))).alias("sector_peer_return_5d"),
-            pl.lit(float(stock_meta.get("stock_vs_sector", 0))).alias("stock_vs_sector"),
+            pl.lit(_meta_float(stock_meta, "sector_encoded", 0.0)).alias("sector_encoded"),
+            pl.lit(_meta_float(stock_meta, "market_cap_bucket", 2.0)).alias("market_cap_bucket"),
+            pl.lit(_meta_float(stock_meta, "avg_volume_bucket", 2.0)).alias("avg_volume_bucket"),
+            pl.lit(_meta_float(stock_meta, "sector_peer_return_1d", 0.0)).alias("sector_peer_return_1d"),
+            pl.lit(_meta_float(stock_meta, "sector_peer_return_5d", 0.0)).alias("sector_peer_return_5d"),
+            pl.lit(_meta_float(stock_meta, "stock_vs_sector", 0.0)).alias("stock_vs_sector"),
         ])
     else:
         df = df.with_columns([
@@ -1021,6 +1021,33 @@ def sanitize_feature_frame(
 
     report["output_rows"] = int(cleaned.height)
     return cleaned, report
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _meta_float(stock_meta: dict, key: str, default: float) -> float:
+    return safe_float(stock_meta.get(key, default), default)
+
+
+def close_or_adjusted(row: dict) -> float:
+    value = row.get("adj_close")
+    if value is None:
+        value = row.get("close")
+    return safe_float(value, 0.0)
+
+
+def close_price(row: dict) -> float:
+    value = row.get("close")
+    if value is None:
+        value = row.get("adj_close")
+    return safe_float(value, 0.0)
 
 
 def get_features(

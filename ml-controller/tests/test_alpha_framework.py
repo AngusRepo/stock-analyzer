@@ -279,7 +279,7 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
         {"2330": 1},
     )
 
-    forecast_data = captured["statements"][1][1][3]
+    forecast_data = captured["statements"][2][1][3]
     assert '"alpha_context"' in forecast_data
     assert '"edge_bucket": "breakout_vol_expansion"' in forecast_data
 
@@ -341,7 +341,8 @@ def test_regime_aware_allocate_diversifies_sideways_top_slate():
     assert top_buckets.count("defensive_accumulation") >= 1
     assert top_buckets.count("trend_following") <= 2
     assert all(row["alpha_allocation"]["selected"] is True for row in top)
-    assert top[0]["score"] > rows[0]["score"]
+    original_scores = {row["symbol"]: row["score"] for row in rows}
+    assert all(row["score"] == original_scores[row["symbol"]] for row in allocated)
 
 
 def test_regime_aware_allocate_keeps_score_order_when_no_alpha_context():
@@ -386,7 +387,7 @@ def test_regime_aware_allocate_uses_policy_weights_and_slate_size():
     assert sum(1 for row in allocated if row.get("alpha_allocation", {}).get("selected")) == 3
 
 
-def test_regime_aware_allocate_uses_policy_score_boost_controls():
+def test_regime_aware_allocate_does_not_mutate_predictive_score():
     rows = [
         _allocation_row("T1", 99.03, "trend_following"),
         _allocation_row("D1", 88.02, "defensive_accumulation"),
@@ -394,8 +395,6 @@ def test_regime_aware_allocate_uses_policy_score_boost_controls():
     policy = normalize_alpha_policy({
         "allocation": {
             "slateSize": 1,
-            "scoreBoostSpacing": 0.25,
-            "scoreBoostMin": 0.0,
             "scoreRoundDecimals": 3,
             "weights": {
                 "bull": {
@@ -411,10 +410,8 @@ def test_regime_aware_allocate_uses_policy_score_boost_controls():
     allocated = regime_aware_allocate(rows, "bull", policy=policy)
 
     assert allocated[0]["symbol"] == "D1"
-    assert allocated[0]["score"] == 99.28
-    assert allocated[0]["alpha_allocation"]["score_boost"] == pytest.approx(11.26)
-    assert allocated[0]["alpha_allocation"]["score_boost_spacing"] == 0.25
-    assert allocated[0]["alpha_allocation"]["score_round_decimals"] == 3
+    assert allocated[0]["score"] == 88.02
+    assert "score_boost" not in allocated[0]["alpha_allocation"]
 
 
 def test_build_alpha_context_uses_policy_overlay_thresholds():

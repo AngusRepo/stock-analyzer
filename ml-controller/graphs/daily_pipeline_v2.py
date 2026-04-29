@@ -622,7 +622,7 @@ def _load_pool_and_ic():
 
     2026-04-19 R1+R3 hybrid:
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
-      - ic_weights: from ic_tracking.json (raw OOS IC per model)
+      - ic_weights: from model_pool.json rolling_ic/ic_4w_avg/latest weekly_ic
       - degraded_dampening: from trading:config.mlPool.degradedDampening
       - ev2_cfg: from trading:config.ensemble_v2 — thresholds + Top-K override
         config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery). Empty
@@ -643,14 +643,29 @@ def _load_pool_and_ic():
             return {}, {}, 1.0, {}, False
         pool = _json.loads(pool_blob.download_as_text())
         model_status: dict[str, str] = {}
+        ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
             model_status[name] = entry.get("status", "active")
-        # IC tracking sidecar — best-effort
-        ic_weights: dict[str, float] = {}
+            ic_value = entry.get("rolling_ic")
+            if ic_value is None:
+                ic_value = entry.get("ic_4w_avg")
+            if ic_value is None:
+                history = entry.get("weekly_ic") or []
+                if history:
+                    ic_value = history[-1]
+            try:
+                if ic_value is not None:
+                    ic_weights[name] = float(ic_value)
+            except (TypeError, ValueError):
+                logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
+
+        # Legacy sidecar fallback only fills models that model_pool cannot yet score.
         ic_blob = bucket.blob("universal/ic_tracking.json")
         if ic_blob.exists():
             ic_data = _json.loads(ic_blob.download_as_text())
             for name, info in (ic_data.get("models") or {}).items():
+                if name in ic_weights:
+                    continue
                 ic_weights[name] = float(info.get("oos_ic", 0.0))
         # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
         degraded_dampening = 1.0

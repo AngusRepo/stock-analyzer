@@ -358,6 +358,42 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
 
     write_predictions_to_d1(predictions, {"2330": 1})
 
-    insert_params = captured["statements"][1][1]
+    insert_params = captured["statements"][2][1]
     forecast_data = insert_params[3]
     assert '"signal_source": "ensemble_v2_topk_policy"' in forecast_data
+
+
+def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    written = write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "HOLD",
+                "confidence": 0.31,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target1": 108.0,
+                "target2": 112.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "HOLD", "signal_source": "ensemble_v2"},
+                "rank_scores": {"XGBoost": 0.6},
+            }
+        },
+        {"2330": 1},
+        run_date="2026-04-29",
+    )
+
+    stale_cleanup_sql, stale_cleanup_params = captured["statements"][1]
+    assert "model_name!='ensemble'" in stale_cleanup_sql
+    assert "date(generated_at, '+8 hours') = ?" in stale_cleanup_sql
+    assert stale_cleanup_params == [1, "2026-04-29"]
+    assert written == 2

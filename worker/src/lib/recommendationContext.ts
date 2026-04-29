@@ -17,6 +17,19 @@ export interface PerModelPredictionRow {
   direction_accuracy?: number | null
 }
 
+const TRACKED_MODEL_NAMES = [
+  'XGBoost',
+  'CatBoost',
+  'ExtraTrees',
+  'LightGBM',
+  'FT-Transformer',
+  'Chronos',
+  'DLinear',
+  'PatchTST',
+  'KalmanFilter',
+  'MarkovSwitching',
+]
+
 export function parsePredictionForecastData(raw: unknown): Record<string, any> | null {
   if (!raw) return null
   if (typeof raw === 'object') return raw as Record<string, any>
@@ -35,9 +48,11 @@ function normalizeForecastPct(raw: unknown): number | null {
   return Math.round(pct * 10) / 10
 }
 
-function rowSignal(row: PerModelPredictionRow): string {
+function rowRankScore(row: PerModelPredictionRow): number | null {
   const parsed = parsePredictionForecastData(row.forecast_data)
-  return String(row.signal_raw ?? parsed?.signal ?? '').toUpperCase()
+  const raw = row.direction_accuracy ?? parsed?.rank_score
+  const score = Number(raw)
+  return Number.isFinite(score) ? score : null
 }
 
 function voteFromSignal(signal: string, score?: number | null): 'bullish' | 'bearish' | 'flat' {
@@ -55,10 +70,13 @@ export function buildMlVoteSummary(
   perModelRows: PerModelPredictionRow[] = [],
 ): MlVoteSummary | null {
   const data = parsePredictionForecastData(forecastData)
-  const cleanRows = perModelRows.filter((row) => {
+  const cleanRowsByModel = new Map<string, PerModelPredictionRow>()
+  for (const row of perModelRows) {
     const name = String(row.model_name ?? '')
-    return name && name !== 'ensemble' && !name.includes('::challenger')
-  })
+    if (!name || name === 'ensemble' || name.includes('::challenger')) continue
+    if (!cleanRowsByModel.has(name)) cleanRowsByModel.set(name, row)
+  }
+  const cleanRows = [...cleanRowsByModel.values()]
   if (!data && cleanRows.length === 0) return null
 
   const models = Array.isArray(data?.models)
@@ -67,7 +85,7 @@ export function buildMlVoteSummary(
   const weights = data?.ensemble_v2?.weights && typeof data.ensemble_v2.weights === 'object'
     ? data.ensemble_v2.weights as Record<string, unknown>
     : {}
-  const total = Math.max(Object.keys(weights).length, models.length, cleanRows.length)
+  const total = Math.max(TRACKED_MODEL_NAMES.length, Object.keys(weights).length, models.length, cleanRows.length)
   if (total <= 0) return null
 
   let bullish = 0
@@ -75,7 +93,9 @@ export function buildMlVoteSummary(
   let flat = 0
   if (cleanRows.length > 0) {
     for (const row of cleanRows) {
-      const vote = voteFromSignal(rowSignal(row), Number(row.direction_accuracy ?? NaN))
+      // Per-model rows inherit the ensemble trade signal for execution audit.
+      // Model voting must use each model's own rank score, not that shared signal.
+      const vote = voteFromSignal('', rowRankScore(row))
       if (vote === 'bullish') bullish += 1
       else if (vote === 'bearish') bearish += 1
       else flat += 1
@@ -110,7 +130,7 @@ export function buildMlVoteSummary(
 export function buildMlVoteWatchPoint(summary: MlVoteSummary | null): string | null {
   if (!summary) return null
   const forecast = summary.forecastPct == null ? 'n/a' : summary.forecastPct.toFixed(1)
-  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, missing=${summary.missing}/${summary.total}, forecast=${forecast}%`
+  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, flat=${summary.flat}/${summary.total}, missing=${summary.missing}/${summary.total}, forecast=${forecast}%`
 }
 
 export function buildMarketStructureWatchPoint(alphaContext: any): string | null {

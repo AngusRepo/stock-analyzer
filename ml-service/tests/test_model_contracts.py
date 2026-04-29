@@ -120,6 +120,14 @@ def test_ft_bundle_rebuild_respects_bundle_contract(model_type, head_type, expec
         assert output.shape == (3, 2)
 
 
+def test_ft_regression_raw_output_maps_to_bounded_rank_without_zero_clipping():
+    from app.ft_transformer import rank_from_ft_regression_output
+
+    assert rank_from_ft_regression_output(-0.2) > 0.0
+    assert rank_from_ft_regression_output(-0.2) < 0.5
+    assert rank_from_ft_regression_output(0.8) == pytest.approx(0.8)
+
+
 def test_run_ft_transformer_uses_regression_bundle_without_legacy_retrain(monkeypatch):
     torch = pytest.importorskip("torch")
 

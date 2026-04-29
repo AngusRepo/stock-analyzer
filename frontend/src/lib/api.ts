@@ -221,6 +221,7 @@ export type ModelPoolLineageModel = {
   metadata_path?: string
   metadata_exists?: boolean
   metadata?: Record<string, unknown> | null
+  rolling_ic?: number | null
   weekly_ic?: number[]
   ic_4w_avg?: number | null
   last_ic_status?: string | null
@@ -235,6 +236,7 @@ export type ModelPoolLineageModel = {
     metadata_exists?: boolean
     metadata?: Record<string, unknown> | null
     shadow_since?: string
+    rolling_ic?: number | null
     weekly_ic?: number[]
     ic_4w_avg?: number | null
     last_ic_status?: string | null

@@ -67,3 +67,67 @@ def test_daily_pipeline_wrapper_no_longer_contains_legacy_plain_mean_body():
     assert "attach_ensemble_v2(pred, model_status, ic_weights, degraded_dampening, ev2_cfg)" in body
     assert "plain mean" not in body
     assert "weight_total > 0" not in body
+
+
+def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypatch):
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    sqlite_mod = types.ModuleType("langgraph.checkpoint.sqlite")
+    sqlite_mod.SqliteSaver = object
+    retry_mod = types.ModuleType("langgraph.pregel.types")
+    retry_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.pregel.types", retry_mod)
+
+    from graphs import daily_pipeline_v2
+
+    pool = {
+        "models": {
+            "XGBoost": {"status": "active", "rolling_ic": 0.037, "ic_4w_avg": 0.031, "weekly_ic": [0.02, 0.031]},
+            "CatBoost": {"status": "degraded", "weekly_ic": [0.012]},
+        }
+    }
+
+    class Blob:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def exists(self):
+            return self.payload is not None
+
+        def download_as_text(self):
+            return self.payload
+
+    class Bucket:
+        def blob(self, path):
+            import json
+
+            if path == "universal/model_pool.json":
+                return Blob(json.dumps(pool))
+            if path == "universal/ic_tracking.json":
+                return Blob('{"models":{"XGBoost":{"oos_ic":0.0},"CatBoost":{"oos_ic":0.0}}}')
+            return Blob(None)
+
+    class Client:
+        def bucket(self, name):
+            return Bucket()
+
+    import google.cloud.storage as storage
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(storage, "Client", lambda: Client())
+    monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+
+    status, ic_weights, degraded, cfg, used_pool = daily_pipeline_v2._load_pool_and_ic()
+
+    assert used_pool is True
+    assert status == {"XGBoost": "active", "CatBoost": "degraded"}
+    assert ic_weights["XGBoost"] == 0.037
+    assert ic_weights["CatBoost"] == 0.012
+    assert degraded == 1.0
+    assert cfg == {}

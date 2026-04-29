@@ -1200,12 +1200,16 @@ def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         X_latest_scaled = scaler.transform(X_latest.reshape(1, -1)).astype(np.float32)
 
         if model_type == "regression":
+            from .ft_transformer import rank_from_ft_regression_output
+
             logits_t = model(torch.tensor(X_test_scaled)) if len(X_test_scaled) > 0 else None
-            pred_latest = float(model(torch.tensor(X_latest_scaled)).reshape(-1)[0].item())
-            pred_latest = float(np.clip(pred_latest, 0.0, 1.0))
+            pred_latest = rank_from_ft_regression_output(model(torch.tensor(X_latest_scaled)).reshape(-1)[0].item())
             up_prob = pred_latest
             if logits_t is not None and len(y_test) > 0:
-                preds_t = np.clip(logits_t.detach().cpu().numpy().reshape(-1), 0.0, 1.0)
+                preds_t = np.array(
+                    [rank_from_ft_regression_output(v) for v in logits_t.detach().cpu().numpy().reshape(-1)],
+                    dtype=float,
+                )
                 dir_acc = float(np.mean((preds_t > 0.5) == y_test))
             else:
                 dir_acc = 0.5

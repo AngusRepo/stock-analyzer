@@ -475,6 +475,7 @@ class ComputeWeeklyICRequest(BaseModel):
     history_max: int = 26               # cap weekly_ic array (~6 months rolling)
     min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
     update_pool: bool = True            # write back to model_pool.json
+    append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
 
 
 @router.post("/compute_weekly_ic")
@@ -537,6 +538,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                     pool,
                     per_model_ic,
                     history_max=req.history_max,
+                    append_history=req.append_history,
                 )
                 if changed:
                     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
@@ -1225,6 +1227,7 @@ async def lineage():
                     "metadata_exists": ch_metadata_exists,
                     "metadata": ch_metadata,
                     "shadow_since": challenger.get("shadow_since"),
+                    "rolling_ic": challenger.get("rolling_ic"),
                     "weekly_ic": challenger.get("weekly_ic") or [],
                     "ic_4w_avg": challenger.get("ic_4w_avg"),
                     "last_ic_status": challenger.get("last_ic_status"),
@@ -1242,6 +1245,7 @@ async def lineage():
                 "metadata_path": metadata_path,
                 "metadata_exists": metadata_exists,
                 "metadata": metadata,
+                "rolling_ic": entry.get("rolling_ic"),
                 "weekly_ic": entry.get("weekly_ic") or [],
                 "ic_4w_avg": entry.get("ic_4w_avg"),
                 "last_ic_status": entry.get("last_ic_status"),

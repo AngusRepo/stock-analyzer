@@ -663,7 +663,9 @@ def predict_single_stock(payload: dict) -> dict:
         req = PredictRequest(**payload)
         return predict_stock_v2(req)
     except Exception as e_v2:
+        import traceback
         print(f"[predict_single_stock] v2 failed for {payload.get('symbol', '?')}: {type(e_v2).__name__}: {e_v2}")
+        print(traceback.format_exc())
         return {
             "stock_id": payload.get("stock_id", 0),
             "symbol": payload.get("symbol", "?"),

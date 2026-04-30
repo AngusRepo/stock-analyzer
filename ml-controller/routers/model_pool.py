@@ -490,7 +490,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     Reads:
       D1 predictions WHERE
-        model_name IN (10 managed model names)
+        model_name IN (8 alpha prediction models + shadow challenger rows)
         AND verified_at IS NOT NULL
         AND generated_at >= datetime('now','-7 days')
 

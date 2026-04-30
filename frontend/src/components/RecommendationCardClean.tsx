@@ -48,6 +48,23 @@ type MlVoteSummary = {
   }
 }
 
+const ALPHA_PREDICTION_MODEL_NAMES = [
+  'XGBoost',
+  'CatBoost',
+  'ExtraTrees',
+  'LightGBM',
+  'FT-Transformer',
+  'Chronos',
+  'DLinear',
+  'PatchTST',
+] as const
+
+const ALPHA_PREDICTION_MODEL_SET = new Set<string>(ALPHA_PREDICTION_MODEL_NAMES)
+
+function isAlphaPredictionModelName(raw: unknown): boolean {
+  return ALPHA_PREDICTION_MODEL_SET.has(String(raw ?? ''))
+}
+
 export const AI_TOP_PICK_EXPLANATION =
   '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。'
 
@@ -210,15 +227,18 @@ function parseForecastData(raw: unknown): any | null {
 }
 
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
-  if (rec.ml_vote_summary) return rec.ml_vote_summary
+  if (rec.ml_vote_summary && Number(rec.ml_vote_summary.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
+    return rec.ml_vote_summary
+  }
   const forecast = parseForecastData(rec.prediction_forecast_data)
   const models = Array.isArray(forecast?.models)
-    ? forecast.models.filter((model: any) => String(model?.name ?? model?.model_name ?? '') !== 'StackingRank')
+    ? forecast.models.filter((model: any) => isAlphaPredictionModelName(model?.name ?? model?.model_name ?? model))
     : []
   const weights = forecast?.ensemble_v2?.weights && typeof forecast.ensemble_v2.weights === 'object'
     ? forecast.ensemble_v2.weights
     : {}
-  const total = Math.max(Object.keys(weights).length, models.length)
+  const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
+  const total = Math.max(ALPHA_PREDICTION_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
   if (!forecast || total <= 0) return null
   const bullish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('up')).length
   const bearish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('down')).length

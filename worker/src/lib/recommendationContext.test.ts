@@ -1,0 +1,39 @@
+import { buildMlVoteSummary } from './recommendationContext'
+
+function assert(condition: unknown, message: string): void {
+  if (!condition) throw new Error(message)
+}
+
+const forecastData = {
+  ensemble_v2: {
+    forecast_pct: 0.012,
+    weights: {
+      XGBoost: 0.2,
+      CatBoost: 0.1,
+      ExtraTrees: 0.1,
+      LightGBM: 0.2,
+      'FT-Transformer': 0.1,
+      Chronos: 0.1,
+      DLinear: 0.1,
+      PatchTST: 0.1,
+      KalmanFilter: 0.5,
+      MarkovSwitching: 0.5,
+      ResidualMLP: 0.5,
+      GNN: 0.5,
+    },
+  },
+}
+
+{
+  const summary = buildMlVoteSummary(forecastData, [
+    { model_name: 'XGBoost', forecast_data: { rank_score: 0.8 } },
+    { model_name: 'CatBoost', forecast_data: { rank_score: 0.7 } },
+    { model_name: 'KalmanFilter', forecast_data: { rank_score: 0.9 } },
+    { model_name: 'MarkovSwitching', forecast_data: { rank_score: 0.1 } },
+    { model_name: 'ResidualMLP::challenger', forecast_data: { rank_score: 0.9 } },
+  ])
+
+  assert(summary?.total === 8, 'ML vote denominator must stay at 8 alpha prediction voters')
+  assert(summary?.reported === 2, 'state-space overlays and challengers must not count as reported alpha votes')
+  assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays and shadow models')
+}

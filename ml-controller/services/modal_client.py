@@ -64,7 +64,22 @@ def _chunk_payloads(payloads: list[dict], chunk_size: int) -> list[list[dict]]:
 
 
 def _modal_predict_batch_v2_enabled() -> bool:
-    return os.environ.get("MODAL_PREDICT_BATCH_V2", "").strip().lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get("MODAL_PREDICT_BATCH_V2")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def batch_predict_contract() -> dict:
+    raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE", "10") or "10"
+    try:
+        chunk_size = max(1, int(raw_chunk_size))
+    except ValueError:
+        chunk_size = 10
+    return {
+        "modal_predict_batch_v2": _modal_predict_batch_v2_enabled(),
+        "chunk_size": chunk_size,
+    }
 
 
 async def _record_modal_observation(
@@ -167,7 +182,7 @@ async def _modal_batch_predict(payloads: list[dict]) -> list[dict]:
 
 async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
     function_name = "predict_batch_v2"
-    chunk_size = int(os.environ.get("MODAL_PREDICT_BATCH_SIZE", "10") or "10")
+    chunk_size = batch_predict_contract()["chunk_size"]
     chunks = _chunk_payloads(payloads, chunk_size)
     t0 = time.time()
     try:

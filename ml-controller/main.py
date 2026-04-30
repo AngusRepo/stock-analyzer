@@ -16,6 +16,7 @@ Auth: X-Controller-Token header (set ML_CONTROLLER_SECRET env var)
 import os
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from services.modal_client import batch_predict_contract
 
 from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
@@ -121,4 +122,5 @@ def health():
         "callbackConfigured": bool(worker_url),
         "pipelineJobConfigured": all([pipeline_job_name, gcp_project_id, gcp_region]),
         "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),
+        "batchPredictContract": batch_predict_contract(),
     }

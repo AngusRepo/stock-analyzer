@@ -29,7 +29,7 @@ export interface MlVoteThresholdPolicy {
   modelVoteRegimeAdjustments?: Record<string, number>
 }
 
-const TRACKED_MODEL_NAMES = [
+export const ALPHA_PREDICTION_MODEL_NAMES = [
   'XGBoost',
   'CatBoost',
   'ExtraTrees',
@@ -38,7 +38,14 @@ const TRACKED_MODEL_NAMES = [
   'Chronos',
   'DLinear',
   'PatchTST',
-]
+] as const
+
+const TRACKED_MODEL_NAMES = [...ALPHA_PREDICTION_MODEL_NAMES]
+const TRACKED_MODEL_NAME_SET = new Set<string>(TRACKED_MODEL_NAMES)
+
+function isTrackedAlphaModelName(raw: unknown): boolean {
+  return TRACKED_MODEL_NAME_SET.has(String(raw ?? ''))
+}
 
 const DEFAULT_VOTE_POLICY: Required<MlVoteThresholdPolicy> = {
   modelVoteBullishThreshold: 0.55,
@@ -142,19 +149,20 @@ export function buildMlVoteSummary(
   const cleanRowsByModel = new Map<string, PerModelPredictionRow>()
   for (const row of perModelRows) {
     const name = String(row.model_name ?? '')
-    if (!name || name === 'ensemble' || name.includes('::challenger')) continue
+    if (!isTrackedAlphaModelName(name)) continue
     if (!cleanRowsByModel.has(name)) cleanRowsByModel.set(name, row)
   }
   const cleanRows = [...cleanRowsByModel.values()]
   if (!data && cleanRows.length === 0) return null
 
   const models = Array.isArray(data?.models)
-    ? data.models.filter((model: any) => String(model?.name ?? model?.model_name ?? model ?? '') !== 'StackingRank')
+    ? data.models.filter((model: any) => isTrackedAlphaModelName(model?.name ?? model?.model_name ?? model))
     : []
   const weights = data?.ensemble_v2?.weights && typeof data.ensemble_v2.weights === 'object'
     ? data.ensemble_v2.weights as Record<string, unknown>
     : {}
-  const total = Math.max(TRACKED_MODEL_NAMES.length, Object.keys(weights).length, models.length, cleanRows.length)
+  const trackedWeightKeys = Object.keys(weights).filter(isTrackedAlphaModelName)
+  const total = Math.max(TRACKED_MODEL_NAMES.length, trackedWeightKeys.length, models.length, cleanRows.length)
   if (total <= 0) return null
 
   let bullish = 0
@@ -183,7 +191,7 @@ export function buildMlVoteSummary(
   }
 
   const forecastPct = normalizeForecastPct(data?.ensemble_v2?.forecast_pct ?? data?.forecast_pct ?? null)
-  const activeWeightCount = Object.values(weights).filter((value) => Number(value ?? 0) > 0).length
+  const activeWeightCount = trackedWeightKeys.filter((name) => Number(weights[name] ?? 0) > 0).length
 
   return {
     bullish,

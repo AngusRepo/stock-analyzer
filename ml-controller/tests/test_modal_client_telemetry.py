@@ -35,3 +35,23 @@ def test_modal_predict_batch_chunks_payloads():
     chunks = modal_client._chunk_payloads(payloads, 10)
 
     assert [len(c) for c in chunks] == [10, 10, 5]
+
+
+def test_modal_predict_batch_v2_is_default_contract(monkeypatch):
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_V2", raising=False)
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE", raising=False)
+
+    contract = modal_client.batch_predict_contract()
+
+    assert contract["modal_predict_batch_v2"] is True
+    assert contract["chunk_size"] == 10
+
+
+def test_modal_predict_batch_v2_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_V2", "0")
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE", "12")
+
+    contract = modal_client.batch_predict_contract()
+
+    assert contract["modal_predict_batch_v2"] is False
+    assert contract["chunk_size"] == 12

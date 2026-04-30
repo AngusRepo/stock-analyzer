@@ -1,16 +1,3 @@
-/**
- * AppShell — Shared layout for Dashboard & BotDashboard
- *
- * Structure:
- *   ┌──────────┬──────────────────────────────┐
- *   │ Sidebar  │  Topbar (market ticker)      │
- *   │ (220px)  ├──────────────────────────────┤
- *   │ nav +    │  children (page content)     │
- *   │ user     │                              │
- *   └──────────┴──────────────────────────────┘
- *
- * Mobile: sidebar collapses to Sheet (hamburger toggle)
- */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'wouter'
@@ -19,22 +6,37 @@ import { useAuth } from '@/_core/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import {
-  LayoutDashboard, Bot, Menu,
-  Bell, Search, LogIn, LogOut, Clock,
-  Boxes, Database, FlaskConical,
+  Activity,
+  Bell,
+  Bot,
+  Boxes,
+  ChevronRight,
+  Clock,
+  Command,
+  Database,
+  FlaskConical,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  Menu,
 } from 'lucide-react'
+import { WorkstationBackdrop } from '@/components/workstation/WorkstationChrome'
 
-// ── Nav items ─────────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
   { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
-  { label: 'Bot Trading', icon: Bot, href: '/bot' },
+  { label: 'Bot', icon: Bot, href: '/bot' },
+  { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
   { label: 'Scheduler', icon: Clock, href: '/scheduler', adminOnly: true },
   { label: 'Model Pool', icon: Boxes, href: '/model-pool', adminOnly: true },
   { label: 'Data Quality', icon: Database, href: '/data-quality', adminOnly: true },
   { label: 'Strategy Lab', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
 ] as const
 
-// ── Market Ticker ─────────────────────────────────────────────────────────────
+function isActivePath(itemHref: string, currentPath: string) {
+  if (itemHref === '/') return currentPath === '/' || currentPath.startsWith('/stock/')
+  return currentPath === itemHref || currentPath.startsWith(`${itemHref}/`)
+}
+
 function MarketTicker() {
   const { data, isLoading } = useQuery({
     queryKey: ['market', 'indices'],
@@ -43,68 +45,84 @@ function MarketTicker() {
     staleTime: 3 * 60 * 1000,
   })
 
-  if (isLoading || (!data?.twii && !data?.twoii)) return null
+  if (isLoading || (!data?.twii && !data?.twoii)) {
+    return (
+      <div className="flex items-center gap-3 font-mono text-[11px] text-slate-500">
+        <span>TWII --</span>
+        <span>OTC --</span>
+      </div>
+    )
+  }
 
   return (
-    <>
+    <div className="flex min-w-0 items-center gap-5 overflow-hidden font-mono text-[11px]">
       {[data?.twii, data?.twoii].filter(Boolean).map((idx: any) => {
         const up = idx.change >= 0
         return (
-          <div key={idx.name} className="flex items-center gap-1.5">
-            <span className="text-muted-foreground text-[11px] font-medium">{idx.name}</span>
-            <span className="font-mono font-semibold text-[12px]">
+          <div key={idx.name} className="flex shrink-0 items-center gap-1.5">
+            <span className="text-[#8a92a6]">{idx.name}</span>
+            <span className="font-semibold text-slate-200">
               {idx.current?.toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
-            <span className={`font-mono text-[11px] ${up ? 'text-red-400' : 'text-emerald-400'}`}>
+            <span className={up ? 'text-rose-300' : 'text-emerald-300'}>
               {up ? '+' : ''}{idx.change?.toFixed(2)} ({up ? '+' : ''}{idx.changePct?.toFixed(2)}%)
             </span>
           </div>
         )
       })}
-    </>
+    </div>
   )
 }
 
-// ── Sidebar Content ──────────────────────────────────────────────────────────
 function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNavigate: (href: string) => void }) {
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Logo */}
-      <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-[var(--sv-bg-3)]">
-        <div className="w-[30px] h-[30px] rounded-lg flex items-center justify-center font-extrabold text-xs text-[#0a0b0f]"
-             style={{ background: 'linear-gradient(135deg, #00d4aa, #3b82f6)' }}>
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2.5 border-b border-[#263247] px-4 py-3.5">
+        <div className="flex h-9 w-9 items-center justify-center border border-amber-300/45 bg-[linear-gradient(135deg,#1e1205,#06251c)] font-mono text-xs font-black text-amber-200 shadow-[0_0_22px_rgba(255,191,95,0.14)]">
           SV
         </div>
-        <span className="font-bold text-[15px] tracking-tight">StockVision</span>
-        <span className="ml-auto text-[9px] text-muted-foreground bg-[var(--sv-bg-3)] px-1.5 py-0.5 rounded">v12</span>
+        <div>
+          <span className="block font-mono text-[12px] font-bold uppercase tracking-[0.18em] text-white">StockVision</span>
+          <span className="block font-mono text-[9px] uppercase tracking-[0.16em] text-slate-500">Trading workstation</span>
+        </div>
+        <span className="ml-auto border border-[#263247] bg-[#070a10] px-1.5 py-0.5 font-mono text-[9px] text-amber-300">v12</span>
       </div>
 
-      {/* Nav Items */}
-      <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-1">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-2.5 py-3">
         {NAV_ITEMS.filter(item => !('adminOnly' in item && item.adminOnly) || isAdmin).map((item) => {
           const Icon = item.icon
-          const active = item.href === currentPath
+          const active = isActivePath(item.href, currentPath)
           return (
             <button
               key={item.label}
               onClick={() => onNavigate(item.href)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-all border ${
+              className={`group grid w-full grid-cols-[24px_1fr_14px] items-center gap-2 border px-3 py-2.5 text-left font-mono text-[12px] transition-all ${
                 active
-                  ? 'bg-[rgba(0,212,170,0.1)] text-[#00d4aa] border-[rgba(0,212,170,0.15)]'
-                  : 'text-[#8b8fa3] border-transparent hover:bg-[var(--sv-bg-3)] hover:text-foreground'
+                  ? 'border-amber-300/45 bg-[linear-gradient(90deg,#1a1207,#06121d)] text-white shadow-[inset_3px_0_0_#ffbf5f]'
+                  : 'border-transparent text-[#78859b] hover:border-[#3a2c18] hover:bg-[#120d06] hover:text-[#fff1cf]'
               }`}
             >
-              <Icon className={`w-4 h-4 ${active ? 'opacity-100' : 'opacity-60'}`} />
-              {item.label}
+              <Icon className={`h-4 w-4 ${active ? 'text-amber-300 opacity-100' : 'opacity-60'}`} />
+              <span>{item.label}</span>
+              <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-amber-300' : 'text-[#445068] group-hover:text-[#fff1cf]'}`} />
             </button>
           )
         })}
       </nav>
 
-      {/* User */}
-      <div className="border-t border-[var(--sv-bg-3)] p-3">
+      <div className="border-y border-[#3a2c18] bg-[#0b0907] p-3 font-mono text-[10px] uppercase tracking-[0.13em] text-[#8a92a6]">
+        <div className="mb-2 flex items-center gap-2 text-amber-300">
+          <Command className="h-3.5 w-3.5" />
+          Desk Mode
+        </div>
+        <p>API logic unchanged</p>
+        <p>Workstation skin active</p>
+      </div>
+
+      <div className="border-t border-[#263247] p-3">
         <UserSection />
       </div>
     </div>
@@ -117,29 +135,27 @@ function UserSection() {
   if (!isAuthenticated) {
     return (
       <Button variant="outline" size="sm" className="w-full gap-2 text-xs" onClick={login}>
-        <LogIn className="w-3.5 h-3.5" /> Google 登入
+        <LogIn className="h-3.5 w-3.5" /> Google 登入
       </Button>
     )
   }
 
   return (
     <div className="flex items-center gap-2.5">
-      <div className="w-[30px] h-[30px] rounded-full flex items-center justify-center font-bold text-[11px]"
-           style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}>
+      <div className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#ffbf5f,#4cc9ff)] text-[11px] font-bold text-slate-950">
         {user?.name?.[0] ?? 'U'}
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-[12px] font-semibold truncate">{user?.name}</p>
-        <p className="text-[10px] text-muted-foreground truncate">{user?.role ?? 'user'}</p>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[12px] font-semibold">{user?.name}</p>
+        <p className="truncate text-[10px] text-slate-500">{user?.role ?? 'user'}</p>
       </div>
       <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={logout}>
-        <LogOut className="w-3.5 h-3.5" />
+        <LogOut className="h-3.5 w-3.5" />
       </Button>
     </div>
   )
 }
 
-// ── Main AppShell ────────────────────────────────────────────────────────────
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -160,63 +176,48 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--sv-bg-0)' }}>
+    <div className="relative flex h-screen overflow-hidden bg-[#020409] text-slate-100">
+      <WorkstationBackdrop />
 
-      {/* ── Desktop Sidebar ── */}
       <aside
-        className="hidden lg:flex flex-col shrink-0 relative z-10"
-        style={{ width: 220, background: 'var(--sv-bg-1)', borderRight: '1px solid rgba(255,255,255,0.05)' }}
+        className="relative z-10 hidden shrink-0 flex-col lg:flex"
+        style={{ width: 230, background: 'rgba(5,7,12,0.96)', borderRight: '1px solid #263247' }}
       >
         <SidebarNav currentPath={location} onNavigate={handleNavigate} />
       </aside>
 
-      {/* ── Mobile Sheet ── */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-[220px] p-0" style={{ background: 'var(--sv-bg-1)' }}>
+        <SheetContent side="left" className="w-[230px] border-[#263247] p-0" style={{ background: '#05070c' }}>
           <SidebarNav currentPath={location} onNavigate={handleNavigate} />
         </SheetContent>
       </Sheet>
 
-      {/* ── Main Area ── */}
-      <div className="flex-1 flex flex-col overflow-hidden relative z-10">
-
-        {/* Topbar */}
-        <div
-          className="flex items-center gap-4 px-5 shrink-0"
-          style={{ height: 42, background: 'var(--sv-bg-1)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}
-        >
-          {/* Mobile hamburger */}
-          <Button size="icon" variant="ghost" className="lg:hidden h-8 w-8 -ml-1" onClick={() => setSidebarOpen(true)}>
-            <Menu className="w-4 h-4" />
+      <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
+        <div className="grid min-h-[44px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#263247] bg-[linear-gradient(90deg,#05070c,#08090f_55%,#120d06)] px-3">
+          <Button size="icon" variant="ghost" className="h-8 w-8 lg:hidden" onClick={() => setSidebarOpen(true)}>
+            <Menu className="h-4 w-4" />
           </Button>
 
-          {/* Market ticker */}
-          <div className="hidden sm:flex items-center gap-5">
-            <MarketTicker />
-          </div>
+          <MarketTicker />
 
-          {/* Right side */}
-          <div className="ml-auto flex items-center gap-2.5">
-            {/* Search */}
-            <div className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11.5px] text-muted-foreground cursor-pointer hover:border-[var(--sv-bg-4)]"
-                 style={{ background: 'var(--sv-bg-2)', border: '1px solid rgba(255,255,255,0.08)', minWidth: 180 }}>
-              <Search className="w-3.5 h-3.5" />
-              搜尋股票
-              <kbd className="ml-auto text-[9px] font-mono px-1 rounded border border-[rgba(255,255,255,0.1)]" style={{ background: 'var(--sv-bg-4)' }}>⌘K</kbd>
+          <div className="ml-auto flex min-w-0 items-center gap-2.5">
+            <div className="hidden min-w-[260px] items-center gap-2 border border-[#3a2c18] bg-[#030509] px-3 py-1.5 font-mono text-[11px] text-[#8a92a6] md:flex">
+              <Command className="h-3.5 w-3.5 text-sky-300" />
+              <span className="text-amber-300">/</span>
+              <span className="truncate">type symbol, command, or root-cause question</span>
+              <kbd className="ml-auto border border-[#263247] bg-[#070a10] px-1 font-mono text-[9px] text-slate-400">GO</kbd>
             </div>
 
-            {/* Notifications */}
             {isAuthenticated && unreadCount > 0 && (
-              <div className="relative w-[30px] h-[30px] flex items-center justify-center rounded-lg hover:bg-[var(--sv-bg-3)] cursor-pointer">
-                <Bell className="w-[15px] h-[15px] text-[#8b8fa3]" />
-                <span className="absolute top-1 right-1 w-[5px] h-[5px] bg-red-500 rounded-full" />
+              <div className="relative flex h-[30px] w-[30px] cursor-pointer items-center justify-center border border-[#263247] bg-[#070a10] hover:border-amber-300/40">
+                <Bell className="h-[15px] w-[15px] text-[#8b8fa3]" />
+                <span className="absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-red-500" />
               </div>
             )}
           </div>
         </div>
 
-        {/* Content */}
-        <main className="flex-1 overflow-y-auto" style={{ background: 'var(--sv-bg-0)' }}>
+        <main className="relative z-10 flex-1 overflow-y-auto bg-transparent">
           {children}
         </main>
       </div>

@@ -312,6 +312,27 @@ CREATE TABLE IF NOT EXISTS system_logs (
 CREATE INDEX IF NOT EXISTS idx_system_logs ON system_logs(created_at DESC);
 
 
+-- OBS 統一事件 audit surface（P8 observability contract）
+CREATE TABLE IF NOT EXISTS observability_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id    TEXT NOT NULL,
+  date        TEXT NOT NULL,
+  severity    TEXT NOT NULL CHECK(severity IN ('ok','info','warn','error')),
+  domain      TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  owner       TEXT NOT NULL,
+  impact      TEXT,
+  next_action TEXT,
+  evidence    TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_observability_events_date ON observability_events(date, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_observability_events_domain ON observability_events(domain, created_at DESC);
+
+
 -- 聊天對話持久化
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +396,10 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
   chip_score    REAL DEFAULT 0,          -- 籌碼分數 (0-40)
   tech_score    REAL DEFAULT 0,          -- 技術分數 (0-30)
   ml_score      REAL DEFAULT 0,          -- ML 分數 (0-30)
+  market_segment TEXT,
+  recommendation_lane TEXT DEFAULT 'tradable',
+  eligible_for_ml INTEGER DEFAULT 1,
+  eligible_for_pending_buy INTEGER DEFAULT 1,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(date, stock_id)
 );

@@ -45,7 +45,7 @@ adminControlRoutes.post('/api/admin/cron-callback', async (c) => {
       error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
     }, 400)
   }
-  const { isCronStatus, logCronResult } = await import('../lib/cronLogger')
+  const { isCronStatus, logCronResult } = await import('../lib/schedulerRunLogger')
   if (!isCronStatus(body.status)) {
     return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
   }

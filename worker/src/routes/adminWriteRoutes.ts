@@ -43,6 +43,28 @@ adminWriteRoutes.post('/api/admin/costs/manual', async (c) => {
   return c.json({ ok: true, recorded_usd: body.est_usd })
 })
 
+adminWriteRoutes.post('/api/admin/observability/snapshot', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => ({}))
+  const { buildLiveObservabilityEventReport, persistObservabilitySnapshot } = await import('../lib/observabilityEvents')
+  const report = await buildLiveObservabilityEventReport(c.env, {
+    date: body?.date ?? c.req.query('date'),
+    live: body?.live === true || c.req.query('live') === '1',
+  })
+  const audit = await persistObservabilitySnapshot(c.env, report)
+  return c.json({
+    success: true,
+    version: report.version,
+    date: report.date,
+    generated_at: report.generated_at,
+    overall: report.overall,
+    counts: report.counts,
+    audit,
+  })
+})
+
 adminWriteRoutes.post('/api/admin/research/experiments', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

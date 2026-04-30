@@ -1,6 +1,6 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
-import { classifyCronSummary, logCronResult } from './cronLogger'
+import { classifyCronSummary, logCronResult } from './schedulerRunLogger'
 import { runMorningWarmup } from './localMaintenance'
 import { handleWorkerDomainCron } from './cronWorkerDomainTasks'
 import { handleGcpDomainCron } from './cronGcpDomainTasks'

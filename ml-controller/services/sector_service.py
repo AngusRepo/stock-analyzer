@@ -83,6 +83,35 @@ async def fetch_twse_t86(client: httpx.AsyncClient, date: str) -> list[dict]:
     return results
 
 
+async def fetch_twse_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
+    """TWSE T86 in the normalized Worker bulk-chip contract."""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={twse_date(date)}&selectType=ALL&response=json"
+    resp = await client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("stat") != "OK" or not body.get("data"):
+        return []
+
+    results = []
+    for row in body["data"]:
+        sid = row[0].strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        results.append({
+            "symbol": sid,
+            "foreign_buy": parse_tw_number(row[2]),
+            "foreign_sell": parse_tw_number(row[3]),
+            "foreign_net": parse_tw_number(row[4]),
+            "trust_buy": parse_tw_number(row[8]),
+            "trust_sell": parse_tw_number(row[9]),
+            "trust_net": parse_tw_number(row[10]),
+            "dealer_net": parse_tw_number(row[11]),
+            "dealer_buy": parse_tw_number(row[12]),
+            "dealer_sell": parse_tw_number(row[13]),
+        })
+    return results
+
+
 async def fetch_tpex_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
     """TPEX 三大法人買賣超（完整欄位）。"""
     url = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
@@ -110,6 +139,33 @@ async def fetch_tpex_chips(client: httpx.AsyncClient, date: str) -> list[dict]:
             "dealer_buy":   parse_tw_number(row[12]) if len(row) > 12 else 0,
             "dealer_sell":  parse_tw_number(row[13]) if len(row) > 13 else 0,
             "dealer_net":   parse_tw_number(row[11]),
+        })
+    return results
+
+
+async def fetch_twse_margin(client: httpx.AsyncClient, date: str) -> list[dict]:
+    """TWSE MI_MARGN in the normalized Worker bulk-margin contract."""
+    url = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={twse_date(date)}&selectType=ALL&response=json"
+    resp = await client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    body = resp.json()
+    tables = body.get("tables") or []
+    if body.get("stat") != "OK" or len(tables) < 2 or not tables[1].get("data"):
+        return []
+
+    results = []
+    for row in tables[1].get("data", []):
+        sid = row[0].strip()
+        if not re.match(r"^\d{4,6}$", sid):
+            continue
+        results.append({
+            "symbol": sid,
+            "margin_buy": parse_tw_number(row[2]),
+            "margin_sell": parse_tw_number(row[3]),
+            "margin_balance": parse_tw_number(row[6]),
+            "short_buy": parse_tw_number(row[8]),
+            "short_sell": parse_tw_number(row[9]),
+            "short_balance": parse_tw_number(row[12]),
         })
     return results
 

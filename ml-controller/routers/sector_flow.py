@@ -15,7 +15,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from services.sector_service import (
-    fetch_twse_t86, fetch_tpex_chips, fetch_tpex_margin,
+    fetch_twse_t86, fetch_twse_chips, fetch_twse_margin, fetch_tpex_chips, fetch_tpex_margin,
     fetch_twse_prices, fetch_tpex_prices,
     fetch_sector_mapping, aggregate_sector_flow,
     twse_date, roc_date, parse_tw_number,
@@ -281,6 +281,22 @@ async def backfill_rrg(req: RrgBackfillRequest):
 
 
 # ─── TPEX Proxy: Worker 無法直接呼叫 TPEX（被擋），透過 Controller 代理 ────────
+
+@router.post("/twse-chips")
+async def proxy_twse_chips(req: TpexProxyRequest):
+    """TWSE chips + margin proxy for Worker bulk data update."""
+    target_date = req.date or _today_tw()
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": _USER_AGENT},
+        follow_redirects=True,
+    ) as client:
+        chips = await fetch_twse_chips(client, target_date)
+        margin = await fetch_twse_margin(client, target_date)
+
+    logger.info(f"TWSE proxy: {len(chips)} chips + {len(margin)} margins for {target_date}")
+    return {"date": target_date, "chips": chips, "margins": margin}
+
 
 @router.post("/tpex-chips")
 async def proxy_tpex_chips(req: TpexProxyRequest):

@@ -12,6 +12,7 @@ import {
 } from './pendingBuyStore'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { capEntryToLatestClose } from './entryPricePolicy'
+import { classifyBoard } from './boardTradability'
 import {
   buildMarketStructureWatchPoint,
   buildMlVoteSummary,
@@ -51,6 +52,9 @@ interface BuyRecommendationRow {
   ml_target1: number | null
   ml_target2: number | null
   latest_close: number | null
+  latest_open: number | null
+  latest_avg_price: number | null
+  market: string | null
   forecast_data?: string | null
   watch_points?: unknown
 }
@@ -307,6 +311,25 @@ async function loadPunishedSet(kv: KVNamespace): Promise<Set<string>> {
   }
 }
 
+async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<Set<string>> {
+  const restricted = await loadPunishedSet(kv)
+  try {
+    const { results } = await db.prepare(`
+      SELECT symbol
+        FROM stock_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+    `).bind(tradeDate, tradeDate).all<{ symbol: string | null }>()
+    for (const row of results ?? []) {
+      if (row.symbol) restricted.add(String(row.symbol))
+    }
+  } catch {
+    // Optional governance table may not exist in older D1 snapshots; KV still blocks known punished stocks.
+  }
+  return restricted
+}
+
 async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<string, QuadrantInfo>> {
   const symbolQuadrantMap = new Map<string, QuadrantInfo>()
   if (!symbols.length) return symbolQuadrantMap
@@ -536,9 +559,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
+    const pendingBuyLimit = Math.max(1, Math.floor(cfg.ranking?.topK ?? 3))
+    const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
              dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
+             s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
              p.target1 AS ml_target1,
@@ -551,6 +577,22 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
                 ORDER BY sp.date DESC
                 LIMIT 1
              ) AS latest_close,
+             (
+               SELECT sp.open
+                 FROM stock_prices sp
+                WHERE sp.stock_id = s.id
+                  AND sp.date <= dr.date
+                ORDER BY sp.date DESC
+                LIMIT 1
+             ) AS latest_open,
+             (
+               SELECT sp.avg_price
+                 FROM stock_prices sp
+                WHERE sp.stock_id = s.id
+                  AND sp.date <= dr.date
+                ORDER BY sp.date DESC
+                LIMIT 1
+             ) AS latest_avg_price,
              p.forecast_data AS forecast_data
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
@@ -566,7 +608,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
        WHERE dr.date = ?
          AND dr.has_buy_signal = 1
          AND dr.confidence >= ?
-         AND COALESCE(s.market, '') != 'EMERGING'
+         AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
          AND (
            SELECT sp_exec.open
              FROM stock_prices sp_exec
@@ -576,8 +618,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             LIMIT 1
          ) IS NOT NULL
         ORDER BY dr.score DESC, dr.confidence DESC
-        LIMIT 3
-    `).bind(pendingDate, prevDay, cb.buyConfThreshold).all<BuyRecommendationRow>()
+        LIMIT ?
+    `).bind(pendingDate, prevDay, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -632,7 +674,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
     }
 
-    const punishedSet = await loadPunishedSet(env.KV)
+    const restrictedSet = await loadRestrictedSet(env.DB, env.KV, pendingDate)
     const { cooldownSet, stopDayFrozen } = await collectCooldownSet(env.KV, pendingDate, buyRecs)
     if (stopDayFrozen) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -649,7 +691,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
 
     for (const rec of buyRecs) {
-      if (punishedSet.has(rec.symbol)) continue
+      const board = classifyBoard({
+        market: rec.market,
+        open: rec.latest_open,
+        avg_price: rec.latest_avg_price,
+        symbol: rec.symbol,
+        restricted: restrictedSet.has(rec.symbol),
+      })
+      if (!board.eligibleForPendingBuy) {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: board.boardType,
+          quadrant: board.tradabilityTier,
+          action: `BOARD_${board.reason}`,
+        })
+        continue
+      }
       if (cooldownSet.has(rec.symbol)) continue
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
       const forecastData = parsePredictionForecastData(rec.forecast_data)
@@ -797,6 +855,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         source: 'morning_setup',
         original_entry: originalEntry,
       })
+      if (pendingBuys.length >= pendingBuyLimit) break
     }
 
     await persistPendingBuys(env, pendingDate, pendingBuys, {

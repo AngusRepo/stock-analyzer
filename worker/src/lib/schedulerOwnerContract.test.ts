@@ -33,8 +33,14 @@ for (const required of ['update', 'ml-warmup', 'intraday-rescore', 'weekly-backt
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
+for (const critical of ['update', 'pipeline']) {
+  const job = manifest.jobs.find((j: any) => j.id === critical)
+  assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
+}
+
 const syncScript = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(syncScript.includes('SCHEDULER_AUTH_TOKEN'), 'scheduler sync must load auth token from env, not source')
 assert(syncScript.includes('STOCKVISION_WORKER_BASE_URL'), 'scheduler sync must load worker base URL from env')
 assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler sync must update existing jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
+assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')

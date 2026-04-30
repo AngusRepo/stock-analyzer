@@ -27,6 +27,7 @@ import {
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
+import { classifyBoard } from '../lib/boardTradability'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -994,7 +995,23 @@ recommendations.get('/daily', async (c) => {
   }
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data
+    SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
+           (
+             SELECT sp.open
+               FROM stock_prices sp
+              WHERE sp.stock_id = r.stock_id
+                AND sp.date <= r.date
+              ORDER BY sp.date DESC
+              LIMIT 1
+           ) AS latest_open,
+           (
+             SELECT sp.avg_price
+               FROM stock_prices sp
+              WHERE sp.stock_id = r.stock_id
+                AND sp.date <= r.date
+              ORDER BY sp.date DESC
+              LIMIT 1
+           ) AS latest_avg_price
     FROM daily_recommendations r
     LEFT JOIN stocks s ON s.id = r.stock_id
     LEFT JOIN predictions p ON p.id = (
@@ -1008,7 +1025,7 @@ recommendations.get('/daily', async (c) => {
     )
     WHERE r.date = ?
     ORDER BY r.rank ASC
-    LIMIT 20
+    LIMIT 80
   `).bind(date).all<any>()
 
   const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
@@ -1037,21 +1054,52 @@ recommendations.get('/daily', async (c) => {
   const recs = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
+    const board = classifyBoard({
+      market: r.market,
+      open: r.latest_open,
+      avg_price: r.latest_avg_price,
+      symbol: r.symbol,
+    })
+    const persistedLane = String(r.recommendation_lane || '').trim()
+    const recommendationLane = persistedLane || board.recommendationLane
+    const eligibleForMl = r.eligible_for_ml == null ? board.eligibleForMl : Number(r.eligible_for_ml) === 1
+    const eligibleForPendingBuy = r.eligible_for_pending_buy == null
+      ? board.eligibleForPendingBuy
+      : Number(r.eligible_for_pending_buy) === 1
     return {
       ...r,
+      market_segment: r.market_segment || board.boardType,
+      board_type: board.boardType,
+      tradability_tier: board.tradabilityTier,
+      recommendation_lane: recommendationLane,
+      eligible_for_ml: eligibleForMl,
+      eligible_for_pending_buy: eligibleForPendingBuy,
+      board_reason: board.reason,
       alpha_context: forecastData?.alpha_context ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? null,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal),
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })
+  const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
+  const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
+  const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')
 
   return c.json({
     requested_date: requestedOrToday,
     date,
     is_stale: date !== requestedOrToday,
     resolved_from: resolvedFrom,
-    recommendations: recs,
+    recommendations: tradableRecs,
+    tradable_recommendations: tradableRecs,
+    emerging_recommendations: emergingRecs,
+    research_only_recommendations: researchOnlyRecs,
+    all_recommendations: recs,
+    lanes: {
+      tradable: { count: tradableRecs.length },
+      emerging_watchlist: { count: emergingRecs.length },
+      research_only: { count: researchOnlyRecs.length },
+    },
     generated_at: recs[0]?.created_at ?? null,
   })
 })

@@ -1,12 +1,12 @@
 /**
- * cronLogger.ts - Cron result persistence and alerting
+ * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
 
-export type CronStatus = 'success' | 'error' | 'skipped' | 'triggered' | 'running'
+export type SchedulerRunStatus = 'success' | 'error' | 'skipped' | 'triggered' | 'running'
 
-export interface CronLogEntry {
+export interface SchedulerRunLogEntry {
   task: string
-  status: CronStatus
+  status: SchedulerRunStatus
   summary: string
   details?: string[]
   duration_ms: number
@@ -51,7 +51,7 @@ export function getTaskDisplayName(task: string): string {
   return TASK_NAMES[task] ?? task
 }
 
-export function isCronStatus(status: unknown): status is CronStatus {
+export function isSchedulerRunStatus(status: unknown): status is SchedulerRunStatus {
   return (
     status === 'success' ||
     status === 'error' ||
@@ -61,7 +61,7 @@ export function isCronStatus(status: unknown): status is CronStatus {
   )
 }
 
-export function classifyCronSummary(summary: string): CronStatus {
+export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus {
   const normalized = summary.trim().toLowerCase()
   if (
     normalized.startsWith('running') ||
@@ -92,14 +92,14 @@ export function classifyCronSummary(summary: string): CronStatus {
   return 'success'
 }
 
-export async function logCronResult(
+export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
-  result: Omit<CronLogEntry, 'task' | 'timestamp'>,
+  result: Omit<SchedulerRunLogEntry, 'task' | 'timestamp'>,
   env?: { DISCORD_WEBHOOK_URL?: string },
 ): Promise<void> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const entry: CronLogEntry = {
+  const entry: SchedulerRunLogEntry = {
     task,
     ...result,
     timestamp: new Date().toISOString(),
@@ -107,8 +107,10 @@ export async function logCronResult(
 
   try {
     await kv.put(`cron:log:${task}:${today}`, JSON.stringify(entry), { expirationTtl: 7 * 86400 })
-  } catch {
-    // Cron logging should never break the task itself.
+  } catch (error) {
+    // Cron logging should never break the task itself, but silent failure
+    // makes Scheduler incidents impossible to diagnose.
+    console.warn(`[schedulerRunLogger] KV write failed for task=${task}:`, error)
   }
 
   if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {
@@ -120,7 +122,7 @@ export async function logCronResult(
       if (!already || critical.has(task)) {
         const displayName = getTaskDisplayName(task)
         const message = [
-          `Cron Fail: ${displayName} (\`${task}\`)`,
+          `Scheduler Fail: ${displayName} (\`${task}\`)`,
           `Date: ${today}`,
           `Duration: ${(result.duration_ms / 1000).toFixed(1)}s`,
           `Summary: ${(result.summary || '').slice(0, 500)}`,
@@ -142,12 +144,12 @@ export async function logCronResult(
   }
 }
 
-export async function getCronLogs(kv: KVNamespace, date: string): Promise<CronLogEntry[]> {
+export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promise<SchedulerRunLogEntry[]> {
   const tasks = Object.keys(TASK_NAMES)
-  const results: CronLogEntry[] = []
+  const results: SchedulerRunLogEntry[] = []
 
   const entries = await Promise.all(
-    tasks.map(async (task) => await kv.get(`cron:log:${task}:${date}`, 'json') as CronLogEntry | null),
+    tasks.map(async (task) => await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null),
   )
 
   for (const entry of entries) {
@@ -168,3 +170,10 @@ export async function getCronLogs(kv: KVNamespace, date: string): Promise<CronLo
 
   return results.sort((a, b) => tasks.indexOf(a.task) - tasks.indexOf(b.task))
 }
+
+export type CronStatus = SchedulerRunStatus
+export type CronLogEntry = SchedulerRunLogEntry
+export const isCronStatus = isSchedulerRunStatus
+export const classifyCronSummary = classifySchedulerRunSummary
+export const logCronResult = logSchedulerRunResult
+export const getCronLogs = getSchedulerRunLogs

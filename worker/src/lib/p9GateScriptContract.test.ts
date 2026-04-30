@@ -15,3 +15,7 @@ assert(script.includes('/api/admin/gate/predeploy'), 'P9 gate live smoke should 
 assert(script.includes('Authorization'), 'P9 gate live smoke should send service-token authorization')
 assert(script.includes('[P9 gate] ml-controller contract tests'), 'P9 gate should run ml-controller contract tests')
 assert(script.includes('test_verify_pipeline_graph.py'), 'P9 gate should protect verify dry-run contract')
+assert(script.includes('test_market_segment_policy.py'), 'P9 gate should protect P6 market segment governance contract')
+assert(script.includes('test_model_ic_tracker.py'), 'P9 gate should protect segment-aware model IC contract')
+assert(script.includes('test_sector_flow_proxy.py'), 'P9 gate should protect TWSE/TPEX controller proxy contracts')
+assert(script.includes('screenerPolicy.test.ts'), 'P9 gate should protect adaptive screener policy contract')

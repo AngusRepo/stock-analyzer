@@ -15,6 +15,8 @@ import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeed
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
+import { getAdaptiveParams } from './adaptiveConfig'
+import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -535,11 +537,14 @@ async function deduplicateByCorrelation(
 export async function runBottomUpScreener(env: Bindings): Promise<{
   hotSectors: SectorHeatScore[]
   candidates: ScreenerCandidate[]
+  emergingResearchCandidates?: ScreenerCandidate[]
   debugLog?: string[]
 }> {
   const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
+  const adaptiveParams = await getAdaptiveParams(env.KV)
+  const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const endDate = today()
 
   // ── 資料抓取（平行）──
@@ -549,6 +554,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   type BuzzResult = Awaited<ReturnType<typeof detectPttBuzz>>
   let allPrices: FMStockPrice[]
+  let emergingResearchPrices: FMStockPrice[]
   let allChips: FMChip[]
   let tpexSymbolSet = new Set<string>()
   let combinedBuzz: BuzzResult = []
@@ -563,6 +569,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
     ])
     allPrices = marketData.allPrices
+    emergingResearchPrices = marketData.emergingResearchPrices
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols
 
@@ -597,7 +604,10 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const zSumMap = new Map([...buzzMap.entries()].map(([k, v]) => [k, v.zSum]))
     combinedBuzz.sort((a, b) => (zSumMap.get(b.concept) ?? 0) - (zSumMap.get(a.concept) ?? 0))
 
-    debugLog.push(`[Data] prices=${allPrices.length} chips=${allChips.length} buzz=${combinedBuzz.length}`)
+    debugLog.push(
+      `[Data] prices=${allPrices.length} emerging_research=${emergingResearchPrices.length} ` +
+      `chips=${allChips.length} buzz=${combinedBuzz.length} lanes=${JSON.stringify(marketData.laneCounts)}`,
+    )
   } catch (e) {
     console.error('[Screener v2] Data fetch failed:', e)
     return { hotSectors: [], candidates: [] }
@@ -726,6 +736,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     })
   }
 
+  applyScreenerScoreCalibration(scored, screenerPolicy.scoreCalibration)
+  debugLog.push(
+    `[Step 2b] score calibration ${screenerPolicy.scoreCalibration.enabled ? screenerPolicy.scoreCalibration.method : 'disabled'} ` +
+    `pool=${screenerPolicy.sizing.candidatePoolSize} shortlist=${screenerPolicy.sizing.mlShortlistSize} ` +
+    `emerging=${screenerPolicy.sizing.emergingResearchSize}`,
+  )
+
   // Step 2 debug: top 30 scored
   debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
   const scoredSorted = [...scored].sort((a, b) => b.score - a.score)
@@ -810,7 +827,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // 4a. 新聞情緒（D1 查詢）
   try {
     // 批次查所有候選的近 7 天新聞情緒
-    const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, 100).map(c => c.symbol)
+    const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
     if (topSymbols.length > 0) {
       // 查 stocks 表拿 stock_id
       const ph = topSymbols.map(() => '?').join(',')
@@ -870,7 +887,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── Step 4b: 基本面加分（F-Score + 毛利率事件）──
   try {
-    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
+    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
     if (topSymbols4b.length > 0) {
       const ph = topSymbols4b.map(() => '?').join(',')
 
@@ -964,16 +981,16 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── Step 4c: 趨勢品質 + ADX + 流動性分級（D1 60 天歷史）──
   try {
-    const top80 = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
-    if (top80.length > 0) {
-      const ph = top80.map(() => '?').join(',')
+    const policyPoolSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
+    if (policyPoolSymbols.length > 0) {
+      const ph = policyPoolSymbols.map(() => '?').join(',')
       // 查 60 天 OHLCV（ADX 需要 high/low）
       const { results: histRows } = await env.DB.prepare(`
         SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
         FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
         WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
         ORDER BY s.symbol, sp.date
-      `).bind(...top80).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
+      `).bind(...policyPoolSymbols).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
 
       // 按 symbol 分組
       const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
@@ -1118,18 +1135,18 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const corrThreshold = (sc as any).correlationThreshold ?? 0.8
   const corrWindow = (sc as any).correlationWindow ?? 60
   try {
-    // 只對 top 50 做去重（節省計算）
-    const top50 = afterIndustryLimit.slice(0, 50)
+    // Only deduplicate the active policy pool to keep the Worker bounded.
+    const top50 = afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize)
     afterIndustryLimit = [
       ...(await deduplicateByCorrelation(top50, env.DB, corrThreshold, corrWindow)) as ScoredCandidate[],
-      ...afterIndustryLimit.slice(50),
+      ...afterIndustryLimit.slice(screenerPolicy.sizing.candidatePoolSize),
     ]
   } catch (e) {
     console.warn('[Screener v2] Correlation dedup failed:', e)
   }
 
   // 5d: top N 截斷
-  const maxCandidates = (sc as any).maxCandidates ?? 25
+  const maxCandidates = screenerPolicy.sizing.mlShortlistSize
   const finalCandidates: ScreenerCandidate[] = annotateCandidatesWithStrategySpecs(
     afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[],
   )
@@ -1150,6 +1167,44 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 被截斷的
   const truncated = afterIndustryLimit.slice(maxCandidates)
+  const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
+  const emergingResearchCandidates: ScreenerCandidate[] = []
+  const emergingData = buildStockData(emergingResearchPrices, allChips)
+  try {
+    const emergingScored: ScoredCandidate[] = []
+    for (const [stockId, prices] of emergingData.prices) {
+      if (prices.length < 3) continue
+      if (punishedSet.has(stockId)) continue
+      const latest = prices[prices.length - 1]
+      if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
+      if (latest.Trading_Volume === 0) continue
+      const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
+        prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
+      )
+      const info = sectorMap[stockId]
+      const industry = industryMap.get(stockId) ?? '其他'
+      emergingScored.push({
+        symbol: stockId,
+        name: info?.name ?? stockId,
+        sector: industry,
+        score: base_score,
+        reason: reasons.slice(0, 3).join(' | ') || 'emerging research watchlist',
+        chip_score,
+        tech_score,
+        momentum_score,
+        industry,
+      })
+    }
+    emergingResearchCandidates.push(
+      ...annotateCandidatesWithStrategySpecs(
+        emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
+      ),
+    )
+    debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
+  } catch (e) {
+    console.warn('[Screener v2] Emerging research lane failed:', e)
+    debugLog.push(`[Step 5e] emerging research lane skipped (error): ${e}`)
+  }
   if (truncated.length) {
     debugLog.push(`[Step 5d] 被 top ${maxCandidates} 截斷（前 10）:`)
     for (const c of truncated.slice(0, 10)) {
@@ -1286,19 +1341,62 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         seed.row.chipScore, seed.row.techScore,
         seed.row.currentPrice,
         seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
+        'tradable',
+        1,
+        1,
       )
     })
+    const emergingRecBatch = emergingResearchCandidates.map((c, i) => {
+      const sc = c as any
+      const latestPrices = emergingData.prices.get(c.symbol)
+      const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
+      const seed = buildScreenerSeedRow({
+        candidate: c as any,
+        rank: 100 + i + 1,
+        currentPrice,
+        tags: [
+          'research_only:emerging_not_for_auto_trade',
+          'board_lane:emerging_watchlist',
+          ...(sc.strategy_tags ?? []),
+        ],
+      })
+      const watchPoints = [
+        ...seed.watchPoints,
+        'research_only:emerging_not_for_auto_trade',
+        'board_lane:emerging_watchlist',
+        ...(sc.strategy_watch_points ?? []),
+      ]
+      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+        endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
+        seed.rank, seed.row.seedScore,
+        seed.row.chipScore, seed.row.techScore,
+        seed.row.currentPrice,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        'EMERGING',
+        'emerging_watchlist',
+        1,
+        0,
+      )
+    })
+    recBatch.push(...emergingRecBatch)
     const BATCH = 50
     for (let b = 0; b < recBatch.length; b += BATCH) {
       await env.DB.batch(recBatch.slice(b, b + BATCH))
     }
 
     // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
-    await env.DB.prepare(
-      "UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
-    ).bind(endDate).run()
+    if (finalCandidates.length > 0) {
+      const ph = finalCandidates.map(() => '?').join(',')
+      await env.DB.prepare(
+        `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
+      ).bind(...finalCandidates.map(c => c.symbol)).run()
+    }
 
-    debugLog.push(`[DB] daily_recommendations seed/upsert ${finalCandidates.length} rows; ML owner fields preserved`)
+    debugLog.push(
+      `[DB] daily_recommendations seed/upsert tradable=${finalCandidates.length} ` +
+      `emerging_research=${emergingResearchCandidates.length}; ML owner fields preserved`,
+    )
 
     // #15 同步寫 screener_selection_history 供下次 run 計算 freq flag
     try {
@@ -1400,7 +1498,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     debugLog.push(`  ${c.symbol} ${(c as any).name ?? ''} ${(c as any).industry ?? c.sector} score=${c.score.toFixed(1)}`)
   }
 
-  return { hotSectors: sectorHeatScores, candidates: finalCandidates, debugLog }
+  return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

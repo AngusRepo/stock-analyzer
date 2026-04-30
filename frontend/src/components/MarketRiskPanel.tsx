@@ -54,7 +54,7 @@ export default function MarketRiskPanel() {
         setRisk(riskData)
         setHistory(histData)
       } catch (e: any) {
-        setError(e.message ?? '無法載入大盤風險資料')
+        setError(e.message ?? 'load_failed')
       } finally {
         setLoading(false)
       }
@@ -72,10 +72,19 @@ export default function MarketRiskPanel() {
   )
 
   if (error) return (
-    <div className="rounded-xl border border-border bg-card p-6 text-center text-muted-foreground text-sm">
-      <p className="text-2xl mb-2">📊</p>
-      <p>{error}</p>
-      <p className="text-xs mt-1">排程將於每日 15:30 自動計算</p>
+    <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.35)]" />
+        <div>
+          <p className="font-semibold text-amber-200">市場風險暫時無法載入</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            風控 API 回應異常，首頁先以保守狀態顯示；不會影響 AI 推薦或交易邏輯。
+          </p>
+          <p className="mt-2 font-mono text-[10px] text-muted-foreground/70">
+            source=market/risk · status=degraded
+          </p>
+        </div>
+      </div>
     </div>
   )
 

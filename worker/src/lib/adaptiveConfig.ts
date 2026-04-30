@@ -47,6 +47,12 @@ export interface AdaptiveParams {
   // ── Ensemble PF 品質權重（per-model）─ 這個本來就是 multiplier 不是 absolute，留 ──
   pf_quality_mult: Record<string, number>
 
+  screener?: {
+    candidate_pool_delta?: number
+    ml_shortlist_delta?: number
+    emerging_research_delta?: number
+  }
+
   // ── LinUCB 保護 ─ 這個是 absolute mult，留在 adaptive_params 因為跟 daily 表現相關 ──
   bandit_max_mult: number                // 1.5~2.5
   bandit_force_explore: boolean
@@ -71,6 +77,7 @@ export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
   position_pct_delta: 0,
   sltp_add: null,
   pf_quality_mult: {},
+  screener: {},
   bandit_max_mult: 2.5,
   bandit_force_explore: false,
   computed_at: '',

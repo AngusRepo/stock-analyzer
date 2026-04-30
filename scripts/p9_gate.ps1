@@ -25,11 +25,14 @@ if (Test-Path $TestOut) {
 }
 npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false --skipLibCheck --rootDir src --outDir .tmp-test-run --noEmit false `
   src/cf-types.d.ts `
+  src/lib/adminTriggerObservabilityContract.test.ts `
   src/lib/adminCronCallbackRoutes.test.ts `
   src/lib/adminGateRoutes.test.ts `
+  src/lib/boardTradability.test.ts `
   src/lib/dataQualityMonitor.test.ts `
   src/lib/deployGate.test.ts `
   src/lib/gaOptimizerPush.test.ts `
+  src/lib/marketDataReadiness.test.ts `
   src/lib/p6DataQualityUiContract.test.ts `
   src/lib/p9DeploymentContract.test.ts `
   src/lib/p9GateScriptContract.test.ts `
@@ -42,21 +45,29 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/repoOwnerContract.test.ts `
   src/lib/schedulerOwnerContract.test.ts `
   src/lib/screenerOwnerContract.test.ts `
+  src/lib/screenerMarketDataLanes.test.ts `
+  src/lib/screenerPolicy.test.ts `
   src/lib/screenerSeedQuality.test.ts `
   src/lib/screenerTradability.test.ts `
   src/lib/strategySpec.test.ts `
   src/lib/technicalIndicators.test.ts
 if ($LASTEXITCODE -ne 0) { throw "worker contract test compile failed" }
+node .tmp-test-run/lib/adminTriggerObservabilityContract.test.js
+if ($LASTEXITCODE -ne 0) { throw "adminTriggerObservabilityContract.test failed" }
 node .tmp-test-run/lib/adminCronCallbackRoutes.test.js
 if ($LASTEXITCODE -ne 0) { throw "adminCronCallbackRoutes.test failed" }
 node .tmp-test-run/lib/adminGateRoutes.test.js
 if ($LASTEXITCODE -ne 0) { throw "adminGateRoutes.test failed" }
+node .tmp-test-run/lib/boardTradability.test.js
+if ($LASTEXITCODE -ne 0) { throw "boardTradability.test failed" }
 node .tmp-test-run/lib/dataQualityMonitor.test.js
 if ($LASTEXITCODE -ne 0) { throw "dataQualityMonitor.test failed" }
 node .tmp-test-run/lib/deployGate.test.js
 if ($LASTEXITCODE -ne 0) { throw "deployGate.test failed" }
 node .tmp-test-run/lib/gaOptimizerPush.test.js
 if ($LASTEXITCODE -ne 0) { throw "gaOptimizerPush.test failed" }
+node .tmp-test-run/lib/marketDataReadiness.test.js
+if ($LASTEXITCODE -ne 0) { throw "marketDataReadiness.test failed" }
 node .tmp-test-run/lib/p6DataQualityUiContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p6DataQualityUiContract.test failed" }
 node .tmp-test-run/lib/p9DeploymentContract.test.js
@@ -81,6 +92,10 @@ node .tmp-test-run/lib/schedulerOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "schedulerOwnerContract.test failed" }
 node .tmp-test-run/lib/screenerOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerOwnerContract.test failed" }
+node .tmp-test-run/lib/screenerMarketDataLanes.test.js
+if ($LASTEXITCODE -ne 0) { throw "screenerMarketDataLanes.test failed" }
+node .tmp-test-run/lib/screenerPolicy.test.js
+if ($LASTEXITCODE -ne 0) { throw "screenerPolicy.test failed" }
 node .tmp-test-run/lib/screenerSeedQuality.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerSeedQuality.test failed" }
 node .tmp-test-run/lib/screenerTradability.test.js
@@ -100,8 +115,8 @@ if (-not (Test-Path $ControllerPython)) {
   throw "ml-controller venv python not found: $ControllerPython"
 }
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py -q
-if ($LASTEXITCODE -ne 0) { throw "ml-controller verify pipeline contract tests failed" }
+& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_sector_flow_proxy.py -q
+if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 
 if (-not $SkipFrontendBuild) {

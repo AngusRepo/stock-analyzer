@@ -3,6 +3,7 @@ import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
+import { assertMarketDataReady } from './marketDataReadiness'
 
 const UPDATE_BATCH_SIZE = 6
 
@@ -10,12 +11,13 @@ type ProcessUpdateBatchDeps = {
   runMLAndRiskV2: (env: Bindings) => Promise<string>
 }
 
-export async function runBulkFetch(env: Bindings, force = false) {
+export async function runBulkFetch(env: Bindings, force = false): Promise<string> {
   const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
-    return
+    const ready = await assertMarketDataReady(env.DB, twDate)
+    return `bulk fetch skipped; ${ready.summary}`
   }
 
   try {
@@ -25,17 +27,14 @@ export async function runBulkFetch(env: Bindings, force = false) {
       bulkFetchAndStorePrices(env.DB, twDate),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    if (priceCount === 0) {
-      console.warn(`[Cron] priceCount=0 for ${twDate}; skip lock so next trigger can retry`)
-    } else {
-      await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
-    }
+    const ready = await assertMarketDataReady(env.DB, twDate)
+    await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+    await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
+    return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
+    throw e
   }
-
-  const triggerTime = twDate
-  await fetchWave2Data(env, triggerTime).catch((e) => console.warn('[Wave2] failed:', e))
 }
 
 export async function runQueueUpdate(env: Bindings) {
@@ -56,9 +55,10 @@ export async function runQueueUpdate(env: Bindings) {
   }
 }
 
-export async function runDailyUpdate(env: Bindings, force = false) {
-  await runBulkFetch(env, force)
+export async function runDailyUpdate(env: Bindings, force = false): Promise<string> {
+  const bulkSummary = await runBulkFetch(env, force)
   await runQueueUpdate(env)
+  return bulkSummary
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {

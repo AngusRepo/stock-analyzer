@@ -244,6 +244,62 @@ export const deployGateApi = {
   },
 }
 
+export type ObservabilitySeverity = 'ok' | 'info' | 'warn' | 'error'
+export type ObservabilityDomain = 'scheduler' | 'data_quality' | 'deploy_gate' | 'model_pool' | 'owner_boundary'
+
+export type ObservabilityEvent = {
+  id: string
+  ts: string
+  severity: ObservabilitySeverity
+  domain: ObservabilityDomain
+  source: string
+  status: string
+  title: string
+  summary: string
+  owner: string
+  impact: string
+  next_action: string
+  runbook?: string
+  evidence: Record<string, unknown>
+}
+
+export type ObservabilityEventReport = {
+  success: true
+  version: 'obs-event-contract-v1'
+  generated_at: string
+  date: string
+  overall: ObservabilitySeverity
+  counts: Record<ObservabilitySeverity, number>
+  events: ObservabilityEvent[]
+  domains: Array<{
+    domain: ObservabilityDomain
+    owner: string
+    severity: ObservabilitySeverity
+    event_count: number
+  }>
+  owner_boundaries: Array<{
+    owner: string
+    responsibility: string
+    source_of_truth: string
+  }>
+  audit?: {
+    recent: Array<ObservabilityEvent & {
+      event_id?: string
+      created_at?: string
+    }>
+  }
+}
+
+export const observabilityApi = {
+  events: (opts?: { date?: string; live?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts?.date) params.set('date', opts.date)
+    if (opts?.live) params.set('live', '1')
+    const query = params.toString()
+    return get<ObservabilityEventReport>(`/admin/observability/events${query ? `?${query}` : ''}`)
+  },
+}
+
 export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
 export type StrategySpec = {
   id: string

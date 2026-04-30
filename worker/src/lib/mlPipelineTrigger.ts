@@ -1,5 +1,6 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
+import { assertMarketDataReady } from './marketDataReadiness'
 
 function resolvePipelineRunDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -12,6 +13,8 @@ function resolvePipelineRunDate(runDate?: string | null): string {
 
 export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Promise<string> {
   const twDate = resolvePipelineRunDate(runDate)
+  await assertMarketDataReady(env.DB, twDate)
+
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) {

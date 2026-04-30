@@ -135,9 +135,10 @@ export function buildScreenerSeedUpsertSql(): string {
     INSERT INTO daily_recommendations
       (date, stock_id, symbol, name, sector, rank, score,
        chip_score, tech_score, ml_score, current_price,
-       reason, watch_points, has_buy_signal, industry)
+       reason, watch_points, has_buy_signal, industry,
+       market_segment, recommendation_lane, eligible_for_ml, eligible_for_pending_buy)
     VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?, ?, ?,
-            ?, ?, 0, ?, ?, ?, 0, ?)
+            ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     ON CONFLICT(date, stock_id) DO UPDATE SET
       symbol = excluded.symbol,
       name = excluded.name,
@@ -170,6 +171,10 @@ export function buildScreenerSeedUpsertSql(): string {
         WHEN daily_recommendations.signal IS NULL
          AND daily_recommendations.confidence IS NULL
          AND COALESCE(daily_recommendations.ml_score, 0) = 0
-        THEN excluded.has_buy_signal ELSE daily_recommendations.has_buy_signal END
+        THEN excluded.has_buy_signal ELSE daily_recommendations.has_buy_signal END,
+      market_segment = excluded.market_segment,
+      recommendation_lane = excluded.recommendation_lane,
+      eligible_for_ml = excluded.eligible_for_ml,
+      eligible_for_pending_buy = excluded.eligible_for_pending_buy
   `
 }

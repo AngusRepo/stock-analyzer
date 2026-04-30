@@ -42,6 +42,8 @@ interface CountRow {
   source_reco_date?: string | null
   candidate_count?: number
   active_count?: number
+  emerging_recommendations?: number
+  pending_buy_emerging_like?: number
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -485,6 +487,26 @@ export function buildSurfaceRoleConsistencyCheck(input: {
   }
 }
 
+export function buildBoardLaneContractCheck(input: {
+  emergingRecommendations: number
+  pendingBuyEmergingLike: number
+}): DataQualityCheck {
+  const emergingRecommendations = Number(input.emergingRecommendations ?? 0)
+  const pendingBuyEmergingLike = Number(input.pendingBuyEmergingLike ?? 0)
+  return {
+    id: 'board_lane_contract',
+    label: 'Board lane contract',
+    status: pendingBuyEmergingLike > 0 ? 'fail' : 'ok',
+    summary: pendingBuyEmergingLike > 0
+      ? `${pendingBuyEmergingLike} emerging-style pending buys detected`
+      : `emerging watchlist=${emergingRecommendations}; pending buys contain no emerging-style rows`,
+    metrics: {
+      emerging_recommendations: emergingRecommendations,
+      pending_buy_emerging_like: pendingBuyEmergingLike,
+    },
+  }
+}
+
 function buildSchemaCheck(columns: string[]): DataQualityCheck {
   const required = ['date', 'stock_id', 'symbol', 'rank', 'score', 'signal', 'confidence', 'chip_score', 'tech_score', 'ml_score']
   const missing = required.filter((column) => !columns.includes(column))
@@ -511,7 +533,7 @@ async function latestTableStats(db: D1Database, table: string, dateColumn = 'dat
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
   const targetDate = options.date ?? twToday()
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, pendingBuyStats, predictionGroups, featureVersionStats, healthStats, schemaRows] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, healthStats, schemaRows] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -568,6 +590,68 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        LIMIT 1`,
       targetDate,
     ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT
+          (
+            SELECT COUNT(*)
+              FROM daily_recommendations dr
+              LEFT JOIN stocks s ON s.id = dr.stock_id
+             WHERE dr.date = ?
+               AND (
+                 COALESCE(UPPER(s.market), '') IN ('EMERGING', 'ESB')
+                 OR (
+                   (
+                     SELECT sp.open
+                       FROM stock_prices sp
+                      WHERE sp.stock_id = dr.stock_id
+                        AND sp.date <= dr.date
+                      ORDER BY sp.date DESC
+                      LIMIT 1
+                   ) IS NULL
+                   AND (
+                     SELECT sp.avg_price
+                       FROM stock_prices sp
+                      WHERE sp.stock_id = dr.stock_id
+                        AND sp.date <= dr.date
+                      ORDER BY sp.date DESC
+                      LIMIT 1
+                   ) IS NOT NULL
+                 )
+               )
+          ) AS emerging_recommendations,
+          (
+            SELECT COUNT(*)
+              FROM pending_buy_runs r
+              JOIN pending_buy_items i ON i.run_id = r.id
+              LEFT JOIN stocks s ON s.symbol = i.symbol
+             WHERE r.trade_date = ?
+               AND COALESCE(r.status, '') <> 'superseded'
+               AND (
+                 COALESCE(UPPER(s.market), '') IN ('EMERGING', 'ESB')
+                 OR (
+                   (
+                     SELECT sp.open
+                       FROM stock_prices sp
+                      WHERE sp.stock_id = s.id
+                        AND sp.date <= COALESCE(r.source_reco_date, r.trade_date)
+                      ORDER BY sp.date DESC
+                      LIMIT 1
+                   ) IS NULL
+                   AND (
+                     SELECT sp.avg_price
+                       FROM stock_prices sp
+                      WHERE sp.stock_id = s.id
+                        AND sp.date <= COALESCE(r.source_reco_date, r.trade_date)
+                      ORDER BY sp.date DESC
+                      LIMIT 1
+                   ) IS NOT NULL
+                 )
+               )
+          ) AS pending_buy_emerging_like`,
+      targetDate,
+      targetDate,
+    ).catch((): CountRow => ({})),
     env.DB.prepare(
       `SELECT model_name, COUNT(*) AS count, COUNT(DISTINCT stock_id) AS stocks
        FROM predictions WHERE date(generated_at) = ?
@@ -593,9 +677,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       latestDate: priceStats.latest_date,
       targetDate,
       rowsOnLatest: priceStats.rows_on_latest,
-      warnLagDays: 1,
-      failLagDays: 3,
-      minRows: 10,
+      warnLagDays: 0,
+      failLagDays: 0,
+      minRows: 1000,
     }),
     buildFreshnessCheck({
       id: 'chip_freshness',
@@ -603,9 +687,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       latestDate: chipStats.latest_date,
       targetDate,
       rowsOnLatest: chipStats.rows_on_latest,
-      warnLagDays: 2,
-      failLagDays: 5,
-      minRows: 10,
+      warnLagDays: 0,
+      failLagDays: 0,
+      minRows: 1000,
     }),
     buildFreshnessCheck({
       id: 'technical_indicator_freshness',
@@ -665,6 +749,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     buildSurfaceRoleConsistencyCheck({
       recommendationRole: 'recommendation_candidate',
       pendingBuyRole: 'execution_pool',
+    }),
+    buildBoardLaneContractCheck({
+      emergingRecommendations: Number(boardLaneStats.emerging_recommendations ?? 0),
+      pendingBuyEmergingLike: Number(boardLaneStats.pending_buy_emerging_like ?? 0),
     }),
     buildFreshnessCheck({
       id: 'model_health_freshness',

@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { classifyBoard } from './boardTradability'
 
 // Types originally from finmind.ts. FinMind fetcher is retired; screener keeps
 // this normalized shape internally for scoring parity.
@@ -23,16 +24,75 @@ export interface FMChip {
   sell: number
 }
 
+export interface ScreenerPriceRow {
+  symbol: string
+  market: string | null
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  volume: number | null
+  avg_price: number | null
+}
+
 export function isAutoTradablePriceRow(row: {
   market: string | null
   open: number | null
   avg_price: number | null
 }): boolean {
-  if (row.market === 'EMERGING') return false
-  // Emerging-board quotes have no open price and carry avg_price as the trading
-  // reference. They can be analyzed, but should not enter auto-execution pools.
-  if (row.open == null && row.avg_price != null) return false
-  return true
+  return classifyBoard(row).eligibleForPendingBuy
+}
+
+function toFmPrice(row: ScreenerPriceRow, researchOnly = false): FMStockPrice | null {
+  if (!row.close || row.close <= 0) return null
+  const synthetic = row.close
+  return {
+    date: row.date,
+    stock_id: row.symbol,
+    Trading_Volume: row.volume ?? 0,
+    Trading_money: Math.round((row.avg_price ?? row.close) * (row.volume ?? 0)),
+    open: researchOnly ? synthetic : (row.open ?? synthetic),
+    max: researchOnly ? synthetic : (row.high ?? synthetic),
+    min: researchOnly ? synthetic : (row.low ?? synthetic),
+    close: row.close,
+    spread: 0,
+    Trading_turnover: 0,
+  }
+}
+
+export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
+  allPrices: FMStockPrice[]
+  emergingResearchPrices: FMStockPrice[]
+  tpexSymbols: Set<string>
+  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
+} {
+  const allPrices: FMStockPrice[] = []
+  const emergingResearchPrices: FMStockPrice[] = []
+  const tpexSymbols = new Set<string>()
+  const laneCounts = { tradable: 0, emerging_watchlist: 0, research_only: 0 }
+
+  for (const row of rows) {
+    const board = classifyBoard(row)
+    if (board.recommendationLane === 'tradable') {
+      const price = toFmPrice(row)
+      if (!price) continue
+      allPrices.push(price)
+      laneCounts.tradable += 1
+      if (board.boardType === 'OTC') tpexSymbols.add(row.symbol)
+      continue
+    }
+    if (board.recommendationLane === 'emerging_watchlist') {
+      const price = toFmPrice(row, true)
+      if (!price) continue
+      emergingResearchPrices.push(price)
+      laneCounts.emerging_watchlist += 1
+      continue
+    }
+    laneCounts.research_only += 1
+  }
+
+  return { allPrices, emergingResearchPrices, tpexSymbols, laneCounts }
 }
 
 export async function loadMarketDataFromD1(
@@ -41,8 +101,10 @@ export async function loadMarketDataFromD1(
   chipDays: number = 5,
 ): Promise<{
   allPrices: FMStockPrice[]
+  emergingResearchPrices: FMStockPrice[]
   allChips: FMChip[]
   tpexSymbols: Set<string>
+  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
 }> {
   const lookbackDays = Math.ceil(priceDays * 1.5) + 7
   const chipLookback = Math.ceil(chipDays * 1.5) + 5
@@ -55,7 +117,13 @@ export async function loadMarketDataFromD1(
   const tradingDates = (dateRows ?? []).map((r) => r.date).sort()
   if (!tradingDates.length) {
     console.warn('[Screener D1] No trading dates in D1 stock_prices')
-    return { allPrices: [], allChips: [], tpexSymbols: new Set() }
+    return {
+      allPrices: [],
+      emergingResearchPrices: [],
+      allChips: [],
+      tpexSymbols: new Set(),
+      laneCounts: { tradable: 0, emerging_watchlist: 0, research_only: 0 },
+    }
   }
   const minDate = tradingDates[0]
   const maxDate = tradingDates[tradingDates.length - 1]
@@ -69,29 +137,9 @@ export async function loadMarketDataFromD1(
      WHERE sp.date >= ? AND sp.date <= ?
      ORDER BY s.symbol, sp.date`,
   ).bind(minDate, maxDate)
-   .all<{ symbol: string; market: string | null; date: string;
-           open: number | null; high: number; low: number; close: number;
-           volume: number; avg_price: number | null }>()
+   .all<ScreenerPriceRow>()
 
-  const allPrices: FMStockPrice[] = []
-  const tpexSymbols = new Set<string>()
-  for (const row of (priceRows ?? [])) {
-    if (!row.close || row.close <= 0) continue
-    if (!isAutoTradablePriceRow(row)) continue
-    if (row.market === 'OTC') tpexSymbols.add(row.symbol)
-    allPrices.push({
-      date: row.date,
-      stock_id: row.symbol,
-      Trading_Volume: row.volume ?? 0,
-      Trading_money: Math.round((row.avg_price ?? row.close) * (row.volume ?? 0)),
-      open: row.open,
-      max: row.high,
-      min: row.low,
-      close: row.close,
-      spread: 0,
-      Trading_turnover: 0,
-    })
-  }
+  const { allPrices, emergingResearchPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [])
 
   const { results: chipDateRows } = await env.DB.prepare(
     `SELECT DISTINCT date FROM chip_data
@@ -136,5 +184,5 @@ export async function loadMarketDataFromD1(
     }
   }
 
-  return { allPrices, allChips, tpexSymbols }
+  return { allPrices, emergingResearchPrices, allChips, tpexSymbols, laneCounts }
 }

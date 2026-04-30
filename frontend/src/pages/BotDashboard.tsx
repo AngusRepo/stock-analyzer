@@ -24,6 +24,7 @@ import AppShell from '@/components/AppShell'
 import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
+import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -420,9 +421,11 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     queryFn: () => recommendationsApi.daily(),
     staleTime: 5 * 60_000,
   })
-  const recs = recData?.recommendations ?? recData?.data ?? []
+  const tradableRecs = recData?.tradable_recommendations ?? recData?.recommendations ?? recData?.data ?? []
+  const emergingRecs = recData?.emerging_recommendations ?? []
+  const recs = tradableRecs
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
+  if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
       <div className="space-y-2">
         <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與 Dashboard 同源）</div>
@@ -444,6 +447,31 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
           </button>
         </div>
       ))}
+      {emergingRecs.length > 0 && (
+        <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <div>
+              <p className="text-[11px] font-semibold text-amber-300">興櫃觀察名單</p>
+              <p className="text-[10px] text-muted-foreground/70">研究用，不進 morning setup / pending buys。</p>
+            </div>
+            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+              {emergingRecs.length} 檔
+            </Badge>
+          </div>
+          {emergingRecs.slice(0, 8).map((r: any, idx: number) => (
+            <div key={`emerging-${r.symbol}`} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-amber-500/40 rounded-xl' : ''}`}>
+              <RecommendationCard rec={r} rank={idx + 1} />
+              <button
+                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                title="查看 K 線"
+              >
+                <Activity className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1276,13 +1304,35 @@ export default function BotDashboard() {
   if (!isAuthenticated) {
     return (
       <AppShell>
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center space-y-4">
-            <Bot className="w-12 h-12 mx-auto text-emerald-400/60" />
-            <p className="text-muted-foreground">請先登入以查看 Bot Dashboard</p>
-            <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
-              Google 登入
-            </button>
+        <div className="flex min-h-full items-center justify-center p-4 lg:p-5">
+          <div className="w-full max-w-4xl space-y-3">
+            <WorkstationPageTitle
+              kicker="Execution workstation"
+              title="Bot Trading Desk"
+              description="登入後查看 pending buys、debate、fills、slippage、T1/T2/Stop 與資產計算；未登入時只顯示工作台預覽，不讀交易資料。"
+              action={<WorkstationPill tone="warn">Login Required</WorkstationPill>}
+            />
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <WorkstationCatCard
+                src="/stockvision-cats/02_red_market_royal_cat.png"
+                title="紅盤也要端著"
+                caption="登入後再看真實資產與持倉；紅歸紅，交割與滑價不能亂算。"
+                tone="warn"
+              />
+              <WorkstationCatCard
+                src="/stockvision-cats/03_ai_signal_skewer_stall.png"
+                title="AI 串燒別亂買"
+                caption="推薦只是候選，真正進場前還要過 debate、T2 與 quote sanity。"
+                tone="info"
+              />
+            </div>
+            <div className="border border-[#263247] bg-[#070a10]/90 p-6 text-center">
+              <Bot className="mx-auto h-12 w-12 text-emerald-400/70" />
+              <p className="mt-3 text-sm text-muted-foreground">請先登入以查看 Bot Dashboard</p>
+              <button onClick={login} className="mt-4 border border-emerald-500/30 bg-emerald-600/80 px-4 py-2 text-sm hover:bg-emerald-500">
+                Google 登入
+              </button>
+            </div>
           </div>
         </div>
       </AppShell>
@@ -1292,53 +1342,71 @@ export default function BotDashboard() {
   return (
     <AppShell>
       <div className="p-4 lg:p-5 space-y-3 text-sm">
+        <WorkstationPageTitle
+          kicker="Execution workstation"
+          title="Bot Trading Desk"
+          description="Pending buys、debate、fills、slippage、T1/T2/Stop 與資產計算集中在同一張交易桌；資料來源與交易邏輯維持原 API。"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <WorkstationPill tone="warn">Paper Trading</WorkstationPill>
+              <WorkstationPill tone={isTWMarketOpen() ? 'ok' : 'neutral'}>{isTWMarketOpen() ? 'Market Open' : 'Market Closed'}</WorkstationPill>
+            </div>
+          }
+        />
 
-        {/* ═══ Row 1: Portfolio Summary (full-width sticky) ═══ */}
-        <Card className="border-border bg-card sticky top-0 z-20">
-          <CardContent className="pt-3 pb-2 px-4">
+        <WorkstationPanel title="Portfolio Strip" kicker="cash, settlement, pnl" className="sticky top-0 z-20">
+          <div className="px-4 pb-2 pt-3">
             <PortfolioSummary />
-          </CardContent>
-        </Card>
+          </div>
+        </WorkstationPanel>
 
-        {/* ═══ Row 2: Equity Curve | Positions ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Equity Curve</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-1 pb-2 px-3">
-              <PerformanceChart />
-            </CardContent>
-          </Card>
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Positions</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0"><PositionsTable /></CardContent>
-          </Card>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <WorkstationCatCard
+            src="/stockvision-cats/02_red_market_royal_cat.png"
+            title="紅盤也要端著"
+            caption="帳面變漂亮時先查交割、滑價與未實現損益，不讓紙上富貴偷灌資產。"
+            tone="warn"
+          />
+          <WorkstationCatCard
+            src="/stockvision-cats/03_ai_signal_skewer_stall.png"
+            title="AI 串燒別亂買"
+            caption="推薦只是候選，進場前仍要過 debate、T2、quote sanity 與 execution guard。"
+            tone="info"
+          />
         </div>
 
-        {/* ═══ Row 3: AI Top Picks | Trade History ═══ */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
+          <WorkstationPanel title="Equity Curve" kicker="paper trading performance">
+            <div className="px-3 pb-2 pt-1">
+              <PerformanceChart />
+            </div>
+          </WorkstationPanel>
+          <WorkstationPanel title="Positions" kicker="open risk and holdings">
+            <PositionsTable />
+          </WorkstationPanel>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <WorkstationPanel
+            title="AI Top Picks"
+            kicker="post-debate execution candidates"
+            action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
+          >
+            <div className="border-b border-[#263247] px-4 pb-2 pt-3">
+              <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
                 <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
-              </CardTitle>
+              </div>
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
                 {AI_TOP_PICK_EXPLANATION}
               </p>
-            </CardHeader>
-            <CardContent className="p-2">
+            </div>
+            <div className="p-2">
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
-            </CardContent>
-          </Card>
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Trade History</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0"><TradeHistory /></CardContent>
-          </Card>
+            </div>
+          </WorkstationPanel>
+          <WorkstationPanel title="Trade History" kicker="orders and fills audit">
+            <TradeHistory />
+          </WorkstationPanel>
         </div>
 
         {/* K-Line Dialog (popup on stock click) */}
@@ -1351,31 +1419,28 @@ export default function BotDashboard() {
           </DialogContent>
         </Dialog>
 
-        {/* ═══ Row 4: Trade Journal + RRG ═══ */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           <TradeJournalAnalytics />
           <BotThemeFlowPanel />
         </div>
 
-        {/* ═══ Row 5: Backtest | Adaptive Params | Position Sizer ═══ */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           <BacktestCard />
           <AdaptiveParamsCard />
           <PositionSizer />
         </div>
 
-        {/* ═══ Row 6: Bot Status (collapsible) ═══ */}
         <details className="group">
-          <summary className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border bg-card cursor-pointer hover:border-primary/20 transition-colors text-xs font-medium text-muted-foreground select-none">
+          <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
             <Bot className="w-3.5 h-3.5" />
             <span className="font-mono uppercase tracking-wider">Bot Status & Cron Logs</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
           </summary>
-          <Card className="border-border bg-card mt-2">
-            <CardContent className="p-3">
+          <WorkstationPanel title="Bot Status" kicker="cron logs and market risk" className="mt-2">
+            <div className="p-3">
               <BotStatusPanel />
-            </CardContent>
-          </Card>
+            </div>
+          </WorkstationPanel>
         </details>
 
       </div>

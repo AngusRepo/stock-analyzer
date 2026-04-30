@@ -75,7 +75,9 @@ export function DailyRecommendationPanel() {
     staleTime: 30 * 60 * 1000,
   })
 
-  const recs  = recData?.recommendations  ?? []
+  const tradableRecs = recData?.tradable_recommendations ?? recData?.recommendations ?? []
+  const emergingRecs = recData?.emerging_recommendations ?? []
+  const recs = tradableRecs
 
   return (
     <div className="space-y-6">
@@ -111,17 +113,45 @@ export function DailyRecommendationPanel() {
             <div key={i} className="h-20 rounded-xl bg-muted/40 animate-pulse" />
           ))}
         </div>
-      ) : recs.length === 0 ? (
+      ) : recs.length === 0 && emergingRecs.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground">
           <Star className="w-8 h-8 mx-auto mb-2 opacity-20" />
           <p className="text-sm">今日推薦尚未產生</p>
           <p className="text-xs mt-1">每日 15:35 自動更新</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {recs.map((rec: any, i: number) => (
-            <RecommendationCardClean key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
-          ))}
+        <div className="space-y-5">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <p className="text-xs font-semibold text-emerald-300">上市櫃交易候選</p>
+                <p className="text-[11px] text-muted-foreground">會進入 morning setup / debate / pending buys 的主流程。</p>
+              </div>
+              <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-300">
+                {tradableRecs.length} 檔
+              </Badge>
+            </div>
+            {tradableRecs.map((rec: any, i: number) => (
+              <RecommendationCardClean key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
+            ))}
+          </div>
+
+          {emergingRecs.length > 0 && (
+            <div className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+              <div className="flex items-center justify-between px-1">
+                <div>
+                  <p className="text-xs font-semibold text-amber-300">興櫃觀察名單</p>
+                  <p className="text-[11px] text-muted-foreground">只做研究與人工觀察；不進 morning setup、不產生 pending buys。</p>
+                </div>
+                <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-300">
+                  {emergingRecs.length} 檔
+                </Badge>
+              </div>
+              {emergingRecs.slice(0, 24).map((rec: any, i: number) => (
+                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -5,6 +5,7 @@ import {
   buildRecommendationMlOwnerCheck,
   buildClassificationCoverageCheck,
   buildPendingBuyDateSanityCheck,
+  buildBoardLaneContractCheck,
   buildScreenerCandidateVolumeCheck,
   buildScreenerScoreDistributionCheck,
   buildSurfaceRoleConsistencyCheck,
@@ -27,13 +28,26 @@ function assert(condition: unknown, message: string): void {
   const check = buildFreshnessCheck({
     id: 'price_freshness',
     label: 'Price data',
-    latestDate: '2026-04-24',
-    targetDate: '2026-04-29',
-    rowsOnLatest: 100,
-    warnLagDays: 1,
-    failLagDays: 3,
+    latestDate: '2026-04-29',
+    targetDate: '2026-04-30',
+    rowsOnLatest: 2283,
+    warnLagDays: 0,
+    failLagDays: 0,
   })
-  assert(check.status === 'fail', 'stale price data should fail the quality gate')
+  assert(check.status === 'fail', 'EOD price data must match the target date')
+}
+
+{
+  const check = buildFreshnessCheck({
+    id: 'chip_freshness',
+    label: 'Chip data',
+    latestDate: '2026-04-27',
+    targetDate: '2026-04-30',
+    rowsOnLatest: 5100,
+    warnLagDays: 0,
+    failLagDays: 0,
+  })
+  assert(check.status === 'fail', 'EOD chip data must match the target date')
 }
 
 {
@@ -41,7 +55,7 @@ function assert(condition: unknown, message: string): void {
     .filter((model) => model !== 'Chronos')
     .map((model) => ({ model_name: model, count: 20, stocks: 20 }))
   const check = buildPredictionCoverageCheck(rows)
-  assert(check.status === 'fail', 'missing one of the 10 V2 models should fail prediction coverage')
+  assert(check.status === 'fail', 'missing one of the V2 production models should fail prediction coverage')
   assert((check.metrics?.missing_models as string[]).includes('Chronos'), 'missing model should be reported')
 }
 
@@ -118,6 +132,22 @@ function assert(condition: unknown, message: string): void {
     pendingBuyRole: 'execution_pool',
   })
   assert(check.status === 'ok', 'dashboard and bot should expose distinct source roles')
+}
+
+{
+  const check = buildBoardLaneContractCheck({
+    emergingRecommendations: 4,
+    pendingBuyEmergingLike: 0,
+  })
+  assert(check.status === 'ok', 'emerging recommendations are allowed only as watchlist lane')
+}
+
+{
+  const check = buildBoardLaneContractCheck({
+    emergingRecommendations: 4,
+    pendingBuyEmergingLike: 1,
+  })
+  assert(check.status === 'fail', 'emerging-style pending buys must fail the quality gate')
 }
 
 {

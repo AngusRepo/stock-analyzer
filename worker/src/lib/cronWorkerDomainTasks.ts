@@ -50,8 +50,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   if (cron === '15 9 * * 1-5') {
     runWithLog('update', async () => {
       const { runDailyUpdate } = await import('./updateOrchestrator')
-      await runDailyUpdate(env)
-      return 'market data update done'
+      const summary = await runDailyUpdate(env)
+      return `market data update done: ${summary}`
     })
 
     runWithLog('ml-warmup', async () => {

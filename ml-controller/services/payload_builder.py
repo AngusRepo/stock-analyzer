@@ -10,10 +10,12 @@ in-memory. Reduces D1 round-trips from ~270 (33 stocks × 8) to ~10.
 """
 from __future__ import annotations
 import logging
+import json
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 from services import d1_client, kv_client
+from services.market_segment_policy import policy_for_segment
 
 logger = logging.getLogger(__name__)
 
@@ -646,6 +648,135 @@ def load_active_stocks() -> list[dict]:
     return d1_client.query("SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC")
 
 
+def _normalize_market(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"TWSE", "TSE", "LISTED"}:
+        return "LISTED"
+    if text in {"OTC", "TPEX"}:
+        return "OTC"
+    if text in {"EMERGING", "ESB"}:
+        return "EMERGING"
+    return "UNKNOWN"
+
+
+def _watch_points_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v) for v in value if isinstance(v, (str, int, float))]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(v) for v in parsed if isinstance(v, (str, int, float))]
+        except Exception:
+            return [value]
+    return []
+
+
+def infer_market_segment(stock: dict, latest_price: dict | None = None) -> str:
+    """Single ML-facing market segment contract.
+
+    Price-shape wins over stale stock master metadata: avg_price-only rows are
+    emerging-board style even when `stocks.market` still says OTC.
+    """
+    latest_price = latest_price or {}
+    if latest_price.get("open") is None and latest_price.get("avg_price") is not None:
+        try:
+            if float(latest_price.get("avg_price") or 0) > 0:
+                return "EMERGING"
+        except Exception:
+            pass
+    lane = str(stock.get("recommendation_lane") or "").strip()
+    if lane == "emerging_watchlist":
+        return "EMERGING"
+    return _normalize_market(stock.get("market"))
+
+
+def _lane_for_segment(segment: str, stock: dict | None = None) -> str:
+    explicit = str((stock or {}).get("recommendation_lane") or "").strip()
+    if explicit:
+        return explicit
+    if segment == "EMERGING":
+        return "emerging_watchlist"
+    if segment in {"LISTED", "OTC"}:
+        return "tradable"
+    return "research_only"
+
+
+def build_stock_meta_with_segment(
+    base_meta: dict,
+    stock: dict,
+    latest_price: dict | None = None,
+) -> dict:
+    segment = infer_market_segment(stock, latest_price)
+    policy = policy_for_segment(segment)
+    lane = str(stock.get("recommendation_lane") or "").strip() or policy.recommendation_lane
+    eligible_for_execution = policy.eligible_for_execution and lane == "tradable"
+    return {
+        **base_meta,
+        "market_segment": segment,
+        "recommendation_lane": lane,
+        "eligible_for_ml": policy.eligible_for_ml,
+        "eligible_for_execution": eligible_for_execution,
+        "eligible_for_pending_buy": eligible_for_execution,
+        "segment_serving_mode": policy.serving_mode,
+        "segment_model_pool_scope": policy.model_pool_scope,
+        "segment_min_ic_samples": policy.min_ic_samples,
+        "segment_min_active_days": policy.min_active_days,
+    }
+
+
+def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> list[dict]:
+    """Union execution watchlist with research-only ML candidates.
+
+    Execution watchlist remains the source for auto-tradable names. Emerging
+    recommendations are added only to ML serving so we can collect predictions,
+    IC, and calibration evidence without letting them reach pending buys.
+    """
+    by_symbol: dict[str, dict] = {}
+    for stock in active_stocks or []:
+        symbol = str(stock.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        segment = infer_market_segment(stock)
+        lane = _lane_for_segment(segment, stock)
+        by_symbol[symbol] = {
+            **stock,
+            "market_segment": segment,
+            "recommendation_lane": lane,
+            "eligible_for_ml": True,
+            "eligible_for_execution": lane == "tradable",
+        }
+
+    for rec in screener_recs or []:
+        symbol = str(rec.get("symbol") or "").strip()
+        stock_id = rec.get("stock_id") or rec.get("id")
+        if not symbol or not stock_id or symbol in by_symbol:
+            continue
+        points = _watch_points_list(rec.get("watch_points"))
+        is_emerging_research = (
+            "research_only:emerging_not_for_auto_trade" in points
+            or "board_lane:emerging_watchlist" in points
+            or str(rec.get("recommendation_lane") or "") == "emerging_watchlist"
+            or _normalize_market(rec.get("market")) == "EMERGING"
+        )
+        if not is_emerging_research:
+            continue
+        by_symbol[symbol] = {
+            "id": stock_id,
+            "symbol": symbol,
+            "name": rec.get("name") or symbol,
+            "market": "EMERGING",
+            "sector": rec.get("sector"),
+            "source": "daily_recommendations",
+            "market_segment": "EMERGING",
+            "recommendation_lane": "emerging_watchlist",
+            "eligible_for_ml": True,
+            "eligible_for_execution": False,
+        }
+
+    return sorted(by_symbol.values(), key=lambda row: int(row.get("id") or 0))
+
+
 def _build_stock_meta(
     symbol: str,
     sym_to_sector: dict[str, str],
@@ -765,6 +896,10 @@ def build_payloads(
             "retail_pct": misc.get("retail_pct"),
         }
 
+        latest_price = prices_by_id.get(sid, [])[-1] if prices_by_id.get(sid) else {}
+        stock_meta = _build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, []))
+        stock_meta = build_stock_meta_with_segment(stock_meta, stock, latest_price)
+
         payloads.append(PredictPayload(
             stock_id=sid,
             symbol=symbol,
@@ -781,7 +916,7 @@ def build_payloads(
             trading_config=trading_config or {},
             lifecycle_weights=lifecycle_weights,
             barrier_params=barrier_params,
-            stock_meta=_build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, [])),
+            stock_meta=stock_meta,
         ))
 
     logger.info(f"[payload_builder] Built {len(payloads)} payloads")

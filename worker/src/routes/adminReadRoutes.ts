@@ -62,6 +62,45 @@ adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   }))
 })
 
+adminReadRoutes.get('/api/admin/observability/events', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildLiveObservabilityEventReport, listObservabilityAuditEvents } = await import('../lib/observabilityEvents')
+  const date = c.req.query('date')
+  const report = await buildLiveObservabilityEventReport(c.env, {
+    date,
+    live: c.req.query('live') === '1',
+  })
+  const recent = await listObservabilityAuditEvents(c.env, {
+    date: date ?? report.date,
+    limit: 20,
+  }).catch(() => [])
+
+  return c.json({
+    ...report,
+    audit: { recent },
+  })
+})
+
+adminReadRoutes.get('/api/admin/observability/audit', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { listObservabilityAuditEvents, normalizeObservabilityAuditFilters } = await import('../lib/observabilityEvents')
+  const filters = normalizeObservabilityAuditFilters({
+    date: c.req.query('date'),
+    severity: c.req.query('severity'),
+    domain: c.req.query('domain'),
+    limit: c.req.query('limit'),
+  })
+  return c.json({
+    success: true,
+    date: filters.date,
+    events: await listObservabilityAuditEvents(c.env, filters),
+  })
+})
+
 adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
@@ -225,7 +264,7 @@ adminReadRoutes.get('/api/admin/cron-logs', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const { getCronLogs } = await import('../lib/cronLogger')
+  const { getCronLogs } = await import('../lib/schedulerRunLogger')
   const logs = await getCronLogs(c.env.KV, date)
   return c.json({ date, logs })
 })

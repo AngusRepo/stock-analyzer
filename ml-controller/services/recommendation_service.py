@@ -610,6 +610,10 @@ def filter_and_score_recommendations(
         total_score = round((chip_score + tech_score + ml_score + persona_score) * 10) / 10
 
         payload = payload_by_sym.get(symbol, {})
+        stock_meta = payload.get("stock_meta", {}) if payload else {}
+        recommendation_lane = stock_meta.get("recommendation_lane") or "tradable"
+        market_segment = stock_meta.get("market_segment") or "UNKNOWN"
+        eligible_for_pending_buy = bool(stock_meta.get("eligible_for_pending_buy", recommendation_lane == "tradable"))
         env_for_stock = payload.get("market_env", {}) if payload else {}
 
         # Extract latest indicator values from payload (RSI, MACD, MA20)
@@ -669,6 +673,14 @@ def filter_and_score_recommendations(
             "ml_vote_summary": ml_vote_summary,
         }
 
+        watch_points = build_watch_points(reason_data)
+        if recommendation_lane == "emerging_watchlist" or not eligible_for_pending_buy:
+            watch_points = [
+                *watch_points,
+                "research_only:emerging_not_for_auto_trade",
+                f"market_segment:{market_segment}",
+            ]
+
         row = {
             "date": rec["date"],
             "stock_id": rec.get("stock_id"),
@@ -689,9 +701,13 @@ def filter_and_score_recommendations(
             "confidence": eff_ml.get("confidence"),
             "ml_forecast_pct": eff_ml.get("forecast_pct") or 0.0,
             "current_price": current_price,
-            "has_buy_signal": 1 if (sig and "BUY" in sig) else 0,
+            "market_segment": market_segment,
+            "recommendation_lane": recommendation_lane,
+            "eligible_for_ml": bool(stock_meta.get("eligible_for_ml", True)),
+            "eligible_for_pending_buy": eligible_for_pending_buy,
+            "has_buy_signal": 1 if (eligible_for_pending_buy and sig and "BUY" in sig) else 0,
             "reason": build_reason(reason_data),
-            "watch_points": build_watch_points(reason_data),
+            "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d / 1e8,
             "trust_net_5d": trust_net_5d / 1e8,
             "rsi14": latest_ind.get("rsi14"),
@@ -724,6 +740,9 @@ def _signal_tier(sig: Optional[str]) -> float:
 
 def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     """Avoid turning a negative/weak ML expectation into a BUY label."""
+    if row.get("eligible_for_pending_buy") is False or row.get("recommendation_lane") != "tradable":
+        row["promotion_blocked_reason"] = "research_only_or_not_tradable"
+        return False
     forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct", 0.0))
     try:
         forecast = float(forecast_pct or 0.0)
@@ -875,6 +894,7 @@ def write_predictions_to_d1(
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
+            "stock_meta": data.get("stock_meta"),
         })
         sanitized_count += replaced
         forecast_data = json.dumps(forecast_payload, ensure_ascii=False)
@@ -938,7 +958,12 @@ def write_predictions_to_d1(
                 skipped_model_rows.append(model_name)
                 continue
             per_model_payload, replaced = _sanitize_non_finite(
-                {"signal": raw_signal, "rank_score": safe_model_score, "source": "model_pool_stage2"}
+                {
+                    "signal": raw_signal,
+                    "rank_score": safe_model_score,
+                    "source": "model_pool_stage2",
+                    "stock_meta": data.get("stock_meta"),
+                }
             )
             sanitized_count += replaced
             per_model_forecast = json.dumps(
@@ -1092,8 +1117,9 @@ def update_recommendations_in_d1(
                 date, stock_id, symbol, name, sector, rank, score, signal,
                 confidence, reason, watch_points, has_buy_signal, current_price,
                 foreign_net_5d, trust_net_5d, rsi14, macd_hist, chip_score,
-                tech_score, ml_score, industry
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tech_score, ml_score, industry, market_segment, recommendation_lane,
+                eligible_for_ml, eligible_for_pending_buy
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, stock_id) DO UPDATE SET
                 symbol=excluded.symbol,
                 name=excluded.name,
@@ -1113,7 +1139,11 @@ def update_recommendations_in_d1(
                 chip_score=excluded.chip_score,
                 tech_score=excluded.tech_score,
                 ml_score=excluded.ml_score,
-                industry=excluded.industry
+                industry=excluded.industry,
+                market_segment=excluded.market_segment,
+                recommendation_lane=excluded.recommendation_lane,
+                eligible_for_ml=excluded.eligible_for_ml,
+                eligible_for_pending_buy=excluded.eligible_for_pending_buy
             """.strip(),
             [
                 run_date,
@@ -1137,6 +1167,10 @@ def update_recommendations_in_d1(
                 r.get("tech_score") or 0,
                 ml_score,
                 r.get("industry"),
+                r.get("market_segment") or "UNKNOWN",
+                r.get("recommendation_lane") or "tradable",
+                1 if r.get("eligible_for_ml", True) else 0,
+                1 if r.get("eligible_for_pending_buy", True) else 0,
             ],
         ))
 

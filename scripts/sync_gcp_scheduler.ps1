@@ -35,6 +35,10 @@ if (-not $DryRun) {
 foreach ($job in $manifest.jobs) {
   [void]$managedIds.Add([string]$job.id)
   $uri = "$base/api/admin/trigger/$($job.task)"
+  $query = [string]$job.query
+  if ($query) {
+    $uri = "$uri`?$query"
+  }
   $description = [string]$job.description
   $exists = $DryRun -or $currentIds.Contains([string]$job.id)
 

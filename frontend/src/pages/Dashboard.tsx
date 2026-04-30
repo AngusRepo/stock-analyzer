@@ -45,6 +45,7 @@ import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -393,14 +394,34 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           </div>
         </div>
 
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <WorkstationCatCard
+            src="/stockvision-cats/01_bull_market_train.png"
+            title="牛市列車"
+            caption="行情很熱也先看號誌，別看到列車就直接跳上去。"
+            tone="ok"
+          />
+          <WorkstationCatCard
+            src="/stockvision-cats/04_small_green_observe_first.png"
+            title="小綠先觀察"
+            caption="AI Top Picks 有訊號，但還是要等資料品質、T2 與市場結構一起點頭。"
+            tone="info"
+          />
+        </div>
+
         {/* 大盤行情 */}
-        <MarketOverviewRow />
+        <WorkstationPanel title="Market Tape" kicker="indices and macro pulse">
+          <div className="p-3">
+            <MarketOverviewRow />
+          </div>
+        </WorkstationPanel>
 
         {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.82fr_1.18fr_0.9fr]">
 
           {/* 左欄：自選股 + 大盤風險 + Bot */}
-          <div className="space-y-4">
+          <WorkstationPanel title="Universe Radar" kicker="watchlist and tradability">
+          <div className="space-y-4 p-3">
             <WatchlistCards onSelect={onSelect} />
 
             <div className="space-y-3">
@@ -421,18 +442,23 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
               )}
             </div>
           </div>
+          </WorkstationPanel>
 
           {/* 中左欄：每日選股推薦 */}
-          <div className="space-y-4">
+          <WorkstationPanel title="AI Top Picks" kicker="recommendation and pending signal">
+          <div className="space-y-4 p-3">
             <DailyRecommendationPanel />
             <ExDividendCard />
           </div>
+          </WorkstationPanel>
 
           {/* 中右欄：主題輪動 */}
-          <div className="space-y-4">
+          <WorkstationPanel title="Market Context" kicker="theme flow and risk notes">
+          <div className="space-y-4 p-3">
             <ThemeFlowPanel />
             <AttentionStocksCard />
           </div>
+          </WorkstationPanel>
 
 
         </div>
@@ -611,6 +637,19 @@ export default function Dashboard() {
         <TooltipProvider>
           <Toaster />
           <AppShell>
+            <div className="p-4 pb-0 lg:p-5 lg:pb-0">
+              <WorkstationPageTitle
+                kicker="Decision workstation"
+                title={activeStock ? `${activeStock.symbol} Market Desk` : 'Market Decision Desk'}
+                description="自選股、AI Top Picks、行情結構、風險與新聞維持現有 API 串接；外層切換為 StockVision workstation 視覺。"
+                action={
+                  <div className="flex flex-wrap gap-2">
+                    <WorkstationPill tone="info">Dashboard</WorkstationPill>
+                    {activeStock && <WorkstationPill tone="ok">{activeStock.market}</WorkstationPill>}
+                  </div>
+                }
+              />
+            </div>
             {!activeStock ? (
               <EmptyState onSelect={handleSelect} user={user} />
             ) : (

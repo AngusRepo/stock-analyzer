@@ -29,6 +29,7 @@ from services.payload_builder import (
     load_active_stocks,
     load_market_env,
     build_payloads,
+    build_ml_universe,
 )
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
@@ -101,14 +102,16 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_load_inputs")
     run_date = state["run_date"]
 
-    active_stocks = load_active_stocks()
+    execution_stocks = load_active_stocks()
     screener_recs = d1_client.query(
         "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
         [run_date],
     )
+    active_stocks = build_ml_universe(execution_stocks, screener_recs)
 
     logger.info(
-        f"[Pipeline V2] Loaded {len(active_stocks)} active stocks, "
+        f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
+        f"({len(execution_stocks)} execution), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {
@@ -467,6 +470,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             if row is None:
                 continue
             alt_fallback_count += 1
+        if isinstance(payload, dict):
+            row["stock_meta"] = payload.get("stock_meta") or {}
         _attach_alt_sources(row, sym)
         _attach_challenger_shadow(row, sym)
         pred_map[sym] = row

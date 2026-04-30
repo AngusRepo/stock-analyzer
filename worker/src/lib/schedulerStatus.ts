@@ -3,7 +3,7 @@
  */
 
 import type { Bindings } from '../types'
-import { getCronLogs, type CronLogEntry } from './cronLogger'
+import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 
 interface JobDef {
   id: string

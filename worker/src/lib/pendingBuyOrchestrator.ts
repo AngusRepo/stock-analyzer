@@ -566,8 +566,17 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
        WHERE dr.date = ?
          AND dr.has_buy_signal = 1
          AND dr.confidence >= ?
-       ORDER BY dr.score DESC, dr.confidence DESC
-       LIMIT 3
+         AND COALESCE(s.market, '') != 'EMERGING'
+         AND (
+           SELECT sp_exec.open
+             FROM stock_prices sp_exec
+            WHERE sp_exec.stock_id = s.id
+              AND sp_exec.date <= dr.date
+            ORDER BY sp_exec.date DESC
+            LIMIT 1
+         ) IS NOT NULL
+        ORDER BY dr.score DESC, dr.confidence DESC
+        LIMIT 3
     `).bind(pendingDate, prevDay, cb.buyConfThreshold).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]

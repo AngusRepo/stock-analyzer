@@ -38,6 +38,7 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/schedulerOwnerContract.test.ts `
   src/lib/screenerOwnerContract.test.ts `
   src/lib/screenerSeedQuality.test.ts `
+  src/lib/screenerTradability.test.ts `
   src/lib/technicalIndicators.test.ts
 if ($LASTEXITCODE -ne 0) { throw "worker contract test compile failed" }
 node .tmp-test-run/lib/adminCronCallbackRoutes.test.js
@@ -66,6 +67,8 @@ node .tmp-test-run/lib/screenerOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerOwnerContract.test failed" }
 node .tmp-test-run/lib/screenerSeedQuality.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerSeedQuality.test failed" }
+node .tmp-test-run/lib/screenerTradability.test.js
+if ($LASTEXITCODE -ne 0) { throw "screenerTradability.test failed" }
 node .tmp-test-run/lib/technicalIndicators.test.js
 if ($LASTEXITCODE -ne 0) { throw "technicalIndicators.test failed" }
 if (Test-Path $TestOut) {

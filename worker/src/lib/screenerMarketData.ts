@@ -23,6 +23,18 @@ export interface FMChip {
   sell: number
 }
 
+export function isAutoTradablePriceRow(row: {
+  market: string | null
+  open: number | null
+  avg_price: number | null
+}): boolean {
+  if (row.market === 'EMERGING') return false
+  // Emerging-board quotes have no open price and carry avg_price as the trading
+  // reference. They can be analyzed, but should not enter auto-execution pools.
+  if (row.open == null && row.avg_price != null) return false
+  return true
+}
+
 export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
@@ -58,13 +70,14 @@ export async function loadMarketDataFromD1(
      ORDER BY s.symbol, sp.date`,
   ).bind(minDate, maxDate)
    .all<{ symbol: string; market: string | null; date: string;
-          open: number; high: number; low: number; close: number;
-          volume: number; avg_price: number | null }>()
+           open: number | null; high: number; low: number; close: number;
+           volume: number; avg_price: number | null }>()
 
   const allPrices: FMStockPrice[] = []
   const tpexSymbols = new Set<string>()
   for (const row of (priceRows ?? [])) {
     if (!row.close || row.close <= 0) continue
+    if (!isAutoTradablePriceRow(row)) continue
     if (row.market === 'OTC') tpexSymbols.add(row.symbol)
     allPrices.push({
       date: row.date,

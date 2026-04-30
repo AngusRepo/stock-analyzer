@@ -16,6 +16,7 @@ export interface CronLogEntry {
 
 const TASK_NAMES: Record<string, string> = {
   'pre-market-warmup': 'Pre-market Warmup',
+  update: 'Market Data Update',
   'ml-warmup': 'ML Warmup',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',

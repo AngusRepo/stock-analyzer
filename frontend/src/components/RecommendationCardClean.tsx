@@ -40,6 +40,12 @@ type MlVoteSummary = {
   total?: number
   forecastPct?: number | null
   forecast_pct?: number | null
+  thresholds?: {
+    bullish?: number
+    bearish?: number
+    regime?: string
+    adjustment?: number
+  }
 }
 
 export const AI_TOP_PICK_EXPLANATION =
@@ -244,8 +250,18 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
     : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish - missing))
-  const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
+  const flatText = flat > 0 ? `、${flat}/${total}觀望` : ''
   return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}`
+}
+
+function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
+  const bullish = summary?.thresholds?.bullish
+  const bearish = summary?.thresholds?.bearish
+  if (typeof bullish !== 'number' || typeof bearish !== 'number') return null
+  const regime = summary?.thresholds?.regime && summary.thresholds.regime !== 'unknown'
+    ? `，regime=${summary.thresholds.regime}`
+    : ''
+  return `投票門檻：rank score >= ${bullish.toFixed(3)} 算看漲，<= ${bearish.toFixed(3)} 算看跌，中間為觀望${regime}。`
 }
 
 function translateRecommendationReason(reason: unknown): string {
@@ -339,6 +355,42 @@ function ScoreBreakdown({ rec }: { rec: any }) {
   )
 }
 
+function ScoreBreakdownV2({ rec }: { rec: any }) {
+  const chip = Number(rec.chip_score ?? 0)
+  const tech = Number(rec.tech_score ?? 0)
+  const ml = Number(rec.ml_score ?? 0)
+  const base = Math.round((chip + tech + ml) * 10) / 10
+  const alphaAdj = Number(rec.alpha_context?.score_adjustment ?? 0)
+  const finalScore = Number(rec.score ?? base + alphaAdj)
+  const residual = Math.round((finalScore - base - alphaAdj) * 10) / 10
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-muted-foreground">分數公式</span>
+        <span className="font-mono text-foreground">
+          {fmtNumber(finalScore, 1)} = {fmtNumber(base, 1)}
+          {alphaAdj >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(alphaAdj), 1)}
+          {Math.abs(residual) >= 0.1 && `${residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(residual), 1)}`}
+        </span>
+      </div>
+      <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
+        <span>基礎分：籌碼 + 技術 + ML = {fmtNumber(base, 1)}</span>
+        <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
+        {Math.abs(residual) >= 0.1 && (
+          <span>分數校準差額：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
+        )}
+        <span>最後分數：{fmtNumber(finalScore, 1)}</span>
+      </div>
+      {Math.abs(residual) >= 0.1 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+          分數校準差額是後端來源分數與前端目前可拆解欄位之間的差值，通常來自排名校準、四捨五入或尚未拆成獨立欄位的風控調整；不是額外的 ML 預測報酬。
+        </p>
+      )}
+    </div>
+  )
+}
+
 function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   if (!context) return null
   const bucket = context.bucket ?? 'unknown'
@@ -366,8 +418,8 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
         <span>POC：{fmtNumber(context.poc, 2)}</span>
         <span>Fair value：{fairValue}</span>
-        {context.window && <span>計算視窗：{context.window}</span>}
-        {context.latestClose != null && <span>視窗最新價：{fmtNumber(context.latestClose, 2)}</span>}
+        {context.window && <span>計算區間：{context.window}</span>}
+        {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
       </div>
       <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-muted-foreground/85">
@@ -375,7 +427,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
-          Market structure：POC 是近期成交量最集中的價格，fair value 是系統估計的合理價格帶；
+          Market structure：POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶；
           {LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown}
         </p>
       </div>
@@ -411,7 +463,12 @@ function normalizeWatchPoint(point: string): string {
     const flat = point.match(/flat=([^,]+)/)?.[1] ?? '0'
     const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
     const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
-    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 中性、${missing} 未回傳，預期報酬 ${forecast}%。白話：中性不是模型沒跑，而是 rank score 落在 0.45~0.55 的觀望區。`
+    const bullishThreshold = point.match(/bullish_threshold=([^,]+)/)?.[1]
+    const bearishThreshold = point.match(/bearish_threshold=([^,]+)/)?.[1]
+    const thresholdText = bullishThreshold && bearishThreshold
+      ? `目前門檻：>=${bullishThreshold} 看漲，<=${bearishThreshold} 看跌。`
+      : '目前門檻會依 regime / trading config 調整。'
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，預期報酬 ${forecast}%。白話：觀望不是模型沒跑，而是 rank score 落在看漲/看跌門檻中間，訊號強度不夠明確。${thresholdText}`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
@@ -460,7 +517,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const noticePoints = displayWatchPoints(watchPoints)
   const alphaContext = alphaContextFromRec(rec, watchPoints)
   const displayReason = translateRecommendationReason(rec.reason)
-  const mlSummary = formatMlVoteSummary(mlVoteSummaryFromRec(rec)) ?? extractMlSummary(displayReason)
+  const mlVoteSummary = mlVoteSummaryFromRec(rec)
+  const mlSummary = formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlThresholdText = formatMlThresholdText(mlVoteSummary)
   const chip5dRaw = (rec.foreign_net_5d ?? 0) + (rec.trust_net_5d ?? 0)
   const chipPositive = chip5dRaw > 0
 
@@ -543,7 +602,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <ScoreBar label="ML" value={Number(rec.ml_score ?? 0)} max={30} color="bg-emerald-500" />
           </div>
 
-          <ScoreBreakdown rec={rec} />
+          <ScoreBreakdownV2 rec={rec} />
 
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
@@ -554,6 +613,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
               <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
               <p>{mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。</p>
+              {mlThresholdText && <p className="mt-1 text-muted-foreground/80">{mlThresholdText}</p>}
             </div>
           )}
 

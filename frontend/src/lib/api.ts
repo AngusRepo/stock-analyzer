@@ -1,10 +1,6 @@
 const BASE = import.meta.env.VITE_API_URL ?? '/api'
 export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'
 
-// Fix: 使用 sessionStorage 而非 localStorage 儲存 JWT
-// 原因：localStorage 跨 tab 持久化，XSS 腳本可讀取
-// sessionStorage 僅存活於當前分頁生命週期，關閉分頁即清除，降低 XSS 竊取風險
-// 注意：重新開啟分頁需要重新登入（30分鐘 idle timeout 較合理）
 let _token: string | null = sessionStorage.getItem('sv_token')
 
 function emitAuthTokenEvent(authenticated: boolean) {
@@ -112,9 +108,7 @@ export const systemApi = {
 }
 
 export const accuracyApi = {
-  // 某支股票各模型的真實準確率
   byStock: (stockId: number) => get<any[]>(`/ml/accuracy/${stockId}`),
-  // 全局準確率統計（所有股票加總）
   global: () => get<any>('/ml/accuracy/global'),
 }
 
@@ -125,7 +119,6 @@ export const tradeApi = {
 }
 
 export const chatApi = {
-  // Fix: 移除 userId 參數，server 從 JWT 取
   getSessions: (stockId?: number) =>
     get<any[]>(`/chat/sessions${stockId ? `?stockId=${stockId}` : ''}`),
   getMessages:   (sessionId: number) =>
@@ -209,6 +202,46 @@ export type SchedulerStatus = {
 
 export const schedulerApi = {
   status: () => get<SchedulerStatus>('/scheduler/status'),
+}
+
+export type DataQualityStatus = 'ok' | 'warn' | 'fail'
+
+export type DataQualityCheck = {
+  id: string
+  label: string
+  status: DataQualityStatus
+  summary: string
+  metrics?: Record<string, unknown>
+}
+
+export type DataQualityReport = {
+  date: string
+  generated_at: string
+  overall: DataQualityStatus
+  checks: DataQualityCheck[]
+}
+
+export type DeployGateReport = {
+  date: string
+  generated_at: string
+  decision: 'PASS' | 'WARN' | 'BLOCK'
+  status: DataQualityStatus
+  checks: Array<{ id: string; status: DataQualityStatus; summary: string; metrics?: Record<string, unknown> }>
+  data_quality: DataQualityReport
+}
+
+export const dataQualityApi = {
+  status: (date?: string) => get<DataQualityReport>(`/admin/data-quality/status${date ? `?date=${date}` : ''}`),
+}
+
+export const deployGateApi = {
+  predeploy: (opts?: { date?: string; live?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts?.date) params.set('date', opts.date)
+    if (opts?.live) params.set('live', '1')
+    const query = params.toString()
+    return get<DeployGateReport>(`/admin/gate/predeploy${query ? `?${query}` : ''}`)
+  },
 }
 
 export type ModelPoolLineageModel = {
@@ -314,10 +347,8 @@ export const adaptiveApi = {
 
 export const adminApi = {
   users:   () => get<any[]>('/auth/admin/users'),
-  // approve/reject 現在走 POST，帶 approval token（從 email 連結取得）
   approveByToken: (token: string, action: 'approve' | 'reject') =>
     post<any>('/auth/admin/approve', { token, action }),
-  // 後台直接操作（不需 token）
   setStatus: (userId: number, status: 'approved' | 'rejected') =>
     post<any>(`/auth/admin/users/${userId}/status`, { status }),
   setRole: (userId: number, role: 'user' | 'admin') =>

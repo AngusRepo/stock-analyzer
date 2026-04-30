@@ -43,6 +43,25 @@ adminReadRoutes.get('/api/scheduler/status', async (c) => {
   return c.json(status)
 })
 
+adminReadRoutes.get('/api/admin/data-quality/status', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildDataQualityReport } = await import('../lib/dataQualityMonitor')
+  return c.json(await buildDataQualityReport(c.env, { date: c.req.query('date') }))
+})
+
+adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildDeployGateReport } = await import('../lib/deployGate')
+  return c.json(await buildDeployGateReport(c.env, {
+    date: c.req.query('date'),
+    includeLiveController: c.req.query('live') === '1',
+  }))
+})
+
 adminReadRoutes.get('/api/admin/costs/today', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

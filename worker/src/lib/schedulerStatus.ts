@@ -16,10 +16,11 @@ interface JobDef {
 
 const JOB_DEFS: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
-  { id: 'ml-warmup', name: 'ML Warmup', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
-  { id: 'pipeline', name: 'Pipeline', schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
-  { id: 'ml-predict', name: 'ML Predict', schedule: 'After pipeline', cron: '', group: 'pipeline_chain', chainIndex: 3 },
-  { id: 'recommendation', name: 'Daily Recommendation', schedule: 'After ML predict', cron: '', group: 'pipeline_chain', chainIndex: 4 },
+  { id: 'update', name: 'Market Data Update', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
+  { id: 'ml-warmup', name: 'ML Warmup', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
+  { id: 'pipeline', name: 'Pipeline', schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'ml-predict', name: 'ML Predict', schedule: 'After pipeline', cron: '', group: 'pipeline_chain', chainIndex: 4 },
+  { id: 'recommendation', name: 'Daily Recommendation', schedule: 'After ML predict', cron: '', group: 'pipeline_chain', chainIndex: 5 },
 
   { id: 'us-leading', name: 'US Leading', schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
@@ -43,11 +44,13 @@ const JOB_DEFS: JobDef[] = [
   { id: 'weekly-backtest', name: 'Weekly Backtest/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
+  { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
+  { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 00:00 UTC', cron: '0 16 1-7 * 6', group: 'monthly' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]
 
-const DAG_STEPS = ['Bulk Fetch', 'Screener', 'ML Predict', 'Recommend', 'LLM Reason', 'Write D1']
+const DAG_STEPS = ['Market Data Update', 'Screener', 'ML Predict', 'Recommend', 'LLM Reason', 'Write D1']
 const DOW_NAME_TO_NUM: Record<string, number> = {
   SUN: 0,
   MON: 1,

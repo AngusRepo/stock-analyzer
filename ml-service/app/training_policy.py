@@ -61,6 +61,19 @@ def _coerce_str_list(value: Any, default: tuple[str, ...]) -> list[str]:
     return list(default)
 
 
+def generated_model_pool_version(now_iso: str) -> str:
+    return f"v{now_iso.replace('-', '').replace(':', '').replace('.', '')[:15]}"
+
+
+def should_force_model_pool_challenger(
+    *,
+    gcs_prefix: str,
+    walk_forward_mode: bool,
+    output_model_version: str | None,
+) -> bool:
+    return gcs_prefix == "universal" and not walk_forward_mode and not output_model_version
+
+
 @dataclass(frozen=True)
 class FeatureSelectionPolicy:
     max_rounds: int = 100

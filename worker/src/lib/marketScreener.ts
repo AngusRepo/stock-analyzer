@@ -10,171 +10,10 @@
  */
 
 import type { Bindings } from '../types'
-// Types originally from finmind.ts (FinMind API 已棄用，只保留 type 給 screener 內部用)
-export interface FMStockPrice {
-  date: string
-  stock_id: string
-  Trading_Volume: number
-  Trading_money: number
-  open: number
-  max: number
-  min: number
-  close: number
-  spread: number
-  Trading_turnover: number
-}
-
-export interface FMChip {
-  date: string
-  stock_id: string
-  name: string
-  buy: number
-  sell: number
-}
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
-
-// ─────────────────────────────────────────────────────────────────────────────
-// D1 Reader — Source of truth (取代舊 TWSE/TPEx in-memory fetcher)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 背景：原本 marketScreener 自己對 TWSE/TPEx fetch 20 天歷史，與 bulkFetch 寫
-// 進 D1 的資料完全脫鉤，導致：
-//   1. stale fallback 污染（fetchTwseStockDayAll 對假日呼叫返回 stale data）
-//   2. screener / paper.ts / backtest_engine 三個元件用三套不同的歷史資料
-//   3. Sprint 5 Optuna 搜出來的參數對不上 production
-//
-// 重構後 (2026-04-07)：唯一 source = D1 (bulkFetchAndStorePrices 寫入)。
-// 詳見 memory/project_screener_d1_decoupling.md
-//
-/**
- * 從 D1 讀全市場最近 N 個交易日的 prices + chips。
- * 取代 fetchMultiDayMarketData() — source-of-truth 統一為 D1。
- *
- * @param env - Cloudflare Worker bindings
- * @param priceDays - 抓幾個交易日的 prices（default 20）
- * @param chipDays - 抓幾個交易日的 chips（default 5）
- * @returns 跟 fetchMultiDayMarketData 相同 shape，方便 buildStockData 直接吃
- */
-async function loadMarketDataFromD1(
-  env: Bindings,
-  priceDays: number = 20,
-  chipDays: number = 5,
-): Promise<{
-  allPrices: FMStockPrice[]
-  allChips: FMChip[]
-  tpexSymbols: Set<string>
-}> {
-  // 用「日曆天 ≈ 交易日 × 1.5 + 緩衝」抓夠範圍，後面用 DISTINCT date 取最近 N 個交易日
-  const lookbackDays = Math.ceil(priceDays * 1.5) + 7
-  const chipLookback = Math.ceil(chipDays * 1.5) + 5
-
-  // ── 1. 取最近 priceDays 個有資料的交易日 ──
-  const { results: dateRows } = await env.DB.prepare(
-    `SELECT DISTINCT date FROM stock_prices
-     WHERE date >= date('now', '-${lookbackDays} days')
-     ORDER BY date DESC LIMIT ?`
-  ).bind(priceDays).all<{ date: string }>()
-  const tradingDates = (dateRows ?? []).map(r => r.date).sort()
-  if (!tradingDates.length) {
-    console.warn('[Screener D1] No trading dates in D1 stock_prices')
-    return { allPrices: [], allChips: [], tpexSymbols: new Set() }
-  }
-  const minDate = tradingDates[0]
-  const maxDate = tradingDates[tradingDates.length - 1]
-
-  // ── 2. 全市場 prices JOIN stocks（含 market 標記） ──
-  // 預估 ~2300 stocks × 20 days = 46k rows，安全在 D1 100k limit 內
-  const { results: priceRows } = await env.DB.prepare(
-    `SELECT s.symbol, s.market, sp.date,
-            sp.open, sp.high, sp.low, sp.close,
-            sp.volume, sp.avg_price
-     FROM stock_prices sp
-     JOIN stocks s ON sp.stock_id = s.id
-     WHERE sp.date >= ? AND sp.date <= ?
-     ORDER BY s.symbol, sp.date`
-  ).bind(minDate, maxDate)
-   .all<{ symbol: string; market: string | null; date: string;
-          open: number; high: number; low: number; close: number;
-          volume: number; avg_price: number | null }>()
-
-  const allPrices: FMStockPrice[] = []
-  const tpexSymbols = new Set<string>()
-  for (const r of (priceRows ?? [])) {
-    if (!r.close || r.close <= 0) continue
-    if (r.market === 'OTC') tpexSymbols.add(r.symbol)
-    allPrices.push({
-      date: r.date,
-      stock_id: r.symbol,
-      Trading_Volume: r.volume ?? 0,
-      Trading_money: Math.round((r.avg_price ?? r.close) * (r.volume ?? 0)),
-      open: r.open,
-      max: r.high,
-      min: r.low,
-      close: r.close,
-      spread: 0,
-      Trading_turnover: 0,
-    })
-  }
-
-  // ── 3. 全市場 chips（最近 chipDays 個交易日） ──
-  // chip_data 用 symbol 欄位，不需 JOIN stocks
-  const { results: chipDateRows } = await env.DB.prepare(
-    `SELECT DISTINCT date FROM chip_data
-     WHERE date >= date('now', '-${chipLookback} days')
-     ORDER BY date DESC LIMIT ?`
-  ).bind(chipDays).all<{ date: string }>()
-  const chipDates = (chipDateRows ?? []).map(r => r.date).sort()
-
-  const allChips: FMChip[] = []
-  if (chipDates.length) {
-    const minChipDate = chipDates[0]
-    const maxChipDate = chipDates[chipDates.length - 1]
-    const { results: chipRows } = await env.DB.prepare(
-      `SELECT symbol, date, foreign_buy, foreign_sell,
-              trust_buy, trust_sell
-       FROM chip_data
-       WHERE date >= ? AND date <= ?`
-    ).bind(minChipDate, maxChipDate)
-     .all<{ symbol: string; date: string;
-            foreign_buy: number | null; foreign_sell: number | null;
-            trust_buy: number | null; trust_sell: number | null }>()
-
-    // 轉換成 marketScreener 內部 FMChip 格式（每股每日 2 筆：外資 + 投信）
-    // buildStockData (line ~330) 只看 name='外資'/'投信' 的 net = buy - sell
-    // 不寫 '自營商' 因為 buildStockData 沒在用
-    for (const r of (chipRows ?? [])) {
-      if (r.foreign_buy != null || r.foreign_sell != null) {
-        allChips.push({
-          date: r.date, stock_id: r.symbol, name: '外資',
-          buy: r.foreign_buy ?? 0, sell: r.foreign_sell ?? 0,
-        })
-      }
-      if (r.trust_buy != null || r.trust_sell != null) {
-        allChips.push({
-          date: r.date, stock_id: r.symbol, name: '投信',
-          buy: r.trust_buy ?? 0, sell: r.trust_sell ?? 0,
-        })
-      }
-    }
-  }
-
-  console.log(
-    `[Screener D1] Loaded ${allPrices.length} price rows ` +
-    `(${tradingDates.length} trading days, ${minDate}~${maxDate}) + ` +
-    `${allChips.length} chip rows (${chipDates.length} days, ${tpexSymbols.size} OTC)`
-  )
-
-  return { allPrices, allChips, tpexSymbols }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [REMOVED 2026-04-07] 5 個 in-memory fetcher 已刪除：
-//   fetchTWSEAllPrices / fetchTPExAllPrices /
-//   fetchTWSEInstitutional / fetchTPExInstitutional /
-//   fetchMultiDayMarketData
-// 由 loadMarketDataFromD1() 取代，source-of-truth 統一為 D1 (bulkFetch 寫入)。
-// 詳見 memory/project_screener_d1_decoupling.md
-// ─────────────────────────────────────────────────────────────────────────────
+import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
+import { computeAndStoreIndicators } from './technicalIndicators'
+import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -200,13 +39,6 @@ export interface ScreenerCandidate {
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
-
-/** 計算 N 個交易日前的日期（粗略：日曆天 * 1.5，台北時區） */
-function tradingDaysAgo(n: number): string {
-  const tw = new Date(Date.now() + 8 * 3600_000)
-  tw.setDate(tw.getDate() - Math.ceil(n * 1.5))
-  return tw.toISOString().slice(0, 10)
-}
 
 function today(): string {
   // 用台北時間（UTC+8），確保收盤後取到當天資料
@@ -686,7 +518,6 @@ async function deduplicateByCorrelation(
         // 移除分數低的
         const loser = candidates[i].score >= candidates[j].score ? candidates[j].symbol : candidates[i].symbol
         removed.add(loser)
-        console.log(`[Dedup] ${candidates[i].symbol} ↔ ${candidates[j].symbol} corr=${corr.toFixed(2)} → remove ${loser}`)
       }
     }
   }
@@ -702,7 +533,6 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   candidates: ScreenerCandidate[]
   debugLog?: string[]
 }> {
-  console.log('[Screener v2] Starting bottom-up multi-factor screening...')
   const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
@@ -763,7 +593,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const zSumMap = new Map([...buzzMap.entries()].map(([k, v]) => [k, v.zSum]))
     combinedBuzz.sort((a, b) => (zSumMap.get(b.concept) ?? 0) - (zSumMap.get(a.concept) ?? 0))
 
-    console.log(`[Screener v2] Data: ${allPrices.length} prices, ${allChips.length} chips | Buzz: ${combinedBuzz.length}`)
+    debugLog.push(`[Data] prices=${allPrices.length} chips=${allChips.length} buzz=${combinedBuzz.length}`)
   } catch (e) {
     console.error('[Screener v2] Data fetch failed:', e)
     return { hotSectors: [], candidates: [] }
@@ -842,12 +672,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] D1 marketReturn 查詢失敗，fallback API:', e)
   }
 
-  // [REMOVED 2026-04-07] Step 0.5「D1 stock_prices 補充」邏輯已刪除：
-  // 重構後 loadMarketDataFromD1 是 primary source，不再需要 API + D1 merge。
-  // 詳見 memory/project_screener_d1_decoupling.md
-
   // ── Step 1: Universe hard filter ──
-  console.log('[Screener v2] Step 1: Universe filtering...')
   const universe: { stockId: string; prices: FMStockPrice[] }[] = []
   let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0
 
@@ -871,10 +696,8 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
   const universeMsg = `[Step 1] Universe: ${universe.length} 檔通過 | 篩掉: 股價=${skipPrice} 均量=${skipVol} 成交額=${skipTurnover} 處置=${skipPunish} 零量=${skipVolZero} 天數不足=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero}`
   debugLog.push(universeMsg)
-  console.log(universeMsg)
 
   // ── Step 2: 多因子評分 ──
-  console.log('[Screener v2] Step 2: Multi-factor scoring...')
   type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string }
   const scored: ScoredCandidate[] = []
 
@@ -920,8 +743,8 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // + 最新 date + 非空 quadrant)，把每檔候選股的 top concept tag 對應到 quadrant，
   // 然後用 cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}
   // 調整 score。保留原本 base_score 語意不變（調整後存回 c.score）。
-  // RRG quadrant 本身的 threshold (RS=100, Mom=0) 仍由 _rrg_calculator.py hardcode，
-  // 因為是 de Kempenaer RRG 方法論的數學定義，不該 tunable。
+  // RRG quadrant axes (RS=100, Mom=0) are canonical de Kempenaer coordinates,
+  // so they stay fixed rather than becoming Optuna-tunable policy knobs.
   const sectorHeatScores: SectorHeatScore[] = []
   let rrgAdjustedCount = 0
   const rrgCfg = cfg.rrg
@@ -980,8 +803,6 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // ── Step 4: 情緒面加分 ──
-  console.log('[Screener v2] Step 4: Sentiment scoring...')
-
   // 4a. 新聞情緒（D1 查詢）
   try {
     // 批次查所有候選的近 7 天新聞情緒
@@ -1041,7 +862,6 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | total=${c.score.toFixed(1)} | ${c.reason}`)
   }
 
-  console.log('[Screener v2] Step 5: Sort, dedup, truncate...')
   scored.sort((a, b) => b.score - a.score)
 
   // ── Step 4b: 基本面加分（F-Score + 毛利率事件）──
@@ -1309,7 +1129,6 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const finalCandidates: ScreenerCandidate[] = afterIndustryLimit.slice(0, maxCandidates)
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
-  console.log(step5Msg)
 
   // 被產業上限篩掉的
   const removedByIndustry = scored.filter(c => !afterIndustryLimit.includes(c)).slice(0, 10)
@@ -1353,14 +1172,14 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         for (let i = finalCandidates.length - 1; i >= 0; i--) {
           if (delistRisk.has(finalCandidates[i].symbol)) finalCandidates.splice(i, 1)
         }
-        if (removed.length) console.log(`[Screener v2] DelistingMonitor: removed ${removed.map(c => c.symbol).join(', ')}`)
+        if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
       }
     }
   } catch (e) {
     console.warn('[Screener v2] DelistingMonitor failed:', e)
   }
 
-  console.log(`[Screener v2] Final: ${finalCandidates.length} candidates`)
+  debugLog.push(`[Final] candidates=${finalCandidates.length}`)
 
   // ── DB 寫入 ──
   try {
@@ -1425,14 +1244,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       }
     }
     const matched = [...sectorBonusMap.values()].filter(b => b.bonus > 0).length
-    console.log(`[Screener v2] #16 sector leader bonus: ${matched}/${finalCandidates.length} candidates corr>${corrThreshold} (+${bonusPoints})`)
+    debugLog.push(`[Step 4d] sector leader bonus: ${matched}/${finalCandidates.length} corr>${corrThreshold} (+${bonusPoints})`)
   } catch (e) {
     console.warn('[Screener v2] #16 sector bonus failed (table missing or cold start):', e)
   }
 
-  // Screener 分數寫入 daily_recommendations（chip+tech+current_price，ML 由 recommendation 補）
+  // Screener 只負責 seed chip/tech/price；ML-enriched recommendations 由 ml-controller 擁有。
   try {
-    await env.DB.prepare("DELETE FROM daily_recommendations WHERE date = ?").bind(endDate).run()
     const recBatch = finalCandidates.map((c, i) => {
       const sc = c as any
       // 從即時 API 資料取最新收盤價（不寫 null）
@@ -1447,24 +1265,19 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       if (sectorB && sectorB.bonus > 0 && sectorB.avgCorr !== null) {
         tagParts.push(`🔗 族群連動 (corr=${sectorB.avgCorr.toFixed(2)}, +${sectorB.bonus})`)
       }
-      const reasonWithTags = tagParts.length
-        ? `${tagParts.join(' | ')}\n${c.reason ?? ''}`
-        : (c.reason ?? null)
-      const combinedScore = Math.round((sc.chip_score + sc.tech_score + sc.momentum_score) * 10) / 10
-       + (sectorB?.bonus ?? 0)
-      return env.DB.prepare(`
-        INSERT INTO daily_recommendations
-          (date, stock_id, symbol, name, sector, rank, score,
-           chip_score, tech_score, ml_score, current_price,
-           reason, watch_points, has_buy_signal, industry)
-        VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?, ?, ?,
-                ?, ?, 0, ?, ?, '[]', 0, ?)
-      `).bind(
-        endDate, c.symbol, c.symbol, c.name ?? null, c.sector ?? null,
-        i + 1, combinedScore,
-        sc.chip_score ?? 0, sc.tech_score ?? 0,
-        currentPrice ?? null,
-        reasonWithTags, sc.industry ?? c.sector ?? null,
+      const seed = buildScreenerSeedRow({
+        candidate: c as any,
+        rank: i + 1,
+        currentPrice,
+        sectorBonus: sectorB?.bonus ?? 0,
+        tags: tagParts,
+      })
+      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+        endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
+        seed.rank, seed.row.seedScore,
+        seed.row.chipScore, seed.row.techScore,
+        seed.row.currentPrice,
+        seed.row.reason, JSON.stringify(seed.watchPoints), seed.row.industry,
       )
     })
     const BATCH = 50
@@ -1477,7 +1290,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       "UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
     ).bind(endDate).run()
 
-    console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
+    debugLog.push(`[DB] daily_recommendations seed/upsert ${finalCandidates.length} rows; ML owner fields preserved`)
 
     // #15 同步寫 screener_selection_history 供下次 run 計算 freq flag
     try {
@@ -1494,14 +1307,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       }
       const hiCount = [...selectionFlagMap.values()].filter(f => f.highFreq).length
       const newCount = [...selectionFlagMap.values()].filter(f => f.newMoney).length
-      console.log(`[Screener v2] #15 history +${finalCandidates.length} rows | high_freq=${hiCount} new_money=${newCount}`)
+      debugLog.push(`[DB] selection history +${finalCandidates.length} rows | high_freq=${hiCount} new_money=${newCount}`)
     } catch (e) {
       console.warn('[Screener v2] #15 history insert failed (likely table missing, skip):', e)
     }
 
     // 對缺 technical_indicators 的新股立即計算（不等 Queue，避免 ML NO_SIGNAL）
     try {
-      const { computeAndStoreIndicators } = await import('../routes/stocks')
       const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
         WHERE s.in_current_watchlist = 1
@@ -1515,7 +1327,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
           await computeAndStoreIndicators(env.DB, stock.id)
           computed++
         }
-        console.log(`[Screener v2] 補算 ${computed} 支新股的 technical_indicators: ${noTiStocks.map(s => s.symbol).join(', ')}`)
+        debugLog.push(`[DB] backfilled technical_indicators for ${computed} symbols: ${noTiStocks.map(s => s.symbol).join(', ')}`)
       }
     } catch (e) {
       console.warn('[Screener v2] 新股 TI 補算失敗 (non-blocking):', e)
@@ -1540,7 +1352,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const history = await loadOversoldHistory(env.DB, endDate)
     const assessment = assessZone(indicator.pct_oversold, history)
     await writeMomentumSnapshot(env.DB, endDate, indicator, assessment)
-    console.log(
+    debugLog.push(
       `[Screener v2] momentum zone ${assessment.zone} ` +
       `(pct_oversold=${(indicator.pct_oversold * 100).toFixed(1)}%, ` +
       `rank=${(assessment.percentile_rank * 100).toFixed(1)}, history=${assessment.n_history})`

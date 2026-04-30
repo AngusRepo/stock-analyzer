@@ -125,7 +125,8 @@ def test_ft_regression_raw_output_maps_to_bounded_rank_without_zero_clipping():
 
     assert rank_from_ft_regression_output(-0.2) > 0.0
     assert rank_from_ft_regression_output(-0.2) < 0.5
-    assert rank_from_ft_regression_output(0.8) == pytest.approx(0.8)
+    assert rank_from_ft_regression_output(0.0) == pytest.approx(0.5)
+    assert rank_from_ft_regression_output(0.8) == pytest.approx(0.689974, abs=1e-6)
 
 
 def test_run_ft_transformer_uses_regression_bundle_without_legacy_retrain(monkeypatch):

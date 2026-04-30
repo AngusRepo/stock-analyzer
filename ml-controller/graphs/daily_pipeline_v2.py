@@ -32,6 +32,7 @@ from services.payload_builder import (
     build_payloads,
 )
 from services.modal_client import batch_predict
+from services.model_score_quality import drop_degenerate_rank_scores
 from services.recommendation_service import (
     build_screener_seed_recommendations,
     filter_and_score_recommendations,
@@ -492,6 +493,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         _attach_alt_sources(row, sym)
         _attach_challenger_shadow(row, sym)
         pred_map[sym] = row
+
+    degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
+    degenerate_challengers = drop_degenerate_rank_scores(pred_map, score_field="challenger_rank_scores")
+    if degenerate_scores:
+        logger.warning(f"[Pipeline V2] Dropped degenerate active rank_scores: {degenerate_scores}")
+    if degenerate_challengers:
+        logger.warning(f"[Pipeline V2] Dropped degenerate challenger rank_scores: {degenerate_challengers}")
 
     error_count = sum(1 for r in results if r.get("error"))
     if error_count:

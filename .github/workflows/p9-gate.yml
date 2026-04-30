@@ -1,0 +1,31 @@
+name: P9 Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  p9-gate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run P9 gate
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/p9_gate.ps1

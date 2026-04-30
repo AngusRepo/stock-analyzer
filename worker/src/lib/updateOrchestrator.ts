@@ -1,7 +1,8 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
-import { computeAndStoreIndicators, fetchAndStoreStockData } from '../routes/stocks'
+import { computeAndStoreIndicators } from './technicalIndicators'
+import { fetchAndStoreStockData } from '../routes/stocks'
 
 const UPDATE_BATCH_SIZE = 6
 

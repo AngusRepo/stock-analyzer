@@ -48,6 +48,12 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   }
 
   if (cron === '15 9 * * 1-5') {
+    runWithLog('update', async () => {
+      const { runDailyUpdate } = await import('./updateOrchestrator')
+      await runDailyUpdate(env)
+      return 'market data update done'
+    })
+
     runWithLog('ml-warmup', async () => {
       if (!env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
       const headers: Record<string, string> = {}

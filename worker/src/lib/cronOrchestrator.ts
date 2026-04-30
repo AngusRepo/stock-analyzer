@@ -19,7 +19,7 @@ function twDateString() {
   return twNow().toISOString().slice(0, 10)
 }
 
-async function settlePaperT2(env: Bindings) {
+export async function settlePaperT2(env: Bindings) {
   const today = twToday()
   const matured = await env.DB.prepare(
     "SELECT account_id, SUM(CASE WHEN side='buy' THEN -amount ELSE amount END) as net FROM paper_settlements WHERE settled=0 AND settlement_date <= ? GROUP BY account_id",
@@ -39,7 +39,7 @@ async function settlePaperT2(env: Bindings) {
   }
 }
 
-async function runPreMarketWarmup(env: Bindings) {
+export async function runPreMarketWarmup(env: Bindings) {
   const results: string[] = []
   results.push('Worker:self ok')
 
@@ -159,7 +159,7 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
   })())
 }
 
-async function runIntradayRescore(env: Bindings, cron: string, twTodayStr: string) {
+export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr: string) {
   const { getTradingConfig } = await import('./tradingConfig')
   const cfg = await getTradingConfig(env.KV)
   if (!cfg.intraday.rescoreEnabled) return 'SKIP: rescoreEnabled=false'

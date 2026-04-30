@@ -18,7 +18,7 @@ import polars as pl
 from joblib import load as joblib_load
 from pydantic import BaseModel
 
-from .ft_transformer import rebuild_ft_transformer_from_bundle
+from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
 from .artifact_contract import (
     build_model_artifact_metadata,
     build_training_run_manifest,
@@ -26,6 +26,7 @@ from .artifact_contract import (
     validate_model_artifact_metadata,
 )
 from .model_store import _get_bucket, save_model
+from .training_policy import generated_model_pool_version, should_force_model_pool_challenger
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 
 
@@ -67,6 +68,36 @@ class UniversalTrainRequest(BaseModel):
     followup_webhook_url: str | None = None
     output_model_version: str | None = None
     register_challengers: bool = False
+
+
+def normalize_universal_lifecycle_request(
+    req: UniversalTrainRequest,
+    *,
+    gcs_prefix: str,
+    walk_forward_mode: bool,
+    now_fn=now_utc_iso,
+) -> UniversalTrainRequest:
+    """Ensure production universal retrain enters model_pool lifecycle.
+
+    Universal production retrain must not silently overwrite flat-file artifacts.
+    If an older caller omits output_model_version, generate a challenger version
+    so the artifact can be audited/promoted by model_pool instead of bypassing it.
+    """
+    if not should_force_model_pool_challenger(
+        gcs_prefix=gcs_prefix,
+        walk_forward_mode=walk_forward_mode,
+        output_model_version=req.output_model_version,
+    ):
+        return req
+
+    version = generated_model_pool_version(now_fn())
+    update = {
+        "output_model_version": version,
+        "register_challengers": True,
+    }
+    if hasattr(req, "model_copy"):
+        return req.model_copy(update=update)
+    return req.copy(update=update)
 
 
 def _save_universal_versioned_model(
@@ -129,6 +160,34 @@ def _register_challenger_safe(model_name: str, version: str) -> dict:
         return {"status": "registered", "version": version, "pool_updated": bool(pool)}
     except Exception as exc:
         return {"status": "error", "version": version, "error": str(exc)}
+
+
+def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dict]:
+    """Load the active universal artifact through model_pool.json only."""
+    from .model_pool import get_active_path, get_active_version, gcs_metadata_path_for, load_pool
+
+    pool = load_pool()
+    if not pool:
+        raise RuntimeError("model_pool.json unavailable")
+    path = get_active_path(model_name, pool=pool)
+    if not path:
+        raise RuntimeError(f"{model_name} has no active model_pool artifact")
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise RuntimeError(f"{model_name} active artifact missing: {path}")
+
+    buf = io.BytesIO()
+    blob.download_to_file(buf)
+    buf.seek(0)
+    artifact = joblib_load(buf)
+
+    metadata: dict = {}
+    version = get_active_version(model_name, pool=pool)
+    if version:
+        meta_blob = bucket.blob(gcs_metadata_path_for(model_name, version))
+        if meta_blob.exists():
+            metadata = json.loads(meta_blob.download_as_text())
+    return artifact, metadata
 
 
 def _save_oos_rank_artifact(
@@ -408,6 +467,17 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         and req.test_start is not None
         and req.test_end is not None
     )
+    original_output_version = req.output_model_version
+    req = normalize_universal_lifecycle_request(
+        req,
+        gcs_prefix=gcs_prefix,
+        walk_forward_mode=walk_forward_mode,
+    )
+    if req.output_model_version and not original_output_version and gcs_prefix == "universal" and not walk_forward_mode:
+        print(
+            "[TrainUniversal] Lifecycle guard: generated challenger version "
+            f"{req.output_model_version}; flat-file production overwrite disabled"
+        )
 
     if walk_forward_mode:
         print(
@@ -778,9 +848,17 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             for ts in range(0, len(Xt_test), BATCH_SIZE):
                 xb = torch.tensor(Xt_test[ts:ts + BATCH_SIZE])
                 all_preds.append(model_ftt(xb).numpy())
-        preds = np.concatenate(all_preds)
-        ic = _oos_ic(preds, y_test)
-        oos_rank_predictions["FT-Transformer"] = np.clip(np.asarray(preds, dtype=float).reshape(-1), 0.0, 1.0)
+        raw_preds = np.asarray(np.concatenate(all_preds), dtype=float).reshape(-1)
+        rank_preds = np.asarray([rank_from_ft_regression_output(v) for v in raw_preds], dtype=float)
+        raw_std = float(np.nanstd(raw_preds))
+        rank_std = float(np.nanstd(rank_preds))
+        if rank_std < 1e-6:
+            raise ValueError(
+                "FT-Transformer degenerate rank output "
+                f"(rank_std={rank_std:.8f}, raw_std={raw_std:.8f}); artifact not saved"
+            )
+        ic = _oos_ic(raw_preds, y_test)
+        oos_rank_predictions["FT-Transformer"] = rank_preds
 
         stopped_epoch = last_epoch
         bundle = {
@@ -803,6 +881,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "test": len(X_test),
             "stopped_epoch": stopped_epoch,
             "best_val_ic": round(best_val_ic, 6),
+            "raw_pred_std": round(raw_std, 8),
+            "rank_pred_std": round(rank_std, 8),
             "device": str(device),
             "saved": True,
             "arch": {
@@ -1244,11 +1324,7 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
         import torch
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        blob = bucket.blob("universal/ft-transformer.joblib")
-        buf = io.BytesIO()
-        blob.download_to_file(buf)
-        buf.seek(0)
-        bundle = joblib_load(buf)
+        bundle, ftt_meta = _load_active_model_pool_joblib(bucket, "FT-Transformer")
 
         ftt_n_features = bundle.get("n_features", n_features)
         model_ftt, _ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
@@ -1260,17 +1336,16 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
         ftt_keep_idx = list(range(n_features))
         if ftt_n_features != n_features:
             try:
-                ftt_meta_blob = bucket.blob("universal/metadata_ft-transformer.json")
-                if ftt_meta_blob.exists():
-                    ftt_meta = json.loads(ftt_meta_blob.download_as_text())
-                    ftt_fnames = ftt_meta.get("feature_names", [])
-                    name_to_idx_ftt = {n: i for i, n in enumerate(feature_names)}
-                    ftt_keep_idx = [name_to_idx_ftt[n] for n in ftt_fnames if n in name_to_idx_ftt]
-                    X_shap_ftt = X_shap[:, ftt_keep_idx]
-                    print(
-                        f"[SHAP] FT-T feature align: {len(ftt_keep_idx)} features "
-                        f"(model={ftt_n_features}, prep={n_features})"
-                    )
+                ftt_fnames = ftt_meta.get("feature_names", [])
+                name_to_idx_ftt = {n: i for i, n in enumerate(feature_names)}
+                ftt_keep_idx = [name_to_idx_ftt[n] for n in ftt_fnames if n in name_to_idx_ftt]
+                if not ftt_keep_idx:
+                    raise RuntimeError("FT-Transformer metadata has no matching feature_names")
+                X_shap_ftt = X_shap[:, ftt_keep_idx]
+                print(
+                    f"[SHAP] FT-T feature align: {len(ftt_keep_idx)} features "
+                    f"(model={ftt_n_features}, prep={n_features})"
+                )
             except Exception as feature_err:
                 print(f"[SHAP] FT-T meta load failed: {feature_err}")
                 X_shap_ftt = X_shap[:, :ftt_n_features]

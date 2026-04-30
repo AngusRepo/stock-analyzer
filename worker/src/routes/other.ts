@@ -14,7 +14,8 @@ import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
-import { fetchAndStoreStockData, computeAndStoreIndicators } from './stocks'
+import { fetchAndStoreStockData } from './stocks'
+import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 import {
   generateTechnicalAnalysis,
   generateTradingAdvice,
@@ -25,6 +26,7 @@ import {
   buildMlVoteSummary,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
+import { getTradingConfig } from '../lib/tradingConfig'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -1031,6 +1033,7 @@ recommendations.get('/daily', async (c) => {
   }
 
   // 解析 watch_points JSON
+  const tradingConfig = await getTradingConfig(c.env.KV)
   const recs = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
@@ -1038,7 +1041,7 @@ recommendations.get('/daily', async (c) => {
       ...r,
       alpha_context: forecastData?.alpha_context ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? null,
-      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows),
+      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal),
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })

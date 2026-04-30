@@ -8,6 +8,12 @@ export interface MlVoteSummary {
   forecastPct: number | null
   activeWeightCount: number
   reason: string | null
+  thresholds?: {
+    bullish: number
+    bearish: number
+    regime: string
+    adjustment: number
+  }
 }
 
 export interface PerModelPredictionRow {
@@ -15,6 +21,12 @@ export interface PerModelPredictionRow {
   signal_raw?: string | null
   forecast_data?: unknown
   direction_accuracy?: number | null
+}
+
+export interface MlVoteThresholdPolicy {
+  modelVoteBullishThreshold?: number
+  modelVoteBearishThreshold?: number
+  modelVoteRegimeAdjustments?: Record<string, number>
 }
 
 const TRACKED_MODEL_NAMES = [
@@ -29,6 +41,17 @@ const TRACKED_MODEL_NAMES = [
   'KalmanFilter',
   'MarkovSwitching',
 ]
+
+const DEFAULT_VOTE_POLICY: Required<MlVoteThresholdPolicy> = {
+  modelVoteBullishThreshold: 0.55,
+  modelVoteBearishThreshold: 0.45,
+  modelVoteRegimeAdjustments: {
+    bull: -0.02,
+    bear: 0.03,
+    volatile: 0.03,
+    sideways: 0.02,
+  },
+}
 
 export function parsePredictionForecastData(raw: unknown): Record<string, any> | null {
   if (!raw) return null
@@ -55,12 +78,58 @@ function rowRankScore(row: PerModelPredictionRow): number | null {
   return Number.isFinite(score) ? score : null
 }
 
-function voteFromSignal(signal: string, score?: number | null): 'bullish' | 'bearish' | 'flat' {
+function normalizeRegime(raw: unknown): string {
+  const regime = String(raw ?? '').toLowerCase()
+  if (regime.includes('bull')) return 'bull'
+  if (regime.includes('bear')) return 'bear'
+  if (regime.includes('vol')) return 'volatile'
+  if (regime.includes('side') || regime.includes('range') || regime.includes('chop')) return 'sideways'
+  return 'unknown'
+}
+
+function finiteOrDefault(value: unknown, fallback: number): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value))
+}
+
+function resolveVoteThresholds(
+  forecastData: Record<string, any> | null,
+  policy?: MlVoteThresholdPolicy,
+): { bullish: number; bearish: number; regime: string; adjustment: number } {
+  const regime = normalizeRegime(forecastData?.alpha_context?.regime)
+  const mergedPolicy = {
+    ...DEFAULT_VOTE_POLICY,
+    ...(policy ?? {}),
+    modelVoteRegimeAdjustments: {
+      ...DEFAULT_VOTE_POLICY.modelVoteRegimeAdjustments,
+      ...(policy?.modelVoteRegimeAdjustments ?? {}),
+    },
+  }
+  const adjustment = finiteOrDefault(mergedPolicy.modelVoteRegimeAdjustments[regime], 0)
+  const bullish = clamp01(finiteOrDefault(mergedPolicy.modelVoteBullishThreshold, DEFAULT_VOTE_POLICY.modelVoteBullishThreshold) + adjustment)
+  const bearish = clamp01(finiteOrDefault(mergedPolicy.modelVoteBearishThreshold, DEFAULT_VOTE_POLICY.modelVoteBearishThreshold) - adjustment)
+  return {
+    bullish: Math.max(bullish, bearish),
+    bearish: Math.min(bullish, bearish),
+    regime,
+    adjustment,
+  }
+}
+
+function voteFromSignal(
+  signal: string,
+  score: number | null | undefined,
+  thresholds: { bullish: number; bearish: number },
+): 'bullish' | 'bearish' | 'flat' {
   if (signal.includes('BUY') || signal.includes('UP') || signal.includes('BULL')) return 'bullish'
   if (signal.includes('SELL') || signal.includes('DOWN') || signal.includes('BEAR')) return 'bearish'
   if (typeof score === 'number' && Number.isFinite(score)) {
-    if (score >= 0.55) return 'bullish'
-    if (score <= 0.45) return 'bearish'
+    if (score >= thresholds.bullish) return 'bullish'
+    if (score <= thresholds.bearish) return 'bearish'
   }
   return 'flat'
 }
@@ -68,8 +137,10 @@ function voteFromSignal(signal: string, score?: number | null): 'bullish' | 'bea
 export function buildMlVoteSummary(
   forecastData: unknown,
   perModelRows: PerModelPredictionRow[] = [],
+  policy?: MlVoteThresholdPolicy,
 ): MlVoteSummary | null {
   const data = parsePredictionForecastData(forecastData)
+  const thresholds = resolveVoteThresholds(data, policy)
   const cleanRowsByModel = new Map<string, PerModelPredictionRow>()
   for (const row of perModelRows) {
     const name = String(row.model_name ?? '')
@@ -95,7 +166,7 @@ export function buildMlVoteSummary(
     for (const row of cleanRows) {
       // Per-model rows inherit the ensemble trade signal for execution audit.
       // Model voting must use each model's own rank score, not that shared signal.
-      const vote = voteFromSignal('', rowRankScore(row))
+      const vote = voteFromSignal('', rowRankScore(row), thresholds)
       if (vote === 'bullish') bullish += 1
       else if (vote === 'bearish') bearish += 1
       else flat += 1
@@ -105,8 +176,10 @@ export function buildMlVoteSummary(
       const direction = typeof model === 'string'
         ? ''
         : String(model?.direction ?? model?.signal ?? '').toLowerCase()
-      if (direction.includes('up') || direction.includes('buy') || direction.includes('bull')) bullish += 1
-      else if (direction.includes('down') || direction.includes('sell') || direction.includes('bear')) bearish += 1
+      const score = typeof model === 'string' ? null : finiteOrDefault(model?.rank_score ?? model?.confidence, NaN)
+      const vote = voteFromSignal(direction, score, thresholds)
+      if (vote === 'bullish') bullish += 1
+      else if (vote === 'bearish') bearish += 1
       else flat += 1
     }
   }
@@ -124,13 +197,17 @@ export function buildMlVoteSummary(
     forecastPct,
     activeWeightCount,
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
+    thresholds,
   }
 }
 
 export function buildMlVoteWatchPoint(summary: MlVoteSummary | null): string | null {
   if (!summary) return null
   const forecast = summary.forecastPct == null ? 'n/a' : summary.forecastPct.toFixed(1)
-  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, flat=${summary.flat}/${summary.total}, missing=${summary.missing}/${summary.total}, forecast=${forecast}%`
+  const thresholds = summary.thresholds
+    ? `, bullish_threshold=${summary.thresholds.bullish.toFixed(3)}, bearish_threshold=${summary.thresholds.bearish.toFixed(3)}, regime=${summary.thresholds.regime}`
+    : ''
+  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, flat=${summary.flat}/${summary.total}, missing=${summary.missing}/${summary.total}, forecast=${forecast}%${thresholds}`
 }
 
 export function buildMarketStructureWatchPoint(alphaContext: any): string | null {

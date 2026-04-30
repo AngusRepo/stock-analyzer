@@ -62,6 +62,13 @@ function isStockCode(s: string): boolean {
   return /^\d{4,6}$/.test(s.trim())
 }
 
+function parseOpenApiArray(text: string): any[] {
+  const normalized = text.replace(/^\uFEFF/, '').trimStart()
+  if (!normalized.startsWith('[')) return []
+  const body = JSON.parse(normalized)
+  return Array.isArray(body) ? body : []
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BulkChipRow {
@@ -924,9 +931,7 @@ export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
   }, { label: 'TPEX_DAILY_QUOTES' })
   if (!res.ok) return []
   const text = await res.text()
-  if (!text.startsWith('[')) return []
-  const body = JSON.parse(text) as any[]
-  if (!Array.isArray(body)) return []
+  const body = parseOpenApiArray(text)
   // fields vary, common keys: SecuritiesCompanyCode, Open, High, Low, Close, TradingShares
   return body
     .filter(r => isStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
@@ -953,9 +958,7 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
   })
   if (!res.ok) return []
   const text = await res.text()
-  if (!text.startsWith('[')) return []
-  const body = JSON.parse(text) as any[]
-  if (!Array.isArray(body)) return []
+  const body = parseOpenApiArray(text)
   return body
     .filter(r => isStockCode(r.SecuritiesCompanyCode ?? ''))
     .map(r => {

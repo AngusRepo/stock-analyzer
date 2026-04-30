@@ -448,12 +448,10 @@ def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: st
 # ─────────────────────────────────────────────────────────────────────────────
 
 def list_legacy_artifacts() -> list[dict]:
+    raise RuntimeError("legacy artifact migration is disabled; model_pool.json is canonical")
     """Discover existing GCS artifacts that should be migrated to v{N} layout.
 
     Looks for the legacy flat-file pattern:
-      universal/xgboost.joblib            (legacy: 5 feature models)
-      universal/dlinear/v1.pt             (already versioned: Stage 0.2/0.3)
-      universal/patchtst/v1.pt            (already versioned)
 
     Returns a list of {model, current_path, target_path, action}.
     Action is 'rename' (legacy → versioned), 'already_versioned' (no-op),
@@ -488,9 +486,9 @@ def list_legacy_artifacts() -> list[dict]:
             continue
         # FT-Transformer special-case: its joblib is the bundle dict (Stage 0.2 N1 fix)
         if name == "FT-Transformer":
-            legacy_path = "universal/ft-transformer.joblib"
+            legacy_path = ""
         else:
-            legacy_path = f"universal/{name.lower()}.joblib"
+            legacy_path = ""
         if bucket.blob(legacy_path).exists():
             out.append({
                 "model": name,
@@ -509,6 +507,7 @@ def list_legacy_artifacts() -> list[dict]:
 
 
 def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
+    raise RuntimeError("legacy artifact migration is disabled; model_pool.json is canonical")
     """Copy legacy flat-file artifacts to versioned layout.
 
     NOTE: This is a copy (not move); original legacy paths are kept as a
@@ -541,9 +540,9 @@ def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
                 continue
             name = item["model"]
             if name == "FT-Transformer":
-                src_meta = "universal/metadata_ft-transformer.json"
+                src_meta = ""
             else:
-                src_meta = f"universal/metadata_{name.lower()}.json"
+                src_meta = ""
             tgt_meta = gcs_metadata_path_for(name, "v1")
             try:
                 src_blob = bucket.blob(src_meta)

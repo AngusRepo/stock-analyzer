@@ -9,9 +9,12 @@ function base64url(data: ArrayBuffer | Uint8Array): string {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-function b64urlDecode(s: string): Uint8Array {
+function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/').padEnd(s.length + (4 - s.length % 4) % 4, '=')
-  return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  const raw = atob(b64)
+  const bytes = new Uint8Array(new ArrayBuffer(raw.length))
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+  return bytes
 }
 
 async function getHmacKey(secret: string) {

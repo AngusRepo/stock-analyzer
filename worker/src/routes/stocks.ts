@@ -21,6 +21,7 @@ import {
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
+import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 
 const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -315,101 +316,6 @@ async function fetchAndStoreYahoo(db: D1Database, stock: any) {
   } catch (e) {
     console.error(`[Yahoo] Failed for ${stock.symbol}:`, e)
   }
-}
-
-// ─── 獨立的指標計算入口（由 Queue consumer 在 fetchAndStore 之後呼叫）─────────
-// Why: SRP — fetch/store raw prices 與 compute derived indicators 是兩個不同的 pipeline stage
-export async function computeAndStoreIndicators(db: D1Database, stockId: number): Promise<void> {
-  try {
-    const recentPrices = await db.prepare(
-      'SELECT close, high, low FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 70'
-    ).bind(stockId).all<{ close: number; high: number; low: number }>()
-
-    const closes = recentPrices.results.map(p => p.close).reverse()
-    if (closes.length < 20) return
-
-    const today = new Date().toISOString().split('T')[0]
-    const ind   = computeIndicators(
-      closes,
-      recentPrices.results.map(p => p.high).reverse(),
-      recentPrices.results.map(p => p.low).reverse(),
-    )
-    await db.prepare(
-      `INSERT OR REPLACE INTO technical_indicators
-         (stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal, macd_hist, bb_upper, bb_mid, bb_lower, atr14)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(
-      stockId, today,
-      ind.ma5, ind.ma10, ind.ma20, ind.ma60,
-      ind.rsi14, ind.macd, ind.macdSignal, ind.macdHist,
-      ind.bbUpper, ind.bbMid, ind.bbLower, ind.atr14,
-    ).run()
-  } catch (e) {
-    console.error(`[Indicators] Failed for stock_id=${stockId}:`, e)
-  }
-}
-
-// ─── Technical Indicator Computation ─────────────────────────────────────────
-function sma(arr: number[], n: number): number | null {
-  if (arr.length < n) return null
-  return arr.slice(-n).reduce((a, b) => a + b, 0) / n
-}
-
-function ema(arr: number[], n: number): number[] {
-  const k = 2 / (n + 1); const r = [arr[0]]
-  for (let i = 1; i < arr.length; i++) r.push(arr[i] * k + r[i-1] * (1-k))
-  return r
-}
-
-function computeIndicators(closes: number[], highs: number[], lows: number[]) {
-  const ma5  = sma(closes, 5)
-  const ma10 = sma(closes, 10)
-  const ma20 = sma(closes, 20)
-  const ma60 = sma(closes, 60)
-
-  // RSI
-  let gains = 0, losses = 0, rsi14 = null
-  const period = 14
-  if (closes.length >= period + 1) {
-    for (let i = closes.length - period; i < closes.length; i++) {
-      const d = closes[i] - closes[i-1]
-      if (d > 0) gains += d; else losses -= d
-    }
-    const avgG = gains / period, avgL = losses / period
-    rsi14 = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL)
-  }
-
-  // MACD
-  let macd = null, macdSignal = null, macdHist = null
-  if (closes.length >= 35) {
-    const ema12 = ema(closes, 12), ema26 = ema(closes, 26)
-    const macdLine = ema12.map((v, i) => v - ema26[i]).slice(25)
-    const signalLine = ema(macdLine, 9)
-    macd       = macdLine[macdLine.length - 1]
-    macdSignal = signalLine[signalLine.length - 1]
-    macdHist   = macd - macdSignal
-  }
-
-  // Bollinger Bands
-  let bbUpper = null, bbMid = null, bbLower = null
-  if (closes.length >= 20) {
-    const slice = closes.slice(-20)
-    const mean  = slice.reduce((a,b) => a+b,0) / 20
-    const std   = Math.sqrt(slice.reduce((a,b) => a + (b-mean)**2, 0) / 20)
-    bbMid = mean; bbUpper = mean + 2*std; bbLower = mean - 2*std
-  }
-
-  // ATR
-  let atr14 = null
-  if (highs.length >= 15) {
-    const trs = []
-    for (let i = highs.length - 14; i < highs.length; i++) {
-      trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])))
-    }
-    atr14 = trs.reduce((a,b) => a+b, 0) / 14
-  }
-
-  return { ma5, ma10, ma20, ma60, rsi14, macd, macdSignal, macdHist, bbUpper, bbMid, bbLower, atr14 }
 }
 
 // ─── GET /api/stocks/:id/margin?days=60 ─────────────────────────────────────

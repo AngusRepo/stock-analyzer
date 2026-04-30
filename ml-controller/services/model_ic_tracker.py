@@ -131,9 +131,18 @@ def compute_weekly_ic_from_rows(
             }
             continue
         ic = spearman_ic(pairs)
+        if ic is None:
+            out[name] = {
+                "status": "undefined_variance",
+                "ic": None,
+                "n_samples": len(pairs),
+                "score_sources": score_sources[name],
+                "error": "rank_score_or_actual_return_has_zero_cross_sectional_variance",
+            }
+            continue
         out[name] = {
             "status": "computed",
-            "ic": round(ic, 6) if ic is not None else None,
+            "ic": round(ic, 6),
             "n_samples": len(pairs),
             "score_sources": score_sources[name],
         }

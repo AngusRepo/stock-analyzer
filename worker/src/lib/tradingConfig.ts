@@ -284,6 +284,9 @@ export interface TradingConfig {
     buySignalScore: number       // BUY 門檻（預設 0.52） — Optuna 月搜的 baseline
     holdSignalScore: number      // HOLD 門檻（預設 0.36）
     consensusThreshold: number   // 共識門檻（預設 0.60）
+    modelVoteBullishThreshold: number // per-model rank score 看漲門檻 fallback（會再套 regime adjustment）
+    modelVoteBearishThreshold: number // per-model rank score 看跌門檻 fallback（會再套 regime adjustment）
+    modelVoteRegimeAdjustments: Record<AlphaFrameworkRegime, number> // bull 可放寬，bear/volatile/sideways 可拉寬觀望帶
     // ── 2026-04-18 #36: news analyst hardcode ─────────────────────────────
     newsNegativeConfThreshold: number  // 新聞 bias=negative 觸發 conf 門檻（預設 0.5）
     newsNegativeConfBoost: number      // 觸發時 buyConfThreshold 上調量（預設 0.05）
@@ -564,6 +567,14 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     buySignalScore: 0.52,
     holdSignalScore: 0.36,
     consensusThreshold: 0.60,
+    modelVoteBullishThreshold: 0.55,
+    modelVoteBearishThreshold: 0.45,
+    modelVoteRegimeAdjustments: {
+      bull: -0.02,
+      bear: 0.03,
+      volatile: 0.03,
+      sideways: 0.02,
+    },
     // 2026-04-18 #36
     newsNegativeConfThreshold: 0.5,
     newsNegativeConfBoost: 0.05,

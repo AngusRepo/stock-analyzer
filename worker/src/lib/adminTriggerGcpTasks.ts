@@ -17,11 +17,18 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env),
     backtest: () => deps.runWeeklyBacktest(),
+    'weekly-backtest': async () => {
+      const bt = await deps.runWeeklyBacktest()
+      const mc = await deps.runWeeklyMonteCarlo().catch((e) => { console.warn('[MC]', e); return 'failed' })
+      const pbo = await deps.runWeeklyPBO().catch((e) => { console.warn('[PBO]', e); return 'failed' })
+      return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
+    },
     'monte-carlo': () => deps.runWeeklyMonteCarlo(),
     pbo: () => deps.runWeeklyPBO(),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
     lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(),
+    'monthly-optuna': () => deps.runWeeklyOptunaResearch(),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
     retrain: async () => {
       const force = c.req.query('monthly') === '1'

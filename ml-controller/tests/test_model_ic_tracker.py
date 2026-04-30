@@ -39,6 +39,22 @@ def test_compute_weekly_ic_uses_rank_score_and_reports_score_sources():
     assert result["XGBoost"]["score_sources"] == {"forecast_data.rank_score": 4}
 
 
+def test_compute_weekly_ic_marks_constant_scores_as_undefined_variance():
+    rows = [
+        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.01},
+        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.02},
+        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.03},
+        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.04},
+    ]
+
+    result = compute_weekly_ic_from_rows(rows, min_samples=4, all_tracked=("FT-Transformer",))
+
+    assert result["FT-Transformer"]["status"] == "undefined_variance"
+    assert result["FT-Transformer"]["ic"] is None
+    assert result["FT-Transformer"]["n_samples"] == 4
+    assert result["FT-Transformer"]["error"] == "rank_score_or_actual_return_has_zero_cross_sectional_variance"
+
+
 def test_apply_weekly_ic_updates_active_and_challenger_histories():
     pool = {
         "models": {

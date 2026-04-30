@@ -1,8 +1,17 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
 
-export async function runMLAndRiskV2(env: Bindings): Promise<string> {
-  const twDate = twToday()
+function resolvePipelineRunDate(runDate?: string | null): string {
+  const value = (runDate || '').trim()
+  if (!value) return twToday()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid pipeline run date: ${value}; expected YYYY-MM-DD`)
+  }
+  return value
+}
+
+export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Promise<string> {
+  const twDate = resolvePipelineRunDate(runDate)
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
   if (existing) {
@@ -58,7 +67,7 @@ export async function runMLAndRiskV2(env: Bindings): Promise<string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
-    console.log('[ML V2] Triggering ml-controller /pipeline/v2/run (async, expect 202)...')
+    console.log(`[ML V2] Triggering ml-controller /pipeline/v2/run date=${twDate} (async, expect 202)...`)
     const t0 = Date.now()
     const res = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/run?date=${twDate}`, {
       method: 'POST',

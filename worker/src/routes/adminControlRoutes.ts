@@ -57,6 +57,28 @@ adminControlRoutes.post('/api/admin/cron-callback', async (c) => {
     error: body.error != null ? String(body.error) : undefined,
   })
 
+  if (body.task === 'verify-v2' && body.status === 'success' && c.env.ML_CONTROLLER_URL) {
+    c.executionCtx.waitUntil((async () => {
+      const t0 = Date.now()
+      try {
+        const { runModelIcRollingRefresh } = await import('../lib/controllerWorkflows')
+        const summary = await runModelIcRollingRefresh(c.env)
+        await logCronResult(c.env.KV, 'model-ic-tracker', {
+          status: summary.startsWith('rolling_ic failed') ? 'error' : 'success',
+          summary,
+          duration_ms: Date.now() - t0,
+        }, c.env as any)
+      } catch (e: any) {
+        await logCronResult(c.env.KV, 'model-ic-tracker', {
+          status: 'error',
+          summary: e?.message ?? 'rolling_ic refresh failed',
+          duration_ms: Date.now() - t0,
+          error: String(e),
+        }, c.env as any)
+      }
+    })())
+  }
+
   console.log(
     `[cron-callback] ${body.task} ${body.status} ` +
     `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`,

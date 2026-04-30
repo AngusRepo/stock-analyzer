@@ -301,6 +301,22 @@ function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: bo
   )
 }
 
+function pendingBuyEmptyMessage(meta?: any): string {
+  const counts = meta?.execution_counts ?? {}
+  const cancelled = Number(counts.cancelled ?? 0)
+  const filled = Number(counts.filled ?? 0)
+  const skipped = Number(counts.skipped ?? 0)
+  const expired = Number(counts.expired ?? 0)
+  const terminal = cancelled + filled + skipped + expired
+  if (cancelled > 0 && terminal > 0) {
+    return '今日執行池的 pending buys 已被風控取消；AI Top Picks 仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+  }
+  if (terminal > 0) {
+    return '今日執行池的 pending buys 已進入終態；AI Top Picks 仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+  }
+  return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
+}
+
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   // T2 過濾後的掛單（非 raw recommendations）
   const { data: pbData, isLoading } = useQuery({
@@ -330,11 +346,12 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   // 如果沒有 pending buys，fallback 到 daily recommendations
   if (!buys.length) {
     return (
-      <div className="space-y-2">
-        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys</div>
+      <div className="space-y-3">
+        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
-        <div className="rounded-xl border border-muted/40 bg-background/40 p-4 text-xs text-muted-foreground">
-          尚未產出 debate 後的 pending buys。AI Top Picks 不再回退顯示未經 T2/debate 的 daily recommendations。
+        <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
+          {pendingBuyEmptyMessage(pendingMeta)}
         </div>
       </div>
     )
@@ -405,15 +422,15 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   })
   const recs = recData?.recommendations ?? recData?.data ?? []
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">尚無推薦</div>
+  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
       <div className="space-y-2">
-        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 尚未產出 T2 pending buys，暫以 Daily Recommendations 觀察清單顯示</div>
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與 Dashboard 同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
         </Badge>
-        <span className="text-muted-foreground/70">這裡依 recommendation rank 顯示，不是依 score 重新排序。</span>
+        <span className="text-muted-foreground/70">這是 pipeline 產出的推薦候選；下一個交易日 morning setup / debate 後才會產生 pending buys。</span>
       </div>
       {recs.slice(0, 12).map((r: any, idx: number) => (
         <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>

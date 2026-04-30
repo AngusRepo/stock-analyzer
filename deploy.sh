@@ -28,6 +28,30 @@ ML_DIR="$SCRIPT_DIR/ml-service"
 WORKER_URL=""; PAGES_URL=""; ML_URL=""; CONTROLLER_URL=""
 CONTROLLER_DIR="$SCRIPT_DIR/ml-controller"
 
+run_predeploy_gate() {
+  if [ "${P9_SKIP_GATE:-}" = "1" ]; then
+    warn "P9 gate skipped by P9_SKIP_GATE=1"
+    return
+  fi
+
+  step "STEP 3.5 / 6 P9 pre-deploy gate"
+  info "Installing dependencies for gate..."
+  (cd "$WORKER_DIR" && npm install --silent)
+  (cd "$FRONTEND_DIR" && npm install --silent)
+
+  local gate_script="$SCRIPT_DIR/scripts/p9_gate.ps1"
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "$gate_script"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$gate_script"
+  elif command -v powershell >/dev/null 2>&1; then
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$gate_script"
+  else
+    error "PowerShell is required to run scripts/p9_gate.ps1 before deploy. Set P9_SKIP_GATE=1 only for an approved emergency bypass."
+  fi
+  success "P9 pre-deploy gate passed"
+}
+
 # ── 產生獨立 ML 更新腳本 ─────────────────────────────────────────────────────
 generate_ml_script() {
   cat > "$SCRIPT_DIR/deploy-ml.sh" << 'MLEOF'
@@ -282,6 +306,8 @@ set_secret "RESEND_API_KEY"       "$INPUT_RESEND"
 set_secret "ADMIN_EMAIL"          "$INPUT_ADMIN_EMAIL"
 set_secret "ML_SERVICE_SECRET"    "$INPUT_ML_SECRET"
 set_secret "ML_CONTROLLER_SECRET" "$INPUT_CTRL_SECRET"
+
+run_predeploy_gate
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 4：Worker 部署

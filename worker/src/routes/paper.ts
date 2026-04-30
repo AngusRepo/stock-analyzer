@@ -65,8 +65,12 @@ async function enrichPendingBuyContext(
           FROM predictions p2
          WHERE p2.stock_id = s.id
            AND p2.model_name = 'ensemble'
-           AND date(p2.generated_at, '+8 hours') = dr.date
-         ORDER BY p2.generated_at DESC, p2.id DESC
+           AND p2.generated_at >= datetime(dr.date || ' 00:00:00', '-8 hours')
+           AND p2.generated_at < datetime(dr.date || ' 00:00:00', '+32 hours')
+         ORDER BY
+           CASE WHEN date(p2.generated_at, '+8 hours') = dr.date THEN 0 ELSE 1 END,
+           p2.generated_at DESC,
+           p2.id DESC
          LIMIT 1
       )
      WHERE dr.date = ?
@@ -78,14 +82,27 @@ async function enrichPendingBuyContext(
   if (stockIds.length > 0) {
     const stockPlaceholders = stockIds.map(() => '?').join(',')
     const { results: perModelRows } = await db.prepare(`
+      WITH ranked AS (
+        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data,
+               ROW_NUMBER() OVER (
+                 PARTITION BY stock_id, model_name
+                 ORDER BY
+                   CASE WHEN date(generated_at, '+8 hours') = ? THEN 0 ELSE 1 END,
+                   generated_at DESC,
+                   id DESC
+               ) AS rn
+          FROM predictions
+         WHERE stock_id IN (${stockPlaceholders})
+           AND model_name != 'ensemble'
+           AND model_name NOT LIKE '%::challenger'
+           AND generated_at >= datetime(? || ' 00:00:00', '-8 hours')
+           AND generated_at < datetime(? || ' 00:00:00', '+32 hours')
+      )
       SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
-        FROM predictions
-       WHERE stock_id IN (${stockPlaceholders})
-         AND model_name != 'ensemble'
-         AND model_name NOT LIKE '%::challenger'
-         AND date(generated_at, '+8 hours') = ?
+        FROM ranked
+       WHERE rn = 1
        ORDER BY stock_id, model_name
-    `).bind(...stockIds, sourceRecoDate).all<any>().catch(() => ({ results: [] as any[] }))
+    `).bind(sourceRecoDate, ...stockIds, sourceRecoDate, sourceRecoDate).all<any>().catch(() => ({ results: [] as any[] }))
     for (const row of perModelRows ?? []) {
       const stockId = Number(row.stock_id)
       const list = perModelByStock.get(stockId) ?? []

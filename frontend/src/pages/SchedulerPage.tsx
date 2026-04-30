@@ -10,10 +10,10 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import {
-  Play, Pause, Clock, CheckCircle2, AlertTriangle,
+  Play, Pause, Clock, CheckCircle2, AlertTriangle, ShieldCheck,
   ArrowRight, Activity, RefreshCw, Loader2,
 } from 'lucide-react'
-import { schedulerApi, costsApi, type SchedulerStatus, type CostsMonth } from '@/lib/api'
+import { schedulerApi, costsApi, dataQualityApi, deployGateApi, type SchedulerStatus, type CostsMonth, type DataQualityReport, type DeployGateReport } from '@/lib/api'
 
 const BUILD_STAMP = (import.meta.env.VITE_BUILD_STAMP as string | undefined) || 'dev'
 
@@ -85,9 +85,18 @@ function groupCosts(month: CostsMonth | null): Array<{ label: string; value: str
 
 const MONTHLY_BUDGET = 100
 
+function qualityBadgeClass(status?: 'ok' | 'warn' | 'fail') {
+  if (status === 'ok') return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20'
+  if (status === 'warn') return 'bg-amber-500/15 text-amber-300 border-amber-500/20'
+  if (status === 'fail') return 'bg-red-500/15 text-red-300 border-red-500/20'
+  return 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40'
+}
+
 export default function SchedulerPage() {
   const [status, setStatus] = useState<SchedulerStatus | null>(null)
   const [costs, setCosts] = useState<CostsMonth | null>(null)
+  const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null)
+  const [deployGate, setDeployGate] = useState<DeployGateReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -95,12 +104,16 @@ export default function SchedulerPage() {
   async function load() {
     try {
       setError(null)
-      const [scheduler, monthCosts] = await Promise.all([
+      const [scheduler, monthCosts, quality, gate] = await Promise.all([
         schedulerApi.status().catch((e) => { throw new Error(`scheduler: ${e.message}`) }),
         costsApi.month().catch(() => null),
+        dataQualityApi.status().catch(() => null),
+        deployGateApi.predeploy().catch(() => null),
       ])
       setStatus(scheduler)
       setCosts(monthCosts)
+      setDataQuality(quality)
+      setDeployGate(gate)
     } catch (e: any) {
       setError(e.message ?? 'Load failed')
     } finally {
@@ -320,6 +333,49 @@ export default function SchedulerPage() {
                       {job.history7d.map((cell, index) => <HeatmapCell key={`${job.id}-${index}`} value={cell} />)}
                     </div>
                   ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-sky-400" /> P9 Gate / P6 Data Quality
+                  <Badge variant="outline" className={`ml-auto text-[10px] ${qualityBadgeClass(deployGate?.status)}`}>
+                    {deployGate?.decision ?? 'N/A'}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pb-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3 text-[11px]">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3">
+                    <div className="text-muted-foreground">Data quality</div>
+                    <div className={`mt-1 font-semibold ${dataQuality?.overall === 'fail' ? 'text-red-300' : dataQuality?.overall === 'warn' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                      {dataQuality?.overall ?? 'unknown'}
+                    </div>
+                    <div className="mt-1 text-muted-foreground/70">date {dataQuality?.date ?? '-'}</div>
+                  </div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3">
+                    <div className="text-muted-foreground">Deploy gate</div>
+                    <div className={`mt-1 font-semibold ${deployGate?.decision === 'BLOCK' ? 'text-red-300' : deployGate?.decision === 'WARN' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                      {deployGate?.decision ?? 'unknown'}
+                    </div>
+                    <div className="mt-1 text-muted-foreground/70">checks {deployGate?.checks?.length ?? 0}</div>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  {(dataQuality?.checks ?? []).slice(0, 6).map((check) => (
+                    <div key={check.id} className="flex items-start gap-2 rounded-md border border-zinc-800/70 px-2 py-1.5 text-[11px]">
+                      <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${qualityBadgeClass(check.status)}`}>
+                        {check.status}
+                      </Badge>
+                      <div className="min-w-0">
+                        <div className="font-medium">{check.label}</div>
+                        <div className="truncate text-muted-foreground/70" title={check.summary}>{check.summary}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {!dataQuality && <div className="text-[11px] text-muted-foreground">Data quality API 尚未載入或尚未部署。</div>}
                 </div>
               </CardContent>
             </Card>

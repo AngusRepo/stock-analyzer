@@ -29,13 +29,11 @@ DEFAULT_LEGACY_CLASSIFIER_ARCH = {
 def rank_from_ft_regression_output(raw: float) -> float:
     """Map FT rank-regression utility to a bounded 0..1 rank.
 
-    Pairwise-ranking heads output unbounded utilities. Direct clipping turns
-    negative but useful values into exactly 0, so use a monotonic sigmoid unless
-    an artifact already emits calibrated 0..1 ranks.
+    Pairwise-ranking heads output unbounded utilities centered around zero.
+    A raw value of 0 means "neutral", not "worst rank", so use a monotonic
+    sigmoid for every finite value.
     """
     value = float(raw)
-    if math.isfinite(value) and 0.0 <= value <= 1.0:
-        return value
     if not math.isfinite(value):
         return 0.5
     value = max(-50.0, min(50.0, value))

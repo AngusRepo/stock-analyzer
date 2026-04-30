@@ -9,6 +9,7 @@ const StockReportPage = lazy(() => import('./pages/StockReportPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
+const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -48,6 +49,11 @@ export default function App() {
         <Route path="/model-pool">
           <Suspense fallback={<PageLoader label="Model Pool" />}>
             <ModelPoolPage />
+          </Suspense>
+        </Route>
+        <Route path="/data-quality">
+          <Suspense fallback={<PageLoader label="Data Quality" />}>
+            <DataQualityPage />
           </Suspense>
         </Route>
         <Route>

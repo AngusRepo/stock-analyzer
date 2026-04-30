@@ -5,7 +5,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.training_policy import FeatureSelectionPolicy, UniversalTrainingPolicy  # noqa: E402
+from app.training_policy import (  # noqa: E402
+    FeatureSelectionPolicy,
+    UniversalTrainingPolicy,
+    generated_model_pool_version,
+    should_force_model_pool_challenger,
+)
 
 
 def test_feature_selection_policy_keeps_current_defaults():
@@ -105,3 +110,20 @@ def test_universal_training_policy_accepts_payload_group_string():
     policy = UniversalTrainingPolicy(default_train_groups=("tree", "ftt"))
 
     assert policy.requested_groups({"train_model_groups": "tree,patchtst"}) == ["tree", "patchtst"]
+
+
+def test_universal_train_without_version_should_become_model_pool_challenger():
+    assert should_force_model_pool_challenger(
+        gcs_prefix="universal",
+        walk_forward_mode=False,
+        output_model_version=None,
+    ) is True
+    assert generated_model_pool_version("2026-04-30T01:02:03.123456+00:00") == "v20260430T010203"
+
+
+def test_universal_train_walk_forward_keeps_explicit_storage_scope():
+    assert should_force_model_pool_challenger(
+        gcs_prefix="walk_forward/w0",
+        walk_forward_mode=True,
+        output_model_version=None,
+    ) is False

@@ -173,9 +173,8 @@ def load_model(
                          metadata read from sibling 'metadata_v{N}.json' if present.
       2. gcs_prefix:     walk-forward override e.g. 'walk_forward/w0' →
                          '{prefix}/{model_name.lower()}.joblib'
-      3. ML_POOL pool:   when stock_id=0 and no overrides, look up active version
-                         from model_pool.json
-      4. Legacy fallback: 'universal/{model_name.lower()}.joblib' (for migration safety)
+      3. ML_POOL pool:   when stock_id=0 and no overrides, require active version
+                         from model_pool.json; missing pool/artifact fails closed
       5. Per-stock:      stock_id != 0 → '{stock_id}/{model_name.lower()}.joblib'
     """
     bucket = _get_bucket()
@@ -188,7 +187,6 @@ def load_model(
         blob_path: str | None = None
         meta_path: str | None = None
         used_pool = False
-        pool_lookup_attempted = False
         if explicit_path is not None:
             blob_path = explicit_path
             # Derive sibling metadata path: e.g. universal/xgboost/v2.joblib
@@ -204,32 +202,44 @@ def load_model(
             blob_path = f"{prefix}/{model_name.lower()}.joblib"
             meta_path = f"{prefix}/metadata_{model_name.lower()}.json"
         elif stock_id == 0:
-            # ML_POOL aware: prefer pool entry, fall back to legacy
+            # Production universal models have exactly one owner: model_pool.json.
+            # Do not fall back to legacy flat files; that creates split-brain artifacts.
             try:
                 from .model_pool import get_active_path, gcs_metadata_path_for, get_active_version, load_pool
                 pool_snapshot = load_pool()
-                pool_lookup_attempted = bool(pool_snapshot)
-                pool_path = get_active_path(model_name, pool=pool_snapshot) if pool_snapshot else None
-                if pool_path:
-                    candidate = bucket.blob(pool_path)
-                    if candidate.exists():
-                        blob_path = pool_path
-                        ver = get_active_version(model_name, pool=pool_snapshot)
-                        if ver:
-                            meta_path = gcs_metadata_path_for(model_name, ver)
-                        used_pool = True
+                if not pool_snapshot:
+                    logger.warning(
+                        "[ModelStore] model_pool.json unavailable for %s; refusing legacy fallback",
+                        model_name,
+                    )
+                    return None, None
+                pool_path = get_active_path(model_name, pool=pool_snapshot)
+                if not pool_path:
+                    logger.warning(
+                        "[ModelStore] no active model_pool path for %s; refusing legacy fallback",
+                        model_name,
+                    )
+                    return None, None
+                candidate = bucket.blob(pool_path)
+                if not candidate.exists():
+                    logger.warning(
+                        "[ModelStore] model_pool active artifact missing for %s at %s; refusing legacy fallback",
+                        model_name,
+                        pool_path,
+                    )
+                    return None, None
+                blob_path = pool_path
+                ver = get_active_version(model_name, pool=pool_snapshot)
+                if ver:
+                    meta_path = gcs_metadata_path_for(model_name, ver)
+                used_pool = True
             except Exception as _e:
-                logger.debug(f"[ModelStore] Pool lookup skipped for {model_name}: {_e}")
-            if blob_path is None and pool_lookup_attempted:
                 logger.warning(
-                    "[ModelStore] model_pool active artifact missing for %s; refusing legacy fallback",
+                    "[ModelStore] model_pool lookup failed for %s: %s; refusing legacy fallback",
                     model_name,
+                    _e,
                 )
                 return None, None
-            if blob_path is None:
-                # Legacy flat-file fallback (kept for safety while ML_POOL bootstraps)
-                blob_path = f"universal/{model_name.lower()}.joblib"
-                meta_path = f"universal/metadata_{model_name.lower()}.json"
         else:
             prefix = str(stock_id)
             blob_path = f"{prefix}/{model_name.lower()}.joblib"

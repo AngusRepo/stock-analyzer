@@ -1278,67 +1278,23 @@ class MigrateLegacyRequest(BaseModel):
 
 @router.post("/migrate_legacy")
 async def migrate_legacy(req: MigrateLegacyRequest):
-    """Copy legacy flat-file GCS artifacts to versioned layout (universal/{model}/v1.{ext}).
+    """Deprecated bootstrap endpoint.
 
-    dry_run=True: report only.
-    dry_run=False + confirm=true: actually copy. Originals kept (for predict
-    fallback until model_pool.json is the canonical source). Stage 4 follow-up
-    will deprecate originals after consumers migrate.
+    Production artifacts are now model_pool/versioned-only. Keeping a live
+    copy-from-flat-file path would reintroduce split-brain model ownership.
     """
-    if not req.dry_run and not req.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Non-dry-run requires confirm=true (writes to GCS)",
-        )
-    # Inline import to avoid forcing controller container to load ml-service deps at startup.
-    import importlib
-    import sys
-    sys.path.insert(0, "/app")  # ensure ml-service modules importable when colocated
-    try:
-        from app import model_pool as _mp  # ml-service module
-    except ImportError:
-        # Fallback path for cases where ml-service modules not on PYTHONPATH:
-        # do the bare migration via direct GCS calls
-        return _inline_migrate_via_gcs(dry_run=req.dry_run)
-    return _mp.migrate_legacy_to_versioned(dry_run=req.dry_run)
+    raise HTTPException(
+        status_code=410,
+        detail="legacy model artifact migration is disabled; model_pool.json is the canonical owner",
+    )
 
 
 def _inline_migrate_via_gcs(dry_run: bool) -> dict:
-    """Fallback if ml-service module isn't reachable: minimal inline copy."""
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    legacy_to_versioned = {
-        "universal/xgboost.joblib":          "universal/xgboost/v1.joblib",
-        "universal/catboost.joblib":         "universal/catboost/v1.joblib",
-        "universal/extratrees.joblib":       "universal/extratrees/v1.joblib",
-        "universal/lightgbm.joblib":         "universal/lightgbm/v1.joblib",
-        "universal/ft-transformer.joblib":   "universal/ft_transformer/v1.joblib",
-        "universal/metadata_xgboost.json":          "universal/xgboost/metadata_v1.json",
-        "universal/metadata_catboost.json":         "universal/catboost/metadata_v1.json",
-        "universal/metadata_extratrees.json":       "universal/extratrees/metadata_v1.json",
-        "universal/metadata_lightgbm.json":         "universal/lightgbm/metadata_v1.json",
-        "universal/metadata_ft-transformer.json":   "universal/ft_transformer/metadata_v1.json",
-    }
-    actions = []
-    for src, tgt in legacy_to_versioned.items():
-        src_blob = bucket.blob(src)
-        tgt_blob = bucket.blob(tgt)
-        item = {"source": src, "target": tgt}
-        if not src_blob.exists():
-            actions.append({**item, "executed": False, "note": "source missing"})
-            continue
-        if tgt_blob.exists():
-            actions.append({**item, "executed": False, "note": "target exists (skip)"})
-            continue
-        if dry_run:
-            actions.append({**item, "executed": False, "note": "dry_run"})
-            continue
-        try:
-            new = bucket.copy_blob(src_blob, bucket, tgt)
-            actions.append({**item, "executed": True, "note": f"copied -> {new.name}"})
-        except Exception as e:
-            actions.append({**item, "executed": False, "note": f"error: {e}"})
-    return {"dry_run": dry_run, "actions": actions}
+    """Disabled with /migrate_legacy; kept only to avoid import-time breakage."""
+    raise HTTPException(
+        status_code=410,
+        detail="legacy model artifact migration is disabled",
+    )
 
 
 class InitPoolRequest(BaseModel):

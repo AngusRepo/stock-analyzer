@@ -127,3 +127,19 @@ def test_model_pool_missing_artifact_does_not_fallback_to_legacy(monkeypatch):
 
     assert model is None
     assert metadata is None
+
+
+def test_universal_model_requires_model_pool_even_when_legacy_flat_file_exists(monkeypatch):
+    from app import model_pool
+
+    legacy_buf = io.BytesIO()
+    joblib.dump({"model": "legacy-flat"}, legacy_buf)
+    bucket = _FakeBucket({"universal/xgboost.joblib": _FakeBlob(legacy_buf.getvalue())})
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    monkeypatch.setattr(model_pool, "_get_bucket", lambda: bucket)
+    model_store.clear_model_cache()
+
+    model, metadata = model_store.load_model(0, "XGBoost")
+
+    assert model is None
+    assert metadata is None

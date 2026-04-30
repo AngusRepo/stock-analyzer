@@ -1234,7 +1234,7 @@ export async function getSandboxEntry(
 //   - Plan A model_pool.json single-active/single-challenger pattern
 //   - MLflow stage None → Staging → Production
 //   - KV single-slot (vs GCS JSON pool): OK because we only track 1 challenger
-//     at a time (Plan A tracks 10 models so needs a pool file)
+//     at a time (Plan A tracks alpha predictors plus separate overlay metadata)
 
 const CHALLENGER_KEY = 'trading:config:challenger'
 

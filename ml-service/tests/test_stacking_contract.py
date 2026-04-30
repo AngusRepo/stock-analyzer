@@ -43,9 +43,9 @@ def test_build_meta_features_respects_bundle_model_order():
     features = build_meta_features(
         [
             _pred("XGBoost", "up", 0.81, 0.03),
-            _pred("KalmanFilter", "down", 0.72, -0.02),
+            _pred("DLinear", "down", 0.72, -0.02),
         ],
-        model_order=["KalmanFilter", "XGBoost"],
+        model_order=["DLinear", "XGBoost"],
     )
 
     assert features.shape == (6,)
@@ -57,13 +57,13 @@ def test_meta_predict_uses_bundle_model_order():
     direction, confidence = meta_predict(
         [
             _pred("XGBoost", "up", 0.81, 0.03),
-            _pred("KalmanFilter", "down", 0.72, -0.02),
+            _pred("DLinear", "down", 0.72, -0.02),
             _pred("Chronos", "up", 0.66, 0.01),
         ],
         {
             "scaler": _IdentityScaler(),
             "model": _DummyModel(),
-            "model_order": ["KalmanFilter", "XGBoost"],
+            "model_order": ["DLinear", "XGBoost"],
         },
     )
 
@@ -115,7 +115,7 @@ def test_train_rank_stacker_oof_returns_rank_regression_bundle():
     assert pred > 0.65
 
 
-def test_default_v2_rank_model_order_covers_all_10_models():
+def test_default_v2_rank_model_order_covers_alpha_prediction_models_only():
     assert MODEL_ORDER == [
         "XGBoost",
         "CatBoost",
@@ -125,8 +125,6 @@ def test_default_v2_rank_model_order_covers_all_10_models():
         "Chronos",
         "DLinear",
         "PatchTST",
-        "KalmanFilter",
-        "MarkovSwitching",
     ]
 
 

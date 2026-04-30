@@ -2,8 +2,9 @@
 FastAPI ML service entrypoint.
 
 Current ensemble groups:
-  - Time-series models: KalmanFilter / DLinear / MarkovSwitching / PatchTST / Chronos
+  - Time-series alpha models: DLinear / PatchTST / Chronos
   - Tree and tabular models: XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
+  - State-space overlays: KalmanFilter / MarkovSwitching
 """
 import os
 import numpy as np

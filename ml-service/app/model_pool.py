@@ -64,8 +64,38 @@ GCS_STATE_SPACE_PREFIX = "per_stock_state_space"
 
 SCHEMA_VERSION = "1.0"
 
-# 10 models managed by ML_POOL (Stage 1 launched with 8; Stage 6 adds 2 state-space)
-# Order matters: family balance guard reads this for ≥3 feature + ≥2 time-series + ≥1 state-space
+ALPHA_PREDICTION_MODELS = (
+    "XGBoost",
+    "CatBoost",
+    "ExtraTrees",
+    "LightGBM",
+    "FT-Transformer",
+    "Chronos",
+    "DLinear",
+    "PatchTST",
+)
+
+STATE_SPACE_OVERLAY_MODELS = (
+    "KalmanFilter",
+    "MarkovSwitching",
+)
+
+EXPERIMENTAL_CHALLENGER_MODELS = {
+    "ResidualMLP": ("tabular_neural_shadow", "experimental", "joblib"),
+    "GNN": ("cross_stock_graph_shadow", "experimental", "json"),
+}
+
+META_OPTIMIZERS = {
+    "GAOptimizer": {
+        "layer": "meta_optimizer",
+        "status": "learning",
+        "scope": "ensemble_weights,strategy_params,risk_params",
+        "direct_prediction": False,
+    },
+}
+
+# 8 active alpha prediction models managed by ML_POOL.
+# State-space overlays and meta optimizers live in separate namespaces below.
 MANAGED_MODELS = {
     # name → (model_type, balance_family, gcs_extension)
     "XGBoost":          ("feature",                    "feature",     "joblib"),
@@ -76,16 +106,12 @@ MANAGED_MODELS = {
     "Chronos":          ("time_series_foundation",     "time_series", "json"),
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
     "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
-    # 2026-04-20 Stage 6: state-space models (per-stock state, shared hyperparams)
-    "KalmanFilter":     ("state_space_per_stock",      "state_space", "json"),
-    "MarkovSwitching":  ("state_space_per_stock",      "state_space", "json"),
 }
 
-# Family balance guards (per ML_POOL_ARCHITECTURE.md, adjusted for 5+3+2):
+# Family balance guards for active alpha predictors:
 MIN_ACTIVE_PER_FAMILY = {
     "feature":     3,    # ≥3 of 5 feature models must stay active
     "time_series": 2,    # ≥2 of 3 time-series must stay active
-    "state_space": 1,    # ≥1 of 2 state-space must stay active (small family)
 }
 
 # State-space default hyperparameters (used when no GCS pool entry exists).
@@ -112,11 +138,15 @@ DEFAULT_STATE_SPACE_HYPERPARAMS = {
 
 def gcs_path_for(model_name: str, version: str) -> str:
     """e.g. ('XGBoost', 'v1') → 'universal/xgboost/v1.joblib'"""
-    if model_name not in MANAGED_MODELS:
-        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
     if model_name in DEFAULT_STATE_SPACE_HYPERPARAMS:
         folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
         return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
+    if model_name in EXPERIMENTAL_CHALLENGER_MODELS:
+        _model_type, _family, ext = EXPERIMENTAL_CHALLENGER_MODELS[model_name]
+        folder = model_name.lower().replace("-", "_")
+        return f"experimental_shadow/{folder}/{version}.{ext}"
+    if model_name not in MANAGED_MODELS:
+        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
     _, _, ext = MANAGED_MODELS[model_name]
     folder = model_name.lower().replace("-", "_")
     return f"universal/{folder}/{version}.{ext}"
@@ -168,6 +198,9 @@ def init_default_pool() -> dict:
         "schema_version": SCHEMA_VERSION,
         "last_updated": datetime.now(timezone.utc).isoformat(),
         "models": {},
+        "shadow_models": {},
+        "state_overlays": {},
+        "meta_optimizers": {},
     }
     for name, (model_type, balance_family, _ext) in MANAGED_MODELS.items():
         pool["models"][name] = {
@@ -183,6 +216,35 @@ def init_default_pool() -> dict:
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,
+        }
+    for name, (model_type, balance_family, _ext) in EXPERIMENTAL_CHALLENGER_MODELS.items():
+        pool["shadow_models"][name] = {
+            "status": "challenger",
+            "version": "v1",
+            "gcs_path": gcs_path_for(name, "v1"),
+            "model_type": model_type,
+            "balance_family": balance_family,
+            "shadow_since": today,
+            "weekly_ic": [],
+            "ic_4w_avg": None,
+            "consecutive_negative_weeks": 0,
+            "vote_weight": 0.0,
+        }
+    for name in STATE_SPACE_OVERLAY_MODELS:
+        pool["state_overlays"][name] = {
+            "status": "active",
+            "version": "v1",
+            "gcs_path": gcs_path_for(name, "v1"),
+            "model_type": "state_space_overlay",
+            "role": "regime_risk_overlay",
+            "promoted_at": today,
+        }
+    for name, meta in META_OPTIMIZERS.items():
+        pool["meta_optimizers"][name] = {
+            **meta,
+            "version": "v1",
+            "created_at": today,
+            "promotion_gate": "walk_forward+pbo+transaction_cost_sensitivity",
         }
     return pool
 
@@ -310,6 +372,17 @@ def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optiona
     return gcs_path_for(model_name, version)
 
 
+def get_shadow_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
+    """Return registered experimental shadow path for MLP/GNN-style candidates."""
+    pool = pool or load_pool()
+    if not pool:
+        return None
+    entry = pool.get("shadow_models", {}).get(model_name)
+    if not entry or entry.get("status") not in ("challenger", "shadow"):
+        return None
+    return entry.get("gcs_path") or gcs_path_for(model_name, entry.get("version", "v1"))
+
+
 def register_challenger(
     model_name: str,
     version: str,
@@ -357,6 +430,42 @@ def register_challenger(
     return entry
 
 
+def register_shadow_challenger(
+    model_name: str,
+    version: str,
+    pool: Optional[dict] = None,
+    save: bool = True,
+) -> dict:
+    """Register an experimental predictor that must not vote until promoted.
+
+    This is for ResidualMLP/GNN. GAOptimizer is deliberately excluded because
+    it belongs to the meta_optimizer layer and does not emit stock forecasts.
+    """
+    if model_name not in EXPERIMENTAL_CHALLENGER_MODELS:
+        raise ValueError(f"{model_name} is not an experimental shadow predictor")
+    pool = pool or load_pool()
+    if not pool:
+        raise RuntimeError("model_pool.json not initialized; run /model_pool/init first")
+    shadow_models = pool.setdefault("shadow_models", {})
+    model_type, balance_family, _ext = EXPERIMENTAL_CHALLENGER_MODELS[model_name]
+    today = datetime.now(timezone.utc).date().isoformat()
+    shadow_models[model_name] = {
+        "status": "challenger",
+        "version": version,
+        "gcs_path": gcs_path_for(model_name, version),
+        "model_type": model_type,
+        "balance_family": balance_family,
+        "shadow_since": today,
+        "weekly_ic": [],
+        "ic_4w_avg": None,
+        "consecutive_negative_weeks": 0,
+        "vote_weight": 0.0,
+    }
+    if save:
+        save_pool(pool)
+    return shadow_models[model_name]
+
+
 def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool = True) -> dict:
     """Remove challenger entry (used when Stage 4 retire-not-promote, or
     manual rollback). Returns updated entry."""
@@ -384,8 +493,8 @@ def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
     Hyperparams are SHARED across all stocks; per-stock state is computed
     online at inference and not persisted.
     """
-    if model_name not in MANAGED_MODELS:
-        raise ValueError(f"Unknown model {model_name}")
+    if model_name not in DEFAULT_STATE_SPACE_HYPERPARAMS:
+        raise ValueError(f"{model_name} is not a state-space overlay")
     folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
     return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
 

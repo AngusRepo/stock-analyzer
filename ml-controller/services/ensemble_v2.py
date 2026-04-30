@@ -7,8 +7,6 @@ _SRC_KEY_MODEL = (
     ("chronos", "Chronos"),
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
-    ("kalman_filter", "KalmanFilter"),
-    ("markov_switching", "MarkovSwitching"),
 )
 
 

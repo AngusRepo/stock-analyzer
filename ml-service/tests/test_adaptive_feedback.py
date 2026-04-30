@@ -49,8 +49,10 @@ def test_update_arf_uses_return_pct_not_pnl_r_for_profitability(monkeypatch):
 
     monkeypatch.setattr(linucb_bandit, "linucb_update", _capture_linucb_update)
 
+    from app.arf_aggregator import FEATURE_DIM
+
     req = prediction_runtime.ARFUpdateRequest(
-        arf_features=[0.1] * 33,
+        arf_features=[0.1] * FEATURE_DIM,
         actual_up=True,
         actual_return_pct=0.001,
         realized_pnl_r=2.0,
@@ -99,8 +101,10 @@ def test_update_arf_updates_conformal_residuals(monkeypatch):
     monkeypatch.setattr(conformal, "load_conformal", lambda *args, **kwargs: FakeConformal())
     monkeypatch.setattr(conformal, "save_conformal", lambda *args, **kwargs: {"gcs_saved": True})
 
+    from app.arf_aggregator import FEATURE_DIM
+
     req = prediction_runtime.ARFUpdateRequest(
-        arf_features=[0.1] * 33,
+        arf_features=[0.1] * FEATURE_DIM,
         actual_up=True,
         actual_return_pct=0.021,
         realized_pnl_r=1.4,

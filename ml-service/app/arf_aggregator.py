@@ -1,27 +1,11 @@
-"""
-arf_aggregator.py — Adaptive Random Forest 聚合層（第 11 模型：在線增量聚合）
+﻿"""
+Adaptive Random Forest aggregation layer.
 
-定位：weighted_vote（LinUCB 加權投票）之後的第二道聚合，
-      利用 River 的 ARF + ADWIN Drift Detection 持續線上學習，
-      學會「在什麼樣的 10 模型輸出組合下，最終方向更可能是哪一邊」。
+Inputs are the 8 active alpha prediction models only. State-space models
+(KalmanFilter / MarkovSwitching) are regime/risk overlays, not alpha peers.
 
-兩層架構：
-  Layer 1 — LinUCB Bandit：根據市場情境調整各模型的信任權重（路由層）
-  Layer 2 — ARF（本檔）  ：把 10 個模型的輸出向量做增量分類，輸出最終方向機率（聚合層）
-
-特徵向量（33 維，不含 DoNothing arm — 它沒有 prediction 輸出）：
-  [0:10]  direction_numeric  — 1=up / 0=down，各 base model
-  [10:20] confidence         — 各 base model 預測信心（0~1）
-  [20:30] direction_accuracy — 各 base model 過去準確率（0~1）
-  [30]    hmm_regime_norm    — HMM 狀態歸一化 [0,1]
-  [31]    garch_vol_norm     — GARCH 波動率 [0,2]
-  [32]    market_risk_score  — 市場風險分數 [0,1]
-
-目標（y）：5 日後實際方向（1=up / 0=down）
-學習時機：auto-trade cron 驗證結果後呼叫 arf_update()
-輸出：P(up)（0~1），整合進 ensemble 最終訊號
-
-持久化：pickle 格式，存放在 /tmp/arf_state/arf_state.pkl
+Feature layout: 8 direction flags + 8 confidence values + 8 recent accuracy
+values + 3 market context fields = 27 dimensions.
 """
 from __future__ import annotations
 
@@ -30,19 +14,18 @@ import pickle
 from typing import Optional, TYPE_CHECKING
 import numpy as np
 
+from .model_pool import ALPHA_PREDICTION_MODELS
+
 if TYPE_CHECKING:
     from .models import ModelPrediction
 
 # ── 常數 ──────────────────────────────────────────────────────────────────────
 
 # 只包含 base prediction models（不含 DoNothing — 它沒有 prediction 輸出）
-BASE_MODEL_NAMES = [
-    "KalmanFilter", "DLinear", "MarkovSwitching", "PatchTST", "Chronos",
-    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-]
+BASE_MODEL_NAMES = list(ALPHA_PREDICTION_MODELS)
 
 CONTEXT_DIM      = 3    # hmm_regime_norm, garch_vol_norm, market_risk_score
-FEATURE_DIM      = len(BASE_MODEL_NAMES) * 3 + CONTEXT_DIM  # 33（DoNothing 不影響 ARF 特徵）
+FEATURE_DIM      = len(BASE_MODEL_NAMES) * 3 + CONTEXT_DIM
 ARF_STATE_DIR    = "/tmp/arf_state"
 ARF_STATE_FILE   = "arf_state.pkl"
 MIN_OBS_TO_TRUST = 50   # 至少 50 筆驗證樣本後才信任 ARF 輸出（靜態預設值）
@@ -82,7 +65,7 @@ def build_arf_features(
     market_risk_score: float = 0.5,  # [0,1]
 ) -> np.ndarray:
     """
-    將 10 個 base model 的預測 + 市場情境轉成 ARF 特徵向量（33 維）。
+    將 8 個 alpha base model 的預測 + 市場情境轉成 ARF 特徵向量（27 維）。
     若某 model 預測缺失，使用中性填補（方向=0.5，信心=0，準確率=0.5）。
     """
     pred_map = {p.model_name: p for p in predictions}

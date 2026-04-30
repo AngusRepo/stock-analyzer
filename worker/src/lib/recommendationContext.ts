@@ -38,8 +38,6 @@ const TRACKED_MODEL_NAMES = [
   'Chronos',
   'DLinear',
   'PatchTST',
-  'KalmanFilter',
-  'MarkovSwitching',
 ]
 
 const DEFAULT_VOTE_POLICY: Required<MlVoteThresholdPolicy> = {

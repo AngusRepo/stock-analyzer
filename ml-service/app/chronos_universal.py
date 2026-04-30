@@ -1,116 +1,170 @@
 """
-chronos_universal.py — Universal batch predictor for Amazon Chronos foundation model.
+Universal batch predictor for the production Chronos slot.
 
-2026-04-19 ML_POOL Plan A Stage 0.1: moves Chronos from per-stock per-call
-(models.py:run_chronos) into the v2 universal pipeline.
+StockVision treats Chronos as one alpha model slot, but that slot is now backed
+by two production members:
+- Chronos2ZeroShot: the public amazon/chronos-2 foundation model.
+- Chronos2LoRA: optional fine-tuned adapter/checkpoint configured by env.
 
-Key differences from per-call version:
-- Module-level pipeline singleton (@lru_cache) — loaded once per container
-  lifetime, not per prediction. Saves ~2-5s per call of ChronosPipeline
-  .from_pretrained overhead.
-- Batch interface: chronos_batch_predict(list of {symbol, prices}) returns
-  list of forecasts. Caller (daily_pipeline_v2.node_ml_predict) invokes
-  once for the entire watchlist instead of 33 per-stock calls.
-- Zero GCS artifact — foundation model is zero-shot. Only a
-gs://{GCS_BUCKET_NAME}/universal/chronos/v{N}_config.json is stored
-  as version marker for ML_POOL lifecycle tracking (Stage 1+).
-
-Caller contract:
-    result = chronos_batch_predict(
-        [{"symbol": "2330", "prices": [float, ...]}, ...],
-        horizon=5,
-    )
-    # result = [
-    #   {"symbol": "2330", "model": "Chronos", "forecast_pct": 0.012,
-    #    "up_prob": 0.65, "confidence": 0.58, "direction": "up"},
-    #   ...
-    # ]
-    # Error items: {"symbol": "...", "error": "insufficient data"}
+The downstream contract intentionally remains model="Chronos" so the ensemble
+does not inflate the model denominator when the LoRA member is enabled.
 """
-from functools import lru_cache
-from typing import Iterable
+from __future__ import annotations
+
 import logging
+import os
+from functools import lru_cache
+from typing import Any
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Default model — chronos-t5-tiny: 8M params, CPU-friendly
-# Swap to chronos-t5-mini (20M) or chronos-t5-small (46M) if accuracy needs
-#
-# Production guardrail:
-# StockVision 目前部署中的 Chronos 路徑是 amazon/chronos-t5-tiny。
-# 它是 CPU-friendly 的 zero-shot baseline，不是更大的 Chronos 變體；
-# 任何升級到 mini/small/其他 checkpoint 的動作，都應視為新的架構/
-# 成本決策，而不是默認優化。
-_DEFAULT_MODEL_ID = "amazon/chronos-t5-tiny"
+_DEFAULT_MODEL_ID = "amazon/chronos-2"
+_LORA_MODEL_ID_ENV = "CHRONOS2_LORA_MODEL_ID"
 
-# Min samples required before we attempt forecasting (short series → noise)
 _MIN_CONTEXT = 10
+_MAX_CONTEXT = 8192
+_QUANTILE_LEVELS = [0.1, 0.5, 0.9]
 
-# Context truncation — Chronos T5 max is ~512 in training
-_MAX_CONTEXT = 512
 
-
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=4)
 def _get_pipeline(model_id: str = _DEFAULT_MODEL_ID):
-    """Lazy singleton: load once per container lifetime."""
+    """Lazy singleton: load each Chronos-2 pipeline once per container."""
     import torch
-    from chronos import ChronosPipeline
+    from chronos import Chronos2Pipeline
 
-    logger.info(f"[ChronosUniversal] Loading pipeline: {model_id}")
-    pipeline = ChronosPipeline.from_pretrained(
+    logger.info("[ChronosUniversal] Loading Chronos-2 pipeline: %s", model_id)
+    pipeline = Chronos2Pipeline.from_pretrained(
         model_id,
         device_map="cpu",
         torch_dtype=torch.float32,
     )
-    logger.info(f"[ChronosUniversal] Pipeline ready")
+    logger.info("[ChronosUniversal] Pipeline ready: %s", model_id)
     return pipeline
 
 
-def _one_forecast(
-    pipeline, prices: list[float], horizon: int, num_samples: int
-) -> dict:
-    """Produce a single series forecast. Raises on error (caller handles)."""
-    import torch
+def _context_df(symbol: str, prices: list[float]):
+    """Build the pandas boundary required by Chronos2Pipeline.predict_df()."""
+    import pandas as pd
 
-    ctx_vals = prices[-min(_MAX_CONTEXT, len(prices)):]
-    context = torch.tensor(ctx_vals, dtype=torch.float32).unsqueeze(0)
-
-    with torch.no_grad():
-        forecast_tensor = pipeline.predict(
-            context=context,
-            prediction_length=horizon,
-            num_samples=num_samples,
-        )
-    # forecast_tensor shape: (1, num_samples, horizon)
-    samples = forecast_tensor[0].numpy()  # (num_samples, horizon)
-
-    last_price = float(prices[-1])
-    # Use last horizon step for 5d forecast
-    idx = horizon - 1
-    forecast_median = float(np.median(samples[:, idx]))
-    forecast_pct = (forecast_median - last_price) / max(last_price, 1e-9)
-
-    up_count = int(np.sum(samples[:, idx] > last_price))
-    up_prob = up_count / samples.shape[0]
-
-    # Confidence from sample spread vs price vol
-    spread = float(np.std(samples[:, idx]))
-    confidence = min(
-        0.85,
-        max(0.35, max(up_prob, 1 - up_prob) * (1 - spread / (last_price * 0.05 + 1e-8) * 0.1)),
+    ctx_vals = [float(v) for v in prices[-min(_MAX_CONTEXT, len(prices)):]]
+    timestamps = pd.date_range(
+        end=pd.Timestamp.today().normalize(),
+        periods=len(ctx_vals),
+        freq="D",
     )
+    return pd.DataFrame({
+        "id": [symbol] * len(ctx_vals),
+        "timestamp": timestamps,
+        "target": ctx_vals,
+    })
 
+
+def _as_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _select_forecast_row(pred_df) -> dict[str, float]:
+    """Extract the last-horizon quantiles from a Chronos-2 prediction frame."""
+    if pred_df is None or len(pred_df) == 0:
+        raise ValueError("empty Chronos-2 prediction frame")
+    row = pred_df.sort_values("timestamp").iloc[-1].to_dict() if "timestamp" in pred_df else pred_df.iloc[-1].to_dict()
+    q10 = _as_float(row.get("0.1", row.get(0.1)))
+    q50 = _as_float(row.get("0.5", row.get(0.5)))
+    q90 = _as_float(row.get("0.9", row.get(0.9)))
+    if q50 is None:
+        for key in ("mean", "median", "target", "prediction"):
+            q50 = _as_float(row.get(key))
+            if q50 is not None:
+                break
+    if q50 is None:
+        numeric = [
+            _as_float(value)
+            for key, value in row.items()
+            if key not in {"id", "item_id", "timestamp"}
+        ]
+        numeric = [value for value in numeric if value is not None]
+        if not numeric:
+            raise ValueError(f"Chronos-2 prediction frame has no numeric forecast columns: {list(row)}")
+        q50 = numeric[-1]
+    return {"q10": q10 if q10 is not None else q50, "q50": q50, "q90": q90 if q90 is not None else q50}
+
+
+def _one_member_forecast(pipeline, symbol: str, prices: list[float], horizon: int) -> dict:
+    context_df = _context_df(symbol, prices)
+    pred_df = pipeline.predict_df(
+        context_df,
+        prediction_length=horizon,
+        quantile_levels=_QUANTILE_LEVELS,
+        id_column="id",
+        timestamp_column="timestamp",
+        target="target",
+    )
+    qs = _select_forecast_row(pred_df)
+    last_price = float(prices[-1])
+    forecast_price = qs["q50"]
+    forecast_pct = (forecast_price - last_price) / max(last_price, 1e-9)
+    if qs["q10"] > last_price:
+        up_prob = 0.8
+    elif qs["q90"] < last_price:
+        up_prob = 0.2
+    else:
+        band = max(abs(qs["q90"] - qs["q10"]), last_price * 0.01, 1e-9)
+        up_prob = 0.5 + max(-0.3, min(0.3, (forecast_price - last_price) / band))
+    spread_ratio = abs(qs["q90"] - qs["q10"]) / max(last_price, 1e-9)
+    confidence = min(0.85, max(0.35, max(up_prob, 1 - up_prob) * (1 - min(spread_ratio, 0.20))))
+    return {
+        "forecast_pct": float(forecast_pct),
+        "forecast_price": float(forecast_price),
+        "up_prob": float(up_prob),
+        "confidence": float(confidence),
+        "quantiles": qs,
+    }
+
+
+def _combine_members(members: list[dict]) -> dict:
+    if not members:
+        raise ValueError("no Chronos-2 member forecasts")
+    forecast_pct = float(np.mean([m["forecast_pct"] for m in members]))
+    forecast_price = float(np.mean([m["forecast_price"] for m in members]))
+    up_prob = float(np.mean([m["up_prob"] for m in members]))
+    confidence = float(np.mean([m["confidence"] for m in members]))
     return {
         "model": "Chronos",
+        "model_family": "Chronos2",
         "forecast_pct": round(forecast_pct, 4),
-        "forecast_price": round(forecast_median, 4),
+        "forecast_price": round(forecast_price, 4),
         "up_prob": round(up_prob, 3),
         "confidence": round(confidence, 3),
         "direction": "up" if up_prob > 0.5 else "down",
-        "n_samples": num_samples,
+        "n_members": len(members),
     }
+
+
+def _one_forecast(
+    zero_shot_pipeline,
+    symbol: str,
+    prices: list[float],
+    horizon: int,
+    lora_model_id: str | None,
+) -> dict:
+    members = [_one_member_forecast(zero_shot_pipeline, symbol, prices, horizon)]
+    member_names = ["Chronos2ZeroShot"]
+    lora_status = "not_configured"
+    if lora_model_id:
+        lora_pipeline = _get_pipeline(lora_model_id)
+        members.append(_one_member_forecast(lora_pipeline, symbol, prices, horizon))
+        member_names.append("Chronos2LoRA")
+        lora_status = "active"
+    out = _combine_members(members)
+    out["production_members"] = member_names
+    out["lora_status"] = lora_status
+    return out
 
 
 def chronos_batch_predict(
@@ -121,40 +175,20 @@ def chronos_batch_predict(
 ) -> list[dict]:
     """Batch forecast entry point.
 
-    Args:
-      series_list: [{"symbol": str, "prices": list[float]}] — one per stock.
-      horizon: forecast length (default 5 trading days)
-      num_samples: Chronos sampling count for uncertainty (default 20)
-      model_id: override foundation model (default chronos-t5-tiny)
-
-    Returns:
-      Same length as series_list. Each item either
-        {"symbol", "model", "forecast_pct", "up_prob", ...} on success
-        {"symbol", "error": <reason>} on failure
-
-    Implementation note:
-      Chronos pipeline.predict() accepts batched tensors (N, context_len)
-      but requires same context length. Here we invoke per-series to avoid
-      padding artifacts from mixed context lengths. Performance is
-      acceptable because the pipeline is module-cached (no reload cost)
-      and chronos-t5-tiny inference is ~0.2-0.5s per series on CPU.
-      Future optimization: tensor padding + single .predict() call if
-      watchlist growth makes per-call overhead matter.
-
-    Guardrail:
-      Production default is chronos-t5-tiny on purpose. Do not silently
-      promote this to larger Chronos checkpoints without explicit review.
+    `num_samples` is retained for backward-compatible payloads. Chronos-2 emits
+    quantile forecasts through predict_df, so uncertainty comes from quantiles
+    rather than Chronos T5 sample paths.
     """
-    # Fail-safe: missing chronos dependency → return error rows rather than crash
     try:
-        pipeline = _get_pipeline(model_id)
+        zero_shot_pipeline = _get_pipeline(model_id or _DEFAULT_MODEL_ID)
     except ImportError as e:
-        logger.warning(f"[ChronosUniversal] chronos package missing: {e}")
+        logger.warning("[ChronosUniversal] chronos package missing: %s", e)
         return [{"symbol": s.get("symbol", "?"), "error": f"ImportError: {e}"} for s in series_list]
     except Exception as e:
-        logger.error(f"[ChronosUniversal] Pipeline load failed: {e}")
+        logger.error("[ChronosUniversal] Pipeline load failed: %s", e)
         return [{"symbol": s.get("symbol", "?"), "error": f"PipelineLoadError: {e}"} for s in series_list]
 
+    lora_model_id = os.environ.get(_LORA_MODEL_ID_ENV, "").strip() or None
     results: list[dict] = []
     for s in series_list:
         symbol = s.get("symbol", "?")
@@ -163,23 +197,30 @@ def chronos_batch_predict(
             results.append({"symbol": symbol, "error": f"insufficient data ({len(prices)} < {_MIN_CONTEXT})"})
             continue
         try:
-            out = _one_forecast(pipeline, prices, horizon=horizon, num_samples=num_samples)
+            out = _one_forecast(
+                zero_shot_pipeline,
+                symbol=symbol,
+                prices=prices,
+                horizon=horizon,
+                lora_model_id=lora_model_id,
+            )
             out["symbol"] = symbol
             results.append(out)
         except Exception as e:
-            logger.warning(f"[ChronosUniversal] {symbol} forecast failed: {e}")
+            logger.warning("[ChronosUniversal] %s forecast failed: %s", symbol, e)
             results.append({"symbol": symbol, "error": f"{type(e).__name__}: {e}"})
     return results
 
 
-# 2026-04-19 ML_POOL Stage 0.1: version config (for future lifecycle tracking)
 CURRENT_CONFIG = {
-    "version": "v1",
+    "version": "v2",
     "model_id": _DEFAULT_MODEL_ID,
-    "production_baseline_note": "Current deployed Chronos path uses amazon/chronos-t5-tiny CPU zero-shot baseline; larger Chronos variants are not the accepted default.",
+    "production_members": ["Chronos2ZeroShot", "Chronos2LoRA"],
+    "production_baseline_note": "Production Chronos slot is Chronos-2 zero-shot plus optional LoRA fine-tuned member.",
+    "lora_model_id_env": _LORA_MODEL_ID_ENV,
     "horizon_default": 5,
     "num_samples_default": 20,
     "min_context": _MIN_CONTEXT,
     "max_context": _MAX_CONTEXT,
-    "strategy": "zero-shot foundation, no training",
+    "strategy": "Chronos-2 production replacement, not challenger shadow",
 }

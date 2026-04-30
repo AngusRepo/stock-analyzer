@@ -1,14 +1,14 @@
-"""
-modal_app.py — StockVision ML Service（Modal 部署入口）
+﻿"""
+modal_app.py ??StockVision ML Service??odal ??質?鈭???
 
-Phase 1 MVC 重構：
-  - @modal.function() 定義（predict_single_stock, retrain_single_stock, update_arf_reward）
-  - @modal.asgi_app() 僅保留 HTTP health/audit endpoints，不承擔 production predict owner
-  - Cloud Run Controller 透過 .map() / .remote() 呼叫 Modal Functions
+Phase 1 MVC ?????
+  - @modal.function() ?????redict_single_stock, retrain_single_stock, update_arf_reward??
+  - @modal.asgi_app() ?????HTTP health/audit endpoints????頦? production predict owner
+  - Cloud Run Controller ??? .map() / .remote() ?瞉? Modal Functions
 
-使用方式：
-  部署：cd ml-service && python3 -m modal deploy modal_app.py
-  本地測試：python3 -m modal serve modal_app.py
+?輯撒??摮???
+  ??質??d ml-service && python3 -m modal deploy modal_app.py
+  ?????撗怠??ython3 -m modal serve modal_app.py
 """
 import os
 import modal
@@ -17,20 +17,20 @@ from pathlib import Path
 from app.modal_telemetry import build_retrain_orchestrator_telemetry
 from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 
-# ── 本機路徑（deploy 時 Modal 會自動上傳到 container）───────────────────────
+# ???? ?蟡?????eploy ??Modal ????????? container???????????????????????????????????????????????
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
-_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # 2026-04-07: optuna_routes 需要 import scripts/optuna_*.py
+_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # 2026-04-07: optuna_routes ????import scripts/optuna_*.py
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 
-# ── Image 定義（Modal v1.x API）──────────────────────────────────────────────
+# ???? Image ?????odal v1.x API?????????????????????????????????????????????????????????????????????????????????????????????
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
     .run_commands(
         "python -c \""
-        "from chronos import ChronosPipeline; "
-        "ChronosPipeline.from_pretrained('amazon/chronos-t5-tiny', device_map='cpu')"
+        "from chronos import Chronos2Pipeline; "
+        "Chronos2Pipeline.from_pretrained('amazon/chronos-2', device_map='cpu')"
         "\" || echo 'Chronos pre-download skipped (not installed)'",
     )
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
@@ -38,20 +38,20 @@ image = (
 )
 
 # Chronos baseline note:
-# Modal image currently preloads amazon/chronos-t5-tiny only. This repo does
-# not treat larger Chronos checkpoints as the default production baseline.
+# Modal image preloads amazon/chronos-2. Optional LoRA fine-tuned Chronos-2 is
+# loaded at runtime via CHRONOS2_LORA_MODEL_ID when configured.
 
-# ── Secret：GCS 憑證 + Cloudflare API（D1+KV，2026-04-07 Phase 1）─────────
+# ???? Secret??CS ??? + Cloudflare API??1+KV??026-04-07 Phase 1???????????????????
 gcs_secret = modal.Secret.from_name("gcs-credentials")
 
-# stockvision-cf 必須先 manual 建立：
+# stockvision-cf ?????manual ?梁????
 #   modal secret create stockvision-cf \
 #     CF_API_TOKEN=<cloudflare-api-token> \
 #     CF_ACCOUNT_ID=<cloudflare-account-id> \
 #     CF_D1_DB_ID=<cloudflare-d1-db-id> \
 #     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
 #     STOCKVISION_WORKER_URL=<stockvision-worker-url>
-# 若 secret 不存在，from_name 會報錯 → fallback 用空 secret
+# ??secret ??????from_name ???????fallback ??賢? secret
 try:
     cf_secret = modal.Secret.from_name("stockvision-cf")
 except Exception:
@@ -66,16 +66,16 @@ runtime_env_secret = modal.Secret.from_dict({
     if value
 })
 
-# ── App 定義 ──────────────────────────────────────────────────────────────────
+# ???? App ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 app = modal.App(
     name="stockvision-ml",
     image=image,
     secrets=[gcs_secret, cf_secret, runtime_env_secret],
 )
 
-# ── 共用：GCS 憑證注入 + sys.path 設定 ───────────────────────────────────────
+# ???? ?璇???CS ????? + sys.path ?桀?? ??????????????????????????????????????????????????????????????????????????????
 def _setup_env():
-    """在 Modal container 內設定 GCS 憑證和 import path。"""
+    """Set up Modal container environment."""
     return setup_modal_container_env()
 
 
@@ -148,24 +148,24 @@ def _load_oos_rank_payload_from_gcs(path: str) -> dict:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Modal Functions（Cloud Run Controller 透過 .map() 呼叫）
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+# Modal Functions??loud Run Controller ??? .map() ?瞉???
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2.0 Flow B Orchestrator — Modal 內部 chain
-# Cloud Run 只觸發此函數，後續 selection → train → SHAP 全在 Modal 內完成
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+# 2.0 Flow B Orchestrator ??Modal ??? chain
+# Cloud Run ??曉??瞏剛縐?鞈??????selection ??train ??SHAP ??? Modal ?????
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 @app.function(
     cpu=1,
     memory=1024,
-    timeout=18000,              # 300 min — selection (~70min) + train (~140min) + SHAP (~30min) + buffer (regime 900d worst case)
+    timeout=18000,              # 300 min ??selection (~70min) + train (~140min) + SHAP (~30min) + buffer (regime 900d worst case)
     scaledown_window=60,
     max_containers=1,
 )
 def retrain_orchestrator(payload: dict) -> dict:
-    """2.0 Flow B: prep 已完成 → [月度: await selection] → await train → await SHAP.
+    """2.0 Flow B: prep ??????[??瞍? await selection] ??await train ??await SHAP.
 
     Cloud Run dispatches one Modal orchestration chain.
     Cloud Run does not wait for training completion; followup callback closes the loop.
@@ -241,7 +241,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         print("[Orchestrator] Non-monthly -> skip feature selection")
         result["stages"]["feature_selection"] = {"status": "skipped"}
 
-    # ── Stage 2: Train — 2-container parallel (tree CPU + FT-T GPU) ──────────
+    # ???? Stage 2: Train ??2-container parallel (tree CPU + FT-T GPU) ????????????????????
     from app.training_finalizer import (
         expected_oos_artifact_groups,
         merge_oos_rank_payloads,
@@ -385,7 +385,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             if not partial:
                 continue
             if partial.get("error"):
-                print(f"[Orchestrator] ⚠️ Partial train error: {partial['error']}")
+                print(f"[Orchestrator] ??? Partial train error: {partial['error']}")
                 continue
             total_samples = max(total_samples, partial.get("total_samples", 0))
             for name, r in partial.get("results", {}).items():
@@ -526,7 +526,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             result["stages"]["train"]["degraded_reason"] = f"rank_stacker_{stacker_status or 'missing'}"
 
         if circuit_breaker:
-            print("[Orchestrator] ⚠️ Circuit breaker: some models IC≤0 — ensemble will auto-zero-weight them")
+            print("[Orchestrator] ??? Circuit breaker: some models IC?? ??ensemble will auto-zero-weight them")
 
         # Write merged ic_tracking.json to GCS (both containers skip GCS write when models_filter set)
         try:
@@ -646,15 +646,15 @@ def retrain_orchestrator(payload: dict) -> dict:
 
 
 @app.function(
-    cpu=1,                       # 1 CPU 足夠（10 models 已用 ThreadPoolExecutor 內部並行）
-    memory=2048,                 # 2GB 足夠（torch CPU 模式不需 4GB）
-    timeout=300,                 # 2026-04-08 P0-b: 180→300 buffer for tail inference + cold start
-    min_containers=0,            # Starter Plan 省 idle 成本（靠 Worker 17:15 warmup 預熱）
-    scaledown_window=900,        # 2026-04-08: 300→900 so 17:15 warmup keeps containers alive until 17:30 pipeline
-    max_containers=20,           # Starter 100 上限 → 限制最多 20 並發（77 stocks 分 4 波）
+    cpu=1,                       # 1 CPU ????0 models ?? ThreadPoolExecutor ????正???
+    memory=2048,                 # 2GB ????orch CPU ????? 4GB??
+    timeout=300,                 # 2026-04-08 P0-b: 180??00 buffer for tail inference + cold start
+    min_containers=0,            # Starter Plan ??idle ?????? Worker 17:15 warmup ?????
+    scaledown_window=900,        # 2026-04-08: 300??00 so 17:15 warmup keeps containers alive until 17:30 pipeline
+    max_containers=20,           # Starter 100 ??? ?????????20 ?﹝???7 stocks ??4 ???
 )
 def predict_single_stock(payload: dict) -> dict:
-    """單股推論 — 2.0: regression models + IC-weighted rank_to_signal.
+    """?????? ??2.0: regression models + IC-weighted rank_to_signal.
     No v1 fallback: v2 failures must surface as errors for control-plane visibility.
     """
     _setup_env()
@@ -678,8 +678,8 @@ def predict_single_stock(payload: dict) -> dict:
 
 @app.function(
     cpu=2,
-    memory=4096,
-    timeout=600,
+    memory=8192,
+    timeout=900,
     min_containers=0,
     scaledown_window=900,
     max_containers=4,
@@ -710,7 +710,7 @@ def predict_batch_v2(payload: dict) -> dict:
     max_containers=10,
 )
 def retrain_single_stock(payload: dict) -> dict:
-    """單股重訓 — Pure Compute。"""
+    """Retrain a single stock in pure compute mode."""
     _setup_env()
     from app.use_cases import retrain_stock, PredictRequest
     try:
@@ -726,13 +726,13 @@ def retrain_single_stock(payload: dict) -> dict:
 
 @app.function(
     cpu=1,
-    memory=2048,                 # prep: build_feature_matrix × ~500 stocks ≈ 1GB peak
+    memory=2048,                 # prep: build_feature_matrix ? ~500 stocks ??1GB peak
     timeout=600,                 # 10 min per batch
     scaledown_window=60,
-    max_containers=3,            # 可並行 prep 多批
+    max_containers=3,            # ??剛???prep ???
 )
 def prep_universal_batch(payload: dict) -> dict:
-    """單批 feature engineering → 存 GCS npz。"""
+    """Prepare universal feature batch and persist npz artifacts."""
     _setup_env()
     from app.use_cases import prep_universal_batch as _prep, UniversalPrepRequest
     try:
@@ -744,13 +744,14 @@ def prep_universal_batch(payload: dict) -> dict:
 
 @app.function(
     gpu="L4",                    # FT-Transformer needs GPU; L4 24GB for 631K full samples
-    memory=4096,                 # 631K samples × 106 features ≈ 500MB + tree training overhead
-    timeout=7200,                # 120 min — tree models ~5 min + FT-T GPU 631K ~90 min
+    memory=4096,                 # 631K samples x 106 features plus tree training overhead
+    timeout=7200,                # 120 min: tree models ~5 min + FT-T GPU full train ~90 min
     scaledown_window=60,
     max_containers=1,
 )
 def train_universal_from_gcs(payload: dict) -> dict:
-    """從 GCS 讀 prep npz → concat → 訓練 5 models → 自動觸發 SHAP + Permutation。
+    """Train all universal models from prepared GCS batches.
+
     Compatibility single-container path for Cloud Run direct train calls.
     """
     _setup_env()
@@ -776,14 +777,14 @@ def train_universal_from_gcs(payload: dict) -> dict:
     return train_result
 
 
-# ── 2-container split: tree models (CPU) + FT-T (GPU) ─────────────────────
+# ???? 2-container split: tree models (CPU) + FT-T (GPU) ??????????????????????????????????????????
 # Saves ~30 min GPU idle time + enables parallel training.
 # Orchestrator spawns both, waits for both, then merges results for IC gate.
 
 @app.function(
     cpu=2,
     memory=4096,
-    timeout=5400,                # 90 min — 4 tree models sequential on CPU
+    timeout=5400,                # 90 min ??4 tree models sequential on CPU
     scaledown_window=60,
     max_containers=1,
 )
@@ -802,7 +803,7 @@ def train_tree_models(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=4096,
-    timeout=10800,               # 180 min — FT-T on 1.3M samples
+    timeout=10800,               # 180 min ??FT-T on 1.3M samples
     scaledown_window=60,
     max_containers=1,
 )
@@ -822,7 +823,7 @@ def train_ftt_model(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=4096,
-    timeout=21600,               # 360 min — 20 trials @ ~15 min each + buffer
+    timeout=21600,               # 360 min ??20 trials @ ~15 min each + buffer
     scaledown_window=60,
     max_containers=1,
 )
@@ -836,8 +837,8 @@ def ft_transformer_arch_search(payload: dict) -> dict:
     settings. DO NOT auto-push to KV.
 
     Payload:
-      n_trials     (int, default 20) — coarse=20, full=50
-      subset_size  (int | null)      — null = full 681K, int = subsample X_train
+      n_trials     (int, default 20) ??coarse=20, full=50
+      subset_size  (int | null)      ??null = full 681K, int = subsample X_train
       gcs_prefix   (str, default "universal")
     """
     _setup_env()
@@ -878,14 +879,14 @@ def ft_transformer_arch_search(payload: dict) -> dict:
         return {"error": str(e), "type": "ft_arch_search"}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Sprint 6b Walk-Forward Modal functions (2026-04-18 #32)
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 @app.function(
     cpu=2,
     memory=4096,
-    timeout=3600,   # 60 min per window — tree models on ~60d train data
+    timeout=3600,   # 60 min per window ??tree models on ~60d train data
     scaledown_window=60,
     max_containers=3,   # allow 3 windows in parallel for tree path
 )
@@ -929,7 +930,7 @@ def train_wf_tree_window(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=4096,
-    timeout=3600,  # 60 min per window — FT-T on ~60d train data (smaller than universal)
+    timeout=3600,  # 60 min per window ??FT-T on ~60d train data (smaller than universal)
     scaledown_window=60,
     max_containers=2,   # allow 2 windows on GPU in parallel
 )
@@ -965,7 +966,7 @@ def train_wf_ftt_window(payload: dict) -> dict:
 @app.function(
     cpu=1,
     memory=2048,
-    timeout=300,   # 5 min — HMM is small (market-level, ~500 days max)
+    timeout=300,   # 5 min ??HMM is small (market-level, ~500 days max)
     scaledown_window=60,
     max_containers=3,
 )
@@ -1013,20 +1014,20 @@ def train_wf_hmm_window(payload: dict) -> dict:
 @app.function(
     cpu=1,
     memory=2048,
-    timeout=28800,   # 8 hour cap — 2026-04-19 bumped from 4hr after N2 added per-window FS:
-                     # 14 windows × max(FS_30min, train_15min) / concurrent=2 ≈ 3.5-5 hr nominal,
+    timeout=28800,   # 8 hour cap ??2026-04-19 bumped from 4hr after N2 added per-window FS:
+                     # 14 windows ? max(FS_30min, train_15min) / concurrent=2 ??3.5-5 hr nominal,
                      # 8hr gives headroom for FS variance + late SHAP audit
     scaledown_window=60,
     max_containers=1,   # only one orchestrator at a time
 )
 def walk_forward_orchestrator(payload: dict) -> dict:
-    """Walk-forward orchestrator (Modal-resident) — runs full pipeline across
+    """Walk-forward orchestrator (Modal-resident) ??runs full pipeline across
     all windows, calling train_wf_tree_window / train_wf_ftt_window / train_wf_hmm_window
     internally. Persists aggregate result to GCS walk_forward/runs/{start}_{end}.json.
 
     payload:
         windows: list of {window_id, train_start, train_end, test_start, test_end}
-        market_env: dict (full history — each window filters locally)
+        market_env: dict (full history ??each window filters locally)
         batch_count: int - number of prep batches.
         models: list[str]
         concurrent_windows: int (default 2)
@@ -1063,7 +1064,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     fs_force_refresh = bool(payload.get("fs_force_refresh", False))
 
     async def _run_one(window: dict) -> dict:
-        """FS → HMM → tree+ftt in parallel for one window."""
+        """FS ??HMM ??tree+ftt in parallel for one window."""
         wid = window["window_id"]
         gcs_prefix = f"walk_forward/w{wid}"
         result = {
@@ -1073,7 +1074,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "model_metrics": {},
         }
 
-        # Step 0: per-window feature selection (NEW — kills future leak in tree path)
+        # Step 0: per-window feature selection (NEW ??kills future leak in tree path)
         # Tree training waits for this; FT-T (skip_feature_pool=True) does not need pool.
         # On FS error, fallback to running tree without pool (skip_feature_pool=True)
         # so the run does not abort entirely.
@@ -1099,7 +1100,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     pool_summary = [None] * (fs_result.get("tree_active_count") or 0)
                 result["fs_tree_active_count"] = len(pool_summary)
             else:
-                print(f"[WF-Orchestrator] w{wid} FS failed: {fs_result.get('error')} — tree will fallback to skip_feature_pool")
+                print(f"[WF-Orchestrator] w{wid} FS failed: {fs_result.get('error')} ??tree will fallback to skip_feature_pool")
         except Exception as e:
             print(f"[WF-Orchestrator] w{wid} FS crashed: {e}")
             result["fs_result"] = {"error": str(e)}
@@ -1137,7 +1138,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 # to walk_forward/w{id}/feature_pool.json so this is belt-and-suspenders
                 tree_payload["feature_pool_path"] = f"{gcs_prefix}/feature_pool.json"
             else:
-                # FS failed → don't filter at all (avoids using stale global pool which has leak)
+                # FS failed ??don't filter at all (avoids using stale global pool which has leak)
                 tree_payload["skip_feature_pool"] = True
             tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
         if need_ftt:
@@ -1262,7 +1263,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             }, indent=2, default=str),
             content_type="application/json",
         )
-        print(f"[WF-Orchestrator] Persisted → gs://{bucket.name}/{gcs_path}")
+        print(f"[WF-Orchestrator] Persisted ??gs://{bucket.name}/{gcs_path}")
     except Exception as e:
         print(f"[WF-Orchestrator] Persist failed: {e}")
         gcs_path = None
@@ -1277,12 +1278,12 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=4096,
-    timeout=1800,                # 30 min — SHAP on 5 models × 5K samples
+    timeout=1800,                # 30 min ??SHAP on 5 models ? 5K samples
     scaledown_window=60,
     max_containers=1,
 )
 def shap_feature_audit(payload: dict) -> dict:
-    """SHAP Feature Importance Audit — 跨 5 個 model 評估 feature 重要性。"""
+    """Run SHAP feature importance audit."""
     _setup_env()
     from app.use_cases import run_shap_audit
     try:
@@ -1292,21 +1293,21 @@ def shap_feature_audit(payload: dict) -> dict:
         return {"error": str(e), "type": "shap_audit"}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # P0-8: Feature Selection Pipeline (Modal Function wrapper)
-# 月度 retrain_orchestrator 透過 .remote() 呼叫此 function (orchestrator scope name)
-# ══════════════════════════════════════════════════════════════════════════════
+# ??瞍?retrain_orchestrator ??? .remote() ?瞉???function (orchestrator scope name)
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 @app.function(
-    cpu=4,                       # Target Permutation × N rounds CPU-bound
+    cpu=4,                       # Target Permutation ? N rounds CPU-bound
     memory=8192,                 # Spearman corr + LightGBM on full 960K samples
-    timeout=7200,                # 120 min — signal gate (~5min) + clustering + TP (~30min) + Optuna K sweep (~30min) + diversity guard
+    timeout=7200,                # 120 min ??signal gate (~5min) + clustering + TP (~30min) + Optuna K sweep (~30min) + diversity guard
     scaledown_window=60,
     max_containers=1,
 )
 def feature_selection_pipeline(payload: dict) -> dict:
-    """月度 Feature Selection: Signal Gate → Silhouette → Target Permutation →
-    IC/ICIR → Optuna K Pareto sweep → Diversity Guard → 雙 Pool 輸出 (tree_active + ft_active)。
+    """??瞍?Feature Selection: Signal Gate ??Silhouette ??Target Permutation ??
+    IC/ICIR ??Optuna K Pareto sweep ??Diversity Guard ????Pool ?岳? (tree_active + ft_active)??
 
     Reads prep .npz from GCS, writes feature_pool.json to GCS.
     """
@@ -1330,7 +1331,7 @@ def feature_selection_pipeline(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=8192,
-    timeout=1800,             # 30 min for ~2500 stocks × ~500 windows × 30 epochs
+    timeout=1800,             # 30 min for ~2500 stocks ? ~500 windows ? 30 epochs
     scaledown_window=60,
     max_containers=1,
 )
@@ -1396,7 +1397,7 @@ def dlinear_universal_predict(payload: dict) -> dict:
 
     Returns:
         {"results": [{...}], "n_input": int, "n_success": int}
-        If model not in GCS yet → all rows error "weights not in GCS".
+        If model not in GCS yet ??all rows error "weights not in GCS".
     """
     _setup_env()
     from app.dlinear_universal import dlinear_batch_predict
@@ -1417,7 +1418,7 @@ def dlinear_universal_predict(payload: dict) -> dict:
 @app.function(
     gpu="L4",
     memory=8192,
-    timeout=3600,             # 60 min for ~1500 stocks × ~330k windows × 30 epochs
+    timeout=3600,             # 60 min for ~1500 stocks ? ~330k windows ? 30 epochs
     scaledown_window=60,
     max_containers=1,
 )
@@ -1490,7 +1491,7 @@ def patchtst_universal_predict(payload: dict) -> dict:
 @app.function(
     cpu=2,
     memory=2048,
-    timeout=600,             # 10 min — per-stock loop, Markov can take ~50ms × 33 stocks
+    timeout=600,             # 10 min ??per-stock loop, Markov can take ~50ms ? 33 stocks
     scaledown_window=300,    # keep hyperparam cache warm
     max_containers=1,
 )
@@ -1524,8 +1525,8 @@ def state_space_universal_predict(payload: dict) -> dict:
 # 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
 @app.function(
     cpu=2,
-    memory=4096,              # chronos-t5-tiny loads ~500MB
-    timeout=600,              # 10 min cap — 33 stocks × ~0.5s = 20s typical
+    memory=8192,              # Chronos-2 production baseline
+    timeout=900,              # 15 min cap for CPU Chronos-2 batch inference
     scaledown_window=300,     # keep container warm 5 min for back-to-back calls
     max_containers=1,         # singleton pipeline in module cache, one container fine
 )
@@ -1540,8 +1541,7 @@ def chronos_universal_predict(payload: dict) -> dict:
         series_list: list of {symbol: str, prices: list[float]}
         horizon: int (default 5)
         num_samples: int (default 20)
-        model_id: str (optional override; production baseline is
-                  amazon/chronos-t5-tiny, not a larger Chronos checkpoint)
+        model_id: str (optional override; production baseline is amazon/chronos-2)
 
     Returns:
         {"results": [{symbol, model, forecast_pct, up_prob, confidence,
@@ -1554,10 +1554,7 @@ def chronos_universal_predict(payload: dict) -> dict:
             series_list=payload.get("series_list") or [],
             horizon=payload.get("horizon", 5),
             num_samples=payload.get("num_samples", 20),
-            # Keep the default aligned with app.chronos_universal._DEFAULT_MODEL_ID.
-            # This should remain chronos-t5-tiny unless there is an explicit
-            # architecture decision to change the production Chronos baseline.
-            model_id=payload.get("model_id", "amazon/chronos-t5-tiny"),
+            model_id=payload.get("model_id", "amazon/chronos-2"),
         )
         return {"results": results, "n_input": len(payload.get("series_list") or []), "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
@@ -1569,7 +1566,7 @@ def chronos_universal_predict(payload: dict) -> dict:
 @app.function(
     cpu=4,
     memory=8192,
-    timeout=3600,                # 60 min cap — wf window subset (~110K samples)
+    timeout=3600,                # 60 min cap ??wf window subset (~110K samples)
     scaledown_window=60,
     max_containers=3,            # parallel windows
 )
@@ -1612,7 +1609,7 @@ def feature_selection_per_window(payload: dict) -> dict:
                 import json as _json
                 pool = _json.loads(existing.download_as_text())
                 active = pool.get("tree_active") or pool.get("active", [])
-                print(f"[FS-Window] w{window_id} skip — pool exists ({len(active)} tree_active)")
+                print(f"[FS-Window] w{window_id} skip ??pool exists ({len(active)} tree_active)")
                 return {
                     "skipped": True,
                     "window_id": window_id,
@@ -1621,7 +1618,7 @@ def feature_selection_per_window(payload: dict) -> dict:
                     "elapsed_s": round(time.time() - t0, 1),
                 }
         except Exception as e:
-            print(f"[FS-Window] w{window_id} idempotency check failed ({e}) — proceeding")
+            print(f"[FS-Window] w{window_id} idempotency check failed ({e}) ??proceeding")
 
     try:
         result = run_feature_selection_pipeline(
@@ -1655,7 +1652,7 @@ def feature_selection_per_window(payload: dict) -> dict:
     max_containers=5,
 )
 def update_arf_reward(payload: dict) -> dict:
-    """ARF/LinUCB 驗證更新 — 輕量計算。"""
+    """Update ARF/LinUCB reward state."""
     _setup_env()
     from app.use_cases import update_arf, ARFUpdateRequest
     try:
@@ -1665,21 +1662,21 @@ def update_arf_reward(payload: dict) -> dict:
         return {"error": str(e)}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ASGI Web Endpoint（warmup + /health + IC audit 仍需要）
-# ══════════════════════════════════════════════════════════════════════════════
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+# ASGI Web Endpoint??armup + /health + IC audit ??????
+# ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 @app.function(
     cpu=2,            # 2026-04-07 bumped: Optuna 200 trials needs CPU
-    memory=4096,      # 2026-04-07 bumped: Optuna 載入 paper_orders + predictions 較大
-    timeout=1800,     # 2026-04-07 bumped 300→1800: optuna_signal/sltp 200 trials 可達 5-15 min
+    memory=4096,      # 2026-04-07 bumped: Optuna ??? paper_orders + predictions ??銋?
+    timeout=1800,     # 2026-04-07 bumped 300??800: optuna_signal/sltp 200 trials ??? 5-15 min
     scaledown_window=60,
     max_containers=2,
 )
 @modal.concurrent(max_inputs=4)
 @modal.asgi_app()
 def fastapi_app():
-    """ASGI endpoint — Worker warmup cron + IC audit + Optuna routes。"""
+    """ASGI endpoint for warmup, health, IC audit, and Optuna routes."""
     _setup_env()
     from app.main import app as fastapi_application
     return fastapi_application

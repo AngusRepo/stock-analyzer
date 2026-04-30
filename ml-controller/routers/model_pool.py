@@ -46,6 +46,10 @@ def _model_artifact_path(model_name: str, version: str) -> str:
         return f"per_stock_state_space/kalman/hyperparams_{version}.json"
     if model_name == "MarkovSwitching":
         return f"per_stock_state_space/markov_switching/hyperparams_{version}.json"
+    if model_name in {"ResidualMLP", "GNN"}:
+        ext = "joblib" if model_name == "ResidualMLP" else "json"
+        folder = model_name.lower().replace("-", "_")
+        return f"experimental_shadow/{folder}/{version}.{ext}"
     ext_map = {
         "XGBoost": "joblib",
         "CatBoost": "joblib",
@@ -786,15 +790,15 @@ async def promote_check(req: PromoteCheckRequest):
     today = datetime.now(timezone.utc).date()
     today_iso = today.isoformat()
 
-    # Family balance baseline: count current actives per family
+    # Family balance baseline: count current active alpha predictors per family.
     def _family_actives(p: dict) -> dict[str, int]:
-        counts = {"feature": 0, "time_series": 0, "state_space": 0}
+        counts = {"feature": 0, "time_series": 0}
         for entry in p.get("models", {}).values():
             if entry.get("status") == "active":
                 fam = entry.get("balance_family", "feature")
                 counts[fam] = counts.get(fam, 0) + 1
         return counts
-    MIN_PER_FAMILY = {"feature": 3, "time_series": 2, "state_space": 1}
+    MIN_PER_FAMILY = {"feature": 3, "time_series": 2}
     projected_actives = _family_actives(pool)
 
     actions: list[dict] = []
@@ -1342,10 +1346,13 @@ async def init_pool(req: InitPoolRequest):
         ("Chronos",         "time_series_foundation", "time_series", "json"),
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
         ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
-        # 2026-04-20 Stage 6: state-space (per-stock state, shared hyperparams)
-        ("KalmanFilter",    "state_space_per_stock",  "state_space", "json"),
-        ("MarkovSwitching", "state_space_per_stock",  "state_space", "json"),
     ]
+    shadow_managed = [
+        # (name, model_type, balance_family, ext)
+        ("ResidualMLP", "experimental_mlp", "experimental", "joblib"),
+        ("GNN", "experimental_graph", "experimental", "json"),
+    ]
+    state_overlays = ["KalmanFilter", "MarkovSwitching"]
     models = {}
     for name, mt, bf, _ext in managed:
         models[name] = {
@@ -1362,16 +1369,67 @@ async def init_pool(req: InitPoolRequest):
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,
         }
+    shadow_models = {}
+    for name, mt, bf, _ext in shadow_managed:
+        shadow_models[name] = {
+            "status": "challenger",
+            "version": "v1",
+            "gcs_path": _model_artifact_path(name, "v1"),
+            "model_type": mt,
+            "balance_family": bf,
+            "vote_weight": 0.0,
+            "shadow_since": today,
+            "weekly_ic": [],
+            "ic_4w_avg": None,
+            "note": "Experimental alpha challenger; shadow predicts but does not vote.",
+        }
+    overlays = {}
+    for name in state_overlays:
+        overlays[name] = {
+            "status": "active",
+            "version": "v1",
+            "gcs_path": _model_artifact_path(name, "v1"),
+            "model_type": "state_space_overlay",
+            "balance_family": "state_space",
+            "role": "regime_risk_overlay",
+            "promoted_at": today,
+            "note": "State-space overlay only; excluded from alpha vote, IC, and challenger promotion.",
+        }
+    meta_optimizers = {
+        "GAOptimizer": {
+            "layer": "meta_optimizer",
+            "status": "learning",
+            "version": "v1",
+            "scope": "ensemble_weights,strategy_params,risk_params",
+            "model_type": "meta_optimizer",
+            "balance_family": "optimizer",
+            "direct_prediction": False,
+            "created_at": today,
+            "learning_mode": "direct",
+            "apply_gate": "walk_forward+pbo+transaction_cost_sensitivity",
+            "note": "Optimizer layer only; learns policy/search state directly and never votes as a predictor.",
+        }
+    }
     pool = {
         "schema_version": "1.0",
         "last_updated": iso_now,
         "models": models,
+        "shadow_models": shadow_models,
+        "state_overlays": overlays,
+        "meta_optimizers": meta_optimizers,
     }
     pool_blob.upload_from_string(
         _json.dumps(pool, indent=2, ensure_ascii=False),
         content_type="application/json",
     )
-    return {"status": "initialized", "model_count": len(models), "last_updated": iso_now}
+    return {
+        "status": "initialized",
+        "model_count": len(models),
+        "shadow_model_count": len(shadow_models),
+        "state_overlay_count": len(overlays),
+        "meta_optimizer_count": len(meta_optimizers),
+        "last_updated": iso_now,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1380,8 +1438,8 @@ async def init_pool(req: InitPoolRequest):
 
 
 class WriteChronosConfigRequest(BaseModel):
-    version: str = "v1"
-    model_id: str = "amazon/chronos-t5-tiny"
+    version: str = "v2"
+    model_id: str = "amazon/chronos-2"
     horizon_default: int = 5
     num_samples_default: int = 20
     confirm: bool = False
@@ -1406,7 +1464,7 @@ async def write_chronos_config(req: WriteChronosConfigRequest):
         "model_id": req.model_id,
         "horizon_default": req.horizon_default,
         "num_samples_default": req.num_samples_default,
-        "strategy": "zero-shot foundation, no training",
+        "strategy": "Chronos-2 production replacement; zero-shot plus optional LoRA member",
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     path = f"universal/chronos/{req.version}.json"

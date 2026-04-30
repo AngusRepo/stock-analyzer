@@ -6,19 +6,9 @@ import os
 from collections import defaultdict
 from typing import Any
 
+from services.model_ic_tracker import ALPHA_PREDICTION_MODELS
 
-MANAGED_MODELS = (
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
-    "LightGBM",
-    "FT-Transformer",
-    "Chronos",
-    "DLinear",
-    "PatchTST",
-    "KalmanFilter",
-    "MarkovSwitching",
-)
+MANAGED_MODELS = ALPHA_PREDICTION_MODELS
 
 
 def _as_float(value: Any) -> float | None:

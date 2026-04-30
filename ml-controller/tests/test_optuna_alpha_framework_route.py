@@ -103,3 +103,59 @@ def test_alpha_framework_route_uses_quality_outcome_limit_when_subset_omitted(mo
 
     assert out["status"] == "completed"
     assert captured["limit"] == 777
+
+
+def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(req):
+        captured["req"] = req
+        return {
+            "status": "completed",
+            "optimizer": "GAOptimizer",
+            "population_size": req.population_size,
+            "generations": req.generations,
+            "best": {
+                "score": 1.23,
+                "gate": {"decision": "PASS", "passed": True},
+                "plateau": {"plateau_size": 2},
+                "candidate": {
+                    "target": "meta_optimizer_learning",
+                    "params": {
+                        "alphaFramework": {
+                            "riskOverlay": {"highVolThreshold": 0.045},
+                            "allocation": {"weights": {"bull": {"trend_following": 0.5}}},
+                        }
+                    },
+                },
+            },
+            "ranked": [],
+            "contract": {"applies_to_production": False, "push_target": "worker_kv_ga_optimizer_state"},
+        }
+
+    def fake_push(*, source, params, meta):
+        captured["source"] = source
+        captured["params"] = params
+        captured["meta"] = meta
+        return {"success": True, "sandbox_id": "ga-1"}
+
+    monkeypatch.setattr(optuna, "run_ga_optimizer_service", fake_run)
+    monkeypatch.setattr(optuna, "push_optuna_result", fake_push)
+
+    out = optuna.run_ga_optimizer(
+        optuna.GAOptimizerReq(
+            population_size=12,
+            generations=4,
+            push_kv=True,
+            dry_run=False,
+        )
+    )
+
+    assert out["status"] == "completed"
+    assert out["source"] == "ga_optimizer"
+    assert out["contract"]["applies_to_production"] is False
+    assert out["contract"]["push_target"] == "worker_kv_ga_optimizer_state"
+    assert captured["source"] == "ga_optimizer"
+    assert captured["params"]["status"] == "learning"
+    assert captured["params"]["best_alphaFramework"]["riskOverlay"]["highVolThreshold"] == 0.045
+    assert captured["meta"]["optimizer"] == "GAOptimizer"

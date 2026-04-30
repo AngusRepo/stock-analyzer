@@ -53,8 +53,6 @@ export const EXPECTED_V2_MODELS = [
   'Chronos',
   'DLinear',
   'PatchTST',
-  'KalmanFilter',
-  'MarkovSwitching',
 ] as const
 
 const UNCLASSIFIED_LABEL = '\u672a\u5206\u985e'

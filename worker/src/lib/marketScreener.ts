@@ -14,6 +14,7 @@ import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
+import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,9 @@ export interface ScreenerCandidate {
   sector: string
   score: number
   reason: string
+  strategy_matches?: Array<{ specId: string; alphaBucket: string; status: string; label: string; reason: string }>
+  strategy_tags?: string[]
+  strategy_watch_points?: string[]
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
@@ -1126,7 +1130,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // 5d: top N 截斷
   const maxCandidates = (sc as any).maxCandidates ?? 25
-  const finalCandidates: ScreenerCandidate[] = afterIndustryLimit.slice(0, maxCandidates)
+  const finalCandidates: ScreenerCandidate[] = annotateCandidatesWithStrategySpecs(
+    afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[],
+  )
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
 
@@ -1265,6 +1271,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       if (sectorB && sectorB.bonus > 0 && sectorB.avgCorr !== null) {
         tagParts.push(`🔗 族群連動 (corr=${sectorB.avgCorr.toFixed(2)}, +${sectorB.bonus})`)
       }
+      for (const tag of sc.strategy_tags ?? []) tagParts.push(tag)
       const seed = buildScreenerSeedRow({
         candidate: c as any,
         rank: i + 1,
@@ -1272,12 +1279,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         sectorBonus: sectorB?.bonus ?? 0,
         tags: tagParts,
       })
+      const watchPoints = [...seed.watchPoints, ...(sc.strategy_watch_points ?? [])]
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
         seed.row.chipScore, seed.row.techScore,
         seed.row.currentPrice,
-        seed.row.reason, JSON.stringify(seed.watchPoints), seed.row.industry,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
       )
     })
     const BATCH = 50

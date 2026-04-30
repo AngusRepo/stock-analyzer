@@ -44,7 +44,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
-    "chronos_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "chronos_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "feature_selection_per_window": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "update_arf_reward": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
 }

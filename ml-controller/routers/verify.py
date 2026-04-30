@@ -1,7 +1,7 @@
 """
 Verify endpoints.
 
-  POST /verify       legacy ARF feedback receiver
+  POST /verify       ARF feedback receiver
   POST /verify/run   full verify pipeline V2 trigger
 
 Long-running verify execution must never depend on the Cloud Run Service request
@@ -20,6 +20,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from services import verify_service
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 from services.modal_client import batch_update_arf
 
@@ -113,6 +114,41 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
     except Exception as e:  # noqa: BLE001
         logger.exception("[verify/run] Pipeline failed")
         return {"status": "error", "error": str(e)}
+
+
+@router.post("/verify/dry-run")
+async def post_verify_dry_run(req: VerifyRunRequest = VerifyRunRequest()):
+    """
+    Preview verify V2 without mutating D1/model accuracy/trade performance/ARF.
+
+    This intentionally does not invoke the LangGraph graph because the graph
+    contains write nodes. It mirrors only the read + simulation portion.
+    """
+    logger.info(
+        "[verify/dry-run] lookback_days=%s limit=%s run_date=%s",
+        req.lookback_days,
+        req.limit,
+        req.run_date,
+    )
+    pending = verify_service.load_pending_predictions(req.lookback_days, req.limit)
+    market_risk = verify_service.load_market_risk()
+    prepared = verify_service.prepare_verification_updates(pending, market_risk)
+    updates = prepared.get("verify_updates") or []
+    summary = verify_service.summarize_verification_updates(len(pending), updates)
+    return {
+        "status": "ok",
+        "dry_run": True,
+        "run_date": req.run_date,
+        **summary,
+        "arf_feedback_planned": len(prepared.get("arf_feedback_items") or []),
+        "errors": prepared.get("errors") or [],
+        "mutations_skipped": [
+            "write_verified_predictions",
+            "update_model_accuracy",
+            "update_trade_performance",
+            "batch_update_arf",
+        ],
+    }
 
 
 class VerifyRecord(BaseModel):

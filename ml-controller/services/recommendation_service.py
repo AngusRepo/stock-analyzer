@@ -924,7 +924,7 @@ def write_predictions_to_d1(
         # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
         per_model_scores = _extract_per_model_scores_for_d1(data)
         # Stage 3: extract challenger scores from feature and pipeline_v2
-        # time-series/state-space shadow predictions.
+        # time-series alpha challenger shadow predictions.
         challenger_scores = data.get("challenger_rank_scores") or {}
         for ch_name, ch_score in (challenger_scores or {}).items():
             try:
@@ -984,13 +984,11 @@ def write_predictions_to_d1(
 # 2026-04-19 ML_POOL Stage 2 helpers (per-model row writers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Models whose rank scores we want stored for weekly IC tracking.
-# Mirrors ml-service app/model_pool.py:MANAGED_MODELS keys (10 models = 5 feature
-# + 3 time-series + 2 state-space).
+# Models whose rank scores we want stored for alpha IC tracking.
+# State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
     "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
     "Chronos", "DLinear", "PatchTST",
-    "KalmanFilter", "MarkovSwitching",   # 2026-04-20 Stage 6.2
 )
 
 
@@ -999,7 +997,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
     For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
       from predict_stock_v2).
-    For 3 time-series + 2 state-space: sigmoid-map .forecast_pct → 0~1
+    For 3 time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
       (mirror of pipeline_v2._ts_to_rank with scale=12).
 
     Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
@@ -1014,13 +1012,11 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 out[name] = float(v)
             except (TypeError, ValueError):
                 pass
-    # Time-series + state-space: forecast_pct → sigmoid rank
+    # Time-series alpha predictors: forecast_pct → sigmoid rank.
     _SRC_KEY_MODEL = (
         ("chronos",          "Chronos"),
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),
-        ("kalman_filter",    "KalmanFilter"),       # Stage 6.2
-        ("markov_switching", "MarkovSwitching"),    # Stage 6.2
     )
     for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}

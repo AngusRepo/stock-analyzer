@@ -29,16 +29,22 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/adminGateRoutes.test.ts `
   src/lib/dataQualityMonitor.test.ts `
   src/lib/deployGate.test.ts `
+  src/lib/gaOptimizerPush.test.ts `
   src/lib/p6DataQualityUiContract.test.ts `
   src/lib/p9DeploymentContract.test.ts `
   src/lib/p9GateScriptContract.test.ts `
   src/lib/paperIntradayData.test.ts `
   src/lib/paperTradeMath.test.ts `
+  src/lib/researchEvaluationPlan.test.ts `
+  src/lib/researchEvaluationRunner.test.ts `
+  src/lib/researchExperimentRegistry.test.ts `
+  src/lib/researchInternGate.test.ts `
   src/lib/repoOwnerContract.test.ts `
   src/lib/schedulerOwnerContract.test.ts `
   src/lib/screenerOwnerContract.test.ts `
   src/lib/screenerSeedQuality.test.ts `
   src/lib/screenerTradability.test.ts `
+  src/lib/strategySpec.test.ts `
   src/lib/technicalIndicators.test.ts
 if ($LASTEXITCODE -ne 0) { throw "worker contract test compile failed" }
 node .tmp-test-run/lib/adminCronCallbackRoutes.test.js
@@ -49,6 +55,8 @@ node .tmp-test-run/lib/dataQualityMonitor.test.js
 if ($LASTEXITCODE -ne 0) { throw "dataQualityMonitor.test failed" }
 node .tmp-test-run/lib/deployGate.test.js
 if ($LASTEXITCODE -ne 0) { throw "deployGate.test failed" }
+node .tmp-test-run/lib/gaOptimizerPush.test.js
+if ($LASTEXITCODE -ne 0) { throw "gaOptimizerPush.test failed" }
 node .tmp-test-run/lib/p6DataQualityUiContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p6DataQualityUiContract.test failed" }
 node .tmp-test-run/lib/p9DeploymentContract.test.js
@@ -59,6 +67,14 @@ node .tmp-test-run/lib/paperIntradayData.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperIntradayData.test failed" }
 node .tmp-test-run/lib/paperTradeMath.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperTradeMath.test failed" }
+node .tmp-test-run/lib/researchEvaluationPlan.test.js
+if ($LASTEXITCODE -ne 0) { throw "researchEvaluationPlan.test failed" }
+node .tmp-test-run/lib/researchEvaluationRunner.test.js
+if ($LASTEXITCODE -ne 0) { throw "researchEvaluationRunner.test failed" }
+node .tmp-test-run/lib/researchExperimentRegistry.test.js
+if ($LASTEXITCODE -ne 0) { throw "researchExperimentRegistry.test failed" }
+node .tmp-test-run/lib/researchInternGate.test.js
+if ($LASTEXITCODE -ne 0) { throw "researchInternGate.test failed" }
 node .tmp-test-run/lib/repoOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "repoOwnerContract.test failed" }
 node .tmp-test-run/lib/schedulerOwnerContract.test.js
@@ -69,11 +85,23 @@ node .tmp-test-run/lib/screenerSeedQuality.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerSeedQuality.test failed" }
 node .tmp-test-run/lib/screenerTradability.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerTradability.test failed" }
+node .tmp-test-run/lib/strategySpec.test.js
+if ($LASTEXITCODE -ne 0) { throw "strategySpec.test failed" }
 node .tmp-test-run/lib/technicalIndicators.test.js
 if ($LASTEXITCODE -ne 0) { throw "technicalIndicators.test failed" }
 if (Test-Path $TestOut) {
   Remove-Item -LiteralPath $TestOut -Recurse -Force
 }
+Pop-Location
+
+Write-Host '[P9 gate] ml-controller contract tests'
+$ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
+if (-not (Test-Path $ControllerPython)) {
+  throw "ml-controller venv python not found: $ControllerPython"
+}
+Push-Location (Join-Path $Root 'ml-controller')
+& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py -q
+if ($LASTEXITCODE -ne 0) { throw "ml-controller verify pipeline contract tests failed" }
 Pop-Location
 
 if (-not $SkipFrontendBuild) {

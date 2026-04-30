@@ -17,20 +17,11 @@ from typing import Optional
 
 import numpy as np
 
+from .model_pool import ALPHA_PREDICTION_MODELS
+
 logger = logging.getLogger(__name__)
 
-MODEL_ORDER = [
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
-    "LightGBM",
-    "FT-Transformer",
-    "Chronos",
-    "DLinear",
-    "PatchTST",
-    "KalmanFilter",
-    "MarkovSwitching",
-]
+MODEL_ORDER = list(ALPHA_PREDICTION_MODELS)
 META_FEATURE_DIM = len(MODEL_ORDER)
 STACKER_VERSION = "v2_rank_stacker"
 

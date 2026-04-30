@@ -21,7 +21,7 @@ import { Sheet, SheetContent } from '@/components/ui/sheet'
 import {
   LayoutDashboard, Bot, Menu,
   Bell, Search, LogIn, LogOut, Clock,
-  Boxes, Database,
+  Boxes, Database, FlaskConical,
 } from 'lucide-react'
 
 // ── Nav items ─────────────────────────────────────────────────────────────────
@@ -31,6 +31,7 @@ const NAV_ITEMS = [
   { label: 'Scheduler', icon: Clock, href: '/scheduler', adminOnly: true },
   { label: 'Model Pool', icon: Boxes, href: '/model-pool', adminOnly: true },
   { label: 'Data Quality', icon: Database, href: '/data-quality', adminOnly: true },
+  { label: 'Strategy Lab', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
 ] as const
 
 // ── Market Ticker ─────────────────────────────────────────────────────────────

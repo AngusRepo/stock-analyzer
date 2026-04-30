@@ -30,7 +30,7 @@ DEFAULT_REGIME_CONFIG = {
 }
 REGIME_CONFIG = DEFAULT_REGIME_CONFIG  # runtime alias, overridden by regime_config_override
 
-PRICE_MODEL_NAMES   = {"KalmanFilter", "DLinear", "MarkovSwitching", "PatchTST", "Chronos"}
+PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "Chronos"}
 FEATURE_MODEL_NAMES = {"XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"}
 
 

@@ -35,7 +35,7 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
     assert ev2["reason"] == "no_positive_lifecycle_weight"
 
 
-def test_attach_ensemble_v2_can_use_alternate_models_when_feature_models_fail():
+def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_fail():
     pred = {
         "rank_scores": {},
         "chronos": {"forecast_pct": 0.04},
@@ -51,8 +51,25 @@ def test_attach_ensemble_v2_can_use_alternate_models_when_feature_models_fail():
 
     ev2 = pred["ensemble_v2"]
     assert ev2["avg_rank"] > 0.5
-    assert ev2["contributing_models"] == ["Chronos", "KalmanFilter"]
+    assert ev2["contributing_models"] == ["Chronos"]
     assert ev2["weight_total"] > 0
+
+
+def test_attach_ensemble_v2_does_not_count_state_space_overlays_as_alpha_votes():
+    pred = {
+        "rank_scores": {},
+        "kalman_filter": {"forecast_pct": 0.10},
+        "markov_switching": {"forecast_pct": 0.10},
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"KalmanFilter": "active", "MarkovSwitching": "active"},
+        ic_weights={"KalmanFilter": 0.30, "MarkovSwitching": 0.30},
+        degraded_dampening=1.0,
+    )
+
+    assert "ensemble_v2" not in pred
 
 
 def test_daily_pipeline_wrapper_no_longer_contains_legacy_plain_mean_body():
@@ -78,11 +95,26 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     graph_mod.StateGraph = object
     sqlite_mod = types.ModuleType("langgraph.checkpoint.sqlite")
     sqlite_mod.SqliteSaver = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
     retry_mod = types.ModuleType("langgraph.pregel.types")
     retry_mod.RetryPolicy = object
     monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
     monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
     monkeypatch.setitem(sys.modules, "langgraph.pregel.types", retry_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+    google_storage_mod.Client = object
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
 
     from graphs import daily_pipeline_v2
 
@@ -117,10 +149,8 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
         def bucket(self, name):
             return Bucket()
 
-    import google.cloud.storage as storage
-
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
-    monkeypatch.setattr(storage, "Client", lambda: Client())
+    monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
     monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
 
     status, ic_weights, degraded, cfg, used_pool = daily_pipeline_v2._load_pool_and_ic()

@@ -215,7 +215,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   embeds.push({
     description: '_投資有風險，本報告由 StockVision ML Pipeline 自動產出，僅供參考。_',
     color: 0x95a5a6,
-    footer: { text: `StockVision v12 | ${totalStocks} stocks × 10 models × 44 features` },
+    footer: { text: `StockVision v12 | ${totalStocks} stocks × 8 alpha models × state overlays × 44 features` },
   })
 
   // ── 7. 主題輪動 ─────────────────────────────────────────────────────────

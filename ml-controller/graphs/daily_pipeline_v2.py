@@ -9,7 +9,7 @@ Real LangGraph this time:
   - State is typed schema with full domain data (active_stocks, payloads, predictions, etc.)
   - Nodes are pure functions reading & writing state
   - All D1/ML calls done by ml-controller directly (no fire-and-forget to worker)
-  - SqliteSaver checkpointer for resume support
+  - Checkpointer disabled until a durable async backend is selected
   - Linear edges screener_load → market_env → payloads → ml_predict → recommend → llm_reasons → write_d1
 """
 from __future__ import annotations
@@ -20,8 +20,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.pregel.types import RetryPolicy
+from langgraph.types import RetryPolicy
 
 from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
@@ -191,8 +190,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym and closes:
             chronos_series.append({"symbol": sym, "prices": closes})
 
-    # Parallel: feature + Chronos + DLinear + PatchTST + Kalman + Markov
-    # 6-way asyncio.gather (Stage 0.1+0.2+0.3 + 6.2)
+    # Parallel: alpha predictors + state overlays.
+    # Kalman/Markov are state overlays only; they do not enter alpha challenger.
     model_status, active_versions, challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
 
     async def _skip_batch(reason: str) -> dict:
@@ -234,16 +233,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if challenger_versions.get("PatchTST")
         else _skip_batch("PatchTST challenger absent")
     )
-    kalman_ch_task = (
-        modal_client.kalman_batch_predict(chronos_series, horizon=5, version=challenger_versions["KalmanFilter"])
-        if challenger_versions.get("KalmanFilter")
-        else _skip_batch("KalmanFilter challenger absent")
-    )
-    markov_ch_task = (
-        modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version=challenger_versions["MarkovSwitching"])
-        if challenger_versions.get("MarkovSwitching")
-        else _skip_batch("MarkovSwitching challenger absent")
-    )
     (
         results,
         chronos_raw,
@@ -253,8 +242,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         markov_raw,
         dlinear_ch_raw,
         patchtst_ch_raw,
-        kalman_ch_raw,
-        markov_ch_raw,
     ) = await asyncio.gather(
         feat_task,
         chronos_task,
@@ -264,8 +251,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         markov_task,
         dlinear_ch_task,
         patchtst_ch_task,
-        kalman_ch_task,
-        markov_ch_task,
         return_exceptions=True,
     )
 
@@ -365,8 +350,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", chronos_series)
     patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", chronos_series)
-    kalman_ch_map = _drain_state_space(kalman_ch_raw, "KalmanFilter::challenger")
-    markov_ch_map = _drain_state_space(markov_ch_raw, "MarkovSwitching::challenger")
 
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
@@ -391,10 +374,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             challenger_scores["DLinear"] = _ts_to_rank(float(dlinear_ch_map[sym]["forecast_pct"]))
         if sym in patchtst_ch_map and patchtst_ch_map[sym].get("forecast_pct") is not None:
             challenger_scores["PatchTST"] = _ts_to_rank(float(patchtst_ch_map[sym]["forecast_pct"]))
-        if sym in kalman_ch_map and kalman_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["KalmanFilter"] = _ts_to_rank(float(kalman_ch_map[sym]["forecast_pct"]))
-        if sym in markov_ch_map and markov_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["MarkovSwitching"] = _ts_to_rank(float(markov_ch_map[sym]["forecast_pct"]))
         if not challenger_scores:
             row.pop("challenger_rank_scores", None)
 
@@ -420,8 +399,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             ("Chronos", chronos_map.get(sym)),
             ("DLinear", dlinear_map.get(sym)),
             ("PatchTST", patchtst_map.get(sym)),
-            ("KalmanFilter", kalman_map.get(sym)),
-            ("MarkovSwitching", markov_map.get(sym)),
         ]
         usable = [(name, row) for name, row in sources if row and row.get("forecast_pct") is not None]
         if not usable:
@@ -455,7 +432,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             "forecast_pct": round(forecast_pct, 6),
             "forecast_range": [round(min(forecasts), 6), round(max(forecasts), 6)],
             "signal_strength": round(abs(forecast_pct), 6),
-            "reasoning": "Feature-model fallback: alternate universal/state-space models available",
+            "reasoning": "Feature-model fallback: alternate alpha time-series models available",
             "entry_price": round(current_price, 2) if current_price > 0 else None,
             "stop_loss": round(current_price * (1 - downside), 2) if current_price > 0 else None,
             "target1": round(current_price * (1 + max(0.03, upside)), 2) if current_price > 0 else None,
@@ -616,6 +593,10 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             challenger = entry.get("challenger") or {}
             if challenger.get("version"):
                 challenger_versions[name] = challenger["version"]
+        for name, entry in (pool.get("state_overlays") or {}).items():
+            status[name] = entry.get("status", "active")
+            if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
+                active_versions[name] = entry["version"]
         return status, active_versions, challenger_versions, True
     except Exception as e:
         logger.warning(f"[Pipeline V2] model_pool version load failed: {e}")
@@ -1069,8 +1050,9 @@ def build_graph():
     g.add_edge("write_d1",            END)
 
     # Checkpointer disabled for now:
-    # - SqliteSaver doesn't support async (raises NotImplementedError on ainvoke)
-    # - AsyncSqliteSaver requires aiosqlite + extra setup
+    # - Local sqlite checkpointing is not durable in Cloud Run /tmp.
+    # - langgraph-checkpoint-sqlite is intentionally not installed; adding it
+    #   back would reintroduce an unused dependency owner and leave OSV debt.
     # - Cloud Run /tmp is ephemeral so checkpoint loses across restarts anyway
     # Phase 2 future: D1-backed AsyncSqliteSaver subclass for true resume support
     compiled = g.compile()

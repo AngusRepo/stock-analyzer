@@ -218,6 +218,40 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         message: `source '${source}' not yet wired`,
         deferred_to: 'Phase B/C',
       }, 501)
+    case 'ga_optimizer': {
+      const now = new Date().toISOString()
+      const learningState = {
+        ...(params && typeof params === 'object' ? params : {}),
+        source: 'ga_optimizer',
+        optimizer: params?.optimizer ?? 'GAOptimizer',
+        status: params?.status ?? 'learning',
+        updated_at: now,
+        meta: meta ?? null,
+      }
+      const latestKey = 'optimizer:ga:latest'
+      const historyKey = `optimizer:ga:history:${twToday()}:${Date.now()}`
+      const auditKey = `audit:optuna-push:ga_optimizer:${twToday()}`
+
+      await c.env.KV.put(latestKey, JSON.stringify(learningState))
+      await c.env.KV.put(historyKey, JSON.stringify(learningState), { expirationTtl: 90 * 86400 })
+      await c.env.KV.put(auditKey, JSON.stringify({
+        target: 'meta_optimizer_learning_state',
+        source: 'ga_optimizer',
+        meta: meta ?? null,
+        latest_key: latestKey,
+        history_key: historyKey,
+        pushed_at: now,
+      }), { expirationTtl: 30 * 86400 })
+
+      return c.json({
+        success: true,
+        target: 'meta_optimizer_learning_state',
+        source: 'ga_optimizer',
+        updatedKeys: [latestKey, historyKey],
+        audit_key: auditKey,
+        message: 'GAOptimizer learning state updated; trading:config unchanged.',
+      })
+    }
     case 'l2_sensitivity': {
       const pcircuit = (params && typeof params.circuit === 'object' && params.circuit) || {}
       const pL2 = (params && typeof params.L2_formula === 'object' && params.L2_formula) || {}
@@ -270,7 +304,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     default:
       return c.json({
         error: `Unknown source: ${source}`,
-        allowed: ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'feature_window', 'regime', 'l2_sensitivity'],
+        allowed: ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'feature_window', 'ga_optimizer', 'regime', 'l2_sensitivity'],
       }, 400)
   }
 

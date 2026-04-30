@@ -10,6 +10,7 @@ const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
+const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'))
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -54,6 +55,11 @@ export default function App() {
         <Route path="/data-quality">
           <Suspense fallback={<PageLoader label="Data Quality" />}>
             <DataQualityPage />
+          </Suspense>
+        </Route>
+        <Route path="/strategy-lab">
+          <Suspense fallback={<PageLoader label="Strategy Lab" />}>
+            <StrategyLabPage />
           </Suspense>
         </Route>
         <Route>

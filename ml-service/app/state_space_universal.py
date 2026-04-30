@@ -1,13 +1,12 @@
 """
 state_space_universal.py — Batch wrapper for per-stock state-space models.
 
-2026-04-20 ML_POOL Stage 6.2: brings KalmanFilter + MarkovSwitching into
-the v2 universal pipeline so:
-  - Per-stock predictions land in D1 with model_name='KalmanFilter' / 'MarkovSwitching'
-  - Stage 2 weekly IC tracker auto-picks them up via MANAGED_MODELS list
-  - Stage 4 promote_check applies lifecycle to them
-  - Ensemble V2 routes them through R1+R3 weight (hyperparam version is the
-    "version" tracked in model_pool.json; same gcs_path = JSON file)
+KalmanFilter + MarkovSwitching run inside the v2 universal pipeline as
+state-space overlays:
+  - They provide regime/risk context per stock.
+  - They do not vote as alpha predictors.
+  - They do not enter alpha IC, challenger shadow, or promotion lifecycle.
+  - Shared hyperparameter versions are tracked under model_pool.state_overlays.
 
 Architecture constraint: state-space models can't do tensor-batch inference
 (each stock has its own latent state). The batch wrapper here is a Python
@@ -83,7 +82,7 @@ def state_space_batch_predict(
     """Batch predict via per-stock state-space loop with shared hyperparams.
 
     Args:
-      model_name: 'KalmanFilter' or 'MarkovSwitching' (must match MANAGED_MODELS)
+        model_name: 'KalmanFilter' or 'MarkovSwitching' (must match STATE_SPACE_OVERLAY_MODELS)
       series_list: [{"symbol": str, "prices": list[float]}]
       horizon: forecast horizon in trading days (default 5)
       version: hyperparams version to load from GCS

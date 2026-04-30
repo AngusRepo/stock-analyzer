@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from services.d1_client import query as d1_query
 from services.alpha_quality_policy import alpha_quality_policy
 from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
+from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer as run_ga_optimizer_service
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
@@ -57,6 +58,18 @@ class AlphaFrameworkOptunaReq(BaseModel):
     push_kv: bool = True
     dry_run: bool = False
     subset_size: int | None = Field(default=None, ge=100, le=5000)
+
+
+class GAOptimizerReq(BaseModel):
+    population_size: int = Field(default=24, ge=6, le=200)
+    generations: int = Field(default=8, ge=1, le=50)
+    mutation_rate: float = Field(default=0.25, ge=0.0, le=1.0)
+    crossover_rate: float = Field(default=0.70, ge=0.0, le=1.0)
+    elite_count: int = Field(default=4, ge=1, le=50)
+    seed: int = 42
+    top_k: int = Field(default=5, ge=1, le=20)
+    push_kv: bool = True
+    dry_run: bool = False
 
 
 def _push_live(req) -> bool:
@@ -653,6 +666,76 @@ def run_alpha_framework(req: AlphaFrameworkOptunaReq = Body(default=AlphaFramewo
         "quality_policy": quality_policy,
         "risk_overlay_evidence": result.get("risk_overlay_evidence"),
         "n_trials": req.n_trials,
+        "push": push_response,
+        "contract": contract,
+    }
+
+
+@router.post("/ga_optimizer")
+def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
+    """GA meta optimizer direct learning endpoint."""
+    contract = _contract_meta(
+        source="ga_optimizer",
+        scope="meta_optimizer_learning",
+        sample_scope="generated_policy_population_plus_gate_metrics",
+        applies_to_production=False,
+        push_target="worker_kv_ga_optimizer_state",
+        effective_fields=[
+            "alphaFramework.allocation.weights",
+            "alphaFramework.riskOverlay",
+            "alphaFramework.scoring",
+        ],
+        notes=[
+            "GAOptimizer evolves meta policy parameters; it is not a stock prediction model.",
+            "This endpoint persists learning state directly; applying learned params to trading config is a separate gated action.",
+        ],
+    )
+    result = run_ga_optimizer_service(
+        GAOptimizerRequest(
+            population_size=req.population_size,
+            generations=req.generations,
+            mutation_rate=req.mutation_rate,
+            crossover_rate=req.crossover_rate,
+            elite_count=req.elite_count,
+            seed=req.seed,
+            top_k=req.top_k,
+        )
+    )
+    best = ((result.get("best") or {}).get("candidate") or {}).get("params", {}).get("alphaFramework")
+    learning_state = {
+        "optimizer": "GAOptimizer",
+        "status": "learning",
+        "population_size": result.get("population_size"),
+        "generations": result.get("generations"),
+        "history": result.get("history") or [],
+        "best": result.get("best"),
+        "ranked": result.get("ranked") or [],
+        "best_alphaFramework": best,
+        "contract": result.get("contract"),
+    }
+    push_response = None
+    if req.push_kv and not req.dry_run and best:
+        push_response = push_optuna_result(
+            source="ga_optimizer",
+            params=learning_state,
+            meta={
+                "status": "completed",
+                "target": "meta_optimizer_learning_state",
+                "optimizer": "GAOptimizer",
+                "population_size": result.get("population_size"),
+                "generations": result.get("generations"),
+                "best_score": (result.get("best") or {}).get("score"),
+                "gate": (result.get("best") or {}).get("gate"),
+                "plateau": (result.get("best") or {}).get("plateau"),
+                "note": "GA meta optimizer learning state; does not mutate trading:config",
+            },
+        )
+
+    return {
+        **result,
+        "source": "ga_optimizer",
+        "best_params": best,
+        "learning_state": learning_state,
         "push": push_response,
         "contract": contract,
     }

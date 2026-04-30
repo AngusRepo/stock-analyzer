@@ -25,6 +25,8 @@ _external/
 _tmp_*
 worker/_*.json
 *_scratch.*
+osv-report*.json
+osv-report*.html
 # Ad-hoc Chinese-named D1 exports that occasionally leak to repo root
 上市櫃分類.json
 概念股分類.json

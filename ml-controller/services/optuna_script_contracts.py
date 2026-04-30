@@ -64,6 +64,15 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         push_target="worker_deferred",
         requires_external_gate=True,
     ),
+    "ga_optimizer": OptunaScriptContract(
+        source="ga_optimizer",
+        script="services.ga_optimizer_service",
+        production_effect="meta_optimizer_learning",
+        range_role="genetic_meta_optimizer_direct_learning",
+        push_target="worker_kv_ga_optimizer_state",
+        requires_external_gate=False,
+        notes=("Learns optimizer state directly; applying learned params to trading config still requires a separate gate.",),
+    ),
     "ft_arch": OptunaScriptContract(
         source="ft_arch",
         script="modal_ft_arch_search",

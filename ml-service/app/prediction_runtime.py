@@ -538,7 +538,8 @@ def predict_stock(req: PredictRequest) -> dict:
 
 
 _FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
-_TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST", "KalmanFilter", "MarkovSwitching"]
+_TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST"]
+_STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 
 
@@ -672,9 +673,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     time_series_signals: dict[str, dict] = {}
     ts_model_fns = [
-        ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, req.stock_id)),
         ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
-        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, req.stock_id)),
         ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
         ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, req.stock_id)),
     ]
@@ -698,6 +697,28 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 }
             except Exception as e:
                 model_errors.append(f"{model_name}: {e}")
+
+    state_space_overlays: dict[str, dict] = {}
+    state_overlay_fns = [
+        ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, req.stock_id)),
+        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, req.stock_id)),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {}
+        for model_name, fn in state_overlay_fns:
+            futures[executor.submit(fn)] = model_name
+        for future in as_completed(futures):
+            model_name = futures[future]
+            try:
+                pred = future.result()
+                state_space_overlays[model_name] = {
+                    "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
+                    "direction": getattr(pred, "direction", None),
+                    "confidence": float(getattr(pred, "confidence", 0.0)),
+                    "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
+                }
+            except Exception as e:
+                model_errors.append(f"{model_name}: overlay {e}")
 
     challenger_rank_scores: dict[str, float] = {}
     challenger_errors: list[str] = []
@@ -788,6 +809,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "model_pool_status": model_pool_status if pool_snapshot else None,
         "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
         "time_series_signals": time_series_signals if time_series_signals else None,
+        "state_space_overlays": state_space_overlays if state_space_overlays else None,
         "rank_stacker": rank_stacker_info,
         "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
         "challenger_errors": challenger_errors if challenger_errors else None,

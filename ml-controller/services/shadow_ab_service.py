@@ -6,6 +6,8 @@ import os
 from collections import defaultdict
 from typing import Any
 
+from services.model_ic_tracker import ALPHA_PREDICTION_MODELS
+
 
 def _as_float(value: Any) -> float | None:
     try:
@@ -127,8 +129,10 @@ def _env_float(name: str, default: float) -> float:
 def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]]:
     from services.d1_client import query
 
+    alpha_csv = ",".join(f"'{m}'" for m in ALPHA_PREDICTION_MODELS)
+    challenger_csv = ",".join(f"'{m}::challenger'" for m in ALPHA_PREDICTION_MODELS)
     rows = query(
-        """
+        f"""
         SELECT
             stock_id,
             date(generated_at) AS sample_date,
@@ -141,10 +145,9 @@ def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]
           AND direction_accuracy IS NOT NULL
           AND generated_at >= datetime('now', ?)
           AND (
-            model_name LIKE '%::challenger'
+            model_name IN ({challenger_csv})
             OR model_name IN (
-                'XGBoost', 'CatBoost', 'ExtraTrees', 'LightGBM', 'FT-Transformer',
-                'Chronos', 'DLinear', 'PatchTST', 'KalmanFilter', 'MarkovSwitching'
+                {alpha_csv}
             )
           )
         """,

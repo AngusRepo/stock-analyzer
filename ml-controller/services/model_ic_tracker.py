@@ -10,7 +10,7 @@ import json
 import math
 from typing import Any
 
-MANAGED_MODELS = (
+ALPHA_PREDICTION_MODELS = (
     "XGBoost",
     "CatBoost",
     "ExtraTrees",
@@ -19,14 +19,17 @@ MANAGED_MODELS = (
     "Chronos",
     "DLinear",
     "PatchTST",
-    "KalmanFilter",
-    "MarkovSwitching",
+)
+
+EXPERIMENTAL_SHADOW_MODELS = (
+    "ResidualMLP",
+    "GNN",
 )
 
 
 def tracked_model_names() -> tuple[str, ...]:
-    challengers = tuple(f"{name}::challenger" for name in MANAGED_MODELS)
-    return MANAGED_MODELS + challengers
+    challengers = tuple(f"{name}::challenger" for name in ALPHA_PREDICTION_MODELS + EXPERIMENTAL_SHADOW_MODELS)
+    return ALPHA_PREDICTION_MODELS + challengers
 
 
 def _as_float(value: Any) -> float | None:

@@ -62,6 +62,124 @@ adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   }))
 })
 
+adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { listStrategySpecs } = await import('../lib/strategyLab')
+  const { validateStrategySpec } = await import('../lib/strategySpec')
+  const { STRATEGY_OWNER_BOUNDARIES } = await import('../lib/strategyOwnerFreeze')
+  const specs = listStrategySpecs()
+  return c.json({
+    success: true,
+    version: specs[0]?.version ?? 'strategy-spec-v1',
+    mode: 'read_only',
+    specs: specs.map((spec) => ({ ...spec, validation: validateStrategySpec(spec) })),
+    owner_boundaries: STRATEGY_OWNER_BOUNDARIES,
+  })
+})
+
+adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type StrategyDryRunBody = {
+    date?: string
+    candidates?: Array<Record<string, unknown>>
+  }
+  const body: StrategyDryRunBody = await c.req.json<StrategyDryRunBody>().catch(() => ({} as StrategyDryRunBody))
+  const date = body.date ?? c.req.query('date') ?? twToday()
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 200))
+  let candidates = body.candidates ?? []
+
+  if (!candidates.length) {
+    const { results } = await c.env.DB.prepare(`
+      SELECT symbol, name, sector, industry, score, chip_score, tech_score,
+             COALESCE(score - COALESCE(chip_score, 0) - COALESCE(tech_score, 0) - COALESCE(ml_score, 0), 0) AS momentum_score,
+             current_price
+      FROM daily_recommendations
+      WHERE date = ?
+      ORDER BY rank ASC, score DESC
+      LIMIT ?
+    `).bind(date, limit).all<Record<string, unknown>>()
+    candidates = results ?? []
+  }
+
+  const { listStrategySpecs, dryRunStrategySpec } = await import('../lib/strategyLab')
+  const specs = listStrategySpecs()
+  return c.json({
+    success: true,
+    mode: 'dry_run',
+    date,
+    source: body.candidates?.length ? 'request_body' : 'daily_recommendations',
+    candidate_count: candidates.length,
+    results: specs.map((spec) => dryRunStrategySpec(spec, candidates as any)),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 100))
+  const { listResearchExperiments, buildResearchReviewPacket } = await import('../lib/researchExperimentRegistry')
+  const { buildResearchEvaluationPlan } = await import('../lib/researchEvaluationPlan')
+  const experiments = await listResearchExperiments(c.env.KV, limit)
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiments: experiments.map((record) => ({
+      ...record,
+      review_packet: buildResearchReviewPacket(record),
+      evaluation_plan: buildResearchEvaluationPlan(record),
+    })),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/evaluation-plan', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const { RESEARCH_EXPERIMENT_PREFIX } = await import('../lib/researchExperimentRegistry')
+  const { buildResearchEvaluationPlan } = await import('../lib/researchEvaluationPlan')
+  const record = await c.env.KV.get(`${RESEARCH_EXPERIMENT_PREFIX}${id}`, 'json') as any
+  if (!record) return c.json({ error: 'research experiment not found' }, 404)
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    plan: buildResearchEvaluationPlan(record),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/evaluation-runs', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '20', 10) || 20, 50))
+  const { listResearchEvaluationRunReports } = await import('../lib/researchEvaluationRunner')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiment_id: id,
+    runs: await listResearchEvaluationRunReports(c.env.KV, id, limit),
+  })
+})
+
+adminReadRoutes.post('/api/admin/research/gate', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => ({}))
+  const { evaluateResearchInternGate } = await import('../lib/researchInternGate')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    gate: evaluateResearchInternGate(body),
+  })
+})
+
 adminReadRoutes.get('/api/admin/costs/today', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

@@ -244,6 +244,162 @@ export const deployGateApi = {
   },
 }
 
+export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
+export type StrategySpec = {
+  id: string
+  version: string
+  name: string
+  status: StrategySpecStatus
+  owner: 'strategy'
+  alphaBucket: string
+  supportedRegimes: string[]
+  thesis: string
+  thresholds: Record<string, unknown>
+  riskNotes: string[]
+  validation: { ok: boolean; errors: string[] }
+}
+
+export type StrategyOwnerBoundary = {
+  owner: string
+  owns: string[]
+  forbidden: string[]
+}
+
+export type StrategySpecsResponse = {
+  success: boolean
+  version: string
+  mode: 'read_only'
+  specs: StrategySpec[]
+  owner_boundaries: StrategyOwnerBoundary[]
+}
+
+export type StrategyDryRunResult = {
+  specId: string
+  valid: boolean
+  errors: string[]
+  sampleSize: number
+  matched: number
+  matchRate: number
+}
+
+export type StrategyDryRunResponse = {
+  success: boolean
+  mode: 'dry_run'
+  date: string
+  source: 'request_body' | 'daily_recommendations'
+  candidate_count: number
+  results: StrategyDryRunResult[]
+}
+
+export type ResearchExperiment = {
+  id: string
+  version: string
+  status: string
+  hypothesis: string
+  source_refs: string[]
+  strategy_spec_ids: string[]
+  data_slice: Record<string, unknown>
+  metrics: string[]
+  follow_up: string[]
+  approval_gate: Record<string, boolean>
+  created_at: string
+  updated_at: string
+  review_packet?: string
+  evaluation_plan?: {
+    experiment_id: string
+    mode: 'dry_run_only'
+    hypothesis: string
+    warnings: string[]
+    blocked_capabilities: string[]
+    steps: Array<{
+      id: string
+      kind: string
+      controller_endpoint: string | null
+      method: 'POST'
+      body: Record<string, unknown>
+      mutation_allowed: false
+      gate_decision: 'ALLOW' | 'REQUIRE_APPROVAL' | 'BLOCK'
+      execution_ready: boolean
+      block_reason?: string
+    }>
+  }
+}
+
+export type ResearchEvaluationRunResponse = {
+  success: boolean
+  mode: 'dry_run_execution'
+  report: {
+    success: boolean
+    mode: 'dry_run_execution'
+    experiment_id: string
+    verdict: 'ready_for_review' | 'needs_attention'
+    review_packet: string
+    results: Array<{
+      step_id: string
+      kind: string
+      endpoint: string | null
+      status: 'ok' | 'skipped' | 'error'
+      response?: unknown
+      reason?: string
+    }>
+  }
+}
+
+export type ResearchEvaluationRunsResponse = {
+  success: boolean
+  mode: 'read_only'
+  experiment_id: string
+  runs: Array<ResearchEvaluationRunResponse['report'] & {
+    id: string
+    created_at: string
+  }>
+}
+
+export type ResearchExperimentsResponse = {
+  success: boolean
+  mode: 'read_only'
+  experiments: ResearchExperiment[]
+}
+
+export type ResearchGateResult = {
+  decision: 'ALLOW' | 'REQUIRE_APPROVAL' | 'BLOCK'
+  action: string
+  reason: string
+  allowed_next_steps: string[]
+  blocked_capabilities: string[]
+}
+
+export type ResearchGateResponse = {
+  success: boolean
+  mode: 'read_only'
+  gate: ResearchGateResult
+}
+
+export const strategyLabApi = {
+  specs: () => get<StrategySpecsResponse>('/admin/strategy/specs'),
+  dryRun: (date?: string) => post<StrategyDryRunResponse>(`/admin/strategy/dry-run${date ? `?date=${date}` : ''}`),
+  experiments: () => get<ResearchExperimentsResponse>('/admin/research/experiments'),
+  gate: (action: string, opts?: { dryRun?: boolean }) => post<ResearchGateResponse>('/admin/research/gate', { action, dryRun: opts?.dryRun }),
+  createExperiment: (body: {
+    hypothesis: string
+    sourceRefs?: string[]
+    strategySpecIds?: string[]
+    metrics?: string[]
+    followUp?: string[]
+    dry_run?: boolean
+  }) => post<{ success: boolean; mode: 'dry_run' | 'persisted'; experiment: ResearchExperiment; review_packet: string; hint?: string }>(
+    '/admin/research/experiments',
+    body,
+  ),
+  runEvaluationPlan: (id: string) => post<ResearchEvaluationRunResponse>(
+    `/admin/research/experiments/${encodeURIComponent(id)}/evaluation-plan/run`,
+    { dry_run: true },
+  ),
+  evaluationRuns: (id: string) => get<ResearchEvaluationRunsResponse>(
+    `/admin/research/experiments/${encodeURIComponent(id)}/evaluation-runs`,
+  ),
+}
+
 export type ModelPoolLineageModel = {
   status?: string
   version?: string

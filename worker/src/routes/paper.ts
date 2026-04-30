@@ -13,8 +13,9 @@
 
 import { Hono, type Context } from 'hono'
 import { verifyJWT }  from '../lib/auth'
-import { getTradingConfig } from '../lib/tradingConfig'
+import { getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
 import {
+  batchGetATR,
   getLatestPrice,
   getStockName,
 } from '../lib/paperMarketData'
@@ -22,6 +23,7 @@ import {
   calcCommission,
   calcTax,
 } from '../lib/paperTradeMath'
+import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
@@ -42,7 +44,30 @@ const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 const ACCOUNT_ID = 1
 
-// Market snapshot fetch: Shioaji proxy first, Yahoo fallback second.
+async function resolveManualExecutablePrice(
+  c: Context<{ Bindings: Bindings; Variables: Variables }>,
+  symbol: string,
+  priceOverride: number | null,
+): Promise<{ price: number | null; source: string; error?: string }> {
+  if (priceOverride != null && Number.isFinite(priceOverride) && priceOverride > 0) {
+    return { price: priceOverride, source: 'manual_override' }
+  }
+
+  if (!isTwIntradayTradingMinute()) {
+    return { price: null, source: 'none', error: 'manual order requires explicit price outside TW market hours' }
+  }
+
+  const quotes = await batchGetIntradayOHLC([symbol], {
+    SHIOAJI_PROXY_URL: (c.env as any).SHIOAJI_PROXY_URL,
+    PROXY_SERVICE_TOKEN: (c.env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
+  })
+  const quote = quotes.get(symbol)
+  if (!quote || quote.source !== 'shioaji') {
+    return { price: null, source: quote?.source ?? 'none', error: 'manual order requires broker intraday quote' }
+  }
+  return { price: quote.last, source: 'shioaji' }
+}
 
 async function enrichPendingBuyContext(
   db: D1Database,
@@ -523,10 +548,30 @@ paper.post('/buy', async (c) => {
   if (!symbol)       return c.json({ error: '缺少 symbol' }, 400)
   if (!sharesRaw || sharesRaw <= 0) return c.json({ error: 'shares 必須為正整數' }, 400)
 
-  const price = priceOverride ?? await getLatestPrice(c.env.DB, symbol)
-  if (!price) return c.json({ error: `找不到 ${symbol} 的可用價格，請稍後再試` }, 404)
+  const resolvedPrice = await resolveManualExecutablePrice(c, symbol, priceOverride)
+  const price = resolvedPrice.price
+  if (!price) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格，請稍後再試` }, 404)
 
   const name        = await getStockName(c.env.DB, symbol)
+  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const atr14 = (await batchGetATR(c.env.DB, [symbol])).get(symbol) ?? price * cfg.exit.fallbackAtrPct
+  const regimeLabel = await c.env.KV.get('ml:regime')
+  const sltp = resolveSltpForRegime(cfg, regimeLabel)
+  const volPct = atr14 / price
+  const volLow = sltp?.volThresholdLow ?? 0.015
+  const volHigh = sltp?.volThresholdHigh ?? 0.03
+  const slBase = sltp?.slMultBase ?? 2.0
+  const tpBase = sltp?.tpMultBase ?? 1.5
+  const slLow = sltp?.slMultLow ?? 0.75
+  const slHigh = sltp?.slMultHigh ?? 1.25
+  const tpLow = sltp?.tpMultLow ?? 0.67
+  const tpHigh = sltp?.tpMultHigh ?? 1.33
+  const tp2Mult = sltp?.tp2DistanceMultiplier ?? 2.0
+  const slMult = volPct < volLow ? slBase * slLow : volPct < volHigh ? slBase : slBase * slHigh
+  const tpMult = volPct < volLow ? tpBase * tpLow : volPct < volHigh ? tpBase : tpBase * tpHigh
+  const initialStop = price - atr14 * slMult
+  const tp1Price = price + atr14 * tpMult
+  const tp2Price = price + atr14 * tpMult * tp2Mult
   const txValue     = price * sharesRaw
   const commission  = calcCommission(txValue, cfg)
   const totalCost   = txValue + commission   // Buy orders do not include sell-side tax.
@@ -542,7 +587,6 @@ paper.post('/buy', async (c) => {
     }, 400)
   }
 
-  const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const settlementDate = await getSettlementDate(todayStr, c.env.KV)
 
   // Guardrail: enforce manual daily buy limit.
@@ -572,19 +616,48 @@ paper.post('/buy', async (c) => {
     INSERT INTO paper_orders
       (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
     VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, ?, ?, ?, ?)
-  `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, totalCost, source, signal ?? null, confidence ?? null, note ?? null)
+  `).bind(
+    ACCOUNT_ID,
+    symbol,
+    name,
+    sharesRaw,
+    price,
+    commission,
+    totalCost,
+    source,
+    signal ?? null,
+    confidence ?? null,
+    note ? `${note} | price_source=${resolvedPrice.source}` : `price_source=${resolvedPrice.source}`,
+  )
 
   await c.env.DB.batch([
     // Upsert position immediately for T+0 paper state.
     c.env.DB.prepare(`
-      INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
+        entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
+        stop_multiplier, tp1_price, tp2_price, tp1_hit, original_shares)
+      VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       ON CONFLICT(account_id, symbol) DO UPDATE SET
         shares    = excluded.shares,
         avg_cost  = excluded.avg_cost,
         name      = excluded.name,
         updated_at = datetime('now')
-    `).bind(ACCOUNT_ID, symbol, name, newShares, newAvgCost),
+    `).bind(
+      ACCOUNT_ID,
+      symbol,
+      name,
+      newShares,
+      newAvgCost,
+      price,
+      todayStr,
+      initialStop,
+      initialStop,
+      price,
+      slMult,
+      tp1Price,
+      tp2Price,
+      sharesRaw,
+    ),
 
     // Insert order row.
     orderInsert,
@@ -607,7 +680,7 @@ paper.post('/buy', async (c) => {
     eventType: 'paper_order',
     status: 'filled',
     reason: 'manual_buy',
-    detail: { shares: sharesRaw, price, total_cost: totalCost },
+    detail: { shares: sharesRaw, price, price_source: resolvedPrice.source, total_cost: totalCost },
     orderId: lastOrder?.id ?? null,
     source,
   })
@@ -651,8 +724,9 @@ paper.post('/sell', async (c) => {
     }, 400)
   }
 
-  const price = priceOverride ?? await getLatestPrice(c.env.DB, symbol)
-  if (!price) return c.json({ error: `找不到 ${symbol} 的價格` }, 404)
+  const resolvedPrice = await resolveManualExecutablePrice(c, symbol, priceOverride)
+  const price = resolvedPrice.price
+  if (!price) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格` }, 404)
 
   const name       = pos.name || await getStockName(c.env.DB, symbol)
   const txValue    = price * sharesRaw
@@ -673,7 +747,10 @@ paper.post('/sell', async (c) => {
   const settlementDate = await getSettlementDate(todayStr, c.env.KV)
 
   const sellNote = buildSellOrderNote(
-    { memo: note ?? null, entry_date: pos.entry_date ?? null },
+    {
+      memo: note ? `${note} | price_source=${resolvedPrice.source}` : `price_source=${resolvedPrice.source}`,
+      entry_date: pos.entry_date ?? null,
+    },
     { entryPrice: pos.avg_cost, exitPrice: price, shares: sharesRaw, commission, tax },
   )
 
@@ -714,7 +791,7 @@ paper.post('/sell', async (c) => {
     eventType: 'paper_order',
     status: 'filled',
     reason: 'manual_sell',
-    detail: { shares: sharesRaw, price, proceeds, realized_pnl: Math.round(realizedPnl) },
+    detail: { shares: sharesRaw, price, price_source: resolvedPrice.source, proceeds, realized_pnl: Math.round(realizedPnl) },
     orderId: lastSellOrder?.id ?? null,
     source,
   })

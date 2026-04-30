@@ -19,6 +19,49 @@ export function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, da
   return side === 'buy' ? price + slippage : Math.max(price - slippage, tickSize)
 }
 
+export interface LimitBuyFillInput {
+  currentPrice: number
+  limitPrice: number
+  intradayLow?: number | null
+  slippageTicks?: number
+}
+
+export interface LimitBuyFillResult {
+  fillable: boolean
+  fillPrice?: number
+  reason: string
+}
+
+export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResult {
+  const currentPrice = Number(input.currentPrice)
+  const limitPrice = Number(input.limitPrice)
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { fillable: false, reason: 'invalid_current_price' }
+  if (!Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
+
+  const low = input.intradayLow == null ? null : Number(input.intradayLow)
+  if (low != null && Number.isFinite(low) && low > limitPrice) {
+    return {
+      fillable: false,
+      reason: `limit_not_touched:low_${low.toFixed(2)}_gt_limit_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  if (currentPrice > limitPrice && (low == null || !Number.isFinite(low))) {
+    return {
+      fillable: false,
+      reason: `price_above_limit:${currentPrice.toFixed(2)}_gt_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  const referencePrice = currentPrice <= limitPrice ? currentPrice : limitPrice
+  const slippedPrice = applySlippage(referencePrice, 'buy', input.slippageTicks ?? 1)
+  return {
+    fillable: true,
+    fillPrice: Math.round(Math.min(limitPrice, slippedPrice) * 100) / 100,
+    reason: currentPrice <= limitPrice ? 'marketable_limit' : 'limit_touched_intraday',
+  }
+}
+
 export function applyPartialFill(shares: number, price: number, dailyVolume: number, cfg?: TradingConfig): number {
   if (dailyVolume <= 0) return shares
   const orderVolume = shares * price

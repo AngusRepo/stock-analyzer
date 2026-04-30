@@ -8,7 +8,7 @@ import {
   logRegimeShadow,
   recordSellSettlement,
 } from './paperMarketData'
-import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { calcCommission, calcTax, resolveLimitBuyFill } from './paperTradeMath'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { forceDayTradeClose, pollIntradayStopLoss } from './paperExitTasks'
 import {
@@ -169,6 +169,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
@@ -453,6 +454,23 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
 
     const currentOhlc = ohlcMap.get(pending.symbol)
+    if (currentOhlc?.source !== 'shioaji') {
+      const reason = `broker_quote_required:${currentOhlc?.source ?? 'missing'}`
+      const idx = pendingBuys.findIndex((b) => b.symbol === pending.symbol)
+      if (idx >= 0) {
+        const nextPending = appendPendingBuyExecutionNote(
+          pendingBuys[idx],
+          formatExecutionStatusEvent('deferred', reason),
+        ) as PendingBuy
+        if ((nextPending.watch_points ?? []).length !== (pendingBuys[idx].watch_points ?? []).length) {
+          pendingBuys[idx] = nextPending
+          recordExecutionNote(pending.symbol, 'deferred', reason)
+          stateChanged = true
+        }
+      }
+      console.log(`[Intraday] ${pending.symbol}: ${reason}`)
+      continue
+    }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
@@ -513,13 +531,29 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
 
     const limitPrice = preTrade.limitPrice ?? pending.ml_entry_price
-    const executablePrice = Math.min(price, limitPrice)
-    const slippedPrice = applySlippage(
-      executablePrice,
-      'buy',
-      cfg.position.fillSlippageTicks ?? 1,
-    )
-    const fillPriceOverride = Math.round(Math.min(limitPrice, slippedPrice) * 100) / 100
+    const fill = resolveLimitBuyFill({
+      currentPrice: price,
+      limitPrice,
+      intradayLow: currentOhlc?.low,
+      slippageTicks: cfg.position.fillSlippageTicks ?? 1,
+    })
+    if (!fill.fillable || fill.fillPrice == null) {
+      const idx = pendingBuys.findIndex((b) => b.symbol === pending.symbol)
+      if (idx >= 0) {
+        const nextPending = appendPendingBuyExecutionNote(
+          pendingBuys[idx],
+          formatExecutionStatusEvent('deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'}`),
+        ) as PendingBuy
+        if ((nextPending.watch_points ?? []).length !== (pendingBuys[idx].watch_points ?? []).length) {
+          pendingBuys[idx] = nextPending
+          recordExecutionNote(pending.symbol, 'deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'}`)
+          stateChanged = true
+        }
+      }
+      console.log(`[Intraday] ${pending.symbol}: limit not filled (${fill.reason}) price=${price} limit=${limitPrice} low=${currentOhlc?.low ?? 'na'}`)
+      continue
+    }
+    const fillPriceOverride = fill.fillPrice
 
     if (await hasFilledBuyToday(env, pending.symbol, today)) {
       console.log(`[Intraday] ${pending.symbol}: already filled today, removing stale pending buy`)

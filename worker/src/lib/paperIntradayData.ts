@@ -6,13 +6,35 @@ export interface IntradayOHLC {
   source?: 'shioaji' | 'yahoo'
 }
 
-type IntradayEnv = { SHIOAJI_PROXY_URL?: string; PROXY_SERVICE_TOKEN?: string }
+type IntradayEnv = { SHIOAJI_PROXY_URL?: string; PROXY_SERVICE_TOKEN?: string; requireBrokerQuote?: boolean }
 
 function proxyHeaders(env?: IntradayEnv, json = false): Record<string, string> {
   const headers: Record<string, string> = {}
   if (json) headers['Content-Type'] = 'application/json'
   if (env?.PROXY_SERVICE_TOKEN) headers.Authorization = `Bearer ${env.PROXY_SERVICE_TOKEN}`
   return headers
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
+  const low = finiteNumber(snapshot?.low)
+  const high = finiteNumber(snapshot?.high)
+  const open = finiteNumber(snapshot?.open)
+  let last = finiteNumber(snapshot?.last)
+    ?? finiteNumber(snapshot?.price)
+    ?? finiteNumber(snapshot?.last_price)
+    ?? finiteNumber(snapshot?.trade_price)
+    ?? finiteNumber(snapshot?.close)
+  if (last == null) return null
+
+  if (low != null && last < low) last = low
+  if (high != null && last > high) last = high
+
+  return { last, low, high, open, source: 'shioaji' }
 }
 
 async function getIntradayPrice(symbol: string, env?: IntradayEnv): Promise<number | null> {
@@ -25,12 +47,15 @@ async function getIntradayPrice(symbol: string, env?: IntradayEnv): Promise<numb
       })
       if (res.ok) {
         const json = await res.json() as any
-        return json?.data?.price ?? null
+        const normalized = normalizeShioajiSnapshot(json?.data)
+        return normalized?.last ?? null
       }
     } catch {
       // Shioaji proxy unavailable; continue with fallback.
     }
   }
+
+  if (env?.requireBrokerQuote) return null
 
   try {
     const twSymbol = `${symbol}.TW`
@@ -69,16 +94,8 @@ export async function batchGetIntradayOHLC(
       const json = await res.json() as any
       const data = json?.data ?? {}
       for (const [symbol, snapshot] of Object.entries(data)) {
-        const s = snapshot as any
-        const last = s?.close ?? s?.last ?? s?.price
-        if (last == null) continue
-        map.set(symbol, {
-          last: Number(last),
-          low: s?.low != null ? Number(s.low) : undefined,
-          high: s?.high != null ? Number(s.high) : undefined,
-          open: s?.open != null ? Number(s.open) : undefined,
-          source: 'shioaji',
-        })
+        const normalized = normalizeShioajiSnapshot(snapshot)
+        if (normalized) map.set(symbol, normalized)
       }
       if (map.size > 0) {
         const sample = [...map.entries()].slice(0, 3)
@@ -104,14 +121,19 @@ export async function batchGetIntradayOHLC(
         const json = await res.json() as any
         const data = json?.data ?? {}
         for (const [symbol, quote] of Object.entries(data)) {
-          const price = (quote as any)?.price
-          if (price != null) map.set(symbol, { last: Number(price), low: Number(price), source: 'shioaji' })
+          const normalized = normalizeShioajiSnapshot(quote)
+          if (normalized) map.set(symbol, normalized)
         }
         if (map.size > 0) return map
       }
     } catch (e) {
       console.warn(`[Price] /quotes failed, fallback Yahoo: ${e}`)
     }
+  }
+
+  if (env?.requireBrokerQuote) {
+    console.warn(`[Price] broker quote required; skip Yahoo fallback for ${symbols.length} symbols`)
+    return map
   }
 
   const priceMap = await batchGetIntradayPrices(symbols, undefined)
@@ -138,8 +160,8 @@ export async function batchGetIntradayPrices(
         const json = await res.json() as any
         const data = json?.data ?? {}
         for (const [symbol, quote] of Object.entries(data)) {
-          const price = (quote as any)?.price
-          if (price != null) map.set(symbol, price)
+          const normalized = normalizeShioajiSnapshot(quote)
+          if (normalized) map.set(symbol, normalized.last)
         }
         if (map.size > 0) {
           console.log(`[Price] Shioaji OK: ${map.size} quotes (${[...map.entries()].map(([symbol, price]) => `${symbol}=$${price}`).join(', ')})`)
@@ -149,6 +171,11 @@ export async function batchGetIntradayPrices(
     } catch (e) {
       console.warn(`[Price] Shioaji failed, fallback Yahoo: ${e}`)
     }
+  }
+
+  if (env?.requireBrokerQuote) {
+    console.warn(`[Price] broker quote required; skip Yahoo fallback for ${symbols.length} symbols`)
+    return map
   }
 
   console.log(`[Price] Shioaji unavailable, using Yahoo fallback for ${symbols.length} symbols`)

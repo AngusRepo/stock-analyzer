@@ -184,6 +184,7 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
   const priceMap = await batchGetIntradayPrices(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
   })
   if (priceMap.size === 0) return 'No intraday prices available'
 

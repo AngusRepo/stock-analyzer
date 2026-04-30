@@ -60,6 +60,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
   const priceMap = await batchGetIntradayPrices(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
   })
   const atrMap = await batchGetATR(env.DB, symbols)
   const regime = await getCurrentRegime(env.KV)
@@ -167,6 +168,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const exitPriceMap = await batchGetIntradayPrices(exitSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
   })
   const exitAtrMap = await batchGetATR(env.DB, exitSymbols)
   const eodRegime = await getCurrentRegime(env.KV)
@@ -342,6 +344,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   const priceMap = await batchGetIntradayPrices(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
   })
   const atrMap = await batchGetATR(env.DB, symbols)
   const intraRegime = await getCurrentRegime(env.KV)

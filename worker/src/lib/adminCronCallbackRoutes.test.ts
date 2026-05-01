@@ -51,10 +51,11 @@ void (async () => {
     assert(res.status === 200, 'cron callback should accept service token')
     const body = await res.json() as any
     assert(body.ok === true && body.task === 'verify-v2', 'cron callback should return accepted task')
-    assert(writes.some((write) => write.key.includes('cron:log:verify-v2:')), 'cron callback should persist cron log')
-    const entry = JSON.parse(writes.find((write) => write.key.includes('cron:log:verify-v2:'))!.value)
-    assert(entry.status === 'success', 'persisted cron log should keep callback status')
-    assert(entry.summary === 'verified 12/12', 'persisted cron log should keep callback summary')
+    assert(writes.some((write) => write.key.includes('scheduler:run:verify-v2:')), 'cron callback should persist canonical scheduler run log')
+    assert(writes.some((write) => write.key.includes('cron:log:verify-v2:')), 'cron callback should keep legacy cron log compatibility')
+    const entry = JSON.parse(writes.find((write) => write.key.includes('scheduler:run:verify-v2:'))!.value)
+    assert(entry.status === 'success', 'persisted scheduler log should keep callback status')
+    assert(entry.summary === 'verified 12/12', 'persisted scheduler log should keep callback summary')
   }
 })().catch((error) => {
   console.error(error)

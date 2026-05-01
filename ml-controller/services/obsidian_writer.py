@@ -18,6 +18,8 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from jinja2 import Environment, FileSystemLoader
 
+from services.model_pool_health import read_model_pool_health_rows
+
 logger = logging.getLogger("obsidian")
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -314,10 +316,13 @@ class ObsidianWriter:
             week_end = (dt - timedelta(days=dt.weekday()) + timedelta(days=4)).strftime("%Y-%m-%d")
             week_number = dt.isocalendar()[1]
 
-            # Model health
-            models = await _d1_query(client,
-                "SELECT * FROM model_health_daily WHERE date=(SELECT MAX(date) FROM model_health_daily)")
-            degraded = [m for m in models if (m.get("accuracy_30d") or 1) < 0.50]
+            # Model health: model_pool.json is the V2 source of truth.
+            models = read_model_pool_health_rows()
+            degraded = [
+                m for m in models
+                if m.get("lifecycle_status") in ("degraded", "retired")
+                or ((m.get("ic_4w_avg") is not None) and m.get("ic_4w_avg") < 0)
+            ]
 
             # Weekly trades
             trades = await _d1_query(client,
@@ -375,14 +380,19 @@ class ObsidianWriter:
         sell_orders = [o for o in orders if o.get("side") == "sell"]
         ml_buys = [r for r in recommendations if r.get("signal") in ("BUY", "STRONG_BUY")]
 
-        # Get degraded models
+        # Get degraded models from the V2 model pool owner.
         degraded_str = "None"
         try:
-            models = await _d1_query(client,
-                "SELECT model_name, accuracy_30d FROM model_health_daily "
-                "WHERE date=(SELECT MAX(date) FROM model_health_daily) AND accuracy_30d < 0.50")
+            models = [
+                m for m in read_model_pool_health_rows()
+                if m.get("lifecycle_status") in ("degraded", "retired")
+                or ((m.get("ic_4w_avg") is not None) and m.get("ic_4w_avg") < 0)
+            ]
             if models:
-                degraded_str = ", ".join(f"{m['model_name']}({m['accuracy_30d']:.2f})" for m in models)
+                degraded_str = ", ".join(
+                    f"{m['model_name']}(IC={m.get('ic_4w_avg', 'N/A')})"
+                    for m in models
+                )
         except Exception:
             pass
 

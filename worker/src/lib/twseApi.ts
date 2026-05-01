@@ -62,6 +62,10 @@ function isStockCode(s: string): boolean {
   return /^\d{4,6}$/.test(s.trim())
 }
 
+function isCommonStockCode(s: string): boolean {
+  return /^\d{4}$/.test(s.trim())
+}
+
 function parseOpenApiArray(text: string): any[] {
   const normalized = text.replace(/^\uFEFF/, '').trimStart()
   if (!normalized.startsWith('[')) return []
@@ -923,18 +927,10 @@ export async function fetchTwseStockDayAll(
 }
 
 /** TPEX 全市場今日收盤（openapi）*/
-export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
-  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
-  const res = await fetchWithRetry(url, {
-    headers: TWSE_HEADERS,
-    signal: AbortSignal.timeout(30000),
-  }, { label: 'TPEX_DAILY_QUOTES' })
-  if (!res.ok) return []
-  const text = await res.text()
-  const body = parseOpenApiArray(text)
+export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
   // fields vary, common keys: SecuritiesCompanyCode, Open, High, Low, Close, TradingShares
   return body
-    .filter(r => isStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
+    .filter(r => isCommonStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
     .map(r => {
       const sym = (r.SecuritiesCompanyCode ?? r.Code ?? '').trim()
       const pf = (v: any) => v && v !== '--' ? parseFloat(String(v).replace(/,/g, '')) || null : null
@@ -947,6 +943,18 @@ export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
         volume: r.TradingShares ? parseTwNum(String(r.TradingShares)) : null,
       }
     })
+}
+
+export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
+    signal: AbortSignal.timeout(30000),
+  }, { label: 'TPEX_DAILY_QUOTES' })
+  if (!res.ok) return []
+  const text = await res.text()
+  const body = parseOpenApiArray(text)
+  return parseTpexDailyQuoteRows(body)
 }
 
 /** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
@@ -1034,22 +1042,6 @@ export async function bulkFetchAndStorePrices(
       count += stmts.length
     }
   }
-  // ── 標記興櫃股 market='EMERGING'（讓 screener filter 生效）──
-  const emergingSymbols = emergingRows.status === 'fulfilled'
-    ? emergingRows.value.filter(r => idMap.has(r.symbol)).map(r => r.symbol)
-    : []
-  if (emergingSymbols.length) {
-    const EMG_BATCH = 50
-    for (let i = 0; i < emergingSymbols.length; i += EMG_BATCH) {
-      const batch = emergingSymbols.slice(i, i + EMG_BATCH)
-      const ph = batch.map(() => '?').join(',')
-      await db.prepare(
-        `UPDATE stocks SET market='EMERGING' WHERE symbol IN (${ph}) AND market != 'EMERGING'`
-      ).bind(...batch).run()
-    }
-    console.log(`[BulkPrice] Marked ${emergingSymbols.length} emerging stocks`)
-  }
-
   console.log(`[BulkPrice] Written: ${count} stock_prices rows to date=${effectiveDate} (TWSE ${twseRows.length} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
   return count
 }

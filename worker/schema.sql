@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   stock_id           INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
   model_name         TEXT NOT NULL,
   generated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  prediction_date    TEXT,              -- pipeline business date; do not infer from generated_at
   horizon            INTEGER DEFAULT 30,
   rmse               REAL, mape REAL, direction_accuracy REAL,
   best_model         INTEGER DEFAULT 0,
@@ -139,6 +140,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pred_stock    ON predictions(stock_id, model_name);
+CREATE INDEX IF NOT EXISTS idx_predictions_business_date ON predictions(prediction_date, stock_id, model_name);
 CREATE INDEX IF NOT EXISTS idx_pred_verify   ON predictions(stock_id, verified_at);
 CREATE INDEX IF NOT EXISTS idx_pred_unverify ON predictions(stock_id, direction_correct) WHERE direction_correct IS NULL;
 
@@ -395,11 +397,16 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
   sector_rank   TEXT,                   -- 族群相對強弱排名
   chip_score    REAL DEFAULT 0,          -- 籌碼分數 (0-40)
   tech_score    REAL DEFAULT 0,          -- 技術分數 (0-30)
+  momentum_score REAL DEFAULT 0,         -- Screener 動能/成交量分數 (0-20)
   ml_score      REAL DEFAULT 0,          -- ML 分數 (0-30)
   market_segment TEXT,
   recommendation_lane TEXT DEFAULT 'tradable',
   eligible_for_ml INTEGER DEFAULT 1,
   eligible_for_pending_buy INTEGER DEFAULT 1,
+  alpha_context TEXT,
+  alpha_allocation TEXT,
+  ml_vote_summary TEXT,
+  score_components TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(date, stock_id)
 );

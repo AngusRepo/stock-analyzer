@@ -33,7 +33,23 @@ function assert(condition: unknown, message: string): void {
   const result = evaluateMarketDataReadiness({
     targetDate: '2026-04-30',
     priceLatestDate: '2026-04-30',
+    priceRowsOnLatest: 1082,
+    priceTwseRowsOnLatest: 1068,
+    priceOtcRowsOnLatest: 14,
+    chipLatestDate: '2026-04-30',
+    chipRowsOnLatest: 5100,
+  })
+  assert(!result.ok, 'partial OTC price rows must block pipeline even when total price rows pass')
+  assert(result.summary.includes('OTC price rows=14/700'), 'OTC row-count floor must be explicit')
+}
+
+{
+  const result = evaluateMarketDataReadiness({
+    targetDate: '2026-04-30',
+    priceLatestDate: '2026-04-30',
     priceRowsOnLatest: 2283,
+    priceTwseRowsOnLatest: 1085,
+    priceOtcRowsOnLatest: 1198,
     chipLatestDate: '2026-04-30',
     chipRowsOnLatest: 5100,
   })

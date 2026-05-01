@@ -52,7 +52,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
     Trigger the verify pipeline V2.
 
     In async mode the request returns quickly and a dedicated Cloud Run Job
-    writes the final result back to Worker via /api/admin/cron-callback.
+    writes the final result back to Worker via /api/admin/scheduler-callback.
     """
     from graphs.verify_pipeline import run_verify_v2
 
@@ -101,7 +101,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
                 "callback_task": req.callback_task,
                 "execution_id": execution.execution_id,
                 "execution_name": execution.execution_name,
-                "note": "verify pipeline running as Cloud Run Job; Worker cron log will be updated via callback",
+                "note": "verify pipeline running as Cloud Run Job; Worker scheduler run log will be updated via callback",
             },
         )
 

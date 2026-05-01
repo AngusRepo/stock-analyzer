@@ -53,6 +53,15 @@ function payloadState(isLoading: boolean, error: unknown) {
   return '目前沒有回傳資料'
 }
 
+function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>) {
+  return (
+    name === 'KalmanFilter' ||
+    name === 'MarkovSwitching' ||
+    model.model_type === 'state_space_overlay' ||
+    model.balance_family === 'state_space'
+  )
+}
+
 function severityTone(severity?: string): WorkstationTone {
   if (severity === 'error') return 'error'
   if (severity === 'warn') return 'warn'
@@ -196,6 +205,7 @@ export default function ObservabilityPage() {
 
   const modelStats = useMemo(() => {
     const models = Object.entries(modelPool.data?.models ?? {})
+      .filter(([name, model]) => !isStateSpaceOverlayModel(name, model as Record<string, unknown>))
     const active = models.filter(([, model]) => model.status === 'active').length
     const challenger = models.filter(([, model]) => model.challenger).length
     const weakIc = models.filter(([, model]) => {
@@ -447,7 +457,9 @@ export default function ObservabilityPage() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(modelPool.data?.models ?? {}).map(([name, model]) => {
+                {Object.entries(modelPool.data?.models ?? {})
+                  .filter(([name, model]) => !isStateSpaceOverlayModel(name, model as Record<string, unknown>))
+                  .map(([name, model]) => {
                   const ic = model.ic_4w_avg ?? model.rolling_ic
                   return (
                     <tr key={name} className="hover:bg-[#101927]">

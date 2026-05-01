@@ -25,7 +25,7 @@ def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
     monkeypatch.setattr(
         verify_service,
         "load_bars_for_prediction",
-        lambda stock_id, generated_at: [
+        lambda stock_id, generated_at, prediction_date=None: [
             {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
             {"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
             {"open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
@@ -67,7 +67,7 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
     monkeypatch.setattr(
         verify_service,
         "load_bars_for_prediction",
-        lambda stock_id, generated_at: [
+        lambda stock_id, generated_at, prediction_date=None: [
             {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
             {"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
             {"open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
@@ -93,3 +93,22 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
     assert result["bind"][4] == -1
     assert result["bind"][8] == pytest.approx(0.05)
     assert result["arf"] is None
+
+
+def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+
+    verify_service.load_bars_for_prediction(
+        stock_id=1,
+        generated_at="2026-05-01T01:44:00Z",
+        prediction_date="2026-04-30",
+    )
+
+    assert captured["params"] == [1, "2026-05-01", "2026-05-10"]

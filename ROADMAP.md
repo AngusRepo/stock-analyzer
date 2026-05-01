@@ -140,7 +140,7 @@
 
 ### #15 Three-layer Observability ✅
 - **What**: L1 Trade (existing). L2 Decision: per-trade factor attribution. L3 Model: daily per-model health
-- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `worker/src/index.ts` L3 model_health_daily + KV
+- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `model_pool.json` L3 model lifecycle / IC lineage + KV
 - **Why**: Currently can only see "PnL is bad". Can't diagnose which layer is wrong
 - **Expected**: Answer "why are we losing money" with data
 - **Impl**: L2: INSERT decision_logs on each BUY with chip_pct/tech_pct/ml_pct contribution + debate verdict. L3: After daily verify, snapshot all 10 models' accuracy/PF/expectancy/lifecycle to D1 + KV. API: GET /api/observability/decisions + /model-health

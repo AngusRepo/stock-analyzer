@@ -671,18 +671,22 @@ class ScreenerParams:
     min_daily_turnover: float = 5_000_000
     max_per_industry: int = 5
     max_candidates: int = 25
-    chip_score_tiers: list[float] = field(default_factory=lambda: [36, 28, 20, 12, 5])
+    chip_score_tiers: list[float] = field(default_factory=lambda: [32, 24, 16, 8, 2])
     chip_intensity_thresholds: list[float] = field(
-        default_factory=lambda: [0.20, 0.10, 0.05, 0, -0.05]
+        default_factory=lambda: [0.80, 0.45, 0.20, 0.05, -0.05]
     )
-    consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [4, 2])
+    consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [3, 1])
     consec_buy_day_thresholds: list[int] = field(default_factory=lambda: [5, 3])
-    rsi_score_tiers: list[float] = field(default_factory=lambda: [12, 8, 6, 8, 3])
+    rsi_score_tiers: list[float] = field(default_factory=lambda: [10, 6, 4, 2, 2])
     macd_negative_factor: float = 0.5
     keltner_multiplier: float = 1.5
     natr_threshold: float = 3.0
     excess_return_range: tuple[float, float] = (-0.03, 0.05)
     vol_ratio_range: tuple[float, float] = (0.7, 2.5)
+    score_calibration_enabled: bool = True
+    score_calibration_min_size: int = 30
+    score_calibration_percentile_weight: float = 0.65
+    score_calibration_zscore_weight: float = 0.35
 
     @classmethod
     def from_trading_config(cls, tc: dict) -> "ScreenerParams":
@@ -695,16 +699,20 @@ class ScreenerParams:
             min_daily_turnover=sc.get("minDailyTurnover", 5_000_000),
             max_per_industry=sc.get("maxPerIndustry", 5),
             max_candidates=sc.get("maxCandidates", 25),
-            chip_score_tiers=sc.get("chipScoreTiers", [36, 28, 20, 12, 5]),
-            chip_intensity_thresholds=sc.get("chipIntensityThresholds", [0.20, 0.10, 0.05, 0, -0.05]),
-            consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [4, 2]),
+            chip_score_tiers=sc.get("chipScoreTiers", [32, 24, 16, 8, 2]),
+            chip_intensity_thresholds=sc.get("chipIntensityThresholds", [0.80, 0.45, 0.20, 0.05, -0.05]),
+            consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [3, 1]),
             consec_buy_day_thresholds=sc.get("consecBuyDayThresholds", [5, 3]),
-            rsi_score_tiers=sc.get("rsiScoreTiers", [12, 8, 6, 8, 3]),
+            rsi_score_tiers=sc.get("rsiScoreTiers", [10, 6, 4, 2, 2]),
             macd_negative_factor=sc.get("macdNegativeFactor", 0.5),
             keltner_multiplier=sc.get("keltnerMultiplier", 1.5),
             natr_threshold=sc.get("natrThreshold", 3.0),
             excess_return_range=tuple(sc.get("excessReturnRange", [-0.03, 0.05])),
             vol_ratio_range=tuple(sc.get("volRatioRange", [0.7, 2.5])),
+            score_calibration_enabled=sc.get("scoreCalibrationEnabled", True) is not False,
+            score_calibration_min_size=int(sc.get("scoreCalibrationMinSize", 30)),
+            score_calibration_percentile_weight=float(sc.get("scoreCalibrationPercentileWeight", 0.65)),
+            score_calibration_zscore_weight=float(sc.get("scoreCalibrationZScoreWeight", 0.35)),
         )
 
 
@@ -770,11 +778,11 @@ class MLPredictionsCache:
     Source:
       D1 predictions WHERE
         model_name='ensemble' AND
-        date(generated_at) BETWEEN start_date AND end_date
+        COALESCE(prediction_date, date(generated_at, '+8 hours')) BETWEEN start_date AND end_date
 
     confidence is read from `direction_accuracy` column (set at INSERT time
     by recommendation_service to ml result["confidence"], which is the
-    rank_to_signal output for the 5-feature ensemble; post-Migration C this
+    rank_to_signal output for the feature-model ensemble; post-Migration C this
     is the same value, ensemble_v2.avg_rank delta is small until time-series
     IC accumulates). Stage 4 follow-up may add ensemble_v2_confidence column.
     """
@@ -794,12 +802,12 @@ class MLPredictionsCache:
         """
         from services.d1_client import query as d1_query
         sql = """
-            SELECT s.symbol, date(p.generated_at) AS d, p.direction_accuracy AS conf
+            SELECT s.symbol, COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) AS d, p.direction_accuracy AS conf
             FROM predictions p
             JOIN stocks s ON s.id = p.stock_id
             WHERE p.model_name = 'ensemble'
-              AND date(p.generated_at) >= ?
-              AND date(p.generated_at) <= ?
+              AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) >= ?
+              AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) <= ?
               AND p.direction_accuracy IS NOT NULL
         """
         rows = d1_query(sql, [start_date, end_date])
@@ -928,6 +936,59 @@ def _normalize(value: float, lower: float, upper: float, max_score: float) -> fl
     return (value - lower) / (upper - lower) * max_score
 
 
+def _percentile(values: list[float], value: float) -> float:
+    if len(values) <= 1:
+        return 0.5
+    below = sum(1 for v in values if v < value)
+    equal = sum(1 for v in values if v == value)
+    return _clamp((below + equal * 0.5) / len(values), 0.0, 1.0)
+
+
+def _zscore_component(values: list[float], value: float) -> float:
+    if len(values) <= 1:
+        return 0.5
+    arr = np.asarray(values, dtype=np.float64)
+    std = float(arr.std())
+    if std < 1e-9:
+        return 0.5
+    z = (value - float(arr.mean())) / std
+    return _clamp((z + 2.0) / 4.0, 0.0, 1.0)
+
+
+def _calibrate_factor_score(raw: float, values: list[float], max_score: float, sc: ScreenerParams) -> float:
+    p = _percentile(values, raw)
+    z = _zscore_component(values, raw)
+    pw = _clamp(sc.score_calibration_percentile_weight, 0.0, 1.0)
+    zw = _clamp(sc.score_calibration_zscore_weight, 0.0, 1.0)
+    weight_sum = max(0.001, pw + zw)
+    normalized = (p * pw + z * zw) / weight_sum
+    return round(min(raw, normalized * max_score), 1)
+
+
+def apply_screener_score_calibration(candidates: list[Candidate], sc: ScreenerParams) -> list[Candidate]:
+    if not sc.score_calibration_enabled or len(candidates) < sc.score_calibration_min_size:
+        return candidates
+
+    chip_values = [float(c.chip_score or 0.0) for c in candidates]
+    tech_values = [float(c.tech_score or 0.0) for c in candidates]
+    momentum_values = [float(c.momentum_score or 0.0) for c in candidates]
+    for c in candidates:
+        raw_chip = float(c.chip_score or 0.0)
+        raw_tech = float(c.tech_score or 0.0)
+        raw_momentum = float(c.momentum_score or 0.0)
+        chip = _calibrate_factor_score(raw_chip, chip_values, 40.0, sc)
+        tech = _calibrate_factor_score(raw_tech, tech_values, 30.0, sc)
+        momentum = _calibrate_factor_score(raw_momentum, momentum_values, 20.0, sc)
+        delta = (chip - raw_chip) + (tech - raw_tech) + (momentum - raw_momentum)
+        c.chip_score = chip
+        c.tech_score = tech
+        c.momentum_score = momentum
+        c.base_score = round(float(c.base_score) + delta, 1)
+        if delta < -0.5:
+            c.reasons = [*c.reasons[:3], f"cross-section calibration {delta:.1f}"][:4]
+    return candidates
+
+
 def score_multi_factor_np(
     prices_np: dict,                  # dict from get_price_history_np()
     chip_np: Optional[dict],          # dict from get_chip_history_np() or None
@@ -1023,16 +1084,17 @@ def score_multi_factor_np(
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
         tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 75:
+        if 55 <= rsi <= 68:
             tech_score += tiers[0]
             reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
+        elif 68 < rsi <= 75:
             tech_score += tiers[1]
-        elif 40 <= rsi < 45:
+            reasons.append(f"RSI {rsi:.0f}")
+        elif 45 <= rsi < 55:
             tech_score += tiers[2]
-        elif rsi > 75:
+        elif 75 < rsi <= 85:
             tech_score += tiers[3]
-        elif 30 <= rsi < 40:
+        elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
     # MACD approximation
@@ -1042,18 +1104,18 @@ def score_multi_factor_np(
         ma26 = float(closes[-ma26_window:].mean())
         macd_approx = ma12 - ma26
         if macd_approx > 0:
-            tech_score += 8
+            tech_score += 6
             reasons.append("MACD 多頭")
         elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
-            tech_score += 3
+            tech_score += 2
 
     # MA alignment
     if n >= 5 and latest_close > float(closes[-5:].mean()):
-        tech_score += 3
+        tech_score += 1
     if n >= 20:
         ma20 = float(closes[-20:].mean())
         if latest_close > ma20:
-            tech_score += 4
+            tech_score += 3
             reasons.append("站上MA20")
 
     # ATR14 + NATR + Keltner
@@ -1075,11 +1137,11 @@ def score_multi_factor_np(
         ma20_window = min(20, n)
         ma20 = float(closes[-ma20_window:].mean())
         if atr14 > 0 and latest_close > ma20 + sc.keltner_multiplier * atr14:
-            tech_score += 3
+            tech_score += 2
             reasons.append("突破肯特納")
 
         if natr < sc.natr_threshold and latest_close > ma20:
-            tech_score += 2
+            tech_score += 1
 
     tech_score = _clamp(tech_score, 0, 30)
 
@@ -1236,16 +1298,17 @@ def score_multi_factor(
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
         tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 75:
+        if 55 <= rsi <= 68:
             tech_score += tiers[0]
             reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
+        elif 68 < rsi <= 75:
             tech_score += tiers[1]
-        elif 40 <= rsi < 45:
+            reasons.append(f"RSI {rsi:.0f}")
+        elif 45 <= rsi < 55:
             tech_score += tiers[2]
-        elif rsi > 75:
+        elif 75 < rsi <= 85:
             tech_score += tiers[3]
-        elif 30 <= rsi < 40:
+        elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
     # MACD approximation
@@ -1255,18 +1318,18 @@ def score_multi_factor(
         ma26 = closes[-ma26_window:].mean()
         macd_approx = ma12 - ma26
         if macd_approx > 0:
-            tech_score += 8
+            tech_score += 6
             reasons.append("MACD 多頭")
         elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
-            tech_score += 3
+            tech_score += 2
 
     # MA alignment
     if n >= 5 and latest_close > closes[-5:].mean():
-        tech_score += 3
+        tech_score += 1
     if n >= 20:
         ma20 = closes[-20:].mean()
         if latest_close > ma20:
-            tech_score += 4
+            tech_score += 3
             reasons.append("站上MA20")
 
     # ATR14 + NATR + Keltner
@@ -1287,11 +1350,11 @@ def score_multi_factor(
         ma20_window = min(20, n)
         ma20 = closes[-ma20_window:].mean()
         if atr14 > 0 and latest_close > ma20 + sc.keltner_multiplier * atr14:
-            tech_score += 3
+            tech_score += 2
             reasons.append("突破肯特納")
 
         if natr < sc.natr_threshold and latest_close > ma20:
-            tech_score += 2
+            tech_score += 1
 
     tech_score = _clamp(tech_score, 0, 30)
 
@@ -1520,6 +1583,8 @@ def replay_screener_for_date(
 
     if not scored:
         return []
+
+    apply_screener_score_calibration(scored, screener)
 
     # Sort by base_score before industry cap
     scored.sort(key=lambda c: c.base_score, reverse=True)
@@ -1770,6 +1835,8 @@ def diagnose_replay_for_date(
                 "base": round(base, 2), "chip": round(chip_s, 2),
                 "tech": round(tech_s, 2), "mom": round(mom_s, 2),
             })
+
+    apply_screener_score_calibration(scored, screener)
 
     # ── Stage 4-6: ranking pipeline (mirrors replay_screener_for_date) ───────
     scored.sort(key=lambda c: c.base_score, reverse=True)

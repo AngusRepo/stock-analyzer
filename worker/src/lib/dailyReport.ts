@@ -4,7 +4,7 @@
  * 16:10 TW 執行（所有 Pipeline 完成後），整合：
  *   1. 大盤環境 + 美股 context
  *   2. ML 預測總覽（BUY/HOLD/SELL 分佈）
- *   3. BUY 明細 — 每支含 10 模型投票 + LinUCB/ARF 修正
+ *   3. BUY 明細 — 每支含 alpha model 投票 + LinUCB/ARF 修正
  *   4. SELL 警示 — 同上
  *   5. 推薦名單 + 理由
  *   6. 帳戶績效
@@ -50,7 +50,10 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   // ── 2. ML 預測總覽 ──────────────────────────────────────────────────────
   const { results: signalCounts } = await env.DB.prepare(`
     SELECT trade_signal, COUNT(*) as cnt, ROUND(AVG(direction_accuracy), 3) as avg_conf
-    FROM predictions WHERE date(generated_at)=? GROUP BY trade_signal
+    FROM predictions
+    WHERE model_name='ensemble'
+      AND COALESCE(prediction_date, date(generated_at, '+8 hours'))=?
+    GROUP BY trade_signal
   `).bind(twToday).all<any>()
 
   const buyCount = signalCounts?.find((r: any) => r.trade_signal === 'buy')
@@ -61,7 +64,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   embeds.push({
     title: '🤖 ML 預測總覽',
     color: 0x3498db,
-    description: `**${totalStocks} 支** 分析完成（10 模型 Ensemble × 44 features）`,
+    description: `**${totalStocks} 支** 分析完成（V2 alpha ensemble + state-space overlay）`,
     fields: [
       { name: '🟢 BUY', value: `${buyCount?.cnt ?? 0} 支\n信心 ${((buyCount?.avg_conf ?? 0) * 100).toFixed(0)}%`, inline: true },
       { name: '⚪ HOLD', value: `${holdCount?.cnt ?? 0} 支`, inline: true },
@@ -74,7 +77,9 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     SELECT s.symbol, s.name, p.direction_accuracy as confidence,
            p.entry_price, p.stop_loss, p.target1, p.target2, p.forecast_data
     FROM predictions p JOIN stocks s ON p.stock_id=s.id
-    WHERE date(p.generated_at)=? AND p.trade_signal='buy'
+    WHERE p.model_name='ensemble'
+      AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours'))=?
+      AND p.trade_signal='buy'
     ORDER BY p.direction_accuracy DESC LIMIT 15
   `).bind(twToday).all<any>()
 
@@ -84,7 +89,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
       const models = fd?.models ?? []
       const conf = ((stock.confidence ?? 0) * 100).toFixed(0)
 
-      // 10 模型投票明細
+      // Alpha model vote details.
       let voteText = ''
       for (const m of models) {
         const arrow = m.direction === 'up' ? '↑' : m.direction === 'down' ? '↓' : '→'
@@ -117,7 +122,9 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     SELECT s.symbol, s.name, p.direction_accuracy as confidence,
            p.entry_price, p.stop_loss, p.forecast_data
     FROM predictions p JOIN stocks s ON p.stock_id=s.id
-    WHERE date(p.generated_at)=? AND p.trade_signal='sell'
+    WHERE p.model_name='ensemble'
+      AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours'))=?
+      AND p.trade_signal='sell'
     ORDER BY p.direction_accuracy DESC LIMIT 10
   `).bind(twToday).all<any>()
 
@@ -215,7 +222,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   embeds.push({
     description: '_投資有風險，本報告由 StockVision ML Pipeline 自動產出，僅供參考。_',
     color: 0x95a5a6,
-    footer: { text: `StockVision v12 | ${totalStocks} stocks × 8 alpha models × state overlays × 44 features` },
+    footer: { text: `StockVision v12 | ${totalStocks} stocks × 8 alpha models × state overlays × governed feature set` },
   })
 
   // ── 7. 主題輪動 ─────────────────────────────────────────────────────────

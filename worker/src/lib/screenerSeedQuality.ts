@@ -134,17 +134,18 @@ export function buildScreenerSeedUpsertSql(): string {
   return `
     INSERT INTO daily_recommendations
       (date, stock_id, symbol, name, sector, rank, score,
-       chip_score, tech_score, ml_score, current_price,
+       chip_score, tech_score, momentum_score, ml_score, current_price,
        reason, watch_points, has_buy_signal, industry,
        market_segment, recommendation_lane, eligible_for_ml, eligible_for_pending_buy)
     VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?, ?, ?,
-            ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+            ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     ON CONFLICT(date, stock_id) DO UPDATE SET
       symbol = excluded.symbol,
       name = excluded.name,
       sector = excluded.sector,
       chip_score = excluded.chip_score,
       tech_score = excluded.tech_score,
+      momentum_score = excluded.momentum_score,
       current_price = excluded.current_price,
       industry = excluded.industry,
       rank = CASE

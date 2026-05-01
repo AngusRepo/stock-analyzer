@@ -377,19 +377,35 @@ stocks.get('/:id/ai-summary', async (c) => {
           FROM predictions
          WHERE stock_id = ?
            AND model_name = 'ensemble'
-           AND date(generated_at, '+8 hours') = ?
+           AND (
+             COALESCE(prediction_date, '') = ?
+             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+             OR (
+               prediction_date IS NULL
+               AND generated_at >= ?
+               AND generated_at < datetime(?, '+2 days')
+             )
+           )
          ORDER BY generated_at DESC, id DESC
          LIMIT 1
-      `).bind(id, recRow.date).first<any>().catch(() => null),
+      `).bind(id, recRow.date, recRow.date, recRow.date, recRow.date).first<any>().catch(() => null),
       c.env.DB.prepare(`
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
           FROM predictions
          WHERE stock_id = ?
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND date(generated_at, '+8 hours') = ?
+           AND (
+             COALESCE(prediction_date, '') = ?
+             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+             OR (
+               prediction_date IS NULL
+               AND generated_at >= ?
+               AND generated_at < datetime(?, '+2 days')
+             )
+           )
          ORDER BY model_name
-      `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
+      `).bind(id, recRow.date, recRow.date, recRow.date, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
     ])
     const forecastData = parsePredictionForecastData(ensembleRow?.forecast_data) ?? {}
     const mlVoteSummary = buildMlVoteSummary(forecastData, perModelRows)

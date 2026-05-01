@@ -15,6 +15,7 @@ from typing import Literal
 COL_STOCK_ID = "stock_id"
 COL_MODEL_NAME = "model_name"
 COL_GENERATED_AT = "generated_at"
+COL_PREDICTION_DATE = "prediction_date"
 COL_HORIZON = "horizon"
 COL_DIRECTION_ACCURACY = "direction_accuracy"  # 注意: 寫入時是 confidence，verify 後欄位語意不變
 COL_FORECAST_DATA = "forecast_data"
@@ -47,10 +48,10 @@ COL_VERIFIED_AT = "verified_at"
 # ── Insert SQL (recommendation_service 共用) ──────────────────────────────────
 INSERT_PREDICTIONS_SQL = f"""
 INSERT INTO predictions (
-    {COL_STOCK_ID}, {COL_MODEL_NAME}, {COL_GENERATED_AT}, {COL_HORIZON}, {COL_DIRECTION_ACCURACY},
+    {COL_STOCK_ID}, {COL_MODEL_NAME}, {COL_GENERATED_AT}, {COL_PREDICTION_DATE}, {COL_HORIZON}, {COL_DIRECTION_ACCURACY},
     {COL_FORECAST_DATA}, {COL_ENTRY_PRICE}, {COL_STOP_LOSS}, {COL_TARGET1}, {COL_TARGET2},
     {COL_TRADE_SIGNAL}, {COL_FEATURE_VERSION}, {COL_SIGNAL_RAW}
-) VALUES (?, 'ensemble', datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, 'ensemble', datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """.strip()
 
 # ── Verify update SQL ─────────────────────────────────────────────────────────

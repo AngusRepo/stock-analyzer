@@ -141,6 +141,7 @@ def _denormalize(x_norm: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.nd
 
 def train_dlinear(
     series_close: list[list[float]],
+    sequence_records: list[dict] | None = None,
     seq_len: int = DEFAULT_SEQ_LEN,
     pred_len: int = DEFAULT_PRED_LEN,
     kernel: int = DEFAULT_KERNEL,
@@ -166,37 +167,60 @@ def train_dlinear(
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
+    from .sequence_training import build_sequence_window_dataset, sequence_oos_ic_from_forecast
 
     t0 = time.time()
     dev = torch.device(device)
 
     # ── 1. Build (X, y) windows: every contiguous (seq_len + pred_len) span ──
-    Xs, ys = [], []
-    for prices in series_close:
-        arr = np.asarray(prices, dtype=np.float32)
-        if len(arr) < seq_len + pred_len:
-            continue
-        # Sliding windows with stride=1
-        n_win = len(arr) - seq_len - pred_len + 1
-        for i in range(n_win):
-            Xs.append(arr[i:i + seq_len])
-            ys.append(arr[i + seq_len:i + seq_len + pred_len])
-    if not Xs:
-        return {"error": "no valid windows from input series"}
+    sequence_dataset = None
+    if sequence_records:
+        sequence_dataset = build_sequence_window_dataset(
+            sequence_records,
+            seq_len=seq_len,
+            pred_len=pred_len,
+            oos_ratio=val_ratio,
+        )
+        if not sequence_dataset.report.get("lifecycle_ready"):
+            return {"error": f"sequence_records not lifecycle-ready: {sequence_dataset.report}"}
+        X = np.concatenate([sequence_dataset.X_train, sequence_dataset.X_oos], axis=0)
+        y = np.concatenate([sequence_dataset.y_train, sequence_dataset.y_oos], axis=0)
+        train_idx = np.arange(len(sequence_dataset.X_train))
+        val_idx = np.arange(len(sequence_dataset.X_train), len(X))
+        sequence_report = sequence_dataset.report
+    else:
+        Xs, ys = [], []
+        for prices in series_close:
+            arr = np.asarray(prices, dtype=np.float32)
+            if len(arr) < seq_len + pred_len:
+                continue
+            n_win = len(arr) - seq_len - pred_len + 1
+            for i in range(n_win):
+                Xs.append(arr[i:i + seq_len])
+                ys.append(arr[i + seq_len:i + seq_len + pred_len])
+        if not Xs:
+            return {"error": "no valid windows from input series"}
 
-    X = np.stack(Xs)  # (N, seq_len)
-    y = np.stack(ys)  # (N, pred_len)
+        X = np.stack(Xs)  # (N, seq_len)
+        y = np.stack(ys)  # (N, pred_len)
+        n_total = len(X)
+        n_val = max(1, int(n_total * val_ratio))
+        perm = np.arange(n_total)
+        train_idx, val_idx = perm[:-n_val], perm[-n_val:]
+        sequence_report = {
+            "input_series": len(series_close),
+            "windows": int(n_total),
+            "lifecycle_ready": False,
+            "reason": "legacy_series_close_without_symbol_date",
+        }
     n_total = len(X)
-    logger.info(f"[DLinearUniversal] Built {n_total} windows from {len(series_close)} series")
+    logger.info(f"[DLinearUniversal] Built {n_total} windows from {sequence_report.get('input_series')} series")
 
     # Per-window normalize (RevIN-style)
     X_norm, mean_x, std_x = _normalize(X)
     y_norm = (y - mean_x) / std_x  # use same scale as X
 
     # ── 2. Train/val split (by window index, time-respecting via stable order) ──
-    n_val = max(1, int(n_total * val_ratio))
-    perm = np.arange(n_total)  # already time-ordered per stock (sliding); shuffle batches inside DataLoader
-    train_idx, val_idx = perm[:-n_val], perm[-n_val:]
     Xt, yt = torch.tensor(X_norm[train_idx]), torch.tensor(y_norm[train_idx])
     Xv, yv = torch.tensor(X_norm[val_idx]), torch.tensor(y_norm[val_idx])
 
@@ -254,6 +278,19 @@ def train_dlinear(
     actual_dir = actual_5d > last_input
     pred_dir = pred_5d > last_input
     dir_acc = float((actual_dir == pred_dir).mean())
+    if sequence_dataset is not None:
+        ic_metrics = sequence_oos_ic_from_forecast(
+            forecast_prices=pred_5d,
+            dataset=sequence_dataset,
+        )
+    else:
+        ic_metrics = {
+            "oos_ic": 0.0,
+            "oos_samples": int(len(val_idx)),
+            "daily_ic_count": 0,
+            "passed": False,
+            "reason": "legacy_series_close_without_symbol_date",
+        }
 
     elapsed = round(time.time() - t0, 1)
     logger.info(f"[DLinearUniversal] Train done in {elapsed}s, best_val_loss={best_val_loss:.6f}, dir_acc={dir_acc:.3f}")
@@ -276,6 +313,16 @@ def train_dlinear(
             "lr": lr,
             "elapsed_s": elapsed,
             "history": history,
+            "sequence_report": sequence_report,
+            "oos_ic": ic_metrics.get("oos_ic"),
+            "oos_samples": ic_metrics.get("oos_samples"),
+            "daily_ic_count": ic_metrics.get("daily_ic_count"),
+        },
+        "ic_tracking": {
+            "DLinear": {
+                **ic_metrics,
+                "source": "sequence_oos",
+            },
         },
     }
 

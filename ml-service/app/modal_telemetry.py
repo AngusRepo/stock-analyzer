@@ -79,6 +79,7 @@ def build_retrain_orchestrator_telemetry(
                     "stage": "train",
                     "group": group,
                     "status": group_info.get("status"),
+                    "gcs_io": group_info.get("gcs_io"),
                 },
             )
         )

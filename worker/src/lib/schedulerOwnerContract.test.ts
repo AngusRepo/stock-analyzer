@@ -38,9 +38,18 @@ for (const critical of ['update', 'pipeline']) {
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }
 
+for (const monthly of ['monthly-optuna', 'monthly-retrain']) {
+  const job = manifest.jobs.find((j: any) => j.id === monthly)
+  assert(job?.schedule?.startsWith('first '), `${monthly} must use Cloud Scheduler groc syntax; cron DOM/DOW is OR and can over-trigger`)
+}
+
+const monthlyRetrain = manifest.jobs.find((j: any) => j.id === 'monthly-retrain')
+assert(monthlyRetrain?.timeZone === 'Asia/Taipei', 'monthly retrain should use TW wall-clock time instead of UTC offset gymnastics')
+
 const syncScript = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(syncScript.includes('SCHEDULER_AUTH_TOKEN'), 'scheduler sync must load auth token from env, not source')
 assert(syncScript.includes('STOCKVISION_WORKER_BASE_URL'), 'scheduler sync must load worker base URL from env')
 assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler sync must update existing jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
+assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')

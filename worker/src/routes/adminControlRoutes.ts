@@ -25,7 +25,7 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const body = await c.req.json<any>().catch(() => null)
+  const body = await c.req.json().catch(() => null) as any
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
 
   const { getAdaptiveParams, setAdaptiveParams } = await import('../lib/adaptiveConfig')
@@ -35,22 +35,22 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
   return c.json({ success: true, params: merged })
 })
 
-adminControlRoutes.post('/api/admin/cron-callback', async (c) => {
+async function handleSchedulerCallback(c: any) {
   const authError = requireServiceToken(c)
   if (authError) return authError
 
-  const body = await c.req.json<any>().catch(() => null)
+  const body = await c.req.json().catch(() => null) as any
   if (!body || typeof body.task !== 'string' || typeof body.status !== 'string') {
     return c.json({
       error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
     }, 400)
   }
-  const { isCronStatus, logCronResult } = await import('../lib/schedulerRunLogger')
-  if (!isCronStatus(body.status)) {
+  const { isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+  if (!isSchedulerStatus(body.status)) {
     return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
   }
 
-  await logCronResult(c.env.KV, String(body.task), {
+  await logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,
     summary: String(body.summary ?? ''),
     duration_ms: Number(body.duration_ms ?? 0),
@@ -63,13 +63,13 @@ adminControlRoutes.post('/api/admin/cron-callback', async (c) => {
       try {
         const { runModelIcRollingRefresh } = await import('../lib/controllerWorkflows')
         const summary = await runModelIcRollingRefresh(c.env)
-        await logCronResult(c.env.KV, 'model-ic-tracker', {
+        await logSchedulerResult(c.env.KV, 'model-ic-tracker', {
           status: summary.startsWith('rolling_ic failed') ? 'error' : 'success',
           summary,
           duration_ms: Date.now() - t0,
         }, c.env as any)
       } catch (e: any) {
-        await logCronResult(c.env.KV, 'model-ic-tracker', {
+        await logSchedulerResult(c.env.KV, 'model-ic-tracker', {
           status: 'error',
           summary: e?.message ?? 'rolling_ic refresh failed',
           duration_ms: Date.now() - t0,
@@ -80,9 +80,12 @@ adminControlRoutes.post('/api/admin/cron-callback', async (c) => {
   }
 
   console.log(
-    `[cron-callback] ${body.task} ${body.status} ` +
+    `[scheduler-callback] ${body.task} ${body.status} ` +
     `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`,
   )
 
   return c.json({ ok: true, task: body.task, status: body.status })
-})
+}
+
+adminControlRoutes.post('/api/admin/scheduler-callback', handleSchedulerCallback)
+adminControlRoutes.post('/api/admin/cron-callback', handleSchedulerCallback)

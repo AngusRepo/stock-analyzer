@@ -17,6 +17,8 @@ from typing import Optional
 
 import httpx
 
+from services.model_pool_health import read_model_pool_health_rows
+
 logger = logging.getLogger(__name__)
 
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
@@ -151,13 +153,7 @@ async def generate_weekly_audit() -> dict:
         }
 
         # ── L3: Model Health (latest) ──
-        model_health = await _d1_query(client, """
-            SELECT model_name, accuracy_30d, accuracy_90d, profit_factor,
-                   expectancy, lifecycle_status, lifecycle_weight
-            FROM model_health_daily
-            WHERE date = (SELECT MAX(date) FROM model_health_daily)
-            ORDER BY model_name
-        """)
+        model_health = read_model_pool_health_rows()
 
         degraded_models = [m for m in model_health if m.get("lifecycle_status") == "degraded"]
         low_accuracy = [m for m in model_health if (m.get("accuracy_30d") or 0.5) < 0.45]

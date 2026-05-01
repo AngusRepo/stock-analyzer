@@ -38,18 +38,18 @@ def load_pending_predictions(lookback_days: int = 5, limit: int = 200) -> list[d
 
     Matches worker predictionVerifier.ts:35-44 query exactly.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date().isoformat()
     sql = """
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
         WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
-          AND p.generated_at < ?
+          AND date(COALESCE(p.prediction_date, p.generated_at)) <= ?
           AND p.forecast_data IS NOT NULL
         ORDER BY p.generated_at ASC
         LIMIT ?
     """
-    rows = d1_client.query(sql, params=[cutoff, limit])
+    rows = d1_client.query(sql, params=[cutoff_date, limit])
     logger.info(f"[verify] Loaded {len(rows)} pending predictions")
     return rows
 
@@ -62,15 +62,18 @@ def load_market_risk() -> dict:
     return rows[0] if rows else {}
 
 
-def load_bars_for_prediction(stock_id: int, generated_at: str) -> list[dict]:
+def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: str | None = None) -> list[dict]:
     """
     Load 7 days of OHLC bars starting from day after generated_at.
 
     Matches worker predictionVerifier.ts:81-90 exactly.
     """
-    gen_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-    look_from = (gen_date + timedelta(days=1)).date().isoformat()
-    look_to = (gen_date + timedelta(days=10)).date().isoformat()
+    if prediction_date:
+        business_date = datetime.fromisoformat(prediction_date).date()
+    else:
+        business_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
+    look_from = (business_date + timedelta(days=1)).isoformat()
+    look_to = (business_date + timedelta(days=10)).isoformat()
 
     sql = """
         SELECT date, open, high, low, close
@@ -111,7 +114,7 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
             predicted_price = mid.get("forecast")
 
     # ── Load bars ────────────────────────────────────────────────────────────
-    bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"])
+    bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"], pred.get("prediction_date"))
     if not bars:
         return None  # data not arrived yet
 

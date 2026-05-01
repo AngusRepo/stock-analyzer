@@ -7,12 +7,21 @@ import { assertMarketDataReady } from './marketDataReadiness'
 
 const UPDATE_BATCH_SIZE = 6
 
+function resolveUpdateDate(runDate?: string | null): string {
+  const value = (runDate || '').trim()
+  if (!value) return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid update date: ${value}; expected YYYY-MM-DD`)
+  }
+  return value
+}
+
 type ProcessUpdateBatchDeps = {
   runMLAndRiskV2: (env: Bindings) => Promise<string>
 }
 
-export async function runBulkFetch(env: Bindings, force = false): Promise<string> {
-  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+export async function runBulkFetch(env: Bindings, force = false, runDate?: string): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
@@ -37,8 +46,8 @@ export async function runBulkFetch(env: Bindings, force = false): Promise<string
   }
 }
 
-export async function runQueueUpdate(env: Bindings) {
-  const triggerTime = new Date().toISOString().split('T')[0]
+export async function runQueueUpdate(env: Bindings, runDate?: string) {
+  const triggerTime = resolveUpdateDate(runDate)
   const lockKey = `cron:queue-update:${triggerTime}`
   if (await env.KV.get(lockKey)) {
     console.log('[Cron] Queue update already triggered today, skipping.')
@@ -55,9 +64,9 @@ export async function runQueueUpdate(env: Bindings) {
   }
 }
 
-export async function runDailyUpdate(env: Bindings, force = false): Promise<string> {
-  const bulkSummary = await runBulkFetch(env, force)
-  await runQueueUpdate(env)
+export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
+  const bulkSummary = await runBulkFetch(env, force, runDate)
+  await runQueueUpdate(env, runDate)
   return bulkSummary
 }
 

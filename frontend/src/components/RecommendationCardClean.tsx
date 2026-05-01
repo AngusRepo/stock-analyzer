@@ -48,6 +48,23 @@ type MlVoteSummary = {
   }
 }
 
+type ScoreComponents = {
+  chip?: number | null
+  tech?: number | null
+  screenerMomentum?: number | null
+  ml?: number | null
+  persona?: number | null
+  rawScore?: number | null
+  alphaAdjustment?: number | null
+  finalScore?: number | null
+  formula?: string | null
+  alphaReason?: {
+    bucket?: string | null
+    regime?: string | null
+    riskFlags?: string[] | null
+  } | null
+}
+
 const ALPHA_PREDICTION_MODEL_NAMES = [
   'XGBoost',
   'CatBoost',
@@ -226,9 +243,26 @@ function parseForecastData(raw: unknown): any | null {
   }
 }
 
+function parseObject(raw: unknown): any | null {
+  if (!raw) return null
+  if (typeof raw === 'object') return raw
+  if (typeof raw !== 'string') return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
-  if (rec.ml_vote_summary && Number(rec.ml_vote_summary.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
-    return rec.ml_vote_summary
+  const persisted = parseObject(rec.ml_vote_summary)
+  if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
+    const reported = Number(persisted.reported ?? 0)
+    const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
+    if (reported > 0 || evidence > 0 || Number(rec.ml_score ?? 0) <= 0) {
+      return persisted
+    }
   }
   const forecast = parseForecastData(rec.prediction_forecast_data)
   const models = Array.isArray(forecast?.models)
@@ -251,6 +285,15 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     total,
     forecastPct: forecast.ensemble_v2?.forecast_pct ?? null,
   }
+}
+
+function mlMetadataGapText(rec: any, summary: MlVoteSummary | null): string | null {
+  const mlScore = Number(rec.ml_score ?? 0)
+  if (!Number.isFinite(mlScore) || mlScore <= 0) return null
+  const reported = Number(summary?.reported ?? 0)
+  const votes = Number(summary?.bullish ?? 0) + Number(summary?.bearish ?? 0) + Number(summary?.flat ?? 0)
+  if (summary && (reported > 0 || votes > 0)) return null
+  return `ML 分數 ${fmtNumber(mlScore, 1)} 來自後端 scalar score，但投票明細尚未對齊 business date，暫不顯示 0/8 這種誤導訊息。`
 }
 
 function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
@@ -376,35 +419,51 @@ function ScoreBreakdown({ rec }: { rec: any }) {
 }
 
 function ScoreBreakdownV2({ rec }: { rec: any }) {
-  const chip = Number(rec.chip_score ?? 0)
-  const tech = Number(rec.tech_score ?? 0)
-  const ml = Number(rec.ml_score ?? 0)
-  const base = Math.round((chip + tech + ml) * 10) / 10
-  const alphaAdj = Number(rec.alpha_context?.score_adjustment ?? 0)
-  const finalScore = Number(rec.score ?? base + alphaAdj)
-  const residual = Math.round((finalScore - base - alphaAdj) * 10) / 10
+  const components = parseObject(rec.score_components) as ScoreComponents | null
+  const chip = Number(components?.chip ?? rec.chip_score ?? 0)
+  const tech = Number(components?.tech ?? rec.tech_score ?? 0)
+  const screenerMomentum = Number(components?.screenerMomentum ?? rec.momentum_score ?? 0)
+  const ml = Number(components?.ml ?? rec.ml_score ?? 0)
+  const persona = Number(components?.persona ?? rec.persona_score ?? 0)
+  const rawScore = Number(components?.rawScore ?? Math.round((chip + tech + ml + persona) * 10) / 10)
+  const alphaAdj = Number(components?.alphaAdjustment ?? rec.alpha_context?.score_adjustment ?? 0)
+  const finalScore = Number(components?.finalScore ?? rec.score ?? rawScore + alphaAdj)
+  const residual = Math.round((finalScore - rawScore - alphaAdj) * 10) / 10
+  const hasBackendComponents = Boolean(components)
+  const riskFlags = components?.alphaReason?.riskFlags?.filter(Boolean) ?? []
+  const riskText = riskFlags.length > 0 ? riskFlags.join(', ') : '無額外風控旗標'
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-muted-foreground">分數公式</span>
         <span className="font-mono text-foreground">
-          {fmtNumber(finalScore, 1)} = {fmtNumber(base, 1)}
+          {fmtNumber(finalScore, 1)} = {fmtNumber(rawScore, 1)}
           {alphaAdj >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(alphaAdj), 1)}
           {Math.abs(residual) >= 0.1 && `${residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(residual), 1)}`}
         </span>
       </div>
       <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
-        <span>基礎分：籌碼 + 技術 + ML = {fmtNumber(base, 1)}</span>
+        <span>籌碼：{fmtNumber(chip, 1)}</span>
+        <span>技術：{fmtNumber(tech, 1)}</span>
+        {Math.abs(screenerMomentum) >= 0.1 && <span>Screener 動能：{fmtNumber(screenerMomentum, 1)}</span>}
+        <span>ML：{fmtNumber(ml, 1)}</span>
+        {Math.abs(persona) >= 0.1 && <span>Persona：{persona >= 0 ? '+' : ''}{fmtNumber(persona, 1)}</span>}
+        <span>基礎分：籌碼 + 技術 + ML{Math.abs(persona) >= 0.1 ? ' + Persona' : ''} = {fmtNumber(rawScore, 1)}</span>
         <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
         {Math.abs(residual) >= 0.1 && (
-          <span>分數校準差額：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
+          <span>未拆解差額：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
         )}
         <span>最後分數：{fmtNumber(finalScore, 1)}</span>
       </div>
+      {hasBackendComponents && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+          後端已提供 score_components；Alpha 扣加分主要由 edge bucket、regime 權重與風控旗標決定。風控旗標：{riskText}。
+        </p>
+      )}
       {Math.abs(residual) >= 0.1 && (
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          分數校準差額是後端來源分數與前端目前可拆解欄位之間的差值，通常來自排名校準、四捨五入或尚未拆成獨立欄位的風控調整；不是額外的 ML 預測報酬。
+          這不是額外預測報酬，而是後端尚未提供完整 score_components 時，來源總分與可拆解欄位之間的差值；部署 schema 後應該逐步消失。
         </p>
       )}
     </div>
@@ -539,6 +598,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlSummary = formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const mlThresholdText = formatMlThresholdText(mlVoteSummary)
   const chip5dRaw = (rec.foreign_net_5d ?? 0) + (rec.trust_net_5d ?? 0)
   const chipPositive = chip5dRaw > 0
@@ -587,9 +647,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
                 RSI {fmtNumber(rec.rsi14, 1)}
               </span>
             )}
-            {mlSummary && (
+            {(mlSummary || mlMetadataGap) && (
               <Badge variant="outline" className="max-w-full truncate border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
-                ML {mlSummary}
+                ML {mlSummary ?? `分數 ${fmtNumber(rec.ml_score, 1)}，投票明細待同步`}
               </Badge>
             )}
             {alphaContext?.bucket && (
@@ -629,10 +689,10 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
           </div>
 
-          {mlSummary && (
+          {(mlSummary || mlMetadataGap) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
               <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
-              <p>{mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。</p>
+              <p>{mlSummary ? `${mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。` : mlMetadataGap}</p>
               {mlThresholdText && <p className="mt-1 text-muted-foreground/80">{mlThresholdText}</p>}
             </div>
           )}

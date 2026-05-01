@@ -3,6 +3,7 @@ import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import type { TaskHandler } from '../lib/adminTriggerTaskMap'
+import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
 
 interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
@@ -22,7 +23,7 @@ async function putRunLog(
   payload: Record<string, unknown>,
 ): Promise<void> {
   await kv.put(
-    `cron:run:${task}:${runId}`,
+    `scheduler:manual:${task}:${runId}`,
     JSON.stringify({
       task,
       run_id: runId,
@@ -48,39 +49,28 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
 
     const task = c.req.param('task')
-    const dataTasks = new Set([
-      'screener',
-      'update',
-      'ml',
-      'recommendation',
-      'paper-trade',
-      'morning-setup',
-      'pre-market-warmup',
-      'intraday-check',
-      'intraday-rescore',
-      'eod-exit',
-      'pipeline',
-      'adapt',
-    ])
-
-    if (dataTasks.has(task) && !c.req.query('force')) {
-      const twNow = new Date(Date.now() + 8 * 3600_000)
-      const dayOfWeek = twNow.getUTCDay()
-      const twDate = twNow.toISOString().slice(0, 10)
-      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
-      const isHoliday = await c.env.KV.get(`holiday:${twDate}`)
-      if (isWeekend || isHoliday) {
-        return c.json({
-          error: `今天是${isWeekend ? '週末' : '假日'}，不可手動執行 ${task}；如需強制執行請帶 force=1`,
-        }, 400)
-      }
-    }
-
     const taskMap = deps.buildTaskMap(c)
     const fn = taskMap[task]
     if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
 
-    const { classifyCronSummary, logCronResult } = await import('../lib/schedulerRunLogger')
+    const { classifySchedulerSummary, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+    if (!c.req.query('force')) {
+      const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
+      if (!decision.shouldRun) {
+        const summary = `skipped by scheduler policy: ${decision.reason}`
+        await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0 })
+        return c.json({
+          success: true,
+          skipped: true,
+          task,
+          tw_date: decision.twDate,
+          policy: decision.policy.kind,
+          reason: decision.reason,
+          message: `${task} ${summary}`,
+        })
+      }
+    }
+
     const syncMode = c.req.query('sync') === '1'
     if (SYNC_REQUIRED_TASKS.has(task) && !syncMode) {
       return c.json({
@@ -112,16 +102,16 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     if (longRunning.has(task) && !syncMode) {
       const t0 = Date.now()
       const runId = buildRunId(task)
-      await logCronResult(c.env.KV, task, { status: 'running', summary: `started (background) run_id=${runId}`, duration_ms: 0 })
+      await logSchedulerResult(c.env.KV, task, { status: 'running', summary: `started (background) run_id=${runId}`, duration_ms: 0 })
       await putRunLog(c.env.KV, task, runId, { status: 'running', summary: 'started (background)', duration_ms: 0 })
       c.executionCtx.waitUntil((async () => {
         try {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
-          await logCronResult(c.env.KV, task, { status: classifyCronSummary(summary), summary, duration_ms: Date.now() - t0 })
-          await putRunLog(c.env.KV, task, runId, { status: classifyCronSummary(summary), summary, duration_ms: Date.now() - t0 })
+          await logSchedulerResult(c.env.KV, task, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
+          await putRunLog(c.env.KV, task, runId, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
         } catch (e: any) {
-          await logCronResult(
+          await logSchedulerResult(
             c.env.KV,
             task,
             {
@@ -142,7 +132,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       })())
       return c.json({
         success: true,
-        message: `${task} 已改為背景執行，請查看 cron log`,
+        message: `${task} 已改為背景執行，請查看 scheduler run log`,
         triggered_at: new Date().toISOString(),
         mode: 'async',
         run_id: runId,
@@ -153,10 +143,10 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
-      await logCronResult(c.env.KV, task, { status: classifyCronSummary(summary), summary, duration_ms: Date.now() - t0 })
+      await logSchedulerResult(c.env.KV, task, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
       return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
     } catch (e: any) {
-      await logCronResult(
+      await logSchedulerResult(
         c.env.KV,
         task,
         { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) },

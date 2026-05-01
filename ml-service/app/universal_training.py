@@ -243,25 +243,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         compute_cross_sectional_rank,
         sanitize_feature_frame,
     )
-
-    def _extract_series_close_for_sequence_models(
-        prices_data: list[dict],
-        *,
-        seq_len: int = 60,
-        pred_len: int = 5,
-    ) -> list[float] | None:
-        if len(prices_data) < seq_len + pred_len:
-            return None
-        series: list[float] = []
-        for row in prices_data:
-            close_val = row.get("close")
-            if close_val is None:
-                return None
-            try:
-                series.append(float(close_val))
-            except Exception:
-                return None
-        return series
+    from .sequence_training import build_sequence_record
 
     t0 = time.time()
     payloads = req.payloads
@@ -270,6 +252,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
 
     all_dfs = []
     sequence_series: list[list[float]] = []
+    sequence_records: list[dict] = []
     skipped = 0
     for payload in payloads:
         prices_data = payload.get("prices", [])
@@ -305,9 +288,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
             else:
                 df = df.with_columns(pl.lit("").alias("_date"))
             all_dfs.append(df)
-            seq_series = _extract_series_close_for_sequence_models(prices_data)
-            if seq_series is not None:
-                sequence_series.append(seq_series)
+            seq_record = build_sequence_record(
+                symbol=str(payload.get("symbol") or payload.get("stock_id") or ""),
+                market_type=str(payload.get("market") or "TW"),
+                prices_data=prices_data,
+                min_len=65,
+            )
+            if seq_record is not None:
+                sequence_records.append(seq_record)
+                sequence_series.append(seq_record["close"])
         except Exception as exc:
             skipped += 1
             print(f"[PrepBatch] Skip stock: {exc}")
@@ -368,6 +357,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         y=y,
         dates=dates_arr,
         series_close=np.array(sequence_series, dtype=object),
+        sequence_records=np.array(sequence_records, dtype=object),
     )
     buf.seek(0)
     blob = bucket.blob(f"{gcs_prefix}/prep/batch_{req.batch_index}.npz")
@@ -393,6 +383,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         "rows": len(X),
         "features": len(feature_names),
         "series_count": len(sequence_series),
+        "sequence_record_count": len(sequence_records),
         "cleaning_report": cleaning_report,
         "gcs_prefix": gcs_prefix,
         "skipped": skipped,
@@ -410,6 +401,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     gcs_prefix = (req.gcs_prefix or "universal").rstrip("/")
     all_X, all_y, all_dates = [], [], []
+    gcs_io = {"prep_objects": 0, "prep_bytes": 0, "download_elapsed_s": 0.0}
+    gcs_t0 = time.time()
     for i in range(req.batch_count):
         blob = bucket.blob(f"{gcs_prefix}/prep/batch_{i}.npz")
         if not blob.exists():
@@ -417,12 +410,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             continue
         buf = io.BytesIO()
         blob.download_to_file(buf)
+        gcs_io["prep_objects"] += 1
+        gcs_io["prep_bytes"] += len(buf.getvalue())
         buf.seek(0)
         data = np.load(buf, allow_pickle=True)
         all_X.append(data["X"])
         all_y.append(data["y"])
         all_dates.append(data["dates"])
         print(f"[TrainUniversal] batch_{i}: {len(data['X'])} rows loaded")
+    gcs_io["download_elapsed_s"] = round(time.time() - gcs_t0, 3)
 
     if not all_X:
         raise ValueError("No prep batches found in GCS")
@@ -1208,6 +1204,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "candidate_version": req.output_model_version,
         "challenger_registrations": challenger_registrations,
         "oos_artifact": oos_artifact,
+        "gcs_io": gcs_io,
         "trained_at": trained_at_iso,
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,

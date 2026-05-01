@@ -490,11 +490,23 @@ export type ModelPoolLineageModel = {
   } | null
 }
 
+export type ModelPoolStateOverlay = {
+  status?: string
+  version?: string
+  model_type?: string
+  balance_family?: string
+  role?: string
+  gcs_path?: string
+  note?: string
+}
+
 export type ModelPoolLineage = {
   status: string
   schema_version?: string
   last_updated?: string
   models: Record<string, ModelPoolLineageModel>
+  state_overlays?: Record<string, ModelPoolStateOverlay>
+  meta_optimizers?: Record<string, Record<string, unknown>>
   events: Array<Record<string, unknown>>
   error?: string
 }

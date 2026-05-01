@@ -25,6 +25,7 @@ export interface ScreenerScoreCandidate {
   chip_score: number
   tech_score: number
   momentum_score?: number
+  market_segment?: string
   reason?: string
 }
 
@@ -127,19 +128,45 @@ export function applyScreenerScoreCalibration<T extends ScreenerScoreCandidate>(
 ): T[] {
   if (!policy.enabled || candidates.length < policy.minCrossSectionSize) return candidates
 
-  const chipValues = candidates.map(c => finiteNumber(c.chip_score) ?? 0)
-  const techValues = candidates.map(c => finiteNumber(c.tech_score) ?? 0)
+  const groups = new Map<string, T[]>()
+  for (const candidate of candidates) {
+    const key = candidate.market_segment || 'default'
+    const group = groups.get(key)
+    if (group) group.push(candidate)
+    else groups.set(key, [candidate])
+  }
 
-  for (const c of candidates) {
-    const rawChip = finiteNumber(c.chip_score) ?? 0
-    const rawTech = finiteNumber(c.tech_score) ?? 0
-    const chip = calibrateComponent(rawChip, chipValues, 40, policy)
-    const tech = calibrateComponent(rawTech, techValues, 30, policy)
-    const delta = (chip - rawChip) + (tech - rawTech)
-    c.chip_score = chip
-    c.tech_score = tech
-    c.score = Math.round((c.score + delta) * 10) / 10
+  for (const group of groups.values()) {
+    if (group.length < policy.minCrossSectionSize) continue
+    calibrateCandidates(group, group, policy)
   }
 
   return candidates
+}
+
+function calibrateCandidates<T extends ScreenerScoreCandidate>(
+  targets: T[],
+  pool: T[],
+  policy: ScreenerScoreCalibrationPolicy,
+): void {
+  const chipValues = pool.map(c => finiteNumber(c.chip_score) ?? 0)
+  const techValues = pool.map(c => finiteNumber(c.tech_score) ?? 0)
+  const momentumValues = pool.map(c => finiteNumber(c.momentum_score) ?? 0)
+
+  for (const c of targets) {
+    const rawChip = finiteNumber(c.chip_score) ?? 0
+    const rawTech = finiteNumber(c.tech_score) ?? 0
+    const rawMomentum = finiteNumber(c.momentum_score) ?? 0
+    const chip = calibrateComponent(rawChip, chipValues, 40, policy)
+    const tech = calibrateComponent(rawTech, techValues, 30, policy)
+    const momentum = calibrateComponent(rawMomentum, momentumValues, 20, policy)
+    const delta = (chip - rawChip) + (tech - rawTech) + (momentum - rawMomentum)
+    c.chip_score = chip
+    c.tech_score = tech
+    c.momentum_score = momentum
+    c.score = Math.round((c.score + delta) * 10) / 10
+    if (delta < -0.5 && c.reason) {
+      c.reason = `${c.reason} | cross-section calibration ${delta.toFixed(1)}`
+    }
+  }
 }

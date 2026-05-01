@@ -355,6 +355,7 @@ export function scoreMultiFactor(
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
     if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
+
   }
 
   // P3-5: NATR 低波動加分（低波動 + 趨勢中 = 穩健上漲）
@@ -712,7 +713,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   debugLog.push(universeMsg)
 
   // ── Step 2: 多因子評分 ──
-  type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string }
+  type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string; market_segment: string }
   const scored: ScoredCandidate[] = []
 
   for (const { stockId, prices } of universe) {
@@ -733,6 +734,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       reason: reasons.slice(0, 3).join('；') || '符合篩選條件',
       chip_score, tech_score, momentum_score,
       industry,
+      market_segment: 'listed_otc',
     })
   }
 
@@ -1193,8 +1195,10 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         tech_score,
         momentum_score,
         industry,
+        market_segment: 'emerging',
       })
     }
+    applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
     emergingResearchCandidates.push(
       ...annotateCandidatesWithStrategySpecs(
         emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
@@ -1338,7 +1342,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
-        seed.row.chipScore, seed.row.techScore,
+        seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
         seed.row.currentPrice,
         seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
         tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
@@ -1370,7 +1374,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
-        seed.row.chipScore, seed.row.techScore,
+        seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
         seed.row.currentPrice,
         seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
         'EMERGING',

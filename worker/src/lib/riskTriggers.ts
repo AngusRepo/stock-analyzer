@@ -14,8 +14,8 @@
  *                              two total_value rows in paper_daily_snapshots
  *                              against trading:config.risk.dd_spike_threshold
  *
- * All three graceful-skip on error (don't break their host cron) and log
- * structured summary strings for cron-log visibility.
+ * All three graceful-skip on error and log structured summary strings for
+ * scheduler-run visibility.
  *
  * Console.log is used for alerts (Discord webhook deferred per 2026-04-21
  * scope-cut). When Wei adds DISCORD_WEBHOOK_URL secret later, notify.ts
@@ -34,7 +34,7 @@ const DEFAULT_DD_SPIKE_THRESHOLD = 0.08  // single-day drawdown alert (8%)
  * called BEFORE the /regime/compute call overwrites ml:regime. Caller passes
  * the new label post-compute for comparison.
  *
- * @returns summary string for cron log (e.g. "shift:sideways→volatile" / "same")
+ * @returns summary string for scheduler run logs (e.g. "shift:sideways→volatile" / "same")
  */
 export async function detectRegimeShift(
   env: Bindings,

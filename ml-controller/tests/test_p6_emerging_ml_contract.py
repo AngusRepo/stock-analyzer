@@ -57,6 +57,9 @@ def test_stock_meta_exposes_market_segment_for_train_serve_parity():
     assert meta["eligible_for_execution"] is False
     assert meta["segment_serving_mode"] == "research_only_shadow"
     assert meta["segment_model_pool_scope"] == "emerging_research_pool"
+    assert meta["segment_calibration_scope"] == "emerging_research"
+    assert meta["segment_calibration_artifact_prefix"] == "calibration/emerging_research"
+    assert meta["train_serve_parity_required"] is True
 
 
 def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
@@ -146,15 +149,18 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
     )
 
     insert_params = captured["statements"][2][1]
-    forecast_data = insert_params[3]
+    forecast_data = insert_params[4]
     assert '"stock_meta"' in forecast_data
     assert '"market_segment": "EMERGING"' in forecast_data
     assert '"eligible_for_pending_buy": false' in forecast_data
+    assert '"segment_calibration_scope": "emerging_research"' in forecast_data
+    assert '"train_serve_parity_required": true' in forecast_data
 
     per_model_params = captured["statements"][3][1]
-    per_model_forecast = per_model_params[4]
+    per_model_forecast = per_model_params[5]
     assert '"stock_meta"' in per_model_forecast
     assert '"market_segment": "EMERGING"' in per_model_forecast
+    assert '"segment_calibration_artifact_prefix": "calibration/emerging_research"' in per_model_forecast
 
 
 def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):

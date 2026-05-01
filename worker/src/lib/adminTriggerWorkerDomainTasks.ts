@@ -40,7 +40,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
 
   return {
     screener: () => deps.runMarketScreener(),
-    update: () => deps.runDailyUpdate(!!c.req.query('force')),
+    update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
     recommendation: () => deps.runDailyRecommendation(),
     'paper-trade': () => deps.runPaperAutoTrade(),

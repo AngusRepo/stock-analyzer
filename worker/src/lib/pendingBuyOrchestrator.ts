@@ -601,7 +601,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             FROM predictions p2
            WHERE p2.stock_id = s.id
              AND p2.model_name = 'ensemble'
-             AND date(p2.generated_at, '+8 hours') IN (dr.date, ?)
+             AND (
+               COALESCE(p2.prediction_date, '') IN (dr.date, ?)
+               OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') IN (dr.date, ?))
+               OR (
+                 p2.prediction_date IS NULL
+                 AND p2.generated_at >= dr.date
+                 AND p2.generated_at < datetime(dr.date, '+2 days')
+               )
+             )
            ORDER BY p2.generated_at DESC, p2.id DESC
            LIMIT 1
         )
@@ -619,7 +627,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          ) IS NOT NULL
         ORDER BY dr.score DESC, dr.confidence DESC
         LIMIT ?
-    `).bind(pendingDate, prevDay, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
+    `).bind(prevDay, prevDay, pendingDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -642,9 +650,25 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          WHERE stock_id IN (${placeholders})
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND date(generated_at, '+8 hours') IN (?, ?)
+           AND (
+             COALESCE(prediction_date, '') IN (?, ?)
+             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') IN (?, ?))
+             OR (
+               prediction_date IS NULL
+               AND generated_at >= ?
+               AND generated_at < datetime(?, '+2 days')
+             )
+           )
          ORDER BY stock_id, model_name, generated_at DESC
-      `).bind(...stockIds, pendingDate, prevDay).all<(PerModelPredictionRow & { stock_id: number | null })>().catch(() => ({ results: [] }))
+      `).bind(
+        ...stockIds,
+        pendingDate,
+        prevDay,
+        pendingDate,
+        prevDay,
+        pendingDate,
+        pendingDate,
+      ).all<(PerModelPredictionRow & { stock_id: number | null })>().catch(() => ({ results: [] }))
       for (const row of perModelRows ?? []) {
         const id = Number(row.stock_id)
         if (!Number.isFinite(id)) continue

@@ -3,7 +3,7 @@ pipeline.py — Daily prediction pipeline endpoints
 
 POST /pipeline/v2/run → Triggers the Cloud Run Job `pipeline-v2` which runs the
                         LangGraph V2 pipeline to completion and callbacks Worker
-                        /api/admin/cron-callback with the final status.
+                        /api/admin/scheduler-callback with the final status.
 
 History:
   - 2026-04-07 LangGraph A+B refactor (fake → real StateGraph in controller)
@@ -39,7 +39,7 @@ _jobs_client = CloudRunJobsClient()
 # ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
 #
 # These two functions are kept in this router module because:
-#   1. They're the dashboard-facing contract (cron:log:{task}:{date} payload shape).
+#   1. They're the dashboard-facing contract (scheduler:run:{task}:{date} payload shape).
 #   2. The Cloud Run Job entrypoint (`pipeline_job_main.py`) imports them so the
 #      callback behaviour is identical whether the pipeline ran in a Job or was
 #      triggered ad-hoc some future way. Avoid duplicating the payload spec.
@@ -48,14 +48,14 @@ _jobs_client = CloudRunJobsClient()
 async def _callback_worker(
     payload: dict, client: httpx.AsyncClient | None = None
 ) -> None:
-    """POST to Worker /api/admin/cron-callback. Best-effort; never raises."""
+    """POST to Worker /api/admin/scheduler-callback. Best-effort; never raises."""
     if not WORKER_URL:
         logger.warning(
             "[Pipeline callback] STOCKVISION_WORKER_URL missing; skip callback for task=%s",
             payload.get("task"),
         )
         return
-    url = f"{WORKER_URL.rstrip('/')}/api/admin/cron-callback"
+    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
     headers = {"Content-Type": "application/json"}
     if WORKER_AUTH:
         headers["Authorization"] = f"Bearer {WORKER_AUTH}"
@@ -93,8 +93,8 @@ async def _emit_subtask_callbacks(
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
-    Dashboard reads cron:log:{task}:{date}; pipeline runs screener / ml-predict /
-    recommendation internally but only writes cron:log:pipeline. This reverse-
+    Dashboard reads scheduler:run:{task}:{date}; pipeline runs screener / ml-predict /
+    recommendation internally but only writes scheduler:run:pipeline. This reverse-
     callback pattern keeps the UI tiles aligned with reality.
     """
     metrics: dict = {}
@@ -136,7 +136,7 @@ async def trigger_pipeline_v2(
     """Trigger the Cloud Run Job `pipeline-v2` and return 202 with execution id.
 
     The Job runs `pipeline_job_main.py` which drives run_pipeline_v2() to
-    completion and POSTs Worker /api/admin/cron-callback when done. This
+    completion and POSTs Worker /api/admin/scheduler-callback when done. This
     endpoint returns as soon as the Job execution is accepted by Cloud Run
     (~1 s), not when the pipeline finishes.
 
@@ -181,8 +181,8 @@ async def trigger_pipeline_v2(
             "execution_id": execution.execution_id,
             "execution_name": execution.execution_name,
             "note": (
-                "Pipeline running as Cloud Run Job; cron:log:pipeline will be "
-                "overwritten on completion via /api/admin/cron-callback."
+                "Pipeline running as Cloud Run Job; scheduler:run:pipeline will be "
+                "overwritten on completion via /api/admin/scheduler-callback."
             ),
         },
     )

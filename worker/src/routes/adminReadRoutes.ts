@@ -134,7 +134,7 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   if (!candidates.length) {
     const { results } = await c.env.DB.prepare(`
       SELECT symbol, name, sector, industry, score, chip_score, tech_score,
-             COALESCE(score - COALESCE(chip_score, 0) - COALESCE(tech_score, 0) - COALESCE(ml_score, 0), 0) AS momentum_score,
+             COALESCE(momentum_score, 0) AS momentum_score,
              current_price
       FROM daily_recommendations
       WHERE date = ?

@@ -501,7 +501,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    # ── A: ML_POOL ensemble merge (5 feature + 3 time-series with lifecycle) ──
+    # ── A: ML_POOL ensemble merge (8 alpha models with lifecycle) ──
     # 2026-04-19 R1+R3 hybrid: weight = max(0, ic) × status_filter × dampening.
     # No more hardcoded 0.1 degraded multiplier; pure IC drives weight, with
     # KV-overridable dampening for degraded models (default 1.0 = no dampening).

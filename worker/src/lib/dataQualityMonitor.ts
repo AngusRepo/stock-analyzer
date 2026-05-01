@@ -17,6 +17,13 @@ export interface PredictionCoverageRow {
   stocks: number
 }
 
+export interface ModelIcEvidenceRow {
+  model_name: string
+  count: number
+  stocks: number
+  latest_date?: string | null
+}
+
 interface CountRow {
   count?: number
   total?: number
@@ -72,6 +79,19 @@ export function daysBetweenDates(fromDate: string | null | undefined, toDate: st
   const to = Date.parse(`${toDate.slice(0, 10)}T00:00:00.000Z`)
   if (!Number.isFinite(from) || !Number.isFinite(to)) return null
   return Math.floor((to - from) / 86_400_000)
+}
+
+export async function resolveExpectedTradingDate(kv: KVNamespace, startDate: string = twToday()): Promise<string> {
+  let cursor = new Date(`${startDate.slice(0, 10)}T00:00:00.000Z`)
+  for (let i = 0; i < 14; i += 1) {
+    const date = cursor.toISOString().slice(0, 10)
+    const dow = cursor.getUTCDay()
+    const isWeekend = dow === 0 || dow === 6
+    const isHoliday = Boolean(await kv.get(`holiday:${date}`))
+    if (!isWeekend && !isHoliday) return date
+    cursor = new Date(cursor.getTime() - 86_400_000)
+  }
+  return startDate.slice(0, 10)
 }
 
 export function buildFreshnessCheck(input: {
@@ -146,6 +166,46 @@ export function buildPredictionCoverageCheck(
       underfilled_models: underfilled,
       rows_by_model: rows,
       min_rows_per_model: minRowsPerModel,
+    },
+  }
+}
+
+export function buildModelIcEvidenceCheck(
+  rows: ModelIcEvidenceRow[],
+  expectedModels: readonly string[] = EXPECTED_V2_MODELS,
+  minSamplesPerModel = 30,
+): DataQualityCheck {
+  const byModel = new Map(rows.map((row) => [row.model_name, row]))
+  const missing = expectedModels.filter((model) => !byModel.has(model))
+  const underfilled = expectedModels.filter((model) => {
+    const row = byModel.get(model)
+    return row != null && Number(row.count ?? 0) < minSamplesPerModel
+  })
+  const totalSamples = rows.reduce((sum, row) => sum + Number(row.count ?? 0), 0)
+  const latestVerifiedDate = rows
+    .map((row) => row.latest_date)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .sort()
+    .at(-1) ?? null
+  const status: DataQualityStatus = missing.length > 0
+    ? 'fail'
+    : underfilled.length > 0
+      ? 'warn'
+      : 'ok'
+
+  return {
+    id: 'model_ic_evidence',
+    label: 'Model IC evidence',
+    status,
+    summary: `${expectedModels.length - missing.length}/${expectedModels.length} V2 models have verified IC evidence; samples=${totalSamples}`,
+    metrics: {
+      expected_models: expectedModels,
+      missing_models: missing,
+      underfilled_models: underfilled,
+      rows_by_model: rows,
+      min_samples_per_model: minSamplesPerModel,
+      latest_verified_date: latestVerifiedDate,
+      source_of_truth: 'predictions.verified_at + model_pool.compute_weekly_ic',
     },
   }
 }
@@ -508,7 +568,23 @@ export function buildBoardLaneContractCheck(input: {
 }
 
 function buildSchemaCheck(columns: string[]): DataQualityCheck {
-  const required = ['date', 'stock_id', 'symbol', 'rank', 'score', 'signal', 'confidence', 'chip_score', 'tech_score', 'ml_score']
+  const required = [
+    'date',
+    'stock_id',
+    'symbol',
+    'rank',
+    'score',
+    'signal',
+    'confidence',
+    'chip_score',
+    'tech_score',
+    'momentum_score',
+    'ml_score',
+    'alpha_context',
+    'alpha_allocation',
+    'ml_vote_summary',
+    'score_components',
+  ]
   const missing = required.filter((column) => !columns.includes(column))
   return {
     id: 'daily_recommendations_schema',
@@ -531,9 +607,10 @@ async function latestTableStats(db: D1Database, table: string, dateColumn = 'dat
 }
 
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
-  const targetDate = options.date ?? twToday()
+  const targetDate = options.date ?? await resolveExpectedTradingDate(env.KV, twToday())
+  const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, healthStats, schemaRows] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -654,18 +731,51 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ).catch((): CountRow => ({})),
     env.DB.prepare(
       `SELECT model_name, COUNT(*) AS count, COUNT(DISTINCT stock_id) AS stocks
-       FROM predictions WHERE date(generated_at) = ?
+       FROM predictions
+       WHERE (
+         COALESCE(prediction_date, '') = ?
+         OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+         OR (
+           prediction_date IS NULL
+           AND generated_at >= ?
+           AND generated_at < datetime(?, '+2 days')
+         )
+       )
        GROUP BY model_name ORDER BY model_name`,
-    ).bind(targetDate).all<PredictionCoverageRow>(),
+    ).bind(targetDate, targetDate, targetDate, targetDate).all<PredictionCoverageRow>(),
     firstCount(
       env.DB,
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN feature_version IS NULL OR TRIM(feature_version) = '' THEN 1 ELSE 0 END) AS missing_feature_version,
               COUNT(DISTINCT CASE WHEN feature_version IS NOT NULL AND TRIM(feature_version) <> '' THEN feature_version END) AS distinct_feature_versions
-       FROM predictions WHERE date(generated_at) = ?`,
+       FROM predictions
+       WHERE (
+         COALESCE(prediction_date, '') = ?
+         OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+         OR (
+           prediction_date IS NULL
+           AND generated_at >= ?
+           AND generated_at < datetime(?, '+2 days')
+         )
+       )`,
+      targetDate,
+      targetDate,
+      targetDate,
       targetDate,
     ).catch((): CountRow => ({})),
-    latestTableStats(env.DB, 'model_health_daily'),
+    env.DB.prepare(
+      `SELECT model_name,
+              COUNT(*) AS count,
+              COUNT(DISTINCT stock_id) AS stocks,
+              MAX(date(verified_at)) AS latest_date
+       FROM predictions
+       WHERE model_name IN (${expectedModelPlaceholders})
+         AND actual_return_pct IS NOT NULL
+         AND verified_at IS NOT NULL
+         AND date(COALESCE(prediction_date, generated_at)) >= date('now', '-7 days')
+       GROUP BY model_name
+       ORDER BY model_name`,
+    ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
     env.DB.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
   ])
 
@@ -754,16 +864,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       emergingRecommendations: Number(boardLaneStats.emerging_recommendations ?? 0),
       pendingBuyEmergingLike: Number(boardLaneStats.pending_buy_emerging_like ?? 0),
     }),
-    buildFreshnessCheck({
-      id: 'model_health_freshness',
-      label: 'Model health',
-      latestDate: healthStats.latest_date,
-      targetDate,
-      rowsOnLatest: healthStats.rows_on_latest,
-      warnLagDays: 7,
-      failLagDays: 14,
-      minRows: 5,
-    }),
+    buildModelIcEvidenceCheck(modelIcEvidence.results ?? []),
     buildSchemaCheck((schemaRows.results ?? []).map((row) => row.name)),
   ]
 

@@ -1019,7 +1019,15 @@ recommendations.get('/daily', async (c) => {
         FROM predictions p2
        WHERE p2.stock_id = r.stock_id
          AND p2.model_name = 'ensemble'
-         AND date(p2.generated_at, '+8 hours') = r.date
+         AND (
+           COALESCE(p2.prediction_date, '') = r.date
+           OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = r.date)
+           OR (
+             p2.prediction_date IS NULL
+             AND p2.generated_at >= r.date
+             AND p2.generated_at < datetime(r.date, '+2 days')
+           )
+         )
        ORDER BY p2.generated_at DESC, p2.id DESC
        LIMIT 1
     )
@@ -1038,9 +1046,17 @@ recommendations.get('/daily', async (c) => {
        WHERE stock_id IN (${placeholders})
          AND model_name != 'ensemble'
          AND model_name NOT LIKE '%::challenger'
-         AND date(generated_at, '+8 hours') = ?
+         AND (
+           COALESCE(prediction_date, '') = ?
+           OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+           OR (
+             prediction_date IS NULL
+             AND generated_at >= ?
+             AND generated_at < datetime(?, '+2 days')
+           )
+         )
        ORDER BY stock_id, model_name
-    `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
+    `).bind(...stockIds, date, date, date, date).all<any>().catch(() => ({ results: [] as any[] }))
     for (const row of perModelRows ?? []) {
       const id = Number(row.stock_id)
       const list = perModelByStock.get(id) ?? []
@@ -1053,6 +1069,10 @@ recommendations.get('/daily', async (c) => {
   const tradingConfig = await getTradingConfig(c.env.KV)
   const recs = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
+    const persistedAlphaContext = parsePredictionForecastData(r.alpha_context)
+    const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
+    const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
+    const persistedScoreComponents = parsePredictionForecastData(r.score_components)
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
     const board = classifyBoard({
       market: r.market,
@@ -1075,9 +1095,10 @@ recommendations.get('/daily', async (c) => {
       eligible_for_ml: eligibleForMl,
       eligible_for_pending_buy: eligibleForPendingBuy,
       board_reason: board.reason,
-      alpha_context: forecastData?.alpha_context ?? null,
-      alpha_allocation: forecastData?.alpha_allocation ?? null,
-      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal),
+      alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
+      alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
+      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
+      score_components: persistedScoreComponents ?? null,
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })
@@ -1117,8 +1138,16 @@ recommendations.get('/history', async (c) => {
     FROM daily_recommendations r
     LEFT JOIN predictions p
       ON p.stock_id = r.stock_id
-      AND p.generated_at >= r.date
-      AND p.generated_at < date(r.date, '+1 day')
+      AND p.model_name = 'ensemble'
+      AND (
+        COALESCE(p.prediction_date, '') = r.date
+        OR (p.prediction_date IS NULL AND date(p.generated_at, '+8 hours') = r.date)
+        OR (
+          p.prediction_date IS NULL
+          AND p.generated_at >= r.date
+          AND p.generated_at < datetime(r.date, '+2 days')
+        )
+      )
     WHERE r.date >= date('now', '-' || ? || ' days')
     ORDER BY r.date DESC, r.rank ASC
   `).bind(days).all<any>()

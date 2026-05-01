@@ -171,6 +171,15 @@ function modelIcValue(model: Record<string, unknown>): number | null {
   return Number.isFinite(value) ? value : null
 }
 
+function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>): boolean {
+  return (
+    name === 'KalmanFilter' ||
+    name === 'MarkovSwitching' ||
+    model.model_type === 'state_space_overlay' ||
+    model.balance_family === 'state_space'
+  )
+}
+
 export function buildEventsFromScheduler(input: {
   generatedAt: string
   jobs?: SchedulerJobSnapshot[]
@@ -331,6 +340,7 @@ export function buildEventsFromModelPool(input: {
   }
 
   const entries = Object.entries(input.models ?? {})
+    .filter(([name, model]) => !isStateSpaceOverlayModel(name, model))
   const weak = entries.filter(([, model]) => {
     const ic = modelIcValue(model)
     return ic == null || Math.abs(ic) < 0.0001 || model.metadata_exists === false

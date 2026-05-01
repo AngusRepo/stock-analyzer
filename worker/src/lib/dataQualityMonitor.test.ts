@@ -1,6 +1,7 @@
 import {
   buildFreshnessCheck,
   buildFeatureVersionParityCheck,
+  buildModelIcEvidenceCheck,
   buildPredictionCoverageCheck,
   buildRecommendationMlOwnerCheck,
   buildClassificationCoverageCheck,
@@ -12,6 +13,7 @@ import {
   buildScreenerSeedQualityCheck,
   daysBetweenDates,
   EXPECTED_V2_MODELS,
+  resolveExpectedTradingDate,
   summarizeDataQualityChecks,
 } from './dataQualityMonitor'
 
@@ -23,6 +25,18 @@ function assert(condition: unknown, message: string): void {
   assert(daysBetweenDates('2026-04-28', '2026-04-29') === 1, 'date lag should be calendar-day based')
   assert(daysBetweenDates(null, '2026-04-29') === null, 'missing latest date should return null')
 }
+
+void (async () => {
+  const holidaySet = new Set(['2026-05-01'])
+  const kv = {
+    get: async (key: string) => holidaySet.has(key.replace('holiday:', '')) ? '1' : null,
+  } as unknown as KVNamespace
+  const expected = await resolveExpectedTradingDate(kv, '2026-05-03')
+  assert(expected === '2026-04-30', `holiday/weekend data-quality target should be previous trading day, got ${expected}`)
+})().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})
 
 {
   const check = buildFreshnessCheck({
@@ -57,6 +71,32 @@ function assert(condition: unknown, message: string): void {
   const check = buildPredictionCoverageCheck(rows)
   assert(check.status === 'fail', 'missing one of the V2 production models should fail prediction coverage')
   assert((check.metrics?.missing_models as string[]).includes('Chronos'), 'missing model should be reported')
+}
+
+{
+  const rows = EXPECTED_V2_MODELS.map((model) => ({
+    model_name: model,
+    count: 60,
+    stocks: 60,
+    latest_date: '2026-04-30',
+  }))
+  const check = buildModelIcEvidenceCheck(rows)
+  assert(check.status === 'ok', 'all V2 models with enough verified IC samples should pass')
+  assert(check.metrics?.source_of_truth === 'predictions.verified_at + model_pool.compute_weekly_ic', 'IC evidence must point to V2 source of truth')
+}
+
+{
+  const rows = EXPECTED_V2_MODELS
+    .filter((model) => model !== 'FT-Transformer')
+    .map((model) => ({
+      model_name: model,
+      count: 60,
+      stocks: 60,
+      latest_date: '2026-04-30',
+    }))
+  const check = buildModelIcEvidenceCheck(rows)
+  assert(check.status === 'fail', 'missing V2 model IC evidence should fail')
+  assert((check.metrics?.missing_models as string[]).includes('FT-Transformer'), 'missing IC model should be explicit')
 }
 
 {

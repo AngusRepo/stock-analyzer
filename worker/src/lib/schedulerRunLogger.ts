@@ -106,9 +106,13 @@ export async function logSchedulerRunResult(
   }
 
   try {
-    await kv.put(`cron:log:${task}:${today}`, JSON.stringify(entry), { expirationTtl: 7 * 86400 })
+    const payload = JSON.stringify(entry)
+    await Promise.all([
+      kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
+      kv.put(`cron:log:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
+    ])
   } catch (error) {
-    // Cron logging should never break the task itself, but silent failure
+    // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.
     console.warn(`[schedulerRunLogger] KV write failed for task=${task}:`, error)
   }
@@ -149,7 +153,11 @@ export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promis
   const results: SchedulerRunLogEntry[] = []
 
   const entries = await Promise.all(
-    tasks.map(async (task) => await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null),
+    tasks.map(async (task) => {
+      const canonical = await kv.get(`scheduler:run:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
+      if (canonical) return canonical
+      return await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
+    }),
   )
 
   for (const entry of entries) {
@@ -173,6 +181,10 @@ export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promis
 
 export type CronStatus = SchedulerRunStatus
 export type CronLogEntry = SchedulerRunLogEntry
+export const isSchedulerStatus = isSchedulerRunStatus
+export const classifySchedulerSummary = classifySchedulerRunSummary
+export const logSchedulerResult = logSchedulerRunResult
+export const getSchedulerLogs = getSchedulerRunLogs
 export const isCronStatus = isSchedulerRunStatus
 export const classifyCronSummary = classifySchedulerRunSummary
 export const logCronResult = logSchedulerRunResult

@@ -720,6 +720,9 @@ def build_stock_meta_with_segment(
         "eligible_for_pending_buy": eligible_for_execution,
         "segment_serving_mode": policy.serving_mode,
         "segment_model_pool_scope": policy.model_pool_scope,
+        "segment_calibration_scope": policy.calibration_scope,
+        "segment_calibration_artifact_prefix": policy.calibration_artifact_prefix,
+        "train_serve_parity_required": policy.train_serve_parity_required,
         "segment_min_ic_samples": policy.min_ic_samples,
         "segment_min_active_days": policy.min_active_days,
     }

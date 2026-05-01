@@ -23,7 +23,6 @@ class FakeStatement {
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM technical_indicators')) return { count: 2300 } as T
-    if (sql.includes('COUNT(*) AS count FROM model_health_daily')) return { count: 10 } as T
     if (sql.includes('ml_score_positive')) {
       return { total: 25, ml_score_positive: 25, signal_count: 25, confidence_count: 25 } as T
     }
@@ -61,11 +60,27 @@ class FakeStatement {
     const sql = this.sql
     if (sql.includes('FROM predictions')) {
       return {
-        results: EXPECTED_V2_MODELS.map((model_name) => ({ model_name, count: 25, stocks: 25 })) as T[],
+        results: EXPECTED_V2_MODELS.map((model_name) => ({ model_name, count: 30, stocks: 30, latest_date: '2026-04-30' })) as T[],
       }
     }
     if (sql.includes('PRAGMA table_info(daily_recommendations)')) {
-      const names = ['date', 'stock_id', 'symbol', 'rank', 'score', 'signal', 'confidence', 'chip_score', 'tech_score', 'ml_score']
+      const names = [
+        'date',
+        'stock_id',
+        'symbol',
+        'rank',
+        'score',
+        'signal',
+        'confidence',
+        'chip_score',
+        'tech_score',
+        'momentum_score',
+        'ml_score',
+        'alpha_context',
+        'alpha_allocation',
+        'ml_vote_summary',
+        'score_components',
+      ]
       return { results: names.map((name) => ({ name })) as T[] }
     }
     if (sql.includes('FROM daily_recommendations') && sql.includes('ORDER BY rank ASC')) {

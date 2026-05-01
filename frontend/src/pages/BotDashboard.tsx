@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
+import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -421,8 +422,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     queryFn: () => recommendationsApi.daily(),
     staleTime: 5 * 60_000,
   })
-  const tradableRecs = recData?.tradable_recommendations ?? recData?.recommendations ?? recData?.data ?? []
-  const emergingRecs = recData?.emerging_recommendations ?? []
+  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
   const recs = tradableRecs
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
   if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
@@ -692,7 +692,7 @@ function TradeHistory() {
   )
 }
 
-// ─── Bot Status（Live Cron Logs）─────────────────────────────────────────────
+// ─── Bot Status（Live Scheduler Runs）────────────────────────────────────────
 
 function BotStatusPanel() {
   const { data: risk } = useQuery({
@@ -720,11 +720,11 @@ function BotStatusPanel() {
         </div>
       </div>
 
-      {/* Cron Logs → moved to Scheduler Dashboard */}
+      {/* Scheduler run details live on the Scheduler Dashboard. */}
       <GateCalibrationPanel />
 
       <div className="text-center py-4 text-muted-foreground text-sm">
-        <p>Cron 排程已移至 <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
+        <p>Scheduler runs moved to <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
       </div>
     </div>
   )
@@ -1433,10 +1433,10 @@ export default function BotDashboard() {
         <details className="group">
           <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
             <Bot className="w-3.5 h-3.5" />
-            <span className="font-mono uppercase tracking-wider">Bot Status & Cron Logs</span>
+            <span className="font-mono uppercase tracking-wider">Bot Status & Scheduler Runs</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
           </summary>
-          <WorkstationPanel title="Bot Status" kicker="cron logs and market risk" className="mt-2">
+          <WorkstationPanel title="Bot Status" kicker="scheduler runs and market risk" className="mt-2">
             <div className="p-3">
               <BotStatusPanel />
             </div>

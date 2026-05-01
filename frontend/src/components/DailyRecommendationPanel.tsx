@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { Treemap, ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, Cell, ReferenceLine } from 'recharts'
 import { paperApi } from '@/lib/api'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 /** 法人金額格式化：< 0.01億 改顯示萬元 */
 function fmtChipAmount(billion: number | null | undefined): string {
@@ -75,8 +76,7 @@ export function DailyRecommendationPanel() {
     staleTime: 30 * 60 * 1000,
   })
 
-  const tradableRecs = recData?.tradable_recommendations ?? recData?.recommendations ?? []
-  const emergingRecs = recData?.emerging_recommendations ?? []
+  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
   const recs = tradableRecs
 
   return (

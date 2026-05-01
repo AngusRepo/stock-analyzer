@@ -179,7 +179,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const errMsg = `Shioaji 報價異常: ${zeroPriceSymbols.join(',')}`
     console.error(`[Intraday] 錯誤 ${errMsg}`)
     await env.KV.put(
-      `cron:log:intraday-error:${today}`,
+      `scheduler:run:intraday-error:${today}`,
       JSON.stringify({ error: errMsg, symbols: zeroPriceSymbols, timestamp: new Date().toISOString() }),
       { expirationTtl: 86400 },
     )
@@ -535,6 +535,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       currentPrice: price,
       limitPrice,
       intradayLow: currentOhlc?.low,
+      intradayHigh: currentOhlc?.high,
       slippageTicks: cfg.position.fillSlippageTicks ?? 1,
     })
     if (!fill.fillable || fill.fillPrice == null) {
@@ -542,15 +543,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       if (idx >= 0) {
         const nextPending = appendPendingBuyExecutionNote(
           pendingBuys[idx],
-          formatExecutionStatusEvent('deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'}`),
+          formatExecutionStatusEvent('deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'};high=${currentOhlc?.high ?? 'na'}`),
         ) as PendingBuy
         if ((nextPending.watch_points ?? []).length !== (pendingBuys[idx].watch_points ?? []).length) {
           pendingBuys[idx] = nextPending
-          recordExecutionNote(pending.symbol, 'deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'}`)
+          recordExecutionNote(pending.symbol, 'deferred', fill.reason, `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'};high=${currentOhlc?.high ?? 'na'}`)
           stateChanged = true
         }
       }
-      console.log(`[Intraday] ${pending.symbol}: limit not filled (${fill.reason}) price=${price} limit=${limitPrice} low=${currentOhlc?.low ?? 'na'}`)
+      console.log(`[Intraday] ${pending.symbol}: limit not filled (${fill.reason}) price=${price} limit=${limitPrice} low=${currentOhlc?.low ?? 'na'} high=${currentOhlc?.high ?? 'na'}`)
       continue
     }
     const fillPriceOverride = fill.fillPrice

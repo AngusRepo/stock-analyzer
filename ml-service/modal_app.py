@@ -83,8 +83,8 @@ def _get_gcs_bucket_name() -> str | None:
     return get_gcs_bucket_name()
 
 
-def _load_sequence_series_from_gcs(gcs_prefix: str, batch_count: int) -> list[list[float]]:
-    """Load raw close series artifact for universal sequence-model training."""
+def _load_sequence_records_from_gcs(gcs_prefix: str, batch_count: int) -> list[dict]:
+    """Load v2 sequence records for universal sequence-model lifecycle training."""
     import io
     import numpy as np
     from google.cloud import storage
@@ -94,7 +94,7 @@ def _load_sequence_series_from_gcs(gcs_prefix: str, batch_count: int) -> list[li
         raise RuntimeError("GCS bucket not configured")
 
     bucket = storage.Client().bucket(bucket_name)
-    all_series: list[list[float]] = []
+    all_records: list[dict] = []
     for i in range(batch_count):
         blob = bucket.blob(f"{gcs_prefix}/prep/batch_{i}.npz")
         if not blob.exists():
@@ -103,14 +103,24 @@ def _load_sequence_series_from_gcs(gcs_prefix: str, batch_count: int) -> list[li
         blob.download_to_file(buf)
         buf.seek(0)
         data = np.load(buf, allow_pickle=True)
-        if "series_close" not in data.files:
+        if "sequence_records" in data.files:
+            batch_records = data["sequence_records"].tolist()
+            for row in batch_records:
+                if isinstance(row, dict) and row.get("close") and row.get("dates"):
+                    all_records.append(row)
             continue
-        batch_series = data["series_close"].tolist()
-        for row in batch_series:
-            if not row:
-                continue
-            all_series.append([float(v) for v in row])
-    return all_series
+        if "series_close" in data.files:
+            batch_series = data["series_close"].tolist()
+            for idx, row in enumerate(batch_series):
+                if not row:
+                    continue
+                all_records.append({
+                    "symbol": f"legacy_{i}_{idx}",
+                    "market_type": "unknown",
+                    "close": [float(v) for v in row],
+                    "dates": [],
+                })
+    return all_records
 
 
 def _load_oos_rank_payload_from_gcs(path: str) -> dict:
@@ -247,23 +257,30 @@ def retrain_orchestrator(payload: dict) -> dict:
         merge_oos_rank_payloads,
         missing_expected_oos_groups,
         summarize_training_stage_status,
-        validate_sequence_series,
     )
 
     requested_train_groups = training_policy.requested_groups(payload)
     print(f"[Orchestrator] Training from {batch_count} GCS batches (groups={requested_train_groups})...")
-    sequence_series = list(payload.get("series_close") or [])
-    if not sequence_series and any(g in requested_train_groups for g in ("dlinear", "patchtst")):
+    sequence_records = list(payload.get("sequence_records") or [])
+    if not sequence_records and any(g in requested_train_groups for g in ("dlinear", "patchtst")):
         try:
-            sequence_series = _load_sequence_series_from_gcs(gcs_prefix, batch_count)
-            print(f"[Orchestrator] Loaded {len(sequence_series)} sequence series from GCS for DLinear/PatchTST")
+            sequence_records = _load_sequence_records_from_gcs(gcs_prefix, batch_count)
+            print(f"[Orchestrator] Loaded {len(sequence_records)} sequence records from GCS for DLinear/PatchTST")
         except Exception as e:
-            print(f"[Orchestrator] sequence series load failed: {e}")
-            sequence_series = []
-    sequence_series, sequence_report = validate_sequence_series(
-        sequence_series,
-        min_len=training_policy.sequence_min_length(payload),
-    )
+            print(f"[Orchestrator] sequence records load failed: {e}")
+            sequence_records = []
+    sequence_report = {
+        "input_series": len(sequence_records),
+        "valid_series": sum(
+            1
+            for row in sequence_records
+            if isinstance(row, dict)
+            and len(row.get("close") or []) >= training_policy.sequence_min_length(payload)
+            and len(row.get("dates") or []) == len(row.get("close") or [])
+        ),
+        "min_len": training_policy.sequence_min_length(payload),
+        "contract": "sequence_records_v2",
+    }
     if any(g in requested_train_groups for g in ("dlinear", "patchtst")):
         print(f"[Orchestrator] sequence series validation: {sequence_report}")
     candidate_version = payload.get("candidate_version") or datetime.now(timezone.utc).strftime("v%Y%m%d%H%M%S")
@@ -289,7 +306,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
             "payload": lambda: {
-                "series_close": sequence_series,
+                "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
             },
@@ -300,7 +317,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         "patchtst": {
             "spawn": lambda p: train_patchtst_universal.spawn(p),
             "payload": lambda: {
-                "series_close": sequence_series,
+                "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
             },
@@ -322,15 +339,15 @@ def retrain_orchestrator(payload: dict) -> dict:
                 print(f"[Orchestrator] Unknown train group skipped: {group}")
                 continue
             group_payload = spec["payload"]()
-            if group in {"dlinear", "patchtst"} and not group_payload.get("series_close"):
+            if group in {"dlinear", "patchtst"} and not group_payload.get("sequence_records"):
                 coverage[group] = {
                     "status": "skipped",
                     "models": spec["models"],
-                    "reason": "missing_series_close_artifact",
+                    "reason": "missing_sequence_records_artifact",
                     "sequence_report": sequence_report,
                     "note": spec["note"],
                 }
-                print(f"[Orchestrator] {group} skipped: missing series_close artifact")
+                print(f"[Orchestrator] {group} skipped: missing sequence records artifact")
                 continue
             handles[group] = spec["spawn"](group_payload)
             coverage[group] = {
@@ -352,6 +369,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "status": "error" if tree_result.get("error") else "ok",
                 "elapsed_s": tree_result.get("elapsed_s"),
                 "error": tree_result.get("error"),
+                "gcs_io": tree_result.get("gcs_io"),
             }
         if handles.get("ftt") is not None:
             ftt_result = handles["ftt"].get()
@@ -361,6 +379,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "status": "error" if ftt_result.get("error") else "ok",
                 "elapsed_s": ftt_result.get("elapsed_s"),
                 "error": ftt_result.get("error"),
+                "gcs_io": ftt_result.get("gcs_io"),
             }
         for group in ("dlinear", "patchtst"):
             if handles.get(group) is not None:
@@ -391,6 +410,12 @@ def retrain_orchestrator(payload: dict) -> dict:
             for name, r in partial.get("results", {}).items():
                 if not r.get("skipped") and not r.get("error"):
                     merged_results[name] = r
+            for name, ic in partial.get("ic_tracking", {}).items():
+                merged_ic[name] = ic
+                if not ic.get("passed", True):
+                    circuit_breaker = True
+        for group in ("dlinear", "patchtst"):
+            partial = aux_train.get(group) or {}
             for name, ic in partial.get("ic_tracking", {}).items():
                 merged_ic[name] = ic
                 if not ic.get("passed", True):
@@ -441,6 +466,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 k: {
                     "status": "ok" if "error" not in v else "error",
                     "metadata": v.get("metadata"),
+                    "ic_tracking": v.get("ic_tracking"),
                     "elapsed_s": v.get("elapsed_s"),
                     "type": v.get("type"),
                 }
@@ -1354,6 +1380,7 @@ def train_dlinear_universal(payload: dict) -> dict:
         device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         result = train_dlinear(
             series_close=payload.get("series_close") or [],
+            sequence_records=payload.get("sequence_records") or None,
             seq_len=payload.get("seq_len", 60),
             pred_len=payload.get("pred_len", 5),
             kernel=payload.get("kernel", 25),
@@ -1366,10 +1393,13 @@ def train_dlinear_universal(payload: dict) -> dict:
         if result.get("error"):
             return result
         version = payload.get("version", "v1")
+        result["metadata"]["version"] = version
+        result["metadata"]["model_pool_version"] = version
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
         return {
             "saved": saved,
             "metadata": result["metadata"],
+            "ic_tracking": result.get("ic_tracking", {}),
             "version": version,
             "elapsed_s": result["metadata"].get("elapsed_s"),
             "type": "dlinear_universal",
@@ -1431,6 +1461,7 @@ def train_patchtst_universal(payload: dict) -> dict:
         device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         result = train_patchtst(
             series_close=payload.get("series_close") or [],
+            sequence_records=payload.get("sequence_records") or None,
             seq_len=payload.get("seq_len", 60),
             pred_len=payload.get("pred_len", 5),
             patch_len=payload.get("patch_len", 12),
@@ -1449,10 +1480,13 @@ def train_patchtst_universal(payload: dict) -> dict:
         if result.get("error"):
             return result
         version = payload.get("version", "v1")
+        result["metadata"]["version"] = version
+        result["metadata"]["model_pool_version"] = version
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
         return {
             "saved": saved,
             "metadata": result["metadata"],
+            "ic_tracking": result.get("ic_tracking", {}),
             "version": version,
             "elapsed_s": result["metadata"].get("elapsed_s"),
             "type": "patchtst_universal",

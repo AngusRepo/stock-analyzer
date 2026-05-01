@@ -10,7 +10,7 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
             "status": "ok",
             "group_coverage": {
                 "tree": {"status": "ok", "elapsed_s": 30.0},
-                "ftt": {"status": "ok", "elapsed_s": 45.0},
+                "ftt": {"status": "ok", "elapsed_s": 45.0, "gcs_io": {"prep_objects": 5, "prep_bytes": 100}},
                 "dlinear": {"status": "skipped", "elapsed_s": None},
                 "patchtst": {"status": "ok", "elapsed_s": 60.0},
             },
@@ -36,4 +36,5 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
     assert telemetry[0]["compute_sec"] == 120.0
     assert telemetry[1]["meta"]["run_id"] == "run-a"
     assert telemetry[3]["meta"]["group"] == "ftt"
+    assert telemetry[3]["meta"]["gcs_io"]["prep_objects"] == 5
     assert all(e["source"] == "modal_followup" for e in telemetry)

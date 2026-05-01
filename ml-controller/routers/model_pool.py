@@ -492,7 +492,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
       D1 predictions WHERE
         model_name IN (8 alpha prediction models + shadow challenger rows)
         AND verified_at IS NOT NULL
-        AND generated_at >= datetime('now','-7 days')
+        AND prediction business date >= date('now','-7 days')
 
     Writes:
       gs://<configured bucket>/universal/model_pool.json
@@ -518,12 +518,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     # 1. Pull verified per-model rows from D1.
     placeholders = ",".join(["?"] * len(all_tracked))
     sql = f"""
-        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, generated_at
+        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, generated_at, prediction_date
         FROM predictions
         WHERE model_name IN ({placeholders})
           AND actual_return_pct IS NOT NULL
           AND verified_at IS NOT NULL
-          AND generated_at >= datetime('now', ?)
+          AND date(COALESCE(prediction_date, generated_at)) >= date('now', ?)
     """
     rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
     per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
@@ -1264,6 +1264,8 @@ async def lineage():
             "schema_version": pool.get("schema_version"),
             "last_updated": pool.get("last_updated"),
             "models": out,
+            "state_overlays": pool.get("state_overlays") or {},
+            "meta_optimizers": pool.get("meta_optimizers") or {},
             "events": (pool.get("lifecycle_events") or [])[-100:],
         }
     except Exception as e:

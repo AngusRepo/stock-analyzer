@@ -4,6 +4,7 @@
 
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
+import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 
 interface JobDef {
   id: string
@@ -45,21 +46,13 @@ const JOB_DEFS: JobDef[] = [
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
-  { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 00:00 UTC', cron: '0 16 1-7 * 6', group: 'monthly' },
+  { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00 UTC', cron: 'first saturday of month 16:00', group: 'monthly' },
+  { id: 'retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]
 
 const DAG_STEPS = ['Market Data Update', 'Screener', 'ML Predict', 'Recommend', 'LLM Reason', 'Write D1']
-const DOW_NAME_TO_NUM: Record<string, number> = {
-  SUN: 0,
-  MON: 1,
-  TUE: 2,
-  WED: 3,
-  THU: 4,
-  FRI: 5,
-  SAT: 6,
-}
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
 
 export interface SchedulerDisplayLogCandidate {
@@ -106,36 +99,6 @@ function getLast7Dates(): string[] {
     if (dow >= 1 && dow <= 5) dates.push(d.toISOString().slice(0, 10))
   }
   return dates
-}
-
-function parseDowValue(token: string): number | null {
-  const upper = token.trim().toUpperCase()
-  if (upper in DOW_NAME_TO_NUM) return DOW_NAME_TO_NUM[upper]
-  const num = Number.parseInt(upper, 10)
-  return Number.isFinite(num) ? num : null
-}
-
-function expandRange(rangeExpr: string): number[] {
-  const [startToken, endToken] = rangeExpr.split('-')
-  const start = parseDowValue(startToken)
-  const end = parseDowValue(endToken)
-  if (start == null || end == null) return []
-
-  const out: number[] = []
-  if (start <= end) {
-    for (let i = start; i <= end; i += 1) out.push(i)
-  } else {
-    for (let i = start; i <= 6; i += 1) out.push(i)
-    for (let i = 0; i <= end; i += 1) out.push(i)
-  }
-  return out
-}
-
-function parseDowExpr(expr: string): number[] {
-  return expr
-    .split(',')
-    .flatMap((part) => part.includes('-') ? expandRange(part) : [parseDowValue(part)])
-    .filter((value): value is number => value != null)
 }
 
 function parseLogTime(ts?: string): number | null {
@@ -200,38 +163,6 @@ function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string)
   return undefined
 }
 
-function getNextRunApprox(cron: string): string {
-  if (!cron) return 'N/A'
-  const parts = cron.split(' ')
-  if (parts.length < 5) return 'N/A'
-
-  const [min, hour, , , dow] = parts
-  const targetHourUtc = Number.parseInt(hour, 10)
-  const targetMin = Number.parseInt(min, 10)
-  if (!Number.isFinite(targetHourUtc) || !Number.isFinite(targetMin)) return 'N/A'
-
-  const now = new Date(Date.now() + 8 * 3600_000)
-  const targetHourTW = targetHourUtc + 8
-
-  for (let offset = 0; offset < 8; offset += 1) {
-    const candidate = new Date(now)
-    candidate.setDate(candidate.getDate() + offset)
-    candidate.setHours(targetHourTW, targetMin, 0, 0)
-    if (candidate <= now) continue
-
-    if (dow === '*') {
-      return `${candidate.getMonth() + 1}/${candidate.getDate()} ${String(targetHourTW % 24).padStart(2, '0')}:${String(targetMin).padStart(2, '0')}`
-    }
-
-    const allowedDays = parseDowExpr(dow)
-    if (allowedDays.includes(candidate.getDay())) {
-      return `${candidate.getMonth() + 1}/${candidate.getDate()} ${String(targetHourTW % 24).padStart(2, '0')}:${String(targetMin).padStart(2, '0')}`
-    }
-  }
-
-  return 'N/A'
-}
-
 function formatTimestamp(ts: string): string {
   if (!ts) return 'N/A'
   try {
@@ -254,7 +185,7 @@ export async function getSchedulerStatus(env: Bindings) {
     }),
   )
 
-  const jobs = JOB_DEFS.map((def) => {
+  const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getDisplayLog(allLogs[today], def.id) ?? inferPipelineChildLog(allLogs[today], def.id)
 
     const displayLogs = dates.map((date) => ({
@@ -298,12 +229,12 @@ export async function getSchedulerStatus(env: Bindings) {
       lastStatus,
       lastDuration,
       lastError: todayLog?.error ?? lastLog?.error,
-      nextRun: getNextRunApprox(def.cron),
+      nextRun: await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV }),
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       summary: lastLog?.summary || '',
     }
-  })
+  }))
 
   const failed24h = jobs.filter((job) => {
     const todayLog = getDisplayLog(allLogs[today], job.id) ?? inferPipelineChildLog(allLogs[today], job.id)

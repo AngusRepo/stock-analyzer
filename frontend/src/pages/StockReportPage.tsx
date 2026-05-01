@@ -25,8 +25,14 @@ const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; bo
 const MODEL_COLORS: Record<string, string> = {
   ARIMA: '#818cf8', XGBoost: '#fb923c', LightGBM: '#34d399',
   Prophet: '#60a5fa', LSTM: '#f472b6',
-  PatchTST: '#a78bfa', Chronos: '#fbbf24', MarkovSwitching: '#f97316',
+  PatchTST: '#a78bfa', Chronos: '#fbbf24', KalmanFilter: '#3b82f6', MarkovSwitching: '#f97316',
   RandomForest: '#2dd4bf', GradientBoosting: '#fb7185',
+}
+
+const STATE_SPACE_OVERLAYS = new Set(['KalmanFilter', 'MarkovSwitching'])
+
+function modelDisplayName(name: string): string {
+  return STATE_SPACE_OVERLAYS.has(name) ? `${name} overlay` : name
 }
 
 function SectionCard({ title, icon: Icon, children, className }: {
@@ -256,7 +262,7 @@ export default function StockReportPage() {
                         className="w-20 text-[10px] font-medium px-2 py-0.5 rounded-full text-black text-center shrink-0"
                         style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
                       >
-                        {m.name}
+                        {modelDisplayName(m.name)}
                       </span>
                       <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-red-400' : 'text-emerald-400')}>
                         {m.direction === 'up' ? '↑ 漲' : '↓ 跌'}

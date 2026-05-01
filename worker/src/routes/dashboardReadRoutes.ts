@@ -6,6 +6,15 @@ import type { Bindings, Variables } from '../types'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+function isStateSpaceOverlay(name: string, model: Record<string, any>): boolean {
+  return (
+    name === 'KalmanFilter' ||
+    name === 'MarkovSwitching' ||
+    model.model_type === 'state_space_overlay' ||
+    model.balance_family === 'state_space'
+  )
+}
+
 dashboardReadRoutes.get('/api/backtest/latest', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
@@ -42,10 +51,41 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const { results } = await c.env.DB.prepare(
-    'SELECT * FROM model_health_daily WHERE date=? ORDER BY model_name'
-  ).bind(date).all()
-  return c.json({ date, models: results ?? [] })
+  try {
+    const lineage = await controllerJson<any>(c.env, '/model_pool/lineage', { timeoutMs: 30_000 })
+    const models = Object.entries(lineage?.models ?? {})
+      .filter(([modelName, raw]) => !isStateSpaceOverlay(modelName, raw as Record<string, any>))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([modelName, raw]) => {
+        const model = raw as Record<string, any>
+        const ic = model.ic_4w_avg ?? model.rolling_ic ?? null
+        return {
+          date,
+          model_name: modelName,
+          lifecycle_status: model.status ?? 'unknown',
+          lifecycle_weight: model.weight_mult ?? 1,
+          ic_mean: ic,
+          ic_4w_avg: model.ic_4w_avg ?? null,
+          rolling_ic: model.rolling_ic ?? null,
+          last_ic_status: model.last_ic_status ?? null,
+          last_ic_sample_count: model.last_ic_sample_count ?? 0,
+          weekly_ic_count: Array.isArray(model.weekly_ic) ? model.weekly_ic.length : 0,
+          metadata_exists: model.metadata_exists ?? null,
+          drift_detected: Number(model.consecutive_negative_weeks ?? 0) > 0 ? 1 : 0,
+          created_at: lineage?.last_updated ?? new Date().toISOString(),
+          source_of_truth: 'model_pool.json',
+        }
+      })
+    return c.json({ date, models, source_of_truth: 'model_pool.json', last_updated: lineage?.last_updated ?? null })
+  } catch (e: any) {
+    return c.json({
+      date,
+      models: [],
+      source_of_truth: 'model_pool.json',
+      error: 'model_pool_unavailable',
+      warning: e?.message ?? String(e),
+    }, 502)
+  }
 })
 
 dashboardReadRoutes.get('/api/model-pool/status', async (c) => {

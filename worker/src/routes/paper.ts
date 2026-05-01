@@ -87,13 +87,24 @@ async function enrichPendingBuyContext(
       LEFT JOIN stocks s ON s.symbol = dr.symbol
       LEFT JOIN predictions p ON p.id = (
         SELECT p2.id
-          FROM predictions p2
+         FROM predictions p2
          WHERE p2.stock_id = s.id
            AND p2.model_name = 'ensemble'
-           AND p2.generated_at >= datetime(dr.date || ' 00:00:00', '-8 hours')
-           AND p2.generated_at < datetime(dr.date || ' 00:00:00', '+32 hours')
+           AND (
+             COALESCE(p2.prediction_date, '') = dr.date
+             OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = dr.date)
+             OR (
+               p2.prediction_date IS NULL
+               AND p2.generated_at >= dr.date
+               AND p2.generated_at < datetime(dr.date, '+2 days')
+             )
+           )
          ORDER BY
-           CASE WHEN date(p2.generated_at, '+8 hours') = dr.date THEN 0 ELSE 1 END,
+           CASE
+             WHEN COALESCE(p2.prediction_date, '') = dr.date THEN 0
+             WHEN p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = dr.date THEN 1
+             ELSE 2
+           END,
            p2.generated_at DESC,
            p2.id DESC
          LIMIT 1
@@ -112,7 +123,11 @@ async function enrichPendingBuyContext(
                ROW_NUMBER() OVER (
                  PARTITION BY stock_id, model_name
                  ORDER BY
-                   CASE WHEN date(generated_at, '+8 hours') = ? THEN 0 ELSE 1 END,
+                   CASE
+                     WHEN COALESCE(prediction_date, '') = ? THEN 0
+                     WHEN prediction_date IS NULL AND date(generated_at, '+8 hours') = ? THEN 1
+                     ELSE 2
+                   END,
                    generated_at DESC,
                    id DESC
                ) AS rn
@@ -120,14 +135,29 @@ async function enrichPendingBuyContext(
          WHERE stock_id IN (${stockPlaceholders})
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND generated_at >= datetime(? || ' 00:00:00', '-8 hours')
-           AND generated_at < datetime(? || ' 00:00:00', '+32 hours')
+           AND (
+             COALESCE(prediction_date, '') = ?
+             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
+             OR (
+               prediction_date IS NULL
+               AND generated_at >= ?
+               AND generated_at < datetime(?, '+2 days')
+             )
+           )
       )
       SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
         FROM ranked
        WHERE rn = 1
        ORDER BY stock_id, model_name
-    `).bind(sourceRecoDate, ...stockIds, sourceRecoDate, sourceRecoDate).all<any>().catch(() => ({ results: [] as any[] }))
+    `).bind(
+      sourceRecoDate,
+      sourceRecoDate,
+      ...stockIds,
+      sourceRecoDate,
+      sourceRecoDate,
+      sourceRecoDate,
+      sourceRecoDate,
+    ).all<any>().catch(() => ({ results: [] as any[] }))
     for (const row of perModelRows ?? []) {
       const stockId = Number(row.stock_id)
       const list = perModelByStock.get(stockId) ?? []

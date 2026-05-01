@@ -40,6 +40,7 @@ foreach ($job in $manifest.jobs) {
     $uri = "$uri`?$query"
   }
   $description = [string]$job.description
+  $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
   $exists = $DryRun -or $currentIds.Contains([string]$job.id)
 
   if ($exists) {
@@ -48,7 +49,7 @@ foreach ($job in $manifest.jobs) {
       '--project', $Project,
       '--location', $Location,
       '--schedule', $job.schedule,
-      '--time-zone', $manifest.timeZone,
+      '--time-zone', $timeZone,
       '--uri', $uri,
       '--http-method', 'POST',
       '--update-headers', $headers,
@@ -62,7 +63,7 @@ foreach ($job in $manifest.jobs) {
       '--project', $Project,
       '--location', $Location,
       '--schedule', $job.schedule,
-      '--time-zone', $manifest.timeZone,
+      '--time-zone', $timeZone,
       '--uri', $uri,
       '--http-method', 'POST',
       '--headers', $headers,
@@ -73,7 +74,7 @@ foreach ($job in $manifest.jobs) {
   }
 
   $action = if ($exists) { 'update' } else { 'create' }
-  Write-Host "[scheduler-sync] $action $($job.id) -> $uri @ $($job.schedule)"
+  Write-Host "[scheduler-sync] $action $($job.id) -> $uri @ $($job.schedule) tz=$timeZone"
   if (-not $DryRun) {
     & gcloud @args *> $null
     if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler sync failed for $($job.id)" }

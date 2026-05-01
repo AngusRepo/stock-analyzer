@@ -14,7 +14,7 @@ optuna.py — Optuna 自動化 endpoint (Cloud Run 版)
 - 每次改 requirements.txt 都 rebuild image
 - 額外的 Modal secret 管理
 
-Worker monthly cron `0 16 1-7 * 6` 將 call 這個路徑（不再 call Modal）
+GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑（不再 call Modal）
 """
 from __future__ import annotations
 import logging

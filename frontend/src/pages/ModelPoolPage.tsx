@@ -27,6 +27,15 @@ function familyCounts(models: Record<string, ModelPoolLineageModel>) {
   }, {})
 }
 
+function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel) {
+  return (
+    name === 'KalmanFilter' ||
+    name === 'MarkovSwitching' ||
+    model.model_type === 'state_space_overlay' ||
+    model.balance_family === 'state_space'
+  )
+}
+
 function ModelCard({ name, model }: { name: string; model: ModelPoolLineageModel }) {
   const activeIc = model.weekly_ic ?? []
   const challengerIc = model.challenger?.weekly_ic ?? []
@@ -141,8 +150,21 @@ export default function ModelPoolPage() {
   })
 
   const models = data?.models ?? {}
-  const modelList = Object.entries(models)
-  const counts = familyCounts(models)
+  const modelList = Object.entries(models).filter(([name, model]) => !isStateSpaceOverlay(name, model))
+  const legacyOverlayList = Object.entries(models).filter(([name, model]) => isStateSpaceOverlay(name, model))
+  const overlayList = [
+    ...Object.entries(data?.state_overlays ?? {}),
+    ...legacyOverlayList.map(([name, model]) => [name, {
+      status: model.status,
+      version: model.version,
+      model_type: model.model_type,
+      balance_family: model.balance_family,
+      role: 'regime_risk_overlay',
+      gcs_path: model.gcs_path,
+      note: 'Legacy lineage entry rendered as state-space overlay; excluded from alpha model IC counts.',
+    }] as const),
+  ]
+  const counts = familyCounts(Object.fromEntries(modelList))
   const challengerCount = modelList.filter(([, model]) => !!model.challenger).length
   const missingMetadata = modelList.filter(([, model]) => !model.metadata_exists).length
 
@@ -179,7 +201,7 @@ export default function ModelPoolPage() {
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <Card><CardContent className="px-4 pb-3 pt-4">
                 <Boxes className="mb-2 h-4 w-4 text-sky-400" />
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Models</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Alpha models</p>
                 <p className="mt-1 text-2xl font-bold">{modelList.length}</p>
               </CardContent></Card>
               <Card><CardContent className="px-4 pb-3 pt-4">
@@ -206,6 +228,35 @@ export default function ModelPoolPage() {
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
               {modelList.map(([name, model]) => <ModelCard key={name} name={name} model={model} />)}
             </div>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">State-space Overlays</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-xs text-muted-foreground">
+                <p>
+                  Kalman / Markov 是 regime 與風險 overlay，不是 alpha 投票模型；它們不應計入 8 alpha model 的 IC/投票缺口。
+                </p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {overlayList.map(([name, overlay]) => (
+                    <div key={name} className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-foreground">{name}</div>
+                          <div className="mt-1 text-[11px]">{overlay.role ?? overlay.model_type ?? 'state-space overlay'}</div>
+                        </div>
+                        <Badge className={`border text-[10px] ${statusClass(overlay.status)}`}>{overlay.status ?? 'active'}</Badge>
+                      </div>
+                      <div className="mt-2 break-all font-mono text-[10px]">{overlay.gcs_path ?? 'default hyperparams'}</div>
+                      {overlay.note && <div className="mt-2 text-[11px]">{overlay.note}</div>}
+                    </div>
+                  ))}
+                  {!overlayList.length && (
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">No state-space overlay registered.</div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader className="pb-3">

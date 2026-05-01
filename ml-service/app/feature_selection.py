@@ -164,6 +164,28 @@ def _train_lgbm_regression(X_train: np.ndarray, y_train: np.ndarray,
     return booster
 
 
+def _permuted_target(
+    y: np.ndarray,
+    *,
+    rng: np.random.RandomState,
+    dates: np.ndarray | None = None,
+    mode: str = "within_date",
+) -> np.ndarray:
+    """Permute cross-sectional rank targets without destroying date structure."""
+
+    y_arr = np.asarray(y).copy()
+    if mode != "within_date" or dates is None or len(dates) != len(y_arr):
+        return rng.permutation(y_arr)
+
+    out = y_arr.copy()
+    date_arr = np.asarray(dates).astype(str)
+    for date in np.unique(date_arr):
+        idx = np.where(date_arr == date)[0]
+        if len(idx) > 1:
+            out[idx] = rng.permutation(out[idx])
+    return out
+
+
 def target_permutation(
     X_train: np.ndarray, y_train: np.ndarray,
     X_val: np.ndarray, y_val: np.ndarray,
@@ -171,6 +193,8 @@ def target_permutation(
     max_permutations: int = 100,
     ks_alpha: float = 0.05,
     ks_check_interval: int = 10,
+    dates_train: np.ndarray | None = None,
+    permutation_mode: str = "within_date",
 ) -> dict:
     """Target Permutation feature selection.
 
@@ -217,9 +241,12 @@ def target_permutation(
     actual_rounds = 0
 
     for perm_i in range(max_permutations):
-        # Full random permutation per Altmann et al. (2010) — breaks ALL
-        # feature-target associations including cross-date rank structure.
-        y_shuffled = rng.permutation(y_train)
+        y_shuffled = _permuted_target(
+            y_train,
+            rng=rng,
+            dates=dates_train,
+            mode=permutation_mode,
+        )
         null_model = _train_lgbm_regression(X_train, y_shuffled, X_val, y_val,
                                              seed=42 + perm_i + 1)
         null_imp = null_model.feature_importance(importance_type="gain").astype(np.float64)
@@ -285,6 +312,7 @@ def target_permutation(
         "n_permutations": actual_rounds,
         "per_feature": per_feature,
         "elapsed_s": elapsed,
+        "permutation_mode": permutation_mode,
     }
 
 
@@ -297,6 +325,8 @@ def signal_sanity_gate(
     X_val: np.ndarray, y_val: np.ndarray,
     n_permutations: int = 30,
     alpha: float = 0.05,
+    dates_train: np.ndarray | None = None,
+    permutation_mode: str = "within_date",
 ) -> dict:
     """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
 
@@ -322,7 +352,12 @@ def signal_sanity_gate(
     rng = np.random.RandomState(99)
     null_ics = []
     for i in range(n_permutations):
-        y_shuf = rng.permutation(y_train)
+        y_shuf = _permuted_target(
+            y_train,
+            rng=rng,
+            dates=dates_train,
+            mode=permutation_mode,
+        )
         null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
         null_preds = null_model.predict(X_val)
         if np.std(null_preds) < 1e-10:
@@ -348,6 +383,7 @@ def signal_sanity_gate(
         "null_ic_std": round(float(null_arr.std()), 6),
         "n_permutations": n_permutations,
         "elapsed_s": elapsed,
+        "permutation_mode": permutation_mode,
     }
 
 
@@ -867,13 +903,24 @@ def run_feature_selection_pipeline(
     X_train, y_train = X[train_mask], y[train_mask]
     X_val, y_val = X[val_mask], y[val_mask]
     X_test, y_test = X[test_mask], y[test_mask]
+    dates_train = dates[train_mask]
+    dates_val = dates[val_mask]
 
     print(f"[FeatureSelection] Purged split: train={len(X_train)}, val={len(X_val)}, "
           f"test={len(X_test)}, embargo={embargo_days}d")
 
     # ── 2b. Signal Sanity Gate (P0-6) ───────────────────────────────────────
     print(f"[FeatureSelection] Running signal sanity gate (30 permutations)...")
-    gate_result = signal_sanity_gate(X_train, y_train, X_val, y_val, n_permutations=30, alpha=alpha)
+    gate_result = signal_sanity_gate(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        n_permutations=30,
+        alpha=alpha,
+        dates_train=dates_train,
+        permutation_mode="within_date",
+    )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
               f"no learnable signal in data. Aborting (keeping previous pool).")
@@ -881,7 +928,7 @@ def run_feature_selection_pipeline(
     print(f"[FeatureSelection] ✅ Signal sanity gate passed (p={gate_result.get('p_value')})")
 
     # ── 3. Silhouette clustering ─────────────────────────────────────────────
-    cluster_result = cluster_features(X, feature_names)
+    cluster_result = cluster_features(X_train, feature_names)
 
     # ── 4. Target Permutation ────────────────────────────────────────────────
     tp_result = target_permutation(
@@ -890,14 +937,16 @@ def run_feature_selection_pipeline(
         max_permutations=max_rounds,
         ks_alpha=0.05,
         ks_check_interval=10,
+        dates_train=dates_train,
+        permutation_mode="within_date",
     )
 
     if "error" in tp_result:
         return tp_result
 
-    # ── 5. IC/ICIR stability check (on test set) ────────────────────────────
-    dates_test = dates[test_mask]
-    ic_results = ic_icir_check(X_test, y_test, dates_test, feature_names)
+    # ── 5. IC/ICIR selection on validation; keep test as final audit only ───
+    ic_results = ic_icir_check(X_val, y_val, dates_val, feature_names)
+    final_oos_audit = ic_icir_check(X_test, y_test, dates[test_mask], feature_names)
 
     # ── 6. Combine TP score + IC stability into final score ─────────────────
     combined_scores = {}
@@ -997,11 +1046,18 @@ def run_feature_selection_pipeline(
         "target_permutation": {
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
+            "permutation_mode": tp_result.get("permutation_mode"),
             "per_feature_sample": {k: v for k, v in list(tp_result["per_feature"].items())[:10]},
         },
         "ic_icir": {
             "stable_count": sum(1 for v in ic_results.values() if v["stable"]),
             "total": len(ic_results),
+            "selection_split": "validation",
+        },
+        "final_oos_audit": {
+            "stable_count": sum(1 for v in final_oos_audit.values() if v["stable"]),
+            "total": len(final_oos_audit),
+            "used_for_selection": False,
         },
         "signal_gate": gate_result,
         "k_sweep": {

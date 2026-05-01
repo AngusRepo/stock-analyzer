@@ -12,7 +12,6 @@ const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
 const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'))
 const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'))
-const ObservabilityDemoPage = lazy(() => import('./pages/ObservabilityDemoPage'))
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -67,11 +66,6 @@ export default function App() {
         <Route path="/obs">
           <Suspense fallback={<PageLoader label="OBS" />}>
             <ObservabilityPage />
-          </Suspense>
-        </Route>
-        <Route path="/obs-demo">
-          <Suspense fallback={<PageLoader label="OBS Demo" />}>
-            <ObservabilityDemoPage />
           </Suspense>
         </Route>
         <Route>

@@ -40,12 +40,14 @@ import NewsPanel from '@/components/NewsPanel'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
-import { DailyRecommendationPanel, ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { DailyRecommendationPanelV2 } from '@/components/DailyRecommendationPanelV2'
 import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
+import { SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -417,6 +419,27 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         </WorkstationPanel>
 
         {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <SignalInsightCard
+            title="Today Brief"
+            value="市場 + 推薦"
+            detail="Dashboard 只保留一般使用者看得懂的市場、推薦、風險與研究觀察，不混入維運細節。"
+            tone="info"
+          />
+          <SignalInsightCard
+            title="Tradable Picks"
+            value="上市上櫃"
+            detail="這一區才會進入 morning setup / debate / pending buys，避免興櫃擠掉交易候選。"
+            tone="ok"
+          />
+          <SignalInsightCard
+            title="Research Pool"
+            value="興櫃觀察"
+            detail="興櫃保留給人工研究與長期追蹤，不進自動交易。"
+            tone="warn"
+          />
+        </div>
+
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.82fr_1.18fr_0.9fr]">
 
           {/* 左欄：自選股 + 大盤風險 + Bot */}
@@ -447,7 +470,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           {/* 中左欄：每日選股推薦 */}
           <WorkstationPanel title="AI Top Picks" kicker="recommendation and pending signal">
           <div className="space-y-4 p-3">
-            <DailyRecommendationPanel />
+            <DailyRecommendationPanelV2 />
             <ExDividendCard />
           </div>
           </WorkstationPanel>

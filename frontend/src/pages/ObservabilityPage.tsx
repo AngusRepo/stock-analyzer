@@ -30,6 +30,12 @@ import {
   WorkstationCatCard,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+import {
+  AudienceRoleStrip,
+  DecisionTraceRail,
+  ObsDrilldownMap,
+  SignalInsightCard,
+} from '@/components/workstation/DecisionArchitecture'
 
 function statusTone(status?: string): WorkstationTone {
   const s = String(status ?? '').toLowerCase()
@@ -281,6 +287,19 @@ export default function ObservabilityPage() {
           }
         />
 
+        <AudienceRoleStrip />
+
+        <DecisionTraceRail
+          title="Reliability Decision Trace"
+          compact
+          steps={[
+            { label: 'Symptom', detail: '先看使用者會感受到的症狀：空清單、髒價格、IC=0、scheduler fail。', tone: 'warn' },
+            { label: 'Impact', detail: '標示影響範圍：Dashboard、Bot、ML、Data Quality 或 execution。', tone: 'info' },
+            { label: 'Root Cause', detail: '把原因導向資料、排程、模型、owner boundary 或 deploy drift。', tone: 'error' },
+            { label: 'Drilldown', detail: 'OBS 只給結論；細節連到 Scheduler / DataQuality / ModelPool。', tone: 'ok' },
+          ]}
+        />
+
         <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <WorkstationCatCard
             src="/stockvision-cats/05_stockvision_alert_first_seen.png"
@@ -446,37 +465,28 @@ export default function ObservabilityPage() {
           </div>
         </WorkstationPanel>
 
-        <WorkstationPanel title="Model Lifecycle Snapshot" kicker="IC, metadata, challenger visibility">
-          <div className="overflow-x-auto">
-            <table className="min-w-[760px] w-full border-collapse font-mono text-[11px]">
-              <thead className="bg-[#0c1420] text-[#70809b]">
-                <tr>
-                  {['Model', 'Status', 'Family', 'IC 4W', 'Samples', 'Metadata', 'Challenger'].map(label => (
-                    <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(modelPool.data?.models ?? {})
-                  .filter(([name, model]) => !isStateSpaceOverlayModel(name, model as Record<string, unknown>))
-                  .map(([name, model]) => {
-                  const ic = model.ic_4w_avg ?? model.rolling_ic
-                  return (
-                    <tr key={name} className="hover:bg-[#101927]">
-                      <td className="border border-[#263247] px-2 py-2 text-slate-100">{name}</td>
-                      <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={statusTone(model.status)}>{model.status ?? '-'}</WorkstationPill></td>
-                      <td className="border border-[#263247] px-2 py-2 text-slate-300">{model.balance_family ?? model.model_type ?? '-'}</td>
-                      <td className="border border-[#263247] px-2 py-2 text-slate-300">{ic == null ? '-' : Number(ic).toFixed(4)}</td>
-                      <td className="border border-[#263247] px-2 py-2 text-slate-300">{model.last_ic_sample_count ?? '-'}</td>
-                      <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={model.metadata_exists === false ? 'warn' : 'ok'}>{model.metadata_exists === false ? 'missing' : 'ok'}</WorkstationPill></td>
-                      <td className="border border-[#263247] px-2 py-2 text-slate-300">{model.challenger?.status ?? '-'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </WorkstationPanel>
+        <div className="grid gap-3 md:grid-cols-3">
+          <SignalInsightCard
+            title="Model Health"
+            value={`${modelStats.active}/${modelStats.total}`}
+            detail={`OBS 只顯示模型健康摘要；完整 IC、metadata、challenger lineage 請進 Model Pool。weak IC ${modelStats.weakIc}，metadata gaps ${modelStats.missingMeta}。`}
+            tone={modelPoolUnavailable || modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
+          />
+          <SignalInsightCard
+            title="Data Trust"
+            value={formatStatus(dataQuality.data?.overall)}
+            detail="資料 freshness / schema / train-serve parity 是推薦與 IC 能不能相信的前置條件。"
+            tone={dataQualityUnavailable ? 'warn' : statusTone(dataQuality.data?.overall)}
+          />
+          <SignalInsightCard
+            title="Run Health"
+            value={`${scheduler.data?.stats?.successRate7d ?? 0}%`}
+            detail={`Scheduler 詳細 run log 留在 Scheduler drilldown；OBS 只顯示失敗是否影響今天決策。failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`}
+            tone={schedulerUnavailable ? 'warn' : (scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
+          />
+        </div>
+
+        <ObsDrilldownMap />
 
         <section className="grid gap-4 md:grid-cols-3">
           {[

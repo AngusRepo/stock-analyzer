@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
+import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1359,6 +1360,39 @@ export default function BotDashboard() {
             <PortfolioSummary />
           </div>
         </WorkstationPanel>
+
+        <DecisionTraceRail
+          title="Morning To Intraday Decision Trace"
+          steps={[
+            { label: 'Daily Recs', detail: '收盤後 pipeline 產出上市上櫃交易候選與興櫃研究池。', tone: 'info' },
+            { label: 'Morning Setup', detail: '下一個交易日早上才把交易候選轉成 base ready。', tone: 'neutral' },
+            { label: 'T2 / Debate', detail: '辯論與風控確認後才允許進 pending buys。', tone: 'warn' },
+            { label: 'Quote Sanity', detail: '下單前檢查即時價、漲跌幅、處置/興櫃硬 gate 與追高接刀風險。', tone: 'ok' },
+            { label: 'Execution', detail: '只允許合理限價；不再用昨日收盤價製造 impossible fill。', tone: 'ok' },
+            { label: 'Audit', detail: 'fills、skips、slippage、T1/T2/Stop 與資產變化都留 trace。', tone: 'info' },
+          ]}
+        />
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <SignalInsightCard
+            title="Execution Lane"
+            value="Pending buys"
+            detail="Bot 只把 debate 後的 pending buys 當作可執行清單；daily recommendations 是候選池，不直接下單。"
+            tone="ok"
+          />
+          <SignalInsightCard
+            title="Hard Gate"
+            value="No emerging auto-trade"
+            detail="興櫃可以研究與模型校準，但不會進 morning setup / pending buys。"
+            tone="warn"
+          />
+          <SignalInsightCard
+            title="Pre-order Guard"
+            value="Quote sanity"
+            detail="盤中買入前必須重新確認即時價格、流動性、滑價與市場狀態。"
+            tone="info"
+          />
+        </div>
 
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <WorkstationCatCard

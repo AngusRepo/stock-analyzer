@@ -14,6 +14,7 @@ import {
   ArrowRight, Activity, RefreshCw, Loader2,
 } from 'lucide-react'
 import { schedulerApi, costsApi, dataQualityApi, deployGateApi, type SchedulerStatus, type CostsMonth, type DataQualityReport, type DeployGateReport } from '@/lib/api'
+import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 
 const BUILD_STAMP = (import.meta.env.VITE_BUILD_STAMP as string | undefined) || 'dev'
 
@@ -43,13 +44,6 @@ function HistoryDots({ history }: { history: Array<'success' | 'failed' | 'skip'
       ))}
     </div>
   )
-}
-
-function HeatmapCell({ value }: { value: string }) {
-  if (value === 'skip') return <div className="h-7 rounded bg-zinc-800/50 flex items-center justify-center text-[10px] text-zinc-600">-</div>
-  if (value === 'success') return <div className="h-7 rounded bg-emerald-500/15 flex items-center justify-center text-[10px] text-emerald-500 font-semibold">&#10003;</div>
-  if (value === 'failed') return <div className="h-7 rounded bg-red-500/15 flex items-center justify-center text-[10px] text-red-500 font-semibold">&#10007;</div>
-  return <div className="h-7 rounded bg-emerald-500/15 flex items-center justify-center text-[10px] text-emerald-500 font-semibold">{value}</div>
 }
 
 const COST_LABEL_MAP: Record<string, { label: string; color: string }> = {
@@ -105,7 +99,10 @@ export default function SchedulerPage() {
     try {
       setError(null)
       const [scheduler, monthCosts, quality, gate] = await Promise.all([
-        schedulerApi.status().catch((e) => { throw new Error(`scheduler: ${e.message}`) }),
+        schedulerApi.status().catch((e) => {
+          setError(`scheduler: ${e.message}`)
+          return null
+        }),
         costsApi.month().catch(() => null),
         dataQualityApi.status().catch(() => null),
         deployGateApi.predeploy().catch(() => null),
@@ -141,19 +138,15 @@ export default function SchedulerPage() {
     )
   }
 
-  if (error || !status) {
-    return (
-      <AppShell>
-        <div className="p-6 space-y-2">
-          <div className="text-red-500 text-sm">Scheduler API 載入失敗：{error ?? 'no status'}</div>
-          <Button size="sm" variant="outline" onClick={() => { setLoading(true); load() }}>重試</Button>
-        </div>
-      </AppShell>
-    )
+  const jobs = status?.jobs ?? []
+  const stats = status?.stats ?? {
+    total: 0,
+    active: 0,
+    failed24h: 0,
+    successRate7d: 0,
+    nextJob: 'N/A',
+    nextIn: 'N/A',
   }
-
-  const jobs = status.jobs
-  const stats = status.stats
   const lastSync = new Date().toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' })
 
   const pipelineJobs = jobs.filter((job) => job.group === 'pipeline_chain')
@@ -175,15 +168,6 @@ export default function SchedulerPage() {
   const dagLastRun = pipelineJobs.find((job) => job.id === 'pipeline')?.lastRun ?? 'N/A'
   const dagLastDuration = pipelineJobs.find((job) => job.id === 'pipeline')?.lastDuration ?? 'N/A'
 
-  const heatmapJobs = [...jobs]
-    .filter((job) => job.history7d.some((item) => item !== 'skip'))
-    .sort((a, b) => {
-      const aCnt = a.history7d.filter((item) => item !== 'skip').length
-      const bCnt = b.history7d.filter((item) => item !== 'skip').length
-      return bCnt - aCnt
-    })
-    .slice(0, 10)
-
   const costBuckets = groupCosts(costs)
   const mtdTotal = costs?.total_usd ?? 0
   const budgetPct = Math.min(100, Math.round((mtdTotal / MONTHLY_BUDGET) * 1000) / 10)
@@ -193,9 +177,9 @@ export default function SchedulerPage() {
       <div className="p-4 lg:p-6 space-y-6">
         <div className="flex items-end justify-between">
           <div>
-            <h1 className="text-xl font-bold">Scheduler Dashboard</h1>
+            <h1 className="text-xl font-bold">Scheduler Drilldown</h1>
             <p className="text-xs text-muted-foreground mt-1">
-              {stats.total} jobs &nbsp;|&nbsp; Last sync: {lastSync} TW
+              OBS 的 run-log 深鑽頁：只查排程 eligibility、DAG、callback、duration anomaly。{stats.total} jobs &nbsp;|&nbsp; Last sync: {lastSync} TW
               {refreshing && <span className="ml-2 text-sky-400">refreshing...</span>}
               <span className="ml-2 text-zinc-600">| build {BUILD_STAMP}</span>
             </p>
@@ -204,6 +188,60 @@ export default function SchedulerPage() {
             <RefreshCw className="w-3 h-3 mr-1" /> 重新整理
           </Button>
         </div>
+
+        {error && (
+          <Card className="border-amber-500/30 bg-amber-500/[0.04]">
+            <CardContent className="flex flex-col gap-3 pt-4 text-sm text-amber-200 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="font-semibold">Scheduler API 暫時不可用</div>
+                <div className="mt-1 text-xs text-amber-200/75">
+                  {error}。頁面保留 Data Quality、Deploy Gate 與成本資訊；排程 job 細節會在 API 恢復後自動補回。
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => { setRefreshing(true); load() }}>
+                重試
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <SignalInsightCard
+            title="Run Eligibility"
+            value={stats.nextJob || 'N/A'}
+            detail={`下次觸發必須吃交易日曆 / holiday gate；目前顯示 ${stats.nextIn || 'N/A'}。`}
+            tone="info"
+          />
+          <SignalInsightCard
+            title="Failed 24h"
+            value={String(stats.failed24h)}
+            detail="這裡只看是否影響今日資料/推薦/交易；root cause 回 OBS。"
+            tone={stats.failed24h > 0 ? 'warn' : 'ok'}
+          />
+          <SignalInsightCard
+            title="Success 7d"
+            value={`${stats.successRate7d}%`}
+            detail="比 weekly heatmap 更有用的是：哪些 job 失敗、是否破壞今日決策鏈。"
+            tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'}
+          />
+          <SignalInsightCard
+            title="Pipeline Last"
+            value={dagLastDuration}
+            detail={`last run ${dagLastRun}；<1s 或 -- 代表要追 callback/job 是否真執行。`}
+            tone={dagLastDuration === 'N/A' || dagLastDuration === '<1s' ? 'warn' : 'ok'}
+          />
+        </div>
+
+        <DecisionTraceRail
+          title="Canonical Scheduler Chain"
+          compact
+          steps={[
+            { label: 'Trading Day Gate', detail: '非交易日與國定假日應 skip，不啟動昂貴 Cloud Run / Modal。', tone: 'warn' },
+            { label: 'Market Data', detail: '收盤資料更新是 evening chain 的第一個可信度來源。', tone: 'info' },
+            { label: 'Pipeline / ML', detail: 'Screener、ML predict、recommendation 必須接同一份 freshness。', tone: 'ok' },
+            { label: 'Callback Log', detail: 'Worker 只收最終狀態，UI 不再用 duration 猜有沒有真的跑。', tone: 'info' },
+          ]}
+        />
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           <div className="space-y-6">
@@ -257,7 +295,12 @@ export default function SchedulerPage() {
               </CardContent>
             </Card>
 
-            <div className="space-y-4">
+            <details className="group">
+              <summary className="cursor-pointer rounded-lg border border-[#263247] bg-[#070a10] px-3 py-2 text-xs font-medium text-muted-foreground hover:border-amber-300/30">
+                Raw job groups · Daily Pipeline / Ops / Intraday / Weekly
+                <span className="ml-2 text-[10px] text-muted-foreground/70">預設收合，只有追 log 時打開。</span>
+              </summary>
+              <div className="mt-3 space-y-4">
               {Object.entries(groups).map(([groupName, groupJobs]) => (
                 groupJobs.length > 0 && (
                   <div key={groupName}>
@@ -311,36 +354,47 @@ export default function SchedulerPage() {
                   </div>
                 )
               ))}
-            </div>
+              </div>
+            </details>
           </div>
 
           <div className="space-y-6">
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Weekly Success Heatmap
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Run Anomaly Focus
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pb-4">
-                <div className="grid gap-1" style={{ gridTemplateColumns: '140px repeat(7, 1fr)' }}>
-                  <div />
-                  {['D-6', 'D-5', 'D-4', 'D-3', 'D-2', 'D-1', 'Today'].map((label) => (
-                    <div key={label} className="text-center text-[10px] text-muted-foreground pb-1">{label}</div>
-                  ))}
-                  {heatmapJobs.map((job) => (
-                    <div key={`row-${job.id}`} className="contents">
-                      <div className="flex items-center text-[11px] pl-1 truncate">{job.name}</div>
-                      {job.history7d.map((cell, index) => <HeatmapCell key={`${job.id}-${index}`} value={cell} />)}
+              <CardContent className="pb-4 space-y-2">
+                {(jobs.filter((job) => job.lastStatus === 'failed' || job.lastDuration === '<1s' || job.lastDuration === '--').slice(0, 8)).map((job) => (
+                  <div key={job.id} className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">{job.name}</div>
+                        <div className="mt-1 text-muted-foreground">{job.summary || job.schedule}</div>
+                      </div>
+                      <Badge variant="outline" className={`text-[10px] ${job.lastStatus === 'failed' ? 'border-red-500/30 text-red-300' : 'border-amber-500/30 text-amber-300'}`}>
+                        {job.lastStatus} · {job.lastDuration}
+                      </Badge>
                     </div>
-                  ))}
-                </div>
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                      last {job.lastRun} · next {job.nextRun} · 7d {job.rate7d}
+                    </div>
+                  </div>
+                ))}
+                {!jobs.some((job) => job.lastStatus === 'failed' || job.lastDuration === '<1s' || job.lastDuration === '--') && (
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-emerald-300">
+                    沒有需要優先追的 failed / suspicious duration job。完整歷史仍保留在下方表格。
+                  </div>
+                )}
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-sky-400" /> P9 Gate / P6 Data Quality
+                  <ShieldCheck className="w-4 h-4 text-sky-400" /> Data Quality Snapshot
+                  <a href="/data-quality" className="ml-2 text-[10px] text-sky-400 hover:text-sky-300">open drilldown</a>
                   <Badge variant="outline" className={`ml-auto text-[10px] ${qualityBadgeClass(deployGate?.status)}`}>
                     {deployGate?.decision ?? 'N/A'}
                   </Badge>

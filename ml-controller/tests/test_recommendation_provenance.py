@@ -28,6 +28,9 @@ def _screener_rec(symbol: str) -> dict:
         "name": symbol,
         "sector": "Semis",
         "industry": "IC",
+        "market_segment": "LISTED",
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": 1,
         "chip_score": 18.0,
         "tech_score": 12.0,
     }
@@ -86,6 +89,29 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
     assert row["stock_id"] == 1
 
 
+def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    rec = {
+        **_screener_rec("7879"),
+        "market_segment": "EMERGING",
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": 0,
+    }
+
+    final, _sell_count = filter_and_score_recommendations(
+        [rec],
+        {"7879": _prediction_with_ensemble_v2()},
+        [_payload("7879")],
+    )
+
+    row = final[0]
+    assert row["market_segment"] == "EMERGING"
+    assert row["recommendation_lane"] == "emerging_watchlist"
+    assert row["eligible_for_pending_buy"] is False
+    assert row["has_buy_signal"] == 0
+    assert "research_only:emerging_not_for_auto_trade" in row["watch_points"]
+
+
 def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
@@ -116,9 +142,9 @@ def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeyp
     assert "暫無正 IC 權重" in final[0]["reason"]
 
 
-def test_build_reason_formats_chip_raw_shares_as_yi_not_raw_number():
+def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
     reason = build_reason({
-        "foreign_net_5d": 600_000_000,
+        "foreign_net_5d": 6.0,
         "trust_net_5d": 0,
         "rsi14": 63,
         "macd_hist": 0.2,
@@ -359,7 +385,7 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
     write_predictions_to_d1(predictions, {"2330": 1})
 
     insert_params = captured["statements"][2][1]
-    forecast_data = insert_params[3]
+    forecast_data = insert_params[4]
     assert '"signal_source": "ensemble_v2_topk_policy"' in forecast_data
 
 
@@ -394,6 +420,6 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 
     stale_cleanup_sql, stale_cleanup_params = captured["statements"][1]
     assert "model_name!='ensemble'" in stale_cleanup_sql
-    assert "date(generated_at, '+8 hours') = ?" in stale_cleanup_sql
+    assert "COALESCE(prediction_date, date(generated_at, '+8 hours')) = ?" in stale_cleanup_sql
     assert stale_cleanup_params == [1, "2026-04-29"]
     assert written == 2

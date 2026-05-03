@@ -88,6 +88,8 @@ def _enrich_stock_meta_with_segment_policy(stock_meta: dict | None) -> dict:
     segment = normalize_segment(meta.get("market_segment") or meta.get("market"))
     policy = policy_for_segment(segment)
     lane = str(meta.get("recommendation_lane") or "").strip() or policy.recommendation_lane
+    if not policy.eligible_for_execution:
+        lane = policy.recommendation_lane
     eligible_for_execution = bool(policy.eligible_for_execution and lane == "tradable")
 
     meta.update({
@@ -556,11 +558,32 @@ def build_score_components(row: dict, *, raw_score: float) -> dict[str, Any]:
     }
 
 
+def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) -> float:
+    """Convert chip share counts to TWD billions using same-day close."""
+    if not chips:
+        return 0.0
+    price_by_date = {p.get("date"): float(p.get("close") or 0.0) for p in prices if p.get("date")}
+    fallback_close = 0.0
+    for p in reversed(prices):
+        close = float(p.get("close") or 0.0)
+        if close > 0:
+            fallback_close = close
+            break
+    total = 0.0
+    for c in chips:
+        close = price_by_date.get(c.get("date")) or fallback_close
+        if close <= 0:
+            continue
+        total += float(c.get(field) or 0.0) * close / 1e8
+    return round(total, 6)
+
+
 def build_reason(s: dict) -> str:
     """Build clean Traditional Chinese explanation for recommendation cards."""
     fnet = float(s.get("foreign_net_5d") or 0.0)
     tnet = float(s.get("trust_net_5d") or 0.0)
-    net_amount = (fnet + tnet) / 1e8
+    dnet = float(s.get("dealer_net_5d") or 0.0)
+    net_amount = fnet + tnet + dnet
     if net_amount > 5:
         chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
     elif net_amount > 1:
@@ -739,8 +762,9 @@ def filter_and_score_recommendations(
         # Foreign / trust net (5d sum from chips)
         chips = _sorted_payload_rows(payload, "chips") if payload else []
         recent_chips = chips[-5:]
-        foreign_net_5d = sum((c.get("foreign_net") or 0) for c in recent_chips)
-        trust_net_5d = sum((c.get("trust_net") or 0) for c in recent_chips)
+        foreign_net_5d = _sum_chip_cash_billion(recent_chips, prices, "foreign_net")
+        trust_net_5d = _sum_chip_cash_billion(recent_chips, prices, "trust_net")
+        dealer_net_5d = _sum_chip_cash_billion(recent_chips, prices, "dealer_net")
 
         # ML model votes from prediction
         ml_models_total = 0
@@ -774,6 +798,7 @@ def filter_and_score_recommendations(
             "foreign_consecutive": 0,  # TODO: compute consec from chips if needed
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
+            "dealer_net_5d": dealer_net_5d,
             "rsi14": latest_ind.get("rsi14"),
             "macd_hist": latest_ind.get("macdHist"),
             "current_price": current_price,
@@ -827,8 +852,8 @@ def filter_and_score_recommendations(
             "has_buy_signal": 1 if (eligible_for_pending_buy and sig and "BUY" in sig) else 0,
             "reason": build_reason(reason_data),
             "watch_points": watch_points,
-            "foreign_net_5d": foreign_net_5d / 1e8,
-            "trust_net_5d": trust_net_5d / 1e8,
+            "foreign_net_5d": foreign_net_5d,
+            "trust_net_5d": trust_net_5d,
             "rsi14": latest_ind.get("rsi14"),
             "macd_hist": latest_ind.get("macdHist"),
         }
@@ -860,7 +885,8 @@ def _signal_tier(sig: Optional[str]) -> float:
 
 def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     """Avoid turning a negative/weak ML expectation into a BUY label."""
-    if row.get("eligible_for_pending_buy") is False or row.get("recommendation_lane") != "tradable":
+    lane = row.get("recommendation_lane") or "tradable"
+    if row.get("eligible_for_pending_buy") is False or lane != "tradable":
         row["promotion_blocked_reason"] = "research_only_or_not_tradable"
         return False
     forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct", 0.0))

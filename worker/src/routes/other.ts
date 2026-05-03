@@ -997,6 +997,51 @@ recommendations.get('/daily', async (c) => {
   const { results } = await c.env.DB.prepare(`
     SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
            (
+             SELECT ROUND(COALESCE(SUM(c.foreign_net * (
+               SELECT sp.close FROM stock_prices sp
+               JOIN stocks s2 ON s2.id = sp.stock_id
+               WHERE s2.symbol = c.symbol AND sp.date <= c.date
+               ORDER BY sp.date DESC LIMIT 1
+             )) / 100000000.0, 0), 6)
+               FROM chip_data c
+              WHERE c.symbol = r.symbol
+                AND c.date IN (
+                  SELECT DISTINCT date FROM chip_data
+                   WHERE date <= r.date
+                   ORDER BY date DESC LIMIT 5
+                )
+           ) AS chip_cash_foreign_5d,
+           (
+             SELECT ROUND(COALESCE(SUM(c.trust_net * (
+               SELECT sp.close FROM stock_prices sp
+               JOIN stocks s2 ON s2.id = sp.stock_id
+               WHERE s2.symbol = c.symbol AND sp.date <= c.date
+               ORDER BY sp.date DESC LIMIT 1
+             )) / 100000000.0, 0), 6)
+               FROM chip_data c
+              WHERE c.symbol = r.symbol
+                AND c.date IN (
+                  SELECT DISTINCT date FROM chip_data
+                   WHERE date <= r.date
+                   ORDER BY date DESC LIMIT 5
+                )
+           ) AS chip_cash_trust_5d,
+           (
+             SELECT ROUND(COALESCE(SUM(c.dealer_net * (
+               SELECT sp.close FROM stock_prices sp
+               JOIN stocks s2 ON s2.id = sp.stock_id
+               WHERE s2.symbol = c.symbol AND sp.date <= c.date
+               ORDER BY sp.date DESC LIMIT 1
+             )) / 100000000.0, 0), 6)
+               FROM chip_data c
+              WHERE c.symbol = r.symbol
+                AND c.date IN (
+                  SELECT DISTINCT date FROM chip_data
+                   WHERE date <= r.date
+                   ORDER BY date DESC LIMIT 5
+                )
+           ) AS dealer_net_5d,
+           (
              SELECT sp.open
                FROM stock_prices sp
               WHERE sp.stock_id = r.stock_id
@@ -1036,6 +1081,31 @@ recommendations.get('/daily', async (c) => {
     LIMIT 80
   `).bind(date).all<any>()
 
+  const screenerFunnelBySymbol = new Map<string, any>()
+  const resultSymbols = [...new Set((results ?? [])
+    .map((r: any) => String(r.symbol ?? '').trim())
+    .filter(Boolean))]
+  if (resultSymbols.length > 0) {
+    try {
+      const placeholders = resultSymbols.map(() => '?').join(',')
+      const { results: funnelRows } = await c.env.DB.prepare(`
+        SELECT symbol, rank, reason_code, evidence
+          FROM screener_funnel_items
+         WHERE date = ?
+           AND stage = 'final_selection'
+           AND symbol IN (${placeholders})
+         ORDER BY created_at DESC
+      `).bind(date, ...resultSymbols).all<any>()
+      for (const row of funnelRows ?? []) {
+        if (!screenerFunnelBySymbol.has(row.symbol)) {
+          screenerFunnelBySymbol.set(row.symbol, row)
+        }
+      }
+    } catch (e) {
+      console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
+    }
+  }
+
   const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
   const perModelByStock = new Map<number, any[]>()
   if (stockIds.length > 0) {
@@ -1073,6 +1143,7 @@ recommendations.get('/daily', async (c) => {
     const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
     const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
     const persistedScoreComponents = parsePredictionForecastData(r.score_components)
+    const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
     const board = classifyBoard({
       market: r.market,
@@ -1099,6 +1170,9 @@ recommendations.get('/daily', async (c) => {
       alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
       score_components: persistedScoreComponents ?? null,
+      screener_funnel_rank: screenerFunnel?.rank ?? null,
+      screener_funnel_reason: screenerFunnel?.reason_code ?? null,
+      screener_funnel_evidence: parsePredictionForecastData(screenerFunnel?.evidence) ?? null,
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })

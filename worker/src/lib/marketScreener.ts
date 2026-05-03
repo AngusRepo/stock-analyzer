@@ -52,6 +52,169 @@ function today(): string {
   return tw.toISOString().slice(0, 10)
 }
 
+async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
+  try {
+    const value = await kv.get(key, 'json') as unknown
+    return Array.isArray(value) ? value.map(String).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+async function loadRestrictedScreenerSymbols(env: Bindings): Promise<Set<string>> {
+  const restricted = new Set<string>()
+  const [cachedPunished, cachedAttention] = await Promise.all([
+    readSymbolList(env.KV, 'market:punished_stocks'),
+    readSymbolList(env.KV, 'market:attention_stocks'),
+  ])
+  for (const symbol of cachedPunished) restricted.add(symbol)
+  for (const symbol of cachedAttention) restricted.add(symbol)
+
+  try {
+    const { fetchPunishedStocks } = await import('./twseApi')
+    const punished = await fetchPunishedStocks()
+    if (punished.length) {
+      for (const symbol of punished) restricted.add(symbol)
+      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
+    }
+  } catch (e) {
+    console.warn('[Screener v2] punished stock fetch failed; using KV fallback:', e)
+  }
+
+  return restricted
+}
+
+export interface ScreenerSelectionFlag {
+  highFreq: boolean
+  newMoney: boolean
+  freq20d: number
+}
+
+export async function loadSelectionHistoryFlags(
+  db: D1Database,
+  symbols: string[],
+  endDate: string,
+  options: { highFreqThreshold?: number } = {},
+): Promise<Map<string, ScreenerSelectionFlag>> {
+  const uniqueSymbols = [...new Set(symbols.filter(Boolean))]
+  const selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
+  for (const sym of uniqueSymbols) {
+    selectionFlagMap.set(sym, { highFreq: false, newMoney: true, freq20d: 0 })
+  }
+  if (!uniqueSymbols.length) return selectionFlagMap
+
+  const placeholders = uniqueSymbols.map(() => '?').join(',')
+  const highFreqThreshold = Math.max(1, Math.floor(options.highFreqThreshold ?? 12))
+
+  const { results: freqRows } = await db.prepare(
+    `SELECT symbol, COUNT(*) as freq20d FROM screener_selection_history
+     WHERE date >= date(?, '-20 days') AND date < ? AND symbol IN (${placeholders})
+     GROUP BY symbol`,
+  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string; freq20d: number }>()
+
+  const { results: recentRows } = await db.prepare(
+    `SELECT symbol FROM screener_selection_history
+     WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
+     GROUP BY symbol`,
+  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string }>()
+
+  const freqMap = new Map((freqRows ?? []).map(r => [r.symbol, Number(r.freq20d ?? 0)]))
+  const seenIn30d = new Set((recentRows ?? []).map(r => r.symbol))
+  for (const sym of uniqueSymbols) {
+    const freq = freqMap.get(sym) ?? 0
+    selectionFlagMap.set(sym, {
+      freq20d: freq,
+      highFreq: freq >= highFreqThreshold,
+      newMoney: !seenIn30d.has(sym),
+    })
+  }
+  return selectionFlagMap
+}
+
+interface ScreenerFunnelItemInput {
+  symbol: string
+  name?: string | null
+  stage: string
+  decision: 'pass' | 'drop' | 'selected' | 'observe'
+  reasonCode: string
+  scoreBefore?: number | null
+  scoreAfter?: number | null
+  rank?: number | null
+  evidence?: Record<string, unknown>
+}
+
+function pushFunnelItem(items: ScreenerFunnelItemInput[], item: ScreenerFunnelItemInput): void {
+  items.push({
+    ...item,
+    symbol: String(item.symbol || '').trim(),
+    evidence: item.evidence ?? {},
+  })
+}
+
+async function writeScreenerFunnel(
+  env: Bindings,
+  input: {
+    runId: string
+    date: string
+    status: 'success' | 'skipped' | 'error'
+    universeCount: number
+    candidateCount: number
+    finalCount: number
+    emergingCount: number
+    metadata: Record<string, unknown>
+    debugLog: string[]
+    items: ScreenerFunnelItemInput[]
+  },
+): Promise<void> {
+  await env.DB.prepare(`
+    INSERT INTO screener_funnel_runs
+      (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      status=excluded.status,
+      universe_count=excluded.universe_count,
+      candidate_count=excluded.candidate_count,
+      final_count=excluded.final_count,
+      emerging_count=excluded.emerging_count,
+      metadata=excluded.metadata,
+      debug_log=excluded.debug_log
+  `).bind(
+    input.runId,
+    input.date,
+    input.status,
+    input.universeCount,
+    input.candidateCount,
+    input.finalCount,
+    input.emergingCount,
+    JSON.stringify(input.metadata),
+    JSON.stringify(input.debugLog.slice(-80)),
+  ).run()
+
+  if (!input.items.length) return
+  const batch = input.items.slice(0, 2500).map((item) =>
+    env.DB.prepare(`
+      INSERT INTO screener_funnel_items
+        (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      input.runId,
+      input.date,
+      item.symbol,
+      item.name ?? null,
+      item.stage,
+      item.decision,
+      item.reasonCode,
+      item.scoreBefore ?? null,
+      item.scoreAfter ?? null,
+      item.rank ?? null,
+      JSON.stringify(item.evidence ?? {}),
+    )
+  )
+  for (let i = 0; i < batch.length; i += 50) {
+    await env.DB.batch(batch.slice(i, i + 50))
+  }
+}
+
 /** Clamp value to [min, max] */
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -123,6 +286,10 @@ function buildStockData(
     if (!dateMap.has(c.date)) dateMap.set(c.date, { foreign: 0, trust: 0 })
     const entry = dateMap.get(c.date)!
     const net = c.buy - c.sell
+    const chipName = String(c.name ?? '').toLowerCase()
+    if (chipName.includes('foreign')) entry.foreign += net
+    if (chipName.includes('trust')) entry.trust += net
+    if (chipName.includes('dealer')) (entry as any).dealer = ((entry as any).dealer ?? 0) + net
     if (c.name.includes('外資')) entry.foreign += net
     if (c.name.includes('投信')) entry.trust += net
   }
@@ -281,7 +448,7 @@ export function scoreMultiFactor(
     for (let i = sortedDates.length - 1; i >= 0; i--) {
       const d = sortedDates[i]
       const nets = chipDates.get(d)!
-      const dayNet = nets.foreign + nets.trust
+      const dayNet = nets.foreign + nets.trust + ((nets as any).dealer ?? 0)
       netBuyShares += dayNet
       if (!streakBroken) {
         if (dayNet > 0) consecBuyDays++
@@ -547,6 +714,8 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const adaptiveParams = await getAdaptiveParams(env.KV)
   const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const endDate = today()
+  const runId = `screener-${endDate}-${Date.now()}`
+  const funnelItems: ScreenerFunnelItemInput[] = []
 
   // ── 資料抓取（平行）──
   const { detectPttBuzz, storePttBuzz, loadBuzzKeywords } = await import('./pttBuzz')
@@ -559,6 +728,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   let allChips: FMChip[]
   let tpexSymbolSet = new Set<string>()
   let combinedBuzz: BuzzResult = []
+  let conceptBuzzScore = new Map<string, number>()
 
   try {
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
@@ -603,6 +773,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       topPosts: v.posts.slice(0, 3),
     }))
     const zSumMap = new Map([...buzzMap.entries()].map(([k, v]) => [k, v.zSum]))
+    conceptBuzzScore = zSumMap
     combinedBuzz.sort((a, b) => (zSumMap.get(b.concept) ?? 0) - (zSumMap.get(a.concept) ?? 0))
 
     debugLog.push(
@@ -620,17 +791,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // ── 處置股排除 ──
-  let punishedSet = new Set<string>()
-  try {
-    const { fetchPunishedStocks } = await import('./twseApi')
-    const punished = await fetchPunishedStocks()
-    punishedSet = new Set(punished)
-    if (punished.length) {
-      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
-    }
-  } catch (e) {
-    console.warn('[Screener v2] 處置股抓取失敗:', e)
-  }
+  const punishedSet = await loadRestrictedScreenerSymbols(env)
+  // restricted symbols are loaded once through loadRestrictedScreenerSymbols above.
+  debugLog.push(`[Guard] restricted symbols loaded=${punishedSet.size} (punished + attention, KV fallback enabled)`)
 
   // ── 讀取官方產業 mapping + 概念標籤 ──
   const industryMap = await getIndustryMapping(env.DB, env.KV)
@@ -638,9 +801,11 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     "SELECT symbol, tag, weight FROM stock_tags WHERE tag_type='concept'"
   ).all<{ symbol: string; tag: string; weight: number }>()
   const symbolConceptTags = new Map<string, string[]>()
+  const conceptCrowding = new Map<string, number>()
   for (const r of (tagRows ?? [])) {
     if (!symbolConceptTags.has(r.symbol)) symbolConceptTags.set(r.symbol, [])
     symbolConceptTags.get(r.symbol)!.push(r.tag)
+    conceptCrowding.set(r.tag, (conceptCrowding.get(r.tag) ?? 0) + 1)
   }
 
   // ── 股票名稱 mapping ──
@@ -696,18 +861,39 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const latest = prices[prices.length - 1]
 
     // Hard filters
-    if (latest.close < sc.minPrice || latest.close > sc.maxPrice) { skipPrice++; continue }
-    if (latest.Trading_Volume === 0) { skipVolZero++; continue }
-    if (punishedSet.has(stockId)) { skipPunish++; continue }
+    if (latest.close < sc.minPrice || latest.close > sc.maxPrice) {
+      skipPrice++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'price_out_of_range', evidence: { close: latest.close, minPrice: sc.minPrice, maxPrice: sc.maxPrice } })
+      continue
+    }
+    if (latest.Trading_Volume === 0) {
+      skipVolZero++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'zero_volume', evidence: { volume: latest.Trading_Volume } })
+      continue
+    }
+    if (punishedSet.has(stockId)) {
+      skipPunish++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'restricted_attention_or_punished', evidence: { restricted: true } })
+      continue
+    }
 
     const volSlice = prices.slice(-Math.min(20, prices.length))
     const avgVol20 = volSlice.reduce((s, p) => s + p.Trading_Volume, 0) / volSlice.length
-    if (avgVol20 < sc.minAvgVolume) { skipVol++; continue }
+    if (avgVol20 < sc.minAvgVolume) {
+      skipVol++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'avg_volume_below_min', evidence: { avgVol20, minAvgVolume: sc.minAvgVolume } })
+      continue
+    }
 
     const avgDailyTurnover = avgVol20 * latest.close
-    if (avgDailyTurnover < sc.minDailyTurnover) { skipTurnover++; continue }
+    if (avgDailyTurnover < sc.minDailyTurnover) {
+      skipTurnover++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'turnover_below_min', evidence: { avgDailyTurnover, minDailyTurnover: sc.minDailyTurnover } })
+      continue
+    }
 
     universe.push({ stockId, prices })
+    pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'pass', reasonCode: 'hard_filters_passed', evidence: { close: latest.close, avgVol20, avgDailyTurnover } })
   }
   const universeMsg = `[Step 1] Universe: ${universe.length} 檔通過 | 篩掉: 股價=${skipPrice} 均量=${skipVol} 成交額=${skipTurnover} 處置=${skipPunish} 零量=${skipVolZero} 天數不足=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero}`
   debugLog.push(universeMsg)
@@ -735,6 +921,15 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       chip_score, tech_score, momentum_score,
       industry,
       market_segment: 'listed_otc',
+    })
+    pushFunnelItem(funnelItems, {
+      symbol: stockId,
+      name: info?.name ?? stockId,
+      stage: 'scoring',
+      decision: 'pass',
+      reasonCode: 'base_score_computed',
+      scoreAfter: base_score,
+      evidence: { chip_score, tech_score, momentum_score, reasons },
     })
   }
 
@@ -786,34 +981,60 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       }
       // (b) 最新 sector_flow (theme) 的 quadrant
       const { results: qRows } = await env.DB.prepare(
-        `SELECT sector, quadrant FROM sector_flow
+        `SELECT sector, quadrant, rs_ratio, rs_momentum FROM sector_flow
          WHERE classification='theme' AND quadrant IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification='theme' AND quadrant IS NOT NULL)`
-      ).all<{ sector: string; quadrant: string }>()
-      const themeQuadrant = new Map<string, string>()
-      for (const r of qRows ?? []) themeQuadrant.set(r.sector, r.quadrant)
+      ).all<{ sector: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
+      const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number }>()
+      for (const r of qRows ?? []) themeQuadrant.set(r.sector, {
+        quadrant: r.quadrant,
+        rsRatio: Number(r.rs_ratio ?? 100),
+        rsMomentum: Number(r.rs_momentum ?? 0),
+      })
 
       // Apply bonus to each scored candidate
       for (const c of scored) {
         const tag = symbolTopTag.get(c.symbol)
         if (!tag) continue
-        const q = themeQuadrant.get(tag)
-        if (!q) continue
-        let bonus = 0
-        if (q === 'Leading')       bonus = rrgCfg.leadingBonus
-        else if (q === 'Improving') bonus = rrgCfg.improvingBonus
-        else if (q === 'Weakening') bonus = rrgCfg.weakeningBonus
-        else if (q === 'Lagging')   bonus = rrgCfg.laggingPenalty
-        if (bonus !== 0) {
-          c.score += bonus
-          const sign = bonus > 0 ? '+' : ''
-          c.reason = `[RRG ${q} ${sign}${bonus}] ${c.reason}`
+        const overlay = themeQuadrant.get(tag)
+        if (!overlay) continue
+        const { quadrant: q, rsRatio, rsMomentum } = overlay
+        let adjustment = 0
+        let reasonCode = 'rrg_overlay_neutral'
+        if (q === 'Leading' && rsRatio >= 100 && rsMomentum >= 0) {
+          adjustment = Math.min(4, Math.max(0, Number(rrgCfg.leadingBonus ?? 0)))
+          reasonCode = 'rrg_overlay_leading_confirmed'
+        } else if (q === 'Improving' && rsMomentum > 0) {
+          adjustment = Math.min(3, Math.max(0, Number(rrgCfg.improvingBonus ?? 0)))
+          reasonCode = 'rrg_overlay_improving_tailwind'
+        } else if (q === 'Weakening' && rsMomentum < 0) {
+          adjustment = Math.min(0, Number(rrgCfg.weakeningBonus ?? -2) || -2)
+          reasonCode = 'rrg_overlay_weakening_risk'
+        } else if (q === 'Lagging') {
+          adjustment = Math.max(-6, Math.min(-2, Number(rrgCfg.laggingPenalty ?? -4)))
+          reasonCode = 'rrg_overlay_lagging_risk'
+        }
+        if (adjustment !== 0) {
+          const before = c.score
+          c.score += adjustment
+          const sign = adjustment > 0 ? '+' : ''
+          c.reason = `[rrg_overlay ${q} ${sign}${adjustment}] ${c.reason}`
           rrgAdjustedCount++
+          pushFunnelItem(funnelItems, {
+            symbol: c.symbol,
+            name: c.name,
+            stage: 'rrg_overlay',
+            decision: 'observe',
+            reasonCode,
+            scoreBefore: before,
+            scoreAfter: c.score,
+            evidence: { tag, quadrant: q, rsRatio, rsMomentum, adjustment },
+          })
         }
       }
       debugLog.push(
-        `[Step 3] RRG quadrant bonus applied to ${rrgAdjustedCount}/${scored.length} ` +
+        `[Step 3] RRG overlay applied to ${rrgAdjustedCount}/${scored.length} ` +
         `(themes loaded: ${themeQuadrant.size}, ` +
         `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
       )
@@ -870,9 +1091,25 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const tags = symbolConceptTags.get(c.symbol) ?? []
     const matchedHot = tags.filter(t => hotConcepts.has(t))
     if (matchedHot.length > 0) {
-      const buzzBonus = Math.min(5, matchedHot.length * 3)
+      const bestTag = matchedHot
+        .map(tag => ({ tag, score: conceptBuzzScore.get(tag) ?? 0, crowding: conceptCrowding.get(tag) ?? 1 }))
+        .sort((a, b) => b.score - a.score)[0]
+      const sourceStrength = Math.max(0, bestTag?.score ?? 0)
+      const crowdingPenalty = Math.min(2, Math.log10(Math.max(1, bestTag?.crowding ?? 1)))
+      const buzzBonus = Math.max(0, Math.min(4, sourceStrength * 1.5 + matchedHot.length - crowdingPenalty))
+      const before = c.score
       c.score += buzzBonus
-      if (buzzBonus >= 3) c.reason += `；${matchedHot[0]}概念`
+      c.reason += ` | buzz_evidence:${bestTag.tag}+${buzzBonus.toFixed(1)}`
+      pushFunnelItem(funnelItems, {
+        symbol: c.symbol,
+        name: c.name,
+        stage: 'buzz_evidence',
+        decision: 'observe',
+        reasonCode: 'weighted_keyword_evidence',
+        scoreBefore: before,
+        scoreAfter: c.score,
+        evidence: { concept: bestTag.tag, matchedHot, sourceStrength, crowding: bestTag.crowding, crowdingPenalty, buzzBonus },
+      })
     }
   }
 
@@ -1124,6 +1361,60 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // 5a+5b: 同產業上限
+  let selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
+  try {
+    const policyPoolSymbols = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, screenerPolicy.sizing.candidatePoolSize)
+      .map(c => c.symbol)
+    selectionFlagMap = await loadSelectionHistoryFlags(env.DB, policyPoolSymbols, endDate, {
+      highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+    })
+    const highFreqPenalty = Number((sc as any).highFreqPenalty ?? 6)
+    const newMoneyBonus = Number((sc as any).newMoneyBonus ?? 2)
+    let highFreqAdjusted = 0
+    let newMoneyAdjusted = 0
+    for (const c of scored) {
+      const flag = selectionFlagMap.get(c.symbol)
+      if (!flag) continue
+      if (flag.highFreq && highFreqPenalty > 0) {
+        const before = c.score
+        c.score -= highFreqPenalty
+        c.reason += ` | high_freq_penalty -${highFreqPenalty}`
+        highFreqAdjusted++
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'diversity_cooldown',
+          decision: 'observe',
+          reasonCode: 'high_frequency_cooldown',
+          scoreBefore: before,
+          scoreAfter: c.score,
+          evidence: { freq20d: flag.freq20d, highFreqPenalty },
+        })
+      }
+      if (flag.newMoney && newMoneyBonus > 0) {
+        const before = c.score
+        c.score += newMoneyBonus
+        c.reason += ` | new_money +${newMoneyBonus}`
+        newMoneyAdjusted++
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'diversity_cooldown',
+          decision: 'observe',
+          reasonCode: 'new_money_boost',
+          scoreBefore: before,
+          scoreAfter: c.score,
+          evidence: { freq20d: flag.freq20d, newMoneyBonus },
+        })
+      }
+    }
+    debugLog.push(`[Step 4e] selection diversity: high_freq_penalty=${highFreqAdjusted} new_money_bonus=${newMoneyAdjusted}`)
+  } catch (e) {
+    console.warn('[Screener v2] selection diversity failed:', e)
+  }
+
   const maxPerIndustry = (sc as any).maxPerIndustry ?? 5
   const industryCount = new Map<string, number>()
   let afterIndustryLimit = scored.filter(c => {
@@ -1245,6 +1536,29 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   debugLog.push(`[Final] candidates=${finalCandidates.length}`)
+  finalCandidates.forEach((c, index) => {
+    const sc = c as any
+    const flag = selectionFlagMap.get(c.symbol)
+    pushFunnelItem(funnelItems, {
+      symbol: c.symbol,
+      name: c.name,
+      stage: 'final_selection',
+      decision: 'selected',
+      reasonCode: 'selected_for_ml_shortlist',
+      scoreAfter: Number(sc.score ?? 0),
+      rank: index + 1,
+      evidence: {
+        industry: sc.industry ?? c.sector,
+        chip_score: sc.chip_score,
+        tech_score: sc.tech_score,
+        momentum_score: sc.momentum_score,
+        highFreq: flag?.highFreq ?? false,
+        newMoney: flag?.newMoney ?? false,
+        freq20d: flag?.freq20d ?? 0,
+        strategy_tags: sc.strategy_tags ?? [],
+      },
+    })
+  })
 
   // ── DB 寫入 ──
   try {
@@ -1258,31 +1572,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   //   high_freq: 20d count ≥ 12
   //   new_money: 30d count = 0 (今天首次出現)
   // Forward-only: deploy 日起累積，20d 後 high_freq 才成熟、30d 後 new_money 有信度
-  const selectionFlagMap = new Map<string, { highFreq: boolean; newMoney: boolean; freq20d: number }>()
   try {
     const symbolsList = finalCandidates.map(c => c.symbol)
     if (symbolsList.length > 0) {
-      const placeholders = symbolsList.map(() => '?').join(',')
-      const { results: freqRows } = await env.DB.prepare(
-        `SELECT symbol, COUNT(*) as freq20d FROM screener_selection_history
-         WHERE date >= date(?, '-20 days') AND date < ? AND symbol IN (${placeholders})
-         GROUP BY symbol`
-      ).bind(endDate, endDate, ...symbolsList).all<{ symbol: string; freq20d: number }>()
-      const { results: newMoneyRows } = await env.DB.prepare(
-        `SELECT symbol FROM screener_selection_history
-         WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
-         GROUP BY symbol`
-      ).bind(endDate, endDate, ...symbolsList).all<{ symbol: string }>()
-      const freqMap = new Map((freqRows ?? []).map(r => [r.symbol, r.freq20d]))
-      const seenIn30d = new Set((newMoneyRows ?? []).map(r => r.symbol))
-      for (const sym of symbolsList) {
-        const freq = freqMap.get(sym) ?? 0
-        selectionFlagMap.set(sym, {
-          freq20d: freq,
-          highFreq: freq >= 12,
-          newMoney: !seenIn30d.has(sym),
-        })
-      }
+      const refreshedFlags = await loadSelectionHistoryFlags(env.DB, symbolsList, endDate, {
+        highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+      })
+      for (const [sym, flag] of refreshedFlags) selectionFlagMap.set(sym, flag)
     }
   } catch (e) {
     console.warn('[Screener v2] #15 selection flag query failed (likely table missing, skip):', e)
@@ -1338,7 +1634,11 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         sectorBonus: sectorB?.bonus ?? 0,
         tags: tagParts,
       })
-      const watchPoints = [...seed.watchPoints, ...(sc.strategy_watch_points ?? [])]
+      const watchPoints = [
+        ...seed.watchPoints,
+        `screener_funnel:rank=${i + 1},freq20d=${flag?.freq20d ?? 0},high_freq=${flag?.highFreq ? 'yes' : 'no'},new_money=${flag?.newMoney ? 'yes' : 'no'}`,
+        ...(sc.strategy_watch_points ?? []),
+      ]
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
@@ -1500,6 +1800,29 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   debugLog.push(`[Final] ${finalCandidates.length} 檔:`)
   for (const c of finalCandidates) {
     debugLog.push(`  ${c.symbol} ${(c as any).name ?? ''} ${(c as any).industry ?? c.sector} score=${c.score.toFixed(1)}`)
+  }
+
+  try {
+    await writeScreenerFunnel(env, {
+      runId,
+      date: endDate,
+      status: 'success',
+      universeCount: universe.length,
+      candidateCount: scored.length,
+      finalCount: finalCandidates.length,
+      emergingCount: emergingResearchCandidates.length,
+      metadata: {
+        candidatePoolSize: screenerPolicy.sizing.candidatePoolSize,
+        mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
+        emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
+        restrictedCount: punishedSet.size,
+        buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
+      },
+      debugLog,
+      items: funnelItems,
+    })
+  } catch (e) {
+    console.warn('[Screener v2] funnel write failed:', e)
   }
 
   return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog }

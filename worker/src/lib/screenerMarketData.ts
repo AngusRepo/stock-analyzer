@@ -154,13 +154,14 @@ export async function loadMarketDataFromD1(
     const maxChipDate = chipDates[chipDates.length - 1]
     const { results: chipRows } = await env.DB.prepare(
       `SELECT symbol, date, foreign_buy, foreign_sell,
-              trust_buy, trust_sell
+              trust_buy, trust_sell, dealer_buy, dealer_sell
        FROM chip_data
        WHERE date >= ? AND date <= ?`,
     ).bind(minChipDate, maxChipDate)
      .all<{ symbol: string; date: string;
             foreign_buy: number | null; foreign_sell: number | null;
-            trust_buy: number | null; trust_sell: number | null }>()
+            trust_buy: number | null; trust_sell: number | null;
+            dealer_buy: number | null; dealer_sell: number | null }>()
 
     for (const row of (chipRows ?? [])) {
       if (row.foreign_buy != null || row.foreign_sell != null) {
@@ -179,6 +180,15 @@ export async function loadMarketDataFromD1(
           name: '投信',
           buy: row.trust_buy ?? 0,
           sell: row.trust_sell ?? 0,
+        })
+      }
+      if (row.dealer_buy != null || row.dealer_sell != null) {
+        allChips.push({
+          date: row.date,
+          stock_id: row.symbol,
+          name: 'dealer',
+          buy: row.dealer_buy ?? 0,
+          sell: row.dealer_sell ?? 0,
         })
       }
     }

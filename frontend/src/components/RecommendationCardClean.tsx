@@ -255,6 +255,32 @@ function parseObject(raw: unknown): any | null {
   }
 }
 
+function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]; notes: string[] } | null {
+  const evidence = parseObject(rec.screener_funnel_evidence)
+  if (!evidence && rec.screener_funnel_rank == null) return null
+
+  const chips: string[] = []
+  if (rec.screener_funnel_rank != null) chips.push(`Universe rank #${rec.screener_funnel_rank}`)
+  if (evidence?.industry) chips.push(`產業 ${evidence.industry}`)
+  if (Array.isArray(evidence?.strategy_tags) && evidence.strategy_tags.length > 0) {
+    chips.push(...evidence.strategy_tags.slice(0, 3).map((tag: unknown) => String(tag)))
+  }
+
+  const notes: string[] = []
+  if (evidence?.chip_score != null) notes.push(`籌碼 ${fmtNumber(evidence.chip_score, 1)}`)
+  if (evidence?.tech_score != null) notes.push(`技術 ${fmtNumber(evidence.tech_score, 1)}`)
+  if (evidence?.momentum_score != null) notes.push(`動能 ${fmtNumber(evidence.momentum_score, 1)}`)
+  if (evidence?.freq20d != null) notes.push(`20日入選 ${evidence.freq20d} 次`)
+  if (evidence?.highFreq) notes.push('重複入選已降溫')
+  if (evidence?.newMoney) notes.push('新進資金/新題材加權')
+
+  return {
+    rank: rec.screener_funnel_rank ?? null,
+    chips,
+    notes,
+  }
+}
+
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
@@ -560,6 +586,7 @@ function isContextWatchPoint(point: string): boolean {
     || normalized.startsWith('Alpha overlay:')
     || normalized.startsWith('Market structure:')
     || normalized.startsWith('ML ensemble:')
+    || normalized.startsWith('screener_funnel:')
     || normalized.startsWith('Alpha bucket：')
     || normalized.startsWith('Alpha overlay：')
     || normalized.startsWith('Market structure：')
@@ -600,7 +627,12 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const mlSummary = formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const mlThresholdText = formatMlThresholdText(mlVoteSummary)
-  const chip5dRaw = (rec.foreign_net_5d ?? 0) + (rec.trust_net_5d ?? 0)
+  const screenerFunnel = screenerFunnelFromRec(rec)
+  const chip5dRaw = rec.chip_cash_total_5d ?? (
+    (rec.chip_cash_foreign_5d ?? rec.foreign_net_5d ?? 0)
+    + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
+    + (rec.dealer_net_5d ?? 0)
+  )
   const chipPositive = chip5dRaw > 0
 
   return (
@@ -683,6 +715,31 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
+
+          {screenerFunnel && (
+            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="font-medium text-cyan-700 dark:text-cyan-300">Screener 入選漏斗</p>
+                {screenerFunnel.rank != null && (
+                  <span className="font-mono text-cyan-700 dark:text-cyan-300">#{screenerFunnel.rank}</span>
+                )}
+              </div>
+              {screenerFunnel.chips.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {screenerFunnel.chips.map((chip) => (
+                    <Badge key={chip} variant="outline" className="border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0 text-[10px] text-cyan-700 dark:text-cyan-300">
+                      {chip}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              {screenerFunnel.notes.length > 0 && (
+                <p className="leading-relaxed text-muted-foreground">
+                  {screenerFunnel.notes.join('；')}
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>

@@ -29,11 +29,11 @@ for (const job of manifest.jobs) {
   assert(hasTaskHandler(combinedTasks, job.task), `scheduler task ${job.task} has no admin trigger handler`)
 }
 
-for (const required of ['update', 'ml-warmup', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['update', 'ml-warmup', 'screener', 'pipeline', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
-for (const critical of ['update', 'pipeline']) {
+for (const critical of ['update', 'screener', 'pipeline']) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }

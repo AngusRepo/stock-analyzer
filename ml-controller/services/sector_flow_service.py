@@ -14,7 +14,7 @@ Mapping:
 """
 from __future__ import annotations
 import logging
-from typing import Literal, Optional
+from typing import Literal, Optional, TypedDict
 
 from services import d1_client
 from services._rrg_calculator import build_rrg_point, RrgPoint
@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 TagType = Literal["concept", "industry", "subindustry"]
 Classification = Literal["theme", "industry", "subindustry"]
+
+
+class CashFlow(TypedDict):
+    foreign_net: float
+    trust_net: float
+    dealer_net: float
+    total_net: float
 
 
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
@@ -116,6 +123,84 @@ def _load_stock_tags(tag_type: TagType) -> dict[str, list[str]]:
     return by_tag
 
 
+def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
+    """Load per-symbol 5-day institutional cash flow in TWD billions."""
+    date_rows = d1_client.query(
+        """
+        SELECT DISTINCT date
+        FROM chip_data
+        WHERE date <= ?
+        ORDER BY date DESC
+        LIMIT ?
+        """,
+        [as_of_date, lookback_days],
+    )
+    dates = [r.get("date") for r in date_rows if r.get("date")]
+    if not dates:
+        return {}
+
+    placeholders = ",".join("?" * len(dates))
+    rows = d1_client.query(
+        f"""
+        SELECT
+          c.symbol,
+          COALESCE(c.foreign_net, 0) AS foreign_net,
+          COALESCE(c.trust_net, 0) AS trust_net,
+          COALESCE(c.dealer_net, 0) AS dealer_net,
+          (
+            SELECT sp.close
+            FROM stock_prices sp
+            JOIN stocks s ON s.id = sp.stock_id
+            WHERE s.symbol = c.symbol
+              AND sp.date <= c.date
+            ORDER BY sp.date DESC
+            LIMIT 1
+          ) AS close
+        FROM chip_data c
+        WHERE c.date IN ({placeholders})
+        """,
+        dates,
+    )
+
+    flows: dict[str, CashFlow] = {}
+    for r in rows:
+        symbol = r.get("symbol")
+        close = float(r.get("close") or 0)
+        if not symbol or close <= 0:
+            continue
+        entry = flows.setdefault(
+            symbol,
+            {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
+        )
+        foreign_cash = float(r.get("foreign_net") or 0) * close / 1e8
+        trust_cash = float(r.get("trust_net") or 0) * close / 1e8
+        dealer_cash = float(r.get("dealer_net") or 0) * close / 1e8
+        entry["foreign_net"] += foreign_cash
+        entry["trust_net"] += trust_cash
+        entry["dealer_net"] += dealer_cash
+        entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+    return flows
+
+
+def _aggregate_tag_cash_flows(
+    tag_members: dict[str, list[str]],
+    symbol_flows: dict[str, CashFlow],
+) -> dict[str, CashFlow]:
+    tag_flows: dict[str, CashFlow] = {}
+    for tag, members in tag_members.items():
+        flow: CashFlow = {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0}
+        for symbol in members:
+            sf = symbol_flows.get(symbol)
+            if not sf:
+                continue
+            flow["foreign_net"] += sf["foreign_net"]
+            flow["trust_net"] += sf["trust_net"]
+            flow["dealer_net"] += sf["dealer_net"]
+            flow["total_net"] += sf["total_net"]
+        tag_flows[tag] = flow
+    return tag_flows
+
+
 def _load_prev_rs_ratios(
     classification: Classification,
     as_of_date: str,
@@ -183,6 +268,7 @@ def write_sector_flow(
     points: list[RrgPoint],
     classification: Classification,
     as_of_date: str,
+    cash_flows: Optional[dict[str, CashFlow]] = None,
 ) -> int:
     """
     Upsert sector_flow rows.
@@ -202,15 +288,23 @@ def write_sector_flow(
     for pt in points:
         if pt.rs_ratio is None:
             continue  # skip tags without enough members
+        flow = (cash_flows or {}).get(pt.sector) or {
+            "foreign_net": 0.0,
+            "trust_net": 0.0,
+            "total_net": 0.0,
+        }
         statements.append((
             """
             INSERT INTO sector_flow (date, sector, classification, rs_ratio, rs_momentum, quadrant, stock_count, foreign_net, trust_net, total_net)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
               quadrant = excluded.quadrant,
-              stock_count = excluded.stock_count
+              stock_count = excluded.stock_count,
+              foreign_net = excluded.foreign_net,
+              trust_net = excluded.trust_net,
+              total_net = excluded.total_net
             """.strip(),
             [
                 as_of_date,
@@ -220,6 +314,9 @@ def write_sector_flow(
                 pt.rs_momentum,
                 pt.quadrant,
                 pt.member_count,
+                round(float(flow.get("foreign_net") or 0.0), 4),
+                round(float(flow.get("trust_net") or 0.0), 4),
+                round(float(flow.get("total_net") or 0.0), 4),
             ],
         ))
 
@@ -251,10 +348,13 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
         ("industry", "industry"),
     ]
 
+    symbol_flows = _load_symbol_cash_flows_5d(as_of_date)
     for tag_type, classification in paths:
         try:
+            tag_members = _load_stock_tags(tag_type)
             pts = compute_sector_flow_for_tag_type(tag_type, as_of_date)
-            written = write_sector_flow(pts, classification, as_of_date)
+            tag_flows = _aggregate_tag_cash_flows(tag_members, symbol_flows)
+            written = write_sector_flow(pts, classification, as_of_date, tag_flows)
             counts = {"Leading": 0, "Weakening": 0, "Lagging": 0, "Improving": 0}
             for p in pts:
                 if p.quadrant:

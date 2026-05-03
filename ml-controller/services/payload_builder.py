@@ -710,6 +710,8 @@ def build_stock_meta_with_segment(
     segment = infer_market_segment(stock, latest_price)
     policy = policy_for_segment(segment)
     lane = str(stock.get("recommendation_lane") or "").strip() or policy.recommendation_lane
+    if not policy.eligible_for_execution:
+        lane = policy.recommendation_lane
     eligible_for_execution = policy.eligible_for_execution and lane == "tradable"
     return {
         **base_meta,
@@ -756,25 +758,34 @@ def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> l
         if not symbol or not stock_id or symbol in by_symbol:
             continue
         points = _watch_points_list(rec.get("watch_points"))
+        segment = str(rec.get("market_segment") or rec.get("market") or "").strip().upper()
+        if not segment:
+            segment = "EMERGING" if str(rec.get("recommendation_lane") or "") == "emerging_watchlist" else "LISTED"
+        lane = str(rec.get("recommendation_lane") or "").strip()
         is_emerging_research = (
             "research_only:emerging_not_for_auto_trade" in points
             or "board_lane:emerging_watchlist" in points
-            or str(rec.get("recommendation_lane") or "") == "emerging_watchlist"
-            or _normalize_market(rec.get("market")) == "EMERGING"
+            or lane == "emerging_watchlist"
+            or _normalize_market(segment) == "EMERGING"
         )
-        if not is_emerging_research:
-            continue
+        if is_emerging_research:
+            segment = "EMERGING"
+            lane = "emerging_watchlist"
+        else:
+            segment = _normalize_market(segment)
+            lane = lane or ("tradable" if segment in {"LISTED", "OTC"} else "research_only")
+        eligible_for_execution = lane == "tradable" and segment in {"LISTED", "OTC"}
         by_symbol[symbol] = {
             "id": stock_id,
             "symbol": symbol,
             "name": rec.get("name") or symbol,
-            "market": "EMERGING",
+            "market": segment,
             "sector": rec.get("sector"),
             "source": "daily_recommendations",
-            "market_segment": "EMERGING",
-            "recommendation_lane": "emerging_watchlist",
+            "market_segment": segment,
+            "recommendation_lane": lane,
             "eligible_for_ml": True,
-            "eligible_for_execution": False,
+            "eligible_for_execution": eligible_for_execution,
         }
 
     return sorted(by_symbol.values(), key=lambda row: int(row.get("id") or 0))

@@ -26,7 +26,6 @@ from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
 from services.payload_builder import (
     PredictPayload,
-    load_active_stocks,
     load_market_env,
     build_payloads,
     build_ml_universe,
@@ -34,7 +33,6 @@ from services.payload_builder import (
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.recommendation_service import (
-    build_screener_seed_recommendations,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
     write_predictions_to_d1,
@@ -102,16 +100,20 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_load_inputs")
     run_date = state["run_date"]
 
-    execution_stocks = load_active_stocks()
     screener_recs = d1_client.query(
         "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
         [run_date],
     )
-    active_stocks = build_ml_universe(execution_stocks, screener_recs)
+    if not screener_recs:
+        raise RuntimeError(
+            "screener_recs_missing: daily pipeline requires full-market screener "
+            "seeds before ML/recommendation; refusing watchlist fallback"
+        )
+    active_stocks = build_ml_universe([], screener_recs)
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"({len(execution_stocks)} execution), "
+        f"(source=daily_recommendations), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {
@@ -863,12 +865,10 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
     screener_recs = state["screener_recs"]
     if not screener_recs:
-        screener_recs = build_screener_seed_recommendations(
-            state.get("active_stocks") or [],
-            state.get("payloads") or [],
-            state["run_date"],
+        raise RuntimeError(
+            "screener_recs_missing: daily pipeline requires full-market screener "
+            "seeds before ML/recommendation; refusing watchlist fallback"
         )
-        logger.info("[Pipeline V2] Screener seed fallback active: %s rows", len(screener_recs))
 
     final, sell_count = filter_and_score_recommendations(
         screener_recs,

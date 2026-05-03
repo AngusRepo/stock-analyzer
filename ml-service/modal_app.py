@@ -88,6 +88,7 @@ def _load_sequence_records_from_gcs(gcs_prefix: str, batch_count: int) -> list[d
     import io
     import numpy as np
     from google.cloud import storage
+    from app.gcs_batch_io import download_existing_blobs
 
     bucket_name = _get_gcs_bucket_name()
     if not bucket_name:
@@ -95,13 +96,11 @@ def _load_sequence_records_from_gcs(gcs_prefix: str, batch_count: int) -> list[d
 
     bucket = storage.Client().bucket(bucket_name)
     all_records: list[dict] = []
-    for i in range(batch_count):
-        blob = bucket.blob(f"{gcs_prefix}/prep/batch_{i}.npz")
-        if not blob.exists():
+    keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(batch_count)]
+    for key, raw in download_existing_blobs(bucket, keys, max_workers=4):
+        if raw is None:
             continue
-        buf = io.BytesIO()
-        blob.download_to_file(buf)
-        buf.seek(0)
+        buf = io.BytesIO(raw)
         data = np.load(buf, allow_pickle=True)
         if "sequence_records" in data.files:
             batch_records = data["sequence_records"].tolist()
@@ -115,7 +114,7 @@ def _load_sequence_records_from_gcs(gcs_prefix: str, batch_count: int) -> list[d
                 if not row:
                     continue
                 all_records.append({
-                    "symbol": f"legacy_{i}_{idx}",
+                    "symbol": f"legacy_{key.split('/')[-1]}_{idx}",
                     "market_type": "unknown",
                     "close": [float(v) for v in row],
                     "dates": [],

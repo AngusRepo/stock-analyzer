@@ -52,6 +52,15 @@ function today(): string {
   return tw.toISOString().slice(0, 10)
 }
 
+function resolveScreenerRunDate(runDate?: string | null): string {
+  const value = (runDate || '').trim()
+  if (!value) return today()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid screener run date: ${value}; expected YYYY-MM-DD`)
+  }
+  return value
+}
+
 async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
   try {
     const value = await kv.get(key, 'json') as unknown
@@ -702,7 +711,7 @@ async function deduplicateByCorrelation(
 /**
  * Bottom-up 全市場選股主流程（v2）
  */
-export async function runBottomUpScreener(env: Bindings): Promise<{
+export async function runBottomUpScreener(env: Bindings, runDate?: string | null): Promise<{
   hotSectors: SectorHeatScore[]
   candidates: ScreenerCandidate[]
   emergingResearchCandidates?: ScreenerCandidate[]
@@ -713,7 +722,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const sc = cfg.screener
   const adaptiveParams = await getAdaptiveParams(env.KV)
   const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
-  const endDate = today()
+  const endDate = resolveScreenerRunDate(runDate)
   const runId = `screener-${endDate}-${Date.now()}`
   const funnelItems: ScreenerFunnelItemInput[] = []
 
@@ -734,7 +743,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz] = await Promise.all([
-      loadMarketDataFromD1(env, 20, 5),
+      loadMarketDataFromD1(env, 20, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
@@ -817,10 +826,14 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // 0050 追蹤加權指數，是最穩定的大盤代理。若沒有就用加權指數近似
   let marketReturn5d = 0
   try {
-    const latestDate = await env.DB.prepare("SELECT MAX(date) as d FROM stock_prices").first<{ d: string }>()
+    const latestDate = await env.DB.prepare(
+      'SELECT MAX(date) as d FROM stock_prices WHERE date <= ?',
+    ).bind(endDate).first<{ d: string }>()
     const fiveDaysAgoDate = await env.DB.prepare(
-      "SELECT date FROM (SELECT DISTINCT date FROM stock_prices ORDER BY date DESC LIMIT 6) ORDER BY date ASC LIMIT 1"
-    ).first<{ date: string }>()
+      `SELECT date
+         FROM (SELECT DISTINCT date FROM stock_prices WHERE date <= ? ORDER BY date DESC LIMIT 6)
+        ORDER BY date ASC LIMIT 1`,
+    ).bind(endDate).first<{ date: string }>()
 
     if (latestDate?.d && fiveDaysAgoDate?.date) {
       // 嘗試 0050 ETF
@@ -1727,9 +1740,14 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
         WHERE s.in_current_watchlist = 1
-          AND NOT EXISTS (SELECT 1 FROM technical_indicators ti WHERE ti.stock_id = s.id AND ti.date >= date('now', '-3 days'))
+          AND NOT EXISTS (
+            SELECT 1 FROM technical_indicators ti
+             WHERE ti.stock_id = s.id
+               AND ti.date >= date(?, '-3 days')
+               AND ti.date <= ?
+          )
           AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
-      `).all<{ id: number; symbol: string }>()
+      `).bind(endDate, endDate).all<{ id: number; symbol: string }>()
 
       if (noTiStocks?.length) {
         let computed = 0

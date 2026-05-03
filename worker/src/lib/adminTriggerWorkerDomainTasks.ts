@@ -39,7 +39,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
   const requestedRunDate = () => c.req.query('date') || undefined
 
   return {
-    screener: () => deps.runMarketScreener(),
+    screener: () => deps.runMarketScreener(requestedRunDate()),
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
     recommendation: () => deps.runDailyRecommendation(),

@@ -30,6 +30,7 @@ async def _run() -> int:
     lookback_days = int(os.environ.get("VERIFY_LOOKBACK_DAYS", "5") or 5)
     limit = int(os.environ.get("VERIFY_LIMIT", "200") or 200)
     callback_task = os.environ.get("VERIFY_CALLBACK_TASK", "verify-v2") or "verify-v2"
+    update_aggregates = (os.environ.get("VERIFY_UPDATE_AGGREGATES", "0") or "0").strip().lower() in {"1", "true", "yes"}
     run_id = os.environ.get(
         "VERIFY_RUN_ID",
         os.environ.get("CLOUD_RUN_EXECUTION", f"verify-job-{int(time.time())}-{uuid.uuid4().hex[:8]}"),
@@ -53,6 +54,7 @@ async def _run() -> int:
             run_date=run_date,
             lookback_days=lookback_days,
             limit=limit,
+            update_aggregates=update_aggregates,
         )
         ok = result.get("status") == "ok"
         errors = result.get("errors") or []

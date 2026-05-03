@@ -111,6 +111,7 @@ function parseLogTime(ts?: string): number | null {
 function getDisplayLog(logs: CronLogEntry[] | undefined, taskId: string): CronLogEntry | undefined {
   const log = logs?.find((entry) => entry.task === taskId)
   if (!log) return undefined
+  if (!log.timestamp && log.summary === 'no log for this date') return undefined
   if (!PIPELINE_CHILD_TASKS.has(taskId)) return log
 
   const pipelineLog = logs?.find((entry) => entry.task === 'pipeline')

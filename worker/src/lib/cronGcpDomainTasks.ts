@@ -1,7 +1,6 @@
 import type { Bindings } from '../types'
 import {
   runModelIcTrackerChain,
-  runModelIcRollingRefresh,
   runObsidianDaily,
   runRegimeCompute,
   runVerifyV2,
@@ -37,8 +36,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   if (cron === '0 11 * * 1-5') {
     runWithLog('verify-v2', async () => {
       const verify = await runVerifyV2(env)
-      const rollingIc = await runModelIcRollingRefresh(env).catch((e) => `rolling_ic failed: ${e?.message || e}`)
-      return `${verify} | ${rollingIc}`
+      return `${verify} | rolling_ic after verify callback`
     })
     return true
   }

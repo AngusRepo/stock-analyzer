@@ -31,7 +31,7 @@ async def test_verify_pipeline_runs_discrete_graph_nodes(monkeypatch):
     monkeypatch.setattr(
         verify_pipeline.verify_service,
         "load_pending_predictions",
-        lambda lookback_days, limit: calls.append("load_pending") or [{"id": 1}],
+        lambda lookback_days, limit, run_date=None: calls.append("load_pending") or [{"id": 1}],
     )
     monkeypatch.setattr(
         verify_pipeline.verify_service,
@@ -69,6 +69,7 @@ async def test_verify_pipeline_runs_discrete_graph_nodes(monkeypatch):
         "run_date": "2026-04-27",
         "lookback_days": 5,
         "limit": 10,
+        "update_aggregates": True,
         "metrics": {},
         "errors": [],
     })
@@ -97,7 +98,7 @@ async def test_verify_dry_run_preview_does_not_write_or_update_arf(monkeypatch):
     monkeypatch.setattr(
         verify_router.verify_service,
         "load_pending_predictions",
-        lambda lookback_days, limit: calls.append("load_pending") or [{"id": 1}],
+        lambda lookback_days, limit, run_date=None: calls.append("load_pending") or [{"id": 1}],
     )
     monkeypatch.setattr(
         verify_router.verify_service,

@@ -99,6 +99,7 @@ export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
   chipDays: number = 5,
+  asOfDate?: string,
 ): Promise<{
   allPrices: FMStockPrice[]
   emergingResearchPrices: FMStockPrice[]
@@ -109,11 +110,14 @@ export async function loadMarketDataFromD1(
   const lookbackDays = Math.ceil(priceDays * 1.5) + 7
   const chipLookback = Math.ceil(chipDays * 1.5) + 5
 
+  const maxAllowedDate = asOfDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+
   const { results: dateRows } = await env.DB.prepare(
     `SELECT DISTINCT date FROM stock_prices
-     WHERE date >= date('now', '-${lookbackDays} days')
+     WHERE date <= ?
+       AND date >= date(?, '-${lookbackDays} days')
      ORDER BY date DESC LIMIT ?`,
-  ).bind(priceDays).all<{ date: string }>()
+  ).bind(maxAllowedDate, maxAllowedDate, priceDays).all<{ date: string }>()
   const tradingDates = (dateRows ?? []).map((r) => r.date).sort()
   if (!tradingDates.length) {
     console.warn('[Screener D1] No trading dates in D1 stock_prices')
@@ -143,9 +147,10 @@ export async function loadMarketDataFromD1(
 
   const { results: chipDateRows } = await env.DB.prepare(
     `SELECT DISTINCT date FROM chip_data
-     WHERE date >= date('now', '-${chipLookback} days')
+     WHERE date <= ?
+       AND date >= date(?, '-${chipLookback} days')
      ORDER BY date DESC LIMIT ?`,
-  ).bind(chipDays).all<{ date: string }>()
+  ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
   const chipDates = (chipDateRows ?? []).map((r) => r.date).sort()
 
   const allChips: FMChip[] = []

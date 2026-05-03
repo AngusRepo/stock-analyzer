@@ -27,6 +27,10 @@ const otherRoute = fs.readFileSync('src/routes/other.ts', 'utf8')
   assert(fs.existsSync('src/lib/screenerMarketData.ts'), 'screener market data loader should live in its own domain module')
   assert(marketScreener.includes("from './screenerMarketData'"), 'marketScreener should import the market data loader module')
   assert(!marketScreener.includes('async function loadMarketDataFromD1'), 'marketScreener should not own D1 market data loading')
+  assert(marketScreener.includes('resolveScreenerRunDate'), 'screener must resolve an explicit rerun date instead of always using today')
+  assert(marketScreener.includes('runBottomUpScreener(env: Bindings, runDate?: string | null)'), 'screener public contract must accept a backfill date')
+  assert(screenerMarketData.includes('asOfDate?: string'), 'screener D1 loader must support as-of-date backfills')
+  assert(screenerMarketData.includes('WHERE date <= ?'), 'screener D1 loader must cap price/chip data by requested date')
 }
 
 {

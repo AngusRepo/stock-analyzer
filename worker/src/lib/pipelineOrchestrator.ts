@@ -5,7 +5,7 @@ export async function runDailyRecommendation(env: Bindings) {
   return runMLAndRiskV2(env)
 }
 
-export async function runMarketScreener(env: Bindings) {
+export async function runMarketScreener(env: Bindings, runDate?: string | null) {
   const { runBottomUpScreener } = await import('./marketScreener')
-  return runBottomUpScreener(env)
+  return runBottomUpScreener(env, runDate)
 }

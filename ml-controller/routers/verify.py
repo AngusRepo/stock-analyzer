@@ -35,6 +35,7 @@ class VerifyRunRequest(BaseModel):
     limit: int = 200
     async_mode: bool = False
     callback_task: str = "verify-v2"
+    update_aggregates: bool = False
 
 
 def _format_verify_summary(result: dict) -> str:
@@ -74,6 +75,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
                     "VERIFY_LIMIT": str(req.limit),
                     "VERIFY_CALLBACK_TASK": req.callback_task or "verify-v2",
                     "VERIFY_RUN_ID": run_id,
+                    "VERIFY_UPDATE_AGGREGATES": "1" if req.update_aggregates else "0",
                 },
             )
         except JobAlreadyRunningError as e:
@@ -110,6 +112,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
             run_date=req.run_date or "",
             lookback_days=req.lookback_days,
             limit=req.limit,
+            update_aggregates=req.update_aggregates,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("[verify/run] Pipeline failed")
@@ -130,7 +133,7 @@ async def post_verify_dry_run(req: VerifyRunRequest = VerifyRunRequest()):
         req.limit,
         req.run_date,
     )
-    pending = verify_service.load_pending_predictions(req.lookback_days, req.limit)
+    pending = verify_service.load_pending_predictions(req.lookback_days, req.limit, req.run_date)
     market_risk = verify_service.load_market_risk()
     prepared = verify_service.prepare_verification_updates(pending, market_risk)
     updates = prepared.get("verify_updates") or []

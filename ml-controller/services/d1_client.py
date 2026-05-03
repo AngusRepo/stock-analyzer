@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 
 
 def _check_env():
@@ -103,14 +105,13 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
 def batch_execute(
     statements: list[tuple[str, list[Any]]],
     timeout: float = 30.0,
+    chunk_size: int = 250,
 ) -> dict:
-    """
-    Execute multiple INSERT/UPDATE/DELETE statements sequentially.
+    """Execute multiple INSERT/UPDATE/DELETE statements.
 
-    CF D1 REST API /query endpoint only accepts single statement body
-    (object with sql + params), NOT array. So we loop one-by-one.
-    For true atomic batching CF has a separate transactions API but
-    it's behind a different binding type.
+    Prefer the Worker internal D1 binding endpoint, which uses `env.DB.batch()`
+    and is a real Cloudflare-side batch. Fall back to the legacy REST loop only
+    when the Worker route is not configured or temporarily fails.
 
     Args:
         statements: list of (sql, params) tuples
@@ -121,6 +122,12 @@ def batch_execute(
     """
     if not statements:
         return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
+
+    if WORKER_URL and WORKER_AUTH:
+        try:
+            return _worker_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+        except RuntimeError as e:
+            logger.warning("[d1_client] worker batch failed, falling back to REST loop: %s", e)
 
     success_count = 0
     error_count = 0
@@ -152,4 +159,62 @@ def batch_execute(
         "changes_total": total_changes,
         "first_error": first_error,
         "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "rest_loop_fallback",
+    }
+
+
+def _worker_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    timeout: float = 30.0,
+    chunk_size: int = 250,
+) -> dict:
+    if not statements:
+        return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0, "mode": "worker_d1_batch"}
+    if httpx is None:
+        raise RuntimeError("Worker D1 batch failed: httpx not installed")
+
+    url = f"{WORKER_URL.rstrip('/')}/api/internal/d1/batch"
+    headers = {
+        "Authorization": f"Bearer {WORKER_AUTH}",
+        "Content-Type": "application/json",
+    }
+
+    total = 0
+    success_count = 0
+    error_count = 0
+    changes_total = 0
+    first_error: str | None = None
+    chunk = max(1, min(int(chunk_size or 250), 500))
+
+    for i in range(0, len(statements), chunk):
+        part = statements[i:i + chunk]
+        body = {
+            "statements": [{"sql": sql, "params": params or []} for sql, params in part],
+            "max_statements": chunk,
+        }
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.RequestError as e:
+            raise RuntimeError(f"Worker D1 batch failed: network error: {e}") from e
+        if resp.status_code != 200:
+            raise RuntimeError(f"Worker D1 batch failed: HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
+        total += int(data.get("total") or len(part))
+        success_count += int(data.get("success_count") or len(part))
+        error_count += int(data.get("error_count") or 0)
+        changes_total += int(data.get("changes_total") or 0)
+        if data.get("first_error") and first_error is None:
+            first_error = str(data["first_error"])
+
+    return {
+        "total": total,
+        "success_count": success_count,
+        "error_count": error_count,
+        "changes_total": changes_total,
+        "first_error": first_error,
+        "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "worker_d1_batch",
+        "chunk_size": chunk,
     }

@@ -25,7 +25,7 @@ _USE_MODAL        = bool(os.environ.get("MODAL_TOKEN_ID", ""))
 _DEFAULT_MODAL_RESOURCE = {"cpu": 1.0, "memory_mb": 1024, "gpu": None}
 _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "predict_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
-    "predict_batch_v2": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "predict_batch_v2": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
@@ -71,11 +71,13 @@ def _modal_predict_batch_v2_enabled() -> bool:
 
 
 def batch_predict_contract() -> dict:
-    raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE", "10") or "10"
+    # Larger chunks amortize universal model GCS loads across more symbols while
+    # staying below the 900s Modal predict_batch_v2 timeout.
+    raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE", "40") or "40"
     try:
         chunk_size = max(1, int(raw_chunk_size))
     except ValueError:
-        chunk_size = 10
+        chunk_size = 40
     return {
         "modal_predict_batch_v2": _modal_predict_batch_v2_enabled(),
         "chunk_size": chunk_size,

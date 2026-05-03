@@ -48,7 +48,7 @@ import { setupMorningPendingBuys } from './lib/pendingBuyOrchestrator'
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const adminTriggerRoutes = createAdminTriggerRoutes({
   buildTaskMap: (c: any) => buildAdminTriggerTaskMap(c, {
-    runMarketScreener: () => runMarketScreener(c.env),
+    runMarketScreener: (runDate?: string) => runMarketScreener(c.env, runDate),
     runDailyUpdate: (force?: boolean, runDate?: string) => runDailyUpdateWorkflow(c.env, force, runDate),
     runMLAndRiskV2: (runDate?: string) => runMLAndRiskV2(c.env, runDate),
     runDailyRecommendation: () => runDailyRecommendation(c.env),

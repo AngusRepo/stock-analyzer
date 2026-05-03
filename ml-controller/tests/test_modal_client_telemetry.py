@@ -26,7 +26,7 @@ def test_modal_resource_spec_knows_predict_batch_v2():
     spec = _modal_resource_spec("predict_batch_v2")
 
     assert spec["cpu"] == 2
-    assert spec["memory_mb"] == 4096
+    assert spec["memory_mb"] == 8192
 
 
 def test_modal_predict_batch_chunks_payloads():
@@ -44,7 +44,7 @@ def test_modal_predict_batch_v2_is_default_contract(monkeypatch):
     contract = modal_client.batch_predict_contract()
 
     assert contract["modal_predict_batch_v2"] is True
-    assert contract["chunk_size"] == 10
+    assert contract["chunk_size"] == 40
 
 
 def test_modal_predict_batch_v2_can_be_disabled(monkeypatch):

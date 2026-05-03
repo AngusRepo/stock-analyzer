@@ -31,6 +31,7 @@ class VerifyStateV2(TypedDict, total=False):
     arf_updated: int
     metrics: dict
     errors: Annotated[list[str], operator.add]
+    update_aggregates: bool
 
 
 async def node_load_pending(state: VerifyStateV2) -> dict:
@@ -41,6 +42,7 @@ async def node_load_pending(state: VerifyStateV2) -> dict:
         verify_service.load_pending_predictions,
         lookback_days,
         limit,
+        state.get("run_date") or "",
     )
     market_risk = await asyncio.to_thread(verify_service.load_market_risk)
     return {
@@ -88,12 +90,18 @@ async def node_write_verified(state: VerifyStateV2) -> dict:
 
 async def node_update_model_accuracy(state: VerifyStateV2) -> dict:
     logger.info("[Verify V2] node_update_model_accuracy")
+    if not state.get("update_aggregates", False):
+        logger.info("[Verify V2] model_accuracy aggregate refresh skipped for nightly path")
+        return {"model_accuracy_groups": 0}
     count = await asyncio.to_thread(verify_service.update_model_accuracy)
     return {"model_accuracy_groups": count}
 
 
 async def node_update_trade_performance(state: VerifyStateV2) -> dict:
     logger.info("[Verify V2] node_update_trade_performance")
+    if not state.get("update_aggregates", False):
+        logger.info("[Verify V2] trade_performance aggregate refresh skipped for nightly path")
+        return {"trade_performance_groups": 0}
     count = await asyncio.to_thread(verify_service.update_trade_performance)
     return {"trade_performance_groups": count}
 
@@ -153,6 +161,7 @@ async def run_verify_v2(
     run_date: str = "",
     lookback_days: int = 5,
     limit: int = 200,
+    update_aggregates: bool = False,
 ) -> dict:
     if not run_date:
         tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -162,6 +171,7 @@ async def run_verify_v2(
         "run_date": run_date,
         "lookback_days": lookback_days,
         "limit": limit,
+        "update_aggregates": update_aggregates,
         "metrics": {},
         "errors": [],
     }

@@ -240,6 +240,10 @@ load_verify_job_template() {
       MAX_RETRIES) VERIFY_JOB_MAX_RETRIES="$value" ;;
     esac
   done < "$meta_file"
+  # Verify is idempotent-ish but expensive: retries re-read/re-write D1 and can
+  # multiply Cloud Run cost. Let the scheduler surface one failed execution
+  # instead of retrying the full graph three more times.
+  VERIFY_JOB_MAX_RETRIES="${VERIFY_JOB_MAX_RETRIES_OVERRIDE:-0}"
 }
 
 sync_verify_job() {

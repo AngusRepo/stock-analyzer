@@ -1,5 +1,14 @@
 # StockVision Roadmap — 30 Items
 
+## Next Major Runtime Refactor
+
+### Vectorized Prediction Runtime + Shared Feature Batch Owner
+- **What**: Move `predict_stock_v2_batch()` from chunked per-symbol loops to a true batch runtime: one feature-build owner prepares aligned feature matrices, one model-load/cache layer loads universal artifacts once per container, and model inference runs vectorized across the chunk.
+- **Where**: `ml-service/app/batch_prediction.py`, `ml-service/app/prediction_runtime.py`, `ml-service/app/model_store.py`, `ml-controller/services/modal_client.py`.
+- **Why**: Current `predict_batch_v2` is a useful Modal chunk batch, but inside each chunk it still loops `predict_stock_v2` per symbol. This reduces container count but does not fully eliminate duplicated feature prep and model dispatch overhead.
+- **Expected**: Lower Modal/GCS overhead, fewer repeated model-load paths, more predictable ML predict duration, and cleaner cost attribution.
+- **Guardrails**: Keep current per-symbol runtime as fallback until parity tests prove score/signals match; no trading behavior change without A/B evidence.
+
 > Updated: 2026-04-04
 > Status: P0 ready to execute
 

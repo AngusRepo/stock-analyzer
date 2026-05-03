@@ -112,3 +112,64 @@ def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
     )
 
     assert captured["params"] == [1, "2026-05-01", "2026-05-10"]
+
+
+def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+
+    verify_service.load_pending_predictions(
+        lookback_days=5,
+        limit=600,
+        run_date="2026-05-04",
+        stale_grace_days=10,
+    )
+
+    assert "BETWEEN ? AND ?" in str(captured["sql"])
+    assert "UPPER(COALESCE(s.market, '')) IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
+    assert captured["params"] == ["2026-04-19", "2026-04-29", 600]
+
+
+def test_prepare_verification_updates_batches_bars(monkeypatch):
+    calls = {"bulk": 0, "single": 0}
+
+    monkeypatch.setattr(
+        verify_service,
+        "load_bars_for_predictions",
+        lambda pending: calls.__setitem__("bulk", calls["bulk"] + 1) or {
+            1: [
+                {"date": "2026-05-01", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+                {"date": "2026-05-04", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        verify_service,
+        "load_bars_for_prediction",
+        lambda *args, **kwargs: calls.__setitem__("single", calls["single"] + 1) or [],
+    )
+
+    result = verify_service.prepare_verification_updates(
+        [
+            {
+                "id": 7,
+                "stock_id": 1,
+                "symbol": "2330",
+                "model_name": "XGBoost",
+                "generated_at": "2026-04-30T10:00:00Z",
+                "prediction_date": "2026-04-30",
+                "entry_price": 100.0,
+                "forecast_data": json.dumps({"signal": "HOLD", "rank_score": 0.5}),
+            }
+        ],
+        market_risk={"risk_level": "low", "risk_score": 10},
+    )
+
+    assert calls == {"bulk": 1, "single": 0}
+    assert len(result["verify_updates"]) == 1

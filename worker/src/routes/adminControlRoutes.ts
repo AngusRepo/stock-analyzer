@@ -12,6 +12,60 @@ function requireServiceToken(c: any) {
   return null
 }
 
+const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
+
+function normalizeD1BatchStatement(raw: any, index: number) {
+  const sql = typeof raw?.sql === 'string' ? raw.sql.trim() : ''
+  if (!sql) throw new Error(`statement ${index}: sql is required`)
+  if (sql.includes(';')) throw new Error(`statement ${index}: multiple SQL statements are not allowed`)
+
+  const verb = sql.split(/\s+/, 1)[0]?.toUpperCase()
+  if (!D1_BATCH_ALLOWED_DML.has(verb)) {
+    throw new Error(`statement ${index}: only INSERT/UPDATE/DELETE/REPLACE are allowed`)
+  }
+
+  const params = Array.isArray(raw?.params) ? raw.params : []
+  return { sql, params }
+}
+
+adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json().catch(() => null) as any
+  const rawStatements = Array.isArray(body?.statements) ? body.statements : []
+  const maxStatements = Math.min(Number(body?.max_statements ?? 500) || 500, 500)
+  if (!rawStatements.length) return c.json({ error: 'statements must be a non-empty array' }, 400)
+  if (rawStatements.length > maxStatements) {
+    return c.json({ error: `too many statements: ${rawStatements.length} > ${maxStatements}` }, 400)
+  }
+
+  let statements: Array<{ sql: string; params: any[] }>
+  try {
+    statements = rawStatements.map((s: any, index: number) => normalizeD1BatchStatement(s, index))
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? 'invalid statement' }, 400)
+  }
+
+  const prepared = statements.map((s) => c.env.DB.prepare(s.sql).bind(...s.params))
+  const t0 = Date.now()
+  const results = await c.env.DB.batch(prepared)
+  const changesTotal = results.reduce((sum: number, result: any) => {
+    const meta = result?.meta ?? {}
+    return sum + Number(meta.changes ?? meta.rows_written ?? 0)
+  }, 0)
+
+  return c.json({
+    ok: true,
+    total: statements.length,
+    success_count: results.length,
+    error_count: 0,
+    changes_total: changesTotal,
+    duration_ms: Date.now() - t0,
+    mode: 'worker_d1_batch',
+  })
+})
+
 adminControlRoutes.get('/api/admin/adaptive-params', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

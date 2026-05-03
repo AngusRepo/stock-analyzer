@@ -121,14 +121,15 @@ export async function runModelIcRollingRefresh(env: Bindings) {
   return `rolling_ic n_rows=${icData.n_rows_total} | ${computed}`
 }
 
-export async function runVerifyV2(env: Bindings) {
+export async function runVerifyV2(env: Bindings, runDate?: string) {
   requireController(env)
 
   const data = await controllerJson<any>(env, '/verify/run', {
     method: 'POST',
     jsonBody: {
       lookback_days: 5,
-      limit: 200,
+      limit: 600,
+      run_date: runDate || undefined,
       async_mode: true,
       callback_task: 'verify-v2',
     },

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from . import d1_client
@@ -27,29 +27,51 @@ from ._trade_simulator import simulate_trade
 
 logger = logging.getLogger(__name__)
 
+VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_pending_predictions(lookback_days: int = 5, limit: int = 200) -> list[dict]:
+def _parse_run_date(run_date: str | None = None) -> date:
+    if run_date:
+        return datetime.fromisoformat(run_date).date()
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+
+
+def load_pending_predictions(
+    lookback_days: int = 5,
+    limit: int = 200,
+    run_date: str | None = None,
+    stale_grace_days: int = 10,
+) -> list[dict]:
     """
     Load predictions that need verification.
 
-    Matches worker predictionVerifier.ts:35-44 query exactly.
+    Load only the verifiable window for this run.
+
+    The old query used `prediction_date <= today-lookback` with no lower bound,
+    so stale unverified rows permanently sat at the front of the queue and every
+    nightly verify spent money re-reading old backlog.  The V2 contract treats
+    `lookback_days` as the forecast maturity window and verifies rows whose
+    prediction date is within a bounded grace window ending at that maturity.
     """
-    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date().isoformat()
+    as_of = _parse_run_date(run_date)
+    max_prediction_date = (as_of - timedelta(days=lookback_days)).isoformat()
+    min_prediction_date = (as_of - timedelta(days=lookback_days + stale_grace_days)).isoformat()
     sql = """
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
         WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
-          AND date(COALESCE(p.prediction_date, p.generated_at)) <= ?
+          AND date(COALESCE(p.prediction_date, p.generated_at)) BETWEEN ? AND ?
+          AND UPPER(COALESCE(s.market, '')) IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
-        ORDER BY p.generated_at ASC
+        ORDER BY date(COALESCE(p.prediction_date, p.generated_at)) DESC, p.generated_at ASC
         LIMIT ?
     """
-    rows = d1_client.query(sql, params=[cutoff_date, limit])
+    rows = d1_client.query(sql, params=[min_prediction_date, max_prediction_date, limit])
     logger.info(f"[verify] Loaded {len(rows)} pending predictions")
     return rows
 
@@ -84,7 +106,64 @@ def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: 
     return d1_client.query(sql, params=[stock_id, look_from, look_to])
 
 
-def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
+def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> dict[int, list[dict]]:
+    """Load OHLC bars for all pending predictions in a few D1 reads."""
+    if not predictions:
+        return {}
+
+    windows: list[tuple[int, str, str]] = []
+    for pred in predictions:
+        if pred.get("prediction_date"):
+            business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
+        else:
+            business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+        windows.append((
+            int(pred["stock_id"]),
+            (business_date + timedelta(days=1)).isoformat(),
+            (business_date + timedelta(days=10)).isoformat(),
+        ))
+
+    stock_ids = sorted({w[0] for w in windows})
+    min_date = min(w[1] for w in windows)
+    max_date = max(w[2] for w in windows)
+    bars_by_stock: dict[int, list[dict]] = {}
+
+    for i in range(0, len(stock_ids), chunk_size):
+        chunk = stock_ids[i:i + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = d1_client.query(
+            f"""
+            SELECT stock_id, date, open, high, low, close
+            FROM stock_prices
+            WHERE stock_id IN ({placeholders})
+              AND date >= ?
+              AND date <= ?
+            ORDER BY stock_id ASC, date ASC
+            """,
+            params=[*chunk, min_date, max_date],
+        )
+        for row in rows:
+            bars_by_stock.setdefault(int(row["stock_id"]), []).append(row)
+
+    return bars_by_stock
+
+
+def _prediction_bar_window(pred: dict) -> tuple[str, str]:
+    if pred.get("prediction_date"):
+        business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
+    else:
+        business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+    return (
+        (business_date + timedelta(days=1)).isoformat(),
+        (business_date + timedelta(days=10)).isoformat(),
+    )
+
+
+def verify_single_prediction(
+    pred: dict,
+    market_risk: dict,
+    bars_override: list[dict] | None = None,
+) -> dict | None:
     """
     Verify a single prediction: parse forecast_data, load bars, simulate trade.
 
@@ -114,7 +193,10 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
             predicted_price = mid.get("forecast")
 
     # ── Load bars ────────────────────────────────────────────────────────────
-    bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"], pred.get("prediction_date"))
+    if bars_override is None:
+        bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"], pred.get("prediction_date"))
+    else:
+        bars = bars_override
     if not bars:
         return None  # data not arrived yet
 
@@ -145,6 +227,8 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
     if predicted_direction == "neutral":
         return {
             "id": pred["id"],
+            "stock_id": pred["stock_id"],
+            "model_name": pred.get("model_name"),
             "bind": [
                 predicted_direction,
                 predicted_price,
@@ -180,6 +264,8 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
     # ── Build update binding (matches UPDATE_VERIFY_SQL parameter order) ─────
     return {
         "id": pred["id"],
+        "stock_id": pred["stock_id"],
+        "model_name": pred.get("model_name"),
         "bind": [
             predicted_direction,
             predicted_price,
@@ -225,10 +311,20 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
     updates: list[dict] = []
     arf_batch: list[dict] = []
     errors: list[str] = []
+    bars_by_stock = load_bars_for_predictions(pending)
 
     for pred in pending:
         try:
-            result = verify_single_prediction(pred, market_risk)
+            look_from, look_to = _prediction_bar_window(pred)
+            pred_bars = [
+                b for b in bars_by_stock.get(int(pred["stock_id"]), [])
+                if look_from <= str(b.get("date")) <= look_to
+            ][:7]
+            result = verify_single_prediction(
+                pred,
+                market_risk,
+                bars_override=pred_bars,
+            )
             if result is None:
                 continue
             updates.append(result)

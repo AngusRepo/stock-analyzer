@@ -28,6 +28,7 @@ from .artifact_contract import (
 from .model_store import _get_bucket, save_model
 from .training_policy import generated_model_pool_version, should_force_model_pool_challenger
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
+from .gcs_batch_io import download_existing_blobs
 
 
 class UniversalPrepRequest(BaseModel):
@@ -403,21 +404,19 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     all_X, all_y, all_dates = [], [], []
     gcs_io = {"prep_objects": 0, "prep_bytes": 0, "download_elapsed_s": 0.0}
     gcs_t0 = time.time()
-    for i in range(req.batch_count):
-        blob = bucket.blob(f"{gcs_prefix}/prep/batch_{i}.npz")
-        if not blob.exists():
-            print(f"[TrainUniversal] batch_{i}.npz not found, skipping")
+    batch_keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(req.batch_count)]
+    for key, raw in download_existing_blobs(bucket, batch_keys, max_workers=4):
+        if raw is None:
+            print(f"[TrainUniversal] {key.split('/')[-1]} not found, skipping")
             continue
-        buf = io.BytesIO()
-        blob.download_to_file(buf)
         gcs_io["prep_objects"] += 1
-        gcs_io["prep_bytes"] += len(buf.getvalue())
-        buf.seek(0)
+        gcs_io["prep_bytes"] += len(raw)
+        buf = io.BytesIO(raw)
         data = np.load(buf, allow_pickle=True)
         all_X.append(data["X"])
         all_y.append(data["y"])
         all_dates.append(data["dates"])
-        print(f"[TrainUniversal] batch_{i}: {len(data['X'])} rows loaded")
+        print(f"[TrainUniversal] {key.split('/')[-1]}: {len(data['X'])} rows loaded")
     gcs_io["download_elapsed_s"] = round(time.time() - gcs_t0, 3)
 
     if not all_X:
@@ -1229,10 +1228,10 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
         return {"error": "No prep data in GCS. Run retrain first."}
 
     all_X, all_y, all_dates = [], [], []
-    for blob in prep_blobs:
-        buf = io.BytesIO()
-        blob.download_to_file(buf)
-        buf.seek(0)
+    for key, raw in download_existing_blobs(bucket, [b.name for b in prep_blobs], max_workers=4):
+        if raw is None:
+            continue
+        buf = io.BytesIO(raw)
         data = np.load(buf, allow_pickle=True)
         all_X.append(data["X"])
         all_y.append(data["y"])

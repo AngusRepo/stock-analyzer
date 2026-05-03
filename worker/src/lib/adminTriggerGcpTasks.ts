@@ -9,13 +9,15 @@ import {
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
 export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
+  const requestedRunDate = () => c.req.query('date') || undefined
+
   return {
     'obsidian-daily': async () => runObsidianDaily(c.env, twToday()),
     'obsidian-sync': async () => runObsidianDaily(c.env, twToday()),
     'regime-compute': async () => runRegimeCompute(c.env),
     'model-ic-tracker': async () => runModelIcTrackerChain(c.env),
     'weekly-audit': () => deps.runWeeklyAudit(),
-    'verify-v2': async () => runVerifyV2(c.env),
+    'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),
     backtest: () => deps.runWeeklyBacktest(),
     'weekly-backtest': async () => {
       const bt = await deps.runWeeklyBacktest()

@@ -56,7 +56,9 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
                 "weekly_ic": [0.1],
                 "ic_4w_avg": 0.1,
                 "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
                 "last_ic_sample_count": 90,
+                "last_ic_diagnostics": {"raw_rows": 90, "production_rows": 90},
                 "last_ic_score_sources": {"forecast_data.rank_score": 90},
                 "challenger": {
                     "version": "v2",
@@ -64,7 +66,9 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
                     "weekly_ic": [0.2],
                     "ic_4w_avg": 0.2,
                     "last_ic_status": "computed",
+                    "last_ic_root_cause": "ok",
                     "last_ic_sample_count": 88,
+                    "last_ic_diagnostics": {"raw_rows": 88, "production_rows": 88},
                     "shadow_since": "2026-04-20",
                 },
             }
@@ -89,8 +93,11 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
     assert model["metadata_exists"] is True
     assert model["metadata"] == {"version": "v1", "feature_count": 106}
     assert model["last_ic_status"] == "computed"
+    assert model["last_ic_root_cause"] == "ok"
     assert model["last_ic_sample_count"] == 90
+    assert model["last_ic_diagnostics"]["production_rows"] == 90
     assert model["last_ic_score_sources"] == {"forecast_data.rank_score": 90}
     assert model["challenger"]["metadata_exists"] is True
+    assert model["challenger"]["last_ic_root_cause"] == "ok"
     assert model["challenger"]["last_ic_sample_count"] == 88
     assert result["events"] == [{"model": "XGBoost", "transition": "register"}]

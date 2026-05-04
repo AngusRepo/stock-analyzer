@@ -11,7 +11,7 @@
 
 import type { Bindings } from '../types'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
-import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
+import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
@@ -988,9 +988,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
          WHERE tag_type='concept' AND symbol IN (${ph})
          ORDER BY symbol, weight DESC`
       ).bind(...scored.map(c => c.symbol)).all<{ symbol: string; tag: string }>()
-      const symbolTopTag = new Map<string, string>()
+      const symbolTags = new Map<string, string[]>()
       for (const r of topTagRows ?? []) {
-        if (!symbolTopTag.has(r.symbol)) symbolTopTag.set(r.symbol, r.tag)
+        const tags = symbolTags.get(r.symbol) ?? []
+        tags.push(r.tag)
+        symbolTags.set(r.symbol, tags)
       }
       // (b) 最新 sector_flow (theme) 的 quadrant
       const { results: qRows } = await env.DB.prepare(
@@ -1005,13 +1007,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rsRatio: Number(r.rs_ratio ?? 100),
         rsMomentum: Number(r.rs_momentum ?? 0),
       })
+      const latestThemeUniverse = new Set(themeQuadrant.keys())
 
       // Apply bonus to each scored candidate
       for (const c of scored) {
-        const tag = symbolTopTag.get(c.symbol)
+        const tags = symbolTags.get(c.symbol) ?? []
+        const tag = tags.find((candidateTag) => latestThemeUniverse.has(candidateTag)) ?? tags[0]
         if (!tag) continue
         const overlay = themeQuadrant.get(tag)
-        if (!overlay) continue
+        if (!overlay) {
+          pushFunnelItem(funnelItems, {
+            symbol: c.symbol,
+            name: c.name,
+            stage: 'rrg_overlay',
+            decision: 'observe',
+            reasonCode: 'rrg_overlay_unmapped_neutral',
+            scoreBefore: c.score,
+            scoreAfter: c.score,
+            evidence: { tag, latestThemeUniverseSize: latestThemeUniverse.size },
+          })
+          continue
+        }
         const { quadrant: q, rsRatio, rsMomentum } = overlay
         let adjustment = 0
         let reasonCode = 'rrg_overlay_neutral'
@@ -1701,6 +1717,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     for (let b = 0; b < recBatch.length; b += BATCH) {
       await env.DB.batch(recBatch.slice(b, b + BATCH))
     }
+
+    const seedSymbols = [
+      ...finalCandidates.map(c => c.symbol),
+      ...emergingResearchCandidates.map(c => c.symbol),
+    ].map(s => String(s || '').trim()).filter(Boolean)
+    await env.DB.prepare(buildScreenerSeedPruneSql(seedSymbols.length))
+      .bind(endDate, ...seedSymbols)
+      .run()
 
     // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
     if (finalCandidates.length > 0) {

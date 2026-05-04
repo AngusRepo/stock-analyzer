@@ -54,10 +54,11 @@ def read_model_pool_health_rows() -> list[dict[str, Any]]:
             "rolling_ic": rolling_ic,
             "ic_mean": ic_4w if ic_4w is not None else rolling_ic,
             "last_ic_status": raw.get("last_ic_status"),
+            "last_ic_root_cause": raw.get("last_ic_root_cause"),
             "last_ic_sample_count": raw.get("last_ic_sample_count") or 0,
+            "last_ic_diagnostics": raw.get("last_ic_diagnostics") or {},
             "weekly_ic_count": len(raw.get("weekly_ic") or []),
             "metadata_exists": raw.get("metadata_exists"),
             "source_of_truth": "model_pool.json",
         })
     return rows
-

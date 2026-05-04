@@ -91,20 +91,9 @@ async function enrichPendingBuyContext(
          WHERE p2.stock_id = s.id
            AND p2.model_name = 'ensemble'
            AND (
-             COALESCE(p2.prediction_date, '') = dr.date
-             OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = dr.date)
-             OR (
-               p2.prediction_date IS NULL
-               AND p2.generated_at >= dr.date
-               AND p2.generated_at < datetime(dr.date, '+2 days')
-             )
+             p2.prediction_date = dr.date
            )
          ORDER BY
-           CASE
-             WHEN COALESCE(p2.prediction_date, '') = dr.date THEN 0
-             WHEN p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = dr.date THEN 1
-             ELSE 2
-           END,
            p2.generated_at DESC,
            p2.id DESC
          LIMIT 1
@@ -123,11 +112,6 @@ async function enrichPendingBuyContext(
                ROW_NUMBER() OVER (
                  PARTITION BY stock_id, model_name
                  ORDER BY
-                   CASE
-                     WHEN COALESCE(prediction_date, '') = ? THEN 0
-                     WHEN prediction_date IS NULL AND date(generated_at, '+8 hours') = ? THEN 1
-                     ELSE 2
-                   END,
                    generated_at DESC,
                    id DESC
                ) AS rn
@@ -135,27 +119,14 @@ async function enrichPendingBuyContext(
          WHERE stock_id IN (${stockPlaceholders})
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND (
-             COALESCE(prediction_date, '') = ?
-             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
-             OR (
-               prediction_date IS NULL
-               AND generated_at >= ?
-               AND generated_at < datetime(?, '+2 days')
-             )
-           )
+           AND prediction_date = ?
       )
       SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
         FROM ranked
        WHERE rn = 1
        ORDER BY stock_id, model_name
     `).bind(
-      sourceRecoDate,
-      sourceRecoDate,
       ...stockIds,
-      sourceRecoDate,
-      sourceRecoDate,
-      sourceRecoDate,
       sourceRecoDate,
     ).all<any>().catch(() => ({ results: [] as any[] }))
     for (const row of perModelRows ?? []) {

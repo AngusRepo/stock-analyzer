@@ -17,6 +17,29 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
 assert(manifest.owner === 'gcp-scheduler', 'scheduler manifest must declare gcp-scheduler owner')
 assert(Array.isArray(manifest.jobs) && manifest.jobs.length >= 20, 'scheduler manifest should cover daily, intraday, weekly, and monthly jobs')
 
+const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
+const cronGcpDomainTasks = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
+const tradingDayTasks = [
+  'intraday-check',
+  'intraday-rescore',
+  'eod-exit',
+  'daily-snapshot',
+  'update',
+  'ml-warmup',
+  'screener',
+  'pipeline',
+  'adapt',
+  'daily-report',
+  'obsidian-sync',
+  'regime-compute',
+  'verify-v2',
+  'us-leading',
+  'news-analyst',
+  'morning-setup',
+  'morning-briefing',
+  'pre-market-warmup',
+]
+
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const combinedTasks = `${workerTasks}\n${gcpTasks}`
@@ -27,6 +50,12 @@ for (const job of manifest.jobs) {
   assert(!ids.has(job.id), `duplicate scheduler job id: ${job.id}`)
   ids.add(job.id)
   assert(hasTaskHandler(combinedTasks, job.task), `scheduler task ${job.task} has no admin trigger handler`)
+  assert(schedulerPolicy.includes(`${job.task}':`) || schedulerPolicy.includes(`${job.task}:`), `scheduler task ${job.task} must have an explicit calendar policy`)
+}
+
+for (const task of tradingDayTasks) {
+  const policyPattern = new RegExp(`['"]?${task}['"]?\\s*:\\s*\\{[^}]*kind:\\s*['"]trading_day['"][^}]*holidayGated:\\s*true`, 's')
+  assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
 for (const required of ['update', 'ml-warmup', 'screener', 'pipeline', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
@@ -45,6 +74,8 @@ for (const monthly of ['monthly-optuna', 'monthly-retrain']) {
 
 const monthlyRetrain = manifest.jobs.find((j: any) => j.id === 'monthly-retrain')
 assert(monthlyRetrain?.timeZone === 'Asia/Taipei', 'monthly retrain should use TW wall-clock time instead of UTC offset gymnastics')
+assert(cronGcpDomainTasks.includes("runWithLog('obsidian-sync'"), 'obsidian scheduler log key must match manifest id obsidian-sync')
+assert(!cronGcpDomainTasks.includes("runWithLog('obsidian-daily'"), 'obsidian-daily is a compat trigger alias, not the scheduler log owner')
 
 const syncScript = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(syncScript.includes('SCHEDULER_AUTH_TOKEN'), 'scheduler sync must load auth token from env, not source')

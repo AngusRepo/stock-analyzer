@@ -36,7 +36,9 @@ def test_compute_weekly_ic_uses_rank_score_and_reports_score_sources():
     result = compute_weekly_ic_from_rows(rows, min_samples=4, all_tracked=("XGBoost",))
 
     assert result["XGBoost"]["status"] == "computed"
+    assert result["XGBoost"]["root_cause"] == "ok"
     assert result["XGBoost"]["ic"] == 1.0
+    assert result["XGBoost"]["diagnostics"]["production_rows"] == 4
     assert result["XGBoost"]["score_sources"] == {"forecast_data.rank_score": 4}
 
 
@@ -117,9 +119,33 @@ def test_compute_weekly_ic_marks_constant_scores_as_undefined_variance():
     result = compute_weekly_ic_from_rows(rows, min_samples=4, all_tracked=("FT-Transformer",))
 
     assert result["FT-Transformer"]["status"] == "undefined_variance"
+    assert result["FT-Transformer"]["root_cause"] == "undefined_variance"
     assert result["FT-Transformer"]["ic"] is None
     assert result["FT-Transformer"]["n_samples"] == 4
     assert result["FT-Transformer"]["error"] == "rank_score_or_actual_return_has_zero_cross_sectional_variance"
+
+
+def test_compute_weekly_ic_reports_actionable_root_causes():
+    rows = [
+        {"model_name": "XGBoost", "forecast_data": '{"rank_score": 1}', "actual_return_pct": 0.01, "verified_at": None},
+        {"model_name": "CatBoost", "forecast_data": '{"rank_score": 1}', "actual_return_pct": None, "verified_at": "2026-05-01"},
+        {"model_name": "LightGBM", "forecast_data": "{}", "actual_return_pct": 0.01, "verified_at": "2026-05-01"},
+    ]
+
+    result = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=2,
+        all_tracked=("XGBoost", "CatBoost", "LightGBM", "DLinear"),
+    )
+
+    assert result["XGBoost"]["root_cause"] == "verification_missing"
+    assert result["XGBoost"]["diagnostics"]["unverified_rows"] == 1
+    assert result["CatBoost"]["root_cause"] == "outcome_missing"
+    assert result["CatBoost"]["diagnostics"]["missing_outcome_rows"] == 1
+    assert result["LightGBM"]["root_cause"] == "ranking_signal_missing"
+    assert result["LightGBM"]["diagnostics"]["missing_score_rows"] == 1
+    assert result["DLinear"]["root_cause"] == "prediction_missing"
+    assert result["DLinear"]["diagnostics"]["raw_rows"] == 0
 
 
 def test_apply_weekly_ic_updates_active_and_challenger_histories():
@@ -178,10 +204,40 @@ def test_apply_weekly_ic_records_sample_diagnostics_even_when_insufficient():
     assert changed is True
     assert pool["models"]["XGBoost"]["weekly_ic"] == []
     assert pool["models"]["XGBoost"]["last_ic_status"] == "insufficient_samples"
+    assert pool["models"]["XGBoost"]["last_ic_root_cause"] is None
     assert pool["models"]["XGBoost"]["last_ic_sample_count"] == 12
     assert pool["models"]["XGBoost"]["last_ic_score_sources"] == {"forecast_data.rank_score": 12}
     assert changes["XGBoost"]["status"] == "insufficient_samples"
     assert changes["XGBoost"]["n_samples"] == 12
+
+
+def test_apply_weekly_ic_persists_root_cause_diagnostics():
+    pool = {
+        "models": {
+            "XGBoost": {
+                "weekly_ic": [],
+                "ic_4w_avg": None,
+                "consecutive_negative_weeks": 0,
+            }
+        }
+    }
+    per_model_ic = {
+        "XGBoost": {
+            "status": "insufficient_samples",
+            "root_cause": "outcome_missing",
+            "n_samples": 0,
+            "diagnostics": {"raw_rows": 30, "outcome_rows": 0},
+            "score_sources": {},
+        }
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(pool, per_model_ic, history_max=26)
+
+    assert changed is True
+    assert pool["models"]["XGBoost"]["last_ic_root_cause"] == "outcome_missing"
+    assert pool["models"]["XGBoost"]["last_ic_diagnostics"]["raw_rows"] == 30
+    assert changes["XGBoost"]["root_cause"] == "outcome_missing"
+    assert changes["XGBoost"]["diagnostics"]["outcome_rows"] == 0
 
 
 def test_apply_weekly_ic_persists_segment_ic_diagnostics():

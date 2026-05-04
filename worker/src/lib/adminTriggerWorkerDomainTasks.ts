@@ -42,7 +42,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     screener: () => deps.runMarketScreener(requestedRunDate()),
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
-    recommendation: () => deps.runDailyRecommendation(),
+    recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
     'paper-trade': () => deps.runPaperAutoTrade(),
     'morning-setup': async () => {
       const { settlePaperT2 } = await import('./cronOrchestrator')

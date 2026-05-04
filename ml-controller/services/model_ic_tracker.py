@@ -123,18 +123,49 @@ def compute_weekly_ic_from_rows(
     by_model: dict[str, list[tuple[float, float]]] = {name: [] for name in tracked}
     by_model_segment: dict[str, dict[str, list[tuple[float, float]]]] = {name: {} for name in tracked}
     score_sources: dict[str, dict[str, int]] = {name: {} for name in tracked}
+    diagnostics: dict[str, dict[str, int]] = {
+        name: {
+            "raw_rows": 0,
+            "verified_rows": 0,
+            "outcome_rows": 0,
+            "score_rows": 0,
+            "production_rows": 0,
+            "non_production_rows": 0,
+            "unverified_rows": 0,
+            "missing_outcome_rows": 0,
+            "missing_score_rows": 0,
+        }
+        for name in tracked
+    }
 
     for row in rows:
         model_name = str(row.get("model_name") or "")
         if model_name not in by_model:
             continue
+        diag = diagnostics[model_name]
+        diag["raw_rows"] += 1
+        if "verified_at" in row and not row.get("verified_at"):
+            diag["unverified_rows"] += 1
+            continue
+        diag["verified_rows"] += 1
         score, source = rank_score_from_prediction_row(row)
         actual = _as_float(row.get("actual_return_pct"))
+        if actual is None:
+            diag["missing_outcome_rows"] += 1
+        else:
+            diag["outcome_rows"] += 1
+        if score is None:
+            diag["missing_score_rows"] += 1
+        else:
+            diag["score_rows"] += 1
         if score is None or actual is None:
             continue
         segment = market_segment_from_prediction_row(row)
         if segment in PRODUCTION_IC_SEGMENTS:
             by_model[model_name].append((score, actual))
+            diag["production_rows"] += 1
+        else:
+            diag["non_production_rows"] += 1
         by_model_segment[model_name].setdefault(segment, []).append((score, actual))
         source_counts = score_sources[model_name]
         source_counts[source] = source_counts.get(source, 0) + 1
@@ -154,10 +185,24 @@ def compute_weekly_ic_from_rows(
                 "ic": round(segment_ic, 6) if segment_ic is not None else None,
                 "n_samples": len(segment_pairs),
             }
+        diag = diagnostics[name]
+        root_cause = "ok"
+        if diag["raw_rows"] == 0:
+            root_cause = "prediction_missing"
+        elif diag["verified_rows"] == 0:
+            root_cause = "verification_missing"
+        elif diag["outcome_rows"] == 0:
+            root_cause = "outcome_missing"
+        elif diag["score_rows"] == 0:
+            root_cause = "ranking_signal_missing"
+        elif len(pairs) < min_samples:
+            root_cause = "coverage_low"
         if len(pairs) < min_samples:
             out[name] = {
                 "status": "insufficient_samples",
+                "root_cause": root_cause,
                 "n_samples": len(pairs),
+                "diagnostics": diag,
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
             }
@@ -166,8 +211,10 @@ def compute_weekly_ic_from_rows(
         if ic is None:
             out[name] = {
                 "status": "undefined_variance",
+                "root_cause": "undefined_variance",
                 "ic": None,
                 "n_samples": len(pairs),
+                "diagnostics": diag,
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
                 "error": "rank_score_or_actual_return_has_zero_cross_sectional_variance",
@@ -175,8 +222,10 @@ def compute_weekly_ic_from_rows(
             continue
         out[name] = {
             "status": "computed",
+            "root_cause": "ok",
             "ic": round(ic, 6),
             "n_samples": len(pairs),
+            "diagnostics": diag,
             "score_sources": score_sources[name],
             "segments": segment_diag,
         }
@@ -209,12 +258,16 @@ def apply_weekly_ic_to_pool(
         target["last_ic_score_sources"] = info.get("score_sources") or {}
         target["last_ic_by_segment"] = info.get("segments") or {}
         target["last_ic_error"] = info.get("error")
+        target["last_ic_root_cause"] = info.get("root_cause")
+        target["last_ic_diagnostics"] = info.get("diagnostics") or {}
 
         ic = info.get("ic")
         if ic is None:
             pool_changes[tracked_name] = {
                 "status": target["last_ic_status"],
+                "root_cause": target["last_ic_root_cause"],
                 "n_samples": target["last_ic_sample_count"],
+                "diagnostics": target["last_ic_diagnostics"],
                 "score_sources": target["last_ic_score_sources"],
                 "segments": target["last_ic_by_segment"],
                 "history_len": len(target.get("weekly_ic") or []),
@@ -227,7 +280,9 @@ def apply_weekly_ic_to_pool(
             pool_changes[tracked_name] = {
                 "rolling_ic": ic,
                 "status": target["last_ic_status"],
+                "root_cause": target["last_ic_root_cause"],
                 "n_samples": target["last_ic_sample_count"],
+                "diagnostics": target["last_ic_diagnostics"],
                 "score_sources": info.get("score_sources") or {},
                 "segments": info.get("segments") or {},
                 "history_len": len(target.get("weekly_ic") or []),
@@ -250,6 +305,8 @@ def apply_weekly_ic_to_pool(
             "ic": ic,
             "ic_4w_avg": target["ic_4w_avg"],
             "consecutive_negative_weeks": target["consecutive_negative_weeks"],
+            "root_cause": target["last_ic_root_cause"],
+            "diagnostics": target["last_ic_diagnostics"],
             "history_len": len(target["weekly_ic"]),
             "score_sources": info.get("score_sources") or {},
             "segments": info.get("segments") or {},

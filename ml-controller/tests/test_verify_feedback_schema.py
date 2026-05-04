@@ -132,7 +132,10 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     )
 
     assert "BETWEEN ? AND ?" in str(captured["sql"])
-    assert "UPPER(COALESCE(s.market, '')) IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
+    assert "date(COALESCE" not in str(captured["sql"])
+    assert "UPPER(COALESCE" not in str(captured["sql"])
+    assert "p.prediction_date BETWEEN ? AND ?" in str(captured["sql"])
+    assert "s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
     assert captured["params"] == ["2026-04-19", "2026-04-29", 600]
 
 

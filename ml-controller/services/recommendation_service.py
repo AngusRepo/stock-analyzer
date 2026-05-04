@@ -48,8 +48,27 @@ logger = logging.getLogger(__name__)
 def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
     """Align prediction dedupe with the pipeline business date when available."""
     if run_date:
-        return f"COALESCE({COL_PREDICTION_DATE}, date({COL_GENERATED_AT}, '+8 hours')) = ?", [run_date]
-    return f"date({COL_GENERATED_AT}) = date('now')", []
+        return f"{COL_PREDICTION_DATE} = ?", [run_date]
+    return f"{COL_PREDICTION_DATE} = date('now', '+8 hours')", []
+
+
+def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> int:
+    """Remove same-date prediction rows that no longer belong to the current V2 universe."""
+    safe_ids = [int(stock_id) for stock_id in stock_ids if stock_id]
+    if safe_ids:
+        placeholders = ",".join("?" for _ in safe_ids)
+        result = d1_client.execute(
+            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} NOT IN ({placeholders})",
+            [run_date, *safe_ids],
+            timeout=60,
+        )
+    else:
+        result = d1_client.execute(
+            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
+            [run_date],
+            timeout=60,
+        )
+    return int(((result or {}).get("meta") or {}).get("changes") or 0)
 
 
 def _sanitize_non_finite(value: Any) -> tuple[Any, int]:
@@ -333,118 +352,11 @@ def _is_use_ensemble_v2() -> bool:
         return True
 
 
-def _score_seed_row_from_payload(payload: dict) -> tuple[float, float, float | None]:
-    """Build controller-owned screener seed scores when the legacy screener row is absent."""
-    prices = _sorted_payload_rows(payload, "prices")
-    indicators = _sorted_payload_rows(payload, "indicators")
-    chips = _sorted_payload_rows(payload, "chips")
-    latest_price = prices[-1].get("close") if prices else None
-    latest_ind = indicators[-1] if indicators else {}
-
-    recent_chips = chips[-5:]
-    foreign_net_5d = sum((c.get("foreign_net") or 0) for c in recent_chips)
-    trust_net_5d = sum((c.get("trust_net") or 0) for c in recent_chips)
-    net_5d = foreign_net_5d + trust_net_5d
-
-    recent_prices = prices[-20:]
-    recent_closes = [float(p.get("close") or 0.0) for p in recent_prices if float(p.get("close") or 0.0) > 0]
-    avg_volume = 0.0
-    if recent_prices:
-        volumes = [float(p.get("volume") or 0) for p in recent_prices]
-        avg_volume = sum(volumes) / max(1, len(volumes))
-    chip_intensity = (net_5d / max(avg_volume, 1.0)) if avg_volume else 0.0
-
-    # Use a stricter accumulation scale: 5-day institutional net buy relative
-    # to 20-day average volume. The old 20% threshold made many bull-market
-    # names look almost perfect even without exceptional flow.
-    if chip_intensity > 0.80:
-        chip_score = 32.0
-    elif chip_intensity > 0.45:
-        chip_score = 24.0
-    elif chip_intensity > 0.20:
-        chip_score = 16.0
-    elif chip_intensity > 0.05:
-        chip_score = 8.0
-    elif chip_intensity > -0.05:
-        chip_score = 2.0
-    else:
-        chip_score = 0.0
-
-    rsi = latest_ind.get("rsi14")
-    macd_hist = latest_ind.get("macdHist") or latest_ind.get("macd_hist") or 0
-    ma20 = latest_ind.get("ma20")
-    tech_score = 0.0
-    if isinstance(rsi, Real):
-        rsi_value = float(rsi)
-        if 55 <= rsi_value <= 68:
-            tech_score += 10.0
-        elif 68 < rsi_value <= 75:
-            tech_score += 6.0
-        elif 45 <= rsi_value < 55:
-            tech_score += 4.0
-        elif 75 < rsi_value <= 85:
-            tech_score += 2.0
-        elif 30 <= rsi_value < 45:
-            tech_score += 2.0
-        else:
-            tech_score += 0.0
-    if macd_hist and float(macd_hist) > 0:
-        tech_score += 6.0
-    if latest_price and len(recent_closes) >= 5 and float(latest_price) > (sum(recent_closes[-5:]) / 5):
-        tech_score += 1.0
-    if latest_price and ma20 and float(latest_price) > float(ma20):
-        tech_score += 3.0
-    if latest_price and len(recent_closes) >= 20 and float(latest_price) > (sum(recent_closes[-20:]) / 20):
-        tech_score += 1.0
-
-    return min(40.0, chip_score), min(30.0, tech_score), latest_price
-
-
 def _sorted_payload_rows(payload: dict, key: str) -> list[dict]:
     rows = [row for row in (payload.get(key) or []) if isinstance(row, dict)]
     if any(row.get("date") for row in rows):
         return sorted(rows, key=lambda row: str(row.get("date") or ""))
     return rows
-
-
-def build_screener_seed_recommendations(
-    active_stocks: list[dict],
-    payloads: list[dict],
-    run_date: str,
-) -> list[dict]:
-    """
-    Seed daily recommendations from controller-owned payloads when the legacy
-    screener has not pre-populated daily_recommendations.
-    """
-    payload_by_sym = {p.get("symbol"): p for p in payloads if p.get("symbol")}
-    seeds: list[dict] = []
-    for stock in active_stocks:
-        symbol = stock.get("symbol")
-        if not symbol:
-            continue
-        payload = payload_by_sym.get(symbol) or {}
-        chip_score, tech_score, latest_price = _score_seed_row_from_payload(payload)
-        seeds.append({
-            "date": run_date,
-            "stock_id": stock.get("id"),
-            "symbol": symbol,
-            "name": stock.get("name") or symbol,
-            "sector": stock.get("sector"),
-            "industry": stock.get("industry"),
-            "rank": 0,
-            "score": round((chip_score + tech_score) * 10) / 10,
-            "chip_score": chip_score,
-            "tech_score": tech_score,
-            "ml_score": 0.0,
-            "signal": None,
-            "confidence": None,
-            "reason": "controller_seed",
-            "watch_points": ["controller_seed"],
-            "has_buy_signal": 0,
-            "current_price": latest_price,
-        })
-    logger.info("[recommendation_service] Built %s controller screener seed rows", len(seeds))
-    return seeds
 
 
 def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str, int]) -> str:
@@ -1317,7 +1229,7 @@ def update_recommendations_in_d1(
                 score,
                 r.get("signal"),
                 confidence,
-                r.get("reason") or "controller_seed",
+                r.get("reason") or "pipeline_reason_unavailable",
                 json.dumps(watch_points, ensure_ascii=False),
                 r.get("has_buy_signal") or 0,
                 current_price,

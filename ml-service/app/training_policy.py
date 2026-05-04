@@ -118,6 +118,87 @@ PREDICT_ONLY_MODEL_NOTES = {
 }
 
 
+TREE_MODEL_NAMES = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM")
+FULL_TABULAR_MODEL_NAMES = ("FT-Transformer",)
+SEQUENCE_MODEL_GROUPS = ("dlinear", "patchtst")
+
+
+@dataclass(frozen=True)
+class TrainingGroupFeaturePolicy:
+    group: str
+    models: tuple[str, ...]
+    feature_source: str
+    skip_feature_pool: bool
+    mergeable_oos: bool
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
+    "tree": TrainingGroupFeaturePolicy(
+        group="tree",
+        models=TREE_MODEL_NAMES,
+        feature_source="feature_pool.tree_active",
+        skip_feature_pool=False,
+        mergeable_oos=True,
+        note="Tree models use selected tabular features from feature_pool.tree_active.",
+    ),
+    "ftt": TrainingGroupFeaturePolicy(
+        group="ftt",
+        models=FULL_TABULAR_MODEL_NAMES,
+        feature_source="feature_pool.ft_active",
+        skip_feature_pool=True,
+        mergeable_oos=True,
+        note="FT-Transformer uses the full tabular feature set declared by feature_pool.ft_active.",
+    ),
+    "dlinear": TrainingGroupFeaturePolicy(
+        group="dlinear",
+        models=("DLinear",),
+        feature_source="sequence_records.close_only",
+        skip_feature_pool=True,
+        mergeable_oos=False,
+        note="DLinear trains on close-price sequence records, not tabular feature_pool columns.",
+    ),
+    "patchtst": TrainingGroupFeaturePolicy(
+        group="patchtst",
+        models=("PatchTST",),
+        feature_source="sequence_records.close_only",
+        skip_feature_pool=True,
+        mergeable_oos=False,
+        note="PatchTST trains on close-price sequence records, not tabular feature_pool columns.",
+    ),
+}
+
+
+def training_group_feature_policy(group: str) -> TrainingGroupFeaturePolicy | None:
+    return TRAINING_GROUP_FEATURE_POLICIES.get(str(group or "").strip().lower())
+
+
+def models_for_training_group(group: str) -> list[str]:
+    policy = training_group_feature_policy(group)
+    return list(policy.models) if policy else []
+
+
+def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[str, Any]:
+    policy = training_group_feature_policy(group)
+    if policy is None:
+        return dict(base_payload)
+    payload = dict(base_payload)
+    payload["models_filter"] = list(policy.models)
+    payload["skip_feature_pool"] = policy.skip_feature_pool
+    payload["feature_policy"] = policy.to_dict()
+    return payload
+
+
+def should_force_full_feature_pool(models_filter: list[str] | tuple[str, ...] | None) -> bool:
+    if not models_filter:
+        return False
+    requested = {str(model) for model in models_filter}
+    return bool(requested) and requested.issubset(set(FULL_TABULAR_MODEL_NAMES))
+
+
 @dataclass(frozen=True)
 class UniversalTrainingPolicy:
     default_train_groups: tuple[str, ...] = ("tree", "ftt", "dlinear", "patchtst")

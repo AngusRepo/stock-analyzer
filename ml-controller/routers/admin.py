@@ -513,8 +513,8 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
     rows = d1_query(
         "SELECT stock_id, generated_at, prediction_date, forecast_data FROM predictions "
         "WHERE model_name='ensemble' "
-        "AND COALESCE(prediction_date, date(generated_at, '+8 hours')) >= ? "
-        "AND COALESCE(prediction_date, date(generated_at, '+8 hours')) <= ? "
+        "AND prediction_date >= ? "
+        "AND prediction_date <= ? "
         "ORDER BY generated_at DESC LIMIT 50000",
         [start_date, end_date],
     )

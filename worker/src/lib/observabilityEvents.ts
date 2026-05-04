@@ -374,7 +374,7 @@ export function buildEventsFromModelPool(input: {
     title: name,
     summary: model.metadata_exists === false
       ? `${name} metadata is missing`
-      : `${name} IC is weak or unavailable`,
+      : `${name} IC is weak or unavailable (${String(model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown')})`,
     owner: 'Cloud Run',
     impact: 'Model votes may be deweighted, neutralized, or harder to audit.',
     next_action: 'Trace latest training artifact metadata, weekly IC tracker, and promote/degrade event logs.',
@@ -383,7 +383,10 @@ export function buildEventsFromModelPool(input: {
       status: model.status,
       ic_4w_avg: model.ic_4w_avg,
       rolling_ic: model.rolling_ic,
+      ic_status: model.last_ic_status,
+      ic_root_cause: model.last_ic_root_cause,
       sample_count: model.last_ic_sample_count,
+      ic_diagnostics: model.last_ic_diagnostics,
       metadata_exists: model.metadata_exists,
       family: model.balance_family ?? model.model_type,
     },

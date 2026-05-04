@@ -7,7 +7,7 @@ export interface TriggerDeps {
   runMarketScreener: (runDate?: string) => Promise<any>
   runDailyUpdate: (force?: boolean, runDate?: string) => Promise<any>
   runMLAndRiskV2: (runDate?: string) => Promise<any>
-  runDailyRecommendation: () => Promise<any>
+  runDailyRecommendation: (runDate?: string) => Promise<any>
   runPaperAutoTrade: () => Promise<any>
   setupMorningPendingBuys: () => Promise<any>
   runIntradayCheck: () => Promise<any>

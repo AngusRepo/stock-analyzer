@@ -8,8 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.training_policy import (  # noqa: E402
     FeatureSelectionPolicy,
     UniversalTrainingPolicy,
+    build_group_train_payload,
     generated_model_pool_version,
+    models_for_training_group,
+    should_force_full_feature_pool,
     should_force_model_pool_challenger,
+    training_group_feature_policy,
 )
 
 
@@ -127,3 +131,49 @@ def test_universal_train_walk_forward_keeps_explicit_storage_scope():
         walk_forward_mode=True,
         output_model_version=None,
     ) is False
+
+
+def test_training_group_feature_policies_are_single_source_of_truth():
+    tree = training_group_feature_policy("tree")
+    ftt = training_group_feature_policy("ftt")
+    dlinear = training_group_feature_policy("dlinear")
+    patchtst = training_group_feature_policy("patchtst")
+
+    assert tree.feature_source == "feature_pool.tree_active"
+    assert tree.skip_feature_pool is False
+    assert tree.mergeable_oos is True
+    assert models_for_training_group("tree") == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+
+    assert ftt.feature_source == "feature_pool.ft_active"
+    assert ftt.skip_feature_pool is True
+    assert ftt.mergeable_oos is True
+    assert models_for_training_group("ftt") == ["FT-Transformer"]
+
+    assert dlinear.feature_source == "sequence_records.close_only"
+    assert dlinear.skip_feature_pool is True
+    assert dlinear.mergeable_oos is False
+    assert patchtst.feature_source == "sequence_records.close_only"
+    assert patchtst.skip_feature_pool is True
+    assert patchtst.mergeable_oos is False
+
+
+def test_group_train_payload_enforces_tree_vs_ft_feature_policy():
+    base = {"batch_count": 5, "skip_feature_pool": True, "models_filter": ["Legacy"]}
+
+    tree_payload = build_group_train_payload(base, "tree")
+    ftt_payload = build_group_train_payload(base, "ftt")
+
+    assert tree_payload["models_filter"] == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+    assert tree_payload["skip_feature_pool"] is False
+    assert tree_payload["feature_policy"]["feature_source"] == "feature_pool.tree_active"
+
+    assert ftt_payload["models_filter"] == ["FT-Transformer"]
+    assert ftt_payload["skip_feature_pool"] is True
+    assert ftt_payload["feature_policy"]["feature_source"] == "feature_pool.ft_active"
+
+
+def test_ft_transformer_filter_forces_full_feature_pool_defensively():
+    assert should_force_full_feature_pool(["FT-Transformer"]) is True
+    assert should_force_full_feature_pool(["XGBoost", "LightGBM"]) is False
+    assert should_force_full_feature_pool(["FT-Transformer", "XGBoost"]) is False
+    assert should_force_full_feature_pool(None) is False

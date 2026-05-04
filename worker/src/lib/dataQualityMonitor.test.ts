@@ -65,6 +65,21 @@ void (async () => {
 }
 
 {
+  const check = buildFreshnessCheck({
+    id: 'technical_indicator_freshness',
+    label: 'Technical indicators',
+    latestDate: '2026-04-30',
+    targetDate: '2026-04-30',
+    rowsOnLatest: 32,
+    warnLagDays: 0,
+    failLagDays: 0,
+    minRows: 1000,
+  })
+  assert(check.status === 'fail', 'technical indicators must be full-market, not watchlist-only')
+  assert(check.summary.includes('rows=32/1000'), 'technical indicator row floor must be explicit')
+}
+
+{
   const rows = EXPECTED_V2_MODELS
     .filter((model) => model !== 'Chronos')
     .map((model) => ({ model_name: model, count: 20, stocks: 20 }))

@@ -1,4 +1,5 @@
 import {
+  buildScreenerSeedPruneSql,
   buildScreenerSeedRow,
   buildScreenerSeedUpsertSql,
   normalizeScreenerSeedCandidate,
@@ -66,4 +67,11 @@ function assert(condition: unknown, message: string): void {
   assert(sql.includes('daily_recommendations.signal IS NULL'), 'upsert should preserve ML owner fields')
   assert(sql.includes('daily_recommendations.confidence IS NULL'), 'upsert should preserve confidence owner field')
   assert(sql.includes('COALESCE(daily_recommendations.ml_score, 0) = 0'), 'upsert should preserve ML score owner field')
+}
+
+{
+  const sql = buildScreenerSeedPruneSql(3)
+  assert(sql.includes('DELETE FROM daily_recommendations WHERE date = ?'), 'prune SQL should be date scoped')
+  assert(sql.includes('symbol NOT IN (?,?,?)'), 'prune SQL should keep only current seed symbols')
+  assert(buildScreenerSeedPruneSql(0) === 'DELETE FROM daily_recommendations WHERE date = ?', 'empty seed should clear the date')
 }

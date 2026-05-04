@@ -26,7 +26,11 @@ from .artifact_contract import (
     validate_model_artifact_metadata,
 )
 from .model_store import _get_bucket, save_model
-from .training_policy import generated_model_pool_version, should_force_model_pool_challenger
+from .training_policy import (
+    generated_model_pool_version,
+    should_force_full_feature_pool,
+    should_force_model_pool_challenger,
+)
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
 
@@ -429,8 +433,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     fn_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
 
-    if req.skip_feature_pool:
-        print(f"[TrainUniversal] skip_feature_pool=True -> using all {len(feature_names)} features (FT-T mode)")
+    force_full_feature_pool = should_force_full_feature_pool(req.models_filter)
+    effective_skip_feature_pool = req.skip_feature_pool or force_full_feature_pool
+    if effective_skip_feature_pool:
+        reason = "skip_feature_pool=True"
+        if force_full_feature_pool and not req.skip_feature_pool:
+            reason = f"models_filter={req.models_filter} -> full-feature policy"
+        print(f"[TrainUniversal] {reason} -> using all {len(feature_names)} features")
     else:
         pool_path = req.feature_pool_path or "universal/feature_pool.json"
         try:

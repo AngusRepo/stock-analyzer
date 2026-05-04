@@ -11,9 +11,9 @@ from services import recommendation_service  # noqa: E402
 from services import modal_client  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     build_reason,
-    build_screener_seed_recommendations,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
+    prune_predictions_outside_universe,
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
@@ -156,22 +156,6 @@ def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
     assert "600000000" not in reason
     assert "6.0" in reason
     assert "億" in reason
-
-
-def test_build_screener_seed_recommendations_from_payloads():
-    seeds = build_screener_seed_recommendations(
-        [{"id": 1, "symbol": "2330", "name": "TSMC", "sector": "Semis", "industry": "IC"}],
-        [_payload("2330")],
-        "2026-04-27",
-    )
-
-    assert len(seeds) == 1
-    assert seeds[0]["date"] == "2026-04-27"
-    assert seeds[0]["stock_id"] == 1
-    assert seeds[0]["symbol"] == "2330"
-    assert seeds[0]["current_price"] == 100.0
-    assert seeds[0]["chip_score"] >= 0
-    assert seeds[0]["tech_score"] > 0
 
 
 def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
@@ -420,6 +404,26 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 
     stale_cleanup_sql, stale_cleanup_params = captured["statements"][1]
     assert "model_name!='ensemble'" in stale_cleanup_sql
-    assert "COALESCE(prediction_date, date(generated_at, '+8 hours')) = ?" in stale_cleanup_sql
+    assert "prediction_date = ?" in stale_cleanup_sql
     assert stale_cleanup_params == [1, "2026-04-29"]
     assert written == 2
+
+
+def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):
+    captured = {}
+
+    def _fake_execute(sql, params, timeout=60):
+        captured["sql"] = sql
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"meta": {"changes": 12}}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+
+    deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
+
+    assert deleted == 12
+    assert "DELETE FROM predictions" in captured["sql"]
+    assert "prediction_date = ?" in captured["sql"]
+    assert "stock_id NOT IN (?,?,?)" in captured["sql"]
+    assert captured["params"] == ["2026-04-30", 1, 2, 3]

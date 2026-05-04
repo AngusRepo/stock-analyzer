@@ -36,6 +36,7 @@ from services.recommendation_service import (
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
     write_predictions_to_d1,
+    prune_predictions_outside_universe,
     update_recommendations_in_d1,
     delete_filtered_recommendations,
     re_rank_recommendations,
@@ -67,7 +68,7 @@ class PipelineStateV2(TypedDict, total=False):
     run_date: str
 
     # Loaded inputs
-    active_stocks: list[dict]              # from D1 stocks WHERE in_current_watchlist=1
+    active_stocks: list[dict]              # from daily_recommendations V2 screener universe
     screener_recs: list[dict]              # from D1 daily_recommendations (existing chip+tech)
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
@@ -725,7 +726,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
         # Top concept per symbol (highest weight)
         placeholders = ",".join("?" * len(symbols))
         tag_rows = d1_client.query(
-            f"SELECT symbol, tag FROM stock_tags WHERE symbol IN ({placeholders}) "
+            f"SELECT symbol, tag FROM stock_tags WHERE tag_type = 'concept' AND symbol IN ({placeholders}) "
             f"ORDER BY symbol, weight DESC",
             list(symbols),
         )
@@ -947,6 +948,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     # 1. Predictions
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
+    stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
     predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
 
     # 2. Merge LLM reasons into recommendations (overwrite template)
@@ -978,6 +980,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
         "sell_deleted": sell_deleted,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),

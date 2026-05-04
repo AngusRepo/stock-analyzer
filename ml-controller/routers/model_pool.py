@@ -515,15 +515,15 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     t0 = time.time()
     all_tracked = tracked_model_names()
 
-    # 1. Pull verified per-model rows from D1.
+    # 1. Pull broad per-model rows from D1. The domain service classifies
+    # missing verification/outcome/rank-signal root causes instead of letting SQL
+    # hide them behind a generic insufficient_samples result.
     placeholders = ",".join(["?"] * len(all_tracked))
     sql = f"""
-        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, generated_at, prediction_date
+        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
         FROM predictions
         WHERE model_name IN ({placeholders})
-          AND actual_return_pct IS NOT NULL
-          AND verified_at IS NOT NULL
-          AND date(COALESCE(prediction_date, generated_at)) >= date('now', ?)
+          AND date(prediction_date) >= date('now', ?)
     """
     rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
     per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
@@ -1235,7 +1235,9 @@ async def lineage():
                     "weekly_ic": challenger.get("weekly_ic") or [],
                     "ic_4w_avg": challenger.get("ic_4w_avg"),
                     "last_ic_status": challenger.get("last_ic_status"),
+                    "last_ic_root_cause": challenger.get("last_ic_root_cause"),
                     "last_ic_sample_count": challenger.get("last_ic_sample_count") or 0,
+                    "last_ic_diagnostics": challenger.get("last_ic_diagnostics") or {},
                     "last_ic_score_sources": challenger.get("last_ic_score_sources") or {},
                 }
 
@@ -1253,7 +1255,9 @@ async def lineage():
                 "weekly_ic": entry.get("weekly_ic") or [],
                 "ic_4w_avg": entry.get("ic_4w_avg"),
                 "last_ic_status": entry.get("last_ic_status"),
+                "last_ic_root_cause": entry.get("last_ic_root_cause"),
                 "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
+                "last_ic_diagnostics": entry.get("last_ic_diagnostics") or {},
                 "last_ic_score_sources": entry.get("last_ic_score_sources") or {},
                 "consecutive_negative_weeks": entry.get("consecutive_negative_weeks") or 0,
                 "challenger": challenger_out,

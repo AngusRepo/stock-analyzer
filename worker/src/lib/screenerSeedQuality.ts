@@ -179,3 +179,12 @@ export function buildScreenerSeedUpsertSql(): string {
       eligible_for_pending_buy = excluded.eligible_for_pending_buy
   `
 }
+
+export function buildScreenerSeedPruneSql(symbolCount: number): string {
+  const count = Math.max(0, Math.floor(Number(symbolCount) || 0))
+  if (count <= 0) {
+    return 'DELETE FROM daily_recommendations WHERE date = ?'
+  }
+  const placeholders = Array.from({ length: count }, () => '?').join(',')
+  return `DELETE FROM daily_recommendations WHERE date = ? AND symbol NOT IN (${placeholders})`
+}

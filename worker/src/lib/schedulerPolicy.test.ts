@@ -40,6 +40,16 @@ void (async () => {
   }
 
   {
+    const next = await getNextRunApproxWithPolicy({
+      task: 'intraday-rescore',
+      cron: '0 2,3,4 * * 1-5 + 30 4 * * 1-5',
+      kv: kvWithHolidays(['2026-05-01']),
+      nowTw: new Date('2026-05-01T08:00:00.000Z'),
+    })
+    assert(next === '5/4 10:00', `composite intraday cron should skip holiday/weekend and choose earliest leg, got ${next}`)
+  }
+
+  {
     const queueGate = await shouldRunScheduledTask({
       task: 'optuna-queue',
       kv: kvWithHolidays(['2026-05-01']),

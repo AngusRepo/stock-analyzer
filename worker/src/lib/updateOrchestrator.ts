@@ -5,7 +5,13 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 
-const UPDATE_BATCH_SIZE = 6
+const UPDATE_BATCH_SIZE = 25
+
+const UPDATE_UNIVERSE_WHERE = `
+  COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
+  AND COALESCE(UPPER(market), '') NOT LIKE '%ETF%'
+  AND COALESCE(UPPER(market), '') NOT LIKE '%WARRANT%'
+`
 
 function resolveUpdateDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -17,7 +23,7 @@ function resolveUpdateDate(runDate?: string | null): string {
 }
 
 type ProcessUpdateBatchDeps = {
-  runMLAndRiskV2: (env: Bindings) => Promise<string>
+  runMLAndRiskV2: (env: Bindings, runDate?: string) => Promise<string>
 }
 
 export async function runBulkFetch(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -25,7 +31,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
-    const ready = await assertMarketDataReady(env.DB, twDate)
+    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
     return `bulk fetch skipped; ${ready.summary}`
   }
 
@@ -36,7 +42,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
       bulkFetchAndStorePrices(env.DB, twDate),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    const ready = await assertMarketDataReady(env.DB, twDate)
+    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
     return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
@@ -54,7 +60,7 @@ export async function runQueueUpdate(env: Bindings, runDate?: string) {
     return
   }
 
-  console.log('[Cron] Kicking off queue update for screened candidates...')
+  console.log('[Cron] Kicking off queue update for full TW market indicator universe...')
   try {
     await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
@@ -281,18 +287,25 @@ export async function processUpdateBatch(
 ): Promise<void> {
   const { cursor, triggerTime } = msg
 
-  const today = new Date().toISOString().split('T')[0]
-  if (triggerTime !== today) {
-    console.log(`[Queue] Stale message from ${triggerTime}, skipping.`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+    console.log(`[Queue] Invalid update trigger date ${triggerTime}, skipping.`)
     return
   }
 
   const { results: batch } = await env.DB.prepare(
-    'SELECT id, symbol, market, name FROM stocks WHERE in_current_watchlist=1 AND id > ? ORDER BY id ASC LIMIT ?',
+    `SELECT id, symbol, market, name, in_current_watchlist
+       FROM stocks
+      WHERE ${UPDATE_UNIVERSE_WHERE}
+        AND id > ?
+      ORDER BY id ASC
+      LIMIT ?`,
   ).bind(cursor, UPDATE_BATCH_SIZE).all<any>()
 
   const remainingCount = await env.DB.prepare(
-    'SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1 AND id > ?',
+    `SELECT COUNT(*) as cnt
+       FROM stocks
+      WHERE ${UPDATE_UNIVERSE_WHERE}
+        AND id > ?`,
   ).bind(cursor).first<{ cnt: number }>().then((row) => row?.cnt ?? 0)
 
   if (batch.length === 0) {
@@ -309,13 +322,17 @@ export async function processUpdateBatch(
         'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?',
       ).bind(stock.id).first<{ cnt: number }>()
 
-      if ((priceCount?.cnt ?? 0) < 20) {
+      if ((priceCount?.cnt ?? 0) < 20 && Number(stock.in_current_watchlist ?? 0) === 1) {
         await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
       }
 
       await computeAndStoreIndicators(env.DB, stock.id)
-      await crawlAndStoreNews(env.DB, stock)
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      if (Number(stock.in_current_watchlist ?? 0) === 1) {
+        await crawlAndStoreNews(env.DB, stock)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
     } catch (e) {
       console.error(`[Queue] Failed ${stock.symbol}:`, e)
     }
@@ -339,8 +356,8 @@ export async function processUpdateBatch(
   await checkAlerts(env)
 
   try {
-    await deps.runMLAndRiskV2(env)
-    console.log('[Queue] Event-driven: triggered runMLAndRiskV2 after update complete')
+    await deps.runMLAndRiskV2(env, triggerTime)
+    console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
   } catch (e) {
     console.warn('[Queue] Event-driven ML trigger failed (cron fallback still active):', e)
   }

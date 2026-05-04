@@ -970,6 +970,8 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 
 recommendations.use('/*', authMiddleware)
 
+const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
+
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
@@ -980,14 +982,14 @@ recommendations.get('/daily', async (c) => {
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     // 先看今天有沒有
     const todayCount = await c.env.DB.prepare(
-      'SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ?'
+      `SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ? AND ${FINAL_RECOMMENDATION_WHERE}`
     ).bind(twToday).first<{ cnt: number }>()
     if ((todayCount?.cnt ?? 0) > 0) {
       date = twToday
     } else {
       // 沒有 → 查上一個交易日（最新有推薦資料的日期）
       const prev = await c.env.DB.prepare(
-        'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1'
+        `SELECT date FROM daily_recommendations WHERE date < ? AND ${FINAL_RECOMMENDATION_WHERE} ORDER BY date DESC LIMIT 1`
       ).bind(twToday).first<{ date: string }>()
       date = prev?.date ?? twToday
       if (date !== twToday) resolvedFrom = 'fallback_prev'
@@ -996,51 +998,9 @@ recommendations.get('/daily', async (c) => {
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { results } = await c.env.DB.prepare(`
     SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
-           (
-             SELECT ROUND(COALESCE(SUM(c.foreign_net * (
-               SELECT sp.close FROM stock_prices sp
-               JOIN stocks s2 ON s2.id = sp.stock_id
-               WHERE s2.symbol = c.symbol AND sp.date <= c.date
-               ORDER BY sp.date DESC LIMIT 1
-             )) / 100000000.0, 0), 6)
-               FROM chip_data c
-              WHERE c.symbol = r.symbol
-                AND c.date IN (
-                  SELECT DISTINCT date FROM chip_data
-                   WHERE date <= r.date
-                   ORDER BY date DESC LIMIT 5
-                )
-           ) AS chip_cash_foreign_5d,
-           (
-             SELECT ROUND(COALESCE(SUM(c.trust_net * (
-               SELECT sp.close FROM stock_prices sp
-               JOIN stocks s2 ON s2.id = sp.stock_id
-               WHERE s2.symbol = c.symbol AND sp.date <= c.date
-               ORDER BY sp.date DESC LIMIT 1
-             )) / 100000000.0, 0), 6)
-               FROM chip_data c
-              WHERE c.symbol = r.symbol
-                AND c.date IN (
-                  SELECT DISTINCT date FROM chip_data
-                   WHERE date <= r.date
-                   ORDER BY date DESC LIMIT 5
-                )
-           ) AS chip_cash_trust_5d,
-           (
-             SELECT ROUND(COALESCE(SUM(c.dealer_net * (
-               SELECT sp.close FROM stock_prices sp
-               JOIN stocks s2 ON s2.id = sp.stock_id
-               WHERE s2.symbol = c.symbol AND sp.date <= c.date
-               ORDER BY sp.date DESC LIMIT 1
-             )) / 100000000.0, 0), 6)
-               FROM chip_data c
-              WHERE c.symbol = r.symbol
-                AND c.date IN (
-                  SELECT DISTINCT date FROM chip_data
-                   WHERE date <= r.date
-                   ORDER BY date DESC LIMIT 5
-                )
-           ) AS dealer_net_5d,
+           ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
+           ROUND(COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_trust_5d,
+           0 AS dealer_net_5d,
            (
              SELECT sp.open
                FROM stock_prices sp
@@ -1064,15 +1024,7 @@ recommendations.get('/daily', async (c) => {
         FROM predictions p2
        WHERE p2.stock_id = r.stock_id
          AND p2.model_name = 'ensemble'
-         AND (
-           COALESCE(p2.prediction_date, '') = r.date
-           OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') = r.date)
-           OR (
-             p2.prediction_date IS NULL
-             AND p2.generated_at >= r.date
-             AND p2.generated_at < datetime(r.date, '+2 days')
-           )
-         )
+         AND p2.prediction_date = r.date
        ORDER BY p2.generated_at DESC, p2.id DESC
        LIMIT 1
     )
@@ -1116,17 +1068,9 @@ recommendations.get('/daily', async (c) => {
        WHERE stock_id IN (${placeholders})
          AND model_name != 'ensemble'
          AND model_name NOT LIKE '%::challenger'
-         AND (
-           COALESCE(prediction_date, '') = ?
-           OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
-           OR (
-             prediction_date IS NULL
-             AND generated_at >= ?
-             AND generated_at < datetime(?, '+2 days')
-           )
-         )
+         AND prediction_date = ?
        ORDER BY stock_id, model_name
-    `).bind(...stockIds, date, date, date, date).all<any>().catch(() => ({ results: [] as any[] }))
+    `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
     for (const row of perModelRows ?? []) {
       const id = Number(row.stock_id)
       const list = perModelByStock.get(id) ?? []
@@ -1213,15 +1157,7 @@ recommendations.get('/history', async (c) => {
     LEFT JOIN predictions p
       ON p.stock_id = r.stock_id
       AND p.model_name = 'ensemble'
-      AND (
-        COALESCE(p.prediction_date, '') = r.date
-        OR (p.prediction_date IS NULL AND date(p.generated_at, '+8 hours') = r.date)
-        OR (
-          p.prediction_date IS NULL
-          AND p.generated_at >= r.date
-          AND p.generated_at < datetime(r.date, '+2 days')
-        )
-      )
+      AND p.prediction_date = r.date
     WHERE r.date >= date('now', '-' || ? || ' days')
     ORDER BY r.date DESC, r.rank ASC
   `).bind(days).all<any>()

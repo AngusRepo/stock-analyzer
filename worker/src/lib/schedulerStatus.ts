@@ -31,7 +31,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
   { id: 'adapt', name: 'Adapt Params', schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5', group: 'daily' },
   { id: 'daily-report', name: 'Daily Report', schedule: 'Weekdays 18:25', cron: '25 10 * * 1-5', group: 'daily' },
-  { id: 'obsidian-daily', name: 'Obsidian Sync', schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5', group: 'daily' },
+  { id: 'obsidian-sync', name: 'Obsidian Sync', schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5', group: 'daily' },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'Weekdays 18:50', cron: '50 10 * * 1-5', group: 'daily' },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
@@ -176,6 +176,23 @@ function formatTimestamp(ts: string): string {
   }
 }
 
+function parseNextRunForSort(value: string): number {
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\s+(\d{2}):(\d{2})$/)
+  if (!match) return Number.POSITIVE_INFINITY
+  const nowTw = new Date(Date.now() + 8 * 3600_000)
+  const candidate = new Date(Date.UTC(
+    nowTw.getUTCFullYear(),
+    Number.parseInt(match[1], 10) - 1,
+    Number.parseInt(match[2], 10),
+    Number.parseInt(match[3], 10),
+    Number.parseInt(match[4], 10),
+    0,
+    0,
+  ))
+  if (candidate < nowTw) candidate.setUTCFullYear(candidate.getUTCFullYear() + 1)
+  return candidate.getTime()
+}
+
 export async function getSchedulerStatus(env: Bindings) {
   const dates = getLast7Dates()
   const today = dates[0]
@@ -250,7 +267,7 @@ export async function getSchedulerStatus(env: Bindings) {
 
   const nextJob = jobs
     .filter((job) => job.nextRun !== 'N/A')
-    .sort((a, b) => a.nextRun.localeCompare(b.nextRun))[0]
+    .sort((a, b) => parseNextRunForSort(a.nextRun) - parseNextRunForSort(b.nextRun))[0]
 
   let dagSteps = DAG_STEPS.map((name) => ({ name, duration: 'N/A', status: 'skip' as string }))
   try {
@@ -269,7 +286,7 @@ export async function getSchedulerStatus(env: Bindings) {
     dagSteps = DAG_STEPS.map((name) => ({ name, duration: 'N/A', status: 'skip' as string }))
   }
 
-  const heatmapJobs = ['pipeline', 'ml-predict', 'intraday-rescore', 'morning-setup', 'us-leading', 'weekly-cleanup', 'weekly-audit', 'obsidian-daily']
+  const heatmapJobs = ['pipeline', 'ml-predict', 'intraday-rescore', 'morning-setup', 'us-leading', 'weekly-cleanup', 'weekly-audit', 'obsidian-sync']
   const heatmap = heatmapJobs.map((jobId) => {
     const job = jobs.find((row) => row.id === jobId)
     return {

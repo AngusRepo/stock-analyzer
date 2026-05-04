@@ -121,7 +121,7 @@ export function buildFreshnessCheck(input: {
       id: input.id,
       label: input.label,
       status: 'fail',
-      summary: `${input.label} latest date has too few rows (${rows}/${rowFloor})`,
+      summary: `${input.label} latest date has too few rows rows=${rows}/${rowFloor}`,
       metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor },
     }
   }
@@ -732,35 +732,16 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     env.DB.prepare(
       `SELECT model_name, COUNT(*) AS count, COUNT(DISTINCT stock_id) AS stocks
        FROM predictions
-       WHERE (
-         COALESCE(prediction_date, '') = ?
-         OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
-         OR (
-           prediction_date IS NULL
-           AND generated_at >= ?
-           AND generated_at < datetime(?, '+2 days')
-         )
-       )
+       WHERE prediction_date = ?
        GROUP BY model_name ORDER BY model_name`,
-    ).bind(targetDate, targetDate, targetDate, targetDate).all<PredictionCoverageRow>(),
+    ).bind(targetDate).all<PredictionCoverageRow>(),
     firstCount(
       env.DB,
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN feature_version IS NULL OR TRIM(feature_version) = '' THEN 1 ELSE 0 END) AS missing_feature_version,
               COUNT(DISTINCT CASE WHEN feature_version IS NOT NULL AND TRIM(feature_version) <> '' THEN feature_version END) AS distinct_feature_versions
        FROM predictions
-       WHERE (
-         COALESCE(prediction_date, '') = ?
-         OR (prediction_date IS NULL AND date(generated_at, '+8 hours') = ?)
-         OR (
-           prediction_date IS NULL
-           AND generated_at >= ?
-           AND generated_at < datetime(?, '+2 days')
-         )
-       )`,
-      targetDate,
-      targetDate,
-      targetDate,
+       WHERE prediction_date = ?`,
       targetDate,
     ).catch((): CountRow => ({})),
     env.DB.prepare(
@@ -772,7 +753,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE model_name IN (${expectedModelPlaceholders})
          AND actual_return_pct IS NOT NULL
          AND verified_at IS NOT NULL
-         AND date(COALESCE(prediction_date, generated_at)) >= date('now', '-7 days')
+         AND date(prediction_date) >= date('now', '-7 days')
        GROUP BY model_name
        ORDER BY model_name`,
     ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
@@ -807,9 +788,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       latestDate: tiStats.latest_date,
       targetDate,
       rowsOnLatest: tiStats.rows_on_latest,
-      warnLagDays: 2,
-      failLagDays: 5,
-      minRows: 10,
+      warnLagDays: 0,
+      failLagDays: 0,
+      minRows: 1000,
     }),
     buildPredictionCoverageCheck(predictionGroups.results ?? []),
     buildRecommendationMlOwnerCheck({

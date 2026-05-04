@@ -778,7 +778,7 @@ class MLPredictionsCache:
     Source:
       D1 predictions WHERE
         model_name='ensemble' AND
-        COALESCE(prediction_date, date(generated_at, '+8 hours')) BETWEEN start_date AND end_date
+        prediction_date BETWEEN start_date AND end_date
 
     confidence is read from `direction_accuracy` column (set at INSERT time
     by recommendation_service to ml result["confidence"], which is the
@@ -802,12 +802,12 @@ class MLPredictionsCache:
         """
         from services.d1_client import query as d1_query
         sql = """
-            SELECT s.symbol, COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) AS d, p.direction_accuracy AS conf
+            SELECT s.symbol, p.prediction_date AS d, p.direction_accuracy AS conf
             FROM predictions p
             JOIN stocks s ON s.id = p.stock_id
             WHERE p.model_name = 'ensemble'
-              AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) >= ?
-              AND COALESCE(p.prediction_date, date(p.generated_at, '+8 hours')) <= ?
+              AND p.prediction_date >= ?
+              AND p.prediction_date <= ?
               AND p.direction_accuracy IS NOT NULL
         """
         rows = d1_query(sql, [start_date, end_date])

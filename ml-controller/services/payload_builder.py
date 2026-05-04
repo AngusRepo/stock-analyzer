@@ -643,11 +643,6 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_active_stocks() -> list[dict]:
-    """Read all stocks in current watchlist from D1."""
-    return d1_client.query("SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC")
-
-
 def _normalize_market(value: Any) -> str:
     text = str(value or "").strip().upper()
     if text in {"TWSE", "TSE", "LISTED"}:

@@ -6,6 +6,8 @@ export interface MarketDataReadinessStats {
   priceOtcRowsOnLatest?: number
   chipLatestDate: string | null
   chipRowsOnLatest: number
+  indicatorLatestDate?: string | null
+  indicatorRowsOnLatest?: number
 }
 
 export interface MarketDataReadinessOptions {
@@ -13,6 +15,8 @@ export interface MarketDataReadinessOptions {
   minPriceTwseRows?: number
   minPriceOtcRows?: number
   minChipRows?: number
+  minIndicatorRows?: number
+  requireIndicators?: boolean
 }
 
 export interface MarketDataReadinessResult {
@@ -26,6 +30,7 @@ const DEFAULT_MIN_PRICE_ROWS = 1000
 const DEFAULT_MIN_PRICE_TWSE_ROWS = 900
 const DEFAULT_MIN_PRICE_OTC_ROWS = 700
 const DEFAULT_MIN_CHIP_ROWS = 1000
+const DEFAULT_MIN_INDICATOR_ROWS = 1000
 
 function normalizeRows(value: unknown): number {
   const n = Number(value ?? 0)
@@ -40,6 +45,8 @@ export function evaluateMarketDataReadiness(
   const minPriceTwseRows = options.minPriceTwseRows ?? DEFAULT_MIN_PRICE_TWSE_ROWS
   const minPriceOtcRows = options.minPriceOtcRows ?? DEFAULT_MIN_PRICE_OTC_ROWS
   const minChipRows = options.minChipRows ?? DEFAULT_MIN_CHIP_ROWS
+  const minIndicatorRows = options.minIndicatorRows ?? DEFAULT_MIN_INDICATOR_ROWS
+  const requireIndicators = options.requireIndicators ?? true
   const errors: string[] = []
 
   if (stats.priceLatestDate !== stats.targetDate) {
@@ -60,6 +67,12 @@ export function evaluateMarketDataReadiness(
   if (normalizeRows(stats.chipRowsOnLatest) < minChipRows) {
     errors.push(`chip rows=${stats.chipRowsOnLatest}/${minChipRows}`)
   }
+  if (requireIndicators && stats.indicatorLatestDate !== undefined && stats.indicatorLatestDate !== stats.targetDate) {
+    errors.push(`indicator latest=${stats.indicatorLatestDate ?? 'none'} expected=${stats.targetDate}`)
+  }
+  if (requireIndicators && stats.indicatorRowsOnLatest !== undefined && normalizeRows(stats.indicatorRowsOnLatest) < minIndicatorRows) {
+    errors.push(`indicator rows=${stats.indicatorRowsOnLatest}/${minIndicatorRows}`)
+  }
 
   return {
     ok: errors.length === 0,
@@ -68,7 +81,8 @@ export function evaluateMarketDataReadiness(
       : `market data ready for ${stats.targetDate}: price=${stats.priceRowsOnLatest}` +
         (stats.priceTwseRowsOnLatest !== undefined ? ` TWSE=${stats.priceTwseRowsOnLatest}` : '') +
         (stats.priceOtcRowsOnLatest !== undefined ? ` OTC=${stats.priceOtcRowsOnLatest}` : '') +
-        `, chip=${stats.chipRowsOnLatest}`,
+        `, chip=${stats.chipRowsOnLatest}` +
+        (stats.indicatorRowsOnLatest !== undefined ? `, indicators=${stats.indicatorRowsOnLatest}` : ''),
     errors,
     stats,
   }
@@ -105,9 +119,10 @@ export async function loadMarketDataReadinessStats(
   db: D1Database,
   targetDate: string,
 ): Promise<MarketDataReadinessStats> {
-  const [price, chip] = await Promise.all([
+  const [price, chip, indicators] = await Promise.all([
     latestTableStats(db, 'stock_prices'),
     latestTableStats(db, 'chip_data'),
+    latestTableStats(db, 'technical_indicators'),
   ])
   const priceSegments = await latestPriceSegmentStats(db, price.latestDate)
   return {
@@ -118,6 +133,8 @@ export async function loadMarketDataReadinessStats(
     priceOtcRowsOnLatest: priceSegments.otcRows,
     chipLatestDate: chip.latestDate,
     chipRowsOnLatest: chip.rowsOnLatest,
+    indicatorLatestDate: indicators.latestDate,
+    indicatorRowsOnLatest: indicators.rowsOnLatest,
   }
 }
 

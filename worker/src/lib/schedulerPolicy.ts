@@ -19,7 +19,7 @@ const DEFAULT_POLICY: SchedulerTaskPolicy = {
   description: 'non-market maintenance task',
 }
 
-const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
+export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'intraday-check': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday execution guard' },
   'intraday-rescore': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday ML re-score' },
   'eod-exit': { kind: 'trading_day', holidayGated: true, description: 'market close exit workflow' },
@@ -176,6 +176,18 @@ function formatNextRun(candidate: Date, hourTw: number, minute: number): string 
   return `${candidate.getUTCMonth() + 1}/${candidate.getUTCDate()} ${String(hourTw).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
 }
 
+function parseNextRunDisplay(value: string, nowTw: Date): number {
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\s+(\d{2}):(\d{2})$/)
+  if (!match) return Number.POSITIVE_INFINITY
+  const month = Number.parseInt(match[1], 10) - 1
+  const day = Number.parseInt(match[2], 10)
+  const hour = Number.parseInt(match[3], 10)
+  const minute = Number.parseInt(match[4], 10)
+  const candidate = new Date(Date.UTC(nowTw.getUTCFullYear(), month, day, hour, minute, 0, 0))
+  if (candidate < nowTw) candidate.setUTCFullYear(candidate.getUTCFullYear() + 1)
+  return candidate.getTime()
+}
+
 export function getSchedulerTaskPolicy(task: string): SchedulerTaskPolicy {
   return TASK_POLICIES[task] ?? DEFAULT_POLICY
 }
@@ -216,8 +228,23 @@ export async function getNextRunApproxWithPolicy(input: {
 }): Promise<string> {
   const { cron, task, kv } = input
   if (!cron) return 'N/A'
-  const groc = parseFirstWeekdayOfMonth(cron)
   const nowTw = input.nowTw ?? twNowDate()
+
+  if (cron.includes('+')) {
+    const candidates = await Promise.all(
+      cron.split('+').map((part) => getNextRunApproxWithPolicy({
+        task,
+        cron: part.trim(),
+        kv,
+        nowTw,
+      })),
+    )
+    return candidates
+      .filter((candidate) => candidate !== 'N/A')
+      .sort((a, b) => parseNextRunDisplay(a, nowTw) - parseNextRunDisplay(b, nowTw))[0] ?? 'N/A'
+  }
+
+  const groc = parseFirstWeekdayOfMonth(cron)
   if (groc) {
     for (let offset = 0; offset < 14; offset += 1) {
       const monthAnchor = new Date(Date.UTC(nowTw.getUTCFullYear(), nowTw.getUTCMonth() + offset, 1, 0, 0, 0, 0))

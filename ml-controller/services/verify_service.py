@@ -65,10 +65,10 @@ def load_pending_predictions(
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
         WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
-          AND date(COALESCE(p.prediction_date, p.generated_at)) BETWEEN ? AND ?
-          AND UPPER(COALESCE(s.market, '')) IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
+          AND p.prediction_date BETWEEN ? AND ?
+          AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
-        ORDER BY date(COALESCE(p.prediction_date, p.generated_at)) DESC, p.generated_at ASC
+        ORDER BY p.prediction_date DESC, p.generated_at ASC
         LIMIT ?
     """
     rows = d1_client.query(sql, params=[min_prediction_date, max_prediction_date, limit])

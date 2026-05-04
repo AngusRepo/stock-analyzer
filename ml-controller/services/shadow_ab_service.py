@@ -135,7 +135,7 @@ def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]
         f"""
         SELECT
             stock_id,
-            COALESCE(prediction_date, date(generated_at, '+8 hours')) AS sample_date,
+            prediction_date AS sample_date,
             model_name,
             direction_accuracy,
             actual_return_pct
@@ -143,7 +143,7 @@ def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]
         WHERE verified_at IS NOT NULL
           AND actual_return_pct IS NOT NULL
           AND direction_accuracy IS NOT NULL
-          AND COALESCE(prediction_date, date(generated_at, '+8 hours')) >= date('now', ?)
+          AND prediction_date >= date('now', ?)
           AND (
             model_name IN ({challenger_csv})
             OR model_name IN (

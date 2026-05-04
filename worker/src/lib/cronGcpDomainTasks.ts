@@ -42,7 +42,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   }
 
   if (cron === '40 10 * * 1-5') {
-    runWithLog('obsidian-daily', async () => {
+    runWithLog('obsidian-sync', async () => {
       const json = await runObsidianDaily(env, twToday())
       return typeof json === 'string' ? json : JSON.stringify(json).slice(0, 300)
     })

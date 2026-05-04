@@ -38,6 +38,7 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/p9GateScriptContract.test.ts `
   src/lib/paperIntradayData.test.ts `
   src/lib/paperTradeMath.test.ts `
+  src/lib/predictionDateOwnerContract.test.ts `
   src/lib/researchEvaluationPlan.test.ts `
   src/lib/researchEvaluationRunner.test.ts `
   src/lib/researchExperimentRegistry.test.ts `
@@ -78,6 +79,8 @@ node .tmp-test-run/lib/paperIntradayData.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperIntradayData.test failed" }
 node .tmp-test-run/lib/paperTradeMath.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperTradeMath.test failed" }
+node .tmp-test-run/lib/predictionDateOwnerContract.test.js
+if ($LASTEXITCODE -ne 0) { throw "predictionDateOwnerContract.test failed" }
 node .tmp-test-run/lib/researchEvaluationPlan.test.js
 if ($LASTEXITCODE -ne 0) { throw "researchEvaluationPlan.test failed" }
 node .tmp-test-run/lib/researchEvaluationRunner.test.js

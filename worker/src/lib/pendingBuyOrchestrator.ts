@@ -338,12 +338,15 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
     const { results: tagRows } = await db.prepare(
       `SELECT symbol, tag
          FROM stock_tags
-        WHERE symbol IN (${placeholders})
+        WHERE tag_type = 'concept'
+          AND symbol IN (${placeholders})
         ORDER BY symbol, weight DESC`,
     ).bind(...symbols).all<any>()
-    const topTagBySymbol = new Map<string, string>()
+    const tagsBySymbol = new Map<string, string[]>()
     for (const row of tagRows ?? []) {
-      if (!topTagBySymbol.has(row.symbol)) topTagBySymbol.set(row.symbol, row.tag)
+      const tags = tagsBySymbol.get(row.symbol) ?? []
+      tags.push(row.tag)
+      tagsBySymbol.set(row.symbol, tags)
     }
 
     const { results: quadrantRows } = await db.prepare(
@@ -366,10 +369,21 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
         rs_momentum: Number(row.rs_momentum),
       })
     }
+    const themeUniverse = new Set(themeQuadrants.keys())
 
     for (const symbol of symbols) {
-      const theme = topTagBySymbol.get(symbol)
+      const tags = tagsBySymbol.get(symbol) ?? []
+      const theme = tags.find((tag) => themeUniverse.has(tag)) ?? tags[0]
       if (!theme) continue
+      if (!themeUniverse.has(theme)) {
+        symbolQuadrantMap.set(symbol, {
+          theme,
+          quadrant: 'Unmapped',
+          rs_ratio: 100,
+          rs_momentum: 0,
+        })
+        continue
+      }
       const info = themeQuadrants.get(theme)
       if (!info) continue
       symbolQuadrantMap.set(symbol, { theme, ...info })
@@ -559,6 +573,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
+    const sourceRecoDate = prevDay
     const pendingBuyLimit = Math.max(1, Math.floor(cfg.ranking?.topK ?? 3))
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
@@ -601,15 +616,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             FROM predictions p2
            WHERE p2.stock_id = s.id
              AND p2.model_name = 'ensemble'
-             AND (
-               COALESCE(p2.prediction_date, '') IN (dr.date, ?)
-               OR (p2.prediction_date IS NULL AND date(p2.generated_at, '+8 hours') IN (dr.date, ?))
-               OR (
-                 p2.prediction_date IS NULL
-                 AND p2.generated_at >= dr.date
-                 AND p2.generated_at < datetime(dr.date, '+2 days')
-               )
-             )
+             AND p2.prediction_date IN (dr.date, ?)
            ORDER BY p2.generated_at DESC, p2.id DESC
            LIMIT 1
         )
@@ -627,7 +634,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          ) IS NOT NULL
         ORDER BY dr.score DESC, dr.confidence DESC
         LIMIT ?
-    `).bind(prevDay, prevDay, pendingDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
+    `).bind(sourceRecoDate, sourceRecoDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -635,7 +642,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       await persistPendingBuys(env, pendingDate, [], {
         status: 'empty',
         reason: 'no_buy_recommendations',
-        prev_day: prevDay,
+        prev_day: sourceRecoDate,
       })
       return
     }
@@ -650,24 +657,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          WHERE stock_id IN (${placeholders})
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND (
-             COALESCE(prediction_date, '') IN (?, ?)
-             OR (prediction_date IS NULL AND date(generated_at, '+8 hours') IN (?, ?))
-             OR (
-               prediction_date IS NULL
-               AND generated_at >= ?
-               AND generated_at < datetime(?, '+2 days')
-             )
-           )
+           AND prediction_date IN (?, ?)
          ORDER BY stock_id, model_name, generated_at DESC
       `).bind(
         ...stockIds,
         pendingDate,
-        prevDay,
-        pendingDate,
-        prevDay,
-        pendingDate,
-        pendingDate,
+        sourceRecoDate,
       ).all<(PerModelPredictionRow & { stock_id: number | null })>().catch(() => ({ results: [] }))
       for (const row of perModelRows ?? []) {
         const id = Number(row.stock_id)
@@ -758,6 +753,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           action: 'REJECT',
         })
         continue
+      } else if (quadrant?.quadrant === 'Unmapped') {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: quadrant.theme,
+          quadrant: quadrant.quadrant,
+          action: 'RRG_UNMAPPED_NEUTRAL',
+        })
       }
 
       let debateVerdict = 'PENDING'

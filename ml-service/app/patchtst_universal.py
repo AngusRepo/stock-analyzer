@@ -217,7 +217,7 @@ def train_patchtst(
             "input_series": len(series_close),
             "windows": int(n_total),
             "lifecycle_ready": False,
-            "reason": "legacy_series_close_without_symbol_date",
+            "reason": "series_close_missing_symbol_date_metadata",
         }
     n_total = len(X)
     logger.info(f"[PatchTSTUniversal] Built {n_total} windows from {sequence_report.get('input_series')} series")
@@ -296,16 +296,29 @@ def train_patchtst(
             "oos_samples": int(len(val_idx)),
             "daily_ic_count": 0,
             "passed": False,
-            "reason": "legacy_series_close_without_symbol_date",
+            "reason": "series_close_missing_symbol_date_metadata",
         }
 
     elapsed = round(time.time() - t0, 1)
     logger.info(f"[PatchTSTUniversal] Train done in {elapsed}s, best_val_loss={best_val_loss:.6f}, dir_acc={dir_acc:.3f}")
 
+    from .training_policy import build_model_feature_policy_metadata
+
+    feature_policy_meta = build_model_feature_policy_metadata(
+        "PatchTST",
+        ["close"],
+        selection_evidence={
+            "feature_pool_path": None,
+            "sequence_report": sequence_report,
+            "contract": "channel-independent close-price patch windows with symbol/date metadata",
+        },
+    )
+
     return {
         "_state_dict_torch": best_state,
         "metadata": {
             "version": "v1",
+            **feature_policy_meta,
             "seq_len": seq_len,
             "pred_len": pred_len,
             "patch_len": patch_len,

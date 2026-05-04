@@ -211,7 +211,7 @@ def train_dlinear(
             "input_series": len(series_close),
             "windows": int(n_total),
             "lifecycle_ready": False,
-            "reason": "legacy_series_close_without_symbol_date",
+            "reason": "series_close_missing_symbol_date_metadata",
         }
     n_total = len(X)
     logger.info(f"[DLinearUniversal] Built {n_total} windows from {sequence_report.get('input_series')} series")
@@ -289,17 +289,30 @@ def train_dlinear(
             "oos_samples": int(len(val_idx)),
             "daily_ic_count": 0,
             "passed": False,
-            "reason": "legacy_series_close_without_symbol_date",
+            "reason": "series_close_missing_symbol_date_metadata",
         }
 
     elapsed = round(time.time() - t0, 1)
     logger.info(f"[DLinearUniversal] Train done in {elapsed}s, best_val_loss={best_val_loss:.6f}, dir_acc={dir_acc:.3f}")
+
+    from .training_policy import build_model_feature_policy_metadata
+
+    feature_policy_meta = build_model_feature_policy_metadata(
+        "DLinear",
+        ["close"],
+        selection_evidence={
+            "feature_pool_path": None,
+            "sequence_report": sequence_report,
+            "contract": "close-price sequence windows with symbol/date metadata",
+        },
+    )
 
     return {
         "state_dict": {k: v.numpy().tolist() for k, v in best_state.items()},  # JSON-friendly for sanity, will save as torch
         "_state_dict_torch": best_state,  # for direct save
         "metadata": {
             "version": "v1",
+            **feature_policy_meta,
             "seq_len": seq_len,
             "pred_len": pred_len,
             "kernel": kernel,

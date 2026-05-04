@@ -27,6 +27,7 @@ from .artifact_contract import (
 )
 from .model_store import _get_bucket, save_model
 from .training_policy import (
+    build_model_feature_policy_metadata,
     generated_model_pool_version,
     should_force_full_feature_pool,
     should_force_model_pool_challenger,
@@ -335,8 +336,13 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         required_targets.append("target_5d")
     if "target_dir" in select_cols:
         required_targets.append("target_dir")
+    raw_selected = pooled.select(select_cols)
+    missingness_by_feature = {
+        col: float(raw_selected[col].null_count() / max(raw_selected.height, 1))
+        for col in available
+    }
     df_clean, cleaning_report = sanitize_feature_frame(
-        pooled.select(select_cols),
+        raw_selected,
         feature_cols=available,
         required_target_cols=required_targets,
     )
@@ -345,9 +351,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     X = df_clean.select(available).to_numpy()
     y = df_clean["target_rank"].to_numpy()
     dates_arr = df_clean["_date"].to_numpy()
+    sectors_arr = (
+        df_clean["sector_encoded"].to_numpy()
+        if "sector_encoded" in df_clean.columns
+        else np.array(["unknown"] * len(df_clean), dtype=object)
+    )
+    missingness_rates_arr = np.array([missingness_by_feature.get(name, 0.0) for name in available], dtype=float)
     feature_names = available
-    assert len(X) == len(y) == len(dates_arr), (
-        f"prep alignment broken: X={len(X)} y={len(y)} dates={len(dates_arr)}"
+    assert len(X) == len(y) == len(dates_arr) == len(sectors_arr), (
+        f"prep alignment broken: X={len(X)} y={len(y)} dates={len(dates_arr)} sectors={len(sectors_arr)}"
     )
 
     bucket = _get_bucket()
@@ -361,6 +373,8 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         X=X,
         y=y,
         dates=dates_arr,
+        sectors=sectors_arr,
+        missingness_rates=missingness_rates_arr,
         series_close=np.array(sequence_series, dtype=object),
         sequence_records=np.array(sequence_records, dtype=object),
     )
@@ -405,7 +419,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise RuntimeError("GCS bucket not available")
 
     gcs_prefix = (req.gcs_prefix or "universal").rstrip("/")
-    all_X, all_y, all_dates = [], [], []
+    all_X, all_y, all_dates, all_missingness_rates = [], [], [], []
     gcs_io = {"prep_objects": 0, "prep_bytes": 0, "download_elapsed_s": 0.0}
     gcs_t0 = time.time()
     batch_keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(req.batch_count)]
@@ -420,6 +434,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         all_X.append(data["X"])
         all_y.append(data["y"])
         all_dates.append(data["dates"])
+        if "missingness_rates" in data.files:
+            all_missingness_rates.append(np.asarray(data["missingness_rates"], dtype=float))
         print(f"[TrainUniversal] {key.split('/')[-1]}: {len(data['X'])} rows loaded")
     gcs_io["download_elapsed_s"] = round(time.time() - gcs_t0, 3)
 
@@ -432,6 +448,24 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     fn_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
+    prep_missingness_rates = (
+        np.nan_to_num(np.vstack(all_missingness_rates), nan=0.0, posinf=0.0, neginf=0.0).mean(axis=0)
+        if all_missingness_rates and all(len(r) == len(feature_names) for r in all_missingness_rates)
+        else np.zeros(len(feature_names), dtype=float)
+    )
+
+    feature_pool_selection_evidence: dict = {}
+    feature_pool_model_policies: dict = {}
+    feature_pool_contract: dict = {}
+    pool_path = req.feature_pool_path or "universal/feature_pool.json"
+    try:
+        pool_blob = bucket.blob(pool_path)
+        if pool_blob.exists():
+            feature_pool_contract = json.loads(pool_blob.download_as_text())
+            feature_pool_selection_evidence = dict(feature_pool_contract.get("selection_evidence") or {})
+            feature_pool_model_policies = dict(feature_pool_contract.get("model_feature_policies") or {})
+    except Exception as exc:
+        print(f"[TrainUniversal] Feature pool contract load failed: {exc}")
 
     force_full_feature_pool = should_force_full_feature_pool(req.models_filter)
     effective_skip_feature_pool = req.skip_feature_pool or force_full_feature_pool
@@ -440,19 +474,26 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         if force_full_feature_pool and not req.skip_feature_pool:
             reason = f"models_filter={req.models_filter} -> full-feature policy"
         print(f"[TrainUniversal] {reason} -> using all {len(feature_names)} features")
+        ft_active = set(feature_pool_contract.get("ft_active") or [])
+        if ft_active:
+            missing_from_prep = sorted(ft_active - set(feature_names))[:10]
+            extra_in_prep = sorted(set(feature_names) - ft_active)[:10]
+            print(
+                "[TrainUniversal] Full-feature schema parity: "
+                f"ft_active={len(ft_active)} prep={len(feature_names)} "
+                f"missing_sample={missing_from_prep} extra_sample={extra_in_prep}"
+            )
     else:
-        pool_path = req.feature_pool_path or "universal/feature_pool.json"
         try:
-            pool_blob = bucket.blob(pool_path)
-            if pool_blob.exists():
-                pool = json.loads(pool_blob.download_as_text())
-                active = pool.get("tree_active") or pool.get("active", [])
+            if feature_pool_contract:
+                active = feature_pool_contract.get("tree_active") or feature_pool_contract.get("active", [])
                 if active:
                     keep_idx = [i for i, name in enumerate(feature_names) if name in set(active)]
                     if keep_idx:
                         orig_count = len(feature_names)
                         X = X[:, keep_idx]
                         feature_names = [feature_names[i] for i in keep_idx]
+                        prep_missingness_rates = prep_missingness_rates[keep_idx]
                         print(f"[TrainUniversal] Feature pool filter ({pool_path}): {len(keep_idx)} active (from {orig_count} total)")
                     else:
                         print(f"[TrainUniversal] Feature pool {pool_path} has {len(active)} active but none match prep columns, using all")
@@ -1064,6 +1105,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     except Exception as med_err:
         print(f"[TrainUniversal] feature_medians compute failed: {med_err}")
         feature_medians = {}
+    prep_missingness_by_feature = {
+        feature_names[i]: round(float(prep_missingness_rates[i]), 6)
+        for i in range(min(len(feature_names), len(prep_missingness_rates)))
+    }
 
     training_run_id = str(
         req.output_model_version
@@ -1106,6 +1151,29 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     challenger_registrations: dict[str, dict] = {}
     for model_name, model_obj in trained_models.items():
         try:
+            model_selection_evidence = {
+                "feature_pool_path": req.feature_pool_path or "universal/feature_pool.json",
+                "feature_pool_policy": feature_pool_model_policies.get(model_name),
+                "selection_evidence": feature_pool_selection_evidence,
+                "schema_parity": {
+                    "training_feature_count": len(feature_names),
+                    "feature_median_count": len(feature_medians or {}),
+                },
+                "missingness_mask": {
+                    "enabled": model_name == "FT-Transformer",
+                    "zero_fill_after_median_alignment": True,
+                    "prep_missingness_by_feature": prep_missingness_by_feature,
+                    "source": "universal/prep/*.npz:missingness_rates",
+                },
+            }
+            model_extra_meta = dict(extra_meta)
+            model_extra_meta.update(
+                build_model_feature_policy_metadata(
+                    model_name,
+                    feature_names,
+                    selection_evidence=model_selection_evidence,
+                )
+            )
             if req.output_model_version and not walk_forward_mode and gcs_prefix == "universal":
                 artifact = model_obj[3] if model_name == "FT-Transformer" else model_obj
                 model_path = _save_universal_versioned_model(
@@ -1116,7 +1184,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     sample_count=len(X_train),
                     version=req.output_model_version,
                     feature_medians=feature_medians,
-                    extra_metadata=extra_meta or None,
+                    extra_metadata=model_extra_meta or None,
                 )
                 if req.register_challengers:
                     challenger_registrations[model_name] = _register_challenger_safe(
@@ -1139,7 +1207,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     len(X_train),
                     feature_medians=feature_medians,
                     gcs_prefix=req.gcs_prefix,
-                    extra_metadata=extra_meta or None,
+                    extra_metadata=model_extra_meta or None,
                     skip_weekly_backup=req.skip_weekly_backup,
                 )
             else:
@@ -1151,7 +1219,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     len(X_train),
                     feature_medians=feature_medians,
                     gcs_prefix=req.gcs_prefix,
-                    extra_metadata=extra_meta or None,
+                    extra_metadata=model_extra_meta or None,
                     skip_weekly_backup=req.skip_weekly_backup,
                 )
             print(f"[TrainUniversal] Saved {model_name} to GCS (prefix={req.gcs_prefix or 'universal'})")

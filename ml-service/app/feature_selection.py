@@ -169,18 +169,32 @@ def _permuted_target(
     *,
     rng: np.random.RandomState,
     dates: np.ndarray | None = None,
+    sectors: np.ndarray | None = None,
     mode: str = "within_date",
 ) -> np.ndarray:
     """Permute cross-sectional rank targets without destroying date structure."""
 
     y_arr = np.asarray(y).copy()
-    if mode != "within_date" or dates is None or len(dates) != len(y_arr):
+    mode_norm = str(mode or "within_date").strip().lower()
+    if mode_norm == "global":
         return rng.permutation(y_arr)
 
     out = y_arr.copy()
+    if dates is None or len(dates) != len(y_arr):
+        return rng.permutation(y_arr)
+
     date_arr = np.asarray(dates).astype(str)
-    for date in np.unique(date_arr):
-        idx = np.where(date_arr == date)[0]
+    sector_arr = None
+    if sectors is not None and len(sectors) == len(y_arr):
+        sector_arr = np.asarray(sectors).astype(str)
+
+    if mode_norm in {"within_date_sector", "within_sector_date"} and sector_arr is not None:
+        group_keys = np.asarray([f"{d}::{s}" for d, s in zip(date_arr, sector_arr)], dtype=str)
+    else:
+        group_keys = date_arr
+
+    for key in np.unique(group_keys):
+        idx = np.where(group_keys == key)[0]
         if len(idx) > 1:
             out[idx] = rng.permutation(out[idx])
     return out
@@ -194,6 +208,7 @@ def target_permutation(
     ks_alpha: float = 0.05,
     ks_check_interval: int = 10,
     dates_train: np.ndarray | None = None,
+    sectors_train: np.ndarray | None = None,
     permutation_mode: str = "within_date",
 ) -> dict:
     """Target Permutation feature selection.
@@ -245,6 +260,7 @@ def target_permutation(
             y_train,
             rng=rng,
             dates=dates_train,
+            sectors=sectors_train,
             mode=permutation_mode,
         )
         null_model = _train_lgbm_regression(X_train, y_shuffled, X_val, y_val,
@@ -313,6 +329,11 @@ def target_permutation(
         "per_feature": per_feature,
         "elapsed_s": elapsed,
         "permutation_mode": permutation_mode,
+        "sector_aware": bool(
+            str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
+            and sectors_train is not None
+            and len(sectors_train) == len(y_train)
+        ),
     }
 
 
@@ -326,6 +347,7 @@ def signal_sanity_gate(
     n_permutations: int = 30,
     alpha: float = 0.05,
     dates_train: np.ndarray | None = None,
+    sectors_train: np.ndarray | None = None,
     permutation_mode: str = "within_date",
 ) -> dict:
     """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
@@ -356,6 +378,7 @@ def signal_sanity_gate(
             y_train,
             rng=rng,
             dates=dates_train,
+            sectors=sectors_train,
             mode=permutation_mode,
         )
         null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
@@ -384,6 +407,11 @@ def signal_sanity_gate(
         "n_permutations": n_permutations,
         "elapsed_s": elapsed,
         "permutation_mode": permutation_mode,
+        "sector_aware": bool(
+            str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
+            and sectors_train is not None
+            and len(sectors_train) == len(y_train)
+        ),
     }
 
 
@@ -450,6 +478,151 @@ def ic_icir_check(
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 4: Elbow Detection (kneed)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def mutual_information_evidence(
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_names: list[str],
+    *,
+    random_state: int = 42,
+) -> dict:
+    """Nonlinear feature evidence using sklearn mutual information."""
+
+    t0 = time.time()
+    try:
+        from sklearn.feature_selection import mutual_info_regression
+
+        raw = mutual_info_regression(
+            np.asarray(X, dtype=float),
+            np.asarray(y, dtype=float),
+            random_state=random_state,
+        )
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "per_feature": {}, "elapsed_s": 0.0}
+
+    raw = np.nan_to_num(np.asarray(raw, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    max_val = float(raw.max()) if raw.size else 0.0
+    norm = raw / max(max_val, 1e-12)
+    per_feature = {
+        name: {"mi": round(float(raw[i]), 8), "score": round(float(norm[i]), 6)}
+        for i, name in enumerate(feature_names)
+    }
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[MutualInfo] Computed MI evidence for {len(feature_names)} features ({elapsed}s)")
+    return {"status": "ok", "elapsed_s": elapsed, "top_features": top, "per_feature": per_feature}
+
+
+def stability_selection_evidence(
+    X: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    feature_names: list[str],
+    *,
+    n_blocks: int = 5,
+) -> dict:
+    """Block/date-aware stability evidence for feature signals."""
+
+    t0 = time.time()
+    date_arr = np.asarray(dates).astype(str)
+    unique_dates = np.sort(np.unique(date_arr))
+    if len(unique_dates) < 3:
+        return {"status": "insufficient_dates", "blocks": 0, "per_feature": {}, "elapsed_s": 0.0}
+
+    blocks = [b for b in np.array_split(unique_dates, min(n_blocks, len(unique_dates))) if len(b)]
+    per_feature: dict[str, dict] = {}
+    for i, name in enumerate(feature_names):
+        block_ics: list[float] = []
+        vals = X[:, i]
+        for block_dates in blocks:
+            mask = np.isin(date_arr, block_dates)
+            if int(mask.sum()) < 10:
+                continue
+            f_b = vals[mask]
+            y_b = y[mask]
+            if np.std(f_b) < 1e-10 or np.std(y_b) < 1e-10:
+                continue
+            rho, _ = stats.spearmanr(f_b, y_b)
+            if not np.isnan(rho):
+                block_ics.append(float(rho))
+
+        if not block_ics:
+            per_feature[name] = {"score": 0.0, "positive_ratio": 0.0, "mean_ic": 0.0, "blocks": 0}
+            continue
+
+        positive_ratio = float(np.mean([ic > 0 for ic in block_ics]))
+        mean_ic = float(np.mean(block_ics))
+        ic_std = float(np.std(block_ics))
+        stability = positive_ratio * max(mean_ic, 0.0) / max(ic_std, 0.05)
+        per_feature[name] = {
+            "score": round(float(np.clip(stability, 0.0, 1.0)), 6),
+            "positive_ratio": round(positive_ratio, 4),
+            "mean_ic": round(mean_ic, 6),
+            "blocks": len(block_ics),
+        }
+
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[StabilitySelection] Computed block stability for {len(feature_names)} features ({elapsed}s)")
+    return {
+        "status": "ok",
+        "elapsed_s": elapsed,
+        "blocks": len(blocks),
+        "top_features": top,
+        "per_feature": per_feature,
+    }
+
+
+def cur_representative_evidence(
+    X: np.ndarray,
+    feature_names: list[str],
+    cluster_result: dict,
+    *,
+    max_components: int = 12,
+    max_rows: int = 5000,
+) -> dict:
+    """CUR-style column leverage evidence for representative feature selection."""
+
+    t0 = time.time()
+    if X.size == 0 or not feature_names:
+        return {"status": "empty", "per_feature": {}, "elapsed_s": 0.0}
+
+    X_arr = np.asarray(X, dtype=float)
+    if len(X_arr) > max_rows:
+        idx = np.linspace(0, len(X_arr) - 1, max_rows).astype(int)
+        X_arr = X_arr[idx]
+    X_arr = np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0)
+    X_arr = X_arr - X_arr.mean(axis=0, keepdims=True)
+    X_arr = X_arr / np.maximum(X_arr.std(axis=0, keepdims=True), 1e-9)
+
+    try:
+        _, _, vt = np.linalg.svd(X_arr, full_matrices=False)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "per_feature": {}, "elapsed_s": 0.0}
+
+    k = min(max_components, vt.shape[0])
+    leverage = np.sum(vt[:k, :] ** 2, axis=0)
+    max_val = float(leverage.max()) if leverage.size else 0.0
+    norm = leverage / max(max_val, 1e-12)
+    per_feature = {
+        name: {
+            "leverage": round(float(leverage[i]), 8),
+            "score": round(float(norm[i]), 6),
+            "cluster": cluster_result.get("feature_to_group", {}).get(name),
+        }
+        for i, name in enumerate(feature_names)
+    }
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[CUR] Computed column leverage evidence for {len(feature_names)} features ({elapsed}s)")
+    return {
+        "status": "ok",
+        "elapsed_s": elapsed,
+        "components": k,
+        "top_features": top,
+        "per_feature": per_feature,
+    }
+
 
 def elbow_detection(per_feature: dict[str, dict], score_key: str = "score") -> dict:
     """Data-driven threshold via kneed Elbow detection.
@@ -714,6 +887,7 @@ def update_feature_pool(
     all_feature_names: list[str] | None = None,  # for ft_active (full 106 features)
     k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
     gate_result: dict | None = None,              # P0-9: Signal Sanity Gate result
+    extra_evidence: dict | None = None,
 ) -> dict:
     """Build feature_pool.json structure with dual pool output.
 
@@ -721,19 +895,44 @@ def update_feature_pool(
     ft_active:   all feature names for FT-Transformer (skip_feature_pool=True path)
     active:      backward-compat alias for tree_active
     """
-    from datetime import datetime
+    from datetime import UTC, datetime
+    from .training_policy import FEATURE_SELECTION_GOVERNANCE, MODEL_FEATURE_POLICIES
 
     dropped = cluster_result.get("dropped_features", [])
     reserve = sorted(set(reserve + dropped))
+    tree_active = sorted(active)
+    ft_active = sorted(all_feature_names) if all_feature_names else tree_active
+    model_policies = {
+        name: policy.to_dict()
+        for name, policy in MODEL_FEATURE_POLICIES.items()
+    }
 
     pool = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "method": "target_permutation_2.0",
-        "active": sorted(active),           # backward compat
-        "tree_active": sorted(active),      # explicit: tree models use this
-        "ft_active": sorted(all_feature_names) if all_feature_names else sorted(active),  # FT-T uses all features
+        "active": tree_active,           # backward compat
+        "tree_active": tree_active,      # explicit: tree models use this
+        "ft_active": ft_active,          # FT-T uses the governed wide tabular schema
         "reserve": reserve,
         "candidate": [],
+        "feature_policy_schema_version": "feature-pool-policy-v1",
+        "selection_governance": FEATURE_SELECTION_GOVERNANCE,
+        "model_feature_policies": model_policies,
+        "selection_evidence": {
+            "tree": {
+                "feature_source": "feature_pool.tree_active",
+                "feature_count": len(tree_active),
+                "selection_required": True,
+                "methods": ["signal_sanity_gate", "target_permutation", "correlation_clustering", "ic_icir", "optuna_k_sweep", "diversity_guard"],
+            },
+            "ftt": {
+                "feature_source": "feature_pool.ft_active",
+                "feature_count": len(ft_active),
+                "selection_required": False,
+                "methods": ["schema_parity", "missingness_mask", "selection_evidence_reference"],
+            },
+            "governance": extra_evidence or {},
+        },
         "cluster_info": {
             "n_groups": cluster_result["n_groups"],
             "best_k": cluster_result["best_k"],
@@ -742,6 +941,8 @@ def update_feature_pool(
         "target_permutation": {
             "n_permutations": tp_stats.get("n_permutations", 0),
             "elapsed_s": tp_stats.get("elapsed_s", 0),
+            "permutation_mode": tp_stats.get("permutation_mode"),
+            "sector_aware": bool(tp_stats.get("sector_aware")),
         },
         "ic_icir": {
             "stable_count": sum(1 for v in (ic_results or {}).values() if v.get("stable")),
@@ -776,7 +977,7 @@ def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
         bucket.blob(path).upload_from_string(pool_json, content_type="application/json")
         print(f"[FeatureSelection] Saved {path} to GCS (wf scope)")
     else:
-        # Production write (legacy behavior)
+        # Production canonical write.
         bucket.blob("universal/feature_pool.json").upload_from_string(
             pool_json, content_type="application/json"
         )
@@ -810,7 +1011,7 @@ def run_feature_selection_pipeline(
     icir_weight: float | None = None,
     train_end_date: str | None = None,  # 2026-04-19 N2: walk-forward — filter dates ≤ this (no future leak)
     gcs_prefix: str | None = None,       # 2026-04-19 N2: walk-forward — write to {prefix}/feature_pool.json
-    **_kwargs,  # absorb legacy params (required_power etc.)
+    **_kwargs,  # absorb deprecated params kept in old scheduler payloads
 ) -> dict:
     """Full 2.0 pipeline:
     Load prep data → Signal Sanity Gate → Silhouette → Target Permutation →
@@ -832,6 +1033,7 @@ def run_feature_selection_pipeline(
     max_rounds = int(selection_params["max_rounds"])
     alpha = float(selection_params["alpha"])
     icir_weight = float(selection_params["icir_weight"])
+    permutation_mode = str(selection_params["permutation_mode"])
 
     bucket = _get_bucket()
     if bucket is None:
@@ -845,7 +1047,8 @@ def run_feature_selection_pipeline(
     if not prep_blobs:
         return {"error": "No prep data in GCS. Run retrain first."}
 
-    all_X, all_y, all_dates = [], [], []
+    all_X, all_y, all_dates, all_sectors = [], [], [], []
+    sector_blob_count = 0
     for blob in prep_blobs:
         buf = io.BytesIO()
         blob.download_to_file(buf)
@@ -854,9 +1057,13 @@ def run_feature_selection_pipeline(
         all_X.append(data["X"])
         all_y.append(data["y"])
         all_dates.append(data["dates"])
+        if "sectors" in data.files:
+            all_sectors.append(data["sectors"])
+            sector_blob_count += 1
     X = np.vstack(all_X)
     y = np.concatenate(all_y)
     dates = np.concatenate(all_dates)
+    sectors = np.concatenate(all_sectors) if sector_blob_count == len(prep_blobs) else None
 
     # Feature names
     fn_blob = bucket.blob("universal/prep/feature_names.json")
@@ -879,6 +1086,8 @@ def run_feature_selection_pipeline(
         X = X[wf_mask]
         y = y[wf_mask]
         dates = dates[wf_mask]
+        if sectors is not None:
+            sectors = sectors[wf_mask]
 
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -905,6 +1114,7 @@ def run_feature_selection_pipeline(
     X_test, y_test = X[test_mask], y[test_mask]
     dates_train = dates[train_mask]
     dates_val = dates[val_mask]
+    sectors_train = sectors[train_mask] if sectors is not None else None
 
     print(f"[FeatureSelection] Purged split: train={len(X_train)}, val={len(X_val)}, "
           f"test={len(X_test)}, embargo={embargo_days}d")
@@ -919,7 +1129,8 @@ def run_feature_selection_pipeline(
         n_permutations=30,
         alpha=alpha,
         dates_train=dates_train,
-        permutation_mode="within_date",
+        sectors_train=sectors_train,
+        permutation_mode=permutation_mode,
     )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
@@ -929,6 +1140,9 @@ def run_feature_selection_pipeline(
 
     # ── 3. Silhouette clustering ─────────────────────────────────────────────
     cluster_result = cluster_features(X_train, feature_names)
+    mi_result = mutual_information_evidence(X_train, y_train, feature_names)
+    stability_result = stability_selection_evidence(X_train, y_train, dates_train, feature_names)
+    cur_result = cur_representative_evidence(X_train, feature_names, cluster_result)
 
     # ── 4. Target Permutation ────────────────────────────────────────────────
     tp_result = target_permutation(
@@ -938,7 +1152,8 @@ def run_feature_selection_pipeline(
         ks_alpha=0.05,
         ks_check_interval=10,
         dates_train=dates_train,
-        permutation_mode="within_date",
+        sectors_train=sectors_train,
+        permutation_mode=permutation_mode,
     )
 
     if "error" in tp_result:
@@ -955,11 +1170,19 @@ def run_feature_selection_pipeline(
         ic_info = ic_results.get(name, {})
         ic_stable = 1.0 if ic_info.get("stable", False) else 0.0
         icir = ic_info.get("icir", 0)
+        mi_score = (mi_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        stability_score = (stability_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        cur_score = (cur_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        governance_bonus = 0.05 * mi_score + 0.08 * stability_score + 0.03 * cur_score
         combined_scores[name] = {
-            "score": round(tp_score + icir * icir_weight, 4),
+            "score": round(tp_score + icir * icir_weight + governance_bonus, 4),
             "tp_score": tp_score,
             "icir": icir,
             "ic_stable": bool(ic_stable),
+            "mi_score": round(float(mi_score), 6),
+            "stability_score": round(float(stability_score), 6),
+            "cur_score": round(float(cur_score), 6),
+            "governance_bonus": round(float(governance_bonus), 6),
         }
 
     # ── 7. K selection: Optuna Pareto sweep + Kneedle (Plan B, 2026-04-17) ───
@@ -996,10 +1219,17 @@ def run_feature_selection_pipeline(
         tp_stats={
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
+            "permutation_mode": tp_result.get("permutation_mode"),
+            "sector_aware": tp_result.get("sector_aware"),
         },
         ic_results=ic_results,
         gate_result=gate_result,
         k_sweep_result=k_sweep_result,
+        extra_evidence={
+            "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
+            "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},
+            "cur": {k: v for k, v in cur_result.items() if k != "per_feature"},
+        },
     )
 
     if not dry_run:
@@ -1047,6 +1277,7 @@ def run_feature_selection_pipeline(
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
             "permutation_mode": tp_result.get("permutation_mode"),
+            "sector_aware": tp_result.get("sector_aware"),
             "per_feature_sample": {k: v for k, v in list(tp_result["per_feature"].items())[:10]},
         },
         "ic_icir": {
@@ -1063,6 +1294,11 @@ def run_feature_selection_pipeline(
         "k_sweep": {
             "best_k": k_sweep_result.get("best_k"),
             "best_ic": k_sweep_result.get("best_ic"),
+        },
+        "feature_governance": {
+            "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
+            "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},
+            "cur": {k: v for k, v in cur_result.items() if k != "per_feature"},
         },
         "shap_comparison": shap_overlap,
         "elapsed_s": elapsed,

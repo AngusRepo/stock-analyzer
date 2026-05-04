@@ -339,4 +339,11 @@ CURRENT_CONFIG = {
     "min_context": _MIN_CONTEXT,
     "max_context": _MAX_CONTEXT,
     "strategy": "Chronos-2 production replacement, not challenger shadow",
+    "feature_policy": {
+        "feature_policy_type": "chronos2_zero_shot_lora_time_series",
+        "feature_source": "chronos2.context.close_series",
+        "selection_owner": "chronos_universal",
+        "selection_required": False,
+        "note": "Chronos consumes time-series context only and does not use tree/FT tabular feature selection.",
+    },
 }

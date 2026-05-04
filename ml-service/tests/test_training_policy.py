@@ -7,8 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.training_policy import (  # noqa: E402
     FeatureSelectionPolicy,
+    FEATURE_SELECTION_GOVERNANCE,
+    MODEL_FEATURE_POLICIES,
     UniversalTrainingPolicy,
+    build_model_feature_policy_metadata,
     build_group_train_payload,
+    feature_policy_for_model,
     generated_model_pool_version,
     models_for_training_group,
     should_force_full_feature_pool,
@@ -25,6 +29,7 @@ def test_feature_selection_policy_keeps_current_defaults():
         "alpha": 0.01,
         "required_power": 0.99,
         "icir_weight": 0.1,
+        "permutation_mode": "within_date_sector",
     }
 
 
@@ -41,6 +46,7 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
         "alpha": 0.02,
         "required_power": 0.95,
         "icir_weight": 0.2,
+        "permutation_mode": "within_date_sector",
     }
 
 
@@ -52,6 +58,7 @@ def test_feature_selection_policy_merges_payload_overrides():
         "alpha": 0.03,
         "required_power": 0.99,
         "icir_weight": 0.1,
+        "permutation_mode": "within_date_sector",
     }
 
 
@@ -63,6 +70,7 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "alpha": 0.01,
         "required_power": 0.99,
         "icir_weight": 0.1,
+        "permutation_mode": "within_date_sector",
     }
 
 
@@ -177,3 +185,46 @@ def test_ft_transformer_filter_forces_full_feature_pool_defensively():
     assert should_force_full_feature_pool(["XGBoost", "LightGBM"]) is False
     assert should_force_full_feature_pool(["FT-Transformer", "XGBoost"]) is False
     assert should_force_full_feature_pool(None) is False
+
+
+def test_model_feature_policy_contract_covers_eight_alpha_slots():
+    expected = {
+        "XGBoost",
+        "CatBoost",
+        "ExtraTrees",
+        "LightGBM",
+        "FT-Transformer",
+        "Chronos",
+        "DLinear",
+        "PatchTST",
+    }
+
+    assert expected.issubset(set(MODEL_FEATURE_POLICIES))
+    assert feature_policy_for_model("XGBoost").feature_source == "feature_pool.tree_active"
+    assert feature_policy_for_model("FT-Transformer").uses_missingness_mask is True
+    assert feature_policy_for_model("DLinear").feature_source == "sequence_records.close_only"
+    assert feature_policy_for_model("PatchTST").feature_source == "sequence_records.close_only"
+    assert feature_policy_for_model("Chronos").feature_source == "chronos2.context.close_series"
+
+
+def test_feature_selection_governance_has_no_planned_p3_methods_left():
+    methods = FEATURE_SELECTION_GOVERNANCE["methods"]
+
+    assert methods["mutual_information"]["status"] == "active"
+    assert methods["stability_selection"]["status"] == "active"
+    assert methods["cur"]["status"] == "active"
+    assert methods["target_permutation_block_date_sector"]["status"] == "active"
+
+
+def test_model_feature_policy_metadata_records_feature_count_and_evidence():
+    meta = build_model_feature_policy_metadata(
+        "FT-Transformer",
+        ["rsi14", "macd", "bias20"],
+        selection_evidence={"feature_pool_path": "universal/feature_pool.json"},
+    )
+
+    assert meta["feature_policy_schema_version"] == "model-feature-policy-v1"
+    assert meta["feature_count"] == 3
+    assert meta["feature_policy"]["model"] == "FT-Transformer"
+    assert meta["feature_policy"]["requires_schema_parity"] is True
+    assert meta["selection_evidence"]["feature_pool_path"] == "universal/feature_pool.json"

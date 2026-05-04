@@ -81,6 +81,7 @@ class FeatureSelectionPolicy:
     alpha: float = 0.01
     required_power: float = 0.99
     icir_weight: float = 0.1
+    permutation_mode: str = "within_date_sector"
 
     @classmethod
     def from_env(cls) -> "FeatureSelectionPolicy":
@@ -93,6 +94,10 @@ class FeatureSelectionPolicy:
             alpha=_env_float("UNIVERSAL_FEATURE_SELECTION_ALPHA", cls.alpha),
             required_power=_env_float("UNIVERSAL_FEATURE_SELECTION_REQUIRED_POWER", cls.required_power),
             icir_weight=_env_float("UNIVERSAL_FEATURE_SELECTION_ICIR_WEIGHT", cls.icir_weight),
+            permutation_mode=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_PERMUTATION_MODE",
+                cls.permutation_mode,
+            ).strip() or cls.permutation_mode,
         )
 
     def to_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
@@ -103,6 +108,7 @@ class FeatureSelectionPolicy:
             "alpha": _coerce_float(overrides.get("alpha"), data["alpha"]),
             "required_power": _coerce_float(overrides.get("required_power"), data["required_power"]),
             "icir_weight": _coerce_float(overrides.get("icir_weight"), data["icir_weight"]),
+            "permutation_mode": str(overrides.get("permutation_mode") or data["permutation_mode"]),
         }
 
     def to_window_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
@@ -130,6 +136,24 @@ class TrainingGroupFeaturePolicy:
     feature_source: str
     skip_feature_pool: bool
     mergeable_oos: bool
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ModelFeaturePolicy:
+    model: str
+    family: str
+    feature_policy_type: str
+    feature_source: str
+    selection_owner: str
+    selection_required: bool
+    uses_missingness_mask: bool
+    requires_schema_parity: bool
+    mergeable_oos: bool
+    allowed_selection_methods: tuple[str, ...]
     note: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -172,6 +196,124 @@ TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
 }
 
 
+_TABULAR_SELECTION_METHODS = (
+    "signal_sanity_gate",
+    "target_permutation_block_date_sector",
+    "correlation_clustering",
+    "ic_icir_stability",
+    "mutual_information",
+    "stability_selection",
+    "cur",
+    "optuna_k_sweep",
+    "diversity_guard",
+)
+
+
+MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
+    **{
+        name: ModelFeaturePolicy(
+            model=name,
+            family="tree",
+            feature_policy_type="selected_tabular",
+            feature_source="feature_pool.tree_active",
+            selection_owner="feature_selection_pipeline",
+            selection_required=True,
+            uses_missingness_mask=False,
+            requires_schema_parity=True,
+            mergeable_oos=True,
+            allowed_selection_methods=_TABULAR_SELECTION_METHODS,
+            note="Tree models use selected tabular features only; no all-feature fallback in governed retrain.",
+        )
+        for name in TREE_MODEL_NAMES
+    },
+    "FT-Transformer": ModelFeaturePolicy(
+        model="FT-Transformer",
+        family="full_tabular_transformer",
+        feature_policy_type="wide_tabular_with_missingness",
+        feature_source="feature_pool.ft_active",
+        selection_owner="feature_selection_pipeline",
+        selection_required=False,
+        uses_missingness_mask=True,
+        requires_schema_parity=True,
+        mergeable_oos=True,
+        allowed_selection_methods=(
+            "schema_parity",
+            "missingness_mask",
+            "target_permutation_evidence_reference",
+            "ic_icir_evidence_reference",
+        ),
+        note="FT-Transformer keeps the wide tabular schema but must carry missingness/schema parity evidence.",
+    ),
+    "DLinear": ModelFeaturePolicy(
+        model="DLinear",
+        family="sequence",
+        feature_policy_type="time_series_close_only",
+        feature_source="sequence_records.close_only",
+        selection_owner="sequence_training",
+        selection_required=False,
+        uses_missingness_mask=False,
+        requires_schema_parity=False,
+        mergeable_oos=False,
+        allowed_selection_methods=("sequence_window_contract", "sequence_oos_ic"),
+        note="DLinear follows its paper-aligned close-price sequence contract, not tabular feature selection.",
+    ),
+    "PatchTST": ModelFeaturePolicy(
+        model="PatchTST",
+        family="sequence_transformer",
+        feature_policy_type="time_series_close_only",
+        feature_source="sequence_records.close_only",
+        selection_owner="sequence_training",
+        selection_required=False,
+        uses_missingness_mask=False,
+        requires_schema_parity=False,
+        mergeable_oos=False,
+        allowed_selection_methods=("sequence_window_contract", "sequence_oos_ic"),
+        note="PatchTST follows channel-independent sequence windows, not tabular all-features.",
+    ),
+    "Chronos": ModelFeaturePolicy(
+        model="Chronos",
+        family="foundation_time_series",
+        feature_policy_type="chronos2_zero_shot_lora_time_series",
+        feature_source="chronos2.context.close_series",
+        selection_owner="chronos_universal",
+        selection_required=False,
+        uses_missingness_mask=False,
+        requires_schema_parity=False,
+        mergeable_oos=False,
+        allowed_selection_methods=("chronos2_context_window", "chronos2_member_contract"),
+        note="Chronos is the Chronos-2 production slot and does not consume tree/FT feature selection.",
+    ),
+}
+
+
+FEATURE_SELECTION_GOVERNANCE = {
+    "schema_version": "feature-selection-governance-v1",
+    "primary_permutation_mode": "within_date_sector",
+    "methods": {
+        "target_permutation_block_date_sector": {
+            "role": "Leakage-resistant signal survival test; permutes labels inside date and sector blocks.",
+            "status": "active",
+        },
+        "correlation_clustering": {
+            "role": "Reduces redundant tabular features before final active/reserve split.",
+            "status": "active",
+        },
+        "mutual_information": {
+            "role": "Nonlinear candidate evidence used as a low-weight governance tie-breaker.",
+            "status": "active",
+        },
+        "stability_selection": {
+            "role": "Block/date-aware robustness evidence used as a low-weight governance tie-breaker.",
+            "status": "active",
+        },
+        "cur": {
+            "role": "CUR-style column leverage evidence for representative feature coverage.",
+            "status": "active",
+        },
+    },
+}
+
+
 def training_group_feature_policy(group: str) -> TrainingGroupFeaturePolicy | None:
     return TRAINING_GROUP_FEATURE_POLICIES.get(str(group or "").strip().lower())
 
@@ -197,6 +339,27 @@ def should_force_full_feature_pool(models_filter: list[str] | tuple[str, ...] | 
         return False
     requested = {str(model) for model in models_filter}
     return bool(requested) and requested.issubset(set(FULL_TABULAR_MODEL_NAMES))
+
+
+def feature_policy_for_model(model_name: str) -> ModelFeaturePolicy:
+    key = str(model_name or "").strip()
+    if key not in MODEL_FEATURE_POLICIES:
+        raise KeyError(f"Unknown model feature policy: {model_name}")
+    return MODEL_FEATURE_POLICIES[key]
+
+
+def build_model_feature_policy_metadata(
+    model_name: str,
+    feature_names: list[str] | tuple[str, ...],
+    selection_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy = feature_policy_for_model(model_name)
+    return {
+        "feature_policy": policy.to_dict(),
+        "feature_policy_schema_version": "model-feature-policy-v1",
+        "feature_count": int(len(feature_names)),
+        "selection_evidence": selection_evidence or {},
+    }
 
 
 @dataclass(frozen=True)

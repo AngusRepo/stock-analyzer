@@ -3,13 +3,13 @@
 ## Session 2026-05-04
 
 ### Portfolio
-- Total: $0 (0%)
-- Positions: 0 | Cash: $0
-- MDD: 0% | Sharpe(30d): N/A
+- Total: $1003800 (0.38%)
+- Positions: 0 | Cash: $955529
+- MDD: 11.5% | Sharpe(30d): 0.4402881137238011
 
 ### Today's Pipeline
-- Screener: 0 → ML BUY: 0 → T2: 0 orders
-- Trades: 0 BUY / 0 SELL
+- Screener: 63 → ML BUY: 3 → T2: 0 orders
+- Trades: 0 BUY / 1 SELL
 
 ### Positions
 No positions.

@@ -104,6 +104,10 @@ def test_run_alpha_candidate_evidence_replays_champion_and_candidate_for_cscv_pb
     assert out["monte_carlo"]["simulation_method"] == "regime_block_bootstrap"
     assert out["pbo"]["method"] == "cscv_rank_logit"
     assert out["pbo"]["n_trades"] == 72
+    assert out["data_snooping"]["method"] == "hansen_spa"
+    assert out["data_snooping"]["benchmark"] == "champion"
+    assert out["data_snooping"]["candidate_count"] == 1
+    assert out["validation_packet"]["validation_scope"]["data_snooping"] == "white_reality_check_or_hansen_spa"
     assert out["gate"]["decision"] == "PASS"
     assert calls[0]["params"]["alphaFramework"]["allocation"]["slateSize"] == 10
     assert calls[1]["params"]["alphaFramework"]["allocation"]["slateSize"] == 8

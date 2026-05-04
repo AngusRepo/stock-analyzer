@@ -28,6 +28,7 @@ def test_normalize_latest_backtest_row_prefers_raw_summary_and_preserves_mode_b(
             "summary": {"total_trades": 120},
             "per_regime": {"sideways": {"trades": 20, "return": 0.03}},
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
+            "walk_forward": {"passed": True, "windows": 6},
             "sanity_flags": [],
             "absolute_confidence": "moderate",
         }),
@@ -39,6 +40,7 @@ def test_normalize_latest_backtest_row_prefers_raw_summary_and_preserves_mode_b(
     assert out["total_trades"] == 120
     assert out["per_regime"]["sideways"]["return"] == 0.03
     assert out["parity_audit"]["worker_parity"]["decision"] == "PASS"
+    assert out["walk_forward"]["windows"] == 6
 
 
 def test_normalize_latest_backtest_row_ignores_loose_mode_column_without_raw_provenance():
@@ -120,6 +122,7 @@ def test_evaluate_latest_promotion_gate_joins_latest_mode_b_risk_checks(monkeypa
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
             "sanity_flags": [],
             "absolute_confidence": "moderate",
+            "walk_forward": {"passed": True, "windows": 8},
         }),
         }],
         "monte_carlo_results": [{
@@ -154,6 +157,9 @@ def test_evaluate_latest_promotion_gate_joins_latest_mode_b_risk_checks(monkeypa
     assert out["decision"] == "PASS"
     assert out["inputs"]["backtest"]["mode"] == "B"
     assert out["metrics"]["mc_mdd_95th"] == 0.16
+    assert out["validation_packet"]["decision"] == "PASS"
+    assert out["validation_packet"]["schema_version"] == "validation-governance-packet-v1"
+    assert "walk_forward" not in out["validation_packet"]["warnings"]
 
 
 def test_evaluate_latest_promotion_gate_can_use_separate_pbo_source(monkeypatch):
@@ -239,6 +245,7 @@ def test_evaluate_latest_promotion_gate_fails_closed_when_risk_rows_missing(monk
     assert out["decision"] == "FAIL"
     assert "missing_monte_carlo_results" in out["failed_gates"]
     assert "missing_pbo_results" in out["failed_gates"]
+    assert out["validation_packet"]["decision"] == "FAIL"
 
 
 def test_evaluate_latest_alpha_policy_gate_combines_candidate_and_latest_risk_gates(monkeypatch):
@@ -297,6 +304,7 @@ def test_evaluate_latest_alpha_policy_gate_combines_candidate_and_latest_risk_ga
     assert out["decision"] == "PASS"
     assert out["candidate"]["sample_count"] == 96
     assert out["inputs"]["source"] == "backtest"
+    assert out["validation_packet"]["decision"] == "PASS"
 
 
 def _alpha_candidate() -> dict:
@@ -310,6 +318,7 @@ def _alpha_candidate() -> dict:
             "sample_count": 96,
             "regime_counts": {"bull": 24, "bear": 24, "volatile": 24, "sideways": 24},
         },
+        "walk_forward": {"passed": True, "windows": 5},
     }
 
 
@@ -341,6 +350,7 @@ def _evidence_bundle(candidate_id: str | None = "trading:config:sandbox:alpha_fr
             "oos_mean_return": 0.03,
             "go_live_verdict": "PASS",
         },
+        "walk_forward": {"passed": True, "windows": 5},
     }
 
 
@@ -350,6 +360,8 @@ def test_alpha_policy_evidence_gate_passes_candidate_specific_bundle():
     assert out["decision"] == "PASS"
     assert out["inputs"]["source"] == "evidence_bundle"
     assert out["inputs"]["candidate_id"] == _alpha_candidate()["id"]
+    assert out["validation_packet"]["decision"] == "PASS"
+    assert out["inputs"]["walk_forward"]["windows"] == 5
 
 
 def test_alpha_policy_evidence_gate_rejects_mismatched_candidate_id():
@@ -386,6 +398,7 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
             "go_live_verdict": "PASS",
             "raw_details": json.dumps({"method": "cscv_rank_logit"}),
         },
+        walk_forward={"passed": True, "windows": 6},
     )
 
     assert bundle["candidate_id"] == _alpha_candidate()["id"]
@@ -393,3 +406,5 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
     assert bundle["backtest"]["total_trades"] == 120
     assert bundle["monte_carlo"]["simulation_method"] == "block_bootstrap"
     assert bundle["pbo"]["method"] == "cscv_rank_logit"
+    assert bundle["walk_forward"]["windows"] == 6
+    assert bundle["validation_packet"]["decision"] == "PASS"

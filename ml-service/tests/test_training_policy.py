@@ -17,7 +17,14 @@ from app.training_policy import (  # noqa: E402
     models_for_training_group,
     should_force_full_feature_pool,
     should_force_model_pool_challenger,
+    ValidationGovernancePolicy,
     training_group_feature_policy,
+)
+from app.universal_training import (  # noqa: E402
+    UniversalTrainRequest,
+    build_ft_model_cpcv_params,
+    build_non_tree_model_cpcv_gap_evidence,
+    model_cpcv_family_adapter_enabled,
 )
 
 
@@ -72,6 +79,140 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
     }
+
+
+def test_validation_governance_policy_keeps_cpcv_defaults():
+    policy = ValidationGovernancePolicy.from_env()
+
+    assert policy.to_split_params() == {
+        "embargo_base_days": 10,
+        "embargo_pct": 0.015,
+        "max_embargo_days": 20,
+        "cpcv_n_groups": 6,
+        "cpcv_n_test_groups": 2,
+        "cpcv_min_train_groups": 2,
+    }
+
+
+def test_validation_governance_policy_reads_env_and_payload_overrides(monkeypatch):
+    monkeypatch.setenv("UNIVERSAL_VALIDATION_CPCV_N_GROUPS", "8")
+    monkeypatch.setenv("UNIVERSAL_VALIDATION_CPCV_N_TEST_GROUPS", "3")
+    monkeypatch.setenv("UNIVERSAL_VALIDATION_EMBARGO_PCT", "0.02")
+
+    policy = ValidationGovernancePolicy.from_env()
+
+    assert policy.to_split_params({"cpcv_n_groups": "10", "max_embargo_days": "30"}) == {
+        "embargo_base_days": 10,
+        "embargo_pct": 0.02,
+        "max_embargo_days": 30,
+        "cpcv_n_groups": 10,
+        "cpcv_n_test_groups": 3,
+        "cpcv_min_train_groups": 2,
+    }
+
+
+def test_universal_train_request_runs_model_cpcv_by_default():
+    req = UniversalTrainRequest()
+
+    assert req.enable_model_cpcv is True
+
+
+def test_model_cpcv_cost_multiplier_is_visible_in_validation_metadata():
+    from app.universal_training import build_validation_split_metadata
+
+    metadata = build_validation_split_metadata(
+        {
+            "embargo_base_days": 10,
+            "embargo_pct": 0.015,
+            "max_embargo_days": 20,
+            "cpcv_n_groups": 6,
+            "cpcv_n_test_groups": 2,
+            "cpcv_min_train_groups": 2,
+        },
+        enable_model_cpcv=True,
+    )
+
+    assert metadata["model_cpcv_cost_estimate"]["cpcv_split_count"] == 15
+    assert metadata["model_cpcv_cost_estimate"]["additional_fit_count"] == 60
+    assert metadata["model_cpcv_cost_estimate"]["tree_fit_multiplier"] == 16
+    assert metadata["model_cpcv_cost_estimate"]["supported_models"] == [
+        "XGBoost",
+        "CatBoost",
+        "ExtraTrees",
+        "LightGBM",
+    ]
+    assert "FT-Transformer" in metadata["model_cpcv_cost_estimate"]["optional_family_adapters"]
+    assert metadata["model_cpcv_cost_estimate"]["forecast_validation_models"]["Chronos"]["method"] == (
+        "chronos_forecast_rank_ic"
+    )
+    assert metadata["model_cpcv_cost_estimate"]["sequence_models"]["DLinear"]["default_method"] == (
+        "sequence_oos_fold_rank_ic"
+    )
+    assert metadata["model_cpcv_cost_estimate"]["sequence_models"]["PatchTST"]["full_cpcv_method"] == (
+        "purged_cpcv_sequence_rank_ic"
+    )
+    assert metadata["model_cpcv_cost_estimate"]["unsupported_until_family_adapter"]["sequence_models"] == []
+    assert "foundation_time_series" not in metadata["model_cpcv_cost_estimate"]["unsupported_until_family_adapter"]
+
+
+def test_non_tree_model_cpcv_gap_evidence_is_fail_visible():
+    evidence = build_non_tree_model_cpcv_gap_evidence(
+        ["XGBoost", "FT-Transformer", "DLinear", "PatchTST", "Chronos"],
+        validation_split_metadata={
+            "model_cpcv_cost_estimate": {
+                "cpcv_split_count": 15,
+                "additional_fit_count": 60,
+            }
+        },
+    )
+
+    assert "XGBoost" not in evidence
+    assert evidence["FT-Transformer"]["decision"] == "FAIL"
+    assert evidence["FT-Transformer"]["family"] == "tabular_deep"
+    assert "DLinear" not in evidence
+    assert "PatchTST" not in evidence
+    assert "Chronos" not in evidence
+
+
+def test_ft_model_cpcv_adapter_requires_explicit_policy_enable():
+    assert model_cpcv_family_adapter_enabled("FT-Transformer", None) is False
+    assert model_cpcv_family_adapter_enabled(
+        "FT-Transformer",
+        {"family_adapters": {"FT-Transformer": {"enabled": True}}},
+    ) is True
+    assert model_cpcv_family_adapter_enabled(
+        "DLinear",
+        {"family_adapters": {"FT-Transformer": {"enabled": True}}},
+    ) is False
+
+
+def test_build_ft_model_cpcv_params_uses_request_and_policy_overrides():
+    req = UniversalTrainRequest(
+        ftt_d_model=64,
+        ftt_n_heads=4,
+        ftt_n_layers=2,
+        ftt_dropout=0.2,
+        ftt_lr=0.0003,
+        ftt_batch_size=256,
+        ftt_margin=0.1,
+        model_cpcv_policy={
+            "family_adapters": {
+                "FT-Transformer": {
+                    "max_epochs": 3,
+                    "batch_size": 128,
+                    "seed": 99,
+                }
+            }
+        },
+    )
+
+    params = build_ft_model_cpcv_params(req)
+
+    assert params["d_model"] == 64
+    assert params["n_heads"] == 4
+    assert params["max_epochs"] == 3
+    assert params["batch_size"] == 128
+    assert params["seed"] == 99
 
 
 def test_universal_training_policy_keeps_current_defaults():

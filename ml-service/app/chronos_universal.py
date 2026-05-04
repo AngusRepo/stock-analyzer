@@ -12,11 +12,15 @@ does not inflate the model denominator when the LoRA member is enabled.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from functools import lru_cache
 from typing import Any
 
 import numpy as np
+from scipy.stats import spearmanr
+
+from .model_validation import MODEL_CPCV_EVIDENCE_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,18 @@ _LORA_MODEL_ID_ENV = "CHRONOS2_LORA_MODEL_ID"
 _MIN_CONTEXT = 10
 _MAX_CONTEXT = 8192
 _QUANTILE_LEVELS = [0.1, 0.5, 0.9]
+
+
+def _validation_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    merged = {
+        "min_samples": 30,
+        "min_rank_ic": 0.0,
+        "min_direction_accuracy": 0.52,
+        "min_coverage": 0.60,
+        "max_abs_bias": 0.05,
+    }
+    merged.update(policy or {})
+    return merged
 
 
 @lru_cache(maxsize=4)
@@ -67,6 +83,132 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if np.isfinite(out) else None
+
+
+def _rank_ic_small_sample(preds: np.ndarray, actual: np.ndarray) -> float:
+    if len(preds) < 2 or np.std(preds) < 1e-12 or np.std(actual) < 1e-12:
+        return 0.0
+    rho, _ = spearmanr(preds, actual)
+    return float(rho) if math.isfinite(float(rho)) else 0.0
+
+
+def _realized_return_for(symbol: str, realized_returns: dict[str, Any] | list[dict[str, Any]]) -> float | None:
+    if isinstance(realized_returns, dict):
+        value = realized_returns.get(symbol)
+        if isinstance(value, dict):
+            value = value.get("forward_return", value.get("realized_return"))
+        return _as_float(value)
+    for row in realized_returns or []:
+        if str(row.get("symbol") or "") != symbol:
+            continue
+        return _as_float(row.get("forward_return", row.get("realized_return")))
+    return None
+
+
+def build_chronos_forecast_validation_evidence(
+    *,
+    predictions: list[dict[str, Any]],
+    realized_returns: dict[str, Any] | list[dict[str, Any]],
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate Chronos forecasts against verified forward returns.
+
+    Chronos is a foundation time-series forecaster, so the governance evidence
+    is forecast validation rather than retrain-style CPCV. This keeps lifecycle
+    promotion comparable without multiplying Modal training jobs.
+    """
+
+    p = _validation_policy(policy)
+    rows: list[dict[str, Any]] = []
+    missing_outcomes: list[str] = []
+    valid_predictions = 0
+    for pred in predictions or []:
+        symbol = str(pred.get("symbol") or "").strip()
+        forecast_pct = _as_float(pred.get("forecast_pct"))
+        if not symbol or forecast_pct is None or pred.get("error"):
+            continue
+        valid_predictions += 1
+        realized = _realized_return_for(symbol, realized_returns)
+        if realized is None:
+            missing_outcomes.append(symbol)
+            continue
+        predicted_direction = 1 if forecast_pct > 0 else -1 if forecast_pct < 0 else 0
+        realized_direction = 1 if realized > 0 else -1 if realized < 0 else 0
+        rows.append(
+            {
+                "symbol": symbol,
+                "forecast_pct": round(float(forecast_pct), 6),
+                "realized_return": round(float(realized), 6),
+                "direction_hit": bool(
+                    predicted_direction != 0
+                    and realized_direction != 0
+                    and predicted_direction == realized_direction
+                ),
+                "up_prob": _as_float(pred.get("up_prob")),
+                "confidence": _as_float(pred.get("confidence")),
+            }
+        )
+
+    samples = len(rows)
+    coverage = samples / valid_predictions if valid_predictions else 0.0
+    preds_arr = np.asarray([row["forecast_pct"] for row in rows], dtype=float)
+    actual_arr = np.asarray([row["realized_return"] for row in rows], dtype=float)
+    rank_ic = _rank_ic_small_sample(preds_arr, actual_arr) if samples else 0.0
+    direction_accuracy = (
+        sum(1 for row in rows if row["direction_hit"]) / samples
+        if samples
+        else 0.0
+    )
+    bias = float(np.mean(preds_arr - actual_arr)) if samples else 0.0
+
+    failed_gates: list[str] = []
+    if missing_outcomes:
+        failed_gates.append("chronos_outcome_missing")
+    if samples < int(p["min_samples"]):
+        failed_gates.append("chronos_min_samples")
+    if coverage < float(p["min_coverage"]):
+        failed_gates.append("chronos_coverage")
+    if rank_ic < float(p["min_rank_ic"]):
+        failed_gates.append("chronos_rank_ic")
+    if direction_accuracy < float(p["min_direction_accuracy"]):
+        failed_gates.append("chronos_direction_accuracy")
+    if abs(bias) > float(p["max_abs_bias"]):
+        failed_gates.append("chronos_forecast_bias")
+
+    decision = "PASS" if not failed_gates else "FAIL"
+    return {
+        "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
+        "model": "Chronos",
+        "family": "foundation_time_series",
+        "forecast_family": "foundation_time_series",
+        "method": "chronos_forecast_rank_ic",
+        "decision": decision,
+        "passed": decision == "PASS",
+        "failed_gates": failed_gates,
+        "samples": samples,
+        "folds": 1 if samples else 0,
+        "oos_ic_mean": round(rank_ic, 6),
+        "oos_ic_std": 0.0,
+        "positive_fold_ratio": 1.0 if rank_ic > 0 else 0.0,
+        "min_test_rows": samples,
+        "coverage_mean": round(coverage, 6),
+        "direction_accuracy": round(direction_accuracy, 6),
+        "forecast_bias": round(bias, 6),
+        "valid_predictions": valid_predictions,
+        "missing_outcome_symbols": missing_outcomes[:50],
+        "policy": p,
+        "fold_metrics": [
+            {
+                "fold_id": "forecast_validation",
+                "oos_ic": round(rank_ic, 6),
+                "test_rows": samples,
+                "coverage": round(coverage, 6),
+            }
+        ] if samples else [],
+        "sample_rows": rows[:100],
+        "retrain_required": False,
+        "reason": "Chronos-2 is validated by forecast/outcome evidence; do not run retrain-style CPCV by default.",
+    }
 
 
 def _select_forecast_row(pred_df) -> dict[str, float]:
@@ -345,5 +487,11 @@ CURRENT_CONFIG = {
         "selection_owner": "chronos_universal",
         "selection_required": False,
         "note": "Chronos consumes time-series context only and does not use tree/FT tabular feature selection.",
+    },
+    "validation_contract": {
+        "method": "chronos_forecast_rank_ic",
+        "input": "batch forecast rows + verified forward returns",
+        "retrain_required": False,
+        "owner": "chronos_universal.build_chronos_forecast_validation_evidence",
     },
 }

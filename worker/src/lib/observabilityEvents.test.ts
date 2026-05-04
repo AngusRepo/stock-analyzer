@@ -1,6 +1,7 @@
 import {
   buildEventsFromDataQuality,
   buildEventsFromScheduler,
+  buildEventsFromValidation,
   normalizeObservabilityAuditFilters,
   selectPersistableObservabilityEvents,
   type ObservabilityEvent,
@@ -46,6 +47,28 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events.length === 1, 'data quality should emit actionable non-ok checks only')
   assert(events[0].severity === 'error', 'failed data quality check should be error severity')
   assert(events[0].title === 'Price data', 'data quality event should preserve check label')
+}
+
+{
+  const events = buildEventsFromValidation({
+    generatedAt,
+    validationPackets: [{
+      source: 'backtest_replay',
+      decision: 'FAIL',
+      failed_gates: ['pbo', 'deflated_sharpe'],
+      warnings: ['walk_forward'],
+      gates: [
+        { name: 'pbo', status: 'FAIL', reason: 'overfit probability too high' },
+        { name: 'deflated_sharpe', status: 'FAIL', reason: 'multiple testing adjusted edge too weak' },
+      ],
+    }],
+  })
+
+  assert(events.length === 1, 'failed validation packet should create one event')
+  assert(events[0].domain === 'validation', 'validation event should use validation domain')
+  assert(events[0].severity === 'error', 'failed validation packet should be error severity')
+  assert(events[0].summary.includes('pbo'), 'validation event should expose failed gates')
+  assert(events[0].next_action.includes('Strategy Lab'), 'validation event should point to strategy evidence review')
 }
 
 {

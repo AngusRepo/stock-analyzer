@@ -60,6 +60,10 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
         metrics,
         run_date="2026-04-26",
         parity_audit=parity_audit,
+        validation_packet={"schema_version": "validation-governance-packet-v1", "decision": "PASS"},
+        metric_explanations=[{"metric": "sharpe", "meaning_zh": "風險調整後報酬"}],
+        strategy_lab_record={"schema_version": "strategy-lab-record-v1", "decision": "PASS"},
+        walk_forward={"passed": True, "windows": 6},
     )
 
     assert "INSERT OR REPLACE INTO backtest_results" in sql
@@ -72,3 +76,7 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
     assert raw["partition_returns"] == [0.01, 0.02]
     assert raw["absolute_confidence"] == "moderate"
     assert raw["parity_audit"] == parity_audit
+    assert raw["validation_packet"]["decision"] == "PASS"
+    assert raw["metric_explanations"][0]["metric"] == "sharpe"
+    assert raw["strategy_lab_record"]["schema_version"] == "strategy-lab-record-v1"
+    assert raw["walk_forward"]["windows"] == 6

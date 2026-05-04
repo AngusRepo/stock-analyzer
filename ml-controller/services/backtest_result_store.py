@@ -35,6 +35,10 @@ def build_replay_backtest_insert(
     run_date: str | None = None,
     strategy: str | None = None,
     parity_audit: dict[str, Any] | None = None,
+    validation_packet: dict[str, Any] | None = None,
+    metric_explanations: list[dict[str, Any]] | None = None,
+    strategy_lab_record: dict[str, Any] | None = None,
+    walk_forward: dict[str, Any] | None = None,
 ) -> tuple[str, list[Any]]:
     run_date = run_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     mode = str(getattr(metrics, "mode", "") or "unknown").upper()
@@ -59,6 +63,10 @@ def build_replay_backtest_insert(
         "sanity_flags": getattr(metrics, "sanity_flags", []) or [],
         "parity_audit": parity_audit or {},
         "partition_returns": getattr(metrics, "partition_returns", []) or [],
+        "validation_packet": validation_packet or {},
+        "metric_explanations": metric_explanations or [],
+        "strategy_lab_record": strategy_lab_record or {},
+        "walk_forward": walk_forward or {},
         "all_returns": [t["profit_ratio"] for t in trades],
         "all_regimes": [str(t.get("entry_regime") or "unknown") for t in trades],
         "trades": trades[:500],
@@ -94,6 +102,10 @@ def persist_replay_backtest(
     *,
     run_date: str | None = None,
     parity_audit: dict[str, Any] | None = None,
+    validation_packet: dict[str, Any] | None = None,
+    metric_explanations: list[dict[str, Any]] | None = None,
+    strategy_lab_record: dict[str, Any] | None = None,
+    walk_forward: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from services.d1_client import execute
 
@@ -101,5 +113,9 @@ def persist_replay_backtest(
         metrics,
         run_date=run_date,
         parity_audit=parity_audit,
+        validation_packet=validation_packet,
+        metric_explanations=metric_explanations,
+        strategy_lab_record=strategy_lab_record,
+        walk_forward=walk_forward,
     )
     return execute(sql, params=params, timeout=60.0)

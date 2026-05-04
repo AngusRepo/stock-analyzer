@@ -42,6 +42,7 @@ def test_apply_promotion_gate_leaves_promote_actions_when_gate_passes():
 
     out = apply_promotion_gate_to_actions(actions, gate)
 
+    assert out[0]["transition"] == "promote"
     assert out == actions
 
 
@@ -179,3 +180,68 @@ def test_apply_promotion_gate_allows_promote_when_shadow_and_paper_order_ab_pass
     )
 
     assert out == actions
+
+
+def test_apply_promotion_gate_blocks_promote_without_model_cpcv_evidence():
+    actions = [{"model": "XGBoost", "transition": "promote"}]
+    gate = {"passed": True, "decision": "PASS", "failed_gates": []}
+
+    out = apply_promotion_gate_to_actions(
+        actions,
+        gate,
+        require_model_cpcv=True,
+        model_cpcv_by_model={},
+    )
+
+    assert out[0]["transition"] == "promote_blocked"
+    assert out[0]["model_cpcv_decision"] == "FAIL"
+    assert "missing_model_cpcv:XGBoost" in out[0]["preconditions_failed"]
+
+
+def test_apply_promotion_gate_blocks_promote_when_model_cpcv_fails():
+    actions = [{"model": "FT-Transformer", "transition": "promote"}]
+    gate = {"passed": True, "decision": "PASS", "failed_gates": []}
+    cpcv = {
+        "FT-Transformer": {
+            "decision": "FAIL",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": ["cpcv_oos_ic"],
+            "folds": 6,
+        }
+    }
+
+    out = apply_promotion_gate_to_actions(
+        actions,
+        gate,
+        require_model_cpcv=True,
+        model_cpcv_by_model=cpcv,
+    )
+
+    assert out[0]["transition"] == "promote_blocked"
+    assert out[0]["model_cpcv_decision"] == "FAIL"
+    assert "model_cpcv:cpcv_oos_ic" in out[0]["preconditions_failed"]
+
+
+def test_apply_promotion_gate_allows_promote_when_model_cpcv_passes():
+    actions = [{"model": "LightGBM", "transition": "promote"}]
+    gate = {"passed": True, "decision": "PASS", "failed_gates": []}
+    cpcv = {
+        "LightGBM": {
+            "decision": "PASS",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": [],
+            "folds": 8,
+            "oos_ic_mean": 0.04,
+        }
+    }
+
+    out = apply_promotion_gate_to_actions(
+        actions,
+        gate,
+        require_model_cpcv=True,
+        model_cpcv_by_model=cpcv,
+    )
+
+    assert out[0]["transition"] == "promote"
+    assert out[0]["model_cpcv_decision"] == "PASS"
+    assert out[0]["model_cpcv_folds"] == 8

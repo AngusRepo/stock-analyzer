@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from services.monte_carlo_service import _run_monte_carlo
 from services.pbo_service import _run_cscv_rank_logit_pbo
+from services.validation_governance import hansen_spa_reality_check
 from services.promotion_service import (
     build_alpha_policy_evidence_bundle,
     evaluate_alpha_policy_evidence_gate,
@@ -134,6 +135,20 @@ def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     }
 
 
+def _data_snooping_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
+    champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
+    candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
+    return hansen_spa_reality_check(
+        {
+            "champion": champion_partitions,
+            "alpha_candidate": candidate_partitions,
+        },
+        benchmark="champion",
+        n_bootstrap=500,
+        seed=17,
+    )
+
+
 def run_alpha_candidate_evidence(
     candidate: dict[str, Any],
     *,
@@ -172,6 +187,7 @@ def run_alpha_candidate_evidence(
         backtest=_backtest_row(candidate_metrics, parity_audit=parity_audit),
         monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
         pbo=_pbo_row(champion_metrics, candidate_metrics),
+        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
     )
     gate = evaluate_alpha_policy_evidence_gate(candidate, evidence)
     if not alpha_replay_applied:

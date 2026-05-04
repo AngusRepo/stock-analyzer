@@ -19,12 +19,24 @@ def apply_promotion_gate_to_actions(
     shadow_ab_by_model: dict[str, dict[str, Any]] | None = None,
     require_paper_order_ab: bool = False,
     paper_order_ab_by_model: dict[str, dict[str, Any]] | None = None,
+    require_model_cpcv: bool = False,
+    model_cpcv_by_model: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    if not require_gate and not require_shadow_ab and not require_paper_order_ab:
+    if (
+        not require_gate
+        and not require_shadow_ab
+        and not require_paper_order_ab
+        and not require_model_cpcv
+    ):
         return actions
 
     gate = gate_result or {}
-    if gate.get("passed") is True and not require_shadow_ab and not require_paper_order_ab:
+    if (
+        gate.get("passed") is True
+        and not require_shadow_ab
+        and not require_paper_order_ab
+        and not require_model_cpcv
+    ):
         return actions
 
     guarded = deepcopy(actions)
@@ -45,6 +57,31 @@ def apply_promotion_gate_to_actions(
             action["promotion_gate_warnings"] = gate.get("warnings") or []
             action["original_promote_reason"] = original_reason
             continue
+
+        if require_model_cpcv:
+            model = str(action.get("model") or "")
+            evidence = (model_cpcv_by_model or {}).get(model)
+            if not evidence:
+                action["transition"] = "promote_blocked"
+                action["reason"] = "model CPCV evidence missing"
+                action["preconditions_failed"] = [f"missing_model_cpcv:{model}"]
+                action["model_cpcv_decision"] = "FAIL"
+                action["original_promote_reason"] = original_reason
+                continue
+            if str(evidence.get("decision") or "").upper() != "PASS":
+                action["transition"] = "promote_blocked"
+                action["reason"] = "model CPCV evidence failed"
+                action["preconditions_failed"] = [
+                    f"model_cpcv:{name}"
+                    for name in (evidence.get("failed_gates") or ["unavailable"])
+                ]
+                action["model_cpcv_decision"] = evidence.get("decision") or "FAIL"
+                action["model_cpcv_evidence"] = evidence
+                action["original_promote_reason"] = original_reason
+                continue
+            action["model_cpcv_decision"] = evidence.get("decision") or "PASS"
+            action["model_cpcv_folds"] = evidence.get("folds")
+            action["model_cpcv_evidence"] = evidence
 
         if require_shadow_ab:
             model = str(action.get("model") or "")

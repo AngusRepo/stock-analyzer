@@ -27,6 +27,8 @@ from .artifact_contract import (
 )
 from .model_store import _get_bucket, save_model
 from .training_policy import (
+    TREE_MODEL_NAMES,
+    ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
     generated_model_pool_version,
     should_force_full_feature_pool,
@@ -37,7 +39,7 @@ from .gcs_batch_io import download_existing_blobs
 
 
 class UniversalPrepRequest(BaseModel):
-    """單批 prep request。"""
+    """Universal batch prep request."""
 
     payloads: list[dict]
     barrier_params: dict = {}
@@ -49,7 +51,7 @@ class UniversalPrepRequest(BaseModel):
 
 
 class UniversalTrainRequest(BaseModel):
-    """Universal train request。"""
+    """Universal training request."""
 
     batch_count: int = 5
     models_filter: list[str] | None = None
@@ -74,6 +76,14 @@ class UniversalTrainRequest(BaseModel):
     followup_webhook_url: str | None = None
     output_model_version: str | None = None
     register_challengers: bool = False
+    embargo_base_days: int | None = None
+    embargo_pct: float | None = None
+    max_embargo_days: int | None = None
+    cpcv_n_groups: int | None = None
+    cpcv_n_test_groups: int | None = None
+    cpcv_min_train_groups: int | None = None
+    enable_model_cpcv: bool = True
+    model_cpcv_policy: dict | None = None
 
 
 def normalize_universal_lifecycle_request(
@@ -158,14 +168,147 @@ def _save_universal_versioned_model(
     return model_path
 
 
-def _register_challenger_safe(model_name: str, version: str) -> dict:
+def _register_challenger_safe(
+    model_name: str,
+    version: str,
+    *,
+    model_cpcv: dict | None = None,
+) -> dict:
     try:
         from .model_pool import register_challenger
 
-        pool = register_challenger(model_name, version, save=True)
+        pool = register_challenger(model_name, version, save=True, model_cpcv=model_cpcv)
         return {"status": "registered", "version": version, "pool_updated": bool(pool)}
     except Exception as exc:
         return {"status": "error", "version": version, "error": str(exc)}
+
+
+def build_validation_split_metadata(
+    validation_policy: dict[str, object],
+    *,
+    enable_model_cpcv: bool,
+) -> dict[str, object]:
+    from .purged_cv import cpcv_split_count
+
+    split_count = cpcv_split_count(
+        n_groups=int(validation_policy["cpcv_n_groups"]),
+        n_test_groups=int(validation_policy["cpcv_n_test_groups"]),
+    )
+    model_count = len(TREE_MODEL_NAMES)
+    return {
+        "policy_schema_version": "validation-governance-policy-v1",
+        "policy": validation_policy,
+        "model_cpcv_cost_estimate": {
+            "enabled": bool(enable_model_cpcv),
+            "supported_models": list(TREE_MODEL_NAMES),
+            "model_count": model_count,
+            "cpcv_split_count": split_count,
+            "baseline_fit_count": model_count,
+            "additional_fit_count": model_count * split_count,
+            "total_fit_count": model_count * (1 + split_count),
+            "tree_fit_multiplier": 1 + split_count,
+            "optional_family_adapters": {
+                "FT-Transformer": {
+                    "enabled_by_policy": "model_cpcv_policy.family_adapters.FT-Transformer.enabled",
+                    "additional_fit_count": split_count,
+                    "cost_note": "FT CPCV trains one FT fold per CPCV split; use a small max_epochs policy first.",
+                }
+            },
+            "forecast_validation_models": {
+                "Chronos": {
+                    "method": "chronos_forecast_rank_ic",
+                    "additional_fit_count": 0,
+                    "cost_note": "Chronos is validated from batch forecasts joined to verified forward returns; no retrain-style CPCV by default.",
+                }
+            },
+            "sequence_models": {
+                "DLinear": {
+                    "default_method": "sequence_oos_fold_rank_ic",
+                    "full_cpcv_method": "purged_cpcv_sequence_rank_ic",
+                    "enabled_by_policy": "model_cpcv_policy.family_adapters.DLinear.enabled",
+                    "additional_fit_count": split_count,
+                    "cost_note": "Default governance records the existing OOS holdout evidence; full sequence CPCV retrains one fold per split only when explicitly enabled.",
+                },
+                "PatchTST": {
+                    "default_method": "sequence_oos_fold_rank_ic",
+                    "full_cpcv_method": "purged_cpcv_sequence_rank_ic",
+                    "enabled_by_policy": "model_cpcv_policy.family_adapters.PatchTST.enabled",
+                    "additional_fit_count": split_count,
+                    "cost_note": "Default governance records the existing OOS holdout evidence; full sequence CPCV retrains one fold per split only when explicitly enabled.",
+                },
+            },
+            "unsupported_until_family_adapter": {
+                "sequence_models": [],
+                "reason": "No known production alpha model lacks a validation owner; sequence models use OOS evidence by default and explicit full CPCV when enabled.",
+            },
+            "cost_formula": (
+                "tree_stage_cost_with_cpcv ~= "
+                "tree_stage_cost_without_cpcv * (1 + cpcv_split_count)"
+            ),
+        },
+    }
+
+
+def build_non_tree_model_cpcv_gap_evidence(
+    trained_model_names: list[str],
+    *,
+    validation_split_metadata: dict[str, object],
+) -> dict[str, dict]:
+    from .model_validation import build_model_cpcv_adapter_missing_evidence
+
+    family_by_model = {
+        "FT-Transformer": ("tabular_deep", "fit_predict_ft_transformer_cpcv"),
+    }
+    cost_estimate = (
+        validation_split_metadata.get("model_cpcv_cost_estimate")
+        if isinstance(validation_split_metadata, dict)
+        else {}
+    )
+    evidence: dict[str, dict] = {}
+    for model_name in trained_model_names:
+        if model_name in TREE_MODEL_NAMES or model_name not in family_by_model:
+            continue
+        family, adapter = family_by_model[model_name]
+        evidence[model_name] = build_model_cpcv_adapter_missing_evidence(
+            model=model_name,
+            family=family,
+            adapter=adapter,
+            cost_estimate=dict(cost_estimate or {}),
+        )
+    return evidence
+
+
+def model_cpcv_family_adapter_enabled(model_name: str, policy: dict | None) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    adapters = policy.get("family_adapters")
+    if not isinstance(adapters, dict):
+        return False
+    cfg = adapters.get(model_name)
+    return bool(isinstance(cfg, dict) and cfg.get("enabled") is True)
+
+
+def build_ft_model_cpcv_params(req: UniversalTrainRequest) -> dict[str, object]:
+    adapter_policy = {}
+    if isinstance(req.model_cpcv_policy, dict):
+        family_adapters = req.model_cpcv_policy.get("family_adapters")
+        if isinstance(family_adapters, dict):
+            adapter_policy = family_adapters.get("FT-Transformer") or {}
+    params = {
+        "d_model": int(req.ftt_d_model),
+        "n_heads": int(req.ftt_n_heads),
+        "n_layers": int(req.ftt_n_layers),
+        "dropout": float(req.ftt_dropout),
+        "lr": float(req.ftt_lr),
+        "batch_size": int(req.ftt_batch_size),
+        "margin": float(req.ftt_margin),
+        "max_epochs": 3,
+        "seed": 42,
+    }
+    for key in ("max_epochs", "batch_size", "seed", "lr", "dropout", "margin"):
+        if isinstance(adapter_policy, dict) and key in adapter_policy and adapter_policy[key] is not None:
+            params[key] = adapter_policy[key]
+    return params
 
 
 def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dict]:
@@ -524,6 +667,20 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             f"{req.output_model_version}; flat-file production overwrite disabled"
         )
 
+    validation_policy = ValidationGovernancePolicy.from_env().to_split_params(
+        {
+            "embargo_base_days": req.embargo_base_days,
+            "embargo_pct": req.embargo_pct,
+            "max_embargo_days": req.max_embargo_days,
+            "cpcv_n_groups": req.cpcv_n_groups,
+            "cpcv_n_test_groups": req.cpcv_n_test_groups,
+            "cpcv_min_train_groups": req.cpcv_min_train_groups,
+        }
+    )
+    validation_split_metadata: dict[str, object] = build_validation_split_metadata(
+        validation_policy,
+        enable_model_cpcv=req.enable_model_cpcv,
+    )
     if walk_forward_mode:
         print(
             f"[TrainUniversal] Walk-forward mode: train={req.train_start}..{req.train_end} "
@@ -545,23 +702,64 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 f"Walk-forward test window {req.test_start}..{req.test_end} has only "
                 f"{len(X_test)} samples (<100 minimum)"
             )
+        validation_split_metadata = {
+            **validation_split_metadata,
+            "method": "walk_forward_explicit",
+            "window_id": req.window_id,
+            "train_range": [req.train_start, req.train_end],
+            "test_range": [req.test_start, req.test_end],
+            "purged": False,
+            "cpcv_available": True,
+            "cpcv_default": {
+                "method": "combinatorial_purged_cv",
+                "n_groups": validation_policy["cpcv_n_groups"],
+                "n_test_groups": validation_policy["cpcv_n_test_groups"],
+                "min_train_groups": validation_policy["cpcv_min_train_groups"],
+            },
+        }
     else:
         if len(X) < 1000:
             raise ValueError(f"Pooled rows below 1000 ({len(X)})")
-        from .purged_cv import purged_train_test_split
+        from .purged_cv import cpcv_split_count, dynamic_embargo_days, purged_train_test_split
 
+        embargo_days = dynamic_embargo_days(
+            len(np.unique(dates_arr)),
+            base_days=int(validation_policy["embargo_base_days"]),
+            embargo_pct=float(validation_policy["embargo_pct"]),
+            max_days=int(validation_policy["max_embargo_days"]),
+        )
         X_train, y_train, dates_train, X_test, y_test, dates_test = purged_train_test_split(
             X,
             y,
             dates_arr,
             test_ratio=0.2,
-            embargo_days=10,
+            embargo_days=embargo_days,
         )
-        print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo=10d")
+        print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo={embargo_days}d")
+        validation_split_metadata = {
+            **validation_split_metadata,
+            "method": "purged_holdout_dynamic_embargo",
+            "purged": True,
+            "embargo_days": embargo_days,
+            "embargo_pct": validation_policy["embargo_pct"],
+            "max_embargo_days": validation_policy["max_embargo_days"],
+            "cpcv_available": True,
+            "cpcv_default": {
+                "method": "combinatorial_purged_cv",
+                "n_groups": validation_policy["cpcv_n_groups"],
+                "n_test_groups": validation_policy["cpcv_n_test_groups"],
+                "min_train_groups": validation_policy["cpcv_min_train_groups"],
+                "split_count": cpcv_split_count(
+                    n_groups=int(validation_policy["cpcv_n_groups"]),
+                    n_test_groups=int(validation_policy["cpcv_n_test_groups"]),
+                ),
+            },
+        }
 
     results = {}
     trained_models: dict[str, object] = {}
     oos_rank_predictions: dict[str, np.ndarray] = {}
+    model_cpcv_evidence_by_model: dict[str, dict] = {}
     _filter = set(req.models_filter) if req.models_filter else None
 
     def _should_train(name: str) -> bool:
@@ -1013,6 +1211,161 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
 
+    if req.enable_model_cpcv:
+        try:
+            from .model_validation import evaluate_model_cpcv_rank_ic
+
+            def _tree_cpcv_fit_predict(model_name: str, train_idx: np.ndarray, test_idx: np.ndarray) -> np.ndarray:
+                if model_name == "XGBoost":
+                    from xgboost import XGBRegressor
+
+                    model = XGBRegressor(
+                        n_estimators=300,
+                        max_depth=6,
+                        learning_rate=0.03,
+                        objective="reg:squarederror",
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        eval_metric="rmse",
+                        random_state=42,
+                        verbosity=0,
+                        n_jobs=-1,
+                    )
+                elif model_name == "CatBoost":
+                    from catboost import CatBoostRegressor
+
+                    model = CatBoostRegressor(
+                        iterations=400,
+                        depth=6,
+                        learning_rate=0.03,
+                        l2_leaf_reg=3.0,
+                        loss_function="RMSE",
+                        random_seed=42,
+                        verbose=0,
+                        thread_count=-1,
+                    )
+                elif model_name == "ExtraTrees":
+                    from sklearn.ensemble import ExtraTreesRegressor
+
+                    model = ExtraTreesRegressor(
+                        n_estimators=300,
+                        max_depth=8,
+                        min_samples_split=10,
+                        min_samples_leaf=5,
+                        max_features="sqrt",
+                        bootstrap=True,
+                        random_state=42,
+                        n_jobs=-1,
+                    )
+                elif model_name == "LightGBM":
+                    import lightgbm as lgb
+
+                    model = lgb.LGBMRegressor(
+                        n_estimators=300,
+                        max_depth=6,
+                        learning_rate=0.03,
+                        objective="regression",
+                        num_leaves=63,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        min_child_samples=20,
+                        random_state=42,
+                        verbose=-1,
+                        n_jobs=-1,
+                    )
+                else:
+                    raise ValueError(f"Unsupported CPCV model family: {model_name}")
+                model.fit(X[train_idx], y[train_idx])
+                return np.asarray(model.predict(X[test_idx]), dtype=float)
+
+            for model_name in TREE_MODEL_NAMES:
+                if model_name not in trained_models:
+                    continue
+                evidence = evaluate_model_cpcv_rank_ic(
+                    model=model_name,
+                    X=X,
+                    y=y,
+                    dates=dates_arr,
+                    fit_predict=lambda train_idx, test_idx, name=model_name: _tree_cpcv_fit_predict(
+                        name,
+                        train_idx,
+                        test_idx,
+                    ),
+                    n_groups=int(validation_policy["cpcv_n_groups"]),
+                    n_test_groups=int(validation_policy["cpcv_n_test_groups"]),
+                    embargo_days=int(validation_policy["embargo_base_days"]),
+                    min_train_groups=int(validation_policy["cpcv_min_train_groups"]),
+                    embargo_pct=float(validation_policy["embargo_pct"]),
+                    max_embargo_days=int(validation_policy["max_embargo_days"]),
+                    policy=req.model_cpcv_policy,
+                )
+                model_cpcv_evidence_by_model[model_name] = evidence
+                results.setdefault(model_name, {})["model_cpcv"] = evidence
+                print(
+                    f"[TrainUniversal] {model_name} CPCV decision={evidence['decision']} "
+                    f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}"
+                )
+            if (
+                "FT-Transformer" in trained_models
+                and model_cpcv_family_adapter_enabled("FT-Transformer", req.model_cpcv_policy)
+            ):
+                from .model_validation import (
+                    build_model_cpcv_adapter_error_evidence,
+                    evaluate_model_cpcv_rank_ic,
+                    fit_predict_ft_transformer_cpcv,
+                )
+
+                try:
+                    ft_params = build_ft_model_cpcv_params(req)
+                    evidence = evaluate_model_cpcv_rank_ic(
+                        model="FT-Transformer",
+                        X=X,
+                        y=y,
+                        dates=dates_arr,
+                        fit_predict=lambda train_idx, test_idx: fit_predict_ft_transformer_cpcv(
+                            X,
+                            y,
+                            train_idx,
+                            test_idx,
+                            params=ft_params,
+                        ),
+                        n_groups=int(validation_policy["cpcv_n_groups"]),
+                        n_test_groups=int(validation_policy["cpcv_n_test_groups"]),
+                        embargo_days=int(validation_policy["embargo_base_days"]),
+                        min_train_groups=int(validation_policy["cpcv_min_train_groups"]),
+                        embargo_pct=float(validation_policy["embargo_pct"]),
+                        max_embargo_days=int(validation_policy["max_embargo_days"]),
+                        policy=req.model_cpcv_policy,
+                    )
+                except Exception as ft_exc:
+                    evidence = build_model_cpcv_adapter_error_evidence(
+                        model="FT-Transformer",
+                        family="tabular_deep",
+                        adapter="fit_predict_ft_transformer_cpcv",
+                        error=str(ft_exc),
+                        cost_estimate=validation_split_metadata.get("model_cpcv_cost_estimate", {}),
+                    )
+                model_cpcv_evidence_by_model["FT-Transformer"] = evidence
+                results.setdefault("FT-Transformer", {})["model_cpcv"] = evidence
+                print(
+                    f"[TrainUniversal] FT-Transformer CPCV decision={evidence['decision']} "
+                    f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}"
+                )
+        except Exception as exc:
+            results["ModelCPCV"] = {"error": str(exc)}
+            print(f"[TrainUniversal] Model CPCV failed: {exc}")
+        for model_name, evidence in build_non_tree_model_cpcv_gap_evidence(
+            list(trained_models.keys()),
+            validation_split_metadata=validation_split_metadata,
+        ).items():
+            if model_name not in model_cpcv_evidence_by_model:
+                model_cpcv_evidence_by_model[model_name] = evidence
+                results.setdefault(model_name, {})["model_cpcv"] = evidence
+                print(
+                    f"[TrainUniversal] {model_name} CPCV decision=FAIL "
+                    f"reason={evidence['failed_gates'][0]}"
+                )
+
     ic_tracking = {}
     circuit_breaker_triggered = False
     for model_name, model_result in results.items():
@@ -1029,6 +1382,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "oos_samples": len(X_test),
             "passed": oos_ic > 0,
         }
+        if model_name in model_cpcv_evidence_by_model:
+            ic_tracking[model_name]["model_cpcv"] = model_cpcv_evidence_by_model[model_name]
         if oos_ic <= 0:
             circuit_breaker_triggered = True
             print(f"[IC-Breaker] {model_name} OOS IC={oos_ic:.4f} <= 0 -> breaker")
@@ -1128,6 +1483,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "date_min": str(dates_arr.astype(str).min()) if len(dates_arr) else None,
             "date_max": str(dates_arr.astype(str).max()) if len(dates_arr) else None,
             "walk_forward": bool(walk_forward_mode),
+            "validation_split": validation_split_metadata,
         },
         params=req_params,
         code_version=os.environ.get("GIT_SHA") or os.environ.get("SOURCE_VERSION") or "unknown",
@@ -1140,7 +1496,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     extra_meta = {
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
-    }
+            "validation_split": validation_split_metadata,
+            "model_cpcv_enabled": bool(req.enable_model_cpcv),
+        }
     if walk_forward_mode:
         extra_meta.update({
             "window_id": req.window_id,
@@ -1165,6 +1523,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     "prep_missingness_by_feature": prep_missingness_by_feature,
                     "source": "universal/prep/*.npz:missingness_rates",
                 },
+                "validation_split": validation_split_metadata,
+                "model_cpcv": model_cpcv_evidence_by_model.get(model_name),
             }
             model_extra_meta = dict(extra_meta)
             model_extra_meta.update(
@@ -1190,6 +1550,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     challenger_registrations[model_name] = _register_challenger_safe(
                         model_name,
                         req.output_model_version,
+                        model_cpcv=model_cpcv_evidence_by_model.get(model_name),
                     )
                 print(
                     f"[TrainUniversal] Saved {model_name} challenger to {model_path} "
@@ -1561,6 +1922,9 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
 __all__ = [
     "UniversalPrepRequest",
     "UniversalTrainRequest",
+    "build_ft_model_cpcv_params",
+    "build_non_tree_model_cpcv_gap_evidence",
+    "model_cpcv_family_adapter_enabled",
     "prep_universal_batch",
     "train_universal_from_gcs",
     "run_shap_audit",

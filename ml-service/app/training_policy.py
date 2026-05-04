@@ -117,8 +117,67 @@ class FeatureSelectionPolicy:
         return self.to_selection_params(overrides)
 
 
+@dataclass(frozen=True)
+class ValidationGovernancePolicy:
+    embargo_base_days: int = 10
+    embargo_pct: float = 0.015
+    max_embargo_days: int = 20
+    cpcv_n_groups: int = 6
+    cpcv_n_test_groups: int = 2
+    cpcv_min_train_groups: int = 2
+
+    @classmethod
+    def from_env(cls) -> "ValidationGovernancePolicy":
+        return cls(
+            embargo_base_days=_env_int(
+                "UNIVERSAL_VALIDATION_EMBARGO_BASE_DAYS",
+                cls.embargo_base_days,
+            ),
+            embargo_pct=_env_float("UNIVERSAL_VALIDATION_EMBARGO_PCT", cls.embargo_pct),
+            max_embargo_days=_env_int(
+                "UNIVERSAL_VALIDATION_MAX_EMBARGO_DAYS",
+                cls.max_embargo_days,
+            ),
+            cpcv_n_groups=_env_int(
+                "UNIVERSAL_VALIDATION_CPCV_N_GROUPS",
+                cls.cpcv_n_groups,
+            ),
+            cpcv_n_test_groups=_env_int(
+                "UNIVERSAL_VALIDATION_CPCV_N_TEST_GROUPS",
+                cls.cpcv_n_test_groups,
+            ),
+            cpcv_min_train_groups=_env_int(
+                "UNIVERSAL_VALIDATION_CPCV_MIN_TRAIN_GROUPS",
+                cls.cpcv_min_train_groups,
+            ),
+        )
+
+    def to_split_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
+        overrides = overrides or {}
+        return {
+            "embargo_base_days": _coerce_int(
+                overrides.get("embargo_base_days"),
+                self.embargo_base_days,
+            ),
+            "embargo_pct": _coerce_float(overrides.get("embargo_pct"), self.embargo_pct),
+            "max_embargo_days": _coerce_int(
+                overrides.get("max_embargo_days"),
+                self.max_embargo_days,
+            ),
+            "cpcv_n_groups": _coerce_int(overrides.get("cpcv_n_groups"), self.cpcv_n_groups),
+            "cpcv_n_test_groups": _coerce_int(
+                overrides.get("cpcv_n_test_groups"),
+                self.cpcv_n_test_groups,
+            ),
+            "cpcv_min_train_groups": _coerce_int(
+                overrides.get("cpcv_min_train_groups"),
+                self.cpcv_min_train_groups,
+            ),
+        }
+
+
 PREDICT_ONLY_MODEL_NOTES = {
-    "Chronos": "Zero-shot foundation model; no monthly retrain stage",
+    "Chronos": "Foundation forecast slot; zero-shot serving plus optional LoRA adapter, validated by forecast/outcome evidence",
     "KalmanFilter": "Per-stock state-space inference; no universal train artifact",
     "MarkovSwitching": "Per-stock state-space inference; shared hyperparams only",
 }

@@ -8,13 +8,15 @@ but they cannot produce auditable cross-sectional OOS IC.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 
 
 @dataclass(frozen=True)
 class SequenceWindowDataset:
+    X_all: np.ndarray
+    y_all: np.ndarray
     X_train: np.ndarray
     y_train: np.ndarray
     X_oos: np.ndarray
@@ -141,6 +143,8 @@ def build_sequence_window_dataset(
     if not Xs:
         empty = np.asarray([], dtype=np.float32).reshape(0, seq_len)
         return SequenceWindowDataset(
+            X_all=empty,
+            y_all=np.asarray([], dtype=np.float32).reshape(0, pred_len),
             X_train=empty,
             y_train=np.asarray([], dtype=np.float32).reshape(0, pred_len),
             X_oos=empty,
@@ -177,6 +181,8 @@ def build_sequence_window_dataset(
         "lifecycle_ready": bool(len(train_index) > 0 and len(oos_index) > 0),
     }
     return SequenceWindowDataset(
+        X_all=X,
+        y_all=y,
         X_train=X[train_index],
         y_train=y[train_index],
         X_oos=X[oos_index],
@@ -209,3 +215,121 @@ def sequence_oos_ic_from_forecast(
         "oos_dates": int(len(set(target_dates))),
     })
     return ic
+
+
+def build_sequence_oos_fold_evidence(
+    *,
+    model: str,
+    dataset: SequenceWindowDataset,
+    forecast_prices: np.ndarray,
+    policy: dict | None = None,
+) -> dict:
+    from .model_validation import build_model_cpcv_evidence
+
+    ic = sequence_oos_ic_from_forecast(forecast_prices=forecast_prices, dataset=dataset)
+    evidence = build_model_cpcv_evidence(
+        model=model,
+        fold_metrics=[
+            {
+                "fold_id": "oos_holdout",
+                "oos_ic": ic.get("oos_ic", 0.0),
+                "test_rows": ic.get("oos_samples", 0),
+                "coverage": 1.0 if ic.get("oos_samples", 0) else 0.0,
+            }
+        ],
+        policy=policy or {"min_folds": 1, "min_test_rows": 1, "min_coverage": 0.8},
+    )
+    evidence["method"] = "sequence_oos_fold_rank_ic"
+    evidence["family"] = "sequence_model"
+    evidence["date_field"] = "target_date"
+    evidence["input_contract"] = "SequenceWindowDataset(symbol,target_date,last_close,forward_return)"
+    evidence["oos_dates"] = ic.get("oos_dates", 0)
+    evidence["daily_ic_count"] = ic.get("daily_ic_count", 0)
+    return evidence
+
+
+def sequence_cpcv_policy_enabled(policy: dict | None, model: str) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    adapters = policy.get("family_adapters")
+    if not isinstance(adapters, dict):
+        return False
+    cfg = adapters.get(model)
+    return bool(isinstance(cfg, dict) and cfg.get("enabled") is True)
+
+
+def build_sequence_cpcv_evidence(
+    *,
+    model: str,
+    dataset: SequenceWindowDataset,
+    fit_predict: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    n_groups: int,
+    n_test_groups: int,
+    embargo_days: int,
+    min_train_groups: int = 2,
+    embargo_pct: float | None = None,
+    max_embargo_days: int | None = 20,
+    policy: dict | None = None,
+) -> dict:
+    from .model_validation import build_model_cpcv_evidence
+    from .purged_cv import CombinatorialPurgedCV
+
+    if not dataset.report.get("lifecycle_ready") or len(dataset.meta) == 0:
+        return build_model_cpcv_evidence(
+            model=model,
+            fold_metrics=[],
+            policy=policy,
+        ) | {
+            "method": "purged_cpcv_sequence_rank_ic",
+            "failed_gates": ["sequence_dataset_not_lifecycle_ready"],
+            "reason": dataset.report.get("reason") or "sequence_dataset_not_lifecycle_ready",
+        }
+
+    target_dates = np.asarray([row["target_date"] for row in dataset.meta], dtype=str)
+    actual_returns_all = np.asarray([row["forward_return"] for row in dataset.meta], dtype=float)
+    last_close_all = np.asarray([row["last_close"] for row in dataset.meta], dtype=float)
+    cv = CombinatorialPurgedCV(
+        n_groups=n_groups,
+        n_test_groups=n_test_groups,
+        embargo_days=embargo_days,
+        embargo_pct=embargo_pct,
+        max_embargo_days=max_embargo_days,
+        min_train_groups=min_train_groups,
+    )
+    fold_metrics: list[dict] = []
+    for fold_id, (train_idx, test_idx) in enumerate(
+        cv.split(dataset.X_all, actual_returns_all, target_dates),
+        start=1,
+    ):
+        forecast_prices = np.asarray(fit_predict(train_idx, test_idx), dtype=float).reshape(-1)
+        if len(forecast_prices) != len(test_idx):
+            raise ValueError(
+                f"{model} sequence CPCV fold {fold_id} returned "
+                f"{len(forecast_prices)} forecasts for {len(test_idx)} rows"
+            )
+        pred_returns = (forecast_prices - last_close_all[test_idx]) / np.maximum(last_close_all[test_idx], 1e-9)
+        finite_mask = np.isfinite(pred_returns) & np.isfinite(actual_returns_all[test_idx])
+        coverage = float(finite_mask.mean()) if len(finite_mask) else 0.0
+        if finite_mask.any():
+            ic = mean_daily_spearman_ic(
+                predictions=pred_returns[finite_mask],
+                actual_returns=actual_returns_all[test_idx][finite_mask],
+                target_dates=target_dates[test_idx][finite_mask],
+            )["oos_ic"]
+        else:
+            ic = 0.0
+        fold_metrics.append(
+            {
+                "fold_id": fold_id,
+                "oos_ic": ic,
+                "test_rows": int(len(test_idx)),
+                "coverage": coverage,
+            }
+        )
+
+    evidence = build_model_cpcv_evidence(model=model, fold_metrics=fold_metrics, policy=policy)
+    evidence["method"] = "purged_cpcv_sequence_rank_ic"
+    evidence["family"] = "sequence_model"
+    evidence["date_field"] = "target_date"
+    evidence["input_contract"] = "SequenceWindowDataset(symbol,target_date,last_close,forward_return)"
+    return evidence

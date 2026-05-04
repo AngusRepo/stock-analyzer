@@ -1379,6 +1379,7 @@ def train_dlinear_universal(payload: dict) -> dict:
             lr=payload.get("lr", 1e-3),
             val_ratio=payload.get("val_ratio", 0.15),
             device=device,
+            model_cpcv_policy=payload.get("model_cpcv_policy") or None,
         )
         if result.get("error"):
             return result
@@ -1466,6 +1467,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             weight_decay=payload.get("weight_decay", 1e-5),
             val_ratio=payload.get("val_ratio", 0.15),
             device=device,
+            model_cpcv_policy=payload.get("model_cpcv_policy") or None,
         )
         if result.get("error"):
             return result

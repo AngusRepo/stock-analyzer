@@ -180,6 +180,7 @@ def _build_lifecycle_review_packet(
     promotion_gate: dict | None,
     shadow_ab_by_model: dict | None,
     paper_order_ab_by_model: dict | None,
+    model_cpcv_by_model: dict | None = None,
 ) -> dict:
     promote_like = [a for a in actions if str(a.get("transition") or "").startswith("promote")]
     blocked = [a for a in actions if a.get("transition") == "promote_blocked"]
@@ -198,10 +199,12 @@ def _build_lifecycle_review_packet(
             "deflated_sharpe": "promotion gate policy evaluates risk-adjusted evidence when available",
             "shadow_ab": "shadow prediction evidence must pass when require_shadow_ab=true",
             "paper_order_ab": "paper order AB evidence must pass when require_paper_order_ab=true",
+            "model_cpcv": "challenger model-level CPCV evidence must pass when require_model_cpcv=true",
         },
         "promotion_gate": promotion_gate,
         "shadow_ab_by_model": shadow_ab_by_model or {},
         "paper_order_ab_by_model": paper_order_ab_by_model or {},
+        "model_cpcv_by_model": model_cpcv_by_model or {},
         "blocked": [
             {
                 "model": a.get("model"),
@@ -873,6 +876,7 @@ class PromoteCheckRequest(BaseModel):
     shadow_ab_lookback_days: int = 90
     require_paper_order_ab: bool = True
     paper_order_ab_lookback_days: int = 90
+    require_model_cpcv: bool = True
 
 
 @router.post("/promote_check")
@@ -1066,6 +1070,7 @@ async def promote_check(req: PromoteCheckRequest):
     has_promote_action = any(a.get("transition") == "promote" for a in actions)
     shadow_ab_by_model = None
     paper_order_ab_by_model = None
+    model_cpcv_by_model = {}
     if has_promote_action and req.require_promotion_gate:
         try:
             from services.promotion_service import evaluate_latest_promotion_gate
@@ -1112,7 +1117,26 @@ async def promote_check(req: PromoteCheckRequest):
                     "failed_gates": [],
                     "warnings": [str(e)],
                 }
-    if has_promote_action and (req.require_promotion_gate or req.require_shadow_ab or req.require_paper_order_ab):
+    if has_promote_action and req.require_model_cpcv:
+        model_cpcv_by_model = {
+            name: (pool.get("models", {}).get(name, {}).get("challenger") or {}).get("model_cpcv")
+            for name in {
+                str(action.get("model") or "")
+                for action in actions
+                if action.get("transition") == "promote"
+            }
+        }
+        model_cpcv_by_model = {
+            name: evidence
+            for name, evidence in model_cpcv_by_model.items()
+            if isinstance(evidence, dict)
+        }
+    if has_promote_action and (
+        req.require_promotion_gate
+        or req.require_shadow_ab
+        or req.require_paper_order_ab
+        or req.require_model_cpcv
+    ):
         actions = apply_promotion_gate_to_actions(
             actions,
             promotion_gate,
@@ -1121,6 +1145,8 @@ async def promote_check(req: PromoteCheckRequest):
             shadow_ab_by_model=shadow_ab_by_model,
             require_paper_order_ab=req.require_paper_order_ab,
             paper_order_ab_by_model=paper_order_ab_by_model,
+            require_model_cpcv=req.require_model_cpcv,
+            model_cpcv_by_model=model_cpcv_by_model,
         )
 
     # Apply transitions if requested
@@ -1145,6 +1171,8 @@ async def promote_check(req: PromoteCheckRequest):
                         "consecutive_negative_weeks",
                         "recent_weeks_ic",
                         "weekly_ic_count",
+                        "model_cpcv_decision",
+                        "model_cpcv_folds",
                     )
                     if k in action
                 },
@@ -1159,6 +1187,7 @@ async def promote_check(req: PromoteCheckRequest):
             if t == "promote":
                 # Move challenger -> active; keep history of v_old as "retired" sub-entry
                 ch = entry["challenger"]
+                model_cpcv = ch.get("model_cpcv") if isinstance(ch.get("model_cpcv"), dict) else None
                 _retired_history = entry.setdefault("retired_versions", [])
                 _retired_history.append({
                     "version": entry["version"],
@@ -1172,6 +1201,8 @@ async def promote_check(req: PromoteCheckRequest):
                 entry["weekly_ic"] = ch.get("weekly_ic", []).copy()
                 entry["ic_4w_avg"] = ch.get("ic_4w_avg")
                 entry["consecutive_negative_weeks"] = ch.get("consecutive_negative_weeks", 0)
+                if model_cpcv:
+                    entry["last_model_cpcv"] = model_cpcv
                 entry["status"] = "active"
                 entry.pop("challenger", None)
                 entry.pop("degraded_since", None)
@@ -1262,6 +1293,7 @@ async def promote_check(req: PromoteCheckRequest):
         promotion_gate=promotion_gate,
         shadow_ab_by_model=shadow_ab_by_model,
         paper_order_ab_by_model=paper_order_ab_by_model,
+        model_cpcv_by_model=model_cpcv_by_model,
     )
 
     return {
@@ -1285,10 +1317,12 @@ async def promote_check(req: PromoteCheckRequest):
             "shadow_ab_lookback_days": req.shadow_ab_lookback_days,
             "require_paper_order_ab": req.require_paper_order_ab,
             "paper_order_ab_lookback_days": req.paper_order_ab_lookback_days,
+            "require_model_cpcv": req.require_model_cpcv,
         },
         "promotion_gate": promotion_gate,
         "shadow_ab_by_model": shadow_ab_by_model,
         "paper_order_ab_by_model": paper_order_ab_by_model,
+        "model_cpcv_by_model": model_cpcv_by_model,
         "lifecycle_review_packet": lifecycle_review_packet,
     }
 

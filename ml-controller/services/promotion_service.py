@@ -16,6 +16,7 @@ from services.promotion_policy import (
     evaluate_alpha_policy_candidate,
     evaluate_promotion_candidate,
 )
+from services.validation_governance import build_validation_packet
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict[str, Any]]:
@@ -64,6 +65,7 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "sanity_flags": raw.get("sanity_flags") or [],
         "per_regime": raw.get("per_regime") if isinstance(raw.get("per_regime"), dict) else {},
         "parity_audit": raw.get("parity_audit") if isinstance(raw.get("parity_audit"), dict) else {},
+        "walk_forward": raw.get("walk_forward") if isinstance(raw.get("walk_forward"), dict) else {},
     }
 
 
@@ -151,6 +153,14 @@ def evaluate_latest_promotion_gate(
     missing = [f"missing_{name}" for name, ok in present.items() if not ok]
 
     if missing:
+        validation_packet = build_validation_packet(
+            source="promotion_gate",
+            backtest=inputs["backtest"],
+            monte_carlo=inputs["monte_carlo"] if present.get("monte_carlo_results") else None,
+            pbo=inputs["pbo"] if present.get("pbo_results") else None,
+            walk_forward=inputs["backtest"].get("walk_forward") or None,
+            policy=policy,
+        )
         return {
             "decision": "FAIL",
             "passed": False,
@@ -158,6 +168,7 @@ def evaluate_latest_promotion_gate(
             "warnings": [],
             "policy": policy.to_dict(),
             "metrics": {},
+            "validation_packet": validation_packet,
             "inputs": {
                 "source": source,
                 "pbo_source": inputs["pbo_source"],
@@ -172,6 +183,14 @@ def evaluate_latest_promotion_gate(
         inputs["backtest"],
         inputs["monte_carlo"],
         inputs["pbo"],
+        policy=policy,
+    )
+    result["validation_packet"] = build_validation_packet(
+        source="promotion_gate",
+        backtest=inputs["backtest"],
+        monte_carlo=inputs["monte_carlo"],
+        pbo=inputs["pbo"],
+        walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )
     result["inputs"] = {
@@ -198,6 +217,14 @@ def evaluate_latest_alpha_policy_gate(
     missing = [f"missing_{name}" for name, ok in present.items() if not ok]
 
     if missing:
+        validation_packet = build_validation_packet(
+            source="alpha_policy_latest_gate",
+            backtest=inputs["backtest"],
+            monte_carlo=inputs["monte_carlo"] if present.get("monte_carlo_results") else None,
+            pbo=inputs["pbo"] if present.get("pbo_results") else None,
+            walk_forward=inputs["backtest"].get("walk_forward") or None,
+            policy=policy,
+        )
         return {
             "decision": "FAIL",
             "passed": False,
@@ -205,6 +232,7 @@ def evaluate_latest_alpha_policy_gate(
             "warnings": [],
             "policy": policy.to_dict(),
             "metrics": {},
+            "validation_packet": validation_packet,
             "candidate": {
                 "status": candidate.get("status"),
                 "target": candidate.get("target") or candidate.get("stage"),
@@ -227,6 +255,14 @@ def evaluate_latest_alpha_policy_gate(
         inputs["backtest"],
         inputs["monte_carlo"],
         inputs["pbo"],
+        policy=policy,
+    )
+    result["validation_packet"] = build_validation_packet(
+        source="alpha_policy_latest_gate",
+        backtest=inputs["backtest"],
+        monte_carlo=inputs["monte_carlo"],
+        pbo=inputs["pbo"],
+        walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )
     result["inputs"] = {
@@ -267,6 +303,8 @@ def evaluate_alpha_policy_evidence_gate(
     backtest = evidence.get("backtest") if isinstance(evidence.get("backtest"), dict) else {}
     monte_carlo = evidence.get("monte_carlo") if isinstance(evidence.get("monte_carlo"), dict) else {}
     pbo = evidence.get("pbo") if isinstance(evidence.get("pbo"), dict) else {}
+    data_snooping = evidence.get("data_snooping") if isinstance(evidence.get("data_snooping"), dict) else {}
+    walk_forward = evidence.get("walk_forward") if isinstance(evidence.get("walk_forward"), dict) else {}
     for key, value in (("backtest", backtest), ("monte_carlo", monte_carlo), ("pbo", pbo)):
         if not value:
             failed.append(f"missing_alpha_evidence_{key}")
@@ -278,12 +316,22 @@ def evaluate_alpha_policy_evidence_gate(
         pbo,
         policy=policy,
     )
+    validation_packet = build_validation_packet(
+        source="alpha_policy_evidence_gate",
+        backtest=backtest,
+        monte_carlo=monte_carlo or None,
+        pbo=pbo or None,
+        data_snooping=data_snooping or None,
+        walk_forward=walk_forward or None,
+        policy=policy,
+    )
     merged_failed = [*failed, *(result.get("failed_gates") or [])]
     decision = "PASS" if not merged_failed else "FAIL"
     result.update({
         "decision": decision,
         "passed": decision == "PASS",
         "failed_gates": merged_failed,
+        "validation_packet": validation_packet,
         "inputs": {
             "source": "evidence_bundle",
             "candidate_id": candidate_id,
@@ -291,10 +339,14 @@ def evaluate_alpha_policy_evidence_gate(
             "backtest": backtest,
             "monte_carlo": monte_carlo,
             "pbo": pbo,
+            "data_snooping": data_snooping,
+            "walk_forward": walk_forward,
             "raw_rows_present": {
                 "backtest_results": bool(backtest),
                 "monte_carlo_results": bool(monte_carlo),
                 "pbo_results": bool(pbo),
+                "data_snooping": bool(data_snooping),
+                "walk_forward": bool(walk_forward),
             },
         },
     })
@@ -307,10 +359,25 @@ def build_alpha_policy_evidence_bundle(
     backtest: dict[str, Any],
     monte_carlo: dict[str, Any],
     pbo: dict[str, Any],
+    data_snooping: dict[str, Any] | None = None,
+    walk_forward: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_backtest = normalize_latest_backtest_row(backtest)
+    normalized_monte_carlo = normalize_latest_monte_carlo_row(monte_carlo)
+    normalized_pbo = normalize_latest_pbo_row(pbo)
     return {
         "candidate_id": candidate_id,
-        "backtest": normalize_latest_backtest_row(backtest),
-        "monte_carlo": normalize_latest_monte_carlo_row(monte_carlo),
-        "pbo": normalize_latest_pbo_row(pbo),
+        "backtest": normalized_backtest,
+        "monte_carlo": normalized_monte_carlo,
+        "pbo": normalized_pbo,
+        "data_snooping": data_snooping or {},
+        "walk_forward": walk_forward or {},
+        "validation_packet": build_validation_packet(
+            source="alpha_policy_evidence_bundle",
+            backtest=normalized_backtest,
+            monte_carlo=normalized_monte_carlo,
+            pbo=normalized_pbo,
+            data_snooping=data_snooping,
+            walk_forward=walk_forward,
+        ),
     }

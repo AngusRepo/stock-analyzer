@@ -26,6 +26,7 @@ from scipy.spatial.distance import squareform
 from sklearn.metrics import silhouette_score
 
 from app.model_store import _get_bucket
+from app.purged_cv import dynamic_embargo_days
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1092,9 +1093,14 @@ def run_feature_selection_pipeline(
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     # ── 2. Purged time-based split: 70 / embargo / 10(val) / embargo / 20(test) ──
-    embargo_days = 10  # ~1.3%T per De Prado AFML Ch.7 (aligned with main.py)
     sorted_dates = np.sort(np.unique(dates))
     n_dates = len(sorted_dates)
+    embargo_days = dynamic_embargo_days(
+        n_dates,
+        base_days=10,
+        embargo_pct=0.015,
+        max_days=20,
+    )
 
     cut70_idx = int(n_dates * 0.7)
     cut80_idx = int(n_dates * 0.8)

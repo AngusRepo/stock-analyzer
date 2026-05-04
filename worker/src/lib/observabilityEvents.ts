@@ -11,6 +11,7 @@ export type ObservabilityDomain =
   | 'data_quality'
   | 'deploy_gate'
   | 'model_pool'
+  | 'validation'
   | 'owner_boundary'
 
 const OBSERVABILITY_SEVERITIES: ObservabilitySeverity[] = ['ok', 'info', 'warn', 'error']
@@ -19,6 +20,7 @@ const OBSERVABILITY_DOMAINS: ObservabilityDomain[] = [
   'data_quality',
   'deploy_gate',
   'model_pool',
+  'validation',
   'owner_boundary',
 ]
 
@@ -162,6 +164,14 @@ function deployGateSeverity(decision: string | undefined): ObservabilitySeverity
   if (value === 'block' || value === 'fail' || value === 'failed') return 'error'
   if (value === 'warn' || value === 'warning') return 'warn'
   if (!value || value === 'unknown') return 'warn'
+  return 'ok'
+}
+
+function validationSeverity(decision: unknown): ObservabilitySeverity {
+  const value = String(decision ?? '').toUpperCase()
+  if (value === 'FAIL' || value === 'BLOCK') return 'error'
+  if (value === 'WARN' || value === 'WARNING') return 'warn'
+  if (!value || value === 'UNKNOWN' || value === 'MISSING') return 'warn'
   return 'ok'
 }
 
@@ -395,6 +405,89 @@ export function buildEventsFromModelPool(input: {
   }))
 }
 
+export function buildEventsFromValidation(input: {
+  generatedAt: string
+  validationPackets?: Array<Record<string, unknown>>
+  sourceError?: string
+}): ObservabilityEvent[] {
+  if (input.sourceError) {
+    return [{
+      id: eventId('validation', 'validation_packet', 'unavailable'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'validation',
+      source: 'validation_packet',
+      status: 'unavailable',
+      title: 'Validation packet unavailable',
+      summary: 'OBS could not read the latest Strategy Lab / backtest validation packet.',
+      owner: 'Cloud Run',
+      impact: 'Backtest, PBO, Monte Carlo, and DSR evidence may be invisible to the operator.',
+      next_action: 'Check latest backtest_results.raw_results and /backtest/replay persistence.',
+      runbook: 'P4/P9 validation governance',
+      evidence: { error: input.sourceError },
+    }]
+  }
+
+  const packets = (input.validationPackets ?? []).filter((packet) => Object.keys(packet).length > 0)
+  if (!packets.length) {
+    return [{
+      id: eventId('validation', 'validation_packet', 'stable'),
+      ts: input.generatedAt,
+      severity: 'ok',
+      domain: 'validation',
+      source: 'validation_packet',
+      status: 'ok',
+      title: 'Validation governance quiet',
+      summary: 'No latest validation packet is attached to the visible backtest row.',
+      owner: 'Cloud Run',
+      impact: 'No active validation failure is visible, but promotion should still require model_pool gates.',
+      next_action: 'Run or persist /backtest/replay with validation_packet before promotion review.',
+      runbook: 'P4/P9 validation governance',
+      evidence: {},
+    }]
+  }
+
+  return packets.slice(0, 6).map((packet, index) => {
+    const decision = String(packet.decision ?? 'UNKNOWN').toUpperCase()
+    const failedGates = Array.isArray(packet.failed_gates)
+      ? packet.failed_gates.map(String)
+      : []
+    const warnings = Array.isArray(packet.warnings)
+      ? packet.warnings.map(String)
+      : []
+    return {
+      id: eventId('validation', 'validation_packet', String(packet.source ?? index)),
+      ts: input.generatedAt,
+      severity: validationSeverity(decision),
+      domain: 'validation',
+      source: 'validation_packet',
+      status: decision.toLowerCase(),
+      title: `Validation ${decision}`,
+      summary: failedGates.length
+        ? `Failed gates: ${failedGates.join(', ')}`
+        : warnings.length
+          ? `Warnings: ${warnings.join(', ')}`
+          : 'Validation packet passed current governance gates.',
+      owner: 'Cloud Run',
+      impact: failedGates.length
+        ? 'Strategy promotion or production confidence must be blocked until evidence is fixed.'
+        : 'Validation evidence is visible for Strategy Lab and promotion review.',
+      next_action: failedGates.length
+        ? 'Open Strategy Lab/backtest replay evidence, inspect failed gates, then rerun validation.'
+        : 'Keep validation packet attached to Strategy Lab and model_pool promote-check.',
+      runbook: 'P4/P9 validation governance',
+      evidence: {
+        source: packet.source,
+        decision,
+        failed_gates: failedGates,
+        warnings,
+        gates: packet.gates,
+        validation_scope: packet.validation_scope,
+      },
+    }
+  })
+}
+
 export function buildObservabilityEventReport(input: {
   date: string
   generatedAt: string
@@ -404,6 +497,8 @@ export function buildObservabilityEventReport(input: {
   deployChecks?: Array<{ id?: string; name?: string; status?: string; summary?: string; metrics?: Record<string, unknown> }>
   modelPoolModels?: Record<string, Record<string, unknown>>
   modelPoolError?: string
+  validationPackets?: Array<Record<string, unknown>>
+  validationError?: string
 }): ObservabilityEventReport {
   const events = [
     ...buildEventsFromScheduler({ generatedAt: input.generatedAt, jobs: input.schedulerJobs }),
@@ -417,6 +512,11 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       models: input.modelPoolModels,
       sourceError: input.modelPoolError,
+    }),
+    ...buildEventsFromValidation({
+      generatedAt: input.generatedAt,
+      validationPackets: input.validationPackets,
+      sourceError: input.validationError,
     }),
   ]
 
@@ -444,11 +544,36 @@ export function buildObservabilityEventReport(input: {
   }
 }
 
+function extractValidationPacketFromBacktestRow(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  const raw = safeJsonParse(row?.raw_results)
+  const packet = raw.validation_packet
+  return packet && typeof packet === 'object' ? packet as Record<string, unknown> : null
+}
+
+async function readLatestValidationPackets(env: Bindings): Promise<{
+  packets: Array<Record<string, unknown>>
+  error?: string
+}> {
+  try {
+    const row = await env.DB.prepare(`
+      SELECT raw_results
+        FROM backtest_results
+       WHERE raw_results IS NOT NULL
+       ORDER BY run_date DESC, created_at DESC
+       LIMIT 1
+    `).first<Record<string, unknown>>()
+    const packet = extractValidationPacketFromBacktestRow(row)
+    return { packets: packet ? [packet] : [] }
+  } catch (error) {
+    return { packets: [], error: String(error) }
+  }
+}
+
 export async function buildLiveObservabilityEventReport(env: Bindings, options: { date?: string; live?: boolean } = {}) {
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -471,6 +596,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     controllerJson<{ models?: Record<string, Record<string, unknown>> }>(env, '/model_pool/lineage', { timeoutMs: 12_000 })
       .then((payload) => ({ payload }))
       .catch((error: unknown) => ({ error: String(error) })),
+    readLatestValidationPackets(env),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -485,6 +611,8 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     deployChecks: deployGate.checks,
     modelPoolModels: modelPoolPayload?.models,
     modelPoolError,
+    validationPackets: validationResult.packets,
+    validationError: validationResult.error,
   })
 }
 

@@ -21,6 +21,14 @@ from services.promotion_service import (
     evaluate_latest_promotion_gate,
 )
 from services.backtest_result_store import persist_replay_backtest
+from services.promotion_policy import PromotionPolicy
+from services.validation_governance import (
+    backtest_metrics_to_dict,
+    build_strategy_lab_record,
+    build_strategy_replay_contract,
+    build_validation_packet,
+    explain_backtest_metrics,
+)
 from services.backtest_engine import (
     replay_period_loading,
     diagnose_replay_for_date,
@@ -109,6 +117,26 @@ class ReplayRequest(BaseModel):
         default=None,
         description="Worker/API parity audit to persist with promotion-grade replay rows. "
                     "Promotion gates fail closed unless worker_parity.decision == PASS.",
+    )
+    hypothesis: Optional[str] = Field(
+        default=None,
+        description="Strategy Lab hypothesis being tested; used for read-only experiment records.",
+    )
+    dataset_snapshot: Optional[dict] = Field(
+        default=None,
+        description="Dataset/version snapshot for reproducible Strategy Lab records.",
+    )
+    model_versions: Optional[dict] = Field(
+        default=None,
+        description="Model/artifact versions used by this replay.",
+    )
+    follow_up: Optional[list[str]] = Field(
+        default=None,
+        description="Human review notes or next experiment steps.",
+    )
+    walk_forward_evidence: Optional[dict] = Field(
+        default=None,
+        description="Walk-forward evidence attached to the validation packet and persisted raw result.",
     )
     regime_label: Optional[str] = Field(
         default=None,
@@ -221,6 +249,42 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             regime_label=req.regime_label,
         )
 
+        backtest_evidence = backtest_metrics_to_dict(metrics, parity_audit=req.parity_audit)
+        validation_packet = build_validation_packet(
+            source="backtest_replay",
+            backtest=backtest_evidence,
+            walk_forward=req.walk_forward_evidence,
+            policy=PromotionPolicy.from_env(),
+            external_risk_required=False,
+        )
+        metric_explanations = explain_backtest_metrics(backtest_evidence)
+        strategy_replay_contract = build_strategy_replay_contract(
+            mode=metrics.mode,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            persisted=bool(req.persist_results),
+            symbols_count=len(req.symbols) if req.symbols else None,
+            regime_label=req.regime_label,
+        )
+        strategy_lab_record = build_strategy_lab_record(
+            hypothesis=req.hypothesis,
+            data_slice={
+                "start_date": req.start_date,
+                "end_date": req.end_date,
+                "mode": metrics.mode,
+                "symbols": req.symbols,
+                "symbols_count": len(req.symbols) if req.symbols else None,
+                "regime_label": req.regime_label,
+            },
+            dataset_snapshot=req.dataset_snapshot,
+            model_versions=req.model_versions,
+            metrics=backtest_evidence,
+            validation_packet=validation_packet,
+            strategy_replay_contract=strategy_replay_contract,
+            follow_up=req.follow_up,
+            tags=["backtest_replay", f"mode_{metrics.mode.lower()}"],
+        )
+
         persist_result = None
         if req.persist_results:
             if not req.persist_confirm:
@@ -228,13 +292,24 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
                     "status": "error",
                     "error": "persist_results=true requires persist_confirm=true",
                 }
-            persist_result = persist_replay_backtest(metrics, parity_audit=req.parity_audit)
+            persist_result = persist_replay_backtest(
+                metrics,
+                parity_audit=req.parity_audit,
+                validation_packet=validation_packet,
+                metric_explanations=metric_explanations,
+                strategy_lab_record=strategy_lab_record,
+                walk_forward=req.walk_forward_evidence,
+            )
 
         # Serialize BacktestMetrics to JSON-safe dict
         return {
             "status": "ok",
             "mode": metrics.mode,
             "persist_result": persist_result,
+            "strategy_replay_contract": strategy_replay_contract,
+            "strategy_lab_record": strategy_lab_record,
+            "validation_packet": validation_packet,
+            "metric_explanations": metric_explanations,
             "timerange": f"{metrics.start_date}~{metrics.end_date}",
             "initial_capital": metrics.initial_capital,
             "final_equity": round(metrics.final_equity, 2),

@@ -146,6 +146,13 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
         "weekly_ic": [0.04, 0.05, 0.04, 0.05],
         "ic_4w_avg": 0.045,
         "consecutive_negative_weeks": 0,
+        "model_cpcv": {
+            "decision": "PASS",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": [],
+            "folds": 15,
+            "oos_ic_mean": 0.03,
+        },
     }
     pool = {
         "schema_version": "1.0",
@@ -162,7 +169,11 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
     monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {})
 
     result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(require_promotion_gate=False, require_shadow_ab=True)
+        model_pool.PromoteCheckRequest(
+            require_promotion_gate=False,
+            require_shadow_ab=True,
+            require_paper_order_ab=False,
+        )
     )
 
     blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
@@ -183,6 +194,13 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
         "weekly_ic": [0.04, 0.05, 0.04, 0.05],
         "ic_4w_avg": 0.045,
         "consecutive_negative_weeks": 0,
+        "model_cpcv": {
+            "decision": "PASS",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": [],
+            "folds": 15,
+            "oos_ic_mean": 0.03,
+        },
     }
     pool = {
         "schema_version": "1.0",
@@ -228,3 +246,140 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
     assert result["paper_order_ab_by_model"]["XGBoost"]["decision"] == "PASS"
     assert result["lifecycle_review_packet"]["summary"]["promote_candidates"] == 1
     assert result["lifecycle_review_packet"]["shadow_ab_by_model"]["XGBoost"]["decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch):
+    challenger = {
+        "version": "v2",
+        "gcs_path": "universal/xgboost/v2.joblib",
+        "shadow_since": "2026-01-01",
+        "weekly_ic": [0.04, 0.05, 0.04, 0.05],
+        "ic_4w_avg": 0.045,
+        "consecutive_negative_weeks": 0,
+    }
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
+            "CatBoost": _entry(),
+            "ExtraTrees": _entry(),
+        },
+    }
+    _install_fake_gcs(monkeypatch, pool)
+
+    import services.shadow_ab_service as shadow_ab_service
+    import services.paper_order_ab_service as paper_order_ab_service
+
+    monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "samples": 80}
+    })
+    monkeypatch.setattr(paper_order_ab_service, "load_paper_order_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
+    })
+
+    result = await model_pool.promote_check(
+        model_pool.PromoteCheckRequest(require_promotion_gate=False)
+    )
+
+    blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
+    assert blocked
+    assert "missing_model_cpcv:XGBoost" in blocked[0]["preconditions_failed"]
+    assert result["model_cpcv_by_model"] == {}
+    assert result["lifecycle_review_packet"]["required_evidence"]["model_cpcv"]
+
+
+@pytest.mark.asyncio
+async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
+    challenger = {
+        "version": "v2",
+        "gcs_path": "universal/xgboost/v2.joblib",
+        "shadow_since": "2026-01-01",
+        "weekly_ic": [0.04, 0.05, 0.04, 0.05],
+        "ic_4w_avg": 0.045,
+        "consecutive_negative_weeks": 0,
+        "model_cpcv": {
+            "decision": "PASS",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": [],
+            "folds": 15,
+            "oos_ic_mean": 0.03,
+        },
+    }
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
+            "CatBoost": _entry(),
+            "ExtraTrees": _entry(),
+        },
+    }
+    _install_fake_gcs(monkeypatch, pool)
+
+    import services.shadow_ab_service as shadow_ab_service
+    import services.paper_order_ab_service as paper_order_ab_service
+
+    monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "samples": 80}
+    })
+    monkeypatch.setattr(paper_order_ab_service, "load_paper_order_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
+    })
+
+    result = await model_pool.promote_check(
+        model_pool.PromoteCheckRequest(require_promotion_gate=False)
+    )
+
+    promotes = [a for a in result["actions"] if a["transition"] == "promote"]
+    assert promotes
+    assert result["model_cpcv_by_model"]["XGBoost"]["decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
+    cpcv = {
+        "decision": "PASS",
+        "method": "purged_cpcv_rank_ic",
+        "failed_gates": [],
+        "folds": 15,
+        "oos_ic_mean": 0.03,
+    }
+    challenger = {
+        "version": "v2",
+        "gcs_path": "universal/xgboost/v2.joblib",
+        "shadow_since": "2026-01-01",
+        "weekly_ic": [0.04, 0.05, 0.04, 0.05],
+        "ic_4w_avg": 0.045,
+        "consecutive_negative_weeks": 0,
+        "model_cpcv": cpcv,
+    }
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
+            "CatBoost": _entry(),
+            "ExtraTrees": _entry(),
+        },
+    }
+    bucket = _install_fake_gcs(monkeypatch, pool)
+
+    import services.shadow_ab_service as shadow_ab_service
+    import services.paper_order_ab_service as paper_order_ab_service
+
+    monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "samples": 80}
+    })
+    monkeypatch.setattr(paper_order_ab_service, "load_paper_order_ab_by_model", lambda lookback_days=90: {
+        "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
+    })
+
+    result = await model_pool.promote_check(
+        model_pool.PromoteCheckRequest(apply=True, confirm=True, require_promotion_gate=False)
+    )
+
+    assert result["applied_count"] == 1
+    saved = json.loads(bucket.pool_blob.download_as_text())
+    active = saved["models"]["XGBoost"]
+    assert active["version"] == "v2"
+    assert active["last_model_cpcv"]["decision"] == "PASS"
+    assert "challenger" not in active

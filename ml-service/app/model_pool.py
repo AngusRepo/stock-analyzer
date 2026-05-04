@@ -400,6 +400,7 @@ def register_challenger(
     version: str,
     pool: Optional[dict] = None,
     save: bool = True,
+    model_cpcv: dict | None = None,
 ) -> dict:
     """Add a challenger entry to model_pool.json.
 
@@ -437,6 +438,8 @@ def register_challenger(
         "ic_4w_avg": None,
         "consecutive_negative_weeks": 0,
     }
+    if model_cpcv is not None:
+        entry["challenger"]["model_cpcv"] = model_cpcv
     if save:
         save_pool(pool)
     return entry

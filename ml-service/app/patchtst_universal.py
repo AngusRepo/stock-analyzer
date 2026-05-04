@@ -164,6 +164,7 @@ def train_patchtst(
     weight_decay: float = 1e-5,
     val_ratio: float = 0.15,
     device: str = "cpu",
+    model_cpcv_policy: dict | None = None,
 ) -> dict:
     """Train universal PatchTST on pooled (stock, window) samples.
 
@@ -173,7 +174,11 @@ def train_patchtst(
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
-    from .sequence_training import build_sequence_window_dataset, sequence_oos_ic_from_forecast
+    from .sequence_training import (
+        build_sequence_oos_fold_evidence,
+        build_sequence_window_dataset,
+        sequence_oos_ic_from_forecast,
+    )
 
     t0 = time.time()
     dev = torch.device(device)
@@ -290,12 +295,25 @@ def train_patchtst(
             forecast_prices=pred_5d,
             dataset=sequence_dataset,
         )
+        model_cpcv_evidence = build_sequence_oos_fold_evidence(
+            model="PatchTST",
+            dataset=sequence_dataset,
+            forecast_prices=pred_5d,
+        )
     else:
         ic_metrics = {
             "oos_ic": 0.0,
             "oos_samples": int(len(val_idx)),
             "daily_ic_count": 0,
             "passed": False,
+            "reason": "series_close_missing_symbol_date_metadata",
+        }
+        model_cpcv_evidence = {
+            "model": "PatchTST",
+            "method": "sequence_oos_fold_rank_ic",
+            "decision": "FAIL",
+            "passed": False,
+            "failed_gates": ["sequence_dataset_missing_symbol_date_metadata"],
             "reason": "series_close_missing_symbol_date_metadata",
         }
 
@@ -343,6 +361,8 @@ def train_patchtst(
             "oos_ic": ic_metrics.get("oos_ic"),
             "oos_samples": ic_metrics.get("oos_samples"),
             "daily_ic_count": ic_metrics.get("daily_ic_count"),
+            "model_cpcv": model_cpcv_evidence,
+            "model_cpcv_policy": model_cpcv_policy or {},
         },
         "ic_tracking": {
             "PatchTST": {

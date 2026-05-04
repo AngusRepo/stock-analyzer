@@ -49,6 +49,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
 
     const task = c.req.param('task')
+    const requestedRunDate = c.req.query('date') || undefined
     const taskMap = deps.buildTaskMap(c)
     const fn = taskMap[task]
     if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
@@ -58,7 +59,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
       if (!decision.shouldRun) {
         const summary = `skipped by scheduler policy: ${decision.reason}`
-        await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0 })
+        await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0, run_date: requestedRunDate })
         return c.json({
           success: true,
           skipped: true,
@@ -102,14 +103,34 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     if (longRunning.has(task) && !syncMode) {
       const t0 = Date.now()
       const runId = buildRunId(task)
-      await logSchedulerResult(c.env.KV, task, { status: 'running', summary: `started (background) run_id=${runId}`, duration_ms: 0 })
-      await putRunLog(c.env.KV, task, runId, { status: 'running', summary: 'started (background)', duration_ms: 0 })
+      await logSchedulerResult(c.env.KV, task, {
+        status: 'running',
+        summary: `started (background) run_id=${runId}`,
+        duration_ms: 0,
+        run_date: requestedRunDate,
+      })
+      await putRunLog(c.env.KV, task, runId, {
+        status: 'running',
+        summary: 'started (background)',
+        duration_ms: 0,
+        run_date: requestedRunDate,
+      })
       c.executionCtx.waitUntil((async () => {
         try {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
-          await logSchedulerResult(c.env.KV, task, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
-          await putRunLog(c.env.KV, task, runId, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
+          await logSchedulerResult(c.env.KV, task, {
+            status: classifySchedulerSummary(summary),
+            summary,
+            duration_ms: Date.now() - t0,
+            run_date: requestedRunDate,
+          })
+          await putRunLog(c.env.KV, task, runId, {
+            status: classifySchedulerSummary(summary),
+            summary,
+            duration_ms: Date.now() - t0,
+            run_date: requestedRunDate,
+          })
         } catch (e: any) {
           await logSchedulerResult(
             c.env.KV,
@@ -119,6 +140,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
               summary: e?.message ?? 'Unknown error',
               duration_ms: Date.now() - t0,
               error: String(e),
+              run_date: requestedRunDate,
             },
             c.env as any,
           )
@@ -127,6 +149,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
             summary: e?.message ?? 'Unknown error',
             duration_ms: Date.now() - t0,
             error: String(e),
+            run_date: requestedRunDate,
           })
         }
       })())
@@ -143,13 +166,24 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
-      await logSchedulerResult(c.env.KV, task, { status: classifySchedulerSummary(summary), summary, duration_ms: Date.now() - t0 })
+      await logSchedulerResult(c.env.KV, task, {
+        status: classifySchedulerSummary(summary),
+        summary,
+        duration_ms: Date.now() - t0,
+        run_date: requestedRunDate,
+      })
       return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
     } catch (e: any) {
       await logSchedulerResult(
         c.env.KV,
         task,
-        { status: 'error', summary: e?.message ?? 'Unknown error', duration_ms: Date.now() - t0, error: String(e) },
+        {
+          status: 'error',
+          summary: e?.message ?? 'Unknown error',
+          duration_ms: Date.now() - t0,
+          error: String(e),
+          run_date: requestedRunDate,
+        },
         c.env as any,
       )
       return c.json({ success: false, message: `${task} 執行失敗`, error: e.message }, 500)

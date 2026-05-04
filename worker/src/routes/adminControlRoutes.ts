@@ -109,6 +109,7 @@ async function handleSchedulerCallback(c: any) {
     summary: String(body.summary ?? ''),
     duration_ms: Number(body.duration_ms ?? 0),
     error: body.error != null ? String(body.error) : undefined,
+    run_date: typeof body.run_date === 'string' ? body.run_date : typeof body.date === 'string' ? body.date : undefined,
   })
 
   if (body.task === 'verify-v2' && body.status === 'success' && c.env.ML_CONTROLLER_URL) {

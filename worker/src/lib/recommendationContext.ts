@@ -7,6 +7,8 @@ export interface MlVoteSummary {
   total: number
   forecastPct: number | null
   activeWeightCount: number
+  zeroWeightModels?: string[]
+  contributingModels?: string[]
   reason: string | null
   thresholds?: {
     bullish: number
@@ -192,6 +194,7 @@ export function buildMlVoteSummary(
 
   const forecastPct = normalizeForecastPct(data?.ensemble_v2?.forecast_pct ?? data?.forecast_pct ?? null)
   const activeWeightCount = trackedWeightKeys.filter((name) => Number(weights[name] ?? 0) > 0).length
+  const zeroWeightModels = TRACKED_MODEL_NAMES.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
 
   return {
     bullish,
@@ -202,6 +205,8 @@ export function buildMlVoteSummary(
     total,
     forecastPct,
     activeWeightCount,
+    zeroWeightModels,
+    contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models : [],
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
     thresholds,
   }
@@ -222,6 +227,10 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
   const poc = structure.poc_price
   const low = structure.fair_value_low
   const high = structure.fair_value_high
+  const optimisticLow = structure.optimistic_value_low
+  const optimisticHigh = structure.optimistic_value_high
+  const optimisticStatus = structure.optimistic_value_status
+  const upsideToOptimisticHighPct = structure.upside_to_optimistic_high_pct
   const location = structure.price_location ?? 'unknown'
   if (poc == null && low == null && high == null && location === 'unknown') return null
   const windowStart = structure.window_start_date
@@ -229,7 +238,14 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
   const latestClose = structure.latest_close
   const windowText = windowStart && windowEnd ? `, window=${windowStart}~${windowEnd}` : ''
   const latestText = latestClose != null ? `, latest_close=${latestClose}` : ''
-  return `Market structure: POC=${poc ?? 'n/a'}, fair_value=${low ?? 'n/a'}~${high ?? 'n/a'}, location=${location}${windowText}${latestText}`
+  const optimisticText = optimisticLow != null || optimisticHigh != null
+    ? `, optimistic_value=${optimisticLow ?? 'n/a'}~${optimisticHigh ?? 'n/a'}`
+    : ''
+  const optimisticStatusText = optimisticStatus ? `, optimistic_status=${optimisticStatus}` : ''
+  const upsideText = upsideToOptimisticHighPct != null
+    ? `, upside_to_optimistic_high_pct=${upsideToOptimisticHighPct}`
+    : ''
+  return `Market structure: POC=${poc ?? 'n/a'}, fair_value=${low ?? 'n/a'}~${high ?? 'n/a'}${optimisticText}${optimisticStatusText}${upsideText}, location=${location}${windowText}${latestText}`
 }
 
 export function appendUniqueWatchPoint(points: string[], next: string | null): string[] {

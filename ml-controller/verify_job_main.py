@@ -75,6 +75,8 @@ async def _run() -> int:
         "duration_ms": elapsed_ms,
         "run_id": run_id,
     }
+    if run_date:
+        payload["run_date"] = run_date
     if error:
         payload["error"] = error
 

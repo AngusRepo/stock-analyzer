@@ -75,11 +75,13 @@ async def _run() -> int:
         "duration_ms": elapsed_ms,
         "run_id": run_id,
     }
+    if run_date:
+        overall_payload["run_date"] = run_date
     if error:
         overall_payload["error"] = error
 
     await _callback_worker(overall_payload)
-    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms)
+    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
 
     logger.info(
         "[JobEntry] Pipeline finished: status=%s elapsed=%dms", status, elapsed_ms

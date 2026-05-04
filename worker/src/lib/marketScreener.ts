@@ -172,6 +172,29 @@ export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>
   return deduped
 }
 
+export async function queryTopConceptTagsForSymbols(
+  db: D1Database,
+  symbols: string[],
+  chunkSize = 400,
+): Promise<Array<{ symbol: string; tag: string }>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  const safeChunkSize = Math.max(1, Math.min(400, Math.floor(chunkSize || 400)))
+  const rows: Array<{ symbol: string; tag: string }> = []
+
+  for (let i = 0; i < uniqueSymbols.length; i += safeChunkSize) {
+    const chunk = uniqueSymbols.slice(i, i + safeChunkSize)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT symbol, tag FROM stock_tags
+       WHERE tag_type='concept' AND symbol IN (${placeholders})
+       ORDER BY symbol, weight DESC`
+    ).bind(...chunk).all<{ symbol: string; tag: string }>()
+    rows.push(...(results ?? []))
+  }
+
+  return rows
+}
+
 async function writeScreenerFunnel(
   env: Bindings,
   input: {
@@ -993,13 +1016,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const rrgCfg = cfg.rrg
   if (rrgCfg && scored.length > 0) {
     try {
-      const ph = scored.map(() => '?').join(',')
       // (a) 每檔候選股的 top (highest weight) concept tag
-      const { results: topTagRows } = await env.DB.prepare(
-        `SELECT symbol, tag FROM stock_tags
-         WHERE tag_type='concept' AND symbol IN (${ph})
-         ORDER BY symbol, weight DESC`
-      ).bind(...scored.map(c => c.symbol)).all<{ symbol: string; tag: string }>()
+      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, scored.map(c => c.symbol))
       const symbolTags = new Map<string, string[]>()
       for (const r of topTagRows ?? []) {
         const tags = symbolTags.get(r.symbol) ?? []

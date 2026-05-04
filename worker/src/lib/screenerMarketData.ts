@@ -108,6 +108,25 @@ export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
   return { allPrices, emergingResearchPrices, tpexSymbols, laneCounts }
 }
 
+function latestSymbolsForLane(rows: ScreenerPriceRow[], lane: 'tradable' | 'emerging_watchlist'): string[] {
+  const rowsBySymbol = new Map<string, ScreenerPriceRow[]>()
+  for (const row of rows) {
+    const symbol = String(row.symbol || '').trim()
+    if (!symbol) continue
+    const list = rowsBySymbol.get(symbol) ?? []
+    list.push(row)
+    rowsBySymbol.set(symbol, list)
+  }
+
+  const symbols: string[] = []
+  for (const [symbol, symbolRows] of rowsBySymbol.entries()) {
+    symbolRows.sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    const latest = symbolRows[symbolRows.length - 1]
+    if (classifyBoard(latest).recommendationLane === lane) symbols.push(symbol)
+  }
+  return symbols
+}
+
 export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
@@ -157,6 +176,54 @@ export async function loadMarketDataFromD1(
    .all<ScreenerPriceRow>()
 
   const { allPrices, emergingResearchPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [])
+  let finalEmergingResearchPrices = emergingResearchPrices
+  let finalLaneCounts = laneCounts
+
+  // Emerging stocks often trade sparsely. A 20-market-day global window can
+  // contain fewer than 15 observed bars for one emerging symbol, which makes
+  // RSI/MACD/MA20 score as missing even when the wider D1 history is usable.
+  const emergingSymbols = latestSymbolsForLane(priceRows ?? [], 'emerging_watchlist')
+  if (emergingSymbols.length > 0) {
+    const emergingPriceDays = Math.max(priceDays, 60)
+    const emergingLookbackDays = Math.ceil(emergingPriceDays * 2.2) + 14
+    const { results: emergingDateRows } = await env.DB.prepare(
+      `SELECT DISTINCT date FROM stock_prices
+       WHERE date <= ?
+         AND date >= date(?, '-${emergingLookbackDays} days')
+       ORDER BY date DESC LIMIT ?`,
+    ).bind(maxAllowedDate, maxAllowedDate, emergingPriceDays).all<{ date: string }>()
+    const emergingDates = (emergingDateRows ?? []).map((r) => r.date).sort()
+    if (emergingDates.length) {
+      const minEmergingDate = emergingDates[0]
+      const maxEmergingDate = emergingDates[emergingDates.length - 1]
+      const expandedRows: ScreenerPriceRow[] = []
+      const chunkSize = 80
+      for (let i = 0; i < emergingSymbols.length; i += chunkSize) {
+        const chunk = emergingSymbols.slice(i, i + chunkSize)
+        const placeholders = chunk.map(() => '?').join(',')
+        const { results } = await env.DB.prepare(
+          `SELECT s.symbol, s.market, sp.date,
+                  sp.open, sp.high, sp.low, sp.close,
+                  sp.volume, sp.avg_price
+             FROM stock_prices sp
+             JOIN stocks s ON sp.stock_id = s.id
+            WHERE s.symbol IN (${placeholders})
+              AND sp.date >= ? AND sp.date <= ?
+            ORDER BY s.symbol, sp.date`,
+        ).bind(...chunk, minEmergingDate, maxEmergingDate).all<ScreenerPriceRow>()
+        expandedRows.push(...(results ?? []))
+      }
+      const expandedSplit = splitPriceRowsByBoard(expandedRows)
+      if (expandedSplit.emergingResearchPrices.length > 0) {
+        finalEmergingResearchPrices = expandedSplit.emergingResearchPrices
+        finalLaneCounts = {
+          ...laneCounts,
+          emerging_watchlist: expandedSplit.laneCounts.emerging_watchlist,
+          research_only: Math.max(laneCounts.research_only, expandedSplit.laneCounts.research_only),
+        }
+      }
+    }
+  }
 
   const { results: chipDateRows } = await env.DB.prepare(
     `SELECT DISTINCT date FROM chip_data
@@ -212,5 +279,11 @@ export async function loadMarketDataFromD1(
     }
   }
 
-  return { allPrices, emergingResearchPrices, allChips, tpexSymbols, laneCounts }
+  return {
+    allPrices,
+    emergingResearchPrices: finalEmergingResearchPrices,
+    allChips,
+    tpexSymbols,
+    laneCounts: finalLaneCounts,
+  }
 }

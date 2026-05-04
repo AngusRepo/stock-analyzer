@@ -14,6 +14,7 @@ Real LangGraph this time:
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import operator
 from datetime import datetime, timezone
@@ -643,6 +644,11 @@ def _load_pool_and_ic():
         ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
             model_status[name] = entry.get("status", "active")
+            last_status = str(entry.get("last_ic_status") or "").strip()
+            last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
+            has_fresh_diagnostics = bool(last_status or last_root_cause)
+            if has_fresh_diagnostics and not (last_status == "computed" and last_root_cause in ("", "ok")):
+                continue
             ic_value = entry.get("rolling_ic")
             if ic_value is None:
                 ic_value = entry.get("ic_4w_avg")
@@ -666,13 +672,100 @@ def _load_pool_and_ic():
             tcfg = kv_client.get_json("trading:config", default={}) or {}
             ml_pool_cfg = tcfg.get("mlPool", {}) or {}
             degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
-            ev2_cfg = tcfg.get("ensemble_v2", {}) or {}
+            ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
+            if not ev2_cfg.get("expectedReturnCalibration"):
+                calibration = _load_expected_return_calibration()
+                if calibration:
+                    ev2_cfg["expectedReturnCalibration"] = calibration
         except Exception as _e:
             logger.debug(f"[Pipeline V2] trading:config KV lookup failed (using defaults): {_e}")
         return model_status, ic_weights, degraded_dampening, ev2_cfg, True
     except Exception as e:
         logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
         return {}, {}, 1.0, {}, False
+
+
+def _load_expected_return_calibration(
+    *,
+    lookback_days: int = 90,
+    min_samples: int = 30,
+    min_bin_samples: int = 8,
+    max_bins: int = 8,
+) -> dict[str, Any] | None:
+    """Build empirical avg_rank -> realized return bins from verified outcomes.
+
+    This deliberately fails closed when verified coverage is insufficient: a
+    rank score is not an expected return until production outcomes calibrate it.
+    """
+    try:
+        rows = d1_client.query(
+            """
+            SELECT forecast_data, actual_return_pct
+              FROM predictions
+             WHERE model_name = 'ensemble'
+               AND verified_at IS NOT NULL
+               AND actual_return_pct IS NOT NULL
+               AND forecast_data IS NOT NULL
+               AND date(prediction_date) >= date('now', ?)
+             ORDER BY prediction_date DESC
+             LIMIT 2000
+            """,
+            [f"-{max(1, int(lookback_days))} days"],
+        )
+    except Exception as exc:
+        logger.debug(f"[Pipeline V2] expected-return calibration query skipped: {exc}")
+        return None
+
+    samples: list[tuple[float, float]] = []
+    for row in rows or []:
+        try:
+            payload = json.loads(row.get("forecast_data") or "{}")
+            avg_rank = payload.get("ensemble_v2", {}).get("avg_rank")
+            actual = row.get("actual_return_pct")
+            if avg_rank is None or actual is None:
+                continue
+            avg_rank_f = float(avg_rank)
+            actual_f = float(actual)
+            if not (0.0 <= avg_rank_f <= 1.0):
+                continue
+            if not (-1.0 < actual_f < 1.0):
+                continue
+            samples.append((avg_rank_f, actual_f))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+    if len(samples) < min_samples:
+        return None
+
+    samples.sort(key=lambda item: item[0])
+    bin_count = max(1, min(max_bins, len(samples) // max(1, min_bin_samples)))
+    bins: list[dict[str, Any]] = []
+    for idx in range(bin_count):
+        start = round(idx * len(samples) / bin_count)
+        end = round((idx + 1) * len(samples) / bin_count)
+        subset = samples[start:end]
+        if len(subset) < min_bin_samples:
+            continue
+        returns = sorted(actual for _, actual in subset)
+        mean_return = sum(returns) / len(returns)
+        median_return = returns[len(returns) // 2]
+        bins.append({
+            "rankLow": round(subset[0][0], 6),
+            "rankHigh": round(subset[-1][0], 6),
+            "meanReturn": round(mean_return, 6),
+            "medianReturn": round(median_return, 6),
+            "samples": len(subset),
+        })
+
+    if not bins:
+        return None
+    return {
+        "source": "verified_ensemble_outcomes",
+        "lookbackDays": int(lookback_days),
+        "minSamples": int(min_bin_samples),
+        "sampleCount": len(samples),
+        "bins": bins,
+    }
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:

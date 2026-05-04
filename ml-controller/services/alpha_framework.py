@@ -618,14 +618,59 @@ def _structure_detail(
         if total_volume > 0
         else sum(row["close"] for row in valuation_rows) / len(valuation_rows)
     )
-    poc = max(valuation_rows, key=lambda row: row["volume"])["close"] if total_volume > 0 else weighted_price
     avg_range = sum(max(0.0, row["high"] - row["low"]) for row in rows[-lookback:]) / min(len(rows), lookback)
+    profile_low = min(row["low"] for row in valuation_rows)
+    profile_high = max(row["high"] for row in valuation_rows)
+    bin_count = max(8, min(48, int(math.sqrt(len(valuation_rows)) * 8)))
+    bin_width = max((profile_high - profile_low) / bin_count, weighted_price * 0.001, 0.01)
+    volume_bins: dict[int, float] = {}
+    for row in valuation_rows:
+        low_idx = int(math.floor((row["low"] - profile_low) / bin_width))
+        high_idx = int(math.floor((row["high"] - profile_low) / bin_width))
+        if high_idx < low_idx:
+            low_idx, high_idx = high_idx, low_idx
+        touched = max(1, high_idx - low_idx + 1)
+        volume_share = row["volume"] / touched if row["volume"] > 0 else 1.0 / touched
+        for idx in range(low_idx, high_idx + 1):
+            volume_bins[idx] = volume_bins.get(idx, 0.0) + volume_share
     fair_half_width = max(
         avg_range * overlay_policy["fair_value_atr_multiplier"],
         weighted_price * overlay_policy["fair_value_min_pct"],
     )
-    fair_low = weighted_price - fair_half_width
-    fair_high = weighted_price + fair_half_width
+    policy_fair_low = weighted_price - fair_half_width
+    policy_fair_high = weighted_price + fair_half_width
+    if volume_bins:
+        poc_idx = max(volume_bins, key=lambda idx: volume_bins[idx])
+        poc = profile_low + (poc_idx + 0.5) * bin_width
+        target_volume = sum(volume_bins.values()) * 0.70
+        selected = {poc_idx}
+        selected_volume = volume_bins[poc_idx]
+        left = poc_idx - 1
+        right = poc_idx + 1
+        while selected_volume < target_volume and (left in volume_bins or right in volume_bins):
+            left_vol = volume_bins.get(left, -1.0)
+            right_vol = volume_bins.get(right, -1.0)
+            if right_vol >= left_vol:
+                selected.add(right)
+                selected_volume += max(0.0, right_vol)
+                right += 1
+            else:
+                selected.add(left)
+                selected_volume += max(0.0, left_vol)
+                left -= 1
+        value_area_low = profile_low + min(selected) * bin_width
+        value_area_high = profile_low + (max(selected) + 1) * bin_width
+        fair_low = max(value_area_low, policy_fair_low)
+        fair_high = min(value_area_high, policy_fair_high)
+        if fair_low > fair_high:
+            fair_low = policy_fair_low
+            fair_high = policy_fair_high
+        value_area_volume_pct = selected_volume / sum(volume_bins.values()) if volume_bins else 0.0
+    else:
+        poc = weighted_price
+        fair_low = policy_fair_low
+        fair_high = policy_fair_high
+        value_area_volume_pct = 0.0
     optimistic_half_width = max(
         avg_range * overlay_policy["optimistic_value_atr_multiplier"],
         weighted_price * overlay_policy["fair_value_min_pct"],
@@ -634,6 +679,17 @@ def _structure_detail(
     optimistic_high = weighted_price + optimistic_half_width
     if optimistic_high < optimistic_low:
         optimistic_high = optimistic_low
+    if latest > optimistic_high:
+        optimistic_status = "exceeded"
+    elif optimistic_low <= latest <= optimistic_high:
+        optimistic_status = "inside_optimistic_range"
+    else:
+        optimistic_status = "upside_available"
+    upside_to_optimistic_high_pct = (
+        (optimistic_high - latest) / latest
+        if latest > 0
+        else 0.0
+    )
     if latest < fair_low:
         location = "below_fair_value"
     elif latest > fair_high:
@@ -646,6 +702,10 @@ def _structure_detail(
         "fair_value_high": round(fair_high, 4),
         "optimistic_value_low": round(optimistic_low, 4),
         "optimistic_value_high": round(optimistic_high, 4),
+        "optimistic_value_status": optimistic_status,
+        "upside_to_optimistic_high_pct": round(upside_to_optimistic_high_pct, 6),
+        "value_area_volume_pct": round(value_area_volume_pct, 4),
+        "structure_method": "volume_profile_value_area",
         "price_location": location,
         "volume_weighted_price": round(weighted_price, 4),
         "latest_close": round(latest, 4),
@@ -919,6 +979,8 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
             f"POC={structure['poc_price']}, "
             f"fair_value={structure['fair_value_low']}~{structure['fair_value_high']}, "
             f"optimistic_value={structure.get('optimistic_value_low')}~{structure.get('optimistic_value_high')}, "
+            f"optimistic_status={structure.get('optimistic_value_status') or 'n/a'}, "
+            f"upside_to_optimistic_high_pct={structure.get('upside_to_optimistic_high_pct') or 0}, "
             f"location={structure['price_location']}, "
             f"window={structure.get('window_start_date') or 'n/a'}~{structure.get('window_end_date') or 'n/a'}, "
             f"latest_close={structure.get('latest_close') or 'n/a'}"

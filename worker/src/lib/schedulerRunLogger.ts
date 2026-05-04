@@ -14,6 +14,11 @@ export interface SchedulerRunLogEntry {
   error?: string
 }
 
+type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
+  date?: string
+  run_date?: string
+}
+
 const TASK_NAMES: Record<string, string> = {
   'pre-market-warmup': 'Pre-market Warmup',
   update: 'Market Data Update',
@@ -95,13 +100,20 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
 export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
-  result: Omit<SchedulerRunLogEntry, 'task' | 'timestamp'>,
+  result: SchedulerRunResultInput,
   env?: { DISCORD_WEBHOOK_URL?: string },
 ): Promise<void> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const requestedDate = String(result.run_date ?? result.date ?? '').trim()
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
+    ? requestedDate
+    : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const entry: SchedulerRunLogEntry = {
     task,
-    ...result,
+    status: result.status,
+    summary: result.summary,
+    details: result.details,
+    duration_ms: result.duration_ms,
+    error: result.error,
     timestamp: new Date().toISOString(),
   }
 

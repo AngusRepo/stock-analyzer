@@ -90,6 +90,7 @@ async def _emit_subtask_callbacks(
     overall_status: str,
     overall_error: str | None,
     elapsed_ms: int,
+    run_date: str | None = None,
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
@@ -121,6 +122,8 @@ async def _emit_subtask_callbacks(
                 "duration_ms": elapsed_ms,
                 "run_id": run_id,
             }
+            if run_date:
+                payload["run_date"] = run_date
             if status == "error":
                 payload["error"] = overall_error or f"{task}: no output"
             await _callback_worker(payload, client=client)

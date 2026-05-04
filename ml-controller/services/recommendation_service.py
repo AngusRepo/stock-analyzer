@@ -180,7 +180,8 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         return {
             "signal": None,
             "confidence": 0.0,
-            "forecast_pct": 0.0,
+            "forecast_pct": None,
+            "forecast_pct_source": "missing",
             "signal_source": "missing",
             "signal_raw": None,
         }
@@ -193,11 +194,11 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         ev2 = ml.get("ensemble_v2") or {}
         if ev2.get("signal"):
             confidence = ev2.get("confidence") if ev2.get("confidence") is not None else legacy_conf
-            forecast_pct = ev2.get("forecast_pct") if ev2.get("forecast_pct") is not None else legacy_forecast
             return {
                 "signal": ev2.get("signal"),
                 "confidence": confidence,
-                "forecast_pct": forecast_pct,
+                "forecast_pct": ev2.get("forecast_pct"),
+                "forecast_pct_source": ev2.get("forecast_pct_source") or "ensemble_v2",
                 "signal_source": ev2.get("signal_source") or "ensemble_v2",
                 "signal_raw": ev2.get("signal_raw") or legacy_signal,
             }
@@ -206,6 +207,7 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         "signal": legacy_signal,
         "confidence": legacy_conf,
         "forecast_pct": legacy_forecast,
+        "forecast_pct_source": "legacy",
         "signal_source": "legacy",
         "signal_raw": legacy_signal,
     }
@@ -363,8 +365,12 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     """Build recommendation-facing ML text from the same source used for scoring."""
     signal = str(eff_ml.get("signal") or "").upper()
     source = str(eff_ml.get("signal_source") or "")
-    forecast_pct = float(eff_ml.get("forecast_pct") or 0.0)
-    forecast_text = f"{forecast_pct * 100:+.1f}%"
+    forecast_raw = eff_ml.get("forecast_pct")
+    forecast_text = (
+        "預期報酬校準不足"
+        if forecast_raw is None
+        else f"{float(forecast_raw) * 100:+.1f}%"
+    )
     ev2 = (ml or {}).get("ensemble_v2") or {}
 
     if source in {"ranking_promotion", "ensemble_v2_topk_policy"} or (ml or {}).get("topk_forced"):
@@ -399,11 +405,58 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
 def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -> dict[str, Any]:
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
+    tracked = [
+        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
+        "Chronos", "DLinear", "PatchTST",
+    ]
+    weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
-    for value in (ev2.get("weights") or {}).values():
+    for value in weights.values():
         numeric = _sanitize_non_finite(value)[0]
         if isinstance(numeric, Real) and float(numeric) > 0:
             active_weight_count += 1
+    zero_weight_models = [
+        name for name in tracked
+        if name in weights and _sanitize_non_finite(weights.get(name))[0] in (0, 0.0, None)
+    ]
+
+    model_scores: dict[str, float] = {}
+    rank_scores = (ml or {}).get("rank_scores") or {}
+    if isinstance(rank_scores, dict):
+        for name in tracked[:5]:
+            try:
+                if rank_scores.get(name) is not None:
+                    model_scores[name] = float(rank_scores[name])
+            except (TypeError, ValueError):
+                continue
+    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+        sig = (ml or {}).get(src_key) or {}
+        try:
+            if sig.get("forecast_pct") is not None:
+                model_scores[model_name] = 1.0 / (1.0 + math.exp(-float(sig["forecast_pct"]) * 12.0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+    if model_scores:
+        bullish = sum(1 for value in model_scores.values() if value >= 0.55)
+        bearish = sum(1 for value in model_scores.values() if value <= 0.45)
+        flat = max(0, len(model_scores) - bullish - bearish)
+        return {
+            "bullish": bullish,
+            "bearish": bearish,
+            "flat": flat,
+            "reported": len(model_scores),
+            "missing": max(0, len(tracked) - len(model_scores)),
+            "total": len(tracked),
+            "forecastPct": ev2.get("forecast_pct"),
+            "forecastPctSource": ev2.get("forecast_pct_source"),
+            "activeWeightCount": active_weight_count,
+            "zeroWeightModels": zero_weight_models,
+            "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
+            "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
+            "contributingModels": ev2.get("contributing_models") or [],
+        }
+
     models = (ml or {}).get("models") or []
     if isinstance(models, dict):
         iterable = list(models.values())
@@ -440,7 +493,9 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "missing": max(0, total - reported),
         "total": total,
         "forecastPct": ev2.get("forecast_pct"),
+        "forecastPctSource": ev2.get("forecast_pct_source"),
         "activeWeightCount": active_weight_count,
+        "zeroWeightModels": zero_weight_models,
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],

@@ -11,6 +11,7 @@ from services import recommendation_service  # noqa: E402
 from services import modal_client  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     build_reason,
+    build_ml_vote_summary_data,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
     prune_predictions_outside_universe,
@@ -416,6 +417,43 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
     insert_params = captured["statements"][2][1]
     forecast_data = insert_params[4]
     assert '"signal_source": "ensemble_v2_topk_policy"' in forecast_data
+
+
+def test_ml_vote_summary_counts_weight_gated_models_as_reported():
+    summary = build_ml_vote_summary_data(
+        {
+            "rank_scores": {
+                "XGBoost": 0.61,
+                "CatBoost": 0.58,
+                "ExtraTrees": 0.52,
+                "LightGBM": 0.47,
+                "FT-Transformer": 0.56,
+            },
+            "chronos": {"forecast_pct": 0.02},
+            "dlinear": {"forecast_pct": -0.01},
+            "patchtst": {"forecast_pct": 0.015},
+            "ensemble_v2": {
+                "forecast_pct": 0.0066,
+                "weights": {
+                    "XGBoost": 0.02,
+                    "CatBoost": 0.03,
+                    "ExtraTrees": 0.02,
+                    "LightGBM": 0.06,
+                    "FT-Transformer": 0.0,
+                    "Chronos": 0.24,
+                    "DLinear": 0.0,
+                    "PatchTST": 0.17,
+                },
+                "contributing_models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "Chronos", "PatchTST"],
+            },
+        },
+        {"up": 0, "down": 0, "total": 0},
+    )
+
+    assert summary["reported"] == 8
+    assert summary["missing"] == 0
+    assert summary["activeWeightCount"] == 6
+    assert summary["zeroWeightModels"] == ["FT-Transformer", "DLinear"]
 
 
 def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):

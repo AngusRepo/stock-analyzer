@@ -161,3 +161,129 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     assert ic_weights["CatBoost"] == 0.012
     assert degraded == 1.0
     assert cfg == {}
+
+
+def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatch):
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    sqlite_mod = types.ModuleType("langgraph.checkpoint.sqlite")
+    sqlite_mod.SqliteSaver = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    retry_mod = types.ModuleType("langgraph.pregel.types")
+    retry_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.pregel.types", retry_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+    google_storage_mod.Client = object
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+
+    from graphs import daily_pipeline_v2
+
+    pool = {
+        "models": {
+            "FT-Transformer": {
+                "status": "active",
+                "rolling_ic": 0.12,
+                "last_ic_status": "insufficient_samples",
+                "last_ic_root_cause": "verification_missing",
+            },
+            "DLinear": {
+                "status": "active",
+                "rolling_ic": -0.06,
+                "last_ic_status": "insufficient_samples",
+                "last_ic_root_cause": "verification_missing",
+            },
+            "PatchTST": {
+                "status": "active",
+                "rolling_ic": 0.07,
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+            },
+        }
+    }
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            import json
+
+            return json.dumps(pool)
+
+    class Bucket:
+        def blob(self, path):
+            return Blob()
+
+    class Client:
+        def bucket(self, name):
+            return Bucket()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
+    monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+
+    status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
+
+    assert status["FT-Transformer"] == "active"
+    assert "FT-Transformer" not in ic_weights
+    assert "DLinear" not in ic_weights
+    assert ic_weights["PatchTST"] == 0.07
+
+
+def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcomes(monkeypatch):
+    import json
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+
+    from graphs import daily_pipeline_v2
+
+    rows = []
+    for idx in range(40):
+        avg_rank = 0.40 + (idx * 0.01)
+        actual = -0.02 if avg_rank < 0.60 else 0.04
+        rows.append({
+            "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": avg_rank}}),
+            "actual_return_pct": actual,
+        })
+
+    monkeypatch.setattr(daily_pipeline_v2.d1_client, "query", lambda *_args, **_kwargs: rows)
+
+    calibration = daily_pipeline_v2._load_expected_return_calibration(
+        min_samples=30,
+        min_bin_samples=10,
+        max_bins=4,
+    )
+
+    assert calibration is not None
+    assert calibration["source"] == "verified_ensemble_outcomes"
+    assert calibration["sampleCount"] == 40
+    assert len(calibration["bins"]) == 4
+    assert calibration["bins"][-1]["meanReturn"] > 0

@@ -57,6 +57,31 @@ void (async () => {
     assert(entry.status === 'success', 'persisted scheduler log should keep callback status')
     assert(entry.summary === 'verified 12/12', 'persisted scheduler log should keep callback summary')
   }
+
+  {
+    writes.length = 0
+    const res = await adminControlRoutes.request('/api/admin/scheduler-callback', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: 'pipeline',
+        status: 'success',
+        summary: 'run_id=pipeline-v2-test preds=10 recos=2',
+        duration_ms: 4567,
+        run_id: 'pipeline-v2-test',
+        run_date: '2026-05-04',
+      }),
+    }, env)
+    assert(res.status === 200, 'scheduler callback should accept explicit run_date')
+    assert(
+      writes.some((write) => write.key === 'scheduler:run:pipeline:2026-05-04'),
+      'scheduler callback should persist canonical log under explicit run_date instead of receive date',
+    )
+    assert(
+      writes.some((write) => write.key === 'cron:log:pipeline:2026-05-04'),
+      'scheduler callback should persist legacy log under explicit run_date',
+    )
+  }
 })().catch((error) => {
   console.error(error)
   process.exit(1)

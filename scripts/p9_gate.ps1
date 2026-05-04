@@ -33,6 +33,7 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/deployGate.test.ts `
   src/lib/gaOptimizerPush.test.ts `
   src/lib/marketDataReadiness.test.ts `
+  src/lib/marketScreenerSqlChunking.test.ts `
   src/lib/p6DataQualityUiContract.test.ts `
   src/lib/p9DeploymentContract.test.ts `
   src/lib/p9GateScriptContract.test.ts `
@@ -70,6 +71,8 @@ node .tmp-test-run/lib/gaOptimizerPush.test.js
 if ($LASTEXITCODE -ne 0) { throw "gaOptimizerPush.test failed" }
 node .tmp-test-run/lib/marketDataReadiness.test.js
 if ($LASTEXITCODE -ne 0) { throw "marketDataReadiness.test failed" }
+node .tmp-test-run/lib/marketScreenerSqlChunking.test.js
+if ($LASTEXITCODE -ne 0) { throw "marketScreenerSqlChunking.test failed" }
 node .tmp-test-run/lib/p6DataQualityUiContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p6DataQualityUiContract.test failed" }
 node .tmp-test-run/lib/p9DeploymentContract.test.js
@@ -121,7 +124,7 @@ if (-not (Test-Path $ControllerPython)) {
   throw "ml-controller venv python not found: $ControllerPython"
 }
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py -q
+& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 

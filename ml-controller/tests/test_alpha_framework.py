@@ -117,10 +117,17 @@ def test_risk_overlay_exposes_multi_horizon_volatility_and_market_structure():
     assert overlay["volatility_detail"]["expansion_ratio"] >= 0
     assert overlay["liquidity_detail"]["median_volume"] >= 500_000
     assert overlay["liquidity_detail"]["last_volume_ratio"] > 0
-    assert overlay["structure_detail"]["poc_price"] == pytest.approx(126.0, abs=2.0)
+    assert overlay["structure_detail"]["structure_method"] == "volume_profile_value_area"
+    assert overlay["structure_detail"]["poc_price"] > 0
     assert overlay["structure_detail"]["fair_value_low"] < overlay["structure_detail"]["fair_value_high"]
     assert overlay["structure_detail"]["optimistic_value_low"] >= overlay["structure_detail"]["fair_value_high"]
     assert overlay["structure_detail"]["optimistic_value_high"] >= overlay["structure_detail"]["optimistic_value_low"]
+    assert overlay["structure_detail"]["optimistic_value_status"] in {
+        "upside_available",
+        "inside_optimistic_range",
+        "exceeded",
+    }
+    assert "upside_to_optimistic_high_pct" in overlay["structure_detail"]
     assert overlay["structure_detail"]["price_location"] in {
         "below_fair_value",
         "in_fair_value",
@@ -141,8 +148,23 @@ def test_market_structure_uses_recent_value_area_not_full_history_vwap():
     assert structure["volume_weighted_price"] == pytest.approx(252.7, abs=3.0)
     assert structure["fair_value_low"] > 230
     assert structure["price_location"] in {"in_fair_value", "above_fair_value"}
-    assert structure["window_start_date"] == "2026-03-31"
-    assert structure["window_end_date"] == "2026-04-09"
+
+
+def test_market_structure_value_area_uses_volume_profile_bins():
+    closes = [100, 101, 102, 150, 151, 152, 153, 154, 155, 156]
+    volumes = [100_000, 100_000, 100_000, 5_000_000, 6_000_000, 5_500_000, 5_200_000, 5_100_000, 5_000_000, 4_900_000]
+    payload = _payload_with_volumes("3037", closes, volumes)
+
+    overlay = build_risk_overlay(payload, confidence=0.8)
+    structure = overlay.structure_detail
+
+    assert structure["structure_method"] == "volume_profile_value_area"
+    assert 149 <= structure["poc_price"] <= 153
+    assert structure["fair_value_low"] >= 145
+    assert structure["fair_value_high"] >= structure["fair_value_low"]
+    assert structure["value_area_volume_pct"] >= 0.65
+    assert structure["window_start_date"] == "2026-03-01"
+    assert structure["window_end_date"] == "2026-03-10"
 
 
 def test_market_structure_sorts_price_rows_by_date_before_recent_window():

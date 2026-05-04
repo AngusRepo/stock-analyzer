@@ -19,8 +19,34 @@ def _rank_confidence(avg_rank: float) -> float:
     return round(0.5 + abs(avg_rank - 0.5), 4)
 
 
-def _rank_forecast_pct(avg_rank: float) -> float:
-    return round(max(-0.05, min(0.05, (avg_rank - 0.5) * 0.10)), 4)
+def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tuple[float | None, str]:
+    """Map ensemble rank to expected return only when verified calibration exists."""
+    calibration = (ev2_cfg or {}).get("expectedReturnCalibration") or {}
+    bins = calibration.get("bins") if isinstance(calibration, dict) else None
+    min_samples = int(calibration.get("minSamples", 1) or 1) if isinstance(calibration, dict) else 1
+    if isinstance(bins, list):
+        for row in bins:
+            if not isinstance(row, dict):
+                continue
+            try:
+                low = float(row.get("rankLow", row.get("rank_low")))
+                high = float(row.get("rankHigh", row.get("rank_high")))
+                samples = int(row.get("samples") or 0)
+                mean_return = float(row.get("meanReturn", row.get("mean_return")))
+            except (TypeError, ValueError):
+                continue
+            upper_ok = avg_rank <= high if high >= 1.0 else avg_rank < high
+            if samples >= min_samples and avg_rank >= low and upper_ok:
+                return round(mean_return, 6), "calibrated_rank_bin"
+    return None, "uncalibrated_rank_score"
+
+
+def _forecast_fields(avg_rank: float, ev2_cfg: dict | None = None) -> dict:
+    forecast, source = _calibrated_forecast_pct(avg_rank, ev2_cfg)
+    return {
+        "forecast_pct": forecast,
+        "forecast_pct_source": source,
+    }
 
 
 def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: float) -> float:
@@ -107,20 +133,21 @@ def attach_ensemble_v2(
                 "avg_rank": round(avg, 4),
                 "signal": label,
                 "confidence": _rank_confidence(avg),
-                "forecast_pct": _rank_forecast_pct(avg),
                 "signal_source": "ensemble_v2",
                 "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
                 "weights": {k: round(v, 6) for k, v in weights.items()},
                 "weight_total": round(weight_total, 6),
                 "reason": "cold_start_equal_weight",
                 "weight_formula": "cold_start_equal_weight_until_ic_available",
+                **_forecast_fields(avg, ev2_cfg),
             }
             return
         pred["ensemble_v2"] = {
             "avg_rank": 0.5,
             "signal": "HOLD",
             "confidence": 0.5,
-            "forecast_pct": 0.0,
+            "forecast_pct": None,
+            "forecast_pct_source": "no_positive_lifecycle_weight",
             "signal_source": "ensemble_v2",
             "contributing_models": [],
             "weights": {k: round(v, 6) for k, v in weights.items()},
@@ -152,10 +179,10 @@ def attach_ensemble_v2(
         "avg_rank": round(avg, 4),
         "signal": label,
         "confidence": _rank_confidence(avg),
-        "forecast_pct": _rank_forecast_pct(avg),
         "signal_source": "ensemble_v2",
         "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
         "weights": {k: round(v, 6) for k, v in weights.items()},
         "weight_total": round(weight_total, 6),
         "weight_formula": "max(0,ic) * status_filter * dampening_if_degraded",
+        **_forecast_fields(avg, ev2_cfg),
     }

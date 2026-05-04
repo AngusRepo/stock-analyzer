@@ -28,6 +28,8 @@ type AlphaContext = {
   fairValueHigh?: string | number | null
   optimisticValueLow?: string | number | null
   optimisticValueHigh?: string | number | null
+  optimisticValueStatus?: string | null
+  upsideToOptimisticHighPct?: string | number | null
   location?: string
   window?: string | null
   latestClose?: string | number | null
@@ -42,6 +44,9 @@ type MlVoteSummary = {
   total?: number
   forecastPct?: number | null
   forecast_pct?: number | null
+  activeWeightCount?: number | null
+  zeroWeightModels?: string[]
+  contributingModels?: string[]
   thresholds?: {
     bullish?: number
     bearish?: number
@@ -232,6 +237,8 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
     fairValueHigh,
     optimisticValueLow,
     optimisticValueHigh,
+    optimisticValueStatus: extractValue(structurePoint ?? '', 'optimistic_status') ?? undefined,
+    upsideToOptimisticHighPct: extractValue(structurePoint ?? '', 'upside_to_optimistic_high_pct') ?? undefined,
     location: extractValue(structurePoint ?? '', 'location') ?? undefined,
     window: extractValue(structurePoint ?? '', 'window'),
     latestClose: extractValue(structurePoint ?? '', 'latest_close'),
@@ -375,13 +382,43 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
     return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
   const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecast = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? `，預期${forecastRaw >= 0 ? '+' : ''}${forecastRaw.toFixed(1)}%`
+  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
+    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
+    : null
+  const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
+    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish - missing))
   const flatText = flat > 0 ? `、${flat}/${total}觀望` : ''
   return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}`
+}
+
+function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | null {
+  if (!summary) return null
+  const total = Number(summary.total ?? 0)
+  if (!Number.isFinite(total) || total <= 0) return null
+  const bullish = Number(summary.bullish ?? 0)
+  const bearish = Number(summary.bearish ?? 0)
+  const flat = Number(summary.flat ?? 0)
+  const reported = Number(summary.reported ?? bullish + bearish + flat)
+  const missing = Number(summary.missing ?? Math.max(0, total - reported))
+  if (reported <= 0 || bullish + bearish + flat <= 0) {
+    return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
+  }
+  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
+  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
+    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
+    : null
+  const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
+    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    : ''
+  const flatText = flat > 0 ? `，${flat}/${total}中性` : ''
+  const missingText = missing > 0 ? `，${missing}/${total}未回報` : ''
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `；${summary.zeroWeightModels.join('/')} 權重=0（IC/lifecycle gate）`
+    : ''
+  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
 }
 
 function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
@@ -427,6 +464,8 @@ function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
     fairValueHigh: structure.fair_value_high,
     optimisticValueLow: structure.optimistic_value_low,
     optimisticValueHigh: structure.optimistic_value_high,
+    optimisticValueStatus: structure.optimistic_value_status,
+    upsideToOptimisticHighPct: structure.upside_to_optimistic_high_pct,
     location: structure.price_location,
     window: structure.window_start_date && structure.window_end_date
       ? `${structure.window_start_date}~${structure.window_end_date}`
@@ -564,6 +603,14 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   const optimisticValue = context.optimisticValueLow || context.optimisticValueHigh
     ? `${fmtNumber(context.optimisticValueLow, 2)} ~ ${fmtNumber(context.optimisticValueHigh, 2)}`
     : '-'
+  const optimisticExceeded = context.optimisticValueStatus === 'exceeded'
+    || (Number(context.latestClose) > 0
+      && Number(context.optimisticValueHigh) > 0
+      && Number(context.latestClose) > Number(context.optimisticValueHigh))
+  const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境區間'
+  const optimisticHelp = optimisticExceeded
+    ? '目前價格已高於近端量價估出的順風上緣，這不是樂觀目標價，而是偏追高提醒。'
+    : '樂觀情境是順風時的上緣假設，不是保證目標價。'
   const sizingText = fmtOptionalNumber(context.sizing, 2)
   const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
   return (
@@ -581,7 +628,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
         <span>POC：{fmtNumber(context.poc, 2)}</span>
         <span>Fair value：{fairValue}</span>
-        {optimisticValue !== '-' && <span>樂觀情境區間：{optimisticValue}</span>}
+        {optimisticValue !== '-' && <span>{optimisticLabel}：{optimisticValue}</span>}
         {context.window && <span>計算區間：{context.window}</span>}
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
@@ -592,7 +639,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
           Market structure：POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶；
-          {LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown}
+          {LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
         </p>
       </div>
       {context.skip && (
@@ -622,7 +669,13 @@ function normalizeWatchPoint(point: string): string {
     const optimisticValue = ctx?.optimisticValueLow || ctx?.optimisticValueHigh
       ? `${fmtNumber(ctx?.optimisticValueLow, 2)} ~ ${fmtNumber(ctx?.optimisticValueHigh, 2)}`
       : null
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；樂觀情境=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是正常合理價格帶；樂觀情境是順風時的上緣假設，不是保證目標價。`
+    const optimisticExceeded = ctx?.optimisticValueStatus === 'exceeded'
+      || (Number(ctx?.latestClose) > 0 && Number(ctx?.optimisticValueHigh) > 0 && Number(ctx?.latestClose) > Number(ctx?.optimisticValueHigh))
+    const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境'
+    const optimisticHelp = optimisticExceeded
+      ? '目前價格已高於順風上緣，這是偏追高提醒，不是樂觀目標價。'
+      : '樂觀情境是順風時的上緣假設，不是保證目標價。'
+    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是正常合理價格帶；${optimisticHelp}`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
@@ -686,7 +739,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const alphaContext = alphaContextFromRec(rec, watchPoints)
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
-  const mlSummary = formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlSummary = formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const mlThresholdText = formatMlThresholdText(mlVoteSummary)
   const screenerFunnel = screenerFunnelFromRec(rec)

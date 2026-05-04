@@ -447,7 +447,47 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     }
 
 
-def build_score_components(row: dict, *, raw_score: float) -> dict[str, Any]:
+def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy: dict | None = None) -> list[dict[str, Any]]:
+    if not isinstance(alpha_context, dict):
+        return []
+    bucket = alpha_context.get("edge_bucket")
+    regime_weight = alpha_context.get("regime_weight")
+    risk_overlay = alpha_context.get("risk_overlay") or {}
+    risk_flags = risk_overlay.get("flags") or []
+    scoring = normalize_alpha_policy(alpha_policy)["scoring"]
+    bucket_bonus = _float_or_none(scoring["bucket_bonus"].get(str(bucket))) if bucket else None
+    regime_delta = None
+    if regime_weight is not None:
+        regime_delta = (float(regime_weight) - 1.0) * scoring["regime_weight_impact"]
+    risk_penalty = float(risk_overlay.get("penalty") or 0.0) * scoring["overlay_penalty_impact"]
+    details: list[dict[str, Any]] = []
+    if bucket_bonus is not None:
+        details.append({
+            "key": "bucket_bonus",
+            "label": "Edge bucket",
+            "value": round(bucket_bonus, 2),
+            "explain": "策略型態基礎加分，例如突破/波動擴張通常比防守累積更積極。",
+        })
+    if regime_delta is not None:
+        details.append({
+            "key": "regime_weight",
+            "label": "Regime weight",
+            "value": round(regime_delta, 2),
+            "explain": "目前大盤 regime 對這種策略型態的順逆風調整。",
+        })
+    if risk_penalty:
+        flag_text = ", ".join(str(flag) for flag in risk_flags) if risk_flags else "risk_overlay"
+        details.append({
+            "key": "risk_overlay",
+            "label": "Risk overlay",
+            "value": -round(risk_penalty, 2),
+            "flags": risk_flags,
+            "explain": f"風控扣分，觸發旗標：{flag_text}。",
+        })
+    return details
+
+
+def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | None = None) -> dict[str, Any]:
     """Persist the score math so the UI never invents an opaque residual."""
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
@@ -465,7 +505,10 @@ def build_score_components(row: dict, *, raw_score: float) -> dict[str, Any]:
         "alphaReason": {
             "bucket": alpha_context.get("edge_bucket") if isinstance(alpha_context, dict) else None,
             "regime": alpha_context.get("regime") if isinstance(alpha_context, dict) else None,
+            "regimeWeight": alpha_context.get("regime_weight") if isinstance(alpha_context, dict) else None,
             "riskFlags": ((alpha_context.get("risk_overlay") or {}).get("flags") if isinstance(alpha_context, dict) else []) or [],
+            "riskPenalty": ((alpha_context.get("risk_overlay") or {}).get("penalty") if isinstance(alpha_context, dict) else 0) or 0,
+            "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
         },
     }
 
@@ -488,6 +531,77 @@ def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) ->
             continue
         total += float(c.get(field) or 0.0) * close / 1e8
     return round(total, 6)
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _ema(values: list[float], span: int) -> list[float]:
+    if not values:
+        return []
+    alpha = 2.0 / (span + 1.0)
+    out = [values[0]]
+    for value in values[1:]:
+        out.append(value * alpha + out[-1] * (1.0 - alpha))
+    return out
+
+
+def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | None]:
+    """Return latest RSI/MACD/MA20 for recommendation text.
+
+    The screener can emit research-only/emerging seeds before technical_indicators
+    are materialized. In that case, derive the same snapshot from payload prices
+    instead of treating missing fields as bearish.
+    """
+    indicators = _sorted_payload_rows(payload, "indicators") if payload else []
+    latest_ind = indicators[-1] if indicators else {}
+    prices = _sorted_payload_rows(payload, "prices") if payload else []
+    closes = [
+        float(p.get("close"))
+        for p in prices
+        if _float_or_none(p.get("close")) is not None
+    ]
+
+    ma20 = _float_or_none(latest_ind.get("ma20"))
+    rsi14 = _float_or_none(latest_ind.get("rsi14"))
+    macd_hist = _float_or_none(latest_ind.get("macdHist"))
+
+    if ma20 is None and len(closes) >= 20:
+        ma20 = sum(closes[-20:]) / 20.0
+
+    if rsi14 is None and len(closes) >= 15:
+        gains = 0.0
+        losses = 0.0
+        for i in range(len(closes) - 14, len(closes)):
+            delta = closes[i] - closes[i - 1]
+            if delta > 0:
+                gains += delta
+            else:
+                losses -= delta
+        avg_gain = gains / 14.0
+        avg_loss = losses / 14.0
+        rsi14 = 100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+    if macd_hist is None and len(closes) >= 35:
+        ema12 = _ema(closes, 12)
+        ema26 = _ema(closes, 26)
+        macd_line = [a - b for a, b in zip(ema12, ema26)][25:]
+        signal_line = _ema(macd_line, 9)
+        if macd_line and signal_line:
+            macd_hist = macd_line[-1] - signal_line[-1]
+
+    return {
+        "ma20": ma20,
+        "rsi14": rsi14 if rsi14 is not None else _float_or_none(rec.get("rsi14")),
+        "macd_hist": macd_hist if macd_hist is not None else _float_or_none(rec.get("macd_hist")),
+    }
 
 
 def build_reason(s: dict) -> str:
@@ -663,9 +777,9 @@ def filter_and_score_recommendations(
         eligible_for_pending_buy = bool(stock_meta.get("eligible_for_pending_buy", recommendation_lane == "tradable"))
         env_for_stock = payload.get("market_env", {}) if payload else {}
 
-        # Extract latest indicator values from payload (RSI, MACD, MA20)
-        indicators = _sorted_payload_rows(payload, "indicators") if payload else []
-        latest_ind = indicators[-1] if indicators else {}
+        # Extract latest indicator values from payload. If the indicator table
+        # is not ready for a research-only seed, derive from payload prices.
+        technical = _derive_technical_snapshot(payload, rec)
 
         # Latest price from payload
         prices = _sorted_payload_rows(payload, "prices") if payload else []
@@ -711,10 +825,10 @@ def filter_and_score_recommendations(
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
             "dealer_net_5d": dealer_net_5d,
-            "rsi14": latest_ind.get("rsi14"),
-            "macd_hist": latest_ind.get("macdHist"),
+            "rsi14": technical.get("rsi14"),
+            "macd_hist": technical.get("macd_hist"),
             "current_price": current_price,
-            "ma20": latest_ind.get("ma20"),
+            "ma20": technical.get("ma20"),
             "_signal": eff_ml.get("signal"),
             "ml_confidence": eff_ml.get("confidence") or 0,
             "ml_forecast_pct": eff_ml.get("forecast_pct") or 0,
@@ -766,13 +880,13 @@ def filter_and_score_recommendations(
             "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
-            "rsi14": latest_ind.get("rsi14"),
-            "macd_hist": latest_ind.get("macdHist"),
+            "rsi14": technical.get("rsi14"),
+            "macd_hist": technical.get("macd_hist"),
         }
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
-        row["score_components"] = build_score_components(row, raw_score=total_score)
+        row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
         final.append(row)
 
     return final, sell_count

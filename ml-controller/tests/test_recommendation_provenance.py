@@ -89,6 +89,45 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
     assert row["stock_id"] == 1
 
 
+def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    prices = [
+        {
+            "date": f"2026-04-{i + 1:02d}",
+            "close": 50.0 + i,
+            "open": 49.5 + i,
+            "high": 51.0 + i,
+            "low": 49.0 + i,
+        }
+        for i in range(40)
+    ]
+    payload = {
+        "symbol": "3585",
+        "prices": prices,
+        "indicators": [],
+        "chips": [],
+        "stock_meta": {
+            "market_segment": "EMERGING",
+            "recommendation_lane": "emerging_watchlist",
+            "eligible_for_ml": True,
+            "eligible_for_execution": False,
+        },
+    }
+
+    final, sell_count = filter_and_score_recommendations(
+        [{**_screener_rec("3585"), "market_segment": "EMERGING", "eligible_for_pending_buy": 0}],
+        {"3585": _prediction_with_ensemble_v2()},
+        [payload],
+    )
+
+    assert sell_count == 0
+    assert len(final) == 1
+    assert final[0]["rsi14"] is not None
+    assert final[0]["macd_hist"] is not None
+    assert final[0]["macd_hist"] > 0
+    assert final[0]["current_price"] == 89.0
+
+
 def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     rec = {

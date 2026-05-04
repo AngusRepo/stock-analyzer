@@ -10,7 +10,7 @@ function assert(condition: unknown, message: string): void {
 
 {
   const classified = classifyBoard({ market: 'OTC', open: null, avg_price: 100.53 })
-  assert(classified.boardType === 'EMERGING', 'emerging-style price row must override stale OTC market metadata')
+  assert(classified.boardType === 'EMERGING', 'latest avg-price-only row must override stale OTC market metadata')
   assert(classified.tradabilityTier === 'research_only', 'emerging row should be research-only')
   assert(classified.eligibleForPendingBuy === false, 'emerging row must never be pending-buy eligible')
 }

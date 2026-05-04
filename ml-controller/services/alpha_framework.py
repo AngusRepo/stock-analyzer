@@ -36,6 +36,7 @@ DEFAULT_ALPHA_POLICY: dict[str, Any] = {
         "fair_value_range_lookback": 10,
         "fair_value_atr_multiplier": 0.75,
         "fair_value_min_pct": 0.01,
+        "optimistic_value_atr_multiplier": 1.25,
     },
     "allocation": {
         "slate_size": 10,
@@ -226,6 +227,10 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         "fair_value_min_pct": _to_float(
             _camel_or_snake(raw_overlay, "fairValueMinPct", "fair_value_min_pct", overlay_default["fair_value_min_pct"]),
             overlay_default["fair_value_min_pct"],
+        ),
+        "optimistic_value_atr_multiplier": _to_float(
+            _camel_or_snake(raw_overlay, "optimisticValueAtrMultiplier", "optimistic_value_atr_multiplier", overlay_default["optimistic_value_atr_multiplier"]),
+            overlay_default["optimistic_value_atr_multiplier"],
         ),
     }
 
@@ -621,6 +626,14 @@ def _structure_detail(
     )
     fair_low = weighted_price - fair_half_width
     fair_high = weighted_price + fair_half_width
+    optimistic_half_width = max(
+        avg_range * overlay_policy["optimistic_value_atr_multiplier"],
+        weighted_price * overlay_policy["fair_value_min_pct"],
+    )
+    optimistic_low = fair_high
+    optimistic_high = weighted_price + optimistic_half_width
+    if optimistic_high < optimistic_low:
+        optimistic_high = optimistic_low
     if latest < fair_low:
         location = "below_fair_value"
     elif latest > fair_high:
@@ -631,6 +644,8 @@ def _structure_detail(
         "poc_price": round(poc, 4),
         "fair_value_low": round(fair_low, 4),
         "fair_value_high": round(fair_high, 4),
+        "optimistic_value_low": round(optimistic_low, 4),
+        "optimistic_value_high": round(optimistic_high, 4),
         "price_location": location,
         "volume_weighted_price": round(weighted_price, 4),
         "latest_close": round(latest, 4),
@@ -903,6 +918,7 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
             "Market structure: "
             f"POC={structure['poc_price']}, "
             f"fair_value={structure['fair_value_low']}~{structure['fair_value_high']}, "
+            f"optimistic_value={structure.get('optimistic_value_low')}~{structure.get('optimistic_value_high')}, "
             f"location={structure['price_location']}, "
             f"window={structure.get('window_start_date') or 'n/a'}~{structure.get('window_end_date') or 'n/a'}, "
             f"latest_close={structure.get('latest_close') or 'n/a'}"

@@ -26,6 +26,8 @@ type AlphaContext = {
   poc?: string | number | null
   fairValueLow?: string | number | null
   fairValueHigh?: string | number | null
+  optimisticValueLow?: string | number | null
+  optimisticValueHigh?: string | number | null
   location?: string
   window?: string | null
   latestClose?: string | number | null
@@ -62,6 +64,15 @@ type ScoreComponents = {
     bucket?: string | null
     regime?: string | null
     riskFlags?: string[] | null
+    riskPenalty?: number | null
+    regimeWeight?: number | null
+    details?: Array<{
+      key?: string
+      label?: string
+      value?: number | null
+      explain?: string
+      flags?: string[]
+    }> | null
   } | null
 }
 
@@ -205,6 +216,8 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
   const [volatility, liquidity] = risk ? risk.split('/') : []
   const fairValue = extractValue(structurePoint ?? '', 'fair_value')
   const [fairValueLow, fairValueHigh] = fairValue ? fairValue.split('~') : []
+  const optimisticValue = extractValue(structurePoint ?? '', 'optimistic_value')
+  const [optimisticValueLow, optimisticValueHigh] = optimisticValue ? optimisticValue.split('~') : []
 
   const legacyAlpha = alphaPoint?.match(/^Alpha (?:bucket|overlay):\s*([^,/]+)(?:\s*\/\s*([^,]+))?/)
 
@@ -217,6 +230,8 @@ function contextFromWatchPoints(points: string[]): AlphaContext | null {
     poc: extractValue(structurePoint ?? '', 'POC'),
     fairValueLow,
     fairValueHigh,
+    optimisticValueLow,
+    optimisticValueHigh,
     location: extractValue(structurePoint ?? '', 'location') ?? undefined,
     window: extractValue(structurePoint ?? '', 'window'),
     latestClose: extractValue(structurePoint ?? '', 'latest_close'),
@@ -294,6 +309,10 @@ function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]
   if (evidence?.newMoney) notes.push('新進資金/新題材加權')
   if (Array.isArray(evidence?.decision_path) && evidence.decision_path.length > 0) {
     notes.push(`漏斗路徑：${evidence.decision_path.map((step: any) => step.stage).filter(Boolean).join(' → ')}`)
+  }
+
+  if (chips.length === 0 && notes.length === 0 && rec.screener_funnel_rank == null) {
+    return null
   }
 
   return {
@@ -406,6 +425,8 @@ function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
     poc: structure.poc_price,
     fairValueLow: structure.fair_value_low,
     fairValueHigh: structure.fair_value_high,
+    optimisticValueLow: structure.optimistic_value_low,
+    optimisticValueHigh: structure.optimistic_value_high,
     location: structure.price_location,
     window: structure.window_start_date && structure.window_end_date
       ? `${structure.window_start_date}~${structure.window_end_date}`
@@ -480,6 +501,7 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
   const hasBackendComponents = Boolean(components)
   const riskFlags = components?.alphaReason?.riskFlags?.filter(Boolean) ?? []
   const riskText = riskFlags.length > 0 ? riskFlags.join(', ') : '無額外風控旗標'
+  const alphaDetails = components?.alphaReason?.details?.filter((item) => item && item.value != null) ?? []
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
@@ -504,9 +526,20 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
         )}
         <span>最後分數：{fmtNumber(finalScore, 1)}</span>
       </div>
-      {hasBackendComponents && (
+      {hasBackendComponents && alphaDetails.length > 0 && (
+        <div className="mt-2 space-y-1 rounded-md border border-border/40 bg-muted/20 p-2 text-[11px] leading-relaxed text-muted-foreground/90">
+          <p className="font-medium text-foreground/80">Alpha 調整拆解</p>
+          {alphaDetails.map((item, index) => (
+            <p key={`${item.key ?? item.label}-${index}`}>
+              {item.label ?? item.key}：{Number(item.value) >= 0 ? '+' : ''}{fmtNumber(item.value, 1)}
+              {item.explain ? `，${item.explain}` : ''}
+            </p>
+          ))}
+        </div>
+      )}
+      {hasBackendComponents && alphaDetails.length === 0 && (
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          後端已提供 score_components；Alpha 扣加分主要由 edge bucket、regime 權重與風控旗標決定。風控旗標：{riskText}。
+          Alpha 調整沒有觸發可拆解旗標；風控旗標：{riskText}。
         </p>
       )}
       {Math.abs(residual) >= 0.1 && (
@@ -528,6 +561,9 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   const fairValue = context.fairValueLow || context.fairValueHigh
     ? `${fmtNumber(context.fairValueLow, 2)} ~ ${fmtNumber(context.fairValueHigh, 2)}`
     : '-'
+  const optimisticValue = context.optimisticValueLow || context.optimisticValueHigh
+    ? `${fmtNumber(context.optimisticValueLow, 2)} ~ ${fmtNumber(context.optimisticValueHigh, 2)}`
+    : '-'
   const sizingText = fmtOptionalNumber(context.sizing, 2)
   const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
   return (
@@ -545,6 +581,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
         <span>POC：{fmtNumber(context.poc, 2)}</span>
         <span>Fair value：{fairValue}</span>
+        {optimisticValue !== '-' && <span>樂觀情境區間：{optimisticValue}</span>}
         {context.window && <span>計算區間：{context.window}</span>}
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
@@ -582,7 +619,10 @@ function normalizeWatchPoint(point: string): string {
     const fairValue = ctx?.fairValueLow || ctx?.fairValueHigh
       ? `${fmtNumber(ctx?.fairValueLow, 2)} ~ ${fmtNumber(ctx?.fairValueHigh, 2)}`
       : '-'
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是合理價格帶，價格位置用來判斷是否追高或折價。`
+    const optimisticValue = ctx?.optimisticValueLow || ctx?.optimisticValueHigh
+      ? `${fmtNumber(ctx?.optimisticValueLow, 2)} ~ ${fmtNumber(ctx?.optimisticValueHigh, 2)}`
+      : null
+    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；樂觀情境=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是正常合理價格帶；樂觀情境是順風時的上緣假設，不是保證目標價。`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'

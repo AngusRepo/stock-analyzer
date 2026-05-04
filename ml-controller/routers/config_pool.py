@@ -38,6 +38,7 @@ from services.alpha_policy_search import load_alpha_outcome_rows
 from services.alpha_quality import evaluate_alpha_quality
 from services.alpha_quality_policy import resolve_alpha_quality_inputs
 from services.config_pool_policy import DEFAULT_CONFIG_POOL_POLICY, ConfigPoolPolicy
+from services.market_structure_validation import load_market_structure_rows, validate_market_structure
 from services.promotion_service import evaluate_alpha_policy_evidence_gate, evaluate_latest_alpha_policy_gate
 from services.worker_config_client import WorkerConfigClientError, worker_fetch
 
@@ -109,6 +110,24 @@ async def alpha_quality_report(
             return_pct_per_r=resolved["return_pct_per_r"],
             direction_correct_fallback_r=resolved["direction_correct_fallback_r"],
         ),
+    }
+
+
+@router.get("/market_structure_validation")
+async def market_structure_validation_report(
+    limit: int = Query(default=1000, ge=100, le=5000),
+    min_samples: int = Query(default=30, ge=1, le=1000),
+):
+    rows = load_market_structure_rows(limit=limit)
+    return {
+        "source": "market_structure_validation",
+        "limit": limit,
+        "method": {
+            "value_band": "recent volume-weighted price +/- range envelope",
+            "purpose": "validate market-structure overlay before using it as a gate",
+            "not_intrinsic_value": True,
+        },
+        **validate_market_structure(rows, min_samples=min_samples),
     }
 
 

@@ -119,6 +119,8 @@ def test_risk_overlay_exposes_multi_horizon_volatility_and_market_structure():
     assert overlay["liquidity_detail"]["last_volume_ratio"] > 0
     assert overlay["structure_detail"]["poc_price"] == pytest.approx(126.0, abs=2.0)
     assert overlay["structure_detail"]["fair_value_low"] < overlay["structure_detail"]["fair_value_high"]
+    assert overlay["structure_detail"]["optimistic_value_low"] >= overlay["structure_detail"]["fair_value_high"]
+    assert overlay["structure_detail"]["optimistic_value_high"] >= overlay["structure_detail"]["optimistic_value_low"]
     assert overlay["structure_detail"]["price_location"] in {
         "below_fair_value",
         "in_fair_value",
@@ -279,7 +281,12 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
         {"2330": 1},
     )
 
-    forecast_data = captured["statements"][2][1][3]
+    forecast_data = next(
+        param
+        for _sql, params in captured["statements"]
+        for param in params
+        if isinstance(param, str) and '"alpha_context"' in param
+    )
     assert '"alpha_context"' in forecast_data
     assert '"edge_bucket": "breakout_vol_expansion"' in forecast_data
 

@@ -71,21 +71,34 @@ export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
   const emergingResearchPrices: FMStockPrice[] = []
   const tpexSymbols = new Set<string>()
   const laneCounts = { tradable: 0, emerging_watchlist: 0, research_only: 0 }
+  const rowsBySymbol = new Map<string, ScreenerPriceRow[]>()
 
   for (const row of rows) {
-    const board = classifyBoard(row)
+    const symbol = String(row.symbol || '').trim()
+    if (!symbol) continue
+    const list = rowsBySymbol.get(symbol) ?? []
+    list.push(row)
+    rowsBySymbol.set(symbol, list)
+  }
+
+  for (const symbolRows of rowsBySymbol.values()) {
+    symbolRows.sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    const latest = symbolRows[symbolRows.length - 1]
+    const board = classifyBoard(latest)
     if (board.recommendationLane === 'tradable') {
-      const price = toFmPrice(row)
-      if (!price) continue
-      allPrices.push(price)
+      for (const row of symbolRows) {
+        const price = toFmPrice(row)
+        if (price) allPrices.push(price)
+      }
       laneCounts.tradable += 1
-      if (board.boardType === 'OTC') tpexSymbols.add(row.symbol)
+      if (board.boardType === 'OTC') tpexSymbols.add(latest.symbol)
       continue
     }
     if (board.recommendationLane === 'emerging_watchlist') {
-      const price = toFmPrice(row, true)
-      if (!price) continue
-      emergingResearchPrices.push(price)
+      for (const row of symbolRows) {
+        const price = toFmPrice(row, true)
+        if (price) emergingResearchPrices.push(price)
+      }
       laneCounts.emerging_watchlist += 1
       continue
     }

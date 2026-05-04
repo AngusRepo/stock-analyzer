@@ -87,20 +87,26 @@ export function computeTechnicalIndicators(closes: number[], highs: number[], lo
   return { ma5, ma10, ma20, ma60, rsi14, macd, macdSignal, macdHist, bbUpper, bbMid, bbLower, atr14 }
 }
 
-export async function computeAndStoreIndicators(db: D1Database, stockId: number): Promise<void> {
+export async function computeAndStoreIndicators(db: D1Database, stockId: number, asOfDate?: string): Promise<void> {
   try {
-    const recentPrices = await db.prepare(
-      'SELECT close, high, low FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 70',
-    ).bind(stockId).all<{ close: number; high: number; low: number }>()
+    const recentPrices = asOfDate
+      ? await db.prepare(
+        'SELECT date, close, high, low FROM stock_prices WHERE stock_id=? AND date<=? ORDER BY date DESC LIMIT 70',
+      ).bind(stockId, asOfDate).all<{ date: string; close: number; high: number | null; low: number | null }>()
+      : await db.prepare(
+        'SELECT date, close, high, low FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 70',
+      ).bind(stockId).all<{ date: string; close: number; high: number | null; low: number | null }>()
 
-    const closes = recentPrices.results.map((p) => p.close).reverse()
+    const rows = (recentPrices.results ?? []).filter((p) => Number(p.close) > 0)
+    const latestDate = rows[0]?.date
+    if (!latestDate) return
+    const closes = rows.map((p) => Number(p.close)).reverse()
     if (closes.length < 20) return
 
-    const today = new Date().toISOString().split('T')[0]
     const indicators = computeTechnicalIndicators(
       closes,
-      recentPrices.results.map((p) => p.high).reverse(),
-      recentPrices.results.map((p) => p.low).reverse(),
+      rows.map((p) => Number(p.high ?? p.close)).reverse(),
+      rows.map((p) => Number(p.low ?? p.close)).reverse(),
     )
     await db.prepare(
       `INSERT OR REPLACE INTO technical_indicators
@@ -108,7 +114,7 @@ export async function computeAndStoreIndicators(db: D1Database, stockId: number)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).bind(
       stockId,
-      today,
+      latestDate,
       indicators.ma5,
       indicators.ma10,
       indicators.ma20,

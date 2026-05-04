@@ -1773,9 +1773,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     // 對缺 technical_indicators 的新股立即計算（不等 Queue，避免 ML NO_SIGNAL）
     try {
-      const { results: noTiStocks } = await env.DB.prepare(`
+      const seedSymbolsForIndicators = [
+        ...finalCandidates.map(c => c.symbol),
+        ...emergingResearchCandidates.map(c => c.symbol),
+      ].map(s => String(s || '').trim()).filter(Boolean)
+      if (!seedSymbolsForIndicators.length) {
+        debugLog.push('[DB] skipped technical_indicators seed backfill: no seed symbols')
+      } else {
+        const ph = seedSymbolsForIndicators.map(() => '?').join(',')
+        const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
-        WHERE s.in_current_watchlist = 1
+        WHERE s.symbol IN (${ph})
           AND NOT EXISTS (
             SELECT 1 FROM technical_indicators ti
              WHERE ti.stock_id = s.id
@@ -1783,15 +1791,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
                AND ti.date <= ?
           )
           AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
-      `).bind(endDate, endDate).all<{ id: number; symbol: string }>()
+      `).bind(...seedSymbolsForIndicators, endDate, endDate).all<{ id: number; symbol: string }>()
 
-      if (noTiStocks?.length) {
-        let computed = 0
-        for (const stock of noTiStocks) {
-          await computeAndStoreIndicators(env.DB, stock.id)
-          computed++
+        if (noTiStocks?.length) {
+          let computed = 0
+          for (const stock of noTiStocks) {
+            await computeAndStoreIndicators(env.DB, stock.id, endDate)
+            computed++
+          }
+          debugLog.push(`[DB] backfilled technical_indicators for seed symbols=${computed}: ${noTiStocks.map(s => s.symbol).join(', ')}`)
         }
-        debugLog.push(`[DB] backfilled technical_indicators for ${computed} symbols: ${noTiStocks.map(s => s.symbol).join(', ')}`)
       }
     } catch (e) {
       console.warn('[Screener v2] 新股 TI 補算失敗 (non-blocking):', e)

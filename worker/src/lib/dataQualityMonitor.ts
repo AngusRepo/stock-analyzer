@@ -38,6 +38,10 @@ interface CountRow {
   missing_reasons?: number
   missing_industry_tags?: number
   current_price_valid?: number
+  tradable_count?: number
+  emerging_watchlist_count?: number
+  eligible_ml_count?: number
+  eligible_pending_count?: number
   avg_score?: number
   min_score?: number
   max_score?: number
@@ -51,6 +55,18 @@ interface CountRow {
   active_count?: number
   emerging_recommendations?: number
   pending_buy_emerging_like?: number
+  top_concept_symbols?: number
+  top_unmapped_symbols?: number
+  top_other_symbols?: number
+  latest_theme_rows?: number
+  latest_theme_date?: string | null
+  funnel_run_id?: string | null
+  funnel_status?: string | null
+  funnel_final_count?: number
+  funnel_emerging_count?: number
+  funnel_candidate_count?: number
+  funnel_universe_count?: number
+  funnel_created_at?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -411,6 +427,81 @@ export function buildScreenerScoreDistributionCheck(input: {
   }
 }
 
+export function buildScreenerSourceOfTruthCheck(input: {
+  targetDate: string
+  funnelRunId?: string | null
+  funnelStatus?: string | null
+  funnelFinalCount: number
+  funnelEmergingCount: number
+  dailyTotal: number
+  tradableCount: number
+  emergingCount: number
+  eligibleMlCount: number
+  eligiblePendingCount: number
+}): DataQualityCheck {
+  const dailyTotal = Number(input.dailyTotal ?? 0)
+  const funnelFinalCount = Number(input.funnelFinalCount ?? 0)
+  const funnelEmergingCount = Number(input.funnelEmergingCount ?? 0)
+  const funnelTotal = funnelFinalCount + funnelEmergingCount
+  const tradableCount = Number(input.tradableCount ?? 0)
+  const emergingCount = Number(input.emergingCount ?? 0)
+  const eligibleMlCount = Number(input.eligibleMlCount ?? 0)
+  const eligiblePendingCount = Number(input.eligiblePendingCount ?? 0)
+  const funnelStatus = input.funnelStatus ?? null
+  const funnelRunId = input.funnelRunId ?? null
+  const baseMetrics = {
+    target_date: input.targetDate,
+    funnel_run_id: funnelRunId,
+    funnel_status: funnelStatus,
+    funnel_final_count: funnelFinalCount,
+    funnel_emerging_count: funnelEmergingCount,
+    funnel_total: funnelTotal,
+    daily_total: dailyTotal,
+    tradable_count: tradableCount,
+    emerging_count: emergingCount,
+    eligible_ml_count: eligibleMlCount,
+    eligible_pending_count: eligiblePendingCount,
+    source_of_truth: 'screener_funnel_runs -> daily_recommendations seed rows',
+  }
+
+  if (!funnelRunId) {
+    return {
+      id: 'screener_source_of_truth',
+      label: 'Screener source of truth',
+      status: 'fail',
+      summary: `no screener funnel run for ${input.targetDate}; daily=${dailyTotal}`,
+      metrics: baseMetrics,
+    }
+  }
+
+  if (funnelStatus !== 'success') {
+    return {
+      id: 'screener_source_of_truth',
+      label: 'Screener source of truth',
+      status: 'fail',
+      summary: `latest screener funnel status=${funnelStatus ?? 'missing'} for ${input.targetDate}`,
+      metrics: baseMetrics,
+    }
+  }
+
+  const aligned =
+    dailyTotal === funnelTotal &&
+    tradableCount === funnelFinalCount &&
+    emergingCount === funnelEmergingCount &&
+    eligibleMlCount === dailyTotal &&
+    eligiblePendingCount === tradableCount
+
+  return {
+    id: 'screener_source_of_truth',
+    label: 'Screener source of truth',
+    status: aligned ? 'ok' : 'fail',
+    summary: aligned
+      ? `daily=${dailyTotal} funnel=${funnelTotal} tradable=${tradableCount} emerging=${emergingCount}`
+      : `daily=${dailyTotal} funnel=${funnelTotal} tradable=${tradableCount}/${funnelFinalCount} emerging=${emergingCount}/${funnelEmergingCount} eligible_ml=${eligibleMlCount}/${dailyTotal} pending=${eligiblePendingCount}/${tradableCount}`,
+    metrics: baseMetrics,
+  }
+}
+
 export function buildClassificationCoverageCheck(input: {
   total: number
   missingIndustryTags: number
@@ -443,6 +534,47 @@ export function buildClassificationCoverageCheck(input: {
       total,
       missing_industry_tags: missing,
       missing_ratio: ratio,
+    },
+  }
+}
+
+export function buildRrgTaxonomyCoverageCheck(input: {
+  latestThemeDate?: string | null
+  targetDate: string
+  latestThemeRows: number
+  topConceptSymbols: number
+  topUnmappedSymbols: number
+  topOtherSymbols: number
+  warnUnmappedRatio?: number
+}): DataQualityCheck {
+  const latestThemeRows = Number(input.latestThemeRows ?? 0)
+  const topConceptSymbols = Number(input.topConceptSymbols ?? 0)
+  const topUnmappedSymbols = Number(input.topUnmappedSymbols ?? 0)
+  const topOtherSymbols = Number(input.topOtherSymbols ?? 0)
+  const lagDays = daysBetweenDates(input.latestThemeDate, input.targetDate)
+  const unmappedRatio = topConceptSymbols > 0 ? topUnmappedSymbols / topConceptSymbols : 0
+  const warnUnmappedRatio = Number(input.warnUnmappedRatio ?? 0.02)
+  const status: DataQualityStatus = latestThemeRows <= 0 || lagDays == null || lagDays > 0
+    ? 'fail'
+    : topUnmappedSymbols > 0 || topOtherSymbols > 0 || unmappedRatio > warnUnmappedRatio
+      ? 'warn'
+      : 'ok'
+  return {
+    id: 'rrg_taxonomy_coverage',
+    label: 'RRG taxonomy coverage',
+    status,
+    summary: `theme_date=${input.latestThemeDate ?? 'none'} lag=${lagDays ?? 'n/a'}d themes=${latestThemeRows} unmapped=${topUnmappedSymbols}/${topConceptSymbols} other=${topOtherSymbols}`,
+    metrics: {
+      latest_theme_date: input.latestThemeDate ?? null,
+      target_date: input.targetDate,
+      lag_days: lagDays,
+      latest_theme_rows: latestThemeRows,
+      top_concept_symbols: topConceptSymbols,
+      top_unmapped_symbols: topUnmappedSymbols,
+      top_other_symbols: topOtherSymbols,
+      unmapped_ratio: unmappedRatio,
+      warn_unmapped_ratio: warnUnmappedRatio,
+      source_of_truth: 'stock_tags.tag_type=concept + latest sector_flow.classification=theme',
     },
   }
 }
@@ -610,7 +742,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedTradingDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -631,6 +763,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
               SUM(CASE WHEN chip_score IS NULL OR tech_score IS NULL THEN 1 ELSE 0 END) AS missing_components,
               SUM(CASE WHEN reason IS NULL OR reason = '' THEN 1 ELSE 0 END) AS missing_reasons,
               SUM(CASE WHEN current_price IS NOT NULL AND current_price > 0 THEN 1 ELSE 0 END) AS current_price_valid,
+              SUM(CASE WHEN recommendation_lane = 'tradable' THEN 1 ELSE 0 END) AS tradable_count,
+              SUM(CASE WHEN recommendation_lane = 'emerging_watchlist' THEN 1 ELSE 0 END) AS emerging_watchlist_count,
+              SUM(CASE WHEN COALESCE(eligible_for_ml, 0) = 1 THEN 1 ELSE 0 END) AS eligible_ml_count,
+              SUM(CASE WHEN COALESCE(eligible_for_pending_buy, 0) = 1 THEN 1 ELSE 0 END) AS eligible_pending_count,
               AVG(score) AS avg_score,
               MIN(score) AS min_score,
               MAX(score) AS max_score,
@@ -653,6 +789,59 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE dr.date = ?`,
       targetDate,
     ),
+    firstCount(
+      env.DB,
+      `WITH latest_theme_date AS (
+         SELECT MAX(date) AS latest_theme_date
+           FROM sector_flow
+          WHERE classification = 'theme'
+            AND quadrant IS NOT NULL
+       ),
+       latest_theme AS (
+         SELECT sector
+           FROM sector_flow
+          WHERE classification = 'theme'
+            AND quadrant IS NOT NULL
+            AND date = (SELECT latest_theme_date FROM latest_theme_date)
+       ),
+       ranked_concepts AS (
+         SELECT st.symbol,
+                st.tag,
+                lt.sector AS matched_theme,
+                ROW_NUMBER() OVER (
+                  PARTITION BY st.symbol
+                  ORDER BY CASE WHEN lt.sector IS NOT NULL THEN 0 ELSE 1 END,
+                           st.weight DESC,
+                           st.tag ASC
+                ) AS rn
+           FROM stock_tags st
+           LEFT JOIN latest_theme lt ON lt.sector = st.tag
+          WHERE st.tag_type = 'concept'
+       )
+       SELECT
+         (SELECT latest_theme_date FROM latest_theme_date) AS latest_theme_date,
+         (SELECT COUNT(*) FROM latest_theme) AS latest_theme_rows,
+         COUNT(*) AS top_concept_symbols,
+         SUM(CASE WHEN rc.matched_theme IS NULL THEN 1 ELSE 0 END) AS top_unmapped_symbols,
+         SUM(CASE WHEN rc.tag = '其他' THEN 1 ELSE 0 END) AS top_other_symbols
+        FROM ranked_concepts rc
+       WHERE rc.rn = 1`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT run_id AS funnel_run_id,
+              status AS funnel_status,
+              final_count AS funnel_final_count,
+              emerging_count AS funnel_emerging_count,
+              candidate_count AS funnel_candidate_count,
+              universe_count AS funnel_universe_count,
+              created_at AS funnel_created_at
+         FROM screener_funnel_runs
+        WHERE date = ?
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      targetDate,
+    ).catch((): CountRow => ({})),
     firstCount(
       env.DB,
       `SELECT r.trade_date AS run_trade_date,
@@ -826,9 +1015,29 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       highScoreCount: screenerSeedStats.high_score_count,
       perfectScoreCount: screenerSeedStats.perfect_score_count,
     }),
+    buildScreenerSourceOfTruthCheck({
+      targetDate,
+      funnelRunId: screenerFunnelStats.funnel_run_id,
+      funnelStatus: screenerFunnelStats.funnel_status,
+      funnelFinalCount: Number(screenerFunnelStats.funnel_final_count ?? 0),
+      funnelEmergingCount: Number(screenerFunnelStats.funnel_emerging_count ?? 0),
+      dailyTotal: Number(screenerSeedStats.total ?? 0),
+      tradableCount: Number(screenerSeedStats.tradable_count ?? 0),
+      emergingCount: Number(screenerSeedStats.emerging_watchlist_count ?? 0),
+      eligibleMlCount: Number(screenerSeedStats.eligible_ml_count ?? 0),
+      eligiblePendingCount: Number(screenerSeedStats.eligible_pending_count ?? 0),
+    }),
     buildClassificationCoverageCheck({
       total: Number(classificationStats.total ?? 0),
       missingIndustryTags: Number(classificationStats.missing_industry_tags ?? 0),
+    }),
+    buildRrgTaxonomyCoverageCheck({
+      latestThemeDate: rrgTaxonomyStats.latest_theme_date,
+      targetDate,
+      latestThemeRows: Number(rrgTaxonomyStats.latest_theme_rows ?? 0),
+      topConceptSymbols: Number(rrgTaxonomyStats.top_concept_symbols ?? 0),
+      topUnmappedSymbols: Number(rrgTaxonomyStats.top_unmapped_symbols ?? 0),
+      topOtherSymbols: Number(rrgTaxonomyStats.top_other_symbols ?? 0),
     }),
     buildPendingBuyDateSanityCheck({
       targetDate,

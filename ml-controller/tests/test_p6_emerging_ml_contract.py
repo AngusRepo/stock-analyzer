@@ -122,7 +122,12 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
         captured["statements"] = statements
         return len(statements)
 
+    def fake_query(sql, params):
+        captured["seed_query"] = (sql, params)
+        return [{"stock_id": 2}]
+
     monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
+    monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
     monkeypatch.setattr("services.recommendation_service._is_use_ensemble_v2", lambda: False)
 
     write_predictions_to_d1(
@@ -170,7 +175,12 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
         captured["statements"] = statements
         return len(statements)
 
+    def fake_query(sql, params):
+        captured["seed_query"] = (sql, params)
+        return [{"stock_id": 2}]
+
     monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
+    monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
 
     update_recommendations_in_d1(
         [
@@ -209,6 +219,9 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
     assert "recommendation_lane" in sql
     assert "eligible_for_ml" in sql
     assert "eligible_for_pending_buy" in sql
+    assert "UPDATE daily_recommendations" in sql
+    assert "INSERT INTO daily_recommendations" not in sql
     assert "EMERGING" in params
     assert "emerging_watchlist" in params
     assert 1 in params
+    assert captured["seed_query"][1] == ["2026-04-30", 2]

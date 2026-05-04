@@ -28,6 +28,7 @@ import {
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard } from '../lib/boardTradability'
+import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -1041,17 +1042,22 @@ recommendations.get('/daily', async (c) => {
     try {
       const placeholders = resultSymbols.map(() => '?').join(',')
       const { results: funnelRows } = await c.env.DB.prepare(`
-        SELECT symbol, rank, reason_code, evidence
+        WITH latest_screener_run AS (
+          SELECT run_id
+            FROM screener_funnel_runs
+           WHERE date = ?
+           ORDER BY created_at DESC
+           LIMIT 1
+        )
+        SELECT symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
           FROM screener_funnel_items
-         WHERE date = ?
-           AND stage = 'final_selection'
+         WHERE run_id = (SELECT run_id FROM latest_screener_run)
            AND symbol IN (${placeholders})
-         ORDER BY created_at DESC
+           AND stage IN ('scoring', 'rrg_overlay', 'buzz_evidence', 'diversity_cooldown', 'final_selection')
+         ORDER BY symbol ASC, created_at ASC
       `).bind(date, ...resultSymbols).all<any>()
-      for (const row of funnelRows ?? []) {
-        if (!screenerFunnelBySymbol.has(row.symbol)) {
-          screenerFunnelBySymbol.set(row.symbol, row)
-        }
+      for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
+        screenerFunnelBySymbol.set(symbol, summary)
       }
     } catch (e) {
       console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
@@ -1116,7 +1122,8 @@ recommendations.get('/daily', async (c) => {
       score_components: persistedScoreComponents ?? null,
       screener_funnel_rank: screenerFunnel?.rank ?? null,
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
-      screener_funnel_evidence: parsePredictionForecastData(screenerFunnel?.evidence) ?? null,
+      screener_funnel_evidence: screenerFunnel?.evidence ?? null,
+      screener_funnel_timeline: screenerFunnel?.timeline ?? [],
       watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
     }
   })

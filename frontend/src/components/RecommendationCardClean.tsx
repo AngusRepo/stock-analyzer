@@ -260,8 +260,8 @@ function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]
   if (!evidence && rec.screener_funnel_rank == null) return null
 
   const chips: string[] = []
-  if (rec.screener_funnel_rank != null) chips.push(`Universe rank #${rec.screener_funnel_rank}`)
-  if (evidence?.industry) chips.push(`產業 ${evidence.industry}`)
+  if (rec.screener_funnel_rank != null) chips.push(`入選排名 #${rec.screener_funnel_rank}`)
+  if (evidence?.industry) chips.push(`產業：${evidence.industry}`)
   if (Array.isArray(evidence?.strategy_tags) && evidence.strategy_tags.length > 0) {
     chips.push(...evidence.strategy_tags.slice(0, 3).map((tag: unknown) => String(tag)))
   }
@@ -270,9 +270,31 @@ function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]
   if (evidence?.chip_score != null) notes.push(`籌碼 ${fmtNumber(evidence.chip_score, 1)}`)
   if (evidence?.tech_score != null) notes.push(`技術 ${fmtNumber(evidence.tech_score, 1)}`)
   if (evidence?.momentum_score != null) notes.push(`動能 ${fmtNumber(evidence.momentum_score, 1)}`)
+  const rrg = parseObject(evidence?.rrg_overlay)
+  if (rrg?.quadrant) {
+    const adjustment = fmtOptionalNumber(rrg.adjustment, 1)
+    notes.push(`RRG：${rrg.tag ?? '題材'} / ${rrg.quadrant}${adjustment ? `，調整 ${adjustment}` : ''}`)
+  }
+  const buzz = parseObject(evidence?.buzz_evidence)
+  if (buzz?.concept) {
+    const bonus = fmtOptionalNumber(buzz.buzzBonus, 1)
+    notes.push(`熱門題材：${buzz.concept}${bonus ? `，加權 ${bonus}` : ''}`)
+  }
+  const cooldown = Array.isArray(evidence?.diversity_cooldown) ? evidence.diversity_cooldown : []
+  for (const item of cooldown.slice(0, 2)) {
+    const row = parseObject(item)
+    if (row?.reason_code === 'high_frequency_cooldown') {
+      notes.push(`重複入選降溫：20日 ${row.freq20d ?? '-'} 次`)
+    } else if (row?.reason_code === 'new_money_boost') {
+      notes.push('新進候選加權：避免清單每天長一樣')
+    }
+  }
   if (evidence?.freq20d != null) notes.push(`20日入選 ${evidence.freq20d} 次`)
   if (evidence?.highFreq) notes.push('重複入選已降溫')
   if (evidence?.newMoney) notes.push('新進資金/新題材加權')
+  if (Array.isArray(evidence?.decision_path) && evidence.decision_path.length > 0) {
+    notes.push(`漏斗路徑：${evidence.decision_path.map((step: any) => step.stage).filter(Boolean).join(' → ')}`)
+  }
 
   return {
     rank: rec.screener_funnel_rank ?? null,

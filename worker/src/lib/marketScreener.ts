@@ -160,6 +160,18 @@ function pushFunnelItem(items: ScreenerFunnelItemInput[], item: ScreenerFunnelIt
   })
 }
 
+export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>(candidates: T[]): T[] {
+  const seen = new Set<string>()
+  const deduped: T[] = []
+  for (const candidate of candidates) {
+    const symbol = String(candidate.symbol ?? '').trim().toUpperCase()
+    if (!symbol || seen.has(symbol)) continue
+    seen.add(symbol)
+    deduped.push(candidate)
+  }
+  return deduped
+}
+
 async function writeScreenerFunnel(
   env: Bindings,
   input: {
@@ -1469,8 +1481,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N 截斷
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
-  const finalCandidates: ScreenerCandidate[] = annotateCandidatesWithStrategySpecs(
-    afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[],
+  const finalCandidates = dedupeScreenerCandidatesBySymbol(
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
   )
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
@@ -1519,11 +1531,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })
     }
     applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
-    emergingResearchCandidates.push(
-      ...annotateCandidatesWithStrategySpecs(
+    emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol(
+      annotateCandidatesWithStrategySpecs(
         emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
       ),
-    )
+    ))
     debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
   } catch (e) {
     console.warn('[Screener v2] Emerging research lane failed:', e)

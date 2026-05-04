@@ -22,6 +22,7 @@ const researchInternGate = fs.readFileSync('src/lib/researchInternGate.ts', 'utf
 const researchEvaluationPlan = fs.readFileSync('src/lib/researchEvaluationPlan.ts', 'utf8')
 const stocksRoute = fs.readFileSync('src/routes/stocks.ts', 'utf8')
 const otherRoute = fs.readFileSync('src/routes/other.ts', 'utf8')
+const screenerFunnelEvidence = fs.readFileSync('src/lib/screenerFunnelEvidence.ts', 'utf8')
 const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2.py', 'utf8')
 
 {
@@ -50,6 +51,9 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('loadRestrictedScreenerSymbols'), 'screener must use a unified restricted-symbol gate')
   assert(marketScreener.includes('market:attention_stocks'), 'screener restricted gate must include attention-list KV fallback')
   assert(marketScreener.includes('loadSelectionHistoryFlags'), 'screener repeat/new-money history must be a reusable domain helper')
+  assert(marketScreener.includes('dedupeScreenerCandidatesBySymbol'), 'screener must dedupe symbols before writing funnel counts and daily seeds')
+  assert(marketScreener.includes('finalCandidates = dedupeScreenerCandidatesBySymbol'), 'tradable funnel count must use the deduped ML shortlist')
+  assert(marketScreener.includes('emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol'), 'emerging funnel count must use the deduped research shortlist')
   assert(marketScreener.includes('highFreqPenalty'), 'screener high-frequency candidates must affect ranking, not only labels')
   assert(screenerMarketData.includes('dealer_buy'), 'screener chip data must include dealer flows for three-institution scoring')
   assert(schema.includes('screener_funnel_runs'), 'schema must include screener funnel run table')
@@ -80,6 +84,12 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(otherRoute.includes("from '../lib/boardTradability'"), 'recommendation API must expose board/tradability contract fields')
   assert(otherRoute.includes('persistedLane'), 'recommendation API must prefer persisted governance lane before board fallback')
   assert(otherRoute.includes('emerging_recommendations'), 'recommendation API must split emerging watchlist from tradable recommendations')
+  assert(otherRoute.includes('summarizeScreenerFunnelRows'), 'recommendation API must expose full screener funnel evidence, not only final rank')
+  assert(otherRoute.includes('screener_funnel_timeline'), 'recommendation API must return UI-readable screener funnel timeline')
+  assert(otherRoute.includes('latest_screener_run'), 'recommendation API must read funnel evidence from the latest screener run only')
+  assert(screenerFunnelEvidence.includes('rrg_overlay'), 'funnel evidence summary must include RRG overlay')
+  assert(screenerFunnelEvidence.includes('buzz_evidence'), 'funnel evidence summary must include buzz evidence')
+  assert(screenerFunnelEvidence.includes('diversity_cooldown'), 'funnel evidence summary must include diversity/cooldown evidence')
 }
 
 {

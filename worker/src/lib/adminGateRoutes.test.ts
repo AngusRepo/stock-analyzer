@@ -34,6 +34,10 @@ class FakeStatement {
         missing_components: 0,
         missing_reasons: 0,
         current_price_valid: 25,
+        tradable_count: 20,
+        emerging_watchlist_count: 5,
+        eligible_ml_count: 25,
+        eligible_pending_count: 20,
         avg_score: 72,
         min_score: 45,
         max_score: 88,
@@ -42,6 +46,26 @@ class FakeStatement {
       } as T
     }
     if (sql.includes('missing_industry_tags')) return { total: 25, missing_industry_tags: 0 } as T
+    if (sql.includes('latest_theme_date')) {
+      return {
+        latest_theme_date: '2026-04-30',
+        latest_theme_rows: 47,
+        top_concept_symbols: 494,
+        top_unmapped_symbols: 0,
+        top_other_symbols: 0,
+      } as T
+    }
+    if (sql.includes('FROM screener_funnel_runs')) {
+      return {
+        funnel_run_id: 'screener-2026-04-30-test',
+        funnel_status: 'success',
+        funnel_final_count: 20,
+        funnel_emerging_count: 5,
+        funnel_candidate_count: 90,
+        funnel_universe_count: 1800,
+        funnel_created_at: '2026-04-30 09:20:00',
+      } as T
+    }
     if (sql.includes('pending_buy_runs')) {
       return {
         run_trade_date: String(this.binds[0]),

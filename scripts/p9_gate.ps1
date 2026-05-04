@@ -46,6 +46,7 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/repoOwnerContract.test.ts `
   src/lib/schedulerOwnerContract.test.ts `
   src/lib/screenerOwnerContract.test.ts `
+  src/lib/screenerFunnelEvidence.test.ts `
   src/lib/screenerMarketDataLanes.test.ts `
   src/lib/screenerPolicy.test.ts `
   src/lib/screenerSeedQuality.test.ts `
@@ -95,6 +96,8 @@ node .tmp-test-run/lib/schedulerOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "schedulerOwnerContract.test failed" }
 node .tmp-test-run/lib/screenerOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerOwnerContract.test failed" }
+node .tmp-test-run/lib/screenerFunnelEvidence.test.js
+if ($LASTEXITCODE -ne 0) { throw "screenerFunnelEvidence.test failed" }
 node .tmp-test-run/lib/screenerMarketDataLanes.test.js
 if ($LASTEXITCODE -ne 0) { throw "screenerMarketDataLanes.test failed" }
 node .tmp-test-run/lib/screenerPolicy.test.js

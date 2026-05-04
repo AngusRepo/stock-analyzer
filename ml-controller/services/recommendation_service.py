@@ -1126,18 +1126,43 @@ INSERT INTO predictions (
 """.strip()
 
 
+def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date: str) -> None:
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return
+    existing: set[int] = set()
+    chunk_size = 80
+    for i in range(0, len(stock_ids), chunk_size):
+        chunk = stock_ids[i:i + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = d1_client.query(
+            f"SELECT stock_id FROM daily_recommendations WHERE date=? AND stock_id IN ({placeholders})",
+            [run_date, *chunk],
+        )
+        existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
+    missing = [sid for sid in stock_ids if sid not in existing]
+    if missing:
+        raise RuntimeError(
+            "Missing screener-owned daily_recommendations seed rows for "
+            f"run_date={run_date}: {missing[:10]} (missing={len(missing)}/{len(stock_ids)})"
+        )
+
+
 def update_recommendations_in_d1(
     recommendations: list[dict],
     run_date: str,
 ) -> int:
     """
-    Upsert daily_recommendations rows with screener + ML fields.
+    Update screener-owned daily_recommendations rows with ML fields.
 
-    The V2 controller owns the fallback seed path, so this writer must create
-    rows when the legacy screener did not pre-populate the table.
+    Screener is the only owner allowed to create seed rows. The pipeline must
+    fail fast when the source-of-truth seed is missing instead of silently
+    creating controller-owned fallback rows.
     """
     if not recommendations:
         return 0
+
+    _assert_recommendation_seed_rows_exist(recommendations, run_date)
 
     statements: list[tuple[str, list[Any]]] = []
     for idx, r in enumerate(recommendations, start=1):
@@ -1181,47 +1206,38 @@ def update_recommendations_in_d1(
             continue
         statements.append((
             """
-            INSERT INTO daily_recommendations (
-                date, stock_id, symbol, name, sector, rank, score, signal,
-                confidence, reason, watch_points, has_buy_signal, current_price,
-                foreign_net_5d, trust_net_5d, rsi14, macd_hist, chip_score,
-                tech_score, momentum_score, ml_score, industry, market_segment, recommendation_lane,
-                eligible_for_ml, eligible_for_pending_buy, alpha_context, alpha_allocation,
-                ml_vote_summary, score_components
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date, stock_id) DO UPDATE SET
-                symbol=excluded.symbol,
-                name=excluded.name,
-                sector=excluded.sector,
-                rank=excluded.rank,
-                score=excluded.score,
-                signal=excluded.signal,
-                confidence=excluded.confidence,
-                reason=excluded.reason,
-                watch_points=excluded.watch_points,
-                has_buy_signal=excluded.has_buy_signal,
-                current_price=excluded.current_price,
-                foreign_net_5d=excluded.foreign_net_5d,
-                trust_net_5d=excluded.trust_net_5d,
-                rsi14=excluded.rsi14,
-                macd_hist=excluded.macd_hist,
-                chip_score=excluded.chip_score,
-                tech_score=excluded.tech_score,
-                momentum_score=excluded.momentum_score,
-                ml_score=excluded.ml_score,
-                industry=excluded.industry,
-                market_segment=excluded.market_segment,
-                recommendation_lane=excluded.recommendation_lane,
-                eligible_for_ml=excluded.eligible_for_ml,
-                eligible_for_pending_buy=excluded.eligible_for_pending_buy,
-                alpha_context=excluded.alpha_context,
-                alpha_allocation=excluded.alpha_allocation,
-                ml_vote_summary=excluded.ml_vote_summary,
-                score_components=excluded.score_components
+            UPDATE daily_recommendations SET
+                symbol=?,
+                name=?,
+                sector=?,
+                rank=?,
+                score=?,
+                signal=?,
+                confidence=?,
+                reason=?,
+                watch_points=?,
+                has_buy_signal=?,
+                current_price=?,
+                foreign_net_5d=?,
+                trust_net_5d=?,
+                rsi14=?,
+                macd_hist=?,
+                chip_score=?,
+                tech_score=?,
+                momentum_score=?,
+                ml_score=?,
+                industry=?,
+                market_segment=?,
+                recommendation_lane=?,
+                eligible_for_ml=?,
+                eligible_for_pending_buy=?,
+                alpha_context=?,
+                alpha_allocation=?,
+                ml_vote_summary=?,
+                score_components=?
+            WHERE date=? AND stock_id=?
             """.strip(),
             [
-                run_date,
-                stock_id,
                 r["symbol"],
                 r.get("name") or r["symbol"],
                 r.get("sector"),
@@ -1250,13 +1266,21 @@ def update_recommendations_in_d1(
                 json.dumps(alpha_allocation, ensure_ascii=False) if alpha_allocation is not None else None,
                 json.dumps(ml_vote_summary, ensure_ascii=False) if ml_vote_summary is not None else None,
                 json.dumps(score_components, ensure_ascii=False) if score_components is not None else None,
+                run_date,
+                stock_id,
             ],
         ))
 
     if not statements:
         return 0
-    d1_client.batch_execute(statements)
-    logger.info(f"[recommendation_service] Upserted {len(statements)} daily_recommendations rows")
+    result = d1_client.batch_execute(statements)
+    changes = int(result if isinstance(result, int) else (result or {}).get("changes_total") or 0)
+    if changes < len(statements):
+        raise RuntimeError(
+            f"Recommendation update touched {changes}/{len(statements)} rows; "
+            "screener seed ownership may be broken"
+        )
+    logger.info(f"[recommendation_service] Updated {len(statements)} daily_recommendations rows")
     return len(statements)
 
 

@@ -5,6 +5,8 @@ import {
   buildPredictionCoverageCheck,
   buildRecommendationMlOwnerCheck,
   buildClassificationCoverageCheck,
+  buildRrgTaxonomyCoverageCheck,
+  buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
   buildBoardLaneContractCheck,
   buildScreenerCandidateVolumeCheck,
@@ -117,6 +119,110 @@ void (async () => {
 {
   const check = buildClassificationCoverageCheck({ total: 20, missingIndustryTags: 8 })
   assert(check.status === 'warn', 'high missing industry tag coverage should warn')
+}
+
+{
+  const check = buildRrgTaxonomyCoverageCheck({
+    latestThemeDate: '2026-04-30',
+    targetDate: '2026-04-30',
+    latestThemeRows: 47,
+    topConceptSymbols: 494,
+    topUnmappedSymbols: 0,
+    topOtherSymbols: 0,
+  })
+  assert(check.status === 'ok', 'aligned concept taxonomy and RRG theme universe should pass')
+  assert(check.metrics?.source_of_truth === 'stock_tags.tag_type=concept + latest sector_flow.classification=theme', 'RRG taxonomy gate must declare its source of truth')
+}
+
+{
+  const check = buildRrgTaxonomyCoverageCheck({
+    latestThemeDate: '2026-04-07',
+    targetDate: '2026-04-30',
+    latestThemeRows: 47,
+    topConceptSymbols: 494,
+    topUnmappedSymbols: 0,
+    topOtherSymbols: 0,
+  })
+  assert(check.status === 'fail', 'stale RRG theme snapshot must fail data quality')
+}
+
+{
+  const check = buildRrgTaxonomyCoverageCheck({
+    latestThemeDate: '2026-04-30',
+    targetDate: '2026-04-30',
+    latestThemeRows: 47,
+    topConceptSymbols: 100,
+    topUnmappedSymbols: 7,
+    topOtherSymbols: 2,
+  })
+  assert(check.status === 'warn', 'unmapped top concepts should warn instead of silently polluting RRG gates')
+  assert(check.summary.includes('unmapped=7/100'), 'RRG taxonomy summary must expose unmapped ratio')
+}
+
+{
+  const check = buildScreenerSourceOfTruthCheck({
+    targetDate: '2026-04-30',
+    funnelRunId: 'screener-2026-04-30-1',
+    funnelStatus: 'success',
+    funnelFinalCount: 40,
+    funnelEmergingCount: 6,
+    dailyTotal: 46,
+    tradableCount: 40,
+    emergingCount: 6,
+    eligibleMlCount: 46,
+    eligiblePendingCount: 40,
+  })
+  assert(check.status === 'ok', 'daily recommendation seeds should align to the latest screener funnel run')
+  assert(check.metrics?.source_of_truth === 'screener_funnel_runs -> daily_recommendations seed rows', 'screener gate must declare source of truth')
+}
+
+{
+  const check = buildScreenerSourceOfTruthCheck({
+    targetDate: '2026-04-30',
+    funnelRunId: null,
+    funnelStatus: null,
+    funnelFinalCount: 0,
+    funnelEmergingCount: 0,
+    dailyTotal: 46,
+    tradableCount: 40,
+    emergingCount: 6,
+    eligibleMlCount: 46,
+    eligiblePendingCount: 40,
+  })
+  assert(check.status === 'fail', 'seed rows without same-day screener funnel evidence must fail')
+}
+
+{
+  const check = buildScreenerSourceOfTruthCheck({
+    targetDate: '2026-04-30',
+    funnelRunId: 'screener-2026-04-30-1',
+    funnelStatus: 'success',
+    funnelFinalCount: 40,
+    funnelEmergingCount: 6,
+    dailyTotal: 45,
+    tradableCount: 39,
+    emergingCount: 6,
+    eligibleMlCount: 45,
+    eligiblePendingCount: 39,
+  })
+  assert(check.status === 'fail', 'daily seed count must not drift from screener funnel final/emerging counts')
+  assert(check.summary.includes('daily=45 funnel=46'), 'source-of-truth summary must expose count mismatch')
+}
+
+{
+  const check = buildScreenerSourceOfTruthCheck({
+    targetDate: '2026-04-30',
+    funnelRunId: 'screener-2026-04-30-1',
+    funnelStatus: 'success',
+    funnelFinalCount: 40,
+    funnelEmergingCount: 6,
+    dailyTotal: 46,
+    tradableCount: 40,
+    emergingCount: 6,
+    eligibleMlCount: 46,
+    eligiblePendingCount: 46,
+  })
+  assert(check.status === 'fail', 'emerging research lane must not become pending-buy eligible')
 }
 
 {

@@ -338,7 +338,7 @@ export async function loadPendingBuySnapshot(
   requestedDate: string,
   opts: { allowFallbackRecent?: boolean } = {},
 ): Promise<PendingBuySnapshot> {
-  const allowFallbackRecent = opts.allowFallbackRecent ?? true
+  const allowFallbackRecent = opts.allowFallbackRecent ?? false
   try {
     return await readD1Snapshot(env, requestedDate, allowFallbackRecent)
   } catch (error) {

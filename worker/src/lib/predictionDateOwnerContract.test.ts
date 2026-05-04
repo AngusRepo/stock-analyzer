@@ -49,6 +49,30 @@ assert(
   !recommendationService.includes('build_screener_seed_recommendations(') && !recommendationService.includes('controller_seed'),
   'ml-controller must not recreate recommendation seeds when screener source-of-truth is missing',
 )
+assert(
+  !/INSERT\s+INTO\s+daily_recommendations/i.test(recommendationService),
+  'ml-controller recommendation writer must update screener-owned seed rows, not insert fallback rows',
+)
+assert(
+  recommendationService.includes('_assert_recommendation_seed_rows_exist('),
+  'ml-controller must fail fast when screener-owned daily recommendation seed rows are missing',
+)
+
+const adaptiveEngine = readRepoFile('worker/src/lib/adaptiveEngine.ts')
+assert(
+  !adaptiveEngine.includes('Controller failed, using legacy fallback') && !adaptiveEngine.includes('Legacy fallback'),
+  'adaptive params owner is ml-controller; Worker must not compute legacy fallback params',
+)
+assert(
+  adaptiveEngine.includes('throw new Error') && adaptiveEngine.includes('ML_CONTROLLER_URL is required'),
+  'adaptive update must fail visibly when controller owner is not configured',
+)
+
+const pendingBuyStore = readRepoFile('worker/src/lib/pendingBuyStore.ts')
+assert(
+  pendingBuyStore.includes('const allowFallbackRecent = opts.allowFallbackRecent ?? false'),
+  'pending buy snapshot must default to exact-date reads; stale recent fallback must be explicit',
+)
 
 const workerTriggerTasks = readRepoFile('worker/src/lib/adminTriggerWorkerDomainTasks.ts')
 assert(

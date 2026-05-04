@@ -4,7 +4,7 @@ import { modelPoolApi, type ModelPoolLineageModel } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Activity, Boxes, GitBranch, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Loader2, RefreshCw } from 'lucide-react'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 
@@ -16,8 +16,8 @@ function fmt(value: unknown): string {
 
 function toneFromStatus(status?: string): WorkstationTone {
   if (status === 'active' || status === 'ok') return 'ok'
-  if (status === 'degraded' || status === 'warn') return 'warn'
-  if (status === 'retired' || status === 'failed' || status === 'error') return 'error'
+  if (status === 'degraded' || status === 'warn' || status === 'coverage_low') return 'warn'
+  if (status === 'retired' || status === 'failed' || status === 'error' || status === 'artifact_mismatch') return 'error'
   return 'neutral'
 }
 
@@ -44,25 +44,34 @@ function familyCounts(models: Array<[string, ModelPoolLineageModel]>) {
   }, {})
 }
 
+function shortRootCause(model: ModelPoolLineageModel): string {
+  return model.lifecycle_diagnosis?.status ?? model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown'
+}
+
 function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineageModel }) {
   const ic = icValue(model)
   const sampleCount = model.last_ic_sample_count ?? 0
   const challenger = model.challenger
   const metadataTone = model.metadata_exists === false ? 'warn' : 'ok'
+  const diagnosis = model.lifecycle_diagnosis
   const icTone: WorkstationTone = ic == null || Math.abs(ic) < 0.0001 ? 'warn' : ic > 0 ? 'ok' : 'error'
 
   return (
     <tr className="hover:bg-[#101927]">
       <td className="border border-[#263247] px-2 py-2 text-slate-100">
         <div className="font-semibold">{name}</div>
-        <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} · {model.balance_family ?? 'unknown'}</div>
+        <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {model.balance_family ?? 'unknown'}</div>
       </td>
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={toneFromStatus(model.status)}>{model.status ?? '-'}</WorkstationPill></td>
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill></td>
       <td className="border border-[#263247] px-2 py-2 text-slate-300">{sampleCount}</td>
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={metadataTone}>{model.metadata_exists === false ? 'missing' : 'present'}</WorkstationPill></td>
-      <td className="border border-[#263247] px-2 py-2 text-slate-300">{challenger ? `${challenger.version ?? 'challenger'} · ${fmt(challenger.ic_4w_avg ?? challenger.rolling_ic)}` : '-'}</td>
-      <td className="border border-[#263247] px-2 py-2 text-[#8a92a6]">{fmt(model.last_ic_status)}</td>
+      <td className="border border-[#263247] px-2 py-2 text-slate-300">{diagnosis?.coverage == null ? 'N/A' : `${Math.round(diagnosis.coverage * 100)}%`}</td>
+      <td className="border border-[#263247] px-2 py-2 text-slate-300">{challenger ? `${challenger.version ?? 'challenger'} / ${fmt(challenger.ic_4w_avg ?? challenger.rolling_ic)}` : '-'}</td>
+      <td className="border border-[#263247] px-2 py-2 text-[#8a92a6]">
+        <div>{shortRootCause(model)}</div>
+        {diagnosis?.reason && <div className="mt-1 max-w-[260px] whitespace-normal text-[10px] leading-4">{diagnosis.reason}</div>}
+      </td>
     </tr>
   )
 }
@@ -70,6 +79,7 @@ function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineage
 function ModelDetailCard({ name, model }: { name: string; model: ModelPoolLineageModel }) {
   const activeIc = model.weekly_ic ?? []
   const challengerIc = model.challenger?.weekly_ic ?? []
+  const diagnosis = model.lifecycle_diagnosis
 
   return (
     <Card className="border-zinc-800/80">
@@ -90,8 +100,18 @@ function ModelDetailCard({ name, model }: { name: string; model: ModelPoolLineag
           <div><div className="text-muted-foreground">IC 4w</div><div className="font-mono">{fmt(model.ic_4w_avg)}</div></div>
           <div><div className="text-muted-foreground">Rolling IC</div><div className="font-mono">{fmt(model.rolling_ic)}</div></div>
           <div><div className="text-muted-foreground">Neg weeks</div><div className="font-mono">{fmt(model.consecutive_negative_weeks)}</div></div>
-          <div><div className="text-muted-foreground">Raw IC rows</div><div className="font-mono">{model.last_ic_sample_count ?? 0}</div></div>
+          <div><div className="text-muted-foreground">IC samples</div><div className="font-mono">{model.last_ic_sample_count ?? 0}</div></div>
           <div><div className="text-muted-foreground">Weekly windows</div><div className="font-mono">{activeIc.length}</div></div>
+        </div>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2">
+          <div className="mb-1 text-muted-foreground">Lifecycle diagnosis</div>
+          <div className="font-mono text-[10px] text-slate-200">{shortRootCause(model)}</div>
+          <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{diagnosis?.reason ?? 'No diagnosis yet.'}</div>
+          {!!diagnosis?.blockers?.length && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {diagnosis.blockers.map((blocker) => <WorkstationPill key={blocker} tone="warn">{blocker}</WorkstationPill>)}
+            </div>
+          )}
         </div>
         <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2">
           <div className="mb-1 text-muted-foreground">Artifact</div>
@@ -155,7 +175,7 @@ export default function ModelPoolPage() {
           <div>
             <h1 className="text-xl font-bold">Model Pool Drilldown</h1>
             <p className="mt-1 text-xs text-muted-foreground">
-              單一真相來源：model_pool.json。這頁只負責 lineage、IC、metadata、challenger 與 state-space overlay；OBS 只顯示摘要。
+              單一真相來源：model_pool.json。這頁追 lineage、IC root cause、metadata、challenger 與 state-space overlay；OBS 只顯示摘要。
               {isFetching && <span className="ml-2 text-sky-400">refreshing...</span>}
             </p>
           </div>
@@ -183,25 +203,25 @@ export default function ModelPoolPage() {
               compact
               steps={[
                 { label: 'Production', detail: '只由 model_pool.json 指向 active production artifact。', tone: 'ok' },
-                { label: 'Challenger', detail: '新模型先 shadow predict 與累積 evidence，不直接覆蓋 production。', tone: challengerCount ? 'info' : 'warn' },
-                { label: 'IC Tracker', detail: 'weekly / rolling IC 與 sample count 是 promote/degrade 的主要依據。', tone: weakIc || sampleGaps ? 'warn' : 'ok' },
-                { label: 'Metadata', detail: 'artifact metadata / lineage / feature compatibility 缺失要先修。', tone: missingMetadata ? 'warn' : 'ok' },
+                { label: 'Challenger', detail: '先 shadow predict 與累積 evidence，不直接 promote。', tone: challengerCount ? 'info' : 'warn' },
+                { label: 'IC Tracker', detail: 'weekly / rolling IC 必須帶 sample count、root cause 與 segment diagnostics。', tone: weakIc || sampleGaps ? 'warn' : 'ok' },
+                { label: 'Metadata', detail: 'artifact metadata / feature compatibility 是 FT 與 tree 模型的必要稽核欄位。', tone: missingMetadata ? 'warn' : 'ok' },
               ]}
             />
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-              <SignalInsightCard title="Alpha Models" value={String(modelList.length)} detail={`family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' · ') || 'N/A'}`} tone="info" />
-              <SignalInsightCard title="Challengers" value={String(challengerCount)} detail="Challenger 要 shadow predict 並累積 evidence，不直接 promote。" tone={challengerCount ? 'ok' : 'warn'} />
-              <SignalInsightCard title="IC Gaps" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足會讓投票/權重退化。sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
+              <SignalInsightCard title="Alpha Models" value={String(modelList.length)} detail={`family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone="info" />
+              <SignalInsightCard title="Challengers" value={String(challengerCount)} detail="Challenger 只做 shadow evidence，不直接改 production。" tone={challengerCount ? 'ok' : 'warn'} />
+              <SignalInsightCard title="IC Gaps" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
               <SignalInsightCard title="Metadata Gaps" value={String(missingMetadata)} detail={`last updated ${data?.last_updated ?? 'N/A'}`} tone={missingMetadata ? 'warn' : 'ok'} />
             </div>
 
-            <WorkstationPanel title="Model Health Matrix" kicker="IC, samples, metadata, challenger">
+            <WorkstationPanel title="Model Health Matrix" kicker="IC, samples, coverage, metadata, challenger">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[860px] border-collapse font-mono text-[11px]">
+                <table className="w-full min-w-[980px] border-collapse font-mono text-[11px]">
                   <thead className="bg-[#0c1420] text-[#70809b]">
                     <tr>
-                      {['Model', 'Status', 'IC 4W', 'Samples', 'Metadata', 'Challenger', 'IC status'].map((label) => (
+                      {['Model', 'Status', 'IC 4W', 'Samples', 'Metadata', 'Coverage', 'Challenger', 'Root cause'].map((label) => (
                         <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
                       ))}
                     </tr>
@@ -216,7 +236,7 @@ export default function ModelPoolPage() {
             <details className="group">
               <summary className="cursor-pointer rounded-lg border border-[#263247] bg-[#070a10] px-3 py-2 text-xs font-medium text-muted-foreground hover:border-amber-300/30">
                 Model artifact cards
-                <span className="ml-2 text-[10px] text-muted-foreground/70">預設收合，追單一模型 artifact / challenger 時打開。</span>
+                <span className="ml-2 text-[10px] text-muted-foreground/70">展開檢查 artifact、challenger 與 root-cause 診斷。</span>
               </summary>
               <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
                 {modelList.map(([name, model]) => <ModelDetailCard key={name} name={name} model={model} />)}
@@ -226,7 +246,7 @@ export default function ModelPoolPage() {
             <WorkstationPanel title="State-space Overlays" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">
                 <p>
-                  Kalman / Markov 在這套系統中扮演 regime / risk overlay：提供市場狀態、波動與風控上下文，不計入 alpha model IC 投票數。
+                  Kalman / Markov 是 regime、noise 與風險 overlay：它們提供市場狀態與波動結構參考，但不進 8 組 alpha model 投票分母，也不進 alpha IC promote gate。
                 </p>
                 <div className="grid gap-2 md:grid-cols-2">
                   {overlayList.map(([name, overlay]) => (

@@ -31,7 +31,7 @@ def test_rank_to_signal_stays_neutral_when_all_observed_ic_is_negative():
     assert result.forecast_pct == 0.0
 
 
-def test_load_ic_weights_prefers_model_pool_over_legacy_sidecar(monkeypatch):
+def test_load_ic_weights_uses_model_pool_only(monkeypatch):
     import json
 
     from app import ensemble
@@ -65,11 +65,16 @@ def test_load_ic_weights_prefers_model_pool_over_legacy_sidecar(monkeypatch):
             }
             return FakeBlob(payloads.get(path))
 
-    monkeypatch.setattr("app.model_store._get_bucket", lambda: FakeBucket())
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr("app.model_pool._get_bucket", lambda: FakeBucket())
+    monkeypatch.setattr("app.model_pool._POOL_CACHE", None)
+    monkeypatch.setattr("app.model_pool._POOL_CACHE_LOADED_AT", 0.0)
+    ensemble._IC_WEIGHTS_CACHE = None
+    ensemble._IC_WEIGHTS_CACHE_LOADED_AT = 0.0
 
     weights = ensemble.load_ic_weights()
 
     assert weights["XGBoost"] == 0.12
     assert weights["CatBoost"] == 0.08
     assert weights["ExtraTrees"] == 0.04
-    assert weights["LightGBM"] == 0.05
+    assert "LightGBM" not in weights

@@ -127,6 +127,63 @@ def _one_member_forecast(pipeline, symbol: str, prices: list[float], horizon: in
     }
 
 
+def _member_forecasts_batch(pipeline, series_list: list[dict], horizon: int) -> dict[str, dict]:
+    """Run one Chronos-2 member over many symbols in a single predict_df call."""
+    import pandas as pd
+
+    frames = []
+    last_price_by_symbol: dict[str, float] = {}
+    for row in series_list:
+        symbol = str(row.get("symbol") or "?")
+        prices = row.get("prices") or []
+        if len(prices) < _MIN_CONTEXT:
+            continue
+        frames.append(_context_df(symbol, prices))
+        last_price_by_symbol[symbol] = float(prices[-1])
+
+    if not frames:
+        return {}
+
+    context_df = pd.concat(frames, ignore_index=True)
+    pred_df = pipeline.predict_df(
+        context_df,
+        prediction_length=horizon,
+        quantile_levels=_QUANTILE_LEVELS,
+        id_column="id",
+        timestamp_column="timestamp",
+        target="target",
+    )
+    if "id" not in pred_df:
+        raise ValueError("Chronos-2 batch prediction missing id column")
+
+    out: dict[str, dict] = {}
+    for symbol, group in pred_df.groupby("id", sort=False):
+        symbol_key = str(symbol)
+        last_price = last_price_by_symbol.get(symbol_key)
+        if last_price is None:
+            continue
+        qs = _select_forecast_row(group)
+        forecast_price = qs["q50"]
+        forecast_pct = (forecast_price - last_price) / max(last_price, 1e-9)
+        if qs["q10"] > last_price:
+            up_prob = 0.8
+        elif qs["q90"] < last_price:
+            up_prob = 0.2
+        else:
+            band = max(abs(qs["q90"] - qs["q10"]), last_price * 0.01, 1e-9)
+            up_prob = 0.5 + max(-0.3, min(0.3, (forecast_price - last_price) / band))
+        spread_ratio = abs(qs["q90"] - qs["q10"]) / max(last_price, 1e-9)
+        confidence = min(0.85, max(0.35, max(up_prob, 1 - up_prob) * (1 - min(spread_ratio, 0.20))))
+        out[symbol_key] = {
+            "forecast_pct": float(forecast_pct),
+            "forecast_price": float(forecast_price),
+            "up_prob": float(up_prob),
+            "confidence": float(confidence),
+            "quantiles": qs,
+        }
+    return out
+
+
 def _combine_members(members: list[dict]) -> dict:
     if not members:
         raise ValueError("no Chronos-2 member forecasts")
@@ -144,6 +201,16 @@ def _combine_members(members: list[dict]) -> dict:
         "direction": "up" if up_prob > 0.5 else "down",
         "n_members": len(members),
     }
+
+
+def _combine_member_maps(member_maps: list[tuple[str, dict[str, dict]]], symbol: str) -> dict:
+    members = [values[symbol] for _name, values in member_maps if symbol in values]
+    out = _combine_members(members)
+    out["production_members"] = [name for name, values in member_maps if symbol in values]
+    out["lora_status"] = "active" if any(
+        name == "Chronos2LoRA" and symbol in values for name, values in member_maps
+    ) else "not_configured"
+    return out
 
 
 def _one_forecast(
@@ -189,13 +256,56 @@ def chronos_batch_predict(
         return [{"symbol": s.get("symbol", "?"), "error": f"PipelineLoadError: {e}"} for s in series_list]
 
     lora_model_id = os.environ.get(_LORA_MODEL_ID_ENV, "").strip() or None
+    valid_series = [s for s in series_list if len(s.get("prices") or []) >= _MIN_CONTEXT]
+    invalid_by_symbol = {
+        str(s.get("symbol") or "?"): {
+            "symbol": s.get("symbol", "?"),
+            "error": f"insufficient data ({len(s.get('prices') or [])} < {_MIN_CONTEXT})",
+        }
+        for s in series_list
+        if len(s.get("prices") or []) < _MIN_CONTEXT
+    }
+
+    batch_results: dict[str, dict] = {}
+    try:
+        member_maps: list[tuple[str, dict[str, dict]]] = [
+            ("Chronos2ZeroShot", _member_forecasts_batch(zero_shot_pipeline, valid_series, horizon)),
+        ]
+        if lora_model_id:
+            member_maps.append(("Chronos2LoRA", _member_forecasts_batch(_get_pipeline(lora_model_id), valid_series, horizon)))
+        for row in valid_series:
+            symbol = str(row.get("symbol") or "?")
+            try:
+                out = _combine_member_maps(member_maps, symbol)
+                out["symbol"] = symbol
+                out["batch_mode"] = "multi_series_predict_df"
+                batch_results[symbol] = out
+            except Exception as e:
+                logger.warning("[ChronosUniversal] %s batch combine failed: %s", symbol, e)
+        if len(batch_results) == len(valid_series):
+            return [
+                batch_results.get(str(s.get("symbol") or "?"))
+                or invalid_by_symbol.get(str(s.get("symbol") or "?"))
+                or {"symbol": s.get("symbol", "?"), "error": "Chronos batch result missing"}
+                for s in series_list
+            ]
+        logger.warning(
+            "[ChronosUniversal] batch forecast partial result %s/%s; falling back missing rows",
+            len(batch_results),
+            len(valid_series),
+        )
+    except Exception as e:
+        logger.warning("[ChronosUniversal] multi-series batch failed; fallback per symbol: %s", e)
+        batch_results = {}
+
     results: list[dict] = []
-    for s in series_list:
+    for s in valid_series:
         symbol = s.get("symbol", "?")
-        prices = s.get("prices") or []
-        if len(prices) < _MIN_CONTEXT:
-            results.append({"symbol": symbol, "error": f"insufficient data ({len(prices)} < {_MIN_CONTEXT})"})
+        symbol_key = str(symbol)
+        if symbol_key in batch_results:
+            results.append(batch_results[symbol_key])
             continue
+        prices = s.get("prices") or []
         try:
             out = _one_forecast(
                 zero_shot_pipeline,
@@ -209,7 +319,13 @@ def chronos_batch_predict(
         except Exception as e:
             logger.warning("[ChronosUniversal] %s forecast failed: %s", symbol, e)
             results.append({"symbol": symbol, "error": f"{type(e).__name__}: {e}"})
-    return results
+    by_symbol = {str(r.get("symbol") or "?"): r for r in results}
+    by_symbol.update(invalid_by_symbol)
+    return [
+        by_symbol.get(str(s.get("symbol") or "?"))
+        or {"symbol": s.get("symbol", "?"), "error": "Chronos result missing"}
+        for s in series_list
+    ]
 
 
 CURRENT_CONFIG = {

@@ -108,6 +108,7 @@ class PredictPayload:
     lifecycle_weights: dict[str, float] = field(default_factory=dict)
     barrier_params: dict = field(default_factory=dict)
     stock_meta: dict = field(default_factory=dict)  # Universal Model: sector/cap/volume/cross-sectional
+    runtime_options: dict = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -926,6 +927,11 @@ def build_payloads(
             lifecycle_weights=lifecycle_weights,
             barrier_params=barrier_params,
             stock_meta=stock_meta,
+            runtime_options={
+                "embedded_time_series": False,
+                "embedded_state_space": False,
+                "owner": "daily_pipeline_v2.batch_predict",
+            },
         ))
 
     logger.info(f"[payload_builder] Built {len(payloads)} payloads")

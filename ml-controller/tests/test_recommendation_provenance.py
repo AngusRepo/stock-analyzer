@@ -163,9 +163,14 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
 
     def _fake_batch_execute(statements):
         captured["statements"] = statements
-        return {"success_count": len(statements)}
+        return {"success_count": len(statements), "changes_total": len(statements)}
 
     monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"stock_id": 1}],
+    )
 
     update_recommendations_in_d1([{
         "date": "2026-04-27",
@@ -187,9 +192,10 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     }], "2026-04-27")
 
     sql, params = captured["statements"][0]
-    assert "INSERT INTO daily_recommendations" in sql
-    assert "ON CONFLICT(date, stock_id) DO UPDATE" in sql
-    assert params[:4] == ["2026-04-27", 1, "2330", "TSMC"]
+    assert "UPDATE daily_recommendations SET" in sql
+    assert "WHERE date=? AND stock_id=?" in sql
+    assert params[:4] == ["2330", "TSMC", "Semis", 1]
+    assert params[-2:] == ["2026-04-27", 1]
 
 
 def test_hybrid_ranking_promotion_marks_signal_source():

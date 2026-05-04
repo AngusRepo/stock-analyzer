@@ -709,8 +709,8 @@ def predict_single_stock(payload: dict) -> dict:
 def predict_batch_v2(payload: dict) -> dict:
     """Chunked v2 prediction.
 
-    Production keeps predict_single_stock as the default path. Controller can
-    opt in via MODAL_PREDICT_BATCH_V2 after live latency benchmarking.
+    Production controller uses this chunked contract by default. Set
+    MODAL_PREDICT_BATCH_V2=0 only as an emergency fallback to single-stock map.
     """
     _setup_env()
     from app.batch_prediction import predict_stock_v2_batch

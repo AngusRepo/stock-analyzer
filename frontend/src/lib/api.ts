@@ -456,6 +456,17 @@ export const strategyLabApi = {
   ),
 }
 
+export type ModelPoolLifecycleDiagnosis = {
+  status?: string
+  reason?: string
+  blockers?: string[]
+  coverage?: number | null
+  sample_count?: number
+  root_cause?: string | null
+  error?: string | null
+  metadata_feature_count?: number | null
+}
+
 export type ModelPoolLineageModel = {
   status?: string
   version?: string
@@ -470,8 +481,13 @@ export type ModelPoolLineageModel = {
   weekly_ic?: number[]
   ic_4w_avg?: number | null
   last_ic_status?: string | null
+  last_ic_root_cause?: string | null
   last_ic_sample_count?: number
+  last_ic_diagnostics?: Record<string, number>
   last_ic_score_sources?: Record<string, number>
+  last_ic_by_segment?: Record<string, Record<string, unknown>>
+  last_ic_error?: string | null
+  lifecycle_diagnosis?: ModelPoolLifecycleDiagnosis
   consecutive_negative_weeks?: number
   challenger?: {
     version?: string
@@ -485,8 +501,13 @@ export type ModelPoolLineageModel = {
     weekly_ic?: number[]
     ic_4w_avg?: number | null
     last_ic_status?: string | null
+    last_ic_root_cause?: string | null
     last_ic_sample_count?: number
+    last_ic_diagnostics?: Record<string, number>
     last_ic_score_sources?: Record<string, number>
+    last_ic_by_segment?: Record<string, Record<string, unknown>>
+    last_ic_error?: string | null
+    lifecycle_diagnosis?: ModelPoolLifecycleDiagnosis
   } | null
 }
 

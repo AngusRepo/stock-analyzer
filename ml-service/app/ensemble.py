@@ -16,12 +16,16 @@ NOTE: 5 feature models (XGBoost, CatBoost, ExtraTrees, LightGBM, FT-Transformer)
   - confidence_threshold 從 0.60 降至 0.55（adaptive via KV）
 """
 import logging
+import os
+import time
 import numpy as np
 from dataclasses import dataclass
 from typing import Literal, Any
 from .models import ModelPrediction
 
 logger = logging.getLogger("ensemble")
+_IC_WEIGHTS_CACHE: dict[str, float] | None = None
+_IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
 
 
 def _extract_model_pool_ic(pool: dict) -> dict[str, float]:
@@ -409,26 +413,20 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_ic_weights() -> dict[str, float]:
-    """Load serving IC weights from model_pool.json, then legacy sidecar gaps."""
+    """Load serving IC weights from model_pool.json only."""
+    global _IC_WEIGHTS_CACHE, _IC_WEIGHTS_CACHE_LOADED_AT
+    ttl = int(os.environ.get("IC_WEIGHTS_CACHE_TTL_SECONDS", "300") or "300")
+    if _IC_WEIGHTS_CACHE is not None and time.time() - _IC_WEIGHTS_CACHE_LOADED_AT < max(0, ttl):
+        return dict(_IC_WEIGHTS_CACHE)
     try:
-        from .model_store import _get_bucket
-        import json
-        bucket = _get_bucket()
-        if bucket is None:
-            return {}
+        from .model_pool import load_pool
         weights: dict[str, float] = {}
-        pool_blob = bucket.blob("universal/model_pool.json")
-        if pool_blob.exists():
-            weights.update(_extract_model_pool_ic(json.loads(pool_blob.download_as_text())))
+        pool = load_pool()
+        if pool:
+            weights.update(_extract_model_pool_ic(pool))
 
-        legacy_blob = bucket.blob("universal/ic_tracking.json")
-        if legacy_blob.exists():
-            data = json.loads(legacy_blob.download_as_text())
-            for name, info in (data.get("models") or {}).items():
-                if name in weights:
-                    continue
-                weights[name] = float(info.get("oos_ic", 0.0))
-
+        _IC_WEIGHTS_CACHE = dict(weights)
+        _IC_WEIGHTS_CACHE_LOADED_AT = time.time()
         return weights
     except Exception:
         return {}

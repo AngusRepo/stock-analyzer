@@ -59,6 +59,7 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
                 "last_ic_root_cause": "ok",
                 "last_ic_sample_count": 90,
                 "last_ic_diagnostics": {"raw_rows": 90, "production_rows": 90},
+                "last_ic_by_segment": {"LISTED": {"ic": 0.1, "n_samples": 90}},
                 "last_ic_score_sources": {"forecast_data.rank_score": 90},
                 "challenger": {
                     "version": "v2",
@@ -96,8 +97,45 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
     assert model["last_ic_root_cause"] == "ok"
     assert model["last_ic_sample_count"] == 90
     assert model["last_ic_diagnostics"]["production_rows"] == 90
+    assert model["last_ic_by_segment"]["LISTED"]["n_samples"] == 90
+    assert model["lifecycle_diagnosis"]["status"] == "ok"
+    assert model["lifecycle_diagnosis"]["coverage"] == 1.0
     assert model["last_ic_score_sources"] == {"forecast_data.rank_score": 90}
     assert model["challenger"]["metadata_exists"] is True
     assert model["challenger"]["last_ic_root_cause"] == "ok"
     assert model["challenger"]["last_ic_sample_count"] == 88
     assert result["events"] == [{"model": "XGBoost", "transition": "register"}]
+
+
+@pytest.mark.asyncio
+async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "FT-Transformer": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/ft_transformer/v1.joblib",
+                "model_type": "feature",
+                "balance_family": "feature",
+                "weekly_ic": [],
+                "ic_4w_avg": None,
+                "last_ic_status": "insufficient_samples",
+                "last_ic_root_cause": "prediction_missing",
+                "last_ic_sample_count": 0,
+                "last_ic_diagnostics": {"raw_rows": 0, "production_rows": 0},
+            }
+        },
+    }
+    blobs = {"universal/model_pool.json": json.dumps(pool)}
+    from google.cloud import storage
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(storage, "Client", lambda: _FakeStorageClient(_FakeBucket(blobs)))
+
+    result = await model_pool.lineage()
+
+    diagnosis = result["models"]["FT-Transformer"]["lifecycle_diagnosis"]
+    assert diagnosis["status"] == "artifact_mismatch"
+    assert "metadata_missing" in diagnosis["blockers"]
+    assert "prediction_missing" in diagnosis["blockers"]

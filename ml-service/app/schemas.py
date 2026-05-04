@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class NightSessionData(BaseModel):
@@ -29,3 +29,4 @@ class PredictRequest(BaseModel):
     use_optuna: bool = False
     night_session: NightSessionData | None = None
     context: str = "scheduled_daily"
+    runtime_options: dict = Field(default_factory=dict)

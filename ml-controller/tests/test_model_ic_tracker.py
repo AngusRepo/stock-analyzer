@@ -13,7 +13,7 @@ from services.model_ic_tracker import (  # noqa: E402
 )
 
 
-def test_rank_score_prefers_forecast_rank_score_over_direction_accuracy():
+def test_rank_score_uses_forecast_rank_score_only():
     score, source = rank_score_from_prediction_row(
         {
             "direction_accuracy": 0.1,
@@ -23,6 +23,15 @@ def test_rank_score_prefers_forecast_rank_score_over_direction_accuracy():
 
     assert score == 0.9
     assert source == "forecast_data.rank_score"
+
+    score, source = rank_score_from_prediction_row(
+        {
+            "direction_accuracy": 0.8,
+            "forecast_data": '{}',
+        }
+    )
+    assert score is None
+    assert source == "missing"
 
 
 def test_compute_weekly_ic_uses_rank_score_and_reports_score_sources():

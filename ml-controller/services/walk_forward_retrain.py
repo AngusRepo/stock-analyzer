@@ -526,7 +526,8 @@ def _aggregate_run(run: WalkForwardRun) -> dict:
 def build_report(run: WalkForwardRun, current_universal_ic: Optional[dict] = None) -> str:
     """Markdown report comparing walk-forward per-model IC vs current universal.
 
-    current_universal_ic: optional {model_name: ic} from universal/ic_tracking.json
+    current_universal_ic: optional legacy report-only comparison data. It must
+    not feed serving weights or model lifecycle decisions.
     """
     lines = [
         f"# Walk-Forward ML Run Report",
@@ -623,7 +624,7 @@ def persist_run_to_gcs(run: WalkForwardRun, extra: Optional[dict] = None) -> Opt
 
 
 def load_current_universal_ic() -> dict:
-    """Load current universal/ic_tracking.json for comparison vs walk-forward."""
+    """Load legacy universal/ic_tracking.json for report-only comparison."""
     bucket = _get_bucket()
     if bucket is None:
         return {}

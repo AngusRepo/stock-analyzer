@@ -52,20 +52,20 @@ export function AudienceRoleStrip() {
       {[
         {
           title: 'Dashboard',
-          subtitle: '給朋友看的投資情報頁',
-          body: '只回答今天市場與推薦重點，不暴露排程、模型治理、資料庫維運語言。',
+          subtitle: 'friend-facing',
+          body: '給一般朋友看的市場摘要：重點是可讀、少術語、快速知道今天系統看見什麼機會。',
           tone: 'info' as WorkstationTone,
         },
         {
           title: 'Bot',
-          subtitle: '給你自己的交易控制台',
-          body: '集中 pending buys、debate、quote sanity、持倉、T1/T2/Stop 與 execution audit。',
+          subtitle: 'admin execution',
+          body: '給你自己操作：pending buys、debate、quote sanity、T1/T2/Stop 與 execution audit 必須可追溯。',
           tone: 'ok' as WorkstationTone,
         },
         {
           title: 'OBS',
-          subtitle: '系統可靠度與 root cause',
-          body: '只看症狀、影響、原因、下一步；細節再 drill down 到 Scheduler/DataQuality/ModelPool。',
+          subtitle: 'root cause center',
+          body: '回答哪裡壞、為什麼壞、影響哪些股票與哪個 run_id，而不是再多一張漂亮但無法診斷的儀表板。',
           tone: 'warn' as WorkstationTone,
         },
       ].map((item) => (
@@ -86,20 +86,20 @@ export function RecommendationLaneExplainer() {
     <div className="grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
       <div className="bg-[linear-gradient(135deg,#06140f,#071019)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-emerald-200">上市上櫃交易池</p>
+          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-emerald-200">上市上櫃交易流</p>
           <WorkstationPill tone="ok">tradable lane</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-          會進入 morning setup、T2/debate、pending buys 與盤中 quote sanity。這一區才會影響自動交易。
+          會進入 morning setup、T2/debate、pending buys 與盤中 quote sanity，這一區才會影響自動交易。
         </p>
       </div>
       <div className="bg-[linear-gradient(135deg,#171006,#0b0d12)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-amber-200">興櫃研究池</p>
+          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-amber-200">興櫃研究流</p>
           <WorkstationPill tone="warn">research only</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-          可做 ML / IC / calibration evidence，但硬 gate 不進 morning setup、不產生 pending buys、不自動交易。
+          可做 ML、IC、校準與研究觀察，但硬 gate 不進 morning setup、不產生 pending buys、不自動交易。
         </p>
       </div>
     </div>
@@ -115,21 +115,21 @@ export function ObsDrilldownMap() {
             href: '/scheduler',
             icon: Workflow,
             title: 'Scheduler',
-            body: '只在需要查 run log、callback、交易日曆、duration anomaly 時進去。',
+            body: '檢查 run log、callback、duration anomaly 與觸發順序。',
             tone: 'info' as WorkstationTone,
           },
           {
             href: '/data-quality',
             icon: ShieldCheck,
             title: 'Data Quality',
-            body: '只在需要查 price/chip/features/schema/parity freshness 時進去。',
+            body: '檢查 price、chip、features、schema、parity 與 freshness。',
             tone: 'ok' as WorkstationTone,
           },
           {
             href: '/model-pool',
             icon: GitBranch,
             title: 'Model Pool',
-            body: '只在需要查 lineage、IC、challenger、metadata、family balance 時進去。',
+            body: '檢查 lineage、IC、challenger、metadata 與 family balance。',
             tone: 'warn' as WorkstationTone,
           },
         ].map((item) => {

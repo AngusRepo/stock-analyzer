@@ -88,8 +88,129 @@ def _metadata_summary(raw: dict) -> dict:
         "dataset_snapshot",
         "train_range",
         "validation_range",
+        "feature_policy",
+        "artifact_schema",
+        "schema_hash",
+        "model_pool_version",
     )
-    return {key: raw[key] for key in keep if key in raw}
+    summary = {key: raw[key] for key in keep if key in raw}
+    feature_names = raw.get("feature_names")
+    if isinstance(feature_names, list):
+        summary["feature_name_count"] = len(feature_names)
+    return summary
+
+
+def _ic_coverage(diagnostics: dict) -> float | None:
+    raw_rows = diagnostics.get("raw_rows")
+    production_rows = diagnostics.get("production_rows")
+    try:
+        raw = float(raw_rows)
+        production = float(production_rows)
+    except (TypeError, ValueError):
+        return None
+    if raw <= 0:
+        return None
+    return round(production / raw, 4)
+
+
+def _lifecycle_diagnosis(
+    *,
+    model_name: str,
+    entry: dict,
+    metadata_exists: bool,
+    metadata: dict | None,
+) -> dict:
+    diagnostics = entry.get("last_ic_diagnostics") or {}
+    root_cause = entry.get("last_ic_root_cause")
+    error = entry.get("last_ic_error")
+    sample_count = int(entry.get("last_ic_sample_count") or 0)
+    metadata_feature_count = None
+    if isinstance(metadata, dict):
+        metadata_feature_count = metadata.get("feature_count") or metadata.get("feature_name_count")
+
+    blockers: list[str] = []
+    if not metadata_exists:
+        blockers.append("metadata_missing")
+    if error:
+        blockers.append(str(error))
+    if root_cause and root_cause != "ok":
+        blockers.append(str(root_cause))
+    if sample_count <= 0:
+        blockers.append("ic_sample_missing")
+    if model_name == "FT-Transformer" and metadata_exists and not metadata_feature_count:
+        blockers.append("ft_feature_metadata_missing")
+
+    if not blockers:
+        status = "ok"
+        reason = "IC, samples, metadata are present."
+    elif "metadata_missing" in blockers or "ft_feature_metadata_missing" in blockers:
+        status = "artifact_mismatch"
+        reason = "Artifact metadata is missing or incomplete; train/serve schema cannot be audited."
+    elif "prediction_missing" in blockers:
+        status = "prediction_missing"
+        reason = "No prediction rows were found for this model in the IC lookback window."
+    elif "outcome_missing" in blockers:
+        status = "outcome_missing"
+        reason = "Prediction rows exist but verified outcome labels are missing."
+    elif "ranking_signal_missing" in blockers:
+        status = "ranking_signal_missing"
+        reason = "Prediction rows exist but forecast_data.rank_score is missing."
+    elif "coverage_low" in blockers:
+        status = "coverage_low"
+        reason = "Model has too few production samples to compute stable IC."
+    else:
+        status = "warn"
+        reason = "Lifecycle evidence is incomplete; inspect diagnostics."
+
+    return {
+        "status": status,
+        "reason": reason,
+        "blockers": blockers,
+        "coverage": _ic_coverage(diagnostics),
+        "sample_count": sample_count,
+        "root_cause": root_cause,
+        "error": error,
+        "metadata_feature_count": metadata_feature_count,
+    }
+
+
+def _build_lifecycle_review_packet(
+    *,
+    actions: list[dict],
+    promotion_gate: dict | None,
+    shadow_ab_by_model: dict | None,
+    paper_order_ab_by_model: dict | None,
+) -> dict:
+    promote_like = [a for a in actions if str(a.get("transition") or "").startswith("promote")]
+    blocked = [a for a in actions if a.get("transition") == "promote_blocked"]
+    return {
+        "summary": {
+            "actions": len(actions),
+            "promote_candidates": len(promote_like),
+            "blocked_promotions": len(blocked),
+            "gate_decision": (promotion_gate or {}).get("decision"),
+            "gate_passed": (promotion_gate or {}).get("passed"),
+        },
+        "required_evidence": {
+            "ic": "challenger.ic_4w_avg must beat active by policy margin",
+            "pbo": "promotion_gate must include PBO evidence",
+            "monte_carlo": "promotion_gate must include Monte Carlo evidence",
+            "deflated_sharpe": "promotion gate policy evaluates risk-adjusted evidence when available",
+            "shadow_ab": "shadow prediction evidence must pass when require_shadow_ab=true",
+            "paper_order_ab": "paper order AB evidence must pass when require_paper_order_ab=true",
+        },
+        "promotion_gate": promotion_gate,
+        "shadow_ab_by_model": shadow_ab_by_model or {},
+        "paper_order_ab_by_model": paper_order_ab_by_model or {},
+        "blocked": [
+            {
+                "model": a.get("model"),
+                "reason": a.get("reason"),
+                "preconditions_failed": a.get("preconditions_failed") or [],
+            }
+            for a in blocked
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1136,6 +1257,13 @@ async def promote_check(req: PromoteCheckRequest):
                 content_type="application/json",
             )
 
+    lifecycle_review_packet = _build_lifecycle_review_packet(
+        actions=actions,
+        promotion_gate=promotion_gate,
+        shadow_ab_by_model=shadow_ab_by_model,
+        paper_order_ab_by_model=paper_order_ab_by_model,
+    )
+
     return {
         "status": "ok",
         "dry_run": not req.apply,
@@ -1161,6 +1289,7 @@ async def promote_check(req: PromoteCheckRequest):
         "promotion_gate": promotion_gate,
         "shadow_ab_by_model": shadow_ab_by_model,
         "paper_order_ab_by_model": paper_order_ab_by_model,
+        "lifecycle_review_packet": lifecycle_review_packet,
     }
 
 
@@ -1239,6 +1368,14 @@ async def lineage():
                     "last_ic_sample_count": challenger.get("last_ic_sample_count") or 0,
                     "last_ic_diagnostics": challenger.get("last_ic_diagnostics") or {},
                     "last_ic_score_sources": challenger.get("last_ic_score_sources") or {},
+                    "last_ic_by_segment": challenger.get("last_ic_by_segment") or {},
+                    "last_ic_error": challenger.get("last_ic_error"),
+                    "lifecycle_diagnosis": _lifecycle_diagnosis(
+                        model_name=name,
+                        entry=challenger,
+                        metadata_exists=ch_metadata_exists,
+                        metadata=ch_metadata,
+                    ),
                 }
 
             out[name] = {
@@ -1259,6 +1396,14 @@ async def lineage():
                 "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
                 "last_ic_diagnostics": entry.get("last_ic_diagnostics") or {},
                 "last_ic_score_sources": entry.get("last_ic_score_sources") or {},
+                "last_ic_by_segment": entry.get("last_ic_by_segment") or {},
+                "last_ic_error": entry.get("last_ic_error"),
+                "lifecycle_diagnosis": _lifecycle_diagnosis(
+                    model_name=name,
+                    entry=entry,
+                    metadata_exists=metadata_exists,
+                    metadata=metadata,
+                ),
                 "consecutive_negative_weeks": entry.get("consecutive_negative_weeks") or 0,
                 "challenger": challenger_out,
             }

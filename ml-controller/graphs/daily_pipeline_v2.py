@@ -656,14 +656,8 @@ def _load_pool_and_ic():
             except (TypeError, ValueError):
                 logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
 
-        # Legacy sidecar fallback only fills models that model_pool cannot yet score.
-        ic_blob = bucket.blob("universal/ic_tracking.json")
-        if ic_blob.exists():
-            ic_data = _json.loads(ic_blob.download_as_text())
-            for name, info in (ic_data.get("models") or {}).items():
-                if name in ic_weights:
-                    continue
-                ic_weights[name] = float(info.get("oos_ic", 0.0))
+        # IC weights have exactly one owner: model_pool.json. Missing IC stays
+        # missing so lifecycle diagnostics can explain the root cause.
         # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
         degraded_dampening = 1.0
         ev2_cfg: dict = {}

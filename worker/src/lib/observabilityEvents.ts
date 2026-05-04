@@ -343,7 +343,8 @@ export function buildEventsFromModelPool(input: {
     .filter(([name, model]) => !isStateSpaceOverlayModel(name, model))
   const weak = entries.filter(([, model]) => {
     const ic = modelIcValue(model)
-    return ic == null || Math.abs(ic) < 0.0001 || model.metadata_exists === false
+    const diagnosis = model.lifecycle_diagnosis as Record<string, unknown> | undefined
+    return ic == null || Math.abs(ic) < 0.0001 || model.metadata_exists === false || diagnosis?.status === 'artifact_mismatch'
   })
 
   if (!weak.length) {
@@ -367,14 +368,14 @@ export function buildEventsFromModelPool(input: {
   return weak.slice(0, 12).map(([name, model]) => ({
     id: eventId('model_pool', 'model_pool_lineage', name),
     ts: input.generatedAt,
-    severity: model.metadata_exists === false ? 'error' : 'warn',
+    severity: model.metadata_exists === false || (model.lifecycle_diagnosis as Record<string, unknown> | undefined)?.status === 'artifact_mismatch' ? 'error' : 'warn',
     domain: 'model_pool',
     source: 'model_pool_lineage',
-    status: model.metadata_exists === false ? 'metadata_missing' : 'weak_ic',
+    status: String((model.lifecycle_diagnosis as Record<string, unknown> | undefined)?.status ?? (model.metadata_exists === false ? 'metadata_missing' : 'weak_ic')),
     title: name,
     summary: model.metadata_exists === false
       ? `${name} metadata is missing`
-      : `${name} IC is weak or unavailable (${String(model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown')})`,
+      : `${name} IC is weak or unavailable (${String((model.lifecycle_diagnosis as Record<string, unknown> | undefined)?.root_cause ?? model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown')})`,
     owner: 'Cloud Run',
     impact: 'Model votes may be deweighted, neutralized, or harder to audit.',
     next_action: 'Trace latest training artifact metadata, weekly IC tracker, and promote/degrade event logs.',
@@ -385,6 +386,7 @@ export function buildEventsFromModelPool(input: {
       rolling_ic: model.rolling_ic,
       ic_status: model.last_ic_status,
       ic_root_cause: model.last_ic_root_cause,
+      lifecycle_diagnosis: model.lifecycle_diagnosis,
       sample_count: model.last_ic_sample_count,
       ic_diagnostics: model.last_ic_diagnostics,
       metadata_exists: model.metadata_exists,

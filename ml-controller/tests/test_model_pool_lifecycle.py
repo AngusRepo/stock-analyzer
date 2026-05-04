@@ -168,6 +168,10 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
     blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
     assert blocked
     assert "missing_shadow_ab:XGBoost" in blocked[0]["preconditions_failed"]
+    packet = result["lifecycle_review_packet"]
+    assert packet["summary"]["blocked_promotions"] == 1
+    assert packet["required_evidence"]["shadow_ab"]
+    assert packet["blocked"][0]["model"] == "XGBoost"
 
 
 @pytest.mark.asyncio
@@ -222,3 +226,5 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
     assert promotes
     assert result["shadow_ab_by_model"]["XGBoost"]["decision"] == "PASS"
     assert result["paper_order_ab_by_model"]["XGBoost"]["decision"] == "PASS"
+    assert result["lifecycle_review_packet"]["summary"]["promote_candidates"] == 1
+    assert result["lifecycle_review_packet"]["shadow_ab_by_model"]["XGBoost"]["decision"] == "PASS"

@@ -53,6 +53,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -61,6 +62,8 @@ logger = logging.getLogger(__name__)
 GCS_BUCKET = os.environ.get("GCS_BUCKET_NAME", "").strip()
 GCS_POOL_KEY = "universal/model_pool.json"
 GCS_STATE_SPACE_PREFIX = "per_stock_state_space"
+_POOL_CACHE: dict | None = None
+_POOL_CACHE_LOADED_AT: float = 0.0
 
 SCHEMA_VERSION = "1.0"
 
@@ -164,12 +167,18 @@ def gcs_metadata_path_for(model_name: str, version: str) -> str:
 
 def load_pool() -> Optional[dict]:
     """Load current model_pool.json from GCS. None if missing."""
+    global _POOL_CACHE, _POOL_CACHE_LOADED_AT
+    ttl = int(os.environ.get("MODEL_POOL_CACHE_TTL_SECONDS", "300") or "300")
+    if _POOL_CACHE is not None and time.time() - _POOL_CACHE_LOADED_AT < max(0, ttl):
+        return json.loads(json.dumps(_POOL_CACHE))
     try:
         bucket = _get_bucket()
         blob = bucket.blob(GCS_POOL_KEY)
         if not blob.exists():
             return None
-        return json.loads(blob.download_as_text())
+        _POOL_CACHE = json.loads(blob.download_as_text())
+        _POOL_CACHE_LOADED_AT = time.time()
+        return json.loads(json.dumps(_POOL_CACHE))
     except Exception as e:
         logger.warning(f"[ModelPool] Load failed: {e}")
         return None
@@ -177,12 +186,15 @@ def load_pool() -> Optional[dict]:
 
 def save_pool(pool: dict) -> None:
     """Write model_pool.json to GCS with updated last_updated timestamp."""
+    global _POOL_CACHE, _POOL_CACHE_LOADED_AT
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     bucket = _get_bucket()
     bucket.blob(GCS_POOL_KEY).upload_from_string(
         json.dumps(pool, indent=2, ensure_ascii=False),
         content_type="application/json",
     )
+    _POOL_CACHE = json.loads(json.dumps(pool))
+    _POOL_CACHE_LOADED_AT = time.time()
     logger.info(f"[ModelPool] Saved {GCS_POOL_KEY} ({len(pool.get('models', {}))} models)")
 
 
@@ -310,7 +322,7 @@ def compute_weight(
 
     Args:
       model_name:  for pool lookup
-      ic_value:    raw IC (e.g. 0.13 from ic_tracking.json or weekly_ic avg)
+      ic_value:    raw IC (e.g. 0.13 from model_pool weekly_ic/rolling_ic)
       pool:        loaded model_pool dict (or None to fetch from GCS)
       degraded_dampening: extra multiplier applied only if status == degraded.
                           Default 1.0 = no dampening = pure R3 (industry std).
@@ -557,110 +569,15 @@ def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: st
 # ─────────────────────────────────────────────────────────────────────────────
 
 def list_legacy_artifacts() -> list[dict]:
+    """Legacy artifact migration is intentionally disabled."""
     raise RuntimeError("legacy artifact migration is disabled; model_pool.json is canonical")
-    """Discover existing GCS artifacts that should be migrated to v{N} layout.
-
-    Looks for the legacy flat-file pattern:
-
-    Returns a list of {model, current_path, target_path, action}.
-    Action is 'rename' (legacy → versioned), 'already_versioned' (no-op),
-    or 'missing' (artifact not in GCS yet).
-    """
-    bucket = _get_bucket()
-    out = []
-    for name, (_mt, _bf, ext) in MANAGED_MODELS.items():
-        target_path = gcs_path_for(name, "v1")
-        if name in DEFAULT_STATE_SPACE_HYPERPARAMS:
-            out.append({
-                "model": name,
-                "current_path": target_path,
-                "target_path": target_path,
-                "action": "state_space_hyperparams",
-            })
-            continue
-        # Already versioned?
-        if bucket.blob(target_path).exists():
-            out.append({
-                "model": name,
-                "current_path": target_path,
-                "target_path": target_path,
-                "action": "already_versioned",
-            })
-            continue
-        # Legacy flat path?
-        if name == "Chronos":
-            # Foundation model, no GCS weights — skip
-            out.append({"model": name, "current_path": None,
-                        "target_path": target_path, "action": "foundation_no_artifact"})
-            continue
-        # FT-Transformer special-case: its joblib is the bundle dict (Stage 0.2 N1 fix)
-        if name == "FT-Transformer":
-            legacy_path = ""
-        else:
-            legacy_path = ""
-        if bucket.blob(legacy_path).exists():
-            out.append({
-                "model": name,
-                "current_path": legacy_path,
-                "target_path": target_path,
-                "action": "rename",
-            })
-        else:
-            out.append({
-                "model": name,
-                "current_path": None,
-                "target_path": target_path,
-                "action": "missing",
-            })
-    return out
 
 
 def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
+    """Legacy artifact migration is intentionally disabled."""
     raise RuntimeError("legacy artifact migration is disabled; model_pool.json is canonical")
-    """Copy legacy flat-file artifacts to versioned layout.
 
-    NOTE: This is a copy (not move); original legacy paths are kept as a
-    conservative fallback while production consumers read model_pool.json.
 
-    dry_run=True: report only, no GCS writes.
-    """
-    bucket = _get_bucket()
-
-    plan = list_legacy_artifacts()
-    actions_taken = []
-    for item in plan:
-        if item["action"] != "rename":
-            actions_taken.append({**item, "executed": False, "note": item["action"]})
-            continue
-        if dry_run:
-            actions_taken.append({**item, "executed": False, "note": "dry_run"})
-            continue
-        try:
-            src_blob = bucket.blob(item["current_path"])
-            new_blob = bucket.copy_blob(src_blob, bucket, item["target_path"])
-            actions_taken.append({**item, "executed": True, "note": f"copied to {new_blob.name}"})
-        except Exception as e:
-            actions_taken.append({**item, "executed": False, "note": f"error: {e}"})
-
-    # Also copy metadata_{model}.json → metadata in versioned folder for consistency
-    if not dry_run:
-        for item in plan:
-            if item["action"] != "rename":
-                continue
-            name = item["model"]
-            if name == "FT-Transformer":
-                src_meta = ""
-            else:
-                src_meta = ""
-            tgt_meta = gcs_metadata_path_for(name, "v1")
-            try:
-                src_blob = bucket.blob(src_meta)
-                if src_blob.exists():
-                    bucket.copy_blob(src_blob, bucket, tgt_meta)
-            except Exception as e:
-                logger.warning(f"[ModelPool] Metadata copy failed {src_meta}→{tgt_meta}: {e}")
-
-    return {"dry_run": dry_run, "plan": plan, "actions": actions_taken}
 def _get_bucket():
     if not GCS_BUCKET:
         raise RuntimeError("GCS_BUCKET_NAME not configured")

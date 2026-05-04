@@ -57,17 +57,14 @@ def _safe_json(raw: Any) -> dict[str, Any]:
 def rank_score_from_prediction_row(row: dict[str, Any]) -> tuple[float | None, str]:
     """Return the score used for IC.
 
-    Per-model rows write `forecast_data.rank_score`; older rows only have
-    `direction_accuracy`. Prefer rank_score so IC measures rank alpha rather
-    than a generic confidence field.
+    Per-model rows must write `forecast_data.rank_score`. Do not fall back to
+    direction_accuracy because that column is a confidence/legacy compatibility
+    field, not the ranking signal we want to audit.
     """
     forecast = _safe_json(row.get("forecast_data"))
     score = _as_float(forecast.get("rank_score"))
     if score is not None:
         return score, "forecast_data.rank_score"
-    score = _as_float(row.get("direction_accuracy"))
-    if score is not None:
-        return score, "direction_accuracy"
     return None, "missing"
 
 

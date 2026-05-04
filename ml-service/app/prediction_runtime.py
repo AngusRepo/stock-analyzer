@@ -593,6 +593,9 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     rank_scores: dict[str, float] = {}
     model_errors: list[str] = []
+    runtime_options = getattr(req, "runtime_options", {}) or {}
+    run_embedded_time_series = bool(runtime_options.get("embedded_time_series", True))
+    run_embedded_state_space = bool(runtime_options.get("embedded_state_space", True))
 
     def _aligned_features(meta: dict | None) -> np.ndarray:
         training_features = (meta or {}).get("feature_names", [])
@@ -672,53 +675,59 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         raise ValueError(f"All models failed for {req.symbol}: {model_errors}")
 
     time_series_signals: dict[str, dict] = {}
-    ts_model_fns = [
-        ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
-        ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
-        ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, req.stock_id)),
-    ]
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {}
-        for model_name, fn in ts_model_fns:
-            status = model_pool_status.get(model_name, "active")
-            if status in ("retired", "challenger"):
-                model_errors.append(f"{model_name}: skipped by model_pool status={status}")
-                continue
-            futures[executor.submit(fn)] = model_name
-        for future in as_completed(futures):
-            model_name = futures[future]
-            try:
-                pred = future.result()
-                time_series_signals[model_name] = {
-                    "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
-                    "direction": getattr(pred, "direction", None),
-                    "confidence": float(getattr(pred, "confidence", 0.0)),
-                    "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
-                }
-            except Exception as e:
-                model_errors.append(f"{model_name}: {e}")
+    if run_embedded_time_series:
+        ts_model_fns = [
+            ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
+            ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
+            ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, req.stock_id)),
+        ]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {}
+            for model_name, fn in ts_model_fns:
+                status = model_pool_status.get(model_name, "active")
+                if status in ("retired", "challenger"):
+                    model_errors.append(f"{model_name}: skipped by model_pool status={status}")
+                    continue
+                futures[executor.submit(fn)] = model_name
+            for future in as_completed(futures):
+                model_name = futures[future]
+                try:
+                    pred = future.result()
+                    time_series_signals[model_name] = {
+                        "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
+                        "direction": getattr(pred, "direction", None),
+                        "confidence": float(getattr(pred, "confidence", 0.0)),
+                        "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
+                    }
+                except Exception as e:
+                    model_errors.append(f"{model_name}: {e}")
+    else:
+        model_errors.append("embedded time-series skipped: owned by daily_pipeline_v2 batch predictors")
 
     state_space_overlays: dict[str, dict] = {}
-    state_overlay_fns = [
-        ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, req.stock_id)),
-        ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, req.stock_id)),
-    ]
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {}
-        for model_name, fn in state_overlay_fns:
-            futures[executor.submit(fn)] = model_name
-        for future in as_completed(futures):
-            model_name = futures[future]
-            try:
-                pred = future.result()
-                state_space_overlays[model_name] = {
-                    "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
-                    "direction": getattr(pred, "direction", None),
-                    "confidence": float(getattr(pred, "confidence", 0.0)),
-                    "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
-                }
-            except Exception as e:
-                model_errors.append(f"{model_name}: overlay {e}")
+    if run_embedded_state_space:
+        state_overlay_fns = [
+            ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, req.stock_id)),
+            ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, req.stock_id)),
+        ]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            for model_name, fn in state_overlay_fns:
+                futures[executor.submit(fn)] = model_name
+            for future in as_completed(futures):
+                model_name = futures[future]
+                try:
+                    pred = future.result()
+                    state_space_overlays[model_name] = {
+                        "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
+                        "direction": getattr(pred, "direction", None),
+                        "confidence": float(getattr(pred, "confidence", 0.0)),
+                        "direction_accuracy": float(getattr(pred, "direction_accuracy", 0.0)),
+                    }
+                except Exception as e:
+                    model_errors.append(f"{model_name}: overlay {e}")
+    else:
+        model_errors.append("embedded state-space skipped: owned by daily_pipeline_v2 batch predictors")
 
     challenger_rank_scores: dict[str, float] = {}
     challenger_errors: list[str] = []
@@ -814,6 +823,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
         "challenger_errors": challenger_errors if challenger_errors else None,
         "atr": float(atr),
+        "runtime_options": runtime_options,
     }
 
 

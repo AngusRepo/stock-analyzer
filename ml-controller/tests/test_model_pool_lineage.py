@@ -181,3 +181,59 @@ async def test_lineage_marks_verification_missing_as_actionable_root_cause(monke
     assert diagnosis["status"] == "verification_missing"
     assert diagnosis["root_cause"] == "verification_missing"
     assert "verify-v2" in diagnosis["reason"]
+
+
+@pytest.mark.asyncio
+async def test_lineage_preserves_artifact_diff_metadata(monkeypatch):
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/dlinear/v1.pt",
+                "model_type": "time_series",
+                "balance_family": "time_series",
+                "challenger": {
+                    "version": "v20260505",
+                    "gcs_path": "universal/dlinear/v20260505.pt",
+                    "shadow_since": "2026-05-05",
+                },
+            }
+        },
+    }
+    blobs = {
+        "universal/model_pool.json": json.dumps(pool),
+        "universal/dlinear/metadata_v1.json": json.dumps({
+            "version": "v1",
+            "n_input_series": 128,
+            "n_train_windows": 1000,
+            "n_val_windows": 120,
+            "val_dir_accuracy": 0.54,
+            "sequence_report": {"input_series": 128, "train_windows": 1000, "oos_windows": 120},
+        }),
+        "universal/dlinear/metadata_v20260505.json": json.dumps({
+            "version": "v20260505",
+            "n_input_series": 140,
+            "n_train_windows": 1100,
+            "n_val_windows": 130,
+            "val_dir_accuracy": 0.57,
+            "oos_ic": 0.08,
+            "daily_ic_count": 14,
+            "sequence_report": {"input_series": 140, "train_windows": 1100, "oos_windows": 130},
+        }),
+    }
+    from google.cloud import storage
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(storage, "Client", lambda: _FakeStorageClient(_FakeBucket(blobs)))
+
+    result = await model_pool.lineage()
+
+    model = result["models"]["DLinear"]
+    assert model["metadata"]["n_input_series"] == 128
+    assert model["metadata"]["sequence_report"]["input_series"] == 128
+    assert model["challenger"]["metadata"]["n_input_series"] == 140
+    assert model["challenger"]["metadata"]["oos_ic"] == 0.08
+    assert model["challenger"]["metadata"]["daily_ic_count"] == 14
+    assert model["challenger"]["metadata"]["sequence_report"]["oos_windows"] == 130

@@ -93,6 +93,13 @@ def _metadata_summary(raw: dict) -> dict:
         "artifact_schema",
         "schema_hash",
         "model_pool_version",
+        "n_input_series",
+        "n_train_windows",
+        "n_val_windows",
+        "val_dir_accuracy",
+        "oos_ic",
+        "daily_ic_count",
+        "sequence_report",
     )
     summary = {key: raw[key] for key in keep if key in raw}
     feature_names = raw.get("feature_names")

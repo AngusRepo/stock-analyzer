@@ -204,7 +204,7 @@ export default function PipelinePage() {
 
   return (
     <AppShell>
-      <div className="p-4 lg:p-5 space-y-4 text-sm max-w-6xl">
+      <div className="p-4 lg:p-5 space-y-4 text-sm">
 
         {/* Page header */}
         <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] flex items-center justify-between">
@@ -241,7 +241,7 @@ export default function PipelinePage() {
             {[1, 2, 3, 4].map(i => <div key={i} className="h-24 rounded-xl bg-muted/40 animate-pulse" />)}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-2">
 
             {/* ═══ Step 1: Screener ═══ */}
             <Card className="border-border bg-card">

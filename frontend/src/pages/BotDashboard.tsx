@@ -21,12 +21,11 @@ import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
-import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
-import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
+import { DecisionTraceRail } from '@/components/workstation/DecisionArchitecture'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1166,162 +1165,9 @@ function AdaptiveParamsCard() {
 
 // ─── Trade Journal Analytics ────────────────────────────────────────────────
 
-function TradeJournalAnalytics() {
-  const { data: journalData } = useQuery({
-    queryKey: ['paper', 'journal'],
-    queryFn: paperApi.journal,
-    staleTime: 5 * 60_000,
-  })
-
-  const metrics = journalData?.metrics ?? null
-
-  if (!metrics) {
-    return (
-      <Card className="bg-card border-border backdrop-blur-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">交易分析</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground/60 text-xs">尚無已實現交易</p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const kpis = [
-    { label: '勝率', value: `${(metrics.winRate * 100).toFixed(1)}%`, cls: metrics.winRate >= 0.5 ? 'text-red-400' : 'text-emerald-400' },
-    { label: '平均持有', value: `${metrics.avgHoldDays}天`, cls: 'text-foreground/80' },
-    { label: '最佳交易', value: metrics.best ? `${metrics.best.symbol} +$${fmt(Math.round(metrics.best.pnl))}` : '-', cls: 'text-red-400' },
-    { label: '最差交易', value: metrics.worst ? `${metrics.worst.symbol} $${fmt(Math.round(metrics.worst.pnl))}` : '-', cls: 'text-emerald-400' },
-    { label: '平均獲利', value: `$${fmt(Math.round(metrics.avgWin))}`, cls: 'text-red-400' },
-    { label: '平均虧損', value: `-$${fmt(Math.round(metrics.avgLoss))}`, cls: 'text-emerald-400' },
-    { label: 'Profit Factor', value: metrics.profitFactor === Infinity ? '∞' : metrics.profitFactor.toFixed(2), cls: metrics.profitFactor >= 1.5 ? 'text-red-400' : metrics.profitFactor >= 1 ? 'text-foreground/80' : 'text-emerald-400' },
-    { label: 'Expectancy', value: `${metrics.expectancy >= 0 ? '+' : ''}$${fmt(Math.round(metrics.expectancy))}`, cls: pctClass(metrics.expectancy) },
-  ]
-
-  return (
-    <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          交易分析 <span className="text-muted-foreground/60 text-xs ml-2">{metrics.totalTrades} 筆</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {kpis.map(k => (
-            <div key={k.label} className="text-center">
-              <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{k.label}</div>
-              <div className={`text-sm font-mono mt-0.5 ${k.cls}`}>{k.value}</div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
 
 // ─── Position Sizing Calculator ─────────────────────────────────────────────
 
-function PositionSizer() {
-  const { data: account } = useQuery({
-    queryKey: ['paper', 'account'],
-    queryFn: paperApi.account,
-    staleTime: 60_000,
-  })
-  const acc = account?.account ?? account ?? {}
-  const defaultCash = acc?.cash ?? 1_000_000
-
-  const [cash, setCash] = useState<string>('')
-  const [riskPct, setRiskPct] = useState<string>('2')
-  const [entryPrice, setEntryPrice] = useState<string>('')
-  const [stopLoss, setStopLoss] = useState<string>('')
-
-  const cashVal = parseFloat(cash) || defaultCash
-  const riskVal = (parseFloat(riskPct) || 2) / 100
-  const entry = parseFloat(entryPrice) || 0
-  const sl = parseFloat(stopLoss) || 0
-
-  const riskAmt = cashVal * riskVal
-  const priceRisk = entry > 0 && sl > 0 ? Math.abs(entry - sl) : 0
-  const shares = priceRisk > 0 ? Math.floor(riskAmt / priceRisk) : 0
-  const lots = Math.floor(shares / 1000)
-  const positionValue = shares * entry
-  const allocation = cashVal > 0 ? (positionValue / cashVal) * 100 : 0
-
-  const canCalc = entry > 0 && sl > 0 && entry !== sl
-
-  return (
-    <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">部位計算器</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Inputs */}
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">帳戶資金</label>
-            <Input
-              type="number"
-              placeholder={fmt(Math.round(defaultCash))}
-              value={cash}
-              onChange={e => setCash(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">風險 %</label>
-            <Input
-              type="number"
-              placeholder="2"
-              value={riskPct}
-              onChange={e => setRiskPct(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">進場價</label>
-            <Input
-              type="number"
-              placeholder="0"
-              value={entryPrice}
-              onChange={e => setEntryPrice(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">停損價</label>
-            <Input
-              type="number"
-              placeholder="0"
-              value={stopLoss}
-              onChange={e => setStopLoss(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-        </div>
-
-        {/* Results */}
-        {canCalc && (
-          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50">
-            {[
-              { label: '風險金額', value: `$${fmt(Math.round(riskAmt))}` },
-              { label: '價差風險', value: `$${fmt(priceRisk, 1)}` },
-              { label: '股數', value: fmt(shares) },
-              { label: '張數', value: `${lots} 張` },
-              { label: '部位價值', value: `$${fmt(Math.round(positionValue))}` },
-              { label: '佔比', value: `${allocation.toFixed(1)}%` },
-            ].map(r => (
-              <div key={r.label} className="text-center">
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{r.label}</div>
-                <div className="text-sm font-mono text-foreground/80 mt-0.5">{r.value}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
 
 // ─── 模擬交易主頁 ─────────────────────────────────────────────────────────
 
@@ -1409,26 +1255,6 @@ export default function BotDashboard() {
           ]}
         />
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <SignalInsightCard
-            title="執行清單"
-            value="Pending buys"
-            detail="Bot 只把 debate 後的 pending buys 當作可執行清單；daily recommendations 是候選池，不直接下單。"
-            tone="ok"
-          />
-          <SignalInsightCard
-            title="硬性防呆"
-            value="No emerging auto-trade"
-            detail="興櫃可以研究與模型校準，但不會進 morning setup / pending buys。"
-            tone="warn"
-          />
-          <SignalInsightCard
-            title="下單前檢查"
-            value="Quote sanity"
-            detail="盤中買入前必須重新確認即時價格、流動性、滑價與市場狀態。"
-            tone="info"
-          />
-        </div>
 
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <WorkstationCatCard
@@ -1490,14 +1316,12 @@ export default function BotDashboard() {
         </Dialog>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <TradeJournalAnalytics />
           <BotThemeFlowPanel />
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <BacktestCard />
           <AdaptiveParamsCard />
-          <PositionSizer />
         </div>
 
         <details className="group">

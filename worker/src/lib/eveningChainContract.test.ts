@@ -26,6 +26,10 @@ assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose e
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(updateOrchestrator.includes('indicator-queue'), 'indicator queue must have scheduler-visible run state')
+assert(
+  updateOrchestrator.includes('runQueueUpdate(env, runDate, force)'),
+  'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
+)
 assert(updateOrchestrator.includes('runMarketScreener'), 'evening chain must run screener after indicator readiness')
 assert(
   updateOrchestrator.indexOf('runMarketScreener') < updateOrchestrator.indexOf('runMLAndRiskV2'),

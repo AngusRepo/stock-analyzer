@@ -47,7 +47,6 @@ import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
-import { SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -347,7 +346,6 @@ function MarketPulsePanel() {
       )}
 
       <div className="flex flex-wrap gap-2 text-[11px]">
-        <a href="/research" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">研究題材</a>
         <a href="/obs" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">查 Observability</a>
         <a href="/bot" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">檢查模擬交易</a>
       </div>
@@ -435,7 +433,7 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
 
 function MorningBriefingCard() {
   const items = [
-    { label: '市場情緒', value: '先觀察主題與資金流', tone: 'text-[#9cc7ef]', href: '/research' },
+    { label: '市場情緒', value: '先觀察主題與資金流', tone: 'text-[#9cc7ef]', href: '/obs' },
     { label: '可觀測性', value: '確認 SLO / Trace / Freshness', tone: 'text-[#8fc8a9]', href: '/obs' },
     { label: '待處理事項', value: '查看模擬交易與提醒', tone: 'text-[#d4a44f]', href: '/bot' },
   ]
@@ -451,10 +449,10 @@ function MorningBriefingCard() {
           </p>
         </div>
         <a
-          href="/research"
+          href="/obs"
           className="inline-flex w-fit items-center gap-2 rounded-full border border-[#7aa2c7]/35 bg-[#7aa2c7]/10 px-3 py-2 text-xs font-medium text-[#9cc7ef] transition hover:bg-[#7aa2c7]/16"
         >
-          打開研究室
+          打開 OBS
           <ChevronRight className="h-3.5 w-3.5" />
         </a>
       </div>
@@ -524,34 +522,19 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
 
         {/* 大盤行情 */}
         <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
-          <div className="p-3">
+          <div className="space-y-3 p-3">
+            <MarketRiskPanel />
             <MarketPulsePanel />
+            <div className="grid gap-3 xl:grid-cols-2">
+              <ThemeFlowPanel />
+              <AttentionStocksCard />
+            </div>
           </div>
         </WorkstationPanel>
 
         {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <SignalInsightCard
-            title="Today Brief"
-            value="市場 + 推薦"
-            detail="晨間概覽只保留一般使用者看得懂的市場、推薦、風險與研究觀察，不混入維運細節。"
-            tone="info"
-          />
-          <SignalInsightCard
-            title="Tradable Picks"
-            value="上市上櫃"
-            detail="這一區才會進入 morning setup / debate / pending buys，避免興櫃擠掉交易候選。"
-            tone="ok"
-          />
-          <SignalInsightCard
-            title="Research Pool"
-            value="興櫃觀察"
-            detail="興櫃保留給人工研究與長期追蹤，不進自動交易。"
-            tone="warn"
-          />
-        </div>
 
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.82fr_1.18fr_0.9fr]">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.72fr_1.58fr]">
 
           {/* 左欄：自選股 + 大盤風險 + Bot */}
           <WorkstationPanel title="自選雷達" kicker="觀察清單與可交易狀態">
@@ -559,7 +542,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
             <WatchlistCards onSelect={onSelect} />
 
             <div className="space-y-3">
-              <MarketRiskPanel />
               {isAdmin && (
                 <a href="/bot" className="block rounded-xl border border-border bg-card hover:bg-white/[0.07] hover:border-teal-500/30 transition-all p-4">
                   <div className="flex items-center gap-3">
@@ -587,12 +569,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           </WorkstationPanel>
 
           {/* 中右欄：主題輪動 */}
-          <WorkstationPanel title="市場背景" kicker="題材流向與風險備註">
-          <div className="space-y-4 p-3">
-            <ThemeFlowPanel />
-            <AttentionStocksCard />
-          </div>
-          </WorkstationPanel>
 
 
         </div>

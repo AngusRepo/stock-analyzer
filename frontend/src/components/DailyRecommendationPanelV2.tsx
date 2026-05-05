@@ -50,8 +50,8 @@ export function DailyRecommendationPanelV2() {
       <RecommendationLaneExplainer />
 
       {isLoading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map((i) => (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {[1, 2, 3, 4].map((i) => (
             <div key={i} className="h-24 animate-pulse rounded-xl bg-muted/40" />
           ))}
         </div>
@@ -59,16 +59,16 @@ export function DailyRecommendationPanelV2() {
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
           <p className="text-sm">尚未產出今日推薦</p>
-                <p className="mt-1 text-xs">收盤後 pipeline 完成才會更新；若已完成仍為空，請看系統健康的根因紀錄。</p>
+          <p className="mt-1 text-xs">請確認 evening-chain / pipeline / recommendation 已完成，或查看 OBS 根因。</p>
         </div>
       ) : (
-        <div className="space-y-5">
+        <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
           <section className="space-y-3">
             <div className="flex items-center justify-between px-1">
               <div>
-                <p className="text-xs font-semibold text-emerald-300">上市上櫃 · 自動交易候選</p>
+                <p className="text-xs font-semibold text-emerald-300">上市上櫃交易流</p>
                 <p className="text-[11px] text-muted-foreground">
-                  會進 morning setup / debate / pending buys；興櫃不會擠掉交易池名額。
+                  會進入 morning setup / debate / pending buys，這一區才可能影響自動交易。
                 </p>
               </div>
               <Badge variant="outline" className="border-emerald-500/30 text-[10px] text-emerald-300">
@@ -81,29 +81,33 @@ export function DailyRecommendationPanelV2() {
               ))
             ) : (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-4 text-xs text-muted-foreground">
-                今日沒有上市上櫃交易候選。若下方有興櫃，它仍只留在研究池，不會進自動交易。
+                今天沒有上市櫃交易候選；興櫃不會回填到此區，避免研究股擠掉交易股。
               </div>
             )}
           </section>
 
-          {emerging.length > 0 && (
-            <section className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
-              <div className="flex items-center justify-between px-1">
-                <div>
-                  <p className="text-xs font-semibold text-amber-300">興櫃 · 研究觀察池</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    可做 ML / IC / calibration evidence，但硬 gate 不進 morning setup、不產生 pending buys。
-                  </p>
-                </div>
-                <Badge variant="outline" className="border-amber-500/30 text-[10px] text-amber-300">
-                  {emerging.length} 檔
-                </Badge>
+          <section className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <p className="text-xs font-semibold text-amber-300">興櫃觀察 · 研究流</p>
+                <p className="text-[11px] text-muted-foreground">
+                  可跑 ML / IC / calibration evidence，但硬 gate 不進 morning setup、不產生 pending buys。
+                </p>
               </div>
-              {emerging.slice(0, 24).map((rec: any, i: number) => (
+              <Badge variant="outline" className="border-amber-500/30 text-[10px] text-amber-300">
+                {emerging.length} 檔
+              </Badge>
+            </div>
+            {emerging.length > 0 ? (
+              emerging.slice(0, 24).map((rec: any, i: number) => (
                 <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
-              ))}
-            </section>
-          )}
+              ))
+            ) : (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4 text-xs text-muted-foreground">
+                今天沒有興櫃研究候選；此區只做研究觀察，不會擠掉上市櫃交易流。
+              </div>
+            )}
+          </section>
         </div>
       )}
     </div>

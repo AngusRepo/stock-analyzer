@@ -54,10 +54,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   }
 }
 
-export async function runQueueUpdate(env: Bindings, runDate?: string) {
+export async function runQueueUpdate(env: Bindings, runDate?: string, force = false) {
   const triggerTime = resolveUpdateDate(runDate)
   const lockKey = `cron:queue-update:${triggerTime}`
-  if (await env.KV.get(lockKey)) {
+  if (!force && await env.KV.get(lockKey)) {
     console.log('[Cron] Queue update already triggered today, skipping.')
     return
   }
@@ -80,7 +80,7 @@ export async function runQueueUpdate(env: Bindings, runDate?: string) {
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const bulkSummary = await runBulkFetch(env, force, runDate)
-  await runQueueUpdate(env, runDate)
+  await runQueueUpdate(env, runDate, force)
   return bulkSummary
 }
 

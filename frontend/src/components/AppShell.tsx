@@ -19,7 +19,6 @@ import {
   LogIn,
   LogOut,
   Menu,
-  Radar,
 } from 'lucide-react'
 import { WorkstationBackdrop } from '@/components/workstation/WorkstationChrome'
 import { prefetchWorkstationRoute } from '@/lib/queryPolicy'
@@ -29,7 +28,6 @@ const NAV_SECTIONS = [
     label: '每日',
     items: [
       { label: '晨間概覽', icon: LayoutDashboard, href: '/' },
-      { label: '研究室', icon: Radar, href: '/research' },
     ],
   },
   {
@@ -92,9 +90,7 @@ function MarketTicker() {
 }
 
 function FocusBar({ currentPath, unreadCount }: { currentPath: string; unreadCount: number }) {
-  const area = currentPath.startsWith('/research') || currentPath.startsWith('/demo/research-workbench')
-    ? '研究室'
-    : currentPath.startsWith('/bot')
+  const area = currentPath.startsWith('/bot')
       ? '模擬交易室'
       : currentPath.startsWith('/obs') || currentPath.startsWith('/pipeline') || currentPath.startsWith('/scheduler') || currentPath.startsWith('/data-quality')
         ? '可觀測性'

@@ -12,6 +12,7 @@ export type ObservabilityDomain =
   | 'deploy_gate'
   | 'model_pool'
   | 'validation'
+  | 'adaptive_meta'
   | 'owner_boundary'
 
 const OBSERVABILITY_SEVERITIES: ObservabilitySeverity[] = ['ok', 'info', 'warn', 'error']
@@ -21,6 +22,7 @@ const OBSERVABILITY_DOMAINS: ObservabilityDomain[] = [
   'deploy_gate',
   'model_pool',
   'validation',
+  'adaptive_meta',
   'owner_boundary',
 ]
 
@@ -125,6 +127,7 @@ const OWNER_BOUNDARIES: ObservabilityEventReport['owner_boundaries'] = [
   { owner: 'Cloud Run', responsibility: 'Pipeline and controller orchestration', source_of_truth: 'ml-controller graphs/services' },
   { owner: 'Modal', responsibility: 'Heavy ML runtime and model artifacts', source_of_truth: 'ml-service runtime + GCS metadata' },
   { owner: 'Worker', responsibility: 'Serving APIs, D1/KV state, UI contracts', source_of_truth: 'worker routes/lib contracts' },
+  { owner: 'Adaptive Meta Layer', responsibility: 'Regime-aware deltas, bandit protection, and meta optimizer boundaries', source_of_truth: 'ml:adaptive_params + ml:regime:meta' },
   { owner: 'Frontend', responsibility: 'Read-only decision cockpit', source_of_truth: 'typed API payloads, no business ownership' },
 ]
 
@@ -172,6 +175,15 @@ function validationSeverity(decision: unknown): ObservabilitySeverity {
   if (value === 'FAIL' || value === 'BLOCK') return 'error'
   if (value === 'WARN' || value === 'WARNING') return 'warn'
   if (!value || value === 'UNKNOWN' || value === 'MISSING') return 'warn'
+  return 'ok'
+}
+
+function adaptiveMetaSeverity(params?: Record<string, unknown>): ObservabilitySeverity {
+  if (!params) return 'warn'
+  const provenance = params.provenance as Record<string, unknown> | undefined
+  const metaLayer = params.meta_layer as Record<string, unknown> | undefined
+  if (!provenance || provenance.fallback === true) return 'warn'
+  if (!metaLayer || !Array.isArray(metaLayer.alpha_vote_models) || !Array.isArray(metaLayer.state_space_overlays)) return 'warn'
   return 'ok'
 }
 
@@ -488,6 +500,76 @@ export function buildEventsFromValidation(input: {
   })
 }
 
+export function buildEventsFromAdaptiveMeta(input: {
+  generatedAt: string
+  params?: Record<string, unknown>
+  sourceError?: string
+}): ObservabilityEvent[] {
+  if (input.sourceError) {
+    return [{
+      id: eventId('adaptive_meta', 'adaptive_params', 'unavailable'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'adaptive_meta',
+      source: 'adaptive_params',
+      status: 'unavailable',
+      title: 'Adaptive params unavailable',
+      summary: 'OBS could not read effective regime-aware adaptive params.',
+      owner: 'Adaptive Meta Layer',
+      impact: 'Screener, morning setup, and ML runtime may use fallback adaptive deltas.',
+      next_action: 'Check Worker KV ml:adaptive_params, ml:regime:meta, and risk-assess scheduler.',
+      runbook: 'P8 adaptive meta layer contract',
+      evidence: { error: input.sourceError },
+    }]
+  }
+
+  const params = input.params ?? {}
+  const provenance = params.provenance as Record<string, unknown> | undefined
+  const metaLayer = params.meta_layer as Record<string, unknown> | undefined
+  const severity = adaptiveMetaSeverity(params)
+  const source = String(provenance?.source ?? 'unknown')
+  const regime = String(provenance?.regime ?? 'unknown')
+  const fallback = provenance?.fallback === true
+  const alphaCount = Array.isArray(metaLayer?.alpha_vote_models) ? metaLayer.alpha_vote_models.length : 0
+  const overlays = Array.isArray(metaLayer?.state_space_overlays) ? metaLayer.state_space_overlays.map(String) : []
+  const optimizers = Array.isArray(metaLayer?.meta_optimizers) ? metaLayer.meta_optimizers.map(String) : []
+
+  return [{
+    id: eventId('adaptive_meta', 'adaptive_params', 'effective'),
+    ts: input.generatedAt,
+    severity,
+    domain: 'adaptive_meta',
+    source: 'adaptive_params',
+    status: severity === 'ok' ? 'ok' : fallback ? 'fallback' : 'incomplete',
+    title: 'Adaptive meta layer',
+    summary: fallback
+      ? `Adaptive params are fallback or legacy (source=${source}, regime=${regime}).`
+      : `Adaptive params resolved for regime=${regime}; alpha voters=${alphaCount}, overlays=${overlays.join(', ') || 'none'}.`,
+    owner: 'Adaptive Meta Layer',
+    impact: fallback
+      ? 'Regime-aware thresholds and LinUCB protection may not be active until risk-assess refreshes KV.'
+      : 'Screener, ML runtime, and morning setup share the same effective adaptive contract.',
+    next_action: fallback
+      ? 'Run adaptive update after verify or inspect /api/admin/adaptive-params for missing v2 provenance.'
+      : 'Keep risk-assess, regime push, and payload_builder contract tests green.',
+    runbook: 'P8 adaptive meta layer contract',
+    evidence: {
+      provenance,
+      confidence_delta: params.confidence_delta,
+      bandit_max_mult: params.bandit_max_mult,
+      screener: params.screener,
+      regime_overrides: params.regime_overrides,
+      meta_layer: {
+        alpha_vote_count: alphaCount,
+        state_space_overlays: overlays,
+        meta_optimizers: optimizers,
+        adaptive_components: metaLayer?.adaptive_components,
+        immutable_risk_boundaries: metaLayer?.immutable_risk_boundaries,
+      },
+    },
+  }]
+}
+
 export function buildObservabilityEventReport(input: {
   date: string
   generatedAt: string
@@ -499,6 +581,8 @@ export function buildObservabilityEventReport(input: {
   modelPoolError?: string
   validationPackets?: Array<Record<string, unknown>>
   validationError?: string
+  adaptiveParams?: Record<string, unknown>
+  adaptiveError?: string
 }): ObservabilityEventReport {
   const events = [
     ...buildEventsFromScheduler({ generatedAt: input.generatedAt, jobs: input.schedulerJobs }),
@@ -517,6 +601,11 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       validationPackets: input.validationPackets,
       sourceError: input.validationError,
+    }),
+    ...buildEventsFromAdaptiveMeta({
+      generatedAt: input.generatedAt,
+      params: input.adaptiveParams,
+      sourceError: input.adaptiveError,
     }),
   ]
 
@@ -573,7 +662,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -597,6 +686,10 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
       .then((payload) => ({ payload }))
       .catch((error: unknown) => ({ error: String(error) })),
     readLatestValidationPackets(env),
+    import('./adaptiveConfig')
+      .then(({ getAdaptiveParamsForRegime }) => getAdaptiveParamsForRegime(env.KV))
+      .then((params) => ({ params: params as unknown as Record<string, unknown> }))
+      .catch((error: unknown) => ({ error: String(error) })),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -613,6 +706,8 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     modelPoolError,
     validationPackets: validationResult.packets,
     validationError: validationResult.error,
+    adaptiveParams: 'params' in adaptiveResult ? adaptiveResult.params : undefined,
+    adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
   })
 }
 

@@ -15,7 +15,7 @@ import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpser
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
-import { getAdaptiveParams } from './adaptiveConfig'
+import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
-  const adaptiveParams = await getAdaptiveParams(env.KV)
+  const adaptiveParams = await getAdaptiveParamsForRegime(env.KV)
   const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const endDate = resolveScreenerRunDate(runDate)
   const runId = `screener-${endDate}-${Date.now()}`

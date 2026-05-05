@@ -85,7 +85,7 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
   const { getAdaptiveParams, setAdaptiveParams } = await import('../lib/adaptiveConfig')
   const current = await getAdaptiveParams(c.env.KV)
   const merged = { ...current, ...body, version: (current.version ?? 0) + 1 }
-  await setAdaptiveParams(c.env.KV, merged)
+  await setAdaptiveParams(c.env.KV, merged, { source: 'manual', fallback: false })
   return c.json({ success: true, params: merged })
 })
 

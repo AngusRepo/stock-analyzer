@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 from services import d1_client, kv_client
+from services.adaptive import resolve_adaptive_params_for_regime
 from services.market_segment_policy import policy_for_segment
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,21 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
 # ─────────────────────────────────────────────────────────────────────────────
 # Data shapes (match worker payload schema 1:1)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _load_current_regime_label() -> str | None:
+    meta = kv_client.get_json("ml:regime:meta", default={}) or {}
+    if isinstance(meta, dict) and meta.get("label"):
+        return str(meta["label"])
+    raw = kv_client.get("ml:regime")
+    return str(raw) if raw else None
+
+
+def load_effective_adaptive_params() -> dict:
+    """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
+    raw = kv_client.get_json("ml:adaptive_params", default={}) or {}
+    regime = _load_current_regime_label()
+    return resolve_adaptive_params_for_regime(raw, regime)
+
 
 @dataclass
 class MarketEnv:
@@ -368,7 +384,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
     # ── 6. Adaptive params from KV ──────────────────────────────────────────
-    adaptive_params = kv_client.get_json("ml:adaptive_params", default={}) or {}
+    adaptive_params = load_effective_adaptive_params()
 
     # ── 7. Trading config → barrier_params ──────────────────────────────────
     trading_cfg = kv_client.get_json("trading:config", default={}) or {}

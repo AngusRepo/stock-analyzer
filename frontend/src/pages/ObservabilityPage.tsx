@@ -80,6 +80,7 @@ function eventIcon(event: Pick<ObservabilityEvent, 'domain' | 'severity'>) {
   if (event.severity === 'ok') return CheckCircle2
   if (event.domain === 'data_quality') return Database
   if (event.domain === 'model_pool') return GitBranch
+  if (event.domain === 'adaptive_meta') return Network
   if (event.domain === 'scheduler') return AlertTriangle
   if (event.domain === 'validation') return ShieldCheck
   return ShieldCheck

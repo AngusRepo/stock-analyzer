@@ -91,7 +91,7 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv): Promise<string>
   }
 
   const summary = data.summary ?? 'Controller OK'
-  await setAdaptiveParams(env.KV, params)
+  await setAdaptiveParams(env.KV, params, { source: 'ml-controller', fallback: false })
   console.log(`[AdaptiveEngine] Controller: ${summary}`)
   return summary
 }

@@ -1,4 +1,5 @@
 import {
+  buildEventsFromAdaptiveMeta,
   buildEventsFromDataQuality,
   buildEventsFromScheduler,
   buildEventsFromValidation,
@@ -12,6 +13,45 @@ function assert(condition: unknown, message: string): void {
 }
 
 const generatedAt = '2026-04-30T01:00:00.000Z'
+
+{
+  const events = buildEventsFromAdaptiveMeta({
+    generatedAt,
+    params: {
+      confidence_delta: 0.07,
+      bandit_max_mult: 1.5,
+      provenance: {
+        source: 'risk-assess',
+        fallback: false,
+        regime: 'volatile',
+      },
+      meta_layer: {
+        alpha_vote_models: ['XGBoost', 'CatBoost', 'ExtraTrees', 'LightGBM', 'FT-Transformer', 'Chronos', 'DLinear', 'PatchTST'],
+        state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
+        meta_optimizers: ['GAOptimizer'],
+      },
+    },
+  })
+
+  assert(events.length === 1, 'adaptive meta should emit one contract event')
+  assert(events[0].severity === 'ok', 'v2 adaptive meta payload should be ok')
+  assert(events[0].domain === 'adaptive_meta', 'adaptive meta should have a dedicated OBS domain')
+  assert(events[0].summary.includes('regime=volatile'), 'adaptive meta event should expose effective regime')
+  assert((events[0].evidence.meta_layer as any).alpha_vote_count === 8, 'adaptive meta evidence should expose 8 alpha voters')
+}
+
+{
+  const events = buildEventsFromAdaptiveMeta({
+    generatedAt,
+    params: {
+      confidence_delta: 0.01,
+      provenance: { source: 'unknown', fallback: true },
+    },
+  })
+
+  assert(events[0].severity === 'warn', 'legacy/fallback adaptive params should be visible as warning')
+  assert(events[0].status === 'fallback', 'fallback adaptive params should not look healthy')
+}
 
 {
   const events = buildEventsFromScheduler({

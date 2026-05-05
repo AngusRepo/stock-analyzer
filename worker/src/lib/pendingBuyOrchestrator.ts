@@ -488,8 +488,8 @@ export async function checkCircuitBreakers(
 
   if (kv) {
     try {
-      const { getAdaptiveParams } = await import('./adaptiveConfig')
-      const adaptive = await getAdaptiveParams(kv)
+      const { getAdaptiveParamsForRegime } = await import('./adaptiveConfig')
+      const adaptive = await getAdaptiveParamsForRegime(kv)
       if (adaptive?.confidence_delta != null) {
         confidenceDelta = adaptive.confidence_delta
       } else if (adaptive?.confidence_threshold != null) {

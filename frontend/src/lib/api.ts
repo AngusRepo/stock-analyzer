@@ -245,7 +245,7 @@ export const deployGateApi = {
 }
 
 export type ObservabilitySeverity = 'ok' | 'info' | 'warn' | 'error'
-export type ObservabilityDomain = 'scheduler' | 'data_quality' | 'deploy_gate' | 'model_pool' | 'validation' | 'owner_boundary'
+export type ObservabilityDomain = 'scheduler' | 'data_quality' | 'deploy_gate' | 'model_pool' | 'validation' | 'adaptive_meta' | 'owner_boundary'
 
 export type ObservabilityEvent = {
   id: string

@@ -24,6 +24,7 @@ from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
+from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -1337,7 +1338,11 @@ async def status():
         blob = bucket.blob("universal/model_pool.json")
         if not blob.exists():
             return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
-        return _json.loads(blob.download_as_text())
+        pool = _json.loads(blob.download_as_text())
+        pool.setdefault("research_benchmarks", build_research_benchmark_manifest(
+            datetime.now(timezone.utc).date().isoformat(),
+        ))
+        return pool
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
 
@@ -1449,25 +1454,18 @@ async def lineage():
             "models": out,
             "state_overlays": pool.get("state_overlays") or {},
             "meta_optimizers": pool.get("meta_optimizers") or {},
+            "research_benchmarks": pool.get("research_benchmarks") or build_research_benchmark_manifest(
+                datetime.now(timezone.utc).date().isoformat(),
+            ),
             "events": (pool.get("lifecycle_events") or [])[-100:],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS lineage read failed: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Stage 1 bootstrap endpoints (versioning + state machine init)
-# ---------------------------------------------------------------------------
-
-
-class MigrateLegacyRequest(BaseModel):
-    dry_run: bool = True
-    confirm: bool = False  # required when dry_run=False
-
-
 @router.post("/migrate_legacy")
-async def migrate_legacy(req: MigrateLegacyRequest):
-    """Deprecated bootstrap endpoint.
+async def migrate_legacy():
+    """Fail-closed guard for the removed flat-file migration path.
 
     Production artifacts are now model_pool/versioned-only. Keeping a live
     copy-from-flat-file path would reintroduce split-brain model ownership.
@@ -1475,14 +1473,6 @@ async def migrate_legacy(req: MigrateLegacyRequest):
     raise HTTPException(
         status_code=410,
         detail="legacy model artifact migration is disabled; model_pool.json is the canonical owner",
-    )
-
-
-def _inline_migrate_via_gcs(dry_run: bool) -> dict:
-    """Disabled with /migrate_legacy; kept only to avoid import-time breakage."""
-    raise HTTPException(
-        status_code=410,
-        detail="legacy model artifact migration is disabled",
     )
 
 
@@ -1495,8 +1485,8 @@ class InitPoolRequest(BaseModel):
 async def init_pool(req: InitPoolRequest):
     """Initialize model_pool.json with all managed models as 'active' v1.
 
-    Idempotent unless overwrite=true. Should run AFTER /migrate_legacy so
-    versioned paths exist for the entries this writes.
+    Idempotent unless overwrite=true. This writes only the canonical
+    model_pool.json owner path; it does not copy legacy flat-file artifacts.
     """
     if not req.confirm:
         raise HTTPException(
@@ -1595,6 +1585,7 @@ async def init_pool(req: InitPoolRequest):
             "note": "Optimizer layer only; learns policy/search state directly and never votes as a predictor.",
         }
     }
+    research_benchmarks = build_research_benchmark_manifest(today)
     pool = {
         "schema_version": "1.0",
         "last_updated": iso_now,
@@ -1602,6 +1593,7 @@ async def init_pool(req: InitPoolRequest):
         "shadow_models": shadow_models,
         "state_overlays": overlays,
         "meta_optimizers": meta_optimizers,
+        "research_benchmarks": research_benchmarks,
     }
     pool_blob.upload_from_string(
         _json.dumps(pool, indent=2, ensure_ascii=False),
@@ -1613,6 +1605,7 @@ async def init_pool(req: InitPoolRequest):
         "shadow_model_count": len(shadow_models),
         "state_overlay_count": len(overlays),
         "meta_optimizer_count": len(meta_optimizers),
+        "research_benchmark_count": len(research_benchmarks),
         "last_updated": iso_now,
     }
 

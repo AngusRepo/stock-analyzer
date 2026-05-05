@@ -6,9 +6,9 @@ import {
   deployGateApi,
   modelPoolApi,
   observabilityApi,
+  opsApi,
   schedulerApi,
   systemApi,
-  type DataQualityStatus,
   type ObservabilityEvent,
   type SchedulerJob,
 } from '@/lib/api'
@@ -39,33 +39,10 @@ import {
 
 function statusTone(status?: string): WorkstationTone {
   const s = String(status ?? '').toLowerCase()
-  if (['ok', 'pass', 'success', 'active'].includes(s)) return 'ok'
-  if (['warn', 'warning', 'running', 'skip', 'skipped'].includes(s)) return 'warn'
+  if (['ok', 'pass', 'success', 'active', 'online'].includes(s)) return 'ok'
+  if (['warn', 'warning', 'running', 'skip', 'skipped', 'manual_required'].includes(s)) return 'warn'
   if (['fail', 'failed', 'block', 'blocked', 'error'].includes(s)) return 'error'
   return 'neutral'
-}
-
-function formatStatus(status?: string) {
-  return status ? String(status).toUpperCase() : 'UNKNOWN'
-}
-
-function hasPayload<T>(value: T | null | undefined): value is T {
-  return value != null
-}
-
-function payloadState(isLoading: boolean, error: unknown) {
-  if (isLoading) return '資料讀取中'
-  if (error) return 'API 暫時讀不到資料，先視為需追查'
-  return '目前沒有回傳資料'
-}
-
-function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>) {
-  return (
-    name === 'KalmanFilter' ||
-    name === 'MarkovSwitching' ||
-    model.model_type === 'state_space_overlay' ||
-    model.balance_family === 'state_space'
-  )
 }
 
 function severityTone(severity?: string): WorkstationTone {
@@ -76,6 +53,10 @@ function severityTone(severity?: string): WorkstationTone {
   return 'neutral'
 }
 
+function formatStatus(status?: string) {
+  return status ? String(status).toUpperCase() : 'UNKNOWN'
+}
+
 function eventIcon(event: Pick<ObservabilityEvent, 'domain' | 'severity'>) {
   if (event.severity === 'ok') return CheckCircle2
   if (event.domain === 'data_quality') return Database
@@ -84,6 +65,15 @@ function eventIcon(event: Pick<ObservabilityEvent, 'domain' | 'severity'>) {
   if (event.domain === 'scheduler') return AlertTriangle
   if (event.domain === 'validation') return ShieldCheck
   return ShieldCheck
+}
+
+function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>) {
+  return (
+    name === 'KalmanFilter' ||
+    name === 'MarkovSwitching' ||
+    model.model_type === 'state_space_overlay' ||
+    model.balance_family === 'state_space'
+  )
 }
 
 function MetricCell({
@@ -116,32 +106,9 @@ function JobRow({ job }: { job: SchedulerJob }) {
         <p className="truncate text-slate-100">{job.name}</p>
         <p className="truncate text-[#70809b]">{job.summary || job.schedule}</p>
       </div>
-      <WorkstationPill tone={tone}>{job.lastStatus}</WorkstationPill>
+      <WorkstationPill tone={tone}>{job.lastStatus || 'unknown'}</WorkstationPill>
       <span className="text-[#8a92a6]">{job.lastDuration || '-'}</span>
       <span className="truncate text-right text-[#70809b]">{job.group}</span>
-    </div>
-  )
-}
-
-function RootCauseItem({
-  title,
-  body,
-  tone,
-  icon: Icon,
-}: {
-  title: string
-  body: string
-  tone: WorkstationTone
-  icon: typeof AlertTriangle
-}) {
-  return (
-    <div className="grid grid-cols-[28px_1fr_auto] gap-3 border-b border-[#263247] p-3 last:border-b-0">
-      <Icon className={`mt-0.5 h-4 w-4 ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-sky-300'}`} />
-      <div>
-        <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{title}</p>
-        <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{body}</p>
-      </div>
-      <WorkstationPill tone={tone}>{tone}</WorkstationPill>
     </div>
   )
 }
@@ -202,6 +169,18 @@ export default function ObservabilityPage() {
     refetchInterval: 60_000,
     staleTime: 30_000,
   })
+  const drilldown = useQuery({
+    queryKey: ['obs', 'drilldown'],
+    queryFn: () => observabilityApi.drilldown(),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+  const resourceAudit = useQuery({
+    queryKey: ['obs', 'resource-audit'],
+    queryFn: opsApi.resourceAudit,
+    refetchInterval: 300_000,
+    staleTime: 120_000,
+  })
 
   const failedJobs = useMemo(() => {
     return (scheduler.data?.jobs ?? []).filter(job => ['failed', 'running'].includes(job.lastStatus)).slice(0, 8)
@@ -224,53 +203,12 @@ export default function ObservabilityPage() {
     return { total: models.length, active, challenger, weakIc, missingMeta }
   }, [modelPool.data])
 
-  const schedulerUnavailable = scheduler.isLoading || scheduler.isError || !hasPayload(scheduler.data)
-  const dataQualityUnavailable = dataQuality.isLoading || dataQuality.isError || !hasPayload(dataQuality.data)
-  const deployGateUnavailable = deployGate.isLoading || deployGate.isError || !hasPayload(deployGate.data)
-  const modelPoolUnavailable = modelPool.isLoading || modelPool.isError || !hasPayload(modelPool.data)
-  const observabilityUnavailable = observability.isLoading || observability.isError || !hasPayload(observability.data)
   const contractEvents = observability.data?.events ?? []
-  const rootCauseEvents = contractEvents.filter((event) => event.severity !== 'ok')
-  const visibleEvents = (rootCauseEvents.length ? rootCauseEvents : contractEvents).slice(0, 8)
+  const visibleEvents = (contractEvents.filter(event => event.severity !== 'ok').length
+    ? contractEvents.filter(event => event.severity !== 'ok')
+    : contractEvents).slice(0, 8)
   const auditEvents = observability.data?.audit?.recent ?? []
-
-  const fallbackRootCause: Array<{
-    title: string
-    body: string
-    tone: WorkstationTone
-    icon: typeof AlertTriangle
-  }> = [
-    {
-      title: 'Scheduler',
-      body: schedulerUnavailable
-        ? `Scheduler 狀態讀不到：${payloadState(scheduler.isLoading, scheduler.error)}`
-        : failedJobs.length
-          ? `${failedJobs.length} 個排程需要注意；優先看 ${failedJobs[0]?.name}`
-          : '目前沒有失敗或卡住的排程。',
-      tone: schedulerUnavailable ? 'warn' : failedJobs.length ? 'warn' : 'ok',
-      icon: schedulerUnavailable || failedJobs.length ? AlertTriangle : CheckCircle2,
-    },
-    {
-      title: 'Data Quality',
-      body: dataQualityUnavailable
-        ? `Data Quality 狀態讀不到：${payloadState(dataQuality.isLoading, dataQuality.error)}`
-        : staleQuality.length
-          ? `${staleQuality.length} 個資料品質檢查未通過；優先看 ${staleQuality[0]?.label}`
-          : '目前 freshness 與 schema gate 都正常。',
-      tone: dataQualityUnavailable ? 'warn' : staleQuality.length ? statusTone(staleQuality[0]?.status) : 'ok',
-      icon: dataQualityUnavailable || staleQuality.length ? Database : CheckCircle2,
-    },
-    {
-      title: 'Model Pool',
-      body: modelPoolUnavailable
-        ? `Model Pool 狀態讀不到：${payloadState(modelPool.isLoading, modelPool.error)}`
-        : modelStats.weakIc || modelStats.missingMeta
-          ? `${modelStats.weakIc} 組模型 IC 訊號偏弱或缺失；${modelStats.missingMeta} 組缺 metadata。`
-          : '目前模型 metadata 與 IC lineage 看起來都有資料。',
-      tone: modelPoolUnavailable ? 'warn' : modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok',
-      icon: modelPoolUnavailable || modelStats.weakIc || modelStats.missingMeta ? GitBranch : ShieldCheck,
-    },
-  ]
+  const resourceItems = resourceAudit.data?.items ?? []
 
   return (
     <AppShell>
@@ -278,12 +216,12 @@ export default function ObservabilityPage() {
         <WorkstationPageTitle
           kicker="OBS command center"
           title="Reliability Mission Control"
-          description="統一觀察 Scheduler、Data Quality、Deploy Gate、Model Pool 與 System Health。這頁只讀既有 API，不改 backend。"
+          description="把 Scheduler、Data Quality、Deploy Gate、Model Pool、Resource Audit 收到同一個可觀測性入口：先看影響面，再 drill down 到原始頁面。"
           action={
             <div className="flex flex-wrap gap-2">
-              <WorkstationPill tone={dataQualityUnavailable ? 'warn' : statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
-              <WorkstationPill tone={deployGateUnavailable ? 'warn' : statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
-              <WorkstationPill tone={observabilityUnavailable ? 'warn' : severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
+              <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
+              <WorkstationPill tone={statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
+              <WorkstationPill tone={severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
               <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
             </div>
           }
@@ -295,24 +233,24 @@ export default function ObservabilityPage() {
           title="Reliability Decision Trace"
           compact
           steps={[
-            { label: 'Symptom', detail: '先看使用者會感受到的症狀：空清單、髒價格、IC=0、scheduler fail。', tone: 'warn' },
-            { label: 'Impact', detail: '標示影響範圍：Dashboard、Bot、ML、Data Quality 或 execution。', tone: 'info' },
-            { label: 'Root Cause', detail: '把原因導向資料、排程、模型、owner boundary 或 deploy drift。', tone: 'error' },
-            { label: 'Drilldown', detail: 'OBS 只給結論；細節連到 Scheduler / DataQuality / ModelPool。', tone: 'ok' },
+            { label: 'Symptom', detail: '先看空畫面、失敗排程、IC=0、資料過期、callback 異常。', tone: 'warn' },
+            { label: 'Impact', detail: '確認影響 Dashboard、Bot、ML、Data Quality 或 execution 哪一層。', tone: 'info' },
+            { label: 'Root Cause', detail: '用 run_id、owner、source_of_truth 找到責任邊界，避免 split-brain。', tone: 'error' },
+            { label: 'Action', detail: '只給 read-only 診斷與下一步，破壞性清理仍需人工核准。', tone: 'ok' },
           ]}
         />
 
         <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <WorkstationCatCard
             src="/stockvision-cats/05_stockvision_alert_first_seen.png"
-            title="第一眼先抓鬼"
-            caption="OBS 的任務不是報喜，是第一時間指出 scheduler、資料品質或模型治理哪裡斷線。"
+            title="先抓兇手"
+            caption="OBS 不只顯示紅燈，還要講清楚 root cause、影響股票、run_id 與下一步。"
             tone="warn"
           />
           <WorkstationCatCard
             src="/stockvision-cats/06_stockvision_monitoring_normal.png"
-            title="正常也要監控"
-            caption="綠燈不是放空，還要持續看 freshness、IC、callback contract 與 owner boundary。"
+            title="穩定巡邏"
+            caption="正常時也要留下 freshness、IC、callback contract、owner boundary 的健康證據。"
             tone="ok"
           />
         </section>
@@ -321,25 +259,25 @@ export default function ObservabilityPage() {
           <MetricCell
             label="Scheduler Success"
             value={`${scheduler.data?.stats?.successRate7d ?? 0}%`}
-            tone={schedulerUnavailable ? 'warn' : (scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
+            tone={(scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
             detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`}
           />
           <MetricCell
             label="Data Quality"
             value={formatStatus(dataQuality.data?.overall)}
-            tone={dataQualityUnavailable ? 'warn' : statusTone(dataQuality.data?.overall)}
+            tone={statusTone(dataQuality.data?.overall)}
             detail={dataQuality.data?.date ?? '-'}
           />
           <MetricCell
             label="Deploy Gate"
             value={formatStatus(deployGate.data?.decision)}
-            tone={deployGateUnavailable ? 'warn' : statusTone(deployGate.data?.decision)}
+            tone={statusTone(deployGate.data?.decision)}
             detail={deployGate.data?.generated_at ?? '-'}
           />
           <MetricCell
             label="Model Pool"
             value={`${modelStats.active}/${modelStats.total}`}
-            tone={modelPoolUnavailable || modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
+            tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
             detail={`${modelStats.challenger} challenger`}
           />
         </section>
@@ -347,56 +285,108 @@ export default function ObservabilityPage() {
         <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <WorkstationPanel title="Root Cause Cockpit" kicker="answer first, logs second">
             <div>
-              {observabilityUnavailable
-                ? fallbackRootCause.map(item => (
-                  <RootCauseItem key={item.title} {...item} />
-                ))
-                : visibleEvents.slice(0, 4).map((event) => (
-                  <RootCauseItem
-                    key={event.id}
-                    title={event.title}
-                    body={`${event.summary} Next: ${event.next_action}`}
-                    tone={severityTone(event.severity)}
-                    icon={eventIcon(event)}
-                  />
-                ))}
+              {visibleEvents.length ? visibleEvents.slice(0, 4).map((event) => {
+                const Icon = eventIcon(event)
+                return (
+                  <div key={event.id} className="grid grid-cols-[28px_1fr_auto] gap-3 border-b border-[#263247] p-3 last:border-b-0">
+                    <Icon className={`mt-0.5 h-4 w-4 ${event.severity === 'ok' ? 'text-emerald-300' : event.severity === 'warn' ? 'text-amber-300' : event.severity === 'error' ? 'text-rose-300' : 'text-sky-300'}`} />
+                    <div>
+                      <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{event.title}</p>
+                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{event.summary}</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">Next: {event.next_action}</p>
+                    </div>
+                    <WorkstationPill tone={severityTone(event.severity)}>{event.severity}</WorkstationPill>
+                  </div>
+                )
+              }) : (
+                <div className="p-4 text-sm text-slate-500">目前沒有 OBS event payload；請部署後用 live smoke 驗證事件來源。</div>
+              )}
             </div>
           </WorkstationPanel>
 
           <WorkstationPanel title="Owner Boundary" kicker="single owner, no split-brain">
             <div className="grid grid-cols-1 gap-px bg-[#263247] font-mono text-[11px] sm:grid-cols-2">
-              {[
-                ...(observability.data?.owner_boundaries?.map((row) => [
-                  row.owner,
-                  `${row.responsibility} · ${row.source_of_truth}`,
-                  observability.data?.domains?.find((domain) => domain.owner === row.owner)?.severity ?? 'ok',
-                ]) ?? [
-                  ['GCP Scheduler', 'triggers canonical jobs', schedulerUnavailable ? 'warn' : 'ok'],
-                  ['Worker API', 'serves UI + state', system.error ? 'warn' : 'ok'],
-                  ['Cloud Run', 'pipeline orchestration', schedulerUnavailable || failedJobs.length ? 'warn' : 'ok'],
-                  ['Modal', 'heavy ML runtime', modelPoolUnavailable || modelStats.missingMeta ? 'warn' : 'ok'],
-                  ['D1 / KV', 'serving state + run logs', dataQualityUnavailable ? 'warn' : 'ok'],
-                  ['Frontend', 'read-only cockpit', 'ok'],
-                ]),
-              ].map(([owner, role, tone]) => (
-                <div key={owner} className="bg-[#070a10] p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-slate-100">{owner}</p>
-                    <WorkstationPill tone={tone as WorkstationTone}>{tone}</WorkstationPill>
+              {(observability.data?.owner_boundaries ?? [
+                { owner: 'GCP Scheduler', responsibility: 'canonical job trigger', source_of_truth: 'scheduler registry' },
+                { owner: 'Worker API', responsibility: 'read APIs and callback state', source_of_truth: 'D1/KV' },
+                { owner: 'Cloud Run', responsibility: 'pipeline orchestration', source_of_truth: 'job run_id' },
+                { owner: 'Modal', responsibility: 'heavy ML runtime', source_of_truth: 'artifact manifest' },
+                { owner: 'D1 / KV', responsibility: 'serving state and logs', source_of_truth: 'versioned records' },
+                { owner: 'Frontend', responsibility: 'read-only cockpit', source_of_truth: 'admin APIs' },
+              ]).map((row) => {
+                const domain = observability.data?.domains?.find(item => item.owner === row.owner)
+                return (
+                  <div key={row.owner} className="bg-[#070a10] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-slate-100">{row.owner}</p>
+                      <WorkstationPill tone={severityTone(domain?.severity ?? 'ok')}>{domain?.severity ?? 'ok'}</WorkstationPill>
+                    </div>
+                    <p className="mt-2 text-[#70809b]">{row.responsibility} / {row.source_of_truth}</p>
                   </div>
-                  <p className="mt-2 text-[#70809b]">{role}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </WorkstationPanel>
         </section>
 
+        <WorkstationPanel title="Incident Drilldown" kicker="where, why, affected run, next action">
+          <div>
+            {(drilldown.data?.incidents ?? []).slice(0, 6).map((incident) => (
+              <div key={incident.id} className="grid gap-3 border-b border-[#263247] p-3 last:border-b-0 lg:grid-cols-[1fr_1.2fr_0.9fr_auto]">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{incident.domain}</p>
+                  <p className="mt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{incident.title}</p>
+                  <p className="mt-1 text-xs text-[#8a92a6]">{incident.owner}</p>
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root cause</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{incident.root_cause}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">{incident.impact}</p>
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Affected</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">run: {incident.run_ids.join(', ') || '-'}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">symbols: {incident.affected_symbols.slice(0, 8).join(', ') || '-'}</p>
+                </div>
+                <div className="flex flex-col items-start gap-2 lg:items-end">
+                  <WorkstationPill tone={severityTone(incident.severity)}>{incident.status}</WorkstationPill>
+                  <p className="max-w-[220px] text-xs leading-5 text-[#8a92a6] lg:text-right">{incident.next_action}</p>
+                </div>
+              </div>
+            ))}
+            {!drilldown.data?.incidents?.length && (
+              <div className="p-4 text-sm text-slate-500">尚未取得 drilldown incident；部署後請用 live smoke 打 OBS drilldown API。</div>
+            )}
+          </div>
+        </WorkstationPanel>
+
+        <WorkstationPanel title="Resource Audit" kicker="read-only cleanup intelligence">
+          <div className="grid gap-px bg-[#263247] md:grid-cols-2">
+            {resourceItems.map((item) => (
+              <div key={item.id} className="bg-[#070a10] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{item.owner}</p>
+                    <p className="mt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{item.id}</p>
+                  </div>
+                  <WorkstationPill tone={statusTone(item.status)}>{item.status}</WorkstationPill>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-[#8a92a6]">{item.summary}</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">{item.next_action}</p>
+              </div>
+            ))}
+            {!resourceItems.length && (
+              <div className="bg-[#070a10] p-4 text-sm text-slate-500 md:col-span-2">尚未取得 resource audit；這個區塊只讀取 D1/KV 指標，不會做任何清理或刪除。</div>
+            )}
+          </div>
+        </WorkstationPanel>
+
         <WorkstationPanel title="Unified Event Contract" kicker="one schema for scheduler, data, deploy, lifecycle">
           <div>
-            {observabilityUnavailable ? (
-              <div className="p-4 text-sm text-slate-500">目前讀不到 OBS event payload；頁面先 fail-closed，不把未知狀態當健康。</div>
-            ) : (
+            {visibleEvents.length ? (
               visibleEvents.map((event) => <ObservabilityEventRow key={event.id} event={event} />)
+            ) : (
+              <div className="p-4 text-sm text-slate-500">OBS event payload unavailable；請確認 Worker route 與 D1 audit snapshot writer。</div>
             )}
           </div>
         </WorkstationPanel>
@@ -411,7 +401,7 @@ export default function ObservabilityPage() {
               }} />
             )) : (
               <div className="p-4 text-sm text-slate-500">
-                目前還沒有持久化的 OBS audit snapshot；部署後需由 smoke test 或 scheduler 觸發 snapshot writer，才會在 D1 留下稽核證據。
+                尚未看到 OBS audit snapshot。部署後 smoke test 要確認 snapshot writer 有把事件寫入 D1。
               </div>
             )}
           </div>
@@ -424,7 +414,7 @@ export default function ObservabilityPage() {
                 <JobRow key={job.id} job={job} />
               ))}
               {!scheduler.data?.jobs?.length && (
-                <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload；請先看 API 權限、callback contract 或 GCP Scheduler 同步狀態。</div>
+                <div className="p-4 text-sm text-slate-500">尚未取得 scheduler payload；請檢查 API、callback contract 與 GCP Scheduler 狀態。</div>
               )}
             </div>
           </WorkstationPanel>
@@ -437,30 +427,29 @@ export default function ObservabilityPage() {
                     <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{check.label}</p>
                     <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{check.summary}</p>
                   </div>
-                  <WorkstationPill tone={statusTone(check.status as DataQualityStatus)}>{check.status}</WorkstationPill>
+                  <WorkstationPill tone={statusTone(check.status)}>{check.status}</WorkstationPill>
                 </div>
               ))}
               {!dataQuality.data?.checks?.length && (
-                <div className="p-4 text-sm text-slate-500">目前沒有 data quality payload；請先看 P6/P9 gate 是否有產出 freshness/schema/parity 檢查。</div>
+                <div className="p-4 text-sm text-slate-500">尚未取得 data quality payload；請確認 P6/P9 gate 是否有寫入 freshness/schema/parity 結果。</div>
               )}
             </div>
           </WorkstationPanel>
         </section>
 
-        <WorkstationPanel title="名詞速查" kicker="same words, same meaning">
+        <WorkstationPanel title="名詞解釋" kicker="same words, same meaning">
           <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
             {[
               ['DQ', 'Data Quality，檢查價格、籌碼、feature schema、train/serve parity 是否可信。'],
-              ['IC', 'Information Coefficient，模型預測排序與實際結果的相關性，用來判斷模型最近有沒有失準。'],
-              ['POC', '近期成交量最集中的價格區，應只用新鮮且可追溯的量價資料。'],
-              ['Fair value', '系統估算的合理價格帶，不是保證目標價；偏離過大時應先查資料新鮮度。'],
-              ['Alpha bucket', '目前這檔股票比較像哪種交易 edge，例如趨勢、突破、均值回歸或防守累積。'],
-              ['Market structure', '市場結構脈絡，包含 POC、合理價格帶、流動性與價格位置。'],
-              ['partially_filled', '部分成交；剩餘股數需繼續追蹤、取消或到期，不可直接當作完整成交。'],
-              ['quote_unavailable', '報價缺失；缺 bid/ask 或五檔快照時 fail-closed，不用昨日收盤價假裝成交。'],
-              ['stale_quote', '報價過期；盤中快照太舊時不進場，避免 time-travel fill。'],
-              ['Owner boundary', '每段流程只能有一個主責 owner，避免新舊 pipeline 並行互相覆蓋。'],
-              ['Snapshot', '把當下 OBS 判斷寫入 D1，讓事後追 root cause 有證據，而不是只看當下畫面。'],
+              ['IC', 'Information Coefficient，衡量模型預測排序和後續報酬排序的相關性。'],
+              ['POC', '近期成交量最集中的價格，用來理解市場接受的主要成本區。'],
+              ['Fair value', '系統估計的合理價格帶，不是保證目標價，要搭配風險與流動性看。'],
+              ['Alpha bucket', '股票目前更接近哪種 edge：趨勢、均值回歸、突破、或防守累積。'],
+              ['Market structure', '價格、量、POC、fair value、波動與流動性的市場結構摘要。'],
+              ['partially_filled', '部分成交，代表只有一部分股數成交，剩餘股數要進入重掛、取消或等待策略。'],
+              ['stale_quote', '報價過期，系統不能用舊 bid/ask 或昨日收盤價幻想成交。'],
+              ['quote_unavailable', '缺少即時 bid/ask 報價時 fail-closed，不用假價格進場。'],
+              ['Owner boundary', '每個決策只允許一個 owner 與 source of truth，避免新舊流程並行。'],
             ].map(([term, description]) => (
               <div key={term} className="bg-[#070a10] p-3">
                 <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-amber-200">{term}</p>
@@ -474,20 +463,20 @@ export default function ObservabilityPage() {
           <SignalInsightCard
             title="Model Health"
             value={`${modelStats.active}/${modelStats.total}`}
-            detail={`OBS 只顯示模型健康摘要；完整 IC、metadata、challenger lineage 請進 Model Pool。weak IC ${modelStats.weakIc}，metadata gaps ${modelStats.missingMeta}。`}
-            tone={modelPoolUnavailable || modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
+            detail={`weak IC ${modelStats.weakIc}；metadata gaps ${modelStats.missingMeta}。OBS 只做摘要，細節仍 drill down 到 Model Pool。`}
+            tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
           />
           <SignalInsightCard
             title="Data Trust"
             value={formatStatus(dataQuality.data?.overall)}
-            detail="資料 freshness / schema / train-serve parity 是推薦與 IC 能不能相信的前置條件。"
-            tone={dataQualityUnavailable ? 'warn' : statusTone(dataQuality.data?.overall)}
+            detail="資料品質是推薦、IC、backtest、execution 可信度的第一層 gate。"
+            tone={statusTone(dataQuality.data?.overall)}
           />
           <SignalInsightCard
             title="Run Health"
             value={`${scheduler.data?.stats?.successRate7d ?? 0}%`}
-            detail={`Scheduler 詳細 run log 留在 Scheduler drilldown；OBS 只顯示失敗是否影響今天決策。failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`}
-            tone={schedulerUnavailable ? 'warn' : (scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
+            detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}；失敗時先看 run_id 與 callback contract。`}
+            tone={(scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
           />
         </div>
 
@@ -495,9 +484,9 @@ export default function ObservabilityPage() {
 
         <section className="grid gap-4 md:grid-cols-3">
           {[
-            { icon: Network, title: 'Trace Contract', body: 'Scheduler, pipeline, ML, verify use one observable status language.' },
-            { icon: TimerReset, title: 'Freshness Contract', body: 'Data Quality is the first stop before trusting recommendations or IC.' },
-            { icon: XCircle, title: 'No Silent Fallback', body: 'OBS should explain empty UI, stale data, metadata gaps, and owner boundary drift.' },
+            { icon: Activity, title: 'Trace Contract', body: 'Scheduler、pipeline、ML、verify 使用同一套可觀測狀態語意。' },
+            { icon: TimerReset, title: 'Freshness Contract', body: '資料 freshness 是信任推薦與 IC 前的第一個硬門檻。' },
+            { icon: XCircle, title: 'No Silent Fallback', body: '空畫面、舊資料、metadata gap、owner drift 都必須被 OBS 解釋。' },
           ].map(item => {
             const Icon = item.icon
             return (

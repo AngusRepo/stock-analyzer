@@ -53,19 +53,19 @@ export function AudienceRoleStrip() {
         {
           title: 'Dashboard',
           subtitle: 'friend-facing',
-          body: '給一般朋友看的市場摘要：重點是可讀、少術語、快速知道今天系統看見什麼機會。',
+          body: '給一般朋友看的決策摘要：重點是推薦理由、風險提示、可理解的分數，不暴露太多維運細節。',
           tone: 'info' as WorkstationTone,
         },
         {
           title: 'Bot',
           subtitle: 'admin execution',
-          body: '給你自己操作：pending buys、debate、quote sanity、T1/T2/Stop 與 execution audit 必須可追溯。',
+          body: '給你自己看的交易工作台：pending buys、debate、quote sanity、T1/T2/Stop 與 execution audit 都要能追。',
           tone: 'ok' as WorkstationTone,
         },
         {
           title: 'OBS',
           subtitle: 'root cause center',
-          body: '回答哪裡壞、為什麼壞、影響哪些股票與哪個 run_id，而不是再多一張漂亮但無法診斷的儀表板。',
+          body: '可觀測性中心：回答哪裡壞、為什麼壞、影響哪些 run_id/股票、下一步要誰處理。',
           tone: 'warn' as WorkstationTone,
         },
       ].map((item) => (
@@ -86,11 +86,11 @@ export function RecommendationLaneExplainer() {
     <div className="grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
       <div className="bg-[linear-gradient(135deg,#06140f,#071019)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-emerald-200">上市上櫃交易流</p>
+          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-emerald-200">上市櫃交易流</p>
           <WorkstationPill tone="ok">tradable lane</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-          會進入 morning setup、T2/debate、pending buys 與盤中 quote sanity，這一區才會影響自動交易。
+          可進入 morning setup、T2/debate、pending buys 與盤中 quote sanity，這一區才會影響自動交易。
         </p>
       </div>
       <div className="bg-[linear-gradient(135deg,#171006,#0b0d12)] p-4">
@@ -115,21 +115,21 @@ export function ObsDrilldownMap() {
             href: '/scheduler',
             icon: Workflow,
             title: 'Scheduler',
-            body: '檢查 run log、callback、duration anomaly 與觸發順序。',
+            body: '查看 run log、callback、duration anomaly 與排程下一次執行時間。',
             tone: 'info' as WorkstationTone,
           },
           {
             href: '/data-quality',
             icon: ShieldCheck,
             title: 'Data Quality',
-            body: '檢查 price、chip、features、schema、parity 與 freshness。',
+            body: '查看 price、chip、features、schema、train/serve parity 與 freshness gate。',
             tone: 'ok' as WorkstationTone,
           },
           {
             href: '/model-pool',
             icon: GitBranch,
             title: 'Model Pool',
-            body: '檢查 lineage、IC、challenger、metadata 與 family balance。',
+            body: '查看 lineage、IC、challenger、metadata 與 family balance。',
             tone: 'warn' as WorkstationTone,
           },
         ].map((item) => {

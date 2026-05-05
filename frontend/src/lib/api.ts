@@ -290,6 +290,41 @@ export type ObservabilityEventReport = {
   }
 }
 
+export type ObservabilityIncident = {
+  id: string
+  severity: ObservabilitySeverity
+  status: 'open' | 'watch' | 'resolved'
+  domain: ObservabilityDomain
+  owner: string
+  title: string
+  root_cause: string
+  impact: string
+  affected_symbols: string[]
+  run_ids: string[]
+  next_action: string
+  source_event_ids: string[]
+  evidence: Record<string, unknown>
+}
+
+export type ObservabilityDrilldownReport = {
+  success: true
+  version: 'obs-drilldown-v1'
+  generated_at: string
+  date: string
+  overall: ObservabilitySeverity
+  incidents: ObservabilityIncident[]
+  domain_summary: Array<{
+    domain: ObservabilityDomain
+    owner: string
+    open_count: number
+    worst_severity: ObservabilitySeverity
+  }>
+  operator_questions: Array<{
+    question: string
+    answer_path: string
+  }>
+}
+
 export const observabilityApi = {
   events: (opts?: { date?: string; live?: boolean }) => {
     const params = new URLSearchParams()
@@ -298,6 +333,62 @@ export const observabilityApi = {
     const query = params.toString()
     return get<ObservabilityEventReport>(`/admin/observability/events${query ? `?${query}` : ''}`)
   },
+  drilldown: (opts?: { date?: string; live?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts?.date) params.set('date', opts.date)
+    if (opts?.live) params.set('live', '1')
+    const query = params.toString()
+    return get<ObservabilityDrilldownReport>(`/admin/observability/drilldown${query ? `?${query}` : ''}`)
+  },
+}
+
+export type OpsRunbookReport = {
+  success: true
+  version: 'ops-runbook-v1'
+  mode: 'read_only'
+  rollback_playbook: Array<{
+    id: string
+    title: string
+    owner: string
+    command_hint: string
+    mutation_requires_approval: boolean
+  }>
+  resource_cleanup: Array<{
+    id: string
+    title: string
+    owner: string
+    command_hint: string
+    mutation_requires_approval: boolean
+  }>
+  disaster_drill: Array<{
+    id: string
+    title: string
+    owner: string
+    command_hint: string
+    mutation_requires_approval: boolean
+  }>
+  release_gate: string[]
+}
+
+export type OpsResourceAuditReport = {
+  success: true
+  version: 'ops-resource-audit-v1'
+  mode: 'read_only'
+  generated_at: string
+  items: Array<{
+    id: string
+    owner: string
+    status: 'ok' | 'warn' | 'manual_required'
+    summary: string
+    metrics: Record<string, unknown>
+    mutation_allowed: false
+    next_action: string
+  }>
+}
+
+export const opsApi = {
+  runbook: () => get<OpsRunbookReport>('/admin/ops/runbook'),
+  resourceAudit: () => get<OpsResourceAuditReport>('/admin/ops/resource-audit'),
 }
 
 export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'

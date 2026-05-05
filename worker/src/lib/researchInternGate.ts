@@ -7,6 +7,7 @@ export type ResearchInternAction =
   | 'request_backtest_dry_run'
   | 'request_walk_forward_dry_run'
   | 'request_verify_dry_run'
+  | 'request_model_benchmark_dry_run'
   | 'generate_review_packet'
   | 'generate_patch'
   | 'retrain_prod'
@@ -42,6 +43,7 @@ const SAFE_ACTIONS = new Set<ResearchInternAction>([
   'request_backtest_dry_run',
   'request_walk_forward_dry_run',
   'request_verify_dry_run',
+  'request_model_benchmark_dry_run',
   'generate_review_packet',
 ])
 
@@ -107,7 +109,15 @@ export function evaluateResearchInternGate(request: ResearchInternGateRequest): 
     }
   }
 
-  if ((action === 'request_backtest_dry_run' || action === 'request_walk_forward_dry_run' || action === 'request_verify_dry_run') && request.dryRun === false) {
+  if (
+    (
+      action === 'request_backtest_dry_run'
+      || action === 'request_walk_forward_dry_run'
+      || action === 'request_verify_dry_run'
+      || action === 'request_model_benchmark_dry_run'
+    )
+    && request.dryRun === false
+  ) {
     return {
       decision: 'REQUIRE_APPROVAL',
       action,

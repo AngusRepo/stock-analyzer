@@ -16,8 +16,18 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const result = evaluateResearchInternGate({ action: 'request_model_benchmark_dry_run', dryRun: true })
+  assert(result.decision === 'ALLOW', 'dry-run model benchmark request should be allowed')
+}
+
+{
   const result = evaluateResearchInternGate({ action: 'request_walk_forward_dry_run', dryRun: false })
   assert(result.decision === 'REQUIRE_APPROVAL', 'non-dry-run research execution should require approval')
+}
+
+{
+  const result = evaluateResearchInternGate({ action: 'request_model_benchmark_dry_run', dryRun: false })
+  assert(result.decision === 'REQUIRE_APPROVAL', 'non-dry-run model benchmark should require approval')
 }
 
 {

@@ -34,7 +34,11 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/gaOptimizerPush.test.ts `
   src/lib/marketDataReadiness.test.ts `
   src/lib/marketScreenerSqlChunking.test.ts `
+  src/lib/modelUpgradeResearchTrack.test.ts `
+  src/lib/observabilityDrilldown.test.ts `
   src/lib/observabilityEvents.test.ts `
+  src/lib/observabilityRoutesContract.test.ts `
+  src/lib/opsRunbook.test.ts `
   src/lib/p6DataQualityUiContract.test.ts `
   src/lib/p8AdaptiveMetaLayerContract.test.ts `
   src/lib/p9DeploymentContract.test.ts `
@@ -56,6 +60,7 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/researchEvaluationRunner.test.ts `
   src/lib/researchExperimentRegistry.test.ts `
   src/lib/researchInternGate.test.ts `
+  src/lib/reportDeliveryChannel.test.ts `
   src/lib/repoOwnerContract.test.ts `
   src/lib/schedulerOwnerContract.test.ts `
   src/lib/screenerOwnerContract.test.ts `
@@ -85,8 +90,16 @@ node .tmp-test-run/lib/marketDataReadiness.test.js
 if ($LASTEXITCODE -ne 0) { throw "marketDataReadiness.test failed" }
 node .tmp-test-run/lib/marketScreenerSqlChunking.test.js
 if ($LASTEXITCODE -ne 0) { throw "marketScreenerSqlChunking.test failed" }
+node .tmp-test-run/lib/modelUpgradeResearchTrack.test.js
+if ($LASTEXITCODE -ne 0) { throw "modelUpgradeResearchTrack.test failed" }
+node .tmp-test-run/lib/observabilityDrilldown.test.js
+if ($LASTEXITCODE -ne 0) { throw "observabilityDrilldown.test failed" }
 node .tmp-test-run/lib/observabilityEvents.test.js
 if ($LASTEXITCODE -ne 0) { throw "observabilityEvents.test failed" }
+node .tmp-test-run/lib/observabilityRoutesContract.test.js
+if ($LASTEXITCODE -ne 0) { throw "observabilityRoutesContract.test failed" }
+node .tmp-test-run/lib/opsRunbook.test.js
+if ($LASTEXITCODE -ne 0) { throw "opsRunbook.test failed" }
 node .tmp-test-run/lib/p6DataQualityUiContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p6DataQualityUiContract.test failed" }
 node .tmp-test-run/lib/p8AdaptiveMetaLayerContract.test.js
@@ -129,6 +142,8 @@ node .tmp-test-run/lib/researchExperimentRegistry.test.js
 if ($LASTEXITCODE -ne 0) { throw "researchExperimentRegistry.test failed" }
 node .tmp-test-run/lib/researchInternGate.test.js
 if ($LASTEXITCODE -ne 0) { throw "researchInternGate.test failed" }
+node .tmp-test-run/lib/reportDeliveryChannel.test.js
+if ($LASTEXITCODE -ne 0) { throw "reportDeliveryChannel.test failed" }
 node .tmp-test-run/lib/repoOwnerContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "repoOwnerContract.test failed" }
 node .tmp-test-run/lib/schedulerOwnerContract.test.js
@@ -160,7 +175,7 @@ if (-not (Test-Path $ControllerPython)) {
   throw "ml-controller venv python not found: $ControllerPython"
 }
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py -q
+& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 

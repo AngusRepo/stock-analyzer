@@ -101,6 +101,35 @@ adminReadRoutes.get('/api/admin/observability/audit', async (c) => {
   })
 })
 
+adminReadRoutes.get('/api/admin/observability/drilldown', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildLiveObservabilityEventReport } = await import('../lib/observabilityEvents')
+  const { buildObservabilityDrilldown } = await import('../lib/observabilityDrilldown')
+  const report = await buildLiveObservabilityEventReport(c.env, {
+    date: c.req.query('date'),
+    live: c.req.query('live') === '1',
+  })
+  return c.json(buildObservabilityDrilldown(report))
+})
+
+adminReadRoutes.get('/api/admin/ops/runbook', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildOpsRunbook } = await import('../lib/opsRunbook')
+  return c.json(buildOpsRunbook())
+})
+
+adminReadRoutes.get('/api/admin/ops/resource-audit', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildOpsResourceAudit } = await import('../lib/opsRunbook')
+  return c.json(await buildOpsResourceAudit(c.env))
+})
+
 adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

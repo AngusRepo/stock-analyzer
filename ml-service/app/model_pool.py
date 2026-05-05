@@ -97,6 +97,45 @@ META_OPTIMIZERS = {
     },
 }
 
+RESEARCH_BENCHMARK_MODELS = {
+    "TabM": {
+        "status": "benchmark_only",
+        "model_type": "tabular_deep_learning",
+        "family": "tabular",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "promotion_state": "not_challenger",
+        "evidence_required": ["feature_policy", "walk_forward", "pbo", "cost_profile"],
+    },
+    "iTransformer": {
+        "status": "benchmark_only",
+        "model_type": "time_series_transformer",
+        "family": "time_series",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "promotion_state": "not_challenger",
+        "evidence_required": ["sequence_policy", "walk_forward", "pbo", "cost_profile"],
+    },
+    "TimesFM": {
+        "status": "benchmark_only",
+        "model_type": "foundation_time_series",
+        "family": "time_series",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "promotion_state": "not_challenger",
+        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
+    },
+    "Moirai": {
+        "status": "benchmark_only",
+        "model_type": "foundation_time_series",
+        "family": "time_series",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "promotion_state": "not_challenger",
+        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
+    },
+}
+
 # 8 active alpha prediction models managed by ML_POOL.
 # State-space overlays and meta optimizers live in separate namespaces below.
 MANAGED_MODELS = {
@@ -213,6 +252,7 @@ def init_default_pool() -> dict:
         "shadow_models": {},
         "state_overlays": {},
         "meta_optimizers": {},
+        "research_benchmarks": {},
     }
     for name, (model_type, balance_family, _ext) in MANAGED_MODELS.items():
         pool["models"][name] = {
@@ -257,6 +297,13 @@ def init_default_pool() -> dict:
             "version": "v1",
             "created_at": today,
             "promotion_gate": "walk_forward+pbo+transaction_cost_sensitivity",
+        }
+    for name, meta in RESEARCH_BENCHMARK_MODELS.items():
+        pool["research_benchmarks"][name] = {
+            **meta,
+            "created_at": today,
+            "approval_gate": "research_review_packet_required",
+            "note": "Benchmark-only candidate; not a model_pool challenger and never votes until promoted by a separate reviewed lifecycle path.",
         }
     return pool
 

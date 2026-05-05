@@ -973,9 +973,21 @@ recommendations.use('/*', authMiddleware)
 
 const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
 
+function compactRecommendationForCard(rec: Record<string, any>) {
+  const {
+    prediction_forecast_data: _predictionForecastData,
+    screener_funnel_timeline: _screenerFunnelTimeline,
+    latest_open: _latestOpen,
+    latest_avg_price: _latestAvgPrice,
+    ...cardRec
+  } = rec
+  return cardRec
+}
+
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
+  const view = c.req.query('view') === 'card' ? 'card' : 'full'
   let date = c.req.query('date')
   const requestedDate = date
   let resolvedFrom: 'requested' | 'today' | 'fallback_prev' = date ? 'requested' : 'today'
@@ -1130,17 +1142,23 @@ recommendations.get('/daily', async (c) => {
   const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
   const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
   const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')
+  const shape = view === 'card' ? compactRecommendationForCard : (r: Record<string, any>) => r
+  const tradablePayload = tradableRecs.map(shape)
+  const emergingPayload = emergingRecs.map(shape)
+  const researchOnlyPayload = researchOnlyRecs.map(shape)
+  const allPayload = recs.map(shape)
 
   return c.json({
     requested_date: requestedOrToday,
     date,
     is_stale: date !== requestedOrToday,
     resolved_from: resolvedFrom,
-    recommendations: tradableRecs,
-    tradable_recommendations: tradableRecs,
-    emerging_recommendations: emergingRecs,
-    research_only_recommendations: researchOnlyRecs,
-    all_recommendations: recs,
+    view,
+    recommendations: tradablePayload,
+    tradable_recommendations: tradablePayload,
+    emerging_recommendations: emergingPayload,
+    research_only_recommendations: researchOnlyPayload,
+    all_recommendations: allPayload,
     lanes: {
       tradable: { count: tradableRecs.length },
       emerging_watchlist: { count: emergingRecs.length },

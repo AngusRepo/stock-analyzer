@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'wouter'
 import { marketApi, notificationsApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -11,9 +11,7 @@ import {
   Bot,
   Boxes,
   ChevronRight,
-  Clock,
   Command,
-  Database,
   FlaskConical,
   LayoutDashboard,
   LogIn,
@@ -21,14 +19,13 @@ import {
   Menu,
 } from 'lucide-react'
 import { WorkstationBackdrop } from '@/components/workstation/WorkstationChrome'
+import { prefetchWorkstationRoute } from '@/lib/queryPolicy'
 
 const NAV_ITEMS = [
   { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
   { label: 'Bot', icon: Bot, href: '/bot' },
   { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
-  { label: 'Scheduler', icon: Clock, href: '/scheduler', adminOnly: true },
   { label: 'Model Pool', icon: Boxes, href: '/model-pool', adminOnly: true },
-  { label: 'Data Quality', icon: Database, href: '/data-quality', adminOnly: true },
   { label: 'Strategy Lab', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
 ] as const
 
@@ -76,7 +73,13 @@ function MarketTicker() {
 
 function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNavigate: (href: string) => void }) {
   const { user } = useAuth()
+  const queryClient = useQueryClient()
   const isAdmin = user?.role === 'admin'
+  const isAuthenticated = Boolean(user)
+
+  const prefetchRoute = (href: string) => {
+    prefetchWorkstationRoute(queryClient, href, { isAuthenticated, isAdmin })
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -98,6 +101,8 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
           return (
             <button
               key={item.label}
+              onFocus={() => prefetchRoute(item.href)}
+              onMouseEnter={() => prefetchRoute(item.href)}
               onClick={() => onNavigate(item.href)}
               className={`group grid w-full grid-cols-[24px_1fr_14px] items-center gap-2 border px-3 py-2.5 text-left font-mono text-[12px] transition-all ${
                 active

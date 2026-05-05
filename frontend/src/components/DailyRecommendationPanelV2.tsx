@@ -4,18 +4,21 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { RecommendationLaneExplainer } from '@/components/workstation/DecisionArchitecture'
-import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { recommendationsApi } from '@/lib/api'
+import { queryTtl, recommendationDailyKey, selectRecommendationLanes, twToday } from '@/lib/queryPolicy'
 import { cn } from '@/lib/utils'
 
 export function DailyRecommendationPanelV2() {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = twToday()
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['recommendations', 'daily', today, 'v2-lanes'],
-    queryFn: () => recommendationsApi.daily(),
-    staleTime: 30 * 60 * 1000,
+    queryKey: recommendationDailyKey(today),
+    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
+    staleTime: queryTtl.dailyDecision,
+    select: selectRecommendationLanes,
   })
-  const { tradable, emerging } = splitRecommendationLanes<any>(data)
+  const payload = data?.payload
+  const tradable = data?.tradable ?? []
+  const emerging = data?.emerging ?? []
 
   return (
     <div className="space-y-5">
@@ -26,7 +29,7 @@ export function DailyRecommendationPanelV2() {
             每日選股推薦
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {data?.date ?? today} · ML + 籌碼 + 技術 + Alpha / Risk 綜合評分
+            {payload?.date ?? today} · ML + 籌碼 + 技術 + Alpha / Risk 綜合評分
           </p>
           <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground/80">
             {AI_TOP_PICK_EXPLANATION}

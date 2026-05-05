@@ -23,147 +23,30 @@ if (Test-Path $TestOut) {
   }
   Remove-Item -LiteralPath $ResolvedTestOut -Recurse -Force
 }
-npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false --skipLibCheck --rootDir src --outDir .tmp-test-run --noEmit false `
-  src/cf-types.d.ts `
-  src/lib/adminTriggerObservabilityContract.test.ts `
-  src/lib/adminCronCallbackRoutes.test.ts `
-  src/lib/adminGateRoutes.test.ts `
-  src/lib/boardTradability.test.ts `
-  src/lib/dataQualityMonitor.test.ts `
-  src/lib/deployGate.test.ts `
-  src/lib/gaOptimizerPush.test.ts `
-  src/lib/marketDataReadiness.test.ts `
-  src/lib/marketScreenerSqlChunking.test.ts `
-  src/lib/modelUpgradeResearchTrack.test.ts `
-  src/lib/observabilityDrilldown.test.ts `
-  src/lib/observabilityEvents.test.ts `
-  src/lib/observabilityRoutesContract.test.ts `
-  src/lib/opsRunbook.test.ts `
-  src/lib/p6DataQualityUiContract.test.ts `
-  src/lib/p8AdaptiveMetaLayerContract.test.ts `
-  src/lib/p9DeploymentContract.test.ts `
-  src/lib/p9GateScriptContract.test.ts `
-  src/lib/p10ExecutionUiContract.test.ts `
-  src/lib/paperExecutionRealismContract.test.ts `
-  src/lib/paperIntradayData.test.ts `
-  src/lib/paperOrderAccounting.test.ts `
-  src/lib/paperOrderIntent.test.ts `
-  src/lib/partialFillRemainingPolicy.test.ts `
-  src/lib/pendingBuyBriefingSummary.test.ts `
-  src/lib/pendingBuyCronSummary.test.ts `
-  src/lib/pendingBuyExecutionState.test.ts `
-  src/lib/pendingBuyStateSummary.test.ts `
-  src/lib/preTradeExecutionPolicy.test.ts `
-  src/lib/paperTradeMath.test.ts `
-  src/lib/predictionDateOwnerContract.test.ts `
-  src/lib/researchEvaluationPlan.test.ts `
-  src/lib/researchEvaluationRunner.test.ts `
-  src/lib/researchExperimentRegistry.test.ts `
-  src/lib/researchInternGate.test.ts `
-  src/lib/reportDeliveryChannel.test.ts `
-  src/lib/repoOwnerContract.test.ts `
-  src/lib/schedulerOwnerContract.test.ts `
-  src/lib/screenerOwnerContract.test.ts `
-  src/lib/screenerFunnelEvidence.test.ts `
-  src/lib/screenerMarketDataLanes.test.ts `
-  src/lib/screenerPolicy.test.ts `
-  src/lib/screenerSeedQuality.test.ts `
-  src/lib/screenerTradability.test.ts `
-  src/lib/strategySpec.test.ts `
-  src/lib/technicalIndicators.test.ts
+$WorkerTestSources = Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -Filter '*.test.ts' |
+  Sort-Object Name |
+  ForEach-Object { "src/lib/$($_.Name)" }
+
+$TscArgs = @(
+  '--target', 'ES2020',
+  '--module', 'commonjs',
+  '--moduleResolution', 'node',
+  '--strict', 'false',
+  '--skipLibCheck',
+  '--rootDir', 'src',
+  '--outDir', '.tmp-test-run',
+  '--noEmit', 'false',
+  'src/cf-types.d.ts'
+) + $WorkerTestSources
+
+npx tsc @TscArgs
 if ($LASTEXITCODE -ne 0) { throw "worker contract test compile failed" }
-node .tmp-test-run/lib/adminTriggerObservabilityContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "adminTriggerObservabilityContract.test failed" }
-node .tmp-test-run/lib/adminCronCallbackRoutes.test.js
-if ($LASTEXITCODE -ne 0) { throw "adminCronCallbackRoutes.test failed" }
-node .tmp-test-run/lib/adminGateRoutes.test.js
-if ($LASTEXITCODE -ne 0) { throw "adminGateRoutes.test failed" }
-node .tmp-test-run/lib/boardTradability.test.js
-if ($LASTEXITCODE -ne 0) { throw "boardTradability.test failed" }
-node .tmp-test-run/lib/dataQualityMonitor.test.js
-if ($LASTEXITCODE -ne 0) { throw "dataQualityMonitor.test failed" }
-node .tmp-test-run/lib/deployGate.test.js
-if ($LASTEXITCODE -ne 0) { throw "deployGate.test failed" }
-node .tmp-test-run/lib/gaOptimizerPush.test.js
-if ($LASTEXITCODE -ne 0) { throw "gaOptimizerPush.test failed" }
-node .tmp-test-run/lib/marketDataReadiness.test.js
-if ($LASTEXITCODE -ne 0) { throw "marketDataReadiness.test failed" }
-node .tmp-test-run/lib/marketScreenerSqlChunking.test.js
-if ($LASTEXITCODE -ne 0) { throw "marketScreenerSqlChunking.test failed" }
-node .tmp-test-run/lib/modelUpgradeResearchTrack.test.js
-if ($LASTEXITCODE -ne 0) { throw "modelUpgradeResearchTrack.test failed" }
-node .tmp-test-run/lib/observabilityDrilldown.test.js
-if ($LASTEXITCODE -ne 0) { throw "observabilityDrilldown.test failed" }
-node .tmp-test-run/lib/observabilityEvents.test.js
-if ($LASTEXITCODE -ne 0) { throw "observabilityEvents.test failed" }
-node .tmp-test-run/lib/observabilityRoutesContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "observabilityRoutesContract.test failed" }
-node .tmp-test-run/lib/opsRunbook.test.js
-if ($LASTEXITCODE -ne 0) { throw "opsRunbook.test failed" }
-node .tmp-test-run/lib/p6DataQualityUiContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "p6DataQualityUiContract.test failed" }
-node .tmp-test-run/lib/p8AdaptiveMetaLayerContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "p8AdaptiveMetaLayerContract.test failed" }
-node .tmp-test-run/lib/p9DeploymentContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "p9DeploymentContract.test failed" }
-node .tmp-test-run/lib/p9GateScriptContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "p9GateScriptContract.test failed" }
-node .tmp-test-run/lib/p10ExecutionUiContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "p10ExecutionUiContract.test failed" }
-node .tmp-test-run/lib/paperExecutionRealismContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "paperExecutionRealismContract.test failed" }
-node .tmp-test-run/lib/paperIntradayData.test.js
-if ($LASTEXITCODE -ne 0) { throw "paperIntradayData.test failed" }
-node .tmp-test-run/lib/paperOrderAccounting.test.js
-if ($LASTEXITCODE -ne 0) { throw "paperOrderAccounting.test failed" }
-node .tmp-test-run/lib/paperOrderIntent.test.js
-if ($LASTEXITCODE -ne 0) { throw "paperOrderIntent.test failed" }
-node .tmp-test-run/lib/partialFillRemainingPolicy.test.js
-if ($LASTEXITCODE -ne 0) { throw "partialFillRemainingPolicy.test failed" }
-node .tmp-test-run/lib/pendingBuyBriefingSummary.test.js
-if ($LASTEXITCODE -ne 0) { throw "pendingBuyBriefingSummary.test failed" }
-node .tmp-test-run/lib/pendingBuyCronSummary.test.js
-if ($LASTEXITCODE -ne 0) { throw "pendingBuyCronSummary.test failed" }
-node .tmp-test-run/lib/pendingBuyExecutionState.test.js
-if ($LASTEXITCODE -ne 0) { throw "pendingBuyExecutionState.test failed" }
-node .tmp-test-run/lib/pendingBuyStateSummary.test.js
-if ($LASTEXITCODE -ne 0) { throw "pendingBuyStateSummary.test failed" }
-node .tmp-test-run/lib/preTradeExecutionPolicy.test.js
-if ($LASTEXITCODE -ne 0) { throw "preTradeExecutionPolicy.test failed" }
-node .tmp-test-run/lib/paperTradeMath.test.js
-if ($LASTEXITCODE -ne 0) { throw "paperTradeMath.test failed" }
-node .tmp-test-run/lib/predictionDateOwnerContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "predictionDateOwnerContract.test failed" }
-node .tmp-test-run/lib/researchEvaluationPlan.test.js
-if ($LASTEXITCODE -ne 0) { throw "researchEvaluationPlan.test failed" }
-node .tmp-test-run/lib/researchEvaluationRunner.test.js
-if ($LASTEXITCODE -ne 0) { throw "researchEvaluationRunner.test failed" }
-node .tmp-test-run/lib/researchExperimentRegistry.test.js
-if ($LASTEXITCODE -ne 0) { throw "researchExperimentRegistry.test failed" }
-node .tmp-test-run/lib/researchInternGate.test.js
-if ($LASTEXITCODE -ne 0) { throw "researchInternGate.test failed" }
-node .tmp-test-run/lib/reportDeliveryChannel.test.js
-if ($LASTEXITCODE -ne 0) { throw "reportDeliveryChannel.test failed" }
-node .tmp-test-run/lib/repoOwnerContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "repoOwnerContract.test failed" }
-node .tmp-test-run/lib/schedulerOwnerContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "schedulerOwnerContract.test failed" }
-node .tmp-test-run/lib/screenerOwnerContract.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerOwnerContract.test failed" }
-node .tmp-test-run/lib/screenerFunnelEvidence.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerFunnelEvidence.test failed" }
-node .tmp-test-run/lib/screenerMarketDataLanes.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerMarketDataLanes.test failed" }
-node .tmp-test-run/lib/screenerPolicy.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerPolicy.test failed" }
-node .tmp-test-run/lib/screenerSeedQuality.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerSeedQuality.test failed" }
-node .tmp-test-run/lib/screenerTradability.test.js
-if ($LASTEXITCODE -ne 0) { throw "screenerTradability.test failed" }
-node .tmp-test-run/lib/strategySpec.test.js
-if ($LASTEXITCODE -ne 0) { throw "strategySpec.test failed" }
-node .tmp-test-run/lib/technicalIndicators.test.js
-if ($LASTEXITCODE -ne 0) { throw "technicalIndicators.test failed" }
+foreach ($testSource in $WorkerTestSources) {
+  $testName = [System.IO.Path]::GetFileNameWithoutExtension($testSource)
+  $testJs = Join-Path $TestOut (Join-Path 'lib' "$testName.js")
+  node $testJs
+  if ($LASTEXITCODE -ne 0) { throw "$testName failed" }
+}
 if (Test-Path $TestOut) {
   Remove-Item -LiteralPath $TestOut -Recurse -Force
 }
@@ -186,6 +69,16 @@ if (-not $SkipFrontendBuild) {
   if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
   Pop-Location
 }
+
+Write-Host '[P9 gate] diff hygiene'
+Push-Location $Root
+git diff --check
+if ($LASTEXITCODE -ne 0) { throw "git diff --check failed" }
+Pop-Location
+
+Write-Host '[P9 gate] P12 secret scan'
+& (Join-Path $PSScriptRoot 'p12_secret_scan.ps1') -Root $Root
+if ($LASTEXITCODE -ne 0) { throw "P12 secret scan failed" }
 
 if ($LiveSmoke) {
   Write-Host '[P9 gate] live smoke'

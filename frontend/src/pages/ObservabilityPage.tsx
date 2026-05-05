@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '@/components/AppShell'
 import {
@@ -9,7 +9,9 @@ import {
   opsApi,
   schedulerApi,
   systemApi,
+  type DataQualityCheck,
   type ObservabilityEvent,
+  type ObservabilityIncident,
   type SchedulerJob,
 } from '@/lib/api'
 import {
@@ -21,21 +23,16 @@ import {
   Network,
   ShieldCheck,
   TimerReset,
-  XCircle,
 } from 'lucide-react'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
-  WorkstationCatCard,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
-import {
-  AudienceRoleStrip,
-  DecisionTraceRail,
-  ObsDrilldownMap,
-  SignalInsightCard,
-} from '@/components/workstation/DecisionArchitecture'
+import { VirtualizedList } from '@/components/performance/VirtualizedList'
+
+type ObsTab = 'incidents' | 'scheduler' | 'dataQuality' | 'modelHealth' | 'resource'
 
 function statusTone(status?: string): WorkstationTone {
   const s = String(status ?? '').toLowerCase()
@@ -63,7 +60,6 @@ function eventIcon(event: Pick<ObservabilityEvent, 'domain' | 'severity'>) {
   if (event.domain === 'model_pool') return GitBranch
   if (event.domain === 'adaptive_meta') return Network
   if (event.domain === 'scheduler') return AlertTriangle
-  if (event.domain === 'validation') return ShieldCheck
   return ShieldCheck
 }
 
@@ -90,7 +86,7 @@ function MetricCell({
   return (
     <div className="border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
       <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
-      <p className={`mt-2 font-mono text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
+      <p className={`mt-2 font-mono text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
         {value}
       </p>
       {detail && <p className="mt-1 text-xs text-slate-500">{detail}</p>}
@@ -98,97 +94,227 @@ function MetricCell({
   )
 }
 
-function JobRow({ job }: { job: SchedulerJob }) {
-  const tone = statusTone(job.lastStatus)
-  return (
-    <div className="grid grid-cols-[1fr_92px_78px_72px] items-center gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px] last:border-b-0">
-      <div className="min-w-0">
-        <p className="truncate text-slate-100">{job.name}</p>
-        <p className="truncate text-[#70809b]">{job.summary || job.schedule}</p>
+function IncidentInbox({
+  incidents,
+  selectedId,
+  onSelect,
+}: {
+  incidents: ObservabilityIncident[]
+  selectedId?: string
+  onSelect: (id: string) => void
+}) {
+  if (!incidents.length) {
+    return (
+      <div className="p-4">
+        <WorkstationPill tone="ok">No active incidents</WorkstationPill>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          目前沒有需要處理的 active incident。請看下方 compact drilldown 確認最近一次成功 run、資料品質與模型健康。
+        </p>
       </div>
-      <WorkstationPill tone={tone}>{job.lastStatus || 'unknown'}</WorkstationPill>
-      <span className="text-[#8a92a6]">{job.lastDuration || '-'}</span>
-      <span className="truncate text-right text-[#70809b]">{job.group}</span>
+    )
+  }
+
+  return (
+    <VirtualizedList
+      items={incidents}
+      height={420}
+      itemHeight={92}
+      getKey={(incident) => incident.id}
+      renderItem={(incident) => (
+        <button
+          type="button"
+          onClick={() => onSelect(incident.id)}
+          className={`grid h-[92px] w-full grid-cols-[1fr_auto] gap-3 border-b border-[#263247] p-3 text-left transition-colors ${
+            selectedId === incident.id ? 'bg-amber-400/[0.08]' : 'bg-[#070a10] hover:bg-sky-400/[0.05]'
+          }`}
+        >
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{incident.domain} / {incident.owner}</p>
+            <p className="mt-1 truncate font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{incident.title}</p>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#8a92a6]">{incident.impact || incident.root_cause}</p>
+          </div>
+          <WorkstationPill tone={severityTone(incident.severity)}>{incident.status}</WorkstationPill>
+        </button>
+      )}
+    />
+  )
+}
+
+function SelectedIncidentDetail({ incident, fallbackEvents }: { incident?: ObservabilityIncident; fallbackEvents: ObservabilityEvent[] }) {
+  if (!incident) {
+    return (
+      <div className="p-4">
+        <WorkstationPill tone="ok">No active incidents</WorkstationPill>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          最近沒有 open incident。若你要查歷史，請從 Scheduler Runs、Data Quality 或 Model Health Snapshot 切入。
+        </p>
+        <div className="mt-4 space-y-2">
+          {fallbackEvents.slice(0, 3).map((event) => {
+            const Icon = eventIcon(event)
+            return (
+              <div key={event.id} className="grid grid-cols-[22px_1fr_auto] gap-3 border border-[#263247] bg-[#05070c] p-3">
+                <Icon className="mt-0.5 h-4 w-4 text-sky-300" />
+                <div>
+                  <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{event.title}</p>
+                  <p className="mt-1 text-xs text-slate-500">{event.summary}</p>
+                </div>
+                <WorkstationPill tone={severityTone(event.severity)}>{event.severity}</WorkstationPill>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">Selected Incident Detail</p>
+          <h2 className="mt-1 text-lg font-semibold text-[#fff1cf]">{incident.title}</h2>
+          <p className="mt-1 text-xs text-slate-500">{incident.domain} / {incident.owner}</p>
+        </div>
+        <WorkstationPill tone={severityTone(incident.severity)}>{incident.severity}</WorkstationPill>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root cause</p>
+          <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{incident.root_cause || '尚未產出 root cause，請從對應 drilldown 追 run_id / source / model。'}</p>
+        </div>
+        <div className="border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact</p>
+          <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{incident.impact || '尚未標註影響範圍。'}</p>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <MetricCell label="run_id" value={incident.run_ids?.[0] ?? '-'} tone="info" detail={(incident.run_ids ?? []).slice(1).join(', ') || 'primary'} />
+        <MetricCell label="symbols" value={String(incident.affected_symbols?.length ?? 0)} tone={(incident.affected_symbols?.length ?? 0) ? 'warn' : 'neutral'} detail={(incident.affected_symbols ?? []).slice(0, 5).join(', ') || '-'} />
+        <MetricCell label="status" value={incident.status} tone={severityTone(incident.severity)} detail={incident.next_action} />
+      </div>
     </div>
   )
 }
 
-function ObservabilityEventRow({ event }: { event: ObservabilityEvent }) {
-  const Icon = eventIcon(event)
+function DependencyMap() {
+  const nodes = [
+    ['GCP Scheduler', 'trigger'],
+    ['Cloud Run', 'orchestrate'],
+    ['Modal', 'heavy ML'],
+    ['Worker', 'API/callback'],
+    ['D1/KV', 'serving state'],
+    ['Frontend', 'read-only UI'],
+  ]
   return (
-    <div className="grid grid-cols-[24px_116px_1fr_auto] gap-3 border-b border-[#263247] p-3 text-xs last:border-b-0">
-      <Icon className={`mt-0.5 h-4 w-4 ${event.severity === 'ok' ? 'text-emerald-300' : event.severity === 'warn' ? 'text-amber-300' : event.severity === 'error' ? 'text-rose-300' : 'text-sky-300'}`} />
-      <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">
-        <p>{event.domain}</p>
-        <p className="mt-1 text-[#8a92a6]">{event.owner}</p>
+    <div className="p-3">
+      <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">Dependency Map</p>
+      <div className="flex flex-wrap items-center gap-2">
+        {nodes.map(([name, role], index) => (
+          <div key={name} className="flex items-center gap-2">
+            <div className="border border-[#263247] bg-[#05070c] px-3 py-2">
+              <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{name}</p>
+              <p className="mt-1 text-[10px] text-[#70809b]">{role}</p>
+            </div>
+            {index < nodes.length - 1 && <span className="font-mono text-xs text-amber-300">→</span>}
+          </div>
+        ))}
       </div>
-      <div className="min-w-0">
-        <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{event.title}</p>
-        <p className="mt-1 leading-5 text-[#8a92a6]">{event.summary}</p>
-        <p className="mt-1 leading-5 text-slate-500">{event.next_action}</p>
+    </div>
+  )
+}
+
+function ExecutionRealityStrip() {
+  const states = ['quote_unavailable', 'stale_quote', 'requoted', 'partially_filled', 'expired']
+  return (
+    <div className="border-t border-[#263247] p-3">
+      <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">Execution realism watch</p>
+      <div className="flex flex-wrap gap-2">
+        {states.map((state) => (
+          <WorkstationPill key={state} tone={state === 'partially_filled' || state === 'requoted' ? 'warn' : 'info'}>
+            {state}
+          </WorkstationPill>
+        ))}
       </div>
-      <WorkstationPill tone={severityTone(event.severity)}>{event.severity}</WorkstationPill>
+    </div>
+  )
+}
+
+function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
+  return (
+    <div className="grid gap-3 lg:grid-cols-[1fr_260px]">
+      <VirtualizedList
+        items={jobs}
+        height={360}
+        itemHeight={58}
+        getKey={(job) => job.id}
+        empty={<div className="p-4 text-sm text-slate-500">尚未取得 scheduler payload。</div>}
+        renderItem={(job) => (
+          <div className="grid h-[58px] grid-cols-[1fr_92px_78px_78px] items-center gap-2 border-b border-[#263247] px-3 font-mono text-[11px]">
+            <div className="min-w-0">
+              <p className="truncate text-slate-100">{job.name}</p>
+              <p className="truncate text-[#70809b]">{job.summary || job.schedule}</p>
+            </div>
+            <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus || 'unknown'}</WorkstationPill>
+            <span className="text-[#8a92a6]">{job.lastDuration || '-'}</span>
+            <span className="truncate text-right text-[#70809b]">{job.group}</span>
+          </div>
+        )}
+      />
+      <div className="border border-[#263247] bg-[#05070c] p-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Scheduler Drilldown</p>
+        <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
+          這裡只看 run state、callback、duration、skip/failed reason。完整歷史仍保留 deep link。
+        </p>
+        <a href="/scheduler" className="mt-3 inline-flex border border-sky-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">
+          open /scheduler
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function DataQualityTab({ checks }: { checks: DataQualityCheck[] }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {checks.slice(0, 10).map((check) => (
+        <div key={check.id} className="border border-[#263247] bg-[#05070c] p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{check.label}</p>
+              <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{check.summary}</p>
+            </div>
+            <WorkstationPill tone={statusTone(check.status)}>{check.status}</WorkstationPill>
+          </div>
+        </div>
+      ))}
+      {!checks.length && <div className="p-4 text-sm text-slate-500">Data Quality Drilldown 尚未取得 checks。</div>}
+      <a href="/data-quality" className="border border-sky-400/30 bg-[#05070c] p-3 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">
+        open /data-quality
+      </a>
     </div>
   )
 }
 
 export default function ObservabilityPage() {
-  const scheduler = useQuery({
-    queryKey: ['obs', 'scheduler'],
-    queryFn: schedulerApi.status,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const dataQuality = useQuery({
-    queryKey: ['obs', 'data-quality'],
-    queryFn: () => dataQualityApi.status(),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const deployGate = useQuery({
-    queryKey: ['obs', 'deploy-gate'],
-    queryFn: () => deployGateApi.predeploy(),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const modelPool = useQuery({
-    queryKey: ['obs', 'model-pool-lineage'],
-    queryFn: modelPoolApi.lineage,
-    refetchInterval: 120_000,
-    staleTime: 60_000,
-  })
-  const system = useQuery({
-    queryKey: ['obs', 'system'],
-    queryFn: systemApi.status,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const observability = useQuery({
-    queryKey: ['obs', 'events'],
-    queryFn: () => observabilityApi.events(),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const drilldown = useQuery({
-    queryKey: ['obs', 'drilldown'],
-    queryFn: () => observabilityApi.drilldown(),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
-  const resourceAudit = useQuery({
-    queryKey: ['obs', 'resource-audit'],
-    queryFn: opsApi.resourceAudit,
-    refetchInterval: 300_000,
-    staleTime: 120_000,
-  })
+  const [activeTab, setActiveTab] = useState<ObsTab>('incidents')
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string>()
 
-  const failedJobs = useMemo(() => {
-    return (scheduler.data?.jobs ?? []).filter(job => ['failed', 'running'].includes(job.lastStatus)).slice(0, 8)
-  }, [scheduler.data])
+  const scheduler = useQuery({ queryKey: ['obs', 'scheduler'], queryFn: schedulerApi.status, refetchInterval: 60_000, staleTime: 30_000 })
+  const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), refetchInterval: 60_000, staleTime: 30_000 })
+  const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
+  const modelPool = useQuery({ queryKey: ['obs', 'model-pool-lineage'], queryFn: modelPoolApi.lineage, refetchInterval: 120_000, staleTime: 60_000 })
+  const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
+  const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
+  const drilldown = useQuery({ queryKey: ['obs', 'drilldown'], queryFn: () => observabilityApi.drilldown(), refetchInterval: 60_000, staleTime: 30_000 })
+  const resourceAudit = useQuery({ queryKey: ['obs', 'resource-audit'], queryFn: opsApi.resourceAudit, refetchInterval: 300_000, staleTime: 120_000 })
 
-  const staleQuality = useMemo(() => {
-    return (dataQuality.data?.checks ?? []).filter(check => check.status !== 'ok').slice(0, 8)
-  }, [dataQuality.data])
+  const incidents = drilldown.data?.incidents ?? []
+  const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) ?? incidents[0]
+  const events = observability.data?.events ?? []
+  const jobs = scheduler.data?.jobs ?? []
+  const dqChecks = dataQuality.data?.checks ?? []
 
   const modelStats = useMemo(() => {
     const models = Object.entries(modelPool.data?.models ?? {})
@@ -203,12 +329,13 @@ export default function ObservabilityPage() {
     return { total: models.length, active, challenger, weakIc, missingMeta }
   }, [modelPool.data])
 
-  const contractEvents = observability.data?.events ?? []
-  const visibleEvents = (contractEvents.filter(event => event.severity !== 'ok').length
-    ? contractEvents.filter(event => event.severity !== 'ok')
-    : contractEvents).slice(0, 8)
-  const auditEvents = observability.data?.audit?.recent ?? []
-  const resourceItems = resourceAudit.data?.items ?? []
+  const tabs: Array<{ id: ObsTab; label: string; tone: WorkstationTone }> = [
+    { id: 'incidents', label: 'Incidents', tone: incidents.length ? 'warn' : 'ok' },
+    { id: 'scheduler', label: 'Scheduler Runs', tone: (scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok' },
+    { id: 'dataQuality', label: 'Data Quality', tone: statusTone(dataQuality.data?.overall) },
+    { id: 'modelHealth', label: 'Model Health Snapshot', tone: modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok' },
+    { id: 'resource', label: 'Cost / Resource', tone: 'info' },
+  ]
 
   return (
     <AppShell>
@@ -216,7 +343,7 @@ export default function ObservabilityPage() {
         <WorkstationPageTitle
           kicker="OBS command center"
           title="Reliability Mission Control"
-          description="把 Scheduler、Data Quality、Deploy Gate、Model Pool、Resource Audit 收到同一個可觀測性入口：先看影響面，再 drill down 到原始頁面。"
+          description="主入口只回答：哪裡壞、影響誰、root cause 是什麼、下一步去哪裡查。Scheduler 與 Data Quality 收斂成 drilldown，不再四頁互相複製。"
           action={
             <div className="flex flex-wrap gap-2">
               <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
@@ -227,277 +354,79 @@ export default function ObservabilityPage() {
           }
         />
 
-        <AudienceRoleStrip />
-
-        <DecisionTraceRail
-          title="Reliability Decision Trace"
-          compact
-          steps={[
-            { label: 'Symptom', detail: '先看空畫面、失敗排程、IC=0、資料過期、callback 異常。', tone: 'warn' },
-            { label: 'Impact', detail: '確認影響 Dashboard、Bot、ML、Data Quality 或 execution 哪一層。', tone: 'info' },
-            { label: 'Root Cause', detail: '用 run_id、owner、source_of_truth 找到責任邊界，避免 split-brain。', tone: 'error' },
-            { label: 'Action', detail: '只給 read-only 診斷與下一步，破壞性清理仍需人工核准。', tone: 'ok' },
-          ]}
-        />
-
-        <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <WorkstationCatCard
-            src="/stockvision-cats/05_stockvision_alert_first_seen.png"
-            title="先抓兇手"
-            caption="OBS 不只顯示紅燈，還要講清楚 root cause、影響股票、run_id 與下一步。"
-            tone="warn"
-          />
-          <WorkstationCatCard
-            src="/stockvision-cats/06_stockvision_monitoring_normal.png"
-            title="穩定巡邏"
-            caption="正常時也要留下 freshness、IC、callback contract、owner boundary 的健康證據。"
-            tone="ok"
-          />
+        <section className="grid grid-cols-1 gap-px border border-[#263247] bg-[#263247] md:grid-cols-5">
+          <MetricCell label="Incidents" value={String(incidents.length)} tone={incidents.length ? 'warn' : 'ok'} detail="grouped inbox" />
+          <MetricCell label="Scheduler" value={`${scheduler.data?.stats?.successRate7d ?? 0}%`} tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'} detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`} />
+          <MetricCell label="Data Quality" value={formatStatus(dataQuality.data?.overall)} tone={statusTone(dataQuality.data?.overall)} detail={dataQuality.data?.date ?? '-'} />
+          <MetricCell label="Model Pool" value={`${modelStats.active}/${modelStats.total}`} tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'} detail={`${modelStats.challenger} challenger`} />
+          <MetricCell label="Resource" value={String(resourceAudit.data?.items?.length ?? 0)} tone="info" detail="audit items" />
         </section>
 
-        <section className="grid grid-cols-1 gap-px border border-[#263247] bg-[#263247] md:grid-cols-4">
-          <MetricCell
-            label="Scheduler Success"
-            value={`${scheduler.data?.stats?.successRate7d ?? 0}%`}
-            tone={(scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
-            detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`}
-          />
-          <MetricCell
-            label="Data Quality"
-            value={formatStatus(dataQuality.data?.overall)}
-            tone={statusTone(dataQuality.data?.overall)}
-            detail={dataQuality.data?.date ?? '-'}
-          />
-          <MetricCell
-            label="Deploy Gate"
-            value={formatStatus(deployGate.data?.decision)}
-            tone={statusTone(deployGate.data?.decision)}
-            detail={deployGate.data?.generated_at ?? '-'}
-          />
-          <MetricCell
-            label="Model Pool"
-            value={`${modelStats.active}/${modelStats.total}`}
-            tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
-            detail={`${modelStats.challenger} challenger`}
-          />
+        <section className="grid gap-4 xl:grid-cols-[360px_1fr_320px]">
+          <WorkstationPanel title="Incident Inbox" kicker="grouped problems, not duplicated dashboards">
+            <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} onSelect={setSelectedIncidentId} />
+          </WorkstationPanel>
+
+          <WorkstationPanel title="Selected Incident Detail" kicker="impact, root cause, next action">
+            <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />
+          </WorkstationPanel>
+
+          <WorkstationPanel title="Dependency Map" kicker="blast radius">
+            <DependencyMap />
+            <ExecutionRealityStrip />
+          </WorkstationPanel>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-          <WorkstationPanel title="Root Cause Cockpit" kicker="answer first, logs second">
-            <div>
-              {visibleEvents.length ? visibleEvents.slice(0, 4).map((event) => {
-                const Icon = eventIcon(event)
-                return (
-                  <div key={event.id} className="grid grid-cols-[28px_1fr_auto] gap-3 border-b border-[#263247] p-3 last:border-b-0">
-                    <Icon className={`mt-0.5 h-4 w-4 ${event.severity === 'ok' ? 'text-emerald-300' : event.severity === 'warn' ? 'text-amber-300' : event.severity === 'error' ? 'text-rose-300' : 'text-sky-300'}`} />
-                    <div>
-                      <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{event.title}</p>
-                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{event.summary}</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">Next: {event.next_action}</p>
+        <WorkstationPanel title="OBS Drilldown" kicker="compact tabs, deep links stay available">
+          <div className="flex flex-wrap gap-2 border-b border-[#263247] p-3">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] ${
+                  activeTab === tab.id ? 'border-amber-300/50 bg-amber-300/10 text-amber-200' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-sky-400/40 hover:text-sky-200'
+                }`}
+              >
+                {tab.label}
+                <span className="ml-2"><WorkstationPill tone={tab.tone}>{tab.tone}</WorkstationPill></span>
+              </button>
+            ))}
+          </div>
+          <div className="p-3">
+            {activeTab === 'incidents' && <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />}
+            {activeTab === 'scheduler' && <SchedulerRunsTab jobs={jobs} />}
+            {activeTab === 'dataQuality' && <DataQualityTab checks={dqChecks} />}
+            {activeTab === 'modelHealth' && (
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetricCell label="active alpha" value={`${modelStats.active}/${modelStats.total}`} tone="ok" />
+                <MetricCell label="weak IC" value={String(modelStats.weakIc)} tone={modelStats.weakIc ? 'warn' : 'ok'} />
+                <MetricCell label="metadata gaps" value={String(modelStats.missingMeta)} tone={modelStats.missingMeta ? 'warn' : 'ok'} />
+                <a href="/model-pool" className="border border-sky-400/30 bg-[#05070c] p-3 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">
+                  open /model-pool
+                </a>
+              </div>
+            )}
+            {activeTab === 'resource' && (
+              <div className="grid gap-3 md:grid-cols-2">
+                {(resourceAudit.data?.items ?? []).map((item) => (
+                  <div key={item.id} className="border border-[#263247] bg-[#05070c] p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{item.owner}</p>
+                        <p className="mt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{item.id}</p>
+                      </div>
+                      <WorkstationPill tone={statusTone(item.status)}>{item.status}</WorkstationPill>
                     </div>
-                    <WorkstationPill tone={severityTone(event.severity)}>{event.severity}</WorkstationPill>
+                    <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{item.summary}</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">{item.next_action}</p>
                   </div>
-                )
-              }) : (
-                <div className="p-4 text-sm text-slate-500">目前沒有 OBS event payload；請部署後用 live smoke 驗證事件來源。</div>
-              )}
-            </div>
-          </WorkstationPanel>
-
-          <WorkstationPanel title="Owner Boundary" kicker="single owner, no split-brain">
-            <div className="grid grid-cols-1 gap-px bg-[#263247] font-mono text-[11px] sm:grid-cols-2">
-              {(observability.data?.owner_boundaries ?? [
-                { owner: 'GCP Scheduler', responsibility: 'canonical job trigger', source_of_truth: 'scheduler registry' },
-                { owner: 'Worker API', responsibility: 'read APIs and callback state', source_of_truth: 'D1/KV' },
-                { owner: 'Cloud Run', responsibility: 'pipeline orchestration', source_of_truth: 'job run_id' },
-                { owner: 'Modal', responsibility: 'heavy ML runtime', source_of_truth: 'artifact manifest' },
-                { owner: 'D1 / KV', responsibility: 'serving state and logs', source_of_truth: 'versioned records' },
-                { owner: 'Frontend', responsibility: 'read-only cockpit', source_of_truth: 'admin APIs' },
-              ]).map((row) => {
-                const domain = observability.data?.domains?.find(item => item.owner === row.owner)
-                return (
-                  <div key={row.owner} className="bg-[#070a10] p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-slate-100">{row.owner}</p>
-                      <WorkstationPill tone={severityTone(domain?.severity ?? 'ok')}>{domain?.severity ?? 'ok'}</WorkstationPill>
-                    </div>
-                    <p className="mt-2 text-[#70809b]">{row.responsibility} / {row.source_of_truth}</p>
-                  </div>
-                )
-              })}
-            </div>
-          </WorkstationPanel>
-        </section>
-
-        <WorkstationPanel title="Incident Drilldown" kicker="where, why, affected run, next action">
-          <div>
-            {(drilldown.data?.incidents ?? []).slice(0, 6).map((incident) => (
-              <div key={incident.id} className="grid gap-3 border-b border-[#263247] p-3 last:border-b-0 lg:grid-cols-[1fr_1.2fr_0.9fr_auto]">
-                <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{incident.domain}</p>
-                  <p className="mt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{incident.title}</p>
-                  <p className="mt-1 text-xs text-[#8a92a6]">{incident.owner}</p>
-                </div>
-                <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root cause</p>
-                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{incident.root_cause}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">{incident.impact}</p>
-                </div>
-                <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Affected</p>
-                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">run: {incident.run_ids.join(', ') || '-'}</p>
-                  <p className="mt-1 text-xs leading-5 text-[#8a92a6]">symbols: {incident.affected_symbols.slice(0, 8).join(', ') || '-'}</p>
-                </div>
-                <div className="flex flex-col items-start gap-2 lg:items-end">
-                  <WorkstationPill tone={severityTone(incident.severity)}>{incident.status}</WorkstationPill>
-                  <p className="max-w-[220px] text-xs leading-5 text-[#8a92a6] lg:text-right">{incident.next_action}</p>
-                </div>
-              </div>
-            ))}
-            {!drilldown.data?.incidents?.length && (
-              <div className="p-4 text-sm text-slate-500">尚未取得 drilldown incident；部署後請用 live smoke 打 OBS drilldown API。</div>
-            )}
-          </div>
-        </WorkstationPanel>
-
-        <WorkstationPanel title="Resource Audit" kicker="read-only cleanup intelligence">
-          <div className="grid gap-px bg-[#263247] md:grid-cols-2">
-            {resourceItems.map((item) => (
-              <div key={item.id} className="bg-[#070a10] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{item.owner}</p>
-                    <p className="mt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{item.id}</p>
-                  </div>
-                  <WorkstationPill tone={statusTone(item.status)}>{item.status}</WorkstationPill>
-                </div>
-                <p className="mt-3 text-xs leading-5 text-[#8a92a6]">{item.summary}</p>
-                <p className="mt-2 text-xs leading-5 text-slate-500">{item.next_action}</p>
-              </div>
-            ))}
-            {!resourceItems.length && (
-              <div className="bg-[#070a10] p-4 text-sm text-slate-500 md:col-span-2">尚未取得 resource audit；這個區塊只讀取 D1/KV 指標，不會做任何清理或刪除。</div>
-            )}
-          </div>
-        </WorkstationPanel>
-
-        <WorkstationPanel title="Unified Event Contract" kicker="one schema for scheduler, data, deploy, lifecycle">
-          <div>
-            {visibleEvents.length ? (
-              visibleEvents.map((event) => <ObservabilityEventRow key={event.id} event={event} />)
-            ) : (
-              <div className="p-4 text-sm text-slate-500">OBS event payload unavailable；請確認 Worker route 與 D1 audit snapshot writer。</div>
-            )}
-          </div>
-        </WorkstationPanel>
-
-        <WorkstationPanel title="Audit Trail" kicker="persisted snapshots, not page-load side effects">
-          <div>
-            {auditEvents.length ? auditEvents.slice(0, 8).map((event) => (
-              <ObservabilityEventRow key={`${event.id ?? event.event_id}-${event.created_at ?? event.ts}`} event={{
-                ...event,
-                id: event.id ?? event.event_id ?? `${event.domain}:${event.title}`,
-                ts: event.ts ?? event.created_at ?? '',
-              }} />
-            )) : (
-              <div className="p-4 text-sm text-slate-500">
-                尚未看到 OBS audit snapshot。部署後 smoke test 要確認 snapshot writer 有把事件寫入 D1。
+                ))}
+                {!resourceAudit.data?.items?.length && <div className="p-4 text-sm text-slate-500">目前沒有 resource audit payload。</div>}
               </div>
             )}
           </div>
         </WorkstationPanel>
-
-        <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-          <WorkstationPanel title="Scheduler Trace" kicker="recent jobs needing attention">
-            <div>
-              {(failedJobs.length ? failedJobs : (scheduler.data?.jobs ?? []).slice(0, 8)).map(job => (
-                <JobRow key={job.id} job={job} />
-              ))}
-              {!scheduler.data?.jobs?.length && (
-                <div className="p-4 text-sm text-slate-500">尚未取得 scheduler payload；請檢查 API、callback contract 與 GCP Scheduler 狀態。</div>
-              )}
-            </div>
-          </WorkstationPanel>
-
-          <WorkstationPanel title="Data Quality Gaps" kicker="freshness, schema, parity">
-            <div>
-              {(staleQuality.length ? staleQuality : (dataQuality.data?.checks ?? []).slice(0, 8)).map(check => (
-                <div key={check.id} className="grid grid-cols-[1fr_auto] gap-3 border-b border-[#263247] p-3 last:border-b-0">
-                  <div>
-                    <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{check.label}</p>
-                    <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{check.summary}</p>
-                  </div>
-                  <WorkstationPill tone={statusTone(check.status)}>{check.status}</WorkstationPill>
-                </div>
-              ))}
-              {!dataQuality.data?.checks?.length && (
-                <div className="p-4 text-sm text-slate-500">尚未取得 data quality payload；請確認 P6/P9 gate 是否有寫入 freshness/schema/parity 結果。</div>
-              )}
-            </div>
-          </WorkstationPanel>
-        </section>
-
-        <WorkstationPanel title="名詞解釋" kicker="same words, same meaning">
-          <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
-            {[
-              ['DQ', 'Data Quality，檢查價格、籌碼、feature schema、train/serve parity 是否可信。'],
-              ['IC', 'Information Coefficient，衡量模型預測排序和後續報酬排序的相關性。'],
-              ['POC', '近期成交量最集中的價格，用來理解市場接受的主要成本區。'],
-              ['Fair value', '系統估計的合理價格帶，不是保證目標價，要搭配風險與流動性看。'],
-              ['Alpha bucket', '股票目前更接近哪種 edge：趨勢、均值回歸、突破、或防守累積。'],
-              ['Market structure', '價格、量、POC、fair value、波動與流動性的市場結構摘要。'],
-              ['partially_filled', '部分成交，代表只有一部分股數成交，剩餘股數要進入重掛、取消或等待策略。'],
-              ['stale_quote', '報價過期，系統不能用舊 bid/ask 或昨日收盤價幻想成交。'],
-              ['quote_unavailable', '缺少即時 bid/ask 報價時 fail-closed，不用假價格進場。'],
-              ['Owner boundary', '每個決策只允許一個 owner 與 source of truth，避免新舊流程並行。'],
-            ].map(([term, description]) => (
-              <div key={term} className="bg-[#070a10] p-3">
-                <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-amber-200">{term}</p>
-                <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{description}</p>
-              </div>
-            ))}
-          </div>
-        </WorkstationPanel>
-
-        <div className="grid gap-3 md:grid-cols-3">
-          <SignalInsightCard
-            title="Model Health"
-            value={`${modelStats.active}/${modelStats.total}`}
-            detail={`weak IC ${modelStats.weakIc}；metadata gaps ${modelStats.missingMeta}。OBS 只做摘要，細節仍 drill down 到 Model Pool。`}
-            tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'}
-          />
-          <SignalInsightCard
-            title="Data Trust"
-            value={formatStatus(dataQuality.data?.overall)}
-            detail="資料品質是推薦、IC、backtest、execution 可信度的第一層 gate。"
-            tone={statusTone(dataQuality.data?.overall)}
-          />
-          <SignalInsightCard
-            title="Run Health"
-            value={`${scheduler.data?.stats?.successRate7d ?? 0}%`}
-            detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}；失敗時先看 run_id 與 callback contract。`}
-            tone={(scheduler.data?.stats?.failed24h ?? 0) > 0 ? 'warn' : 'ok'}
-          />
-        </div>
-
-        <ObsDrilldownMap />
-
-        <section className="grid gap-4 md:grid-cols-3">
-          {[
-            { icon: Activity, title: 'Trace Contract', body: 'Scheduler、pipeline、ML、verify 使用同一套可觀測狀態語意。' },
-            { icon: TimerReset, title: 'Freshness Contract', body: '資料 freshness 是信任推薦與 IC 前的第一個硬門檻。' },
-            { icon: XCircle, title: 'No Silent Fallback', body: '空畫面、舊資料、metadata gap、owner drift 都必須被 OBS 解釋。' },
-          ].map(item => {
-            const Icon = item.icon
-            return (
-              <div key={item.title} className="border border-[#263247] bg-[#070a10]/90 p-4">
-                <Icon className="h-5 w-5 text-sky-300" />
-                <p className="mt-3 font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{item.title}</p>
-                <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{item.body}</p>
-              </div>
-            )
-          })}
-        </section>
       </div>
     </AppShell>
   )

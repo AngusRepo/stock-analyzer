@@ -19,4 +19,8 @@ assert(script.includes('test_market_segment_policy.py'), 'P9 gate should protect
 assert(script.includes('test_model_ic_tracker.py'), 'P9 gate should protect segment-aware model IC contract')
 assert(script.includes('test_train_serve_parity_contract.py'), 'P9 gate should protect train/serve segment parity contract')
 assert(script.includes('test_sector_flow_proxy.py'), 'P9 gate should protect TWSE/TPEX controller proxy contracts')
-assert(script.includes('screenerPolicy.test.ts'), 'P9 gate should protect adaptive screener policy contract')
+assert(
+  script.includes("Get-ChildItem -Path (Join-Path (Get-Location) 'src\\lib') -Filter '*.test.ts'"),
+  'P9 gate should dynamically discover every worker contract test',
+)
+assert(script.includes('git diff --check'), 'P9 gate should run diff hygiene before release')

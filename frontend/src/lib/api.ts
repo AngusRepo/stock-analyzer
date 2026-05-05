@@ -132,8 +132,13 @@ export const chatApi = {
 }
 
 export const recommendationsApi = {
-  daily:       (date?: string) =>
-    get<any>(`/recommendations/daily${date ? `?date=${date}` : ''}`),
+  daily:       (date?: string, opts?: { view?: 'full' | 'card' }) => {
+    const params = new URLSearchParams()
+    if (date) params.set('date', date)
+    if (opts?.view) params.set('view', opts.view)
+    const query = params.toString()
+    return get<any>(`/recommendations/daily${query ? `?${query}` : ''}`)
+  },
   history:     (days = 7) =>
     get<any[]>(`/recommendations/history?days=${days}`),
   sectorFlow:  (date?: string, type?: 'industry' | 'theme') => {

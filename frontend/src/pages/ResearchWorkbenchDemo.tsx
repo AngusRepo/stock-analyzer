@@ -47,6 +47,14 @@ const constituents = [
 
 const sourceCoverage = ['TWSE', 'TPEX', 'TAIFEX', 'Anue', 'MOPS', 'FinMind sidecar', 'Internal ML']
 
+const telemetry = [
+  { label: 'Unified memory', value: '61.2GB / 96GB', state: 'stable' },
+  { label: 'Local LLM TPS', value: '42.8', state: 'live' },
+  { label: 'CF -> D1 writes', value: 'fresh 18s', state: 'sync' },
+]
+
+const labNodes = ['Gemini', 'Claude', 'Internal ML', 'Policy Gate']
+
 function ToneDot({ tone }: { tone: string }) {
   const color = tone === 'hot' ? 'bg-[#f25f5c]' : tone === 'warm' ? 'bg-[#f6bd60]' : 'bg-[#5aa9e6]'
   return <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${color}`} />
@@ -278,6 +286,35 @@ function RightRail() {
           ))}
         </div>
       </div>
+
+      <div className="mt-6 border-t border-[#273142] pt-4">
+        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Local LLM telemetry</p>
+        <div className="space-y-2">
+          {telemetry.map((item) => (
+            <div key={item.label} className="grid grid-cols-[1fr_auto] gap-3 border border-[#273142] bg-[#0d1118] px-3 py-2">
+              <span className="text-xs text-[#9aa6b8]">{item.label}</span>
+              <span className="font-mono text-xs text-[#d8f3dc]">{item.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-[#273142] pt-4">
+        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">R&D lab topology</p>
+        <div className="border border-[#273142] bg-[#0d1118] p-3">
+          <div className="grid grid-cols-2 gap-2">
+            {labNodes.map((node) => (
+              <div key={node} className="border border-[#334155] bg-[#080c12] px-2 py-2 text-center font-mono text-[10px] text-[#d8dee9]">
+                {node}
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 h-1.5 bg-[#1f2937]">
+            <div className="h-full w-[68%] bg-[#3b82f6]" />
+          </div>
+          <p className="mt-2 text-[11px] leading-5 text-[#8a94a8]">Agent weight preview. Research mode only.</p>
+        </div>
+      </div>
     </aside>
   )
 }
@@ -297,7 +334,7 @@ export default function ResearchWorkbenchDemo() {
                   <span className="font-mono text-[11px] text-[#8a94a8]">/demo/research-workbench</span>
                 </div>
                 <h1 className="text-2xl font-semibold tracking-normal text-white md:text-3xl">StockVision Research Workbench</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#9aa6b8]">題材、每日焦點與個股研究合併成單一研究層。這頁只使用靜態 demo data，不觸碰 production API。</p>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#9aa6b8]">題材、每日焦點、個股研究、AI 代理決策與基礎設施觀測合併成單一研究層。這頁只使用靜態 demo data，不觸碰 production API。</p>
               </div>
               <div className="flex items-center gap-2">
                 <div className="hidden border border-[#273142] bg-[#0d1118] px-3 py-2 font-mono text-xs text-[#9aa6b8] md:flex">

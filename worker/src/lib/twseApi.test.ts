@@ -1,12 +1,12 @@
 import { parseTpexDailyQuoteRows } from './twseApi'
-import fs from 'node:fs'
+import { readFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
 {
-  const source = fs.readFileSync('src/lib/twseApi.ts', 'utf8')
+  const source = readFileSync('src/lib/twseApi.ts', 'utf8')
   assert(!source.includes("SET market='EMERGING'"), 'bulk update must not write unsupported EMERGING into stocks.market')
 }
 

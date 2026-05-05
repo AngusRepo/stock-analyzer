@@ -157,7 +157,9 @@ function isCronDueOnUtcDate(domExpr: string, monthExpr: string, dowExpr: string,
 }
 
 function parseFirstWeekdayOfMonth(groc: string): { dow: number; hour: number; minute: number; timeZone: 'UTC' | 'Asia/Taipei' } | null {
-  const match = groc.trim().toLowerCase().match(/^first\s+(sun|mon|tue|wed|thu|fri|sat)(?:day)?\s+of\s+month\s+(\d{1,2}):(\d{2})(?:\s+(tw|taipei))?$/)
+  const match = groc.trim().toLowerCase().match(
+    /^first\s+(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\s+of\s+month\s+(\d{1,2}):(\d{2})(?:\s+(tw|taipei))?$/,
+  )
   if (!match) return null
   const dow = NUM_TO_DOW_NAME.indexOf(match[1].slice(0, 3))
   const hour = Number.parseInt(match[2], 10)

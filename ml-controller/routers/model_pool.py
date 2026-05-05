@@ -156,6 +156,9 @@ def _lifecycle_diagnosis(
     elif "ranking_signal_missing" in blockers:
         status = "ranking_signal_missing"
         reason = "Prediction rows exist but forecast_data.rank_score is missing."
+    elif "verification_missing" in blockers:
+        status = "verification_missing"
+        reason = "verify-v2 has not written predictions.verified_at / actual_return_pct; IC cannot be trusted until verified_rows_written is positive."
     elif "coverage_low" in blockers:
         status = "coverage_low"
         reason = "Model has too few production samples to compute stable IC."

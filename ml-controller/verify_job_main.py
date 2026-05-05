@@ -13,14 +13,40 @@ import os
 import time
 import uuid
 
-from routers.pipeline import _callback_worker
-from routers.verify import _format_verify_summary
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("verify_job")
+
+
+def format_verify_summary(result: dict) -> str:
+    return (
+        f"verified {result.get('verified', 0)}/{result.get('pending', 0)} "
+        f"written {result.get('metrics', {}).get('verified_rows_written', 0)} "
+        f"correct {result.get('correct', 0)} "
+        f"pnl {(float(result.get('total_pnl_pct', 0.0)) * 100):.1f}% "
+        f"arf {result.get('arf_updated', 0)}"
+    )
+
+
+def classify_verify_callback_status(result: dict) -> tuple[str, str | None]:
+    if result.get("status") != "ok":
+        errors = result.get("errors") or []
+        return "error", "; ".join(str(e) for e in errors[:3]) or str(result)
+
+    pending = int(result.get("pending") or 0)
+    verified = int(result.get("verified") or 0)
+    written = int((result.get("metrics") or {}).get("verified_rows_written") or 0)
+
+    if pending <= 0:
+        return "skipped", "no pending predictions in verifiable window"
+    if verified <= 0 or written <= 0:
+        return "error", (
+            f"verify produced no durable outcome writes: "
+            f"pending={pending} verified={verified} verified_rows_written={written}"
+        )
+    return "success", None
 
 
 async def _run() -> int:
@@ -56,12 +82,10 @@ async def _run() -> int:
             limit=limit,
             update_aggregates=update_aggregates,
         )
-        ok = result.get("status") == "ok"
-        errors = result.get("errors") or []
-        status = "success" if ok else "error"
-        summary = _format_verify_summary(result) if ok else ("; ".join(str(e) for e in errors[:3]) or "verify failed")
-        if not ok:
-            error = "; ".join(str(e) for e in errors[:3]) or str(result)
+        status, reason = classify_verify_callback_status(result)
+        summary = format_verify_summary(result) if status == "success" else (reason or "verify skipped")
+        if status == "error":
+            error = reason
     except Exception as e:  # noqa: BLE001
         logger.exception("[VerifyJob] Verify failed")
         error = f"{type(e).__name__}: {e}"
@@ -80,9 +104,11 @@ async def _run() -> int:
     if error:
         payload["error"] = error
 
+    from routers.pipeline import _callback_worker
+
     await _callback_worker(payload)
     logger.info("[VerifyJob] Verify finished: status=%s elapsed=%dms", status, elapsed_ms)
-    return 0 if status == "success" else 1
+    return 0 if status in {"success", "skipped"} else 1
 
 
 def main() -> None:

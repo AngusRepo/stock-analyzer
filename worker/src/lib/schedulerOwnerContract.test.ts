@@ -24,10 +24,9 @@ const tradingDayTasks = [
   'intraday-rescore',
   'eod-exit',
   'daily-snapshot',
-  'update',
+  'evening-chain',
+  'indicator-queue',
   'ml-warmup',
-  'screener',
-  'pipeline',
   'adapt',
   'daily-report',
   'obsidian-sync',
@@ -58,11 +57,11 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['update', 'ml-warmup', 'screener', 'pipeline', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['evening-chain', 'ml-warmup', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
-for (const critical of ['update', 'screener', 'pipeline']) {
+for (const critical of ['evening-chain']) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }

@@ -39,6 +39,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
   const requestedRunDate = () => c.req.query('date') || undefined
 
   return {
+    'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),

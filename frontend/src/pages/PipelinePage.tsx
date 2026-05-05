@@ -189,11 +189,11 @@ export default function PipelinePage() {
   if (!isAuthenticated) {
     return (
       <AppShell>
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center space-y-4">
-            <Filter className="w-12 h-12 mx-auto text-emerald-400/60" />
-            <p className="text-muted-foreground">請先登入以查看 Pipeline</p>
-            <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
+        <div className="flex items-center justify-center h-full p-4">
+          <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center space-y-4">
+            <Filter className="w-12 h-12 mx-auto text-[#d6a85f]/80" />
+            <p className="text-[#b9b1a1]">請先登入以查看每日流程</p>
+            <button onClick={login} className="rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
               Google 登入
             </button>
           </div>
@@ -207,23 +207,24 @@ export default function PipelinePage() {
       <div className="p-4 lg:p-5 space-y-4 text-sm max-w-6xl">
 
         {/* Page header */}
-        <div className="flex items-center justify-between">
+        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-bold">每日流程</h1>
-            <p className="text-xs text-muted-foreground">{recDate} 選股與掛單流程總覽</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Daily flow</p>
+            <h1 className="mt-1 text-lg font-bold text-[#fff7e8]">每日流程</h1>
+            <p className="mt-1 text-xs text-[#b9b1a1]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
             <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
           </div>
         </div>
 
         {/* Pipeline flow indicator */}
-        <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-card border border-border overflow-x-auto">
+        <div className="flex items-center gap-2 overflow-x-auto rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3">
           {[
-            { label: '初篩', count: screenerPassed.length, color: 'text-blue-400' },
-            { label: 'ML 預測', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-purple-400' },
-            { label: '訊號過濾', count: mlBuy.length + mlHold.length, color: 'text-amber-400' },
-            { label: 'T2 辯論', count: pendingBuys.length, color: 'text-primary' },
+            { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
+            { label: '模型判斷', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-[#d7b98c]' },
+            { label: '推薦整理', count: mlBuy.length + mlHold.length, color: 'text-[#f1c16f]' },
+            { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
           ].map((step, i) => (
             <div key={step.label} className="flex items-center gap-2 shrink-0">
               {i > 0 && <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40" />}
@@ -268,8 +269,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={2} icon={Brain}
-                  title="ML 集成預測"
-                  subtitle="6 模型投票（XGBoost、LightGBM、CatBoost × 2 時框）→ signal_score → 買進 / 觀望 / 賣出"
+                  title="模型判斷"
+                  subtitle="整合多模型投票與 signal_score，先分出買進、觀望與賣出，再交給下一層整理。"
                   count={allRecs.filter((r: any) => r.ml_score != null).length}
                   color="bg-purple-500/20 text-purple-400"
                 />
@@ -328,8 +329,8 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={3} icon={Star}
-                  title="推薦過濾"
-                  subtitle="買進與觀望保留為觀察清單，賣出與無訊號過濾 → 補上 LLM 推薦理由"
+                  title="推薦整理"
+                  subtitle="買進與觀望保留為觀察清單，賣出與無訊號排除；再補上可閱讀的推薦理由。"
                   count={mlBuy.length + mlHold.length}
                   color="bg-amber-500/20 text-amber-400"
                 />
@@ -349,7 +350,7 @@ export default function PipelinePage() {
               <CardContent className="pt-4 pb-3">
                 <StepHeader
                   step={4} icon={Scale}
-                  title="T2 辯論與掛單"
+                  title="辯論與模擬掛單"
                   subtitle={`Morning Setup 辯論 → RRG 象限過濾 → 限價掛單（${pbDate}）`}
                   count={pendingBuys.length}
                   color="bg-primary/20 text-primary"

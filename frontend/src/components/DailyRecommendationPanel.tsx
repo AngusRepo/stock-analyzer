@@ -67,6 +67,16 @@ function SectorFlowBar({ flow, maxAbs }: { flow: any; maxAbs: number }) {
 }
 
 // ─── Main panel ────────────────────────────────────────────────────────────
+function SectorFlowStaleNotice({ data, label = 'theme flow' }: { data: any; label?: string }) {
+  if (!data?.stale) return null
+  return (
+    <div className="mb-3 rounded-2xl border border-[#d6a85f]/30 bg-[#d6a85f]/10 px-3 py-2 text-[11px] leading-relaxed text-[#f1c16f]">
+      {label} 資料尚未更新到 {data.requested_date ?? data.date ?? 'requested date'}；
+      目前顯示最近可用資料 {data.stale_date ?? 'unknown'}。這代表今晚 pipeline 尚未完成或 sector flow 寫入失敗。
+    </div>
+  )
+}
+
 export function DailyRecommendationPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
 
@@ -82,23 +92,23 @@ export function DailyRecommendationPanel() {
   return (
     <div className="space-y-6">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between rounded-2xl border border-[#3a3125] bg-[#171714]/70 p-3">
         <div>
-          <h2 className="text-base font-semibold flex items-center gap-2">
-            <Star className="w-4 h-4 text-amber-400" />
-            每日選股推薦
+          <h2 className="text-base font-semibold flex items-center gap-2 text-[#fff7e8]">
+            <Star className="w-4 h-4 text-[#d6a85f]" />
+            今日候選清單
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {recData?.date ?? today} · ML + 籌碼 + LLM 綜合評分
+          <p className="text-xs text-[#8f877a] mt-0.5">
+            {recData?.date ?? today} · 模型、籌碼與理由整理
           </p>
-          <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground/80">
+          <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-[#b9b1a1]">
             {AI_TOP_PICK_EXPLANATION}
           </p>
         </div>
         <Button
           variant="ghost" size="sm"
           onClick={() => refetch()}
-          className="text-xs gap-1.5"
+          className="text-xs gap-1.5 rounded-full text-[#f1c16f] hover:bg-[#d6a85f]/10"
           disabled={recLoading}
         >
           <RefreshCw className={cn('w-3.5 h-3.5', recLoading && 'animate-spin')} />
@@ -124,10 +134,10 @@ export function DailyRecommendationPanel() {
           <div className="space-y-3">
             <div className="flex items-center justify-between px-1">
               <div>
-                <p className="text-xs font-semibold text-emerald-300">上市櫃交易候選</p>
-                <p className="text-[11px] text-muted-foreground">會進入 morning setup / debate / pending buys 的主流程。</p>
+                <p className="text-xs font-semibold text-[#9fcca1]">上市櫃交易候選</p>
+                <p className="text-[11px] text-[#8f877a]">會進入 morning setup / debate / pending buys 的主流程。</p>
               </div>
-              <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-300">
+              <Badge variant="outline" className="text-[10px] rounded-full border-[#9fcca1]/30 text-[#cbe4c7]">
                 {tradableRecs.length} 檔
               </Badge>
             </div>
@@ -137,13 +147,13 @@ export function DailyRecommendationPanel() {
           </div>
 
           {emergingRecs.length > 0 && (
-            <div className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+            <div className="space-y-3 rounded-2xl border border-[#d6a85f]/24 bg-[#d6a85f]/[0.05] p-3">
               <div className="flex items-center justify-between px-1">
                 <div>
-                  <p className="text-xs font-semibold text-amber-300">興櫃觀察名單</p>
-                  <p className="text-[11px] text-muted-foreground">只做研究與人工觀察；不進 morning setup、不產生 pending buys。</p>
+                  <p className="text-xs font-semibold text-[#f1c16f]">興櫃觀察名單</p>
+                  <p className="text-[11px] text-[#8f877a]">只做研究與人工觀察；不進 morning setup、不產生 pending buys。</p>
                 </div>
-                <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-300">
+                <Badge variant="outline" className="text-[10px] rounded-full border-[#d6a85f]/30 text-[#f1c16f]">
                   {emergingRecs.length} 檔
                 </Badge>
               </div>
@@ -256,7 +266,7 @@ function WordCloud({ items, type }: { items: { text: string; value: number; posi
   )
 }
 
-// Bot Dashboard 用 — 含象限 + RS（差異化）
+// 模擬交易室用 — 含象限 + RS（差異化）
 function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: string; color: string }) {
   if (!flows.length) return <p className="text-xs text-muted-foreground">無{title}主題</p>
   const maxAbs = Math.max(...flows.map((f: any) => Math.abs(f.total_net ?? 0)), 0.01)
@@ -316,7 +326,7 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
   )
 }
 
-// ─── Theme Flow Panel（Dashboard 用）— Ranking Table + Treemap ───────────────
+// ─── Theme Flow Panel（晨間概覽用）— Ranking Table + Treemap ───────────────
 export function ThemeFlowPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
@@ -350,11 +360,12 @@ export function ThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-        <BarChart3 className="w-4 h-4 text-blue-400" />
+    <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
+      <h3 className="text-sm font-medium mb-3 flex items-center gap-2 text-[#fff7e8]">
+        <BarChart3 className="w-4 h-4 text-[#d6a85f]" />
         主題輪動（三大法人近5日買賣超）
       </h3>
+      <SectorFlowStaleNotice data={themeData} label="主題資金流" />
       {themeLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
@@ -579,11 +590,12 @@ export function BotThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-        <BarChart3 className="w-4 h-4 text-blue-400" />
+    <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
+      <h3 className="text-sm font-medium mb-3 flex items-center gap-2 text-[#fff7e8]">
+        <BarChart3 className="w-4 h-4 text-[#d6a85f]" />
         主題輪動 + RRG 四象限
       </h3>
+      <SectorFlowStaleNotice data={themeData} label="Bot 主題資金流" />
       {isLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}

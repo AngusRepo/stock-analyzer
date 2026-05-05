@@ -139,3 +139,45 @@ async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
     assert diagnosis["status"] == "artifact_mismatch"
     assert "metadata_missing" in diagnosis["blockers"]
     assert "prediction_missing" in diagnosis["blockers"]
+
+
+@pytest.mark.asyncio
+async def test_lineage_marks_verification_missing_as_actionable_root_cause(monkeypatch):
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/xgboost/v1.joblib",
+                "model_type": "feature",
+                "balance_family": "feature",
+                "weekly_ic": [0.02],
+                "ic_4w_avg": 0.02,
+                "last_ic_status": "insufficient_samples",
+                "last_ic_root_cause": "verification_missing",
+                "last_ic_sample_count": 0,
+                "last_ic_diagnostics": {
+                    "raw_rows": 90,
+                    "verified_rows": 0,
+                    "production_rows": 0,
+                    "unverified_rows": 90,
+                },
+            }
+        },
+    }
+    blobs = {
+        "universal/model_pool.json": json.dumps(pool),
+        "universal/xgboost/metadata_v1.json": json.dumps({"version": "v1", "feature_count": 106}),
+    }
+    from google.cloud import storage
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(storage, "Client", lambda: _FakeStorageClient(_FakeBucket(blobs)))
+
+    result = await model_pool.lineage()
+
+    diagnosis = result["models"]["XGBoost"]["lifecycle_diagnosis"]
+    assert diagnosis["status"] == "verification_missing"
+    assert diagnosis["root_cause"] == "verification_missing"
+    assert "verify-v2" in diagnosis["reason"]

@@ -377,10 +377,14 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     us_signal = kv_client.get_json(f"us:leading:{run_date}", default={}) or {}
 
     # ── 5. Latest market_breadth ────────────────────────────────────────────
-    breadth_rows = d1_client.query(
-        "SELECT date, advance_ratio, bull_alignment_pct "
-        "FROM market_breadth ORDER BY date DESC LIMIT 5"
-    )
+    try:
+        breadth_rows = d1_client.query(
+            "SELECT date, advance_ratio, bull_alignment_pct "
+            "FROM market_breadth ORDER BY date DESC LIMIT 5"
+        )
+    except RuntimeError as e:
+        logger.warning("[payload_builder] market_breadth unavailable; degrading market_env: %s", e)
+        breadth_rows = []
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
     # ── 6. Adaptive params from KV ──────────────────────────────────────────

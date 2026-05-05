@@ -1207,7 +1207,6 @@ recommendations.get('/sector-flow', async (c) => {
 
   // 若今天沒資料，取最近一筆
   if (!results?.length) {
-    const fallbackBinds = type ? [type] : []
     const { results: latest } = await c.env.DB.prepare(`
       SELECT *
       FROM sector_flow
@@ -1215,10 +1214,17 @@ recommendations.get('/sector-flow', async (c) => {
       ${typeFilter}
       ORDER BY total_net DESC
     `).bind(...(type ? [type, type] : [])).all<any>()
-    return c.json({ date: 'latest', flows: latest ?? [] })
+    const staleDate = latest?.[0]?.date ?? null
+    return c.json({
+      date,
+      requested_date: date,
+      stale: Boolean(staleDate),
+      stale_date: staleDate,
+      flows: latest ?? [],
+    })
   }
 
-  return c.json({ date, flows: results })
+  return c.json({ date, requested_date: date, stale: false, stale_date: null, flows: results })
 })
 
 // GET /api/recommendations/sector-trend?sector=半導體&days=14&type=industry|theme
@@ -1265,10 +1271,17 @@ recommendations.get('/sector-flow-stocks', async (c) => {
     if (cls)   { fbSql += ' AND classification = ?'; fbBinds.push(cls) }
     fbSql += ' ORDER BY theme, classification, net_amount DESC'
     const { results: fb } = await c.env.DB.prepare(fbSql).bind(...fbBinds).all<any>()
-    return c.json({ date: 'latest', stocks: fb ?? [] })
+    const staleDate = fb?.[0]?.date ?? null
+    return c.json({
+      date,
+      requested_date: date,
+      stale: Boolean(staleDate),
+      stale_date: staleDate,
+      stocks: fb ?? [],
+    })
   }
 
-  return c.json({ date, stocks: results })
+  return c.json({ date, requested_date: date, stale: false, stale_date: null, stocks: results })
 })
 
 // GET /api/recommendations/daily-report?date=YYYY-MM-DD

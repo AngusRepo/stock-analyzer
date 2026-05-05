@@ -44,49 +44,49 @@
 }
 
 :root {
-  --radius: 0.5rem;
+  --radius: 0.75rem;
 
   /* ── Surface hierarchy (4 layers, hex for reliable rendering) ── */
-  --sv-bg-0: #0a0b0f;
-  --sv-bg-1: #0f1117;
-  --sv-bg-2: #151822;
-  --sv-bg-3: #1c2030;
-  --sv-bg-4: #242940;
-  --sv-accent: #00d4aa;
+  --sv-bg-0: #0b0f14;
+  --sv-bg-1: #111821;
+  --sv-bg-2: #17202b;
+  --sv-bg-3: #202b37;
+  --sv-bg-4: #2b3a49;
+  --sv-accent: #7aa2c7;
 
   /* ── Semantic tokens ── */
-  --background: #0a0b0f;
-  --foreground: #e2e4e9;
-  --card: #151822;
-  --card-foreground: #e2e4e9;
-  --popover: #151822;
-  --popover-foreground: #e2e4e9;
-  --primary: #00d4aa;
-  --primary-foreground: #0a0b0f;
-  --secondary: #1c2030;
-  --secondary-foreground: #c8cad0;
-  --muted: #1c2030;
-  --muted-foreground: #6b7080;
-  --accent: #242940;
-  --accent-foreground: #e2e4e9;
+  --background: #0b0f14;
+  --foreground: #e6edf3;
+  --card: #17202b;
+  --card-foreground: #e6edf3;
+  --popover: #17202b;
+  --popover-foreground: #e6edf3;
+  --primary: #7aa2c7;
+  --primary-foreground: #071018;
+  --secondary: #202b37;
+  --secondary-foreground: #c8d3df;
+  --muted: #202b37;
+  --muted-foreground: #8b9bab;
+  --accent: #243244;
+  --accent-foreground: #e6edf3;
   --destructive: #ef4444;
   --destructive-foreground: #fafafa;
-  --border: #2a2f42;
-  --input: #1c2030;
-  --ring: #00d4aa;
-  --chart-1: #00d4aa;
-  --chart-2: #3b82f6;
-  --chart-3: #f59e0b;
+  --border: #2b3a49;
+  --input: #202b37;
+  --ring: #7aa2c7;
+  --chart-1: #7aa2c7;
+  --chart-2: #8fc8a9;
+  --chart-3: #d4a44f;
   --chart-4: #ef4444;
   --chart-5: #8b5cf6;
-  --sidebar: #0f1117;
-  --sidebar-foreground: #c8cad0;
-  --sidebar-primary: #00d4aa;
-  --sidebar-primary-foreground: #0a0b0f;
-  --sidebar-accent: #1c2030;
-  --sidebar-accent-foreground: #e2e4e9;
-  --sidebar-border: #1c2030;
-  --sidebar-ring: #00d4aa;
+  --sidebar: #111821;
+  --sidebar-foreground: #c8d3df;
+  --sidebar-primary: #7aa2c7;
+  --sidebar-primary-foreground: #071018;
+  --sidebar-accent: #202b37;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: #2b3a49;
+  --sidebar-ring: #7aa2c7;
 }
 
 /* .dark-unused removed — single dark theme only */

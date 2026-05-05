@@ -36,14 +36,14 @@ export function WorkstationBackdrop() {
         `}
       </style>
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.032)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.024)_1px,transparent_1px)] bg-[size:18px_18px]" />
-      <div className="absolute left-[17%] top-[10%] h-52 w-[22rem] rounded-[42%_58%_63%_37%/45%_38%_62%_55%] bg-amber-300/12 opacity-70 blur-3xl mix-blend-screen" style={{ animation: 'sv-orbit-soft 10s ease-in-out infinite' }} />
+      <div className="absolute left-[17%] top-[10%] h-52 w-[22rem] rounded-[42%_58%_63%_37%/45%_38%_62%_55%] bg-slate-300/10 opacity-70 blur-3xl mix-blend-screen" style={{ animation: 'sv-orbit-soft 10s ease-in-out infinite' }} />
       <div className="absolute right-[10%] top-[22%] h-44 w-[25rem] rotate-12 rounded-[68%_32%_48%_52%/37%_58%_42%_63%] bg-sky-300/10 opacity-65 blur-3xl mix-blend-screen" style={{ animation: 'sv-orbit-slow 13s ease-in-out infinite' }} />
       <div className="absolute left-[44%] bottom-[12%] h-52 w-32 -rotate-12 rounded-[36%_64%_35%_65%/62%_34%_66%_38%] bg-rose-300/10 opacity-60 blur-3xl mix-blend-screen" style={{ animation: 'sv-orbit-soft 15s ease-in-out infinite reverse' }} />
       {[
-        ['18%', '14%', '#ffbf5f', '0s'],
+        ['18%', '14%', '#7aa2c7', '0s'],
         ['58%', '20%', '#4cc9ff', '1.1s'],
         ['77%', '44%', '#ff6b8a', '1.7s'],
-        ['67%', '72%', '#ffbf5f', '2.2s'],
+        ['67%', '72%', '#7aa2c7', '2.2s'],
       ].map(([left, top, color, delay]) => (
         <span
           key={`${left}-${top}`}
@@ -77,11 +77,11 @@ export function WorkstationPanel({
   action?: ReactNode
 }) {
   return (
-    <section className={cx('border border-[#263247] bg-[#070a10]/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]', className)}>
-      <header className="flex min-h-10 items-center justify-between border-b border-[#263247] bg-[linear-gradient(90deg,#0d111b,#0b0c12_58%,#161006)] px-3">
+    <section className={cx('overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#111821]/90 shadow-[0_14px_50px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]', className)}>
+      <header className="flex min-h-10 items-center justify-between border-b border-[#2b3a49] bg-[linear-gradient(90deg,#17202b,#111821_58%,#0d1722)] px-3">
         <div className="min-w-0">
-          {kicker && <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#8a92a6]">{kicker}</p>}
-          <h2 className="truncate text-[12px] font-semibold uppercase tracking-[0.14em] text-[#fff1cf]">{title}</h2>
+          {kicker && <p className="text-[10px] tracking-[0.18em] text-[#8b9bab]">{kicker}</p>}
+          <h2 className="truncate text-[12px] font-semibold tracking-[0.08em] text-[#e6edf3]">{title}</h2>
         </div>
         {action}
       </header>
@@ -105,7 +105,7 @@ export function WorkstationCatCard({
 }) {
   return (
     <div className={cx(
-      'group relative overflow-hidden border border-[#263247] bg-[#070a10]/88 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]',
+      'group relative overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#111821]/88 p-3 shadow-[0_14px_50px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]',
       className,
     )}>
       <div className={cx(
@@ -146,11 +146,11 @@ export function WorkstationPageTitle({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col gap-3 border border-[#263247] bg-[linear-gradient(90deg,#07080d,#111008)] p-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="flex flex-col gap-3 rounded-2xl border border-[#2b3a49] bg-[linear-gradient(90deg,#17202b,#111821_58%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] lg:flex-row lg:items-end lg:justify-between">
       <div>
-        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-amber-300/80">{kicker}</p>
-        <h1 className="mt-1 text-xl font-semibold uppercase tracking-[0.04em] text-[#fff1cf]">{title}</h1>
-        {description && <p className="mt-2 max-w-3xl text-xs leading-5 text-slate-400">{description}</p>}
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#7aa2c7]">{kicker}</p>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight text-[#e6edf3]">{title}</h1>
+        {description && <p className="mt-2 max-w-3xl text-xs leading-5 text-[#a8b6c5]">{description}</p>}
       </div>
       {action}
     </div>

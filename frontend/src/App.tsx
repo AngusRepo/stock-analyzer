@@ -69,6 +69,11 @@ export default function App() {
             <ObservabilityPage />
           </Suspense>
         </Route>
+        <Route path="/research">
+          <Suspense fallback={<PageLoader label="Research Workbench" />}>
+            <ResearchWorkbenchDemo />
+          </Suspense>
+        </Route>
         <Route path="/demo/research-workbench">
           <Suspense fallback={<PageLoader label="Research Workbench" />}>
             <ResearchWorkbenchDemo />
@@ -76,7 +81,7 @@ export default function App() {
         </Route>
         <Route>
           <div className="flex h-screen items-center justify-center text-muted-foreground">
-            <p>Page not found</p>
+            <p>找不到這個頁面</p>
           </div>
         </Route>
       </Switch>

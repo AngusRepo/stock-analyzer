@@ -11,6 +11,8 @@ Required env vars (Cloud Run env):
 from __future__ import annotations
 import os
 import logging
+import random
+import time
 from typing import Any, Optional
 
 try:
@@ -25,6 +27,7 @@ CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
 
 
 def _check_env():
@@ -37,6 +40,18 @@ def _check_env():
         raise RuntimeError(
             f"Missing env vars for D1 client: {missing}. Set in Cloud Run env."
         )
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    delay = min(0.5 * (2 ** attempt), 4.0) + random.uniform(0.0, 0.25)
+    time.sleep(delay)
+
+
+def _is_retryable_d1_response(status_code: int, text: str) -> bool:
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+    lowered = (text or "").lower()
+    return "d1 db is overloaded" in lowered or "requests queued for too long" in lowered
 
 
 def _post(body: dict, timeout: float = 60.0) -> dict:
@@ -52,16 +67,39 @@ def _post(body: dict, timeout: float = 60.0) -> dict:
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json",
     }
-    try:
-        resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
-    except httpx.RequestError as e:
-        raise RuntimeError(f"D1 request failed: network error: {e}") from e
-    if resp.status_code != 200:
-        raise RuntimeError(f"D1 request failed: HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    if not data.get("success"):
-        raise RuntimeError(f"D1 request unsuccessful: {data.get('errors', data)}")
-    return data
+    last_error: RuntimeError | None = None
+    max_attempts = max(1, MAX_D1_RETRIES + 1)
+
+    for attempt in range(max_attempts):
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.RequestError as e:
+            last_error = RuntimeError(f"D1 request failed: network error: {e}")
+            if attempt < max_attempts - 1:
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error from e
+
+        if resp.status_code != 200:
+            last_error = RuntimeError(f"D1 request failed: HTTP {resp.status_code}: {resp.text[:300]}")
+            if _is_retryable_d1_response(resp.status_code, resp.text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 response attempt=%s status=%s", attempt + 1, resp.status_code)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+
+        data = resp.json()
+        if not data.get("success"):
+            error_text = str(data.get("errors", data))
+            last_error = RuntimeError(f"D1 request unsuccessful: {data.get('errors', data)}")
+            if _is_retryable_d1_response(resp.status_code, error_text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 payload error attempt=%s", attempt + 1)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+        return data
+
+    raise last_error or RuntimeError("D1 request failed: exhausted retries")
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:

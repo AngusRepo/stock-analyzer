@@ -1,5 +1,5 @@
 /**
- * BotDashboard — Auto Trade Bot 專頁
+ * 模擬交易室 — Auto Trade Bot 專頁
  *
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
@@ -343,10 +343,10 @@ function pendingBuyEmptyMessage(meta?: any): string {
   const expired = Number(counts.expired ?? 0)
   const terminal = cancelled + filled + skipped + expired
   if (cancelled > 0 && terminal > 0) {
-    return '今日執行池的 pending buys 已被風控取消；AI Top Picks 仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已被風控取消；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
   }
   if (terminal > 0) {
-    return '今日執行池的 pending buys 已進入終態；AI Top Picks 仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已進入終態；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
   }
   return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
 }
@@ -465,7 +465,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
       <div className="space-y-2">
-        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與 Dashboard 同源）</div>
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
@@ -757,11 +757,11 @@ function BotStatusPanel() {
         </div>
       </div>
 
-      {/* Scheduler run details live on the Scheduler Dashboard. */}
+      {/* 排程執行細節集中在排程節奏頁。 */}
       <GateCalibrationPanel />
 
       <div className="text-center py-4 text-muted-foreground text-sm">
-        <p>Scheduler runs moved to <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
+        <p>排程紀錄已移到 <a href="/scheduler" className="text-sky-400 hover:underline">排程節奏</a></p>
       </div>
     </div>
   )
@@ -1323,7 +1323,7 @@ function PositionSizer() {
   )
 }
 
-// ─── Main Dashboard ─────────────────────────────────────────────────────────
+// ─── 模擬交易主頁 ─────────────────────────────────────────────────────────
 
 export default function BotDashboard() {
   const { isAuthenticated, login } = useAuth()
@@ -1344,10 +1344,10 @@ export default function BotDashboard() {
         <div className="flex min-h-full items-center justify-center p-4 lg:p-5">
           <div className="w-full max-w-4xl space-y-3">
             <WorkstationPageTitle
-              kicker="Execution workstation"
-              title="Bot Trading Desk"
-              description="登入後查看 pending buys、debate、fills、slippage、T1/T2/Stop 與資產計算；未登入時只顯示工作台預覽，不讀交易資料。"
-              action={<WorkstationPill tone="warn">Login Required</WorkstationPill>}
+              kicker="Paper trading companion"
+              title="模擬交易室"
+              description="登入後查看待買清單、辯論結果、成交、滑價、停利停損與資產變化；未登入時只顯示預覽，不讀交易資料。"
+              action={<WorkstationPill tone="warn">需要登入</WorkstationPill>}
             />
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <WorkstationCatCard
@@ -1363,10 +1363,10 @@ export default function BotDashboard() {
                 tone="info"
               />
             </div>
-            <div className="border border-[#263247] bg-[#070a10]/90 p-6 text-center">
-              <Bot className="mx-auto h-12 w-12 text-emerald-400/70" />
-              <p className="mt-3 text-sm text-muted-foreground">請先登入以查看 Bot Dashboard</p>
-              <button onClick={login} className="mt-4 border border-emerald-500/30 bg-emerald-600/80 px-4 py-2 text-sm hover:bg-emerald-500">
+            <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center">
+              <Bot className="mx-auto h-12 w-12 text-[#d6a85f]/80" />
+              <p className="mt-3 text-sm text-[#b9b1a1]">請先登入以查看模擬交易室</p>
+              <button onClick={login} className="mt-4 rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
                 Google 登入
               </button>
             </div>
@@ -1380,50 +1380,50 @@ export default function BotDashboard() {
     <AppShell>
       <div className="p-4 lg:p-5 space-y-3 text-sm">
         <WorkstationPageTitle
-          kicker="Execution workstation"
-          title="Bot Trading Desk"
-          description="Pending buys、debate、fills、slippage、T1/T2/Stop 與資產計算集中在同一張交易桌；資料來源與交易邏輯維持原 API。"
+          kicker="Paper trading companion"
+          title="模擬交易室"
+          description="把待買清單、辯論結果、成交、滑價、停利停損與資產變化放在同一張交易桌；資料來源與交易邏輯維持原 API。"
           action={
             <div className="flex flex-wrap gap-2">
-              <WorkstationPill tone="warn">Paper Trading</WorkstationPill>
-              <WorkstationPill tone={isTWMarketOpen() ? 'ok' : 'neutral'}>{isTWMarketOpen() ? 'Market Open' : 'Market Closed'}</WorkstationPill>
+              <WorkstationPill tone="warn">模擬交易</WorkstationPill>
+              <WorkstationPill tone={isTWMarketOpen() ? 'ok' : 'neutral'}>{isTWMarketOpen() ? '台股盤中' : '台股休息'}</WorkstationPill>
             </div>
           }
         />
 
-        <WorkstationPanel title="Portfolio Strip" kicker="cash, settlement, pnl" className="sticky top-0 z-20">
+        <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl" className="sticky top-0 z-20">
           <div className="px-4 pb-2 pt-3">
             <PortfolioSummary />
           </div>
         </WorkstationPanel>
 
         <DecisionTraceRail
-          title="Morning To Intraday Decision Trace"
+          title="從晨間候選到盤中執行"
           steps={[
-            { label: 'Daily Recs', detail: '收盤後 pipeline 產出上市上櫃交易候選與興櫃研究池。', tone: 'info' },
-            { label: 'Morning Setup', detail: '下一個交易日早上才把交易候選轉成 base ready。', tone: 'neutral' },
-            { label: 'T2 / Debate', detail: '辯論與風控確認後才允許進 pending buys。', tone: 'warn' },
-            { label: 'Quote Sanity', detail: '下單前檢查即時價、漲跌幅、處置/興櫃硬 gate 與追高接刀風險。', tone: 'ok' },
-            { label: 'Execution', detail: '只允許合理限價；不再用昨日收盤價製造 impossible fill。', tone: 'ok' },
-            { label: 'Audit', detail: 'fills、skips、slippage、T1/T2/Stop 與資產變化都留 trace。', tone: 'info' },
+            { label: '每日候選', detail: '收盤後 pipeline 產出上市上櫃交易候選與興櫃研究池。', tone: 'info' },
+            { label: '晨間設定', detail: '下一個交易日早上才把交易候選轉成 base ready。', tone: 'neutral' },
+            { label: '辯論風控', detail: '辯論與風控確認後才允許進 pending buys。', tone: 'warn' },
+            { label: '報價檢查', detail: '下單前檢查即時價、漲跌幅、處置/興櫃硬 gate 與追高接刀風險。', tone: 'ok' },
+            { label: '模擬執行', detail: '只允許合理限價；不再用昨日收盤價製造 impossible fill。', tone: 'ok' },
+            { label: '留痕', detail: 'fills、skips、slippage、T1/T2/Stop 與資產變化都留 trace。', tone: 'info' },
           ]}
         />
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <SignalInsightCard
-            title="Execution Lane"
+            title="執行清單"
             value="Pending buys"
             detail="Bot 只把 debate 後的 pending buys 當作可執行清單；daily recommendations 是候選池，不直接下單。"
             tone="ok"
           />
           <SignalInsightCard
-            title="Hard Gate"
+            title="硬性防呆"
             value="No emerging auto-trade"
             detail="興櫃可以研究與模型校準，但不會進 morning setup / pending buys。"
             tone="warn"
           />
           <SignalInsightCard
-            title="Pre-order Guard"
+            title="下單前檢查"
             value="Quote sanity"
             detail="盤中買入前必須重新確認即時價格、流動性、滑價與市場狀態。"
             tone="info"
@@ -1446,25 +1446,25 @@ export default function BotDashboard() {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <WorkstationPanel title="Equity Curve" kicker="paper trading performance">
+          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
             <div className="px-3 pb-2 pt-1">
               <PerformanceChart />
             </div>
           </WorkstationPanel>
-          <WorkstationPanel title="Positions" kicker="open risk and holdings">
+          <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
             <PositionsTable />
           </WorkstationPanel>
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           <WorkstationPanel
-            title="AI Top Picks"
+            title="AI 候選清單"
             kicker="post-debate execution candidates"
             action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
           >
             <div className="border-b border-[#263247] px-4 pb-2 pt-3">
               <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
-                <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
+                <TrendingUp className="w-3.5 h-3.5" /> AI 候選清單
               </div>
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
                 {AI_TOP_PICK_EXPLANATION}
@@ -1474,7 +1474,7 @@ export default function BotDashboard() {
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
             </div>
           </WorkstationPanel>
-          <WorkstationPanel title="Trade History" kicker="orders and fills audit">
+          <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
             <TradeHistory />
           </WorkstationPanel>
         </div>
@@ -1503,10 +1503,10 @@ export default function BotDashboard() {
         <details className="group">
           <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
             <Bot className="w-3.5 h-3.5" />
-            <span className="font-mono uppercase tracking-wider">Bot Status & Scheduler Runs</span>
+            <span className="font-mono uppercase tracking-wider">Bot 狀態與排程紀錄</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
           </summary>
-          <WorkstationPanel title="Bot Status" kicker="scheduler runs and market risk" className="mt-2">
+          <WorkstationPanel title="Bot 狀態" kicker="scheduler runs and market risk" className="mt-2">
             <div className="p-3">
               <BotStatusPanel />
             </div>

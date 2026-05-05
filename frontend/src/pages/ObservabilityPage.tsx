@@ -38,7 +38,7 @@ type ObsTab = 'incidents' | 'scheduler' | 'dataQuality' | 'modelHealth' | 'resou
 
 const TAB_LABELS: Record<ObsTab, string> = {
   incidents: '事件 / Incidents',
-  scheduler: '排程 / Scheduler Runs',
+  scheduler: 'Scheduler Runs / 排程執行',
   dataQuality: '資料品質 / Data Quality',
   modelHealth: '模型健康 / Model Health Snapshot',
   resource: '資源 / Cost / Resource',
@@ -122,12 +122,12 @@ function MetricCell({
   tone?: WorkstationTone
   detail?: string
 }) {
-  const color = tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'
+  const color = tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-[#e6edf3]'
   return (
-    <div className="min-w-0 border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
-      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
+    <div className="min-w-0 border-r border-[#2b3a49] bg-[#111821] p-3 last:border-r-0">
+      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">{label}</p>
       <p className={`mt-2 truncate font-mono text-xl font-semibold ${color}`}>{value}</p>
-      {detail && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{detail}</p>}
+      {detail && <p className="mt-1 line-clamp-2 text-xs text-[#8b9bab]">{detail}</p>}
     </div>
   )
 }
@@ -183,7 +183,7 @@ function HealthMap({
     { label: 'Resource', zh: '資源', value: resourceOk, tone: 'info' as WorkstationTone },
   ]
   return (
-    <WorkstationPanel title="Health Map / 系統健康地圖" kicker="grafana-style first glance">
+    <WorkstationPanel title="Health Map / 系統健康地圖" kicker="SLO, freshness, trace">
       <div className="grid gap-3 p-3 lg:grid-cols-[1.1fr_1fr]">
         <div className="relative min-h-[180px] overflow-hidden border border-[#263247] bg-[radial-gradient(circle_at_30%_20%,rgba(56,189,248,.16),transparent_30%),radial-gradient(circle_at_76%_58%,rgba(251,191,36,.14),transparent_28%),#05070c] p-4">
           <div className="absolute left-1/2 top-1/2 h-px w-[72%] -translate-x-1/2 bg-gradient-to-r from-transparent via-sky-300/50 to-transparent" />
@@ -207,9 +207,9 @@ function HealthMap({
         <div className="grid gap-3">
           <MiniDonut value={Math.max(0, 100 - incidents * 20)} tone={incidents ? 'warn' : 'ok'} label="Incident Load / 事件負載" />
           <div className="border border-[#263247] bg-[#05070c] p-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">How to read / 怎麼看</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">How to read / 怎麼看</p>
             <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-              OBS 第一眼看「哪裡壞、影響誰、下一步做什麼」。細節仍放在 Scheduler、Data Quality、Model Pool drilldown，避免四個頁面互相複製。
+              Observability 第一眼看「哪裡壞、影響誰、下一步做什麼」。細節仍放在流程追蹤、資料新鮮度、模型池，避免四個頁面互相複製。
             </p>
           </div>
         </div>
@@ -297,7 +297,7 @@ function SelectedIncidentDetail({ incident, fallbackEvents }: { incident?: Obser
     <div className="space-y-4 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">Selected Incident Detail / 事件詳情</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">事件詳情</p>
           <h2 className="mt-1 text-lg font-semibold text-[#fff1cf]">{incident.title}</h2>
           <p className="mt-1 text-xs text-slate-500">{domainLabel(incident.domain)} / owner {incident.owner}</p>
         </div>
@@ -307,7 +307,7 @@ function SelectedIncidentDetail({ incident, fallbackEvents }: { incident?: Obser
       <div className="grid gap-3 md:grid-cols-2">
         <div className="border border-[#263247] bg-[#05070c] p-3">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root cause / 根因</p>
-          <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{incident.root_cause || '尚未定位 root cause；請看 run_id、source event 與 specialist drilldown。'}</p>
+          <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{incident.root_cause || '尚未定位根因；請看 run_id、source event 與對應細節頁。'}</p>
         </div>
         <div className="border border-[#263247] bg-[#05070c] p-3">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact / 影響</p>
@@ -335,7 +335,7 @@ function DependencyMap() {
   ] as const
   return (
     <div className="p-3">
-      <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">Dependency Map / 依賴地圖</p>
+      <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-[#70809b]">依賴地圖</p>
       <div className="grid gap-2">
         {nodes.map(([name, role, Icon], index) => (
           <div key={name} className="grid grid-cols-[28px_1fr_18px] items-center gap-2">
@@ -393,8 +393,8 @@ function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
         )}
       />
       <div className="border border-[#263247] bg-[#05070c] p-3">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Scheduler Drilldown / 排程細節</p>
-        <p className="mt-2 text-xs leading-5 text-[#8a92a6]">OBS 只回答「有沒有壞」。排程頁負責 run log、callback、duration anomaly、skip reason。</p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">流程追蹤</p>
+        <p className="mt-2 text-xs leading-5 text-[#8a92a6]">Observability 首屏只回答「有沒有壞」。排程頁負責 run log、callback、duration anomaly、skip reason。</p>
         <a href="/scheduler" className="mt-3 inline-flex border border-sky-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">
           打開 /scheduler
         </a>
@@ -417,8 +417,8 @@ function DataQualityTab({ checks }: { checks: DataQualityCheck[] }) {
           </div>
         </div>
       ))}
-      {!checks.length && <div className="p-4 text-sm text-slate-500">Data Quality Drilldown 沒有 checks。</div>}
-      <a href="/data-quality" className="border border-sky-400/30 bg-[#05070c] p-3 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">
+      {!checks.length && <div className="p-4 text-sm text-[#8f877a]">資料品質目前沒有 checks。</div>}
+      <a href="/data-quality" className="rounded-2xl border border-[#7aa2c7]/30 bg-[#111821] p-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[#9cc7ef]">
         打開 /data-quality
       </a>
     </div>
@@ -481,9 +481,9 @@ export default function ObservabilityPage() {
     <AppShell>
       <div className="space-y-4 p-4 lg:p-5">
         <WorkstationPageTitle
-          kicker="OBS command center"
-          title="Reliability Mission Control / 可觀測指揮中心"
-          description="第一層只看系統健康、事故、影響半徑與下一步；細節再 drilldown 到 Scheduler、Data Quality、Model Pool，避免資訊重複與滿版文字。"
+          kicker="Observability"
+          title="可觀測性中心"
+          description="用 SLO、Incident、Pipeline Trace、Freshness 與 Model Health 先判斷系統是否可信；需要追查時再展開細節，不把 raw log 一次倒在眼前。"
           action={
             <div className="flex flex-wrap gap-2">
               <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>DQ {formatStatus(dataQuality.data?.overall)}</WorkstationPill>
@@ -494,12 +494,12 @@ export default function ObservabilityPage() {
           }
         />
 
-        <section className="grid grid-cols-1 gap-px border border-[#263247] bg-[#263247] md:grid-cols-5">
-          <MetricCell label="事件 / Incidents" value={String(incidents.length)} tone={incidents.length ? 'warn' : 'ok'} detail="grouped inbox" />
-          <MetricCell label="排程 / Scheduler" value={`${scheduler.data?.stats?.successRate7d ?? 0}%`} tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'} detail={`failed24h ${scheduler.data?.stats?.failed24h ?? '-'}`} />
-          <MetricCell label="資料品質 / Data Quality" value={formatStatus(dataQuality.data?.overall)} tone={statusTone(dataQuality.data?.overall)} detail={dataQuality.data?.date ?? '-'} />
-          <MetricCell label="模型池 / Model Pool" value={`${modelStats.active}/${modelStats.total}`} tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'} detail={`${modelStats.challenger} shadow challenger`} />
-          <MetricCell label="資源 / Resource" value={String(resourceAudit.data?.items?.length ?? 0)} tone="info" detail="audit items" />
+        <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#2b3a49] md:grid-cols-5">
+          <MetricCell label="Incidents" value={String(incidents.length)} tone={incidents.length ? 'warn' : 'ok'} detail="active incident inbox" />
+          <MetricCell label="SLO / 排程成功率" value={`${scheduler.data?.stats?.successRate7d ?? 0}%`} tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'} detail={`24h failed ${scheduler.data?.stats?.failed24h ?? '-'}`} />
+          <MetricCell label="Freshness / 資料品質" value={formatStatus(dataQuality.data?.overall)} tone={statusTone(dataQuality.data?.overall)} detail={dataQuality.data?.date ?? '-'} />
+          <MetricCell label="Model Health" value={`${modelStats.active}/${modelStats.total}`} tone={modelStats.weakIc || modelStats.missingMeta ? 'warn' : 'ok'} detail={`${modelStats.challenger} shadow challenger`} />
+          <MetricCell label="Resource" value={String(resourceAudit.data?.items?.length ?? 0)} tone="info" detail="audit items" />
         </section>
 
         <HealthMap
@@ -511,23 +511,23 @@ export default function ObservabilityPage() {
         />
 
         <section className="grid gap-4 xl:grid-cols-[360px_1fr_320px]">
-          <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="grouped problems, not duplicated dashboards">
+          <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="同類問題集中看，不重複做看板">
             <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} onOpen={openIncident} />
           </WorkstationPanel>
 
-          <WorkstationPanel title="Selected Incident Detail / 事件詳情" kicker="impact, root cause, next action">
+          <WorkstationPanel title="Selected Incident Detail / 已選事件詳情" kicker="影響範圍、可能根因、下一步">
             <div ref={detailRef}>
               <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />
             </div>
           </WorkstationPanel>
 
-          <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">
+          <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="影響半徑">
             <DependencyMap />
             <ExecutionRealityStrip />
           </WorkstationPanel>
         </section>
 
-        <WorkstationPanel title="OBS Drilldown / 深入追查" kicker="compact tabs, specialist pages stay available">
+        <WorkstationPanel title="Pipeline Trace / 深入追查" kicker="集中瀏覽，細節頁仍可直接打開">
           <div className="flex flex-wrap gap-2 border-b border-[#263247] p-3">
             {tabs.map((tab) => (
               <button
@@ -535,7 +535,7 @@ export default function ObservabilityPage() {
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
                 className={`min-h-11 cursor-pointer border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
-                  activeTab === tab.id ? 'border-amber-300/50 bg-amber-300/10 text-amber-200' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-sky-400/40 hover:text-sky-200'
+                  activeTab === tab.id ? 'border-sky-300/50 bg-sky-300/10 text-sky-200' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-sky-400/40 hover:text-sky-200'
                 }`}
               >
                 {TAB_LABELS[tab.id]}

@@ -153,7 +153,10 @@ export default {
     void ctx
     for (const msg of batch.messages) {
       try {
-        await processUpdateBatch(msg.body, env, { runMLAndRiskV2 })
+        await processUpdateBatch(msg.body, env, {
+          runMarketScreener,
+          runMLAndRiskV2,
+        })
         msg.ack()
       } catch (e) {
         console.error(`[Queue] Message failed, will retry:`, e)

@@ -1,6 +1,6 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
-import { assertMarketDataReady } from './marketDataReadiness'
+import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
 
 function resolvePipelineRunDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -13,7 +13,7 @@ function resolvePipelineRunDate(runDate?: string | null): string {
 
 export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Promise<string> {
   const twDate = resolvePipelineRunDate(runDate)
-  await assertMarketDataReady(env.DB, twDate)
+  await assertEveningPipelineReady(env, twDate)
 
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)
@@ -99,4 +99,21 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
     await env.KV.delete(lockKey).catch(() => {})
     throw e
   }
+}
+
+export async function assertEveningPipelineReady(
+  env: Bindings,
+  twDate: string,
+): Promise<MarketDataReadinessResult> {
+  const ready = await assertMarketDataReady(env.DB, twDate)
+  const queueLog = await env.KV.get(`scheduler:run:indicator-queue:${twDate}`, 'json') as {
+    status?: string
+    summary?: string
+  } | null
+
+  if (queueLog && queueLog.status !== 'success') {
+    throw new Error(`indicator queue not ready for ${twDate}: ${queueLog.status} ${queueLog.summary ?? ''}`.trim())
+  }
+
+  return ready
 }

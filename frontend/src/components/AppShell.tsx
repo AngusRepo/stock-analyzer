@@ -14,6 +14,7 @@ import {
   Command,
   FlaskConical,
   GitBranch,
+  Home,
   LayoutDashboard,
   LogIn,
   LogOut,
@@ -25,25 +26,25 @@ import { prefetchWorkstationRoute } from '@/lib/queryPolicy'
 
 const NAV_SECTIONS = [
   {
-    label: 'Research',
+    label: '每日',
     items: [
-      { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
-      { label: 'Research Demo', icon: Radar, href: '/demo/research-workbench' },
+      { label: '晨間概覽', icon: LayoutDashboard, href: '/' },
+      { label: '研究室', icon: Radar, href: '/research' },
     ],
   },
   {
-    label: 'Decision',
+    label: '行動',
     items: [
-      { label: 'Bot', icon: Bot, href: '/bot' },
-      { label: 'Strategy Lab', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
+      { label: '模擬交易室', icon: Bot, href: '/bot' },
+      { label: '策略實驗室', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
     ],
   },
   {
-    label: 'Operations',
+    label: '監控',
     items: [
-      { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
-      { label: 'Pipeline', icon: GitBranch, href: '/pipeline', adminOnly: true },
-      { label: 'Model Pool', icon: Boxes, href: '/model-pool', adminOnly: true },
+      { label: 'Observability', icon: Activity, href: '/obs', adminOnly: true },
+      { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
+      { label: '模型池', icon: Boxes, href: '/model-pool', adminOnly: true },
     ],
   },
 ] as const
@@ -90,6 +91,27 @@ function MarketTicker() {
   )
 }
 
+function FocusBar({ currentPath, unreadCount }: { currentPath: string; unreadCount: number }) {
+  const area = currentPath.startsWith('/research') || currentPath.startsWith('/demo/research-workbench')
+    ? '研究室'
+    : currentPath.startsWith('/bot')
+      ? '模擬交易室'
+      : currentPath.startsWith('/obs') || currentPath.startsWith('/pipeline') || currentPath.startsWith('/scheduler') || currentPath.startsWith('/data-quality')
+        ? '可觀測性'
+        : '晨間概覽'
+
+  return (
+    <div className="hidden min-w-0 items-center gap-2 rounded-full border border-[#2b3a49] bg-[#111821]/88 px-3 py-1.5 text-[11px] text-[#9badbf] shadow-[0_8px_28px_rgba(0,0,0,0.18)] xl:flex">
+      <Home className="h-3.5 w-3.5 text-[#7aa2c7]" />
+      <span className="font-medium text-[#e6edf3]">今日焦點</span>
+      <span className="h-1 w-1 rounded-full bg-[#4f6f8f]" />
+      <span className="truncate">目前在 {area}</span>
+      <span className="h-1 w-1 rounded-full bg-[#4f6f8f]" />
+      <span className="truncate">{unreadCount > 0 ? `${unreadCount} 則提醒待看` : '沒有新提醒'}</span>
+    </div>
+  )
+}
+
 function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNavigate: (href: string) => void }) {
   const { user } = useAuth()
   const queryClient = useQueryClient()
@@ -102,15 +124,15 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2.5 border-b border-[#263247] px-4 py-3.5">
-        <div className="flex h-9 w-9 items-center justify-center border border-amber-300/45 bg-[linear-gradient(135deg,#1e1205,#06251c)] font-mono text-xs font-black text-amber-200 shadow-[0_0_22px_rgba(255,191,95,0.14)]">
+      <div className="flex items-center gap-2.5 border-b border-[#2b3a49] px-4 py-3.5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#7aa2c7]/45 bg-[linear-gradient(135deg,#17202b,#0f2835)] font-mono text-xs font-black text-[#d8e7f5] shadow-[0_0_22px_rgba(122,162,199,0.14)]">
           SV
         </div>
         <div>
-          <span className="block font-mono text-[12px] font-bold uppercase tracking-[0.18em] text-white">StockVision</span>
-          <span className="block font-mono text-[9px] uppercase tracking-[0.16em] text-slate-500">Trading workstation</span>
+          <span className="block font-mono text-[12px] font-bold uppercase tracking-[0.18em] text-[#e6edf3]">StockVision</span>
+          <span className="block text-[10px] text-[#8b9bab]">我的量化投資伴侶</span>
         </div>
-        <span className="ml-auto border border-[#263247] bg-[#070a10] px-1.5 py-0.5 font-mono text-[9px] text-amber-300">v12</span>
+        <span className="ml-auto rounded-full border border-[#2b3a49] bg-[#111821] px-1.5 py-0.5 font-mono text-[9px] text-[#7aa2c7]">v12</span>
       </div>
 
       <nav className="flex-1 space-y-4 overflow-y-auto px-2.5 py-3">
@@ -120,7 +142,7 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
 
           return (
             <div key={section.label}>
-              <p className="px-2 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[#596579]">
+              <p className="px-2 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-[#75879a]">
                 {section.label}
               </p>
               <div className="space-y-1">
@@ -135,13 +157,13 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
                       onClick={() => onNavigate(item.href)}
                       className={`group grid w-full grid-cols-[24px_1fr_14px] items-center gap-2 border px-3 py-2.5 text-left font-mono text-[12px] transition-all ${
                         active
-                          ? 'border-[#3b82f6]/60 bg-[linear-gradient(90deg,#07111f,#06121d)] text-white shadow-[inset_3px_0_0_#3b82f6]'
-                          : 'border-transparent text-[#78859b] hover:border-[#263247] hover:bg-[#0d1118] hover:text-[#d8dee9]'
+                          ? 'rounded-xl border-[#7aa2c7]/50 bg-[linear-gradient(90deg,#122334,#101821)] text-[#e6edf3] shadow-[inset_3px_0_0_#7aa2c7]'
+                          : 'rounded-xl border-transparent text-[#8b9bab] hover:border-[#2b3a49] hover:bg-[#111821] hover:text-[#e6edf3]'
                       }`}
                     >
-                      <Icon className={`h-4 w-4 ${active ? 'text-[#93c5fd] opacity-100' : 'opacity-60'}`} />
+                      <Icon className={`h-4 w-4 ${active ? 'text-[#9cc7ef] opacity-100' : 'opacity-60'}`} />
                       <span>{item.label}</span>
-                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-[#93c5fd]' : 'text-[#445068] group-hover:text-[#d8dee9]'}`} />
+                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-[#9cc7ef]' : 'text-[#566574] group-hover:text-[#e6edf3]'}`} />
                     </button>
                   )
                 })}
@@ -151,16 +173,16 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
         })}
       </nav>
 
-      <div className="border-y border-[#263247] bg-[#070a10] p-3 font-mono text-[10px] uppercase tracking-[0.13em] text-[#8a92a6]">
-        <div className="mb-2 flex items-center gap-2 text-[#93c5fd]">
+      <div className="border-y border-[#2b3a49] bg-[#0f151d] p-3 text-[11px] text-[#8b9bab]">
+        <div className="mb-2 flex items-center gap-2 text-[#7aa2c7]">
           <Command className="h-3.5 w-3.5" />
-          Desk State
+          今天的路徑
         </div>
-        <p>Research ready</p>
-        <p>Decision live</p>
+        <p>先判讀市場，再進研究室拆題材</p>
+        <p>執行前回到 Observability 確認可信度</p>
       </div>
 
-      <div className="border-t border-[#263247] p-3">
+      <div className="border-t border-[#2b3a49] p-3">
         <UserSection />
       </div>
     </div>
@@ -214,24 +236,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-[#020409] text-slate-100">
+    <div className="relative flex h-screen overflow-hidden bg-[#0b0f14] text-[#e6edf3]">
       <WorkstationBackdrop />
 
       <aside
         className="relative z-10 hidden shrink-0 flex-col lg:flex"
-        style={{ width: 230, background: 'rgba(5,7,12,0.96)', borderRight: '1px solid #263247' }}
+        style={{ width: 230, background: 'rgba(12,17,23,0.96)', borderRight: '1px solid #2b3a49' }}
       >
         <SidebarNav currentPath={location} onNavigate={handleNavigate} />
       </aside>
 
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-[230px] border-[#263247] p-0" style={{ background: '#05070c' }}>
+        <SheetContent side="left" className="w-[230px] border-[#2b3a49] p-0" style={{ background: '#0c1117' }}>
           <SidebarNav currentPath={location} onNavigate={handleNavigate} />
         </SheetContent>
       </Sheet>
 
       <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
-        <div className="grid min-h-[44px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#263247] bg-[linear-gradient(90deg,#05070c,#08090f_55%,#120d06)] px-3">
+        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#111821_58%,#0d1722)] px-3">
           <Button size="icon" variant="ghost" className="h-8 w-8 lg:hidden" onClick={() => setSidebarOpen(true)}>
             <Menu className="h-4 w-4" />
           </Button>
@@ -239,16 +261,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <MarketTicker />
 
           <div className="ml-auto flex min-w-0 items-center gap-2.5">
-            <div className="hidden min-w-[260px] items-center gap-2 border border-[#3a2c18] bg-[#030509] px-3 py-1.5 font-mono text-[11px] text-[#8a92a6] md:flex">
-              <Command className="h-3.5 w-3.5 text-sky-300" />
-              <span className="text-amber-300">/</span>
-              <span className="truncate">SYMBOL / RUN_ID / INCIDENT / TOPIC</span>
-              <kbd className="ml-auto border border-[#263247] bg-[#070a10] px-1 font-mono text-[9px] text-slate-400">GO</kbd>
+            <FocusBar currentPath={location} unreadCount={unreadCount} />
+            <div className="hidden min-w-[250px] items-center gap-2 rounded-full border border-[#2b3a49] bg-[#0b0f14] px-3 py-1.5 font-mono text-[11px] text-[#8b9bab] md:flex">
+              <Command className="h-3.5 w-3.5 text-[#7aa2c7]" />
+              <span className="text-[#7aa2c7]">/</span>
+              <span className="truncate">標的 / 任務 / 監控狀態</span>
+              <kbd className="ml-auto rounded border border-[#2b3a49] bg-[#111821] px-1 font-mono text-[9px] text-[#9badbf]">GO</kbd>
             </div>
 
             {isAuthenticated && unreadCount > 0 && (
-              <div className="relative flex h-[30px] w-[30px] cursor-pointer items-center justify-center border border-[#263247] bg-[#070a10] hover:border-amber-300/40">
-                <Bell className="h-[15px] w-[15px] text-[#8b8fa3]" />
+              <div className="relative flex h-[30px] w-[30px] cursor-pointer items-center justify-center rounded-full border border-[#2b3a49] bg-[#111821] hover:border-[#7aa2c7]/45">
+                <Bell className="h-[15px] w-[15px] text-[#9badbf]" />
                 <span className="absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-red-500" />
               </div>
             )}

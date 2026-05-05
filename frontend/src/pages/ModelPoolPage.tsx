@@ -4,7 +4,7 @@ import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
-import { WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
+import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 import { modelPoolApi, type ModelPoolLineageModel } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 
@@ -46,6 +46,35 @@ function familyCounts(models: Array<[string, ModelPoolLineageModel]>) {
 
 function shortRootCause(model: ModelPoolLineageModel): string {
   return model.lifecycle_diagnosis?.status ?? model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown'
+}
+
+function metadataNumber(metadata: Record<string, unknown> | null | undefined, key: string): number | null {
+  const raw = metadata?.[key]
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+function sequenceReportNumber(metadata: Record<string, unknown> | null | undefined, key: string): number | null {
+  const report = metadata?.sequence_report
+  if (!report || typeof report !== 'object') return null
+  const raw = (report as Record<string, unknown>)[key]
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+function compactMetric(value: number | null, digits = 0): string {
+  if (value == null) return 'N/A'
+  return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
+}
+
+function artifactAnomalies(metadata: Record<string, unknown> | null | undefined): string[] {
+  const anomalies: string[] = []
+  const topInputSeries = metadataNumber(metadata, 'n_input_series')
+  const reportInputSeries = sequenceReportNumber(metadata, 'input_series')
+  if (topInputSeries === 0 && reportInputSeries != null && reportInputSeries > 0) {
+    anomalies.push('metadata anomaly: n_input_series=0 but sequence_report.input_series has coverage')
+  }
+  return anomalies
 }
 
 function stageTone(stage: ModelUpgradeStage): WorkstationTone {
@@ -109,7 +138,7 @@ function UpgradeTrackPanel() {
   const stageOrder: ModelUpgradeStage[] = ['shadow_challenger', 'benchmark_only']
 
   return (
-    <WorkstationPanel title="Model Upgrade Track / 模型升級軌道" kicker="shadow challenger vs benchmark candidate">
+    <WorkstationPanel title="Model-family Challenger / 新模型家族挑戰者" kicker="Shadow Challengers / 影子挑戰者 · Research Benchmarks / 研究基準">
       <div className="grid gap-px bg-[#263247] lg:grid-cols-2">
         {stageOrder.map((stage) => (
           <div key={stage} className="bg-[#070a10] p-3">
@@ -118,7 +147,7 @@ function UpgradeTrackPanel() {
                 <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{MODEL_UPGRADE_STAGE_LABELS[stage]}</p>
                 <p className="mt-1 text-xs leading-5 text-[#8a92a6]">
                   {stage === 'shadow_challenger'
-                    ? '會產生 shadow evidence，但 promotion 前不投 production vote。'
+                    ? '這裡只放 ResidualMLP / GNN 這種新模型家族。它們應該先產生 shadow evidence，但 promotion 前不投 production vote。'
                     : '只做研究 benchmark，不跑 production inference，避免成本暴增。'}
                 </p>
               </div>
@@ -136,11 +165,162 @@ function UpgradeTrackPanel() {
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
                   <p className="mt-1 text-[11px] leading-5 text-slate-500">{candidate.roleEn}</p>
+                  {candidate.stage === 'benchmark_only' && (
+                    <p className="mt-2 text-[11px] leading-5 text-amber-200">
+                      benchmark report required：必須先進 experiment registry，產出 OOS IC、CPCV/PBO、成本敏感度與資料切片報告，通過後才可升級成 shadow challenger。
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         ))}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
+function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolLineageModel]> }) {
+  const rows = models
+    .filter(([, model]) => !!model.challenger)
+    .map(([name, model]) => {
+      const challenger = model.challenger ?? {}
+      const ic = challenger.ic_4w_avg ?? challenger.rolling_ic
+      const diagnosis = challenger.lifecycle_diagnosis
+      return {
+        name,
+        version: challenger.version ?? 'challenger',
+        ic: ic == null ? 'N/A' : Number(ic).toFixed(4),
+        samples: challenger.last_ic_sample_count ?? 0,
+        rootCause: challenger.last_ic_root_cause ?? diagnosis?.root_cause ?? challenger.last_ic_status ?? 'unknown',
+        status: challenger.last_ic_status ?? diagnosis?.status ?? 'unknown',
+      }
+    })
+
+  return (
+    <WorkstationPanel title="Version Challenger / 版本挑戰者" kicker="Live Shadow Evidence / 即時影子證據 · same-family artifact shadow evidence">
+      <div className="p-3">
+        <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
+          這裡只顯示既有 alpha slot 的新版 artifact，例如 DLinear / PatchTST v1 對 v2026...。
+          這不是 ResidualMLP/GNN 這種新模型家族 challenger，而是同模型家族的新舊版本 shadow 比較。
+          IC 的前提是 verify-v2 必須寫入 predictions.verified_at / actual_return_pct，且 verified_rows_written 必須大於 0。
+        </p>
+        {rows.length ? (
+          <div className="grid gap-2 md:grid-cols-2">
+            {rows.map((row) => (
+              <div key={row.name} className="border border-[#263247] bg-[#05070c] p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{row.name}</p>
+                    <p className="mt-0.5 text-[10px] text-[#70809b]">{row.version}</p>
+                  </div>
+                  <WorkstationPill tone={row.rootCause === 'ok' ? 'ok' : 'warn'}>{row.status}</WorkstationPill>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[11px]">
+                  <div><p className="text-[#70809b]">IC 4W</p><p className="text-slate-100">{row.ic}</p></div>
+                  <div><p className="text-[#70809b]">Samples</p><p className="text-slate-100">{row.samples}</p></div>
+                  <div><p className="text-[#70809b]">Root</p><p className="text-amber-200">{row.rootCause}</p></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200">
+            目前沒有 live challenger slot。ResidualMLP/GNN 若尚未產生 shadow rows，不應被當成可評估 challenger。
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
+function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineageModel]> }) {
+  const rows = models
+    .filter(([, model]) => !!model.challenger)
+    .map(([name, model]) => {
+      const challenger = model.challenger ?? {}
+      const activeMeta = model.metadata ?? null
+      const challengerMeta = challenger.metadata ?? null
+      return {
+        name,
+        activeVersion: model.version ?? 'active',
+        challengerVersion: challenger.version ?? 'challenger',
+        shadowSince: challenger.shadow_since ?? 'N/A',
+        activeInputSeries: metadataNumber(activeMeta, 'n_input_series') ?? sequenceReportNumber(activeMeta, 'input_series'),
+        challengerInputSeries: metadataNumber(challengerMeta, 'n_input_series') ?? sequenceReportNumber(challengerMeta, 'input_series'),
+        challengerSequenceReportInputSeries: sequenceReportNumber(challengerMeta, 'input_series'),
+        activeTrainWindows: metadataNumber(activeMeta, 'n_train_windows'),
+        challengerTrainWindows: metadataNumber(challengerMeta, 'n_train_windows') ?? sequenceReportNumber(challengerMeta, 'train_windows'),
+        activeValWindows: metadataNumber(activeMeta, 'n_val_windows'),
+        challengerValWindows: metadataNumber(challengerMeta, 'n_val_windows') ?? sequenceReportNumber(challengerMeta, 'oos_windows'),
+        activeDirAccuracy: metadataNumber(activeMeta, 'val_dir_accuracy'),
+        challengerDirAccuracy: metadataNumber(challengerMeta, 'val_dir_accuracy'),
+        challengerOosIc: metadataNumber(challengerMeta, 'oos_ic'),
+        challengerDailyIcCount: metadataNumber(challengerMeta, 'daily_ic_count'),
+        anomalies: [...artifactAnomalies(activeMeta), ...artifactAnomalies(challengerMeta)],
+      }
+    })
+
+  return (
+    <WorkstationPanel title="Artifact Diff / 新舊 Artifact 差異" kicker="active vs version challenger metadata">
+      <div className="p-3">
+        <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
+          這裡回答「新版 artifact 到底跟舊版差在哪」：訓練覆蓋、window 數、OOS IC、方向準確率與 metadata anomaly。
+          注意：active weekly IC 與 challenger OOS IC 來源不同，必須等 verify-v2 寫入 durable outcomes 後才可做 promote 判斷。
+        </p>
+        {rows.length ? (
+          <div className="grid gap-3">
+            {rows.map((row) => (
+              <div key={row.name} className="border border-[#263247] bg-[#05070c] p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{row.name}</p>
+                    <p className="mt-1 text-[11px] text-[#8a92a6]">
+                      active {row.activeVersion} → challenger {row.challengerVersion} · shadow_since {row.shadowSince}
+                    </p>
+                  </div>
+                  <WorkstationPill tone={row.anomalies.length ? 'warn' : 'info'}>
+                    {row.anomalies.length ? 'metadata anomaly' : 'metadata comparable'}
+                  </WorkstationPill>
+                </div>
+
+                <div className="mt-3 grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-5">
+                  <div className="bg-[#070a10] p-2">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">input series</p>
+                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeInputSeries)} → {compactMetric(row.challengerInputSeries)}</p>
+                    <p className="mt-1 text-[10px] text-[#70809b]">sequence_report.input_series {compactMetric(row.challengerSequenceReportInputSeries)}</p>
+                  </div>
+                  <div className="bg-[#070a10] p-2">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">train windows</p>
+                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeTrainWindows)} → {compactMetric(row.challengerTrainWindows)}</p>
+                  </div>
+                  <div className="bg-[#070a10] p-2">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">OOS / val windows</p>
+                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeValWindows)} → {compactMetric(row.challengerValWindows)}</p>
+                  </div>
+                  <div className="bg-[#070a10] p-2">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">dir accuracy</p>
+                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeDirAccuracy, 3)} → {compactMetric(row.challengerDirAccuracy, 3)}</p>
+                  </div>
+                  <div className="bg-[#070a10] p-2">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">challenger OOS IC</p>
+                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.challengerOosIc, 4)} · daily {compactMetric(row.challengerDailyIcCount)}</p>
+                  </div>
+                </div>
+
+                {row.anomalies.length > 0 && (
+                  <div className="mt-3 space-y-1 border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] text-amber-200">
+                    {row.anomalies.map((anomaly) => <p key={anomaly}>{anomaly}</p>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200">
+            目前沒有 version challenger，所以沒有 active/challenger artifact diff 可比較。
+          </div>
+        )}
       </div>
     </WorkstationPanel>
   )
@@ -213,18 +393,19 @@ export default function ModelPoolPage() {
   return (
     <AppShell>
       <div className="space-y-6 p-4 lg:p-6">
-        <div className="flex items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-bold">Model Pool Drilldown / 模型池治理</h1>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              這頁只看模型生命週期：production alpha、shadow challenger、benchmark candidate、state-space overlay、IC root cause 與 artifact metadata。
-              {isFetching && <span className="ml-2 text-sky-400">refreshing...</span>}
-            </p>
-          </div>
-          <Button size="sm" variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="mr-1 h-3 w-3" /> Refresh
-          </Button>
-        </div>
+        <WorkstationPageTitle
+          kicker="Model care"
+          title="模型池"
+          description="用一頁看 production alpha、shadow challenger、研究基準、狀態 overlay、IC 根因與 artifact metadata，避免模型健康只藏在 log 裡。"
+          action={
+            <div className="flex flex-wrap items-center gap-2">
+              {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => refetch()}>
+                <RefreshCw className="mr-1 h-3 w-3" /> 更新
+              </Button>
+            </div>
+          }
+        />
 
         {isLoading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -238,19 +419,21 @@ export default function ModelPoolPage() {
 
         {!isLoading && (
           <>
-            <DecisionTraceRail title="Lifecycle Governance Contract / 生命週期治理" compact steps={traceSteps} />
+            <DecisionTraceRail title="模型生命週期規則" compact steps={traceSteps} />
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <SignalInsightCard title="Alpha Models / 投票模型" value={String(modelList.length)} detail={`active ${activeModels}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone="info" />
-              <SignalInsightCard title="Shadow Challengers / 影子挑戰者" value={`${shadowLineageCount}+${plannedShadowCount}`} detail="左邊是 lineage 已掛載；右邊是 P7 upgrade track 計畫中的 MLP/GNN。" tone={shadowLineageCount || plannedShadowCount ? 'ok' : 'warn'} />
+              <SignalInsightCard title="影子挑戰者" value={`${shadowLineageCount}+${plannedShadowCount}`} detail="左邊是 lineage 已掛載；右邊是 P7 upgrade track 計畫中的 MLP/GNN。" tone={shadowLineageCount || plannedShadowCount ? 'ok' : 'warn'} />
               <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM、Moirai 不投票，只做 benchmark evidence。" tone="warn" />
-              <SignalInsightCard title="IC Gaps / IC缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
+              <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
+            <LiveShadowEvidencePanel models={modelList} />
+            <ArtifactDiffPanel models={modelList} />
             <UpgradeTrackPanel />
 
-            <WorkstationPanel title="Model Health Matrix / 模型健康矩陣" kicker="IC, samples, coverage, metadata, challenger">
+            <WorkstationPanel title="模型健康矩陣" kicker="IC, samples, coverage, metadata, challenger">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] border-collapse font-mono text-[11px]">
                   <thead className="bg-[#0c1420] text-[#70809b]">
@@ -293,7 +476,7 @@ export default function ModelPoolPage() {
               </div>
             </WorkstationPanel>
 
-            <WorkstationPanel title="Recent Lifecycle Events / 最近生命週期事件" kicker="promote, degrade, restore, retire audit">
+            <WorkstationPanel title="最近生命週期事件" kicker="promote, degrade, restore, retire audit">
               <div className="space-y-2 p-3">
                 {(data?.events ?? []).slice().reverse().slice(0, 20).map((event, index) => (
                   <div key={index} className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2 text-[11px]">

@@ -120,7 +120,7 @@ export default function StrategyLabPage() {
       setExperiments(experimentResponse)
       setResearchGates(gateResponses)
     } catch (e: unknown) {
-      setError(getErrorMessage(e, 'Strategy Lab load failed'))
+      setError(getErrorMessage(e, '策略實驗室載入失敗'))
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -178,7 +178,7 @@ export default function StrategyLabPage() {
     return (
       <AppShell>
         <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> 載入 Strategy Lab...
+          <Loader2 className="h-4 w-4 animate-spin" /> 載入策略實驗室...
         </div>
       </AppShell>
     )
@@ -187,23 +187,26 @@ export default function StrategyLabPage() {
   return (
     <AppShell>
       <div className="space-y-6 p-4 lg:p-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="flex items-center gap-2 text-xl font-bold">
-              <FlaskConical className="h-5 w-5 text-cyan-300" /> Strategy Lab
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Research room</p>
+            <h1 className="mt-1 flex items-center gap-2 text-xl font-bold text-[#fff7e8]">
+              <FlaskConical className="h-5 w-5 text-[#d6a85f]" /> 策略實驗室
             </h1>
-            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-              P5.0 研究控制面：策略 spec 只能描述 alpha bucket、門檻與風險假設；Screener 只消費 spec 做標註，不能直接產生 pending buy、成交或模型 promote。
+            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-[#b9b1a1]">
+              在這裡先把策略假設、門檻與風險寫清楚；它只能產生研究證據，不會直接觸發 pending buy、成交或模型 promote。
             </p>
           </div>
-          <Button size="sm" variant="outline" onClick={() => { setRefreshing(true); load() }}>
+          <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { setRefreshing(true); load() }}>
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
           </Button>
+          </div>
         </div>
 
         {error && (
           <Card className="border-red-500/30">
-            <CardContent className="p-4 text-sm text-red-300">Strategy Lab API 載入失敗：{error}</CardContent>
+            <CardContent className="p-4 text-sm text-red-300">策略實驗室 API 載入失敗：{error}</CardContent>
           </Card>
         )}
 

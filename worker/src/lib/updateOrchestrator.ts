@@ -4,6 +4,7 @@ import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
+import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
 const UPDATE_BATCH_SIZE = 25
 
@@ -23,6 +24,7 @@ function resolveUpdateDate(runDate?: string | null): string {
 }
 
 type ProcessUpdateBatchDeps = {
+  runMarketScreener: (env: Bindings, runDate?: string) => Promise<any>
   runMLAndRiskV2: (env: Bindings, runDate?: string) => Promise<string>
 }
 
@@ -63,6 +65,12 @@ export async function runQueueUpdate(env: Bindings, runDate?: string) {
   console.log('[Cron] Kicking off queue update for full TW market indicator universe...')
   try {
     await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'running',
+      summary: `indicator queue started for ${triggerTime}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
   } catch (e) {
     console.warn('[Cron] Queue update send failed, NOT writing lock:', e)
@@ -310,6 +318,12 @@ export async function processUpdateBatch(
 
   if (batch.length === 0) {
     console.log('[Queue] All stocks updated.')
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'success',
+      summary: `indicator queue complete for ${triggerTime}; no remaining stocks`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
     await checkAlerts(env)
     return
   }
@@ -353,12 +367,42 @@ export async function processUpdateBatch(
   }
 
   console.log('[Queue] All stocks done. Running alert check...')
+  await logSchedulerResult(env.KV, 'indicator-queue', {
+    status: 'success',
+    summary: `indicator queue complete for ${triggerTime}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
   await checkAlerts(env)
+
+  try {
+    const screenerResult = await deps.runMarketScreener(env, triggerTime)
+    const screenerSummary = typeof screenerResult === 'string'
+      ? screenerResult
+      : JSON.stringify(screenerResult)?.slice(0, 500) ?? ''
+    await logSchedulerResult(env.KV, 'screener', {
+      status: classifySchedulerSummary(screenerSummary),
+      summary: screenerSummary,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    console.log(`[Queue] Event-driven: screener completed for ${triggerTime}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'screener', {
+      status: 'error',
+      summary: e instanceof Error ? e.message : String(e),
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven screener failed:', e)
+    return
+  }
 
   try {
     await deps.runMLAndRiskV2(env, triggerTime)
     console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
   } catch (e) {
-    console.warn('[Queue] Event-driven ML trigger failed (cron fallback still active):', e)
+    console.warn('[Queue] Event-driven ML trigger failed:', e)
   }
 }

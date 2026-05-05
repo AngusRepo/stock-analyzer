@@ -9,7 +9,7 @@ interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
 }
 
-const SYNC_REQUIRED_TASKS = new Set(['update', 'pipeline'])
+const SYNC_REQUIRED_TASKS = new Set(['evening-chain', 'update', 'pipeline'])
 
 function buildRunId(task: string): string {
   const suffix = Math.random().toString(36).slice(2, 10)
@@ -82,6 +82,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
 
     const longRunning = new Set([
       'pipeline',
+      'evening-chain',
       'ml',
       'update',
       'ml-warmup',

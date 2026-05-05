@@ -51,30 +51,30 @@ export function AudienceRoleStrip() {
     <div className="grid gap-px border border-[#263247] bg-[#263247] md:grid-cols-3">
       {[
         {
-          title: 'Dashboard',
-          subtitle: 'friend-facing',
+          title: '晨間概覽',
+          subtitle: 'daily brief',
           body: '給一般朋友看的決策摘要：重點是推薦理由、風險提示、可理解的分數，不暴露太多維運細節。',
           tone: 'info' as WorkstationTone,
         },
         {
-          title: 'Bot',
-          subtitle: 'admin execution',
+          title: '模擬交易室',
+          subtitle: 'paper execution',
           body: '給你自己看的交易工作台：pending buys、debate、quote sanity、T1/T2/Stop 與 execution audit 都要能追。',
           tone: 'ok' as WorkstationTone,
         },
         {
-          title: 'OBS',
-          subtitle: 'root cause center',
+          title: '系統健康',
+    subtitle: '根因',
           body: '可觀測性中心：回答哪裡壞、為什麼壞、影響哪些 run_id/股票、下一步要誰處理。',
           tone: 'warn' as WorkstationTone,
         },
       ].map((item) => (
-        <div key={item.title} className="bg-[#070a10] p-4">
+        <div key={item.title} className="bg-[#171714] p-4">
           <div className="flex items-center justify-between gap-2">
             <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-[#fff1cf]">{item.title}</p>
             <WorkstationPill tone={item.tone}>{item.subtitle}</WorkstationPill>
           </div>
-          <p className="mt-3 text-xs leading-5 text-[#8a92a6]">{item.body}</p>
+          <p className="mt-3 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
         </div>
       ))}
     </div>
@@ -108,40 +108,40 @@ export function RecommendationLaneExplainer() {
 
 export function ObsDrilldownMap() {
   return (
-    <WorkstationPanel title="OBS Drilldown Map" kicker="summary here, raw detail elsewhere">
-      <div className="grid gap-px bg-[#263247] md:grid-cols-3">
+    <WorkstationPanel title="系統健康入口" kicker="summary here, raw detail elsewhere">
+      <div className="grid gap-px bg-[#3a3125] md:grid-cols-3">
         {[
           {
             href: '/scheduler',
             icon: Workflow,
-            title: 'Scheduler',
+            title: '排程節奏',
             body: '查看 run log、callback、duration anomaly 與排程下一次執行時間。',
             tone: 'info' as WorkstationTone,
           },
           {
             href: '/data-quality',
             icon: ShieldCheck,
-            title: 'Data Quality',
+            title: '資料品質',
             body: '查看 price、chip、features、schema、train/serve parity 與 freshness gate。',
             tone: 'ok' as WorkstationTone,
           },
           {
             href: '/model-pool',
             icon: GitBranch,
-            title: 'Model Pool',
+            title: '模型池',
             body: '查看 lineage、IC、challenger、metadata 與 family balance。',
             tone: 'warn' as WorkstationTone,
           },
         ].map((item) => {
           const Icon = item.icon
           return (
-            <a key={item.href} href={item.href} className="group block bg-[#070a10] p-4 transition-colors hover:bg-[#0c1420]">
+            <a key={item.href} href={item.href} className="group block bg-[#171714] p-4 transition-colors hover:bg-[#1f211c]">
               <div className="flex items-start justify-between gap-3">
-                <Icon className="h-5 w-5 text-sky-300" />
-                <WorkstationPill tone={item.tone}>open</WorkstationPill>
+                <Icon className="h-5 w-5 text-[#d6a85f]" />
+                <WorkstationPill tone={item.tone}>打開</WorkstationPill>
               </div>
-              <p className="mt-3 font-mono text-[12px] uppercase tracking-[0.14em] text-slate-100 group-hover:text-[#fff1cf]">{item.title}</p>
-              <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{item.body}</p>
+              <p className="mt-3 font-mono text-[12px] uppercase tracking-[0.14em] text-[#fff7e8] group-hover:text-[#f1c16f]">{item.title}</p>
+              <p className="mt-2 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
             </a>
           )
         })}

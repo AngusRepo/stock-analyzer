@@ -121,20 +121,20 @@ export default function SchedulerPage() {
     <AppShell>
       <div className="space-y-4 p-4 lg:p-5">
         <WorkstationPageTitle
-          kicker="Scheduler Drilldown"
-          title="Job Execution Explorer"
-          description="只看排程 run state、callback contract、duration anomaly 與 dependency chain。不再複製 Data Quality、Deploy Gate 或成本面板。"
+          kicker="Schedule rhythm"
+          title="Scheduler Drilldown / 排程深入追查"
+          description="用一頁看今天的排程是否照節奏走：執行狀態、callback、耗時異常與依賴鏈都集中在這裡。資料品質與成本細節留在各自頁面。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="border border-sky-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">back to OBS</a>
-              <a href="/data-quality" className="border border-[#263247] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#8a92a6]">data-quality deep link</a>
+              <a href="/obs" className="rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">回系統健康</a>
+              <a href="/data-quality" className="rounded-full border border-[#3a3125] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b1a1]">資料品質</a>
               <button
                 type="button"
                 onClick={() => void scheduler.refetch()}
-                className="inline-flex items-center gap-1 border border-amber-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200"
+                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
               >
                 <RefreshCw className={`h-3 w-3 ${scheduler.isFetching ? 'animate-spin' : ''}`} />
-                refresh
+                更新
               </button>
             </div>
           }
@@ -146,20 +146,20 @@ export default function SchedulerPage() {
           </div>
         )}
 
-        <section className="grid grid-cols-1 gap-px border border-[#263247] bg-[#263247] md:grid-cols-5">
-          <MetricCell label="total jobs" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
-          <MetricCell label="success 7d" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
-          <MetricCell label="failed 24h" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
-          <MetricCell label="next job" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
-          <MetricCell label="pipeline last" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
+        <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#3a3125] bg-[#3a3125] md:grid-cols-5">
+          <MetricCell label="排程數" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
+          <MetricCell label="7日成功率" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
+          <MetricCell label="24h 失敗" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
+          <MetricCell label="下一個排程" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
+          <MetricCell label="Pipeline 上次耗時" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
         </section>
 
-        <WorkstationPanel title="Daily Pipeline DAG" kicker="dependency chain">
+        <WorkstationPanel title="每日流程圖" kicker="dependency chain">
           <PipelineDag jobs={jobs} />
         </WorkstationPanel>
 
         <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
-          <WorkstationPanel title="Job Run Table" kicker="run state, callback, duration">
+          <WorkstationPanel title="排程執行表" kicker="run state, callback, duration">
             <VirtualizedList
               items={jobs}
               height={520}
@@ -171,7 +171,7 @@ export default function SchedulerPage() {
           </WorkstationPanel>
 
           <div className="space-y-4">
-            <WorkstationPanel title="Run Anomaly Focus" kicker="failed or suspicious duration">
+            <WorkstationPanel title="需要注意的排程" kicker="failed or suspicious duration">
               <div className="space-y-2 p-3">
                 {suspiciousJobs.slice(0, 8).map((job) => (
                   <div key={job.id} className="border border-[#263247] bg-[#05070c] p-3">
@@ -194,7 +194,7 @@ export default function SchedulerPage() {
               </div>
             </WorkstationPanel>
 
-            <WorkstationPanel title="Run Contract Notes" kicker="what this page owns">
+            <WorkstationPanel title="排程規則備註" kicker="what this page owns">
               <div className="space-y-3 p-3 text-xs leading-5 text-[#8a92a6]">
                 <div className="flex gap-2">
                   <Clock className="mt-0.5 h-4 w-4 text-sky-300" />

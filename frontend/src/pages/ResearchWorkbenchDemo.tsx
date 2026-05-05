@@ -62,10 +62,10 @@ function ToneDot({ tone }: { tone: string }) {
 
 function MetricTile({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="border border-[#273142] bg-[#0d1118] p-3">
-      <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#8a94a8]">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
-      <p className="mt-1 text-xs text-[#9aa6b8]">{sub}</p>
+    <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/86 p-3 shadow-[0_12px_40px_rgba(0,0,0,0.16)]">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8f877a]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-[#fff7e8]">{value}</p>
+      <p className="mt-1 text-xs text-[#b9b1a1]">{sub}</p>
     </div>
   )
 }
@@ -82,17 +82,17 @@ function SectionTitle({
   return (
     <div className="mb-4 flex items-center justify-between gap-4">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center border border-[#334155] bg-[#111827] text-[#65d6ad]">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#d6a85f]/35 bg-[#241a11] text-[#f1c16f]">
           <Icon className="h-4 w-4" />
         </div>
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#8a94a8]">{eyebrow}</p>
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#8f877a]">{eyebrow}</p>
+          <h2 className="text-lg font-semibold text-[#fff7e8]">{title}</h2>
         </div>
       </div>
-      <Button size="sm" variant="outline" className="h-8 gap-1.5 border-[#334155] bg-[#0d1118] text-xs text-[#cbd5e1]">
+      <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-full border-[#3a3125] bg-[#171714] text-xs text-[#d9d0bf] hover:bg-[#241a11]">
         <ArrowUpRight className="h-3.5 w-3.5" />
-        Inspect
+        查看
       </Button>
     </div>
   )
@@ -110,8 +110,8 @@ function TopicWorkspace() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
-        <div className="border border-[#273142] bg-[#0b0f16]">
-          <div className="grid grid-cols-[88px_1fr_130px_80px_80px_72px] border-b border-[#273142] px-4 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8a94a8]">
+        <div className="overflow-hidden rounded-2xl border border-[#3a3125] bg-[#171714]">
+          <div className="grid grid-cols-[88px_1fr_130px_80px_80px_72px] border-b border-[#3a3125] px-4 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8f877a]">
             <span>Symbol</span>
             <span>Name / role</span>
             <span>Chip</span>
@@ -120,26 +120,26 @@ function TopicWorkspace() {
             <span>Risk</span>
           </div>
           {constituents.map((stock) => (
-            <div key={stock.symbol} className="grid grid-cols-[88px_1fr_130px_80px_80px_72px] items-center border-b border-[#1f2937] px-4 py-3 last:border-0">
-              <span className="font-mono text-sm font-semibold text-white">{stock.symbol}</span>
+            <div key={stock.symbol} className="grid grid-cols-[88px_1fr_130px_80px_80px_72px] items-center border-b border-[#332c22] px-4 py-3 last:border-0">
+              <span className="font-mono text-sm font-semibold text-[#fff7e8]">{stock.symbol}</span>
               <div>
-                <p className="text-sm font-medium text-[#e5e7eb]">{stock.name}</p>
-                <p className="text-xs text-[#8a94a8]">{stock.role}</p>
+                <p className="text-sm font-medium text-[#efe7d6]">{stock.name}</p>
+                <p className="text-xs text-[#8f877a]">{stock.role}</p>
               </div>
-              <span className="font-mono text-sm text-[#65d6ad]">{stock.chip}</span>
+              <span className="font-mono text-sm text-[#9fcca1]">{stock.chip}</span>
               <span className="font-mono text-sm text-[#f6bd60]">{stock.news}</span>
-              <span className="font-mono text-sm text-[#8ecae6]">{stock.ml}</span>
-              <Badge variant="outline" className="w-fit rounded-sm border-[#334155] text-[#cbd5e1]">{stock.risk}</Badge>
+              <span className="font-mono text-sm text-[#d7b98c]">{stock.ml}</span>
+              <Badge variant="outline" className="w-fit rounded-full border-[#3a3125] text-[#d9d0bf]">{stock.risk}</Badge>
             </div>
           ))}
         </div>
 
         <div className="space-y-3">
           {['AI ASIC 投片需求延續', '先進封裝產能議題擴散', 'NRE 訂單能見度改善'].map((item, index) => (
-            <div key={item} className="border border-[#273142] bg-[#10151f] p-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#8a94a8]">Catalyst 0{index + 1}</p>
-              <p className="mt-2 text-sm font-medium text-white">{item}</p>
-              <p className="mt-2 text-xs leading-5 text-[#9aa6b8]">新聞、籌碼與 ML 同向時提高觀察優先級，單一來源不直接升級成買進訊號。</p>
+            <div key={item} className="rounded-2xl border border-[#3a3125] bg-[#171714] p-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#8f877a]">Catalyst 0{index + 1}</p>
+              <p className="mt-2 text-sm font-medium text-[#fff7e8]">{item}</p>
+              <p className="mt-2 text-xs leading-5 text-[#b9b1a1]">新聞、籌碼與 ML 同向時提高觀察優先級，單一來源不直接升級成買進訊號。</p>
             </div>
           ))}
         </div>
@@ -154,13 +154,13 @@ function DailyFocus() {
       <SectionTitle icon={BellRing} eyebrow="Daily focus" title="今日焦點隊列" />
       <div className="grid gap-3 lg:grid-cols-2">
         {focusQueue.map((item) => (
-          <div key={item.title} className="border border-[#273142] bg-[#0b0f16] p-4">
+          <div key={item.title} className="rounded-2xl border border-[#3a3125] bg-[#171714] p-4">
             <div className="mb-3 flex items-center justify-between">
-              <Badge className="rounded-sm bg-[#1b4332] text-[#b7efc5] hover:bg-[#1b4332]">{item.tag}</Badge>
+              <Badge className="rounded-full bg-[#9fcca1]/18 text-[#cbe4c7] hover:bg-[#9fcca1]/18">{item.tag}</Badge>
               <span className="font-mono text-xs text-[#f6bd60]">Impact {item.impact}</span>
             </div>
-            <h3 className="text-base font-semibold text-white">{item.title}</h3>
-            <p className="mt-3 text-xs text-[#8a94a8]">{item.source}</p>
+            <h3 className="text-base font-semibold text-[#fff7e8]">{item.title}</h3>
+            <p className="mt-3 text-xs text-[#8f877a]">{item.source}</p>
           </div>
         ))}
       </div>
@@ -185,12 +185,12 @@ function StockResearch() {
     <div className="space-y-5">
       <SectionTitle icon={Building2} eyebrow="Stock research" title="3443 創意：題材、ML 與風險合併視圖" />
       <div className="grid gap-3 md:grid-cols-[1.1fr_0.9fr]">
-        <div className="border border-[#273142] bg-[#0b0f16] p-5">
+        <div className="rounded-2xl border border-[#3a3125] bg-[#171714] p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8a94a8]">Signal provenance</p>
-              <h3 className="mt-2 text-2xl font-semibold text-white">BUY / confidence 0.82</h3>
-              <p className="mt-2 text-sm text-[#9aa6b8]">來源：ensemble_v2 + topic momentum + chip confirmation</p>
+              <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8f877a]">Signal provenance</p>
+              <h3 className="mt-2 text-2xl font-semibold text-[#fff7e8]">BUY / confidence 0.82</h3>
+              <p className="mt-2 text-sm text-[#b9b1a1]">來源：ensemble_v2 + topic momentum + chip confirmation</p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-right">
               <MetricTile label="ML score" value="82" sub="rank PR 88" />
@@ -198,22 +198,22 @@ function StockResearch() {
             </div>
           </div>
         </div>
-        <div className="border border-[#273142] bg-[#10151f] p-5">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Related map</p>
+        <div className="rounded-2xl border border-[#3a3125] bg-[#1f211c] p-5">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8f877a]">Related map</p>
           <div className="mt-4 flex flex-wrap gap-2">
             {['IP 授權', 'ASIC 設計', 'AI 伺服器', '先進封裝', '供應鏈映射'].map((tag) => (
-              <Badge key={tag} variant="outline" className="rounded-sm border-[#3b4a5f] bg-[#0b0f16] text-[#d8dee9]">{tag}</Badge>
+              <Badge key={tag} variant="outline" className="rounded-full border-[#3a3125] bg-[#171714] text-[#d9d0bf]">{tag}</Badge>
             ))}
           </div>
-          <p className="mt-4 text-sm leading-6 text-[#9aa6b8]">個股頁不再只是圖表集合，而是把題材、籌碼、新聞、公告、ML 與供應鏈關係放在同一個固定研究容器。</p>
+          <p className="mt-4 text-sm leading-6 text-[#b9b1a1]">個股頁不再只是圖表集合，而是把題材、籌碼、新聞、公告、ML 與供應鏈關係放在同一個固定研究容器。</p>
         </div>
       </div>
       <div className="grid gap-3 md:grid-cols-4">
         {lanes.map(({ icon: Icon, title, text }) => (
-          <div key={title} className="border border-[#273142] bg-[#0d1118] p-4">
-            <Icon className="mb-3 h-4 w-4 text-[#65d6ad]" />
-            <h3 className="text-sm font-semibold text-white">{title}</h3>
-            <p className="mt-2 text-xs leading-5 text-[#9aa6b8]">{text}</p>
+          <div key={title} className="rounded-2xl border border-[#3a3125] bg-[#171714] p-4">
+            <Icon className="mb-3 h-4 w-4 text-[#d6a85f]" />
+            <h3 className="text-sm font-semibold text-[#fff7e8]">{title}</h3>
+            <p className="mt-2 text-xs leading-5 text-[#b9b1a1]">{text}</p>
           </div>
         ))}
       </div>
@@ -223,34 +223,34 @@ function StockResearch() {
 
 function LeftRail() {
   return (
-    <aside className="hidden border-r border-[#273142] bg-[#080c12] p-4 lg:block">
+    <aside className="hidden border-r border-[#332c22] bg-[#141410] p-4 lg:block">
       <div className="mb-5 flex items-center gap-2">
-        <div className="flex h-9 w-9 items-center justify-center border border-[#65d6ad]/40 bg-[#0f1d1a] font-mono text-xs font-black text-[#b7efc5]">SV</div>
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#d6a85f]/40 bg-[#241a11] font-mono text-xs font-black text-[#f1c16f]">SV</div>
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-white">Research</p>
-          <p className="text-[11px] text-[#8a94a8]">topic-first layer</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#fff7e8]">Research</p>
+          <p className="text-[11px] text-[#8f877a]">topic-first notebook</p>
         </div>
       </div>
 
       <div className="space-y-2">
         {topics.map((topic) => (
-          <button key={topic.id} className="grid w-full grid-cols-[12px_1fr_auto] items-center gap-2 border border-transparent px-2 py-2.5 text-left hover:border-[#334155] hover:bg-[#0d1118]">
+          <button key={topic.id} className="grid w-full grid-cols-[12px_1fr_auto] items-center gap-2 rounded-xl border border-transparent px-2 py-2.5 text-left hover:border-[#3a3125] hover:bg-[#1f211c]">
             <ToneDot tone={topic.tone} />
             <span className="min-w-0">
-              <span className="block truncate text-xs font-medium text-[#e5e7eb]">{topic.name}</span>
-              <span className="block truncate text-[10px] text-[#8a94a8]">{topic.group}</span>
+              <span className="block truncate text-xs font-medium text-[#efe7d6]">{topic.name}</span>
+              <span className="block truncate text-[10px] text-[#8f877a]">{topic.group}</span>
             </span>
-            <span className="font-mono text-[11px] text-[#65d6ad]">{topic.heat}</span>
+            <span className="font-mono text-[11px] text-[#d6a85f]">{topic.heat}</span>
           </button>
         ))}
       </div>
 
-      <div className="mt-6 border-t border-[#273142] pt-4">
-        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Market lenses</p>
+      <div className="mt-6 border-t border-[#332c22] pt-4">
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8f877a]">Market lenses</p>
         {['題材熱力', '資金動向', '法人加碼', '供應鏈映射'].map((lens) => (
-          <button key={lens} className="flex w-full items-center justify-between px-2 py-2 text-left text-xs text-[#cbd5e1] hover:bg-[#0d1118]">
+          <button key={lens} className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left text-xs text-[#d9d0bf] hover:bg-[#1f211c]">
             <span>{lens}</span>
-            <ChevronRight className="h-3.5 w-3.5 text-[#64748b]" />
+            <ChevronRight className="h-3.5 w-3.5 text-[#7d7568]" />
           </button>
         ))}
       </div>
@@ -260,59 +260,59 @@ function LeftRail() {
 
 function RightRail() {
   return (
-    <aside className="hidden border-l border-[#273142] bg-[#080c12] p-4 xl:block">
+    <aside className="hidden border-l border-[#332c22] bg-[#141410] p-4 xl:block">
       <div className="mb-5">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Today brief</p>
-        <h3 className="mt-2 text-base font-semibold text-white">研究摘要</h3>
+        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8f877a]">Today brief</p>
+        <h3 className="mt-2 text-base font-semibold text-[#fff7e8]">今日研究提醒</h3>
       </div>
 
       <div className="space-y-3">
         {focusQueue.slice(0, 3).map((item) => (
-          <div key={item.title} className="border border-[#273142] bg-[#0d1118] p-3">
+          <div key={item.title} className="rounded-2xl border border-[#3a3125] bg-[#171714] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <Badge variant="outline" className="rounded-sm border-[#334155] text-[10px] text-[#cbd5e1]">{item.tag}</Badge>
+              <Badge variant="outline" className="rounded-full border-[#3a3125] text-[10px] text-[#d9d0bf]">{item.tag}</Badge>
               <span className="font-mono text-[10px] text-[#f6bd60]">{item.impact}</span>
             </div>
-            <p className="text-xs leading-5 text-[#d8dee9]">{item.title}</p>
+            <p className="text-xs leading-5 text-[#efe7d6]">{item.title}</p>
           </div>
         ))}
       </div>
 
-      <div className="mt-6 border-t border-[#273142] pt-4">
-        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Source coverage</p>
+      <div className="mt-6 border-t border-[#332c22] pt-4">
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8f877a]">Source coverage</p>
         <div className="flex flex-wrap gap-1.5">
           {sourceCoverage.map((source) => (
-            <span key={source} className="border border-[#273142] bg-[#10151f] px-2 py-1 font-mono text-[10px] text-[#9aa6b8]">{source}</span>
+            <span key={source} className="rounded-full border border-[#3a3125] bg-[#1f211c] px-2 py-1 font-mono text-[10px] text-[#b9b1a1]">{source}</span>
           ))}
         </div>
       </div>
 
-      <div className="mt-6 border-t border-[#273142] pt-4">
-        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">Local LLM telemetry</p>
+      <div className="mt-6 border-t border-[#332c22] pt-4">
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8f877a]">Local LLM telemetry</p>
         <div className="space-y-2">
           {telemetry.map((item) => (
-            <div key={item.label} className="grid grid-cols-[1fr_auto] gap-3 border border-[#273142] bg-[#0d1118] px-3 py-2">
-              <span className="text-xs text-[#9aa6b8]">{item.label}</span>
-              <span className="font-mono text-xs text-[#d8f3dc]">{item.value}</span>
+            <div key={item.label} className="grid grid-cols-[1fr_auto] gap-3 rounded-xl border border-[#3a3125] bg-[#171714] px-3 py-2">
+              <span className="text-xs text-[#b9b1a1]">{item.label}</span>
+              <span className="font-mono text-xs text-[#9fcca1]">{item.value}</span>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="mt-6 border-t border-[#273142] pt-4">
-        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a94a8]">R&D lab topology</p>
-        <div className="border border-[#273142] bg-[#0d1118] p-3">
+      <div className="mt-6 border-t border-[#332c22] pt-4">
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8f877a]">R&D lab topology</p>
+        <div className="rounded-2xl border border-[#3a3125] bg-[#171714] p-3">
           <div className="grid grid-cols-2 gap-2">
             {labNodes.map((node) => (
-              <div key={node} className="border border-[#334155] bg-[#080c12] px-2 py-2 text-center font-mono text-[10px] text-[#d8dee9]">
+              <div key={node} className="rounded-xl border border-[#3a3125] bg-[#111210] px-2 py-2 text-center font-mono text-[10px] text-[#efe7d6]">
                 {node}
               </div>
             ))}
           </div>
-          <div className="mt-3 h-1.5 bg-[#1f2937]">
-            <div className="h-full w-[68%] bg-[#3b82f6]" />
+          <div className="mt-3 h-1.5 rounded-full bg-[#27261f]">
+            <div className="h-full w-[68%] rounded-full bg-[#d6a85f]" />
           </div>
-          <p className="mt-2 text-[11px] leading-5 text-[#8a94a8]">Agent weight preview. Research mode only.</p>
+          <p className="mt-2 text-[11px] leading-5 text-[#8f877a]">Agent weight preview. Research mode only.</p>
         </div>
       </div>
     </aside>
@@ -321,35 +321,35 @@ function RightRail() {
 
 export default function ResearchWorkbenchDemo() {
   return (
-    <div className="min-h-screen bg-[#05080d] text-[#e5e7eb]">
+    <div className="min-h-screen bg-[#111210] text-[#efe7d6]">
       <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[260px_1fr] xl:grid-cols-[260px_1fr_300px]">
         <LeftRail />
 
         <main className="min-w-0">
-          <header className="border-b border-[#273142] bg-[#080c12] px-4 py-4 md:px-6">
+          <header className="border-b border-[#332c22] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] px-4 py-4 md:px-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge className="rounded-sm bg-[#1b4332] text-[#b7efc5] hover:bg-[#1b4332]">Demo route</Badge>
-                  <span className="font-mono text-[11px] text-[#8a94a8]">/demo/research-workbench</span>
+                  <Badge className="rounded-full bg-[#d6a85f]/16 text-[#f1c16f] hover:bg-[#d6a85f]/16">研究室</Badge>
+                  <span className="font-mono text-[11px] text-[#8f877a]">/research</span>
                 </div>
-                <h1 className="text-2xl font-semibold tracking-normal text-white md:text-3xl">StockVision Research Workbench</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#9aa6b8]">題材、每日焦點、個股研究、AI 代理決策與基礎設施觀測合併成單一研究層。這頁只使用靜態 demo data，不觸碰 production API。</p>
+                <h1 className="text-2xl font-semibold tracking-tight text-[#fff7e8] md:text-3xl">StockVision 研究室</h1>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#b9b1a1]">把題材、新聞、公告、籌碼與 AI 訊號整理成一張研究桌；先看脈絡，再決定要不要深入個股。</p>
               </div>
               <div className="flex items-center gap-2">
-                <div className="hidden border border-[#273142] bg-[#0d1118] px-3 py-2 font-mono text-xs text-[#9aa6b8] md:flex">
-                  <CalendarClock className="mr-2 h-4 w-4 text-[#65d6ad]" />
+                <div className="hidden rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 font-mono text-xs text-[#b9b1a1] md:flex">
+                  <CalendarClock className="mr-2 h-4 w-4 text-[#d6a85f]" />
                   2026-05-05 08:30 TW
                 </div>
-                <Button className="h-9 gap-2 rounded-sm bg-[#d8f3dc] text-[#06130f] hover:bg-[#b7efc5]">
+                <Button className="h-9 gap-2 rounded-full bg-[#d6a85f] text-[#171714] hover:bg-[#f1c16f]">
                   <Search className="h-4 w-4" />
-                  Search
+                  搜尋標的
                 </Button>
               </div>
             </div>
           </header>
 
-          <section className="border-b border-[#273142] bg-[#0a0f16] px-4 py-4 md:px-6">
+          <section className="border-b border-[#332c22] bg-[#151511] px-4 py-4 md:px-6">
             <div className="grid gap-3 md:grid-cols-4">
               <MetricTile label="Active topics" value="128" sub="taxonomy nodes" />
               <MetricTile label="News mapped" value="412" sub="24h topic events" />
@@ -360,18 +360,18 @@ export default function ResearchWorkbenchDemo() {
 
           <section className="px-4 py-5 md:px-6">
             <Tabs defaultValue="topics" className="gap-5">
-              <TabsList className="grid h-auto w-full grid-cols-1 rounded-none border border-[#273142] bg-[#0d1118] p-1 sm:grid-cols-3">
-                <TabsTrigger value="topics" className="rounded-sm data-[state=active]:bg-[#d8f3dc] data-[state=active]:text-[#06130f]">
+              <TabsList className="grid h-auto w-full grid-cols-1 rounded-2xl border border-[#3a3125] bg-[#171714] p-1 sm:grid-cols-3">
+                <TabsTrigger value="topics" className="rounded-xl data-[state=active]:bg-[#d6a85f] data-[state=active]:text-[#171714]">
                   <Route className="h-4 w-4" />
-                  題材
+                  題材總覽
                 </TabsTrigger>
-                <TabsTrigger value="focus" className="rounded-sm data-[state=active]:bg-[#d8f3dc] data-[state=active]:text-[#06130f]">
+                <TabsTrigger value="focus" className="rounded-xl data-[state=active]:bg-[#d6a85f] data-[state=active]:text-[#171714]">
                   <Radar className="h-4 w-4" />
-                  焦點
+                  今日焦點
                 </TabsTrigger>
-                <TabsTrigger value="stock" className="rounded-sm data-[state=active]:bg-[#d8f3dc] data-[state=active]:text-[#06130f]">
+                <TabsTrigger value="stock" className="rounded-xl data-[state=active]:bg-[#d6a85f] data-[state=active]:text-[#171714]">
                   <ChartCandlestick className="h-4 w-4" />
-                  個股
+                  個股筆記
                 </TabsTrigger>
               </TabsList>
 
@@ -391,19 +391,19 @@ export default function ResearchWorkbenchDemo() {
         <RightRail />
       </div>
 
-      <div className="fixed bottom-4 left-4 z-20 hidden items-center gap-2 border border-[#273142] bg-[#080c12]/95 px-3 py-2 font-mono text-[11px] text-[#9aa6b8] shadow-2xl backdrop-blur md:flex">
-        <Activity className="h-3.5 w-3.5 text-[#65d6ad]" />
-        Static UX demo. No production calls.
-        <Sparkles className="h-3.5 w-3.5 text-[#f6bd60]" />
-        Hybrid mode.
-        <Gauge className="h-3.5 w-3.5 text-[#8ecae6]" />
-        Research layer only.
-        <Target className="h-3.5 w-3.5 text-[#f25f5c]" />
-        Review candidate.
-        <BookOpenText className="h-3.5 w-3.5 text-[#b7efc5]" />
-        IA preview.
-        <TrendingUp className="h-3.5 w-3.5 text-[#f6bd60]" />
-        Topic-first.
+      <div className="fixed bottom-4 left-4 z-20 hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#141410]/95 px-3 py-2 font-mono text-[11px] text-[#b9b1a1] shadow-2xl backdrop-blur md:flex">
+        <Activity className="h-3.5 w-3.5 text-[#9fcca1]" />
+        研究室預覽，未呼叫 production API
+        <Sparkles className="h-3.5 w-3.5 text-[#d6a85f]" />
+        生活化模式
+        <Gauge className="h-3.5 w-3.5 text-[#d7b98c]" />
+        Topic-first
+        <Target className="h-3.5 w-3.5 text-[#c5855f]" />
+        Review candidate
+        <BookOpenText className="h-3.5 w-3.5 text-[#9fcca1]" />
+        IA preview
+        <TrendingUp className="h-3.5 w-3.5 text-[#d6a85f]" />
+        Focused
       </div>
     </div>
   )

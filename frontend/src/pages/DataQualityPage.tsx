@@ -29,13 +29,13 @@ function metricSummary(check: DataQualityCheck): string {
 
 function CheckCard({ check }: { check: DataQualityCheck }) {
   return (
-    <div className={`border bg-[#05070c] p-3 ${check.status === 'fail' ? 'border-rose-400/35' : check.status === 'warn' ? 'border-amber-400/30' : 'border-[#263247]'}`}>
+    <div className={`rounded-2xl border bg-[#171714] p-3 ${check.status === 'fail' ? 'border-rose-400/35' : check.status === 'warn' ? 'border-[#d6a85f]/35' : 'border-[#3a3125]'}`}>
       <div className="flex items-start gap-3">
         <WorkstationPill tone={statusTone(check.status)}>{check.status}</WorkstationPill>
         <div className="min-w-0">
-          <div className="font-mono text-[12px] uppercase tracking-[0.12em] text-slate-100">{check.label}</div>
-          <div className="mt-1 text-xs leading-5 text-[#8a92a6]">{check.summary}</div>
-          <div className="mt-2 font-mono text-[10px] text-[#70809b]">{metricSummary(check)}</div>
+          <div className="font-mono text-[12px] uppercase tracking-[0.12em] text-[#fff7e8]">{check.label}</div>
+          <div className="mt-1 text-xs leading-5 text-[#b9b1a1]">{check.summary}</div>
+          <div className="mt-2 font-mono text-[10px] text-[#8f877a]">{metricSummary(check)}</div>
         </div>
       </div>
     </div>
@@ -59,19 +59,19 @@ export default function DataQualityPage() {
     <AppShell>
       <div className="space-y-4 p-4 lg:p-5">
         <WorkstationPageTitle
-          kicker="Data Quality Drilldown"
-          title="Source Reliability Explorer"
-          description="OBS 的資料品質深鑽頁：只看 freshness、schema、train/serve parity 與 affected symbols，不重複 Scheduler / Model Pool / release gate 摘要。"
+          kicker="Data care"
+          title="Data Quality Drilldown / 資料品質深入追查"
+          description="確認價格、籌碼、feature 與 train/serve parity 是否跟得上今天的節奏；有缺口時直接列出會影響推薦或模型判斷的項目。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="border border-sky-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-300">back to OBS</a>
+              <a href="/obs" className="rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">回系統健康</a>
               <button
                 type="button"
                 onClick={() => void quality.refetch()}
-                className="inline-flex items-center gap-1 border border-amber-400/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200"
+                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
               >
                 <RefreshCw className={`h-3 w-3 ${quality.isFetching ? 'animate-spin' : ''}`} />
-                refresh
+                更新
               </button>
             </div>
           }
@@ -84,24 +84,24 @@ export default function DataQualityPage() {
         )}
 
         <DecisionTraceRail
-          title="Data Trust Contract"
+          title="資料信任檢查"
           compact
           steps={[
-            { label: 'Freshness', detail: '確認 price / chip / feature 日期是否新鮮且符合交易日曆。', tone: statusTone(report?.overall) },
-            { label: 'Schema', detail: '確認 screener、ML predict、recommendation 使用一致欄位。', tone: warnCount || failCount ? 'warn' : 'ok' },
-            { label: 'Parity', detail: '確認 train/serve parity，避免 feature 漂移只變成 warning。', tone: gaps.length ? 'warn' : 'ok' },
-            { label: 'Impact', detail: '把資料缺口轉成 affected symbols / downstream risk；release gate 請回 OBS 入口。', tone: gaps.length ? 'warn' : 'ok' },
+            { label: '新鮮度', detail: '確認 price / chip / feature 日期是否新鮮且符合交易日曆。', tone: statusTone(report?.overall) },
+            { label: '欄位一致', detail: '確認 screener、ML predict、recommendation 使用一致欄位。', tone: warnCount || failCount ? 'warn' : 'ok' },
+            { label: '訓練服務一致', detail: '確認 train/serve parity，避免 feature 漂移只變成 warning。', tone: gaps.length ? 'warn' : 'ok' },
+            { label: '影響範圍', detail: '把資料缺口轉成 affected symbols / downstream risk；release gate 請回系統健康入口。', tone: gaps.length ? 'warn' : 'ok' },
           ]}
         />
 
         <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <SignalInsightCard title="Overall" value={report?.overall ?? 'unknown'} detail={`date ${report?.date ?? '-'}`} tone={statusTone(report?.overall)} />
-          <SignalInsightCard title="Checks" value={String(report?.checks.length ?? 0)} detail={`ok ${okCount} / warn ${warnCount} / fail ${failCount}`} tone={failCount ? 'error' : warnCount ? 'warn' : 'ok'} />
-          <SignalInsightCard title="Actionable Gaps" value={String(gaps.length)} detail={gaps.length ? '有 fail/warn 缺口，會影響推薦、IC 或 backtest。' : '目前沒有資料品質缺口。'} tone={gaps.length ? 'warn' : 'ok'} />
-          <SignalInsightCard title="Owner" value="Data Source" detail="freshness / schema / parity only" tone="info" />
+          <SignalInsightCard title="整體狀態" value={report?.overall ?? 'unknown'} detail={`date ${report?.date ?? '-'}`} tone={statusTone(report?.overall)} />
+          <SignalInsightCard title="檢查項目" value={String(report?.checks.length ?? 0)} detail={`ok ${okCount} / warn ${warnCount} / fail ${failCount}`} tone={failCount ? 'error' : warnCount ? 'warn' : 'ok'} />
+          <SignalInsightCard title="待處理缺口" value={String(gaps.length)} detail={gaps.length ? '有 fail/warn 缺口，會影響推薦、IC 或 backtest。' : '目前沒有資料品質缺口。'} tone={gaps.length ? 'warn' : 'ok'} />
+          <SignalInsightCard title="責任範圍" value="Data Source" detail="freshness / schema / parity only" tone="info" />
         </section>
 
-        <WorkstationPanel title="Actionable Data Gaps" kicker="fail and warn first">
+        <WorkstationPanel title="需要處理的資料缺口" kicker="fail and warn first">
           <div className="space-y-3 p-3">
             {gaps.length > 0 ? (
               gaps.map((check) => <CheckCard key={check.id} check={check} />)
@@ -113,7 +113,7 @@ export default function DataQualityPage() {
           </div>
         </WorkstationPanel>
 
-        <WorkstationPanel title="All Quality Checks" kicker="freshness, schema, parity">
+        <WorkstationPanel title="全部品質檢查" kicker="freshness, schema, parity">
           <div className="grid grid-cols-1 gap-3 p-3 xl:grid-cols-2">
             {(report?.checks ?? []).map((check) => <CheckCard key={check.id} check={check} />)}
             {!report?.checks?.length && (

@@ -59,7 +59,7 @@ export function DailyRecommendationPanelV2() {
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
           <p className="text-sm">尚未產出今日推薦</p>
-          <p className="mt-1 text-xs">收盤後 pipeline 完成才會更新；若已完成仍為空，請看 OBS root cause。</p>
+                <p className="mt-1 text-xs">收盤後 pipeline 完成才會更新；若已完成仍為空，請看系統健康的根因紀錄。</p>
         </div>
       ) : (
         <div className="space-y-5">

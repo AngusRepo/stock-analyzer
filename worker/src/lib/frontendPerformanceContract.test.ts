@@ -18,6 +18,7 @@ const dailyPanelSource = fs.readFileSync(path.join(frontend, 'components', 'Dail
 const obsSource = fs.readFileSync(path.join(frontend, 'pages', 'ObservabilityPage.tsx'), 'utf8')
 const apiSource = fs.readFileSync(path.join(frontend, 'lib', 'api.ts'), 'utf8')
 const recommendationRouteSource = fs.readFileSync(path.join(root, 'worker', 'src', 'routes', 'other.ts'), 'utf8')
+const viteConfigSource = fs.readFileSync(path.join(root, 'frontend', 'vite.config.ts'), 'utf8')
 
 assert(fs.existsSync(queryPolicyPath), 'frontend must centralize React Query cache and prefetch policy')
 assert(fs.existsSync(virtualListPath), 'frontend must provide a reusable virtualized list for large OBS/funnel tables')
@@ -39,3 +40,6 @@ assert(dailyPanelSource.includes("view: 'card'"), 'DailyRecommendationPanelV2 mu
 assert(obsSource.includes('VirtualizedList'), 'OBS must virtualize large event/job lists instead of rendering every row')
 assert(recommendationRouteSource.includes('compactRecommendationForCard'), 'Worker daily recommendations must support compact card payloads')
 assert(recommendationRouteSource.includes("c.req.query('view') === 'card'"), 'Worker must make payload slimming an explicit request contract')
+assert(viteConfigSource.includes('resolveBuildId'), 'Vite config must derive a build id for production cache busting')
+assert(viteConfigSource.includes('entryFileNames') && viteConfigSource.includes('chunkFileNames'), 'Vite output filenames must include build id to prevent stale PWA chunks')
+assert(viteConfigSource.includes('VITE_BUILD_ID'), 'Frontend must expose build id for deployment diagnostics')

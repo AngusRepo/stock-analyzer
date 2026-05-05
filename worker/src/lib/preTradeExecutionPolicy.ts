@@ -17,6 +17,7 @@ export interface PreTradePolicyConfig {
   requoteDiscount: number
   requoteStopFallback: number
   maxRetries?: number
+  maxQuoteAgeMs?: number
 }
 
 export interface PreTradeExecutionInput {
@@ -27,6 +28,7 @@ export interface PreTradeExecutionInput {
   originalEntry?: number | null
   retryCount?: number | null
   previousClose?: number | null
+  quoteAgeMs?: number | null
   quoteSource: QuoteSource
   marketRiskLevel?: string | null
   momentum?: PreTradeMomentumContext | null
@@ -60,6 +62,11 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
 
   if (input.quoteSource !== 'shioaji') {
     return { action: 'DEFER', reason: `untrusted_quote_source:${input.quoteSource}` }
+  }
+  const quoteAgeMs = Number(input.quoteAgeMs ?? 0)
+  const maxQuoteAgeMs = Number(input.policy.maxQuoteAgeMs ?? 0)
+  if (maxQuoteAgeMs > 0 && Number.isFinite(quoteAgeMs) && quoteAgeMs > maxQuoteAgeMs) {
+    return { action: 'DEFER', reason: `stale_quote:${Math.round(quoteAgeMs)}ms` }
   }
 
   const previousClose = Number(input.previousClose ?? 0)

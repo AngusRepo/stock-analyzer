@@ -24,6 +24,7 @@ import AppShell from '@/components/AppShell'
 import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
+import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
 import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
@@ -266,6 +267,31 @@ function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: bo
           filled {execution.filled}
         </Badge>
       )}
+      {(execution.partially_filled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          partial {execution.partially_filled}
+        </Badge>
+      )}
+      {(execution.submitted ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+          submitted {execution.submitted}
+        </Badge>
+      )}
+      {(execution.requoted ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          requoted {execution.requoted}
+        </Badge>
+      )}
+      {(execution.stale_quote ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          stale quote {execution.stale_quote}
+        </Badge>
+      )}
+      {(execution.quote_unavailable ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+          quote missing {execution.quote_unavailable}
+        </Badge>
+      )}
       {(execution.skipped ?? 0) > 0 && (
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
           skipped {execution.skipped}
@@ -279,6 +305,11 @@ function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: bo
       {(execution.expired ?? 0) > 0 && (
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-400">
           expired {execution.expired}
+        </Badge>
+      )}
+      {(execution.rejected ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+          rejected {execution.rejected}
         </Badge>
       )}
       {stale && (
@@ -366,6 +397,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
+        const executionBadge = formatExecutionStatusBadge(b.execution_status)
+        const partialRemaining = formatPartialFillRemaining(b.watch_points)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
         // prefix with price line. Previously price line 100% replaced reason.
         // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
@@ -393,13 +426,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             <RecommendationCard rec={rec} rank={idx + 1} />
             <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] font-mono text-muted-foreground">
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <span>execution: {b.execution_status ?? 'pending'}</span>
+                <span>execution: {executionBadge.label}</span>
                 <span>debate: {b.debate_status ?? 'pending'}</span>
                 <span>source: {b.source ?? 'morning_setup'}</span>
                 <span>retry: {b.retry_count ?? 0}</span>
               </div>
               <div className="mt-1 text-muted-foreground/70">
                 base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
+              </div>
+              <div className="mt-1 text-muted-foreground/70">
+                {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
               </div>
             </div>
             <button

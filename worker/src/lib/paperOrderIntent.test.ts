@@ -1,4 +1,4 @@
-import { buildPaperBuyIntentKey, shouldRecoverPaperBuyIntent } from './paperOrderIntent'
+import { buildPaperBuyIntentKey, completePaperBuyIntent, shouldRecoverPaperBuyIntent } from './paperOrderIntent'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -28,3 +28,11 @@ assert(
   !shouldRecoverPaperBuyIntent({ status: 'filled', updated_at: '2026-04-28 01:01:00' }, new Date('2026-04-28T09:30:00+08:00')),
   'filled intent must never be recovered',
 )
+
+assert(
+  !shouldRecoverPaperBuyIntent({ status: 'partial', updated_at: '2026-04-28 01:01:00' }, new Date('2026-04-28T09:30:00+08:00')),
+  'partial intent should not be auto-recovered without an explicit remaining-order policy',
+)
+
+const partialIntentStatus: Parameters<typeof completePaperBuyIntent>[2] = 'partial'
+assert(partialIntentStatus === 'partial', 'completePaperBuyIntent should accept partial status')

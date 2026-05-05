@@ -1,4 +1,5 @@
 import type { PendingBuyStateItem, PendingBuyStateSummary } from './pendingBuyStateSummary'
+import { extractPartialFillRemaining, type PendingBuyExecutionStatus } from './pendingBuyExecutionState'
 
 interface BriefingPendingBuy extends PendingBuyStateItem {
   name?: string | null
@@ -18,7 +19,7 @@ export function formatPendingBuyBriefing(
   state: PendingBuyStateSummary,
 ): string {
   const exec = state.execution_counts
-  const header = `**${state.label}** | active ${state.active_count}/${state.total_count} | filled ${exec.filled} | skipped ${exec.skipped} | cancelled ${exec.cancelled} | expired ${exec.expired}`
+  const header = `**${state.label}** | active ${state.active_count}/${state.total_count} | filled ${exec.filled} | skipped ${exec.skipped} | cancelled ${exec.cancelled} | expired ${exec.expired} | rejected ${exec.rejected}`
 
   if (!items.length) {
     if (state.state === 'closed') return `${header}\n今日候選已全部收斂，請以 execution 結果與 intraday log 為準。`
@@ -33,7 +34,13 @@ export function formatPendingBuyBriefing(
     const watch = firstBusinessWatchPoint(item.watch_points)
     const price = `entry ${item.ml_entry_price ?? 'N/A'} | stop ${item.ml_stop_loss ?? 'N/A'}`
     const watchText = watch ? ` | watch: ${watch}` : ''
-    return `- **${item.symbol} ${item.name ?? ''}** | ${price} | debate ${verdict} | exec ${execution}${watchText}`
+    const partial = extractPartialFillRemaining({
+      symbol: item.symbol,
+      execution_status: item.execution_status as PendingBuyExecutionStatus | null | undefined,
+      watch_points: item.watch_points ?? undefined,
+    })
+    const partialText = partial ? ` | partial ${partial.filled}/${partial.requested}, remaining ${partial.remaining}` : ''
+    return `- **${item.symbol} ${item.name ?? ''}** | ${price} | debate ${verdict} | exec ${execution}${partialText}${watchText}`
   })
 
   return [header, ...rows].join('\n')

@@ -1,8 +1,10 @@
 import {
   appendPendingBuyExecutionNote,
   applyPendingBuyExecutionEvents,
+  applyPendingBuyExecutionStatusUpdates,
   applyPendingBuyDebateFailure,
   applyPendingBuySlaExpiry,
+  extractPartialFillRemaining,
   type PendingBuyExecutionEvent,
 } from './pendingBuyExecutionState'
 
@@ -58,6 +60,7 @@ assertDeepEqual(result.summary, {
   skipped: 1,
   cancelled: 0,
   expired: 0,
+  rejected: 0,
 }, 'summary should count terminal outcomes')
 
 const cancelled = applyPendingBuyExecutionEvents([item('3008')], [
@@ -82,10 +85,51 @@ assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item s
 }
 
 {
+  const partial = applyPendingBuyExecutionStatusUpdates([item('2330')], [
+    { symbol: '2330', status: 'partially_filled', reason: 'paper_order_partial_fill', detail: 'requested=1000;filled=600;remaining=400' },
+  ])
+  const expired = applyPendingBuySlaExpiry(partial.allItems, 'partial_fill_remaining_expired')
+  assert(expired.activeItems.length === 0, 'partial fill remaining order should expire through the same SLA lifecycle')
+  assert(expired.allItems[0].execution_status === 'expired', 'partial fill remaining order should become expired terminal state')
+  assert(
+    expired.allItems[0].watch_points?.includes('execution:expired:partial_fill_remaining_expired'),
+    'partial fill expiry should keep an explicit terminal execution note',
+  )
+}
+
+{
   const noted = appendPendingBuyExecutionNote(item('2330'), 'execution:deferred:market_risk_unknown')
   const notedAgain = appendPendingBuyExecutionNote(noted, 'execution:deferred:market_risk_unknown')
   assert(noted.execution_status === 'pending', 'non-terminal execution notes must keep item active')
   assert(notedAgain.watch_points?.filter((point) => point === 'execution:deferred:market_risk_unknown').length === 1, 'execution notes should be idempotent')
+}
+
+{
+  const updated = applyPendingBuyExecutionStatusUpdates([item('2330'), item('2454')], [
+    { symbol: '2330', status: 'requoted', reason: 'market_risk_high', detail: '100->98.5' },
+    { symbol: '2454', status: 'quote_unavailable', reason: 'broker_quote_required:missing' },
+  ])
+  assert(updated.activeItems.length === 2, 'non-terminal execution statuses should remain active')
+  assert(updated.allItems[0].execution_status === 'requoted', 'requote should update active execution status')
+  assert(updated.allItems[1].execution_status === 'quote_unavailable', 'quote outage should be visible as active status')
+  assert(updated.activeSummary.requoted === 1, 'active summary should count requoted')
+  assert(updated.activeSummary.quote_unavailable === 1, 'active summary should count quote unavailable')
+  assert(
+    updated.allItems[0].watch_points?.includes('execution:requoted:market_risk_high:100->98.5'),
+    'non-terminal status update should preserve structured execution note',
+  )
+}
+
+{
+  const updated = applyPendingBuyExecutionStatusUpdates([item('2330')], [
+    { symbol: '2330', status: 'partially_filled', reason: 'paper_order_partial_fill', detail: 'requested=1000;filled=600;remaining=400' },
+  ])
+  assert(updated.activeItems.length === 1, 'partial fill should remain active until remaining order is explicitly resolved')
+  assert(updated.activeSummary.partially_filled === 1, 'active summary should count partial fills')
+  const remaining = extractPartialFillRemaining(updated.allItems[0])
+  assert(remaining?.requested === 1000, 'partial fill parser should expose requested shares')
+  assert(remaining?.filled === 600, 'partial fill parser should expose filled shares')
+  assert(remaining?.remaining === 400, 'partial fill parser should expose remaining shares')
 }
 
 {

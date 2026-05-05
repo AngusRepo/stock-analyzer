@@ -3,6 +3,7 @@ import {
   applyPendingBuyExecutionEvents,
   applyPendingBuySlaExpiry,
   type PendingBuyExecutionEvent,
+  type PendingBuyExecutionStatus,
 } from './pendingBuyExecutionState'
 import { recordPaperExecutionEvents } from './paperExecutionEvents'
 
@@ -18,13 +19,6 @@ export type PendingBuyDebateStatus =
   | 'completed'
   | 'failed'
   | 'skipped'
-
-export type PendingBuyExecutionStatus =
-  | 'pending'
-  | 'filled'
-  | 'skipped'
-  | 'cancelled'
-  | 'expired'
 
 export interface PendingBuy {
   symbol: string
@@ -293,7 +287,7 @@ async function readD1Snapshot(
             kelly_pct, chip_score, tech_score, ml_score, score, source, original_entry, retry_count
        FROM pending_buy_items
       WHERE run_id = ?
-        AND COALESCE(execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+        AND COALESCE(execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired', 'rejected')
       ORDER BY score DESC, confidence DESC, symbol ASC`
   ).bind(run.id).all<PendingBuyItemRow>()
   const [executionCountRows, debateCountRows] = await Promise.all([

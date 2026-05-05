@@ -54,6 +54,21 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
 }
 
 {
+  const decision = evaluatePreTradeExecution(baseInput({
+    quoteAgeMs: 20_000,
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxQuoteAgeMs: 10_000,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'stale broker quotes must fail closed')
+  assert(decision.reason === 'stale_quote:20000ms', 'stale quote reason should be explicit')
+}
+
+{
   const decision = evaluatePreTradeExecution(baseInput({ currentPrice: 109.6, previousClose: 100 }))
   assert(decision.action === 'SKIP', 'limit-up chase must be skipped')
 }

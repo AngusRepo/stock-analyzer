@@ -455,6 +455,9 @@ export default function ObservabilityPage() {
               ['Fair value', '系統估算的合理價格帶，不是保證目標價；偏離過大時應先查資料新鮮度。'],
               ['Alpha bucket', '目前這檔股票比較像哪種交易 edge，例如趨勢、突破、均值回歸或防守累積。'],
               ['Market structure', '市場結構脈絡，包含 POC、合理價格帶、流動性與價格位置。'],
+              ['partially_filled', '部分成交；剩餘股數需繼續追蹤、取消或到期，不可直接當作完整成交。'],
+              ['quote_unavailable', '報價缺失；缺 bid/ask 或五檔快照時 fail-closed，不用昨日收盤價假裝成交。'],
+              ['stale_quote', '報價過期；盤中快照太舊時不進場，避免 time-travel fill。'],
               ['Owner boundary', '每段流程只能有一個主責 owner，避免新舊 pipeline 並行互相覆蓋。'],
               ['Snapshot', '把當下 OBS 判斷寫入 D1，讓事後追 root cause 有證據，而不是只看當下畫面。'],
             ].map(([term, description]) => (

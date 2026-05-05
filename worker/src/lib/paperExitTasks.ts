@@ -1,7 +1,7 @@
 import type { Bindings } from '../types'
 import { formatTradeNotification, sendDiscordNotification } from './notify'
 import { checkExitConditions } from './paperExitPolicy'
-import { batchGetIntradayPrices } from './paperIntradayData'
+import { batchGetIntradayOHLC, type IntradayOHLC } from './paperIntradayData'
 import {
   batchGetATR,
   getCurrentRegime,
@@ -10,13 +10,43 @@ import {
   logRegimeShadow,
   recordSellSettlement,
 } from './paperMarketData'
-import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 
 const ACCOUNT_ID = 1
+
+function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
+  const fill = resolveMarketSellFill({
+    currentPrice: quote.last,
+    bestBid: quote.bid,
+    bestAsk: quote.ask,
+    intradayLow: quote.low,
+    intradayHigh: quote.high,
+    slippageTicks: 1,
+    requireBestBid: true,
+  })
+  return {
+    fillable: fill.fillable,
+    price: fill.fillPrice,
+    reason: fill.reason,
+    detail: {
+      fill_reason: fill.reason,
+      quote_last: quote.last,
+      quote_bid: quote.bid ?? null,
+      quote_ask: quote.ask ?? null,
+      quote_low: quote.low ?? null,
+      quote_high: quote.high ?? null,
+      quote_bid_volume: quote.bidVolume ?? null,
+      quote_ask_volume: quote.askVolume ?? null,
+      quote_total_volume: quote.totalVolume ?? null,
+      quote_time: quote.quoteTime ?? null,
+      quote_source: quote.source ?? null,
+    },
+  }
+}
 
 async function runPostExitDiscipline(
   env: Bindings,
@@ -57,7 +87,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
   if (!sameDayPos?.length) return
 
   const symbols = sameDayPos.map((p: any) => p.symbol)
-  const priceMap = await batchGetIntradayPrices(symbols, {
+  const quoteMap = await batchGetIntradayOHLC(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
@@ -66,8 +96,9 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
   const regime = await getCurrentRegime(env.KV)
 
   for (const pos of sameDayPos) {
-    const price = priceMap.get(pos.symbol)
-    if (!price) continue
+    const quote = quoteMap.get(pos.symbol)
+    if (!quote) continue
+    const price = quote.last
     const atr = atrMap.get(pos.symbol) ?? price * cfg.exit.fallbackAtrPct
 
     const prevCloseRow = await env.DB.prepare(
@@ -98,7 +129,22 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     if (!dtCheck.allowed) continue
 
     const shares = pos.shares
-    const txValue = price * shares
+    const sellFill = resolveExitSellFill(quote)
+    if (!sellFill.fillable || sellFill.price == null) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'skipped',
+        reason: 'daytrade_sell_unfillable',
+        detail: { shares, exit_reason: decision.reason, ...sellFill.detail },
+        source: 'daytrade_force_close',
+      })
+      continue
+    }
+    const fillPrice = sellFill.price
+    const txValue = fillPrice * shares
     const commission = calcCommission(txValue, cfg)
     const tax = calcTax(txValue, cfg, true)
     const proceeds = txValue - commission - tax
@@ -106,7 +152,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const sellNote = buildSellOrderNote({
       reason: `[13:25 daytrade force close] ${decision.reason}`,
       entry_date: pos.entry_date,
-    }, { entryPrice, exitPrice: price, shares, commission, tax })
+    }, { entryPrice, exitPrice: fillPrice, shares, commission, tax })
 
     await env.DB.batch([
       env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
@@ -119,7 +165,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
         pos.symbol,
         pos.name,
         shares,
-        price,
+        fillPrice,
         commission,
         tax,
         proceeds,
@@ -135,15 +181,15 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       eventType: 'paper_order',
       status: 'filled',
       reason: 'daytrade_force_close',
-      detail: { shares, price, proceeds, exit_reason: decision.reason },
+      detail: { shares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
       orderId,
       source: 'daytrade_force_close',
     })
-    const pnl = (price - entryPrice) / entryPrice
-    console.log(`[DayTrade] 13:25 force close ${pos.symbol} ${shares} @ ${price} ${(pnl * 100).toFixed(1)}%`)
+    const pnl = (fillPrice - entryPrice) / entryPrice
+    console.log(`[DayTrade] 13:25 force close ${pos.symbol} ${shares} @ ${fillPrice} ${(pnl * 100).toFixed(1)}%`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,
-      formatTradeNotification('sell', pos.symbol, pos.name, shares, price, `13:25 daytrade force close: ${decision.reason}`, pnl),
+      formatTradeNotification('sell', pos.symbol, pos.name, shares, fillPrice, `13:25 daytrade force close: ${decision.reason}`, pnl),
     )
   }
 }
@@ -165,7 +211,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
   }
 
   const exitSymbols = exitPositions.map((p: any) => p.symbol)
-  const exitPriceMap = await batchGetIntradayPrices(exitSymbols, {
+  const exitQuoteMap = await batchGetIntradayOHLC(exitSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
@@ -198,8 +244,9 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const eodToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
   for (const pos of exitPositions) {
-    const currentPrice = exitPriceMap.get(pos.symbol)
-    if (!currentPrice) continue
+    const quote = exitQuoteMap.get(pos.symbol)
+    if (!quote) continue
+    const currentPrice = quote.last
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(
@@ -227,7 +274,22 @@ export async function runEODExit(env: Bindings): Promise<void> {
 
     if (decision.action === 'full_sell') {
       const shares = pos.shares
-      const txValue = currentPrice * shares
+      const sellFill = resolveExitSellFill(quote)
+      if (!sellFill.fillable || sellFill.price == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: eodToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'skipped',
+          reason: 'eod_sell_unfillable',
+          detail: { shares, exit_reason: decision.reason, ...sellFill.detail },
+          source: 'eod_exit',
+        })
+        continue
+      }
+      const fillPrice = sellFill.price
+      const txValue = fillPrice * shares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
@@ -237,7 +299,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         reason: decision.reason,
         entry_date: pos.entry_date,
         days_held: daysHeld,
-      }, { entryPrice: entryPx, exitPrice: currentPrice, shares, commission, tax })
+      }, { entryPrice: entryPx, exitPrice: fillPrice, shares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
@@ -250,7 +312,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
           pos.symbol,
           pos.name,
           shares,
-          currentPrice,
+          fillPrice,
           commission,
           tax,
           proceeds,
@@ -267,20 +329,35 @@ export async function runEODExit(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'eod_exit',
-        detail: { shares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        detail: { shares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'eod_exit',
       })
-      const exitPnl = (currentPrice - entryPx) / entryPx
-      console.log(`[EODExit] full sell ${pos.symbol} ${shares} @ ${currentPrice} entry=${entryPx} days=${daysHeld} pnl=${(exitPnl * 100).toFixed(1)}% ${decision.reason}`)
+      const exitPnl = (fillPrice - entryPx) / entryPx
+      console.log(`[EODExit] full sell ${pos.symbol} ${shares} @ ${fillPrice} entry=${entryPx} days=${daysHeld} pnl=${(exitPnl * 100).toFixed(1)}% ${decision.reason}`)
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
-        formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice, `${decision.reason} | entry=${entryPx} held=${daysHeld}d`, exitPnl),
+        formatTradeNotification('sell', pos.symbol, pos.name, shares, fillPrice, `${decision.reason} | entry=${entryPx} held=${daysHeld}d`, exitPnl),
       )
       await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'EODExit')
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
-      const txValue = currentPrice * sellShares
+      const sellFill = resolveExitSellFill(quote)
+      if (!sellFill.fillable || sellFill.price == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: eodToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'skipped',
+          reason: 'eod_tp1_unfillable',
+          detail: { shares: sellShares, exit_reason: decision.reason, ...sellFill.detail },
+          source: 'eod_tp1',
+        })
+        continue
+      }
+      const fillPrice = sellFill.price
+      const txValue = fillPrice * sellShares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
@@ -290,7 +367,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         reason: decision.reason,
         entry_date: pos.entry_date,
         days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null,
-      }, { entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax })
+      }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare(`
@@ -303,7 +380,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'eod_tp1', 'TP1', ?, ?)
-        `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, currentPrice, commission, tax, proceeds, null, sellNote),
+        `).bind(ACCOUNT_ID, pos.symbol, pos.name, sellShares, fillPrice, commission, tax, proceeds, null, sellNote),
       ])
       const orderId = await recordSellSettlement(env.DB, env.KV, ACCOUNT_ID, pos.symbol, proceeds)
       await recordPaperExecutionEvent(env, {
@@ -313,15 +390,15 @@ export async function runEODExit(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'eod_tp1',
-        detail: { shares: sellShares, remaining_shares: remainingShares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        detail: { shares: sellShares, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'eod_tp1',
       })
-      const tp1Pnl = (currentPrice - entryPx) / entryPx
-      console.log(`[EODExit] TP1 ${pos.symbol} ${sellShares} @ ${currentPrice}`)
+      const tp1Pnl = (fillPrice - entryPx) / entryPx
+      console.log(`[EODExit] TP1 ${pos.symbol} ${sellShares} @ ${fillPrice}`)
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
-        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, currentPrice, `TP1 已觸發，剩餘 ${remainingShares} 股`, tp1Pnl),
+        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `TP1 已觸發，剩餘 ${remainingShares} 股`, tp1Pnl),
       )
     }
   }
@@ -341,7 +418,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   if (!positions || positions.length === 0) return
 
   const symbols = positions.map((p: any) => p.symbol)
-  const priceMap = await batchGetIntradayPrices(symbols, {
+  const quoteMap = await batchGetIntradayOHLC(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
@@ -349,13 +426,13 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   const atrMap = await batchGetATR(env.DB, symbols)
   const intraRegime = await getCurrentRegime(env.KV)
 
-  if (priceMap.size === 0) {
+  if (quoteMap.size === 0) {
     console.log('[Intraday] no intraday prices available')
     return
   }
 
   await Promise.allSettled(
-    [...priceMap].map(([symbol, price]) => env.KV.put(`intraday:price:${symbol}`, String(price), { expirationTtl: 600 })),
+    [...quoteMap].map(([symbol, quote]) => env.KV.put(`intraday:price:${symbol}`, String(quote.last), { expirationTtl: 600 })),
   )
 
   const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -374,8 +451,9 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   }
 
   for (const pos of positions) {
-    const currentPrice = priceMap.get(pos.symbol)
-    if (!currentPrice) continue
+    const quote = quoteMap.get(pos.symbol)
+    if (!quote) continue
+    const currentPrice = quote.last
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const decision = checkExitConditions(
@@ -416,7 +494,21 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     if (decision.action === 'full_sell') {
       const shares = pos.shares
-      const sellFillPrice = applySlippage(currentPrice, 'sell', 1)
+      const sellFill = resolveExitSellFill(quote)
+      if (!sellFill.fillable || sellFill.price == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: intradayToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'skipped',
+          reason: 'intraday_sell_unfillable',
+          detail: { shares, exit_reason: decision.reason, ...sellFill.detail },
+          source: 'intraday_exit',
+        })
+        continue
+      }
+      const sellFillPrice = sellFill.price
       const txValue = sellFillPrice * shares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -454,7 +546,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'intraday_exit',
-        detail: { shares, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason },
+        detail: { shares, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_exit',
       })
@@ -462,12 +554,27 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const intradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
         env.DISCORD_WEBHOOK_URL,
-        formatTradeNotification('sell', pos.symbol, pos.name, shares, currentPrice, `盤中賣出: ${decision.reason}`, intradayPnl),
+        formatTradeNotification('sell', pos.symbol, pos.name, shares, sellFillPrice, `盤中賣出: ${decision.reason}`, intradayPnl),
       )
       await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'Intraday')
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
-      const txValue = currentPrice * sellShares
+      const sellFill = resolveExitSellFill(quote)
+      if (!sellFill.fillable || sellFill.price == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: intradayToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'skipped',
+          reason: 'intraday_tp1_unfillable',
+          detail: { shares: sellShares, exit_reason: decision.reason, ...sellFill.detail },
+          source: 'intraday_tp1',
+        })
+        continue
+      }
+      const fillPrice = sellFill.price
+      const txValue = fillPrice * sellShares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
@@ -476,7 +583,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
         entry_date: pos.entry_date,
-      }, { entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax })
+      }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
         env.DB.prepare(`
@@ -494,7 +601,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
           pos.symbol,
           pos.name,
           sellShares,
-          currentPrice,
+          fillPrice,
           commission,
           tax,
           proceeds,
@@ -510,15 +617,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'intraday_tp1',
-        detail: { shares: sellShares, remaining_shares: remainingShares, price: currentPrice, proceeds, exit_reason: decision.reason },
+        detail: { shares: sellShares, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_tp1',
       })
-      console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares} 股 @ ${currentPrice} | ${decision.reason}`)
-      const tp1IntradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: currentPrice, shares: sellShares, commission, tax }).realized_pnl_pct / 100
+      console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares} 股 @ ${fillPrice} | ${decision.reason}`)
+      const tp1IntradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
         env.DISCORD_WEBHOOK_URL,
-        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, currentPrice, `盤中 TP1，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
+        formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `盤中 TP1，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
       )
     } else if (decision.action === 'hold' && (decision.newTrailingStop || decision.newHighest)) {
       await env.DB.prepare(`
@@ -533,5 +640,5 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     }
   }
 
-  console.log(`[Intraday] checked ${positions.length} positions with ${priceMap.size} quotes`)
+  console.log(`[Intraday] checked ${positions.length} positions with ${quoteMap.size} quotes`)
 }

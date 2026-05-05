@@ -1,7 +1,14 @@
 import { formatDebateEvent, formatExecutionStatusEvent } from './executionEvent'
 
-export type PendingBuyExecutionStatus = 'pending' | 'filled' | 'skipped' | 'cancelled' | 'expired'
-export type PendingBuyTerminalExecutionStatus = Exclude<PendingBuyExecutionStatus, 'pending'>
+export type PendingBuyActiveExecutionStatus =
+  | 'pending'
+  | 'submitted'
+  | 'requoted'
+  | 'partially_filled'
+  | 'stale_quote'
+  | 'quote_unavailable'
+export type PendingBuyTerminalExecutionStatus = 'filled' | 'skipped' | 'cancelled' | 'expired' | 'rejected'
+export type PendingBuyExecutionStatus = PendingBuyActiveExecutionStatus | PendingBuyTerminalExecutionStatus
 
 export interface PendingBuyExecutionItem {
   symbol: string
@@ -11,20 +18,42 @@ export interface PendingBuyExecutionItem {
   watch_points?: string[]
 }
 
+export interface PendingBuyPartialFillRemaining {
+  requested: number
+  filled: number
+  remaining: number
+}
+
 export interface PendingBuyExecutionEvent {
   symbol: string
   status: PendingBuyTerminalExecutionStatus
   reason: string
 }
 
+export interface PendingBuyExecutionStatusUpdate {
+  symbol: string
+  status: PendingBuyActiveExecutionStatus
+  reason: string
+  detail?: string | null
+}
+
 export interface PendingBuyExecutionTransition {
   allItems: PendingBuyExecutionItem[]
   activeItems: PendingBuyExecutionItem[]
   summary: Record<PendingBuyTerminalExecutionStatus, number>
+  activeSummary: Record<PendingBuyActiveExecutionStatus, number>
   changed: boolean
 }
 
-const TERMINAL_STATUSES: PendingBuyTerminalExecutionStatus[] = ['filled', 'skipped', 'cancelled', 'expired']
+const ACTIVE_STATUSES: PendingBuyActiveExecutionStatus[] = [
+  'pending',
+  'submitted',
+  'requoted',
+  'partially_filled',
+  'stale_quote',
+  'quote_unavailable',
+]
+const TERMINAL_STATUSES: PendingBuyTerminalExecutionStatus[] = ['filled', 'skipped', 'cancelled', 'expired', 'rejected']
 
 function emptySummary(): Record<PendingBuyTerminalExecutionStatus, number> {
   return {
@@ -32,7 +61,30 @@ function emptySummary(): Record<PendingBuyTerminalExecutionStatus, number> {
     skipped: 0,
     cancelled: 0,
     expired: 0,
+    rejected: 0,
   }
+}
+
+function emptyActiveSummary(): Record<PendingBuyActiveExecutionStatus, number> {
+  return {
+    pending: 0,
+    submitted: 0,
+    requoted: 0,
+    partially_filled: 0,
+    stale_quote: 0,
+    quote_unavailable: 0,
+  }
+}
+
+function summarizeActive(items: PendingBuyExecutionItem[]): Record<PendingBuyActiveExecutionStatus, number> {
+  const summary = emptyActiveSummary()
+  for (const item of items) {
+    const status = (item.execution_status ?? 'pending') as PendingBuyExecutionStatus
+    if (ACTIVE_STATUSES.includes(status as PendingBuyActiveExecutionStatus)) {
+      summary[status as PendingBuyActiveExecutionStatus] += 1
+    }
+  }
+  return summary
 }
 
 export function isPendingBuyTerminal(status: PendingBuyExecutionStatus | null | undefined): boolean {
@@ -47,6 +99,32 @@ export function appendPendingBuyExecutionNote<T extends PendingBuyExecutionItem>
     execution_status: item.execution_status ?? 'pending',
     watch_points: [...points, note],
   }
+}
+
+function parsePartialFillDetail(detail: string | null | undefined): PendingBuyPartialFillRemaining | null {
+  if (!detail) return null
+  const parts = new Map<string, number>()
+  for (const part of detail.split(';')) {
+    const [rawKey, rawValue] = part.split('=')
+    const key = rawKey?.trim()
+    const value = Number(rawValue)
+    if (key && Number.isFinite(value) && value >= 0) parts.set(key, value)
+  }
+  const requested = parts.get('requested')
+  const filled = parts.get('filled')
+  const remaining = parts.get('remaining')
+  if (requested == null || filled == null || remaining == null) return null
+  return { requested, filled, remaining }
+}
+
+export function extractPartialFillRemaining(item: PendingBuyExecutionItem): PendingBuyPartialFillRemaining | null {
+  for (const point of item.watch_points ?? []) {
+    const event = point.startsWith('execution:') ? point.split(':') : []
+    if (event[1] !== 'partially_filled' || event[2] !== 'paper_order_partial_fill') continue
+    const parsed = parsePartialFillDetail(event.slice(3).join(':'))
+    if (parsed) return parsed
+  }
+  return null
 }
 
 export function applyPendingBuyExecutionEvents(
@@ -73,6 +151,40 @@ export function applyPendingBuyExecutionEvents(
     allItems,
     activeItems: allItems.filter((item) => !isPendingBuyTerminal(item.execution_status)),
     summary,
+    activeSummary: summarizeActive(allItems.filter((item) => !isPendingBuyTerminal(item.execution_status))),
+    changed,
+  }
+}
+
+export function applyPendingBuyExecutionStatusUpdates(
+  items: PendingBuyExecutionItem[],
+  updates: PendingBuyExecutionStatusUpdate[],
+): PendingBuyExecutionTransition {
+  const updateBySymbol = new Map(updates.map((update) => [update.symbol, update]))
+  let changed = false
+
+  const allItems = items.map((item) => {
+    const update = updateBySymbol.get(item.symbol)
+    if (!update || isPendingBuyTerminal(item.execution_status)) {
+      return { ...item, execution_status: item.execution_status ?? 'pending' }
+    }
+    changed = true
+    const noted = appendPendingBuyExecutionNote(
+      item,
+      formatExecutionStatusEvent(update.status, update.reason, update.detail),
+    )
+    return {
+      ...noted,
+      execution_status: update.status,
+    }
+  })
+  const activeItems = allItems.filter((item) => !isPendingBuyTerminal(item.execution_status))
+
+  return {
+    allItems,
+    activeItems,
+    summary: emptySummary(),
+    activeSummary: summarizeActive(activeItems),
     changed,
   }
 }
@@ -103,6 +215,7 @@ export function applyPendingBuyDebateFailure(
     allItems,
     activeItems: allItems.filter((item) => !isPendingBuyTerminal(item.execution_status)),
     summary,
+    activeSummary: summarizeActive(allItems.filter((item) => !isPendingBuyTerminal(item.execution_status))),
     changed,
   }
 }

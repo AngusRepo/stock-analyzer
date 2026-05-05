@@ -22,12 +22,48 @@ export function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, da
 export interface LimitBuyFillInput {
   currentPrice: number
   limitPrice: number
+  bestAsk?: number | null
+  bestBid?: number | null
   intradayLow?: number | null
   intradayHigh?: number | null
   slippageTicks?: number
+  requireBestAsk?: boolean
 }
 
 export interface LimitBuyFillResult {
+  fillable: boolean
+  fillPrice?: number
+  reason: string
+}
+
+export interface LimitSellFillInput {
+  currentPrice: number
+  limitPrice: number
+  bestBid?: number | null
+  bestAsk?: number | null
+  intradayLow?: number | null
+  intradayHigh?: number | null
+  slippageTicks?: number
+  requireBestBid?: boolean
+}
+
+export interface LimitSellFillResult {
+  fillable: boolean
+  fillPrice?: number
+  reason: string
+}
+
+export interface MarketSellFillInput {
+  currentPrice: number
+  bestBid?: number | null
+  bestAsk?: number | null
+  intradayLow?: number | null
+  intradayHigh?: number | null
+  slippageTicks?: number
+  requireBestBid?: boolean
+}
+
+export interface MarketSellFillResult {
   fillable: boolean
   fillPrice?: number
   reason: string
@@ -54,14 +90,30 @@ export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResul
     }
   }
 
-  if (currentPrice > limitPrice && (low == null || !Number.isFinite(low))) {
+  const bestAsk = input.bestAsk == null ? null : Number(input.bestAsk)
+  if (input.requireBestAsk && (bestAsk == null || !Number.isFinite(bestAsk) || bestAsk <= 0)) {
+    return { fillable: false, reason: 'missing_best_ask' }
+  }
+  if (bestAsk != null && Number.isFinite(bestAsk) && bestAsk > limitPrice) {
+    return {
+      fillable: false,
+      reason: `ask_above_limit:${bestAsk.toFixed(2)}_gt_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  if (currentPrice > limitPrice && bestAsk == null && (low == null || !Number.isFinite(low))) {
     return {
       fillable: false,
       reason: `price_above_limit:${currentPrice.toFixed(2)}_gt_${limitPrice.toFixed(2)}`,
     }
   }
 
-  const referencePrice = currentPrice <= limitPrice ? currentPrice : limitPrice
+  const referencePrice =
+    bestAsk != null && Number.isFinite(bestAsk) && bestAsk <= limitPrice
+      ? bestAsk
+      : currentPrice <= limitPrice
+        ? currentPrice
+        : limitPrice
   const slippedPrice = applySlippage(referencePrice, 'buy', input.slippageTicks ?? 1)
   const fillPrice = Math.round(Math.min(limitPrice, slippedPrice) * 100) / 100
   if (low != null && Number.isFinite(low) && fillPrice < low) {
@@ -80,6 +132,110 @@ export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResul
     fillable: true,
     fillPrice,
     reason: currentPrice <= limitPrice ? 'marketable_limit' : 'limit_touched_intraday',
+  }
+}
+
+export function resolveLimitSellFill(input: LimitSellFillInput): LimitSellFillResult {
+  const currentPrice = Number(input.currentPrice)
+  const limitPrice = Number(input.limitPrice)
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { fillable: false, reason: 'invalid_current_price' }
+  if (!Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
+
+  const low = input.intradayLow == null ? null : Number(input.intradayLow)
+  const high = input.intradayHigh == null ? null : Number(input.intradayHigh)
+  if (low != null && high != null && Number.isFinite(low) && Number.isFinite(high) && low > high) {
+    return {
+      fillable: false,
+      reason: `invalid_intraday_range:low_${low.toFixed(2)}_gt_high_${high.toFixed(2)}`,
+    }
+  }
+  if (high != null && Number.isFinite(high) && high < limitPrice) {
+    return {
+      fillable: false,
+      reason: `limit_not_touched:high_${high.toFixed(2)}_lt_limit_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  const bestBid = input.bestBid == null ? null : Number(input.bestBid)
+  if (input.requireBestBid && (bestBid == null || !Number.isFinite(bestBid) || bestBid <= 0)) {
+    return { fillable: false, reason: 'missing_best_bid' }
+  }
+  if (bestBid != null && Number.isFinite(bestBid) && bestBid < limitPrice) {
+    return {
+      fillable: false,
+      reason: `bid_below_limit:${bestBid.toFixed(2)}_lt_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  if (currentPrice < limitPrice && bestBid == null && (high == null || !Number.isFinite(high))) {
+    return {
+      fillable: false,
+      reason: `price_below_limit:${currentPrice.toFixed(2)}_lt_${limitPrice.toFixed(2)}`,
+    }
+  }
+
+  const referencePrice =
+    bestBid != null && Number.isFinite(bestBid) && bestBid >= limitPrice
+      ? bestBid
+      : currentPrice >= limitPrice
+        ? currentPrice
+        : limitPrice
+  const slippedPrice = applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1)
+  const fillPrice = Math.round(Math.max(limitPrice, slippedPrice) * 100) / 100
+  if (low != null && Number.isFinite(low) && fillPrice < low) {
+    return {
+      fillable: false,
+      reason: `fill_below_intraday_low:${fillPrice.toFixed(2)}_lt_${low.toFixed(2)}`,
+    }
+  }
+  if (high != null && Number.isFinite(high) && fillPrice > high) {
+    return {
+      fillable: false,
+      reason: `fill_above_intraday_high:${fillPrice.toFixed(2)}_gt_${high.toFixed(2)}`,
+    }
+  }
+  return {
+    fillable: true,
+    fillPrice,
+    reason: currentPrice >= limitPrice ? 'marketable_limit' : 'limit_touched_intraday',
+  }
+}
+
+export function resolveMarketSellFill(input: MarketSellFillInput): MarketSellFillResult {
+  const currentPrice = Number(input.currentPrice)
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { fillable: false, reason: 'invalid_current_price' }
+
+  const low = input.intradayLow == null ? null : Number(input.intradayLow)
+  const high = input.intradayHigh == null ? null : Number(input.intradayHigh)
+  if (low != null && high != null && Number.isFinite(low) && Number.isFinite(high) && low > high) {
+    return {
+      fillable: false,
+      reason: `invalid_intraday_range:low_${low.toFixed(2)}_gt_high_${high.toFixed(2)}`,
+    }
+  }
+
+  const bestBid = input.bestBid == null ? null : Number(input.bestBid)
+  if (input.requireBestBid && (bestBid == null || !Number.isFinite(bestBid) || bestBid <= 0)) {
+    return { fillable: false, reason: 'missing_best_bid' }
+  }
+  const referencePrice = bestBid != null && Number.isFinite(bestBid) && bestBid > 0 ? bestBid : currentPrice
+  const fillPrice = Math.round(applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1) * 100) / 100
+  if (low != null && Number.isFinite(low) && fillPrice < low) {
+    return {
+      fillable: false,
+      reason: `fill_below_intraday_low:${fillPrice.toFixed(2)}_lt_${low.toFixed(2)}`,
+    }
+  }
+  if (high != null && Number.isFinite(high) && fillPrice > high) {
+    return {
+      fillable: false,
+      reason: `fill_above_intraday_high:${fillPrice.toFixed(2)}_gt_${high.toFixed(2)}`,
+    }
+  }
+  return {
+    fillable: true,
+    fillPrice,
+    reason: bestBid != null && Number.isFinite(bestBid) && bestBid > 0 ? 'broker_bid_market_sell' : 'last_price_fallback_market_sell',
   }
 }
 

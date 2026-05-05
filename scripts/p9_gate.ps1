@@ -37,7 +37,17 @@ npx tsc --target ES2020 --module commonjs --moduleResolution node --strict false
   src/lib/p6DataQualityUiContract.test.ts `
   src/lib/p9DeploymentContract.test.ts `
   src/lib/p9GateScriptContract.test.ts `
+  src/lib/p10ExecutionUiContract.test.ts `
+  src/lib/paperExecutionRealismContract.test.ts `
   src/lib/paperIntradayData.test.ts `
+  src/lib/paperOrderAccounting.test.ts `
+  src/lib/paperOrderIntent.test.ts `
+  src/lib/partialFillRemainingPolicy.test.ts `
+  src/lib/pendingBuyBriefingSummary.test.ts `
+  src/lib/pendingBuyCronSummary.test.ts `
+  src/lib/pendingBuyExecutionState.test.ts `
+  src/lib/pendingBuyStateSummary.test.ts `
+  src/lib/preTradeExecutionPolicy.test.ts `
   src/lib/paperTradeMath.test.ts `
   src/lib/predictionDateOwnerContract.test.ts `
   src/lib/researchEvaluationPlan.test.ts `
@@ -79,8 +89,28 @@ node .tmp-test-run/lib/p9DeploymentContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p9DeploymentContract.test failed" }
 node .tmp-test-run/lib/p9GateScriptContract.test.js
 if ($LASTEXITCODE -ne 0) { throw "p9GateScriptContract.test failed" }
+node .tmp-test-run/lib/p10ExecutionUiContract.test.js
+if ($LASTEXITCODE -ne 0) { throw "p10ExecutionUiContract.test failed" }
+node .tmp-test-run/lib/paperExecutionRealismContract.test.js
+if ($LASTEXITCODE -ne 0) { throw "paperExecutionRealismContract.test failed" }
 node .tmp-test-run/lib/paperIntradayData.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperIntradayData.test failed" }
+node .tmp-test-run/lib/paperOrderAccounting.test.js
+if ($LASTEXITCODE -ne 0) { throw "paperOrderAccounting.test failed" }
+node .tmp-test-run/lib/paperOrderIntent.test.js
+if ($LASTEXITCODE -ne 0) { throw "paperOrderIntent.test failed" }
+node .tmp-test-run/lib/partialFillRemainingPolicy.test.js
+if ($LASTEXITCODE -ne 0) { throw "partialFillRemainingPolicy.test failed" }
+node .tmp-test-run/lib/pendingBuyBriefingSummary.test.js
+if ($LASTEXITCODE -ne 0) { throw "pendingBuyBriefingSummary.test failed" }
+node .tmp-test-run/lib/pendingBuyCronSummary.test.js
+if ($LASTEXITCODE -ne 0) { throw "pendingBuyCronSummary.test failed" }
+node .tmp-test-run/lib/pendingBuyExecutionState.test.js
+if ($LASTEXITCODE -ne 0) { throw "pendingBuyExecutionState.test failed" }
+node .tmp-test-run/lib/pendingBuyStateSummary.test.js
+if ($LASTEXITCODE -ne 0) { throw "pendingBuyStateSummary.test failed" }
+node .tmp-test-run/lib/preTradeExecutionPolicy.test.js
+if ($LASTEXITCODE -ne 0) { throw "preTradeExecutionPolicy.test failed" }
 node .tmp-test-run/lib/paperTradeMath.test.js
 if ($LASTEXITCODE -ne 0) { throw "paperTradeMath.test failed" }
 node .tmp-test-run/lib/predictionDateOwnerContract.test.js

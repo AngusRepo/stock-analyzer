@@ -37,6 +37,9 @@
 - Keep D1 as hot OLTP/index store: latest dashboard data, recommendations, predictions, paper trading state, manifests, and promotion audit rows.
 - Add a D1 manifest table for lake objects before deleting or retaining less D1 history; first phase should mirror cold data only, not remove D1 rows.
 - Evaluate D1 paid capacity as max-per-DB vs included storage separately: single DB max can be 10GB, but included paid storage is lower and overage still matters.
+- P10 follow-up: add full paper/live parity tests before enabling real broker orders; current gate covers paper execution realism and quote-aware fill behavior.
+- P10 follow-up: design the live order adapter around the same state machine as paper trading, including submitted/requoted/partially_filled/filled/skipped/cancelled/expired/rejected.
+- P10 follow-up: upgrade partial-fill remaining policy v2 with re-quote rules, price drift guard, session cutoff, and remaining-size cancellation thresholds.
 
 ### Pending execution
 - Worker type-check

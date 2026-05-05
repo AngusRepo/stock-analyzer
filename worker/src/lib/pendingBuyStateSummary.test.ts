@@ -30,7 +30,21 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
     skipped: 2,
     cancelled: 1,
     expired: 0,
+    rejected: 0,
   }, 'execution counts should be normalized')
+}
+
+{
+  const summary = buildPendingBuyStateSummary([], {
+    status: 'ready',
+    debate_status: 'completed',
+    candidate_count: 1,
+    execution_counts: { rejected: 1 },
+    debate_counts: { completed: 1 },
+  })
+
+  assert(summary.state === 'skipped', 'rejected-only run should be shown as a skipped/rejected terminal outcome')
+  assert(summary.execution_counts.rejected === 1, 'execution counts should preserve rejected terminal outcomes')
 }
 
 {

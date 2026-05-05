@@ -1,8 +1,8 @@
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
 import { batchGetLatestPrices, recordSellSettlement } from './paperMarketData'
-import { batchGetIntradayPrices } from './paperIntradayData'
-import { applySlippage, calcCommission, calcTax } from './paperTradeMath'
+import { batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
+import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
@@ -165,16 +165,51 @@ export interface RescoreSellParams {
   symbol: string
   shares: number
   price: number
+  quote?: IntradayOHLC
   reason: string
   source: string
 }
 
-export async function executeRescoreSell(env: Bindings, params: RescoreSellParams): Promise<void> {
+export async function executeRescoreSell(env: Bindings, params: RescoreSellParams): Promise<{ filled: boolean; price?: number; reason?: string }> {
   const { getTradingConfig } = await import('./tradingConfig')
   const cfg = await getTradingConfig(env.KV)
-  const { symbol, shares, price, reason, source } = params
+  const { symbol, shares, price, quote, reason, source } = params
 
-  const sellPrice = applySlippage(price, 'sell', 1)
+  const fill = resolveMarketSellFill({
+    currentPrice: quote?.last ?? price,
+    bestBid: quote?.bid,
+    bestAsk: quote?.ask,
+    intradayLow: quote?.low,
+    intradayHigh: quote?.high,
+    slippageTicks: 1,
+    requireBestBid: true,
+  })
+  if (!fill.fillable || fill.fillPrice == null) {
+    await recordPaperExecutionEvent(env, {
+      symbol,
+      side: 'sell',
+      eventType: 'paper_order',
+      status: 'skipped',
+      reason: 'rescore_sell_unfillable',
+      detail: {
+        shares,
+        requested_price: price,
+        exit_reason: reason,
+        fill_reason: fill.reason,
+        quote_last: quote?.last ?? null,
+        quote_bid: quote?.bid ?? null,
+        quote_ask: quote?.ask ?? null,
+        quote_low: quote?.low ?? null,
+        quote_high: quote?.high ?? null,
+        quote_time: quote?.quoteTime ?? null,
+        quote_source: quote?.source ?? null,
+      },
+      source,
+    })
+    return { filled: false, reason: fill.reason }
+  }
+
+  const sellPrice = fill.fillPrice
   const txValue = sellPrice * shares
   const commission = calcCommission(txValue, cfg)
   const tax = calcTax(txValue, cfg, false)
@@ -218,10 +253,24 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
     eventType: 'paper_order',
     status: 'filled',
     reason,
-    detail: { shares, sell_price: sellPrice, proceeds, days_held: daysHeld },
+    detail: {
+      shares,
+      sell_price: sellPrice,
+      proceeds,
+      days_held: daysHeld,
+      fill_reason: fill.reason,
+      quote_last: quote?.last ?? null,
+      quote_bid: quote?.bid ?? null,
+      quote_ask: quote?.ask ?? null,
+      quote_low: quote?.low ?? null,
+      quote_high: quote?.high ?? null,
+      quote_time: quote?.quoteTime ?? null,
+      quote_source: quote?.source ?? null,
+    },
     orderId,
     source,
   })
 
   console.log(`[Rescore-Sell] ${symbol} ${shares} 股 @ ${sellPrice} | entry=${entryPrice} | held=${daysHeld}d | ${reason}`)
+  return { filled: true, price: sellPrice, reason: fill.reason }
 }

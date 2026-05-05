@@ -4,7 +4,7 @@ import { classifyCronSummary, logCronResult } from './schedulerRunLogger'
 import { runMorningWarmup } from './localMaintenance'
 import { handleWorkerDomainCron } from './cronWorkerDomainTasks'
 import { handleGcpDomainCron } from './cronGcpDomainTasks'
-import { batchGetIntradayPrices } from './paperIntradayData'
+import { batchGetIntradayOHLC } from './paperIntradayData'
 import { executeRescoreSell } from './paperWorkerTasks'
 import { runIntradayCheck } from './paperEntryTasks'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
@@ -181,12 +181,12 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
   if (!positions || positions.length === 0) return 'No open positions'
 
   const symbols = positions.map((p: any) => p.symbol)
-  const priceMap = await batchGetIntradayPrices(symbols, {
+  const quoteMap = await batchGetIntradayOHLC(symbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
   })
-  if (priceMap.size === 0) return 'No intraday prices available'
+  if (quoteMap.size === 0) return 'No intraday prices available'
 
   const prevDay = new Date(Date.now() + 8 * 3600_000 - 86400_000).toISOString().slice(0, 10)
   const warnHistoryMap: Record<string, any> = {}
@@ -207,7 +207,7 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
     shares: position.shares,
     entry_price: position.entry_price ?? position.avg_cost,
     entry_date: position.entry_date ?? '2000-01-01',
-    current_price: priceMap.get(position.symbol) ?? position.entry_price ?? position.avg_cost,
+    current_price: quoteMap.get(position.symbol)?.last ?? position.entry_price ?? position.avg_cost,
     ml_confidence: null,
     warn_history: warnHistoryMap[position.symbol] ?? null,
   }))
@@ -234,18 +234,24 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
     if (await env.KV.get(cooldownKey)) continue
 
     const pos = positions.find((p: any) => p.symbol === row.symbol)
-    const currentPrice = priceMap.get(row.symbol)
-    if (!pos || !currentPrice) continue
+    const quote = quoteMap.get(row.symbol)
+    const currentPrice = quote?.last
+    if (!pos || !quote || !currentPrice) continue
 
     try {
-      await executeRescoreSell(env, {
+      const sellResult = await executeRescoreSell(env, {
         symbol: row.symbol,
         shares: pos.shares,
         price: currentPrice,
+        quote,
         reason: `ML Re-score EXIT: conf ${row.original_confidence.toFixed(3)} -> ${row.adjusted_confidence.toFixed(3)} | ${row.reason}`,
         source: 'intraday_rescore',
       })
-      exits.push(`${row.symbol} sold@${currentPrice}(conf ${row.adjusted_confidence.toFixed(2)})`)
+      if (!sellResult.filled) {
+        console.warn(`[Intraday-Rescore] Skip sell ${row.symbol}: ${sellResult.reason}`)
+        continue
+      }
+      exits.push(`${row.symbol} sold@${sellResult.price ?? currentPrice}(conf ${row.adjusted_confidence.toFixed(2)})`)
       newExitCount += 1
       await env.KV.put(cooldownKey, new Date().toISOString(), { expirationTtl: cfg.intraday.rescoreCooldownMin * 60 })
     } catch (e: any) {

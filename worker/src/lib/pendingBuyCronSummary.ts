@@ -11,7 +11,7 @@ export function formatPendingBuyCronSummary(
     `state=${state.state}(${state.label})`,
     `active=${state.active_count}/${state.total_count}`,
     `debate_pending=${state.debate_counts.pending}`,
-    `exec[pending=${exec.pending} filled=${exec.filled} skipped=${exec.skipped} cancelled=${exec.cancelled} expired=${exec.expired}]`,
+    `exec[pending=${exec.pending} filled=${exec.filled} skipped=${exec.skipped} cancelled=${exec.cancelled} expired=${exec.expired} rejected=${exec.rejected}]`,
   ]
 
   for (const [key, value] of Object.entries(extra ?? {})) {

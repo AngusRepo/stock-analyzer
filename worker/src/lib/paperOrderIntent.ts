@@ -19,6 +19,8 @@ export interface PaperOrderIntentRow {
   updated_at: string | null
 }
 
+export type PaperBuyIntentCompletionStatus = 'filled' | 'partial' | 'failed'
+
 export function buildPaperBuyIntentKey(tradeDate: string, symbol: string): string {
   return `${ACCOUNT_ID}:${tradeDate}:${symbol}:buy:auto_ml`
 }
@@ -86,7 +88,7 @@ export async function acquirePaperBuyIntent(
 export async function completePaperBuyIntent(
   env: Bindings,
   intentKey: string,
-  status: 'filled' | 'failed',
+  status: PaperBuyIntentCompletionStatus,
   orderId?: number | null,
   errorMessage?: string | null,
 ): Promise<void> {

@@ -30,7 +30,7 @@ export interface PendingBuyStateSummary {
   label: string
   active_count: number
   total_count: number
-  execution_counts: Record<'pending' | 'filled' | 'skipped' | 'cancelled' | 'expired', number>
+  execution_counts: Record<'pending' | 'filled' | 'skipped' | 'cancelled' | 'expired' | 'rejected', number>
   debate_counts: Record<'pending' | 'completed' | 'failed' | 'skipped', number>
   error_message?: string
 }
@@ -51,6 +51,7 @@ function normalizeExecutionCounts(
     skipped: num(counts?.skipped),
     cancelled: num(counts?.cancelled),
     expired: num(counts?.expired),
+    rejected: num(counts?.rejected),
   }
 }
 
@@ -71,10 +72,10 @@ function normalizeDebateCounts(
 function terminalStateLabel(
   executionCounts: PendingBuyStateSummary['execution_counts'],
 ): Pick<PendingBuyStateSummary, 'state' | 'label'> {
-  const { filled, skipped, cancelled, expired } = executionCounts
-  if (filled > 0 && skipped + cancelled + expired === 0) return { state: 'filled', label: '已成交' }
-  if (expired > 0 && filled + skipped + cancelled === 0) return { state: 'expired', label: '已過期' }
-  if (filled === 0 && expired === 0 && skipped + cancelled > 0) return { state: 'skipped', label: '已跳過' }
+  const { filled, skipped, cancelled, expired, rejected } = executionCounts
+  if (filled > 0 && skipped + cancelled + expired + rejected === 0) return { state: 'filled', label: '已成交' }
+  if (expired > 0 && filled + skipped + cancelled + rejected === 0) return { state: 'expired', label: '已過期' }
+  if (filled === 0 && expired === 0 && skipped + cancelled + rejected > 0) return { state: 'skipped', label: '已跳過' }
   return { state: 'closed', label: '已收斂' }
 }
 
@@ -84,7 +85,7 @@ export function buildPendingBuyStateSummary(
 ): PendingBuyStateSummary {
   const executionCounts = normalizeExecutionCounts(meta?.execution_counts, activeItems)
   const debateCounts = normalizeDebateCounts(meta?.debate_counts, activeItems)
-  const terminalCount = executionCounts.filled + executionCounts.skipped + executionCounts.cancelled + executionCounts.expired
+  const terminalCount = executionCounts.filled + executionCounts.skipped + executionCounts.cancelled + executionCounts.expired + executionCounts.rejected
   const totalCount = Math.max(num(meta?.candidate_count), activeItems.length + terminalCount)
   const runStatus = meta?.status ?? (activeItems.length > 0 ? 'ready' : 'empty')
   const debateStatus = meta?.debate_status ?? (debateCounts.pending > 0 ? 'pending' : 'completed')

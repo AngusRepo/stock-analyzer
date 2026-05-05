@@ -37,10 +37,12 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
+
+from services.design_review_client import call_gemini_design_review
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -89,6 +91,46 @@ class ModalDeployRequest(BaseModel):
     app_path: str = Field(default=_DEFAULT_MODAL_APP_PATH)
     timeout_sec: int = Field(default=_DEFAULT_TIMEOUT_SEC, ge=60, le=3600)
     note: Optional[str] = Field(default=None, max_length=200)
+
+
+class DesignReviewArtifact(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    kind: Literal["code", "diff", "markdown", "route_map", "screenshot_note", "text"] = "text"
+    content: str = Field(..., min_length=1, max_length=24_000)
+
+
+class DesignReviewRequest(BaseModel):
+    objective: str = Field(..., min_length=1, max_length=1_000)
+    focus: list[str] = Field(default_factory=list, max_items=10)
+    current_notes: Optional[str] = Field(default=None, max_length=4_000)
+    artifacts: list[DesignReviewArtifact] = Field(default_factory=list, max_items=8)
+    temperature: float = Field(default=0.35, ge=0.0, le=0.8)
+    max_output_tokens: int = Field(default=2048, ge=512, le=3072)
+
+
+@router.post("/design-review")
+async def design_review(req: DesignReviewRequest):
+    """Bounded Gemini UI/UX reviewer.
+
+    This endpoint deliberately accepts curated UI/UX artifacts instead of free
+    chat. The Gemini key remains server-side in Cloud Run.
+    """
+    try:
+        result = await call_gemini_design_review(
+            req.dict(),
+            temperature=req.temperature,
+            max_output_tokens=req.max_output_tokens,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("[admin/design-review] unexpected failure")
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    return {
+        "ok": True,
+        "artifact_count": len(req.artifacts),
+        **result,
+    }
 
 
 @router.post("/modal-deploy")

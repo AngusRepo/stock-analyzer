@@ -28,6 +28,7 @@ import {
   schedulerApi,
   systemApi,
   type DataQualityCheck,
+  type DataQualityReport,
   type ObservabilityEvent,
   type ObservabilityIncident,
   type SchedulerJob,
@@ -61,6 +62,22 @@ function severityTone(severity?: string): WorkstationTone {
 
 function formatStatus(status?: string) {
   return status ? String(status).toUpperCase() : 'UNKNOWN'
+}
+
+function computeDataQualityScore(report?: DataQualityReport): number {
+  const checks = report?.checks ?? []
+  if (!checks.length) {
+    if (report?.overall === 'ok') return 100
+    if (report?.overall === 'warn') return 65
+    if (report?.overall === 'fail') return 35
+    return 0
+  }
+  const weighted = checks.reduce((sum, check) => {
+    if (check.status === 'ok') return sum + 1
+    if (check.status === 'warn') return sum + 0.65
+    return sum + 0.25
+  }, 0)
+  return Math.round((weighted / checks.length) * 100)
 }
 
 function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>) {
@@ -450,7 +467,7 @@ export default function ObservabilityPage() {
   ]
 
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
-  const dataQualityScore = dataQuality.data?.overall === 'ok' ? 100 : dataQuality.data?.overall === 'warn' ? 65 : 35
+  const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const modelScore = modelStats.total ? Math.round(((modelStats.total - modelStats.weakIc - modelStats.missingMeta) / modelStats.total) * 100) : 0
   const resourceScore = resourceAudit.data?.items?.length ? 80 : 100
 

@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { twToday } from './dateUtils'
+import { twNow, twToday } from './dateUtils'
 
 export type DataQualityStatus = 'ok' | 'warn' | 'fail'
 
@@ -80,6 +80,8 @@ export const EXPECTED_V2_MODELS = [
   'PatchTST',
 ] as const
 
+export const DATA_QUALITY_EOD_READY_MINUTE_TW = 18 * 60 + 30
+
 const UNCLASSIFIED_LABEL = '\u672a\u5206\u985e'
 const UNCLASSIFIED_EN_LABEL = 'Unclassified'
 
@@ -108,6 +110,25 @@ export async function resolveExpectedTradingDate(kv: KVNamespace, startDate: str
     cursor = new Date(cursor.getTime() - 86_400_000)
   }
   return startDate.slice(0, 10)
+}
+
+export async function resolveExpectedCompletedDataDate(
+  kv: KVNamespace,
+  startDate: string = twToday(),
+  nowTw: Date = twNow(),
+  eodReadyMinuteTw: number = DATA_QUALITY_EOD_READY_MINUTE_TW,
+): Promise<string> {
+  const expectedTradingDate = await resolveExpectedTradingDate(kv, startDate)
+  const currentTwDate = nowTw.toISOString().slice(0, 10)
+  const currentTwMinute = nowTw.getUTCHours() * 60 + nowTw.getUTCMinutes()
+
+  if (expectedTradingDate === currentTwDate && currentTwMinute < eodReadyMinuteTw) {
+    const prev = new Date(`${expectedTradingDate}T00:00:00.000Z`)
+    prev.setUTCDate(prev.getUTCDate() - 1)
+    return resolveExpectedTradingDate(kv, prev.toISOString().slice(0, 10))
+  }
+
+  return expectedTradingDate
 }
 
 export function buildFreshnessCheck(input: {
@@ -739,7 +760,7 @@ async function latestTableStats(db: D1Database, table: string, dateColumn = 'dat
 }
 
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
-  const targetDate = options.date ?? await resolveExpectedTradingDate(env.KV, twToday())
+  const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
   const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([

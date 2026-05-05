@@ -40,6 +40,43 @@ def _parse_run_date(run_date: str | None = None) -> date:
     return (datetime.now(timezone.utc) + timedelta(hours=8)).date()
 
 
+def _resolve_verification_prediction_window(
+    as_of: date,
+    lookback_days: int,
+    stale_grace_days: int,
+) -> tuple[str, str]:
+    """
+    Resolve the mature prediction window from actual price dates.
+
+    `lookback_days` used to be applied as calendar days. That misses predictions
+    around holidays/weekends (for example 2026-04-30 -> 2026-05-04 after the
+    5/1 Taiwan holiday). The verification contract should follow completed
+    trading sessions, so the newest verifiable prediction date is the trading
+    day immediately before the latest available price date.
+    """
+    latest_rows = d1_client.query(
+        "SELECT MAX(date) AS latest_date FROM stock_prices WHERE date <= ?",
+        params=[as_of.isoformat()],
+    )
+    latest_price_date = latest_rows[0].get("latest_date") if latest_rows else None
+    if latest_price_date:
+        prev_rows = d1_client.query(
+            "SELECT MAX(date) AS previous_date FROM stock_prices WHERE date < ?",
+            params=[latest_price_date],
+        )
+        previous_price_date = prev_rows[0].get("previous_date") if prev_rows else None
+        if previous_price_date:
+            max_prediction_date = str(previous_price_date)
+            min_prediction_date = (
+                datetime.fromisoformat(max_prediction_date).date() - timedelta(days=stale_grace_days)
+            ).isoformat()
+            return min_prediction_date, max_prediction_date
+
+    max_prediction_date = (as_of - timedelta(days=lookback_days)).isoformat()
+    min_prediction_date = (as_of - timedelta(days=lookback_days + stale_grace_days)).isoformat()
+    return min_prediction_date, max_prediction_date
+
+
 def load_pending_predictions(
     lookback_days: int = 5,
     limit: int = 200,
@@ -53,13 +90,15 @@ def load_pending_predictions(
 
     The old query used `prediction_date <= today-lookback` with no lower bound,
     so stale unverified rows permanently sat at the front of the queue and every
-    nightly verify spent money re-reading old backlog.  The V2 contract treats
-    `lookback_days` as the forecast maturity window and verifies rows whose
-    prediction date is within a bounded grace window ending at that maturity.
+    nightly verify spent money re-reading old backlog. The V2 contract now uses
+    completed price sessions to avoid calendar-day gaps around holidays/weekends.
     """
     as_of = _parse_run_date(run_date)
-    max_prediction_date = (as_of - timedelta(days=lookback_days)).isoformat()
-    min_prediction_date = (as_of - timedelta(days=lookback_days + stale_grace_days)).isoformat()
+    min_prediction_date, max_prediction_date = _resolve_verification_prediction_window(
+        as_of,
+        lookback_days,
+        stale_grace_days,
+    )
     sql = """
         SELECT p.*, s.symbol, s.market
         FROM predictions p

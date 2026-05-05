@@ -115,11 +115,15 @@ def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
 
 
 def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"pending_params": None}
 
     def fake_query(sql, params):
+        if "MAX(date) AS latest_date" in sql:
+            return [{"latest_date": "2026-05-04"}]
+        if "MAX(date) AS previous_date" in sql:
+            return [{"previous_date": "2026-04-30"}]
         captured["sql"] = sql
-        captured["params"] = params
+        captured["pending_params"] = params
         return []
 
     monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
@@ -136,7 +140,31 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     assert "UPPER(COALESCE" not in str(captured["sql"])
     assert "p.prediction_date BETWEEN ? AND ?" in str(captured["sql"])
     assert "s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
-    assert captured["params"] == ["2026-04-19", "2026-04-29", 600]
+    assert captured["pending_params"] == ["2026-04-20", "2026-04-30", 600]
+
+
+def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypatch):
+    queries: list[tuple[str, list[object]]] = []
+
+    def fake_query(sql, params):
+        queries.append((sql, params))
+        if "MAX(date) AS latest_date" in sql:
+            return [{"latest_date": "2026-05-04"}]
+        if "MAX(date) AS previous_date" in sql:
+            return [{"previous_date": "2026-04-30"}]
+        return []
+
+    monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
+
+    min_date, max_date = verify_service._resolve_verification_prediction_window(
+        as_of=verify_service._parse_run_date("2026-05-04"),
+        lookback_days=5,
+        stale_grace_days=10,
+    )
+
+    assert (min_date, max_date) == ("2026-04-20", "2026-04-30")
+    assert max_date != "2026-04-29"
+    assert len(queries) == 2
 
 
 def test_prepare_verification_updates_batches_bars(monkeypatch):

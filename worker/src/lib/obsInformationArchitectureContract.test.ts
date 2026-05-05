@@ -23,6 +23,7 @@ assert(obs.includes('Incident Inbox'), 'OBS must prioritize an incident inbox in
 assert(obs.includes('Selected Incident Detail'), 'OBS must expose a selected incident detail pane')
 assert(obs.includes('Dependency Map'), 'OBS must expose a dependency map for ownership and blast radius')
 assert(obs.includes('Health Map / 系統健康地圖'), 'OBS must include a visual health map, not only metric boxes')
+assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
 assert(obs.includes('查看 / Open'), 'Incident inbox open action must have explicit visible feedback')
 assert(obs.includes("setActiveTab('incidents')"), 'Opening an incident must switch/focus the incident detail context')
 assert(obs.includes('aria-pressed'), 'Incident selection must expose selected state for accessibility')

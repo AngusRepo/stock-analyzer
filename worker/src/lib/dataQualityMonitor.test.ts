@@ -15,6 +15,7 @@ import {
   buildScreenerSeedQualityCheck,
   daysBetweenDates,
   EXPECTED_V2_MODELS,
+  resolveExpectedCompletedDataDate,
   resolveExpectedTradingDate,
   summarizeDataQualityChecks,
 } from './dataQualityMonitor'
@@ -35,6 +36,20 @@ void (async () => {
   } as unknown as KVNamespace
   const expected = await resolveExpectedTradingDate(kv, '2026-05-03')
   assert(expected === '2026-04-30', `holiday/weekend data-quality target should be previous trading day, got ${expected}`)
+
+  const beforeEodReady = await resolveExpectedCompletedDataDate(
+    kv,
+    '2026-05-05',
+    new Date('2026-05-05T16:44:00.000Z'),
+  )
+  assert(beforeEodReady === '2026-05-04', `intraday data-quality target should use last completed trading day, got ${beforeEodReady}`)
+
+  const afterEodReady = await resolveExpectedCompletedDataDate(
+    kv,
+    '2026-05-05',
+    new Date('2026-05-05T18:45:00.000Z'),
+  )
+  assert(afterEodReady === '2026-05-05', `post-EOD data-quality target should use current trading day, got ${afterEodReady}`)
 })().catch((error) => {
   console.error(error)
   process.exit(1)

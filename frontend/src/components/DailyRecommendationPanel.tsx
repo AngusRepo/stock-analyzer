@@ -2,18 +2,18 @@
  * DailyRecommendationPanel.tsx
  * 每日選股推薦面板 — 顯示 ML + 籌碼 + LLM 綜合推薦結果
  */
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { recommendationsApi } from '@/lib/api'
 import {
-  TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp,
-  Zap, BarChart3, Users, AlertCircle, RefreshCw, Star,
+  BarChart3, RefreshCw, Star,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Treemap, ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, Cell, ReferenceLine } from 'recharts'
 import { paperApi } from '@/lib/api'
+import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 /** 法人金額格式化：< 0.01億 改顯示萬元 */
 function fmtChipAmount(billion: number | null | undefined): string {
@@ -24,151 +24,6 @@ function fmtChipAmount(billion: number | null | undefined): string {
     return `${wan > 0 ? '+' : ''}${wan}萬`
   }
   return `${billion > 0 ? '+' : ''}${billion.toFixed(2)}億`
-}
-
-// ─── Signal badge config ───────────────────────────────────────────────────
-const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
-  STRONG_BUY: { label: '強烈買進', color: 'bg-red-500 text-white',     icon: Zap },
-  BUY:        { label: '買進',     color: 'bg-orange-500 text-white',  icon: TrendingUp },
-  HOLD:       { label: '觀望',     color: 'bg-yellow-500 text-white',  icon: Minus },
-  SELL:       { label: '賣出',     color: 'bg-blue-500 text-white',    icon: TrendingDown },
-  STRONG_SELL:{ label: '強烈賣出', color: 'bg-purple-600 text-white',  icon: TrendingDown },
-}
-
-// ─── Score bar ─────────────────────────────────────────────────────────────
-function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = Math.round((value / max) * 100)
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="w-12 text-muted-foreground shrink-0">{label}</span>
-      <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="w-8 text-right font-mono text-muted-foreground">{value}/{max}</span>
-    </div>
-  )
-}
-
-// ─── Single recommendation card ────────────────────────────────────────────
-export function RecommendationCard({ rec, rank }: { rec: any; rank: number }) {
-  const [expanded, setExpanded] = useState(false)
-  const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG['HOLD']
-  const SigIcon = sig.icon
-
-  const chip5dRaw = (rec.foreign_net_5d ?? 0) + (rec.trust_net_5d ?? 0)
-  const chipPositive  = chip5dRaw > 0
-
-  return (
-    <div className={cn(
-      'rounded-xl border transition-all',
-      rank === 1
-        ? 'border-amber-500/40 bg-amber-500/[0.06] shadow-sm'
-        : 'border-border/50 bg-card hover:border-border',
-    )}>
-      {/* ── Header ── */}
-      <div
-        className="flex items-center gap-3 p-3 sm:p-4 cursor-pointer select-none"
-        onClick={() => setExpanded(v => !v)}
-      >
-        {/* Rank badge */}
-        <div className={cn(
-          'w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold shrink-0',
-          rank === 1 ? 'bg-amber-400 text-white' :
-          rank === 2 ? 'bg-gray-400 text-white' :
-          rank === 3 ? 'bg-orange-400 text-white' :
-          'bg-muted text-muted-foreground',
-        )}>
-          {rank}
-        </div>
-
-        {/* Stock info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-sm">{rec.symbol}</span>
-            <span className="text-sm text-muted-foreground truncate">{rec.name}</span>
-            {rec.sector && (
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">{rec.sector}</Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-3 mt-1 flex-wrap">
-            {/* Signal */}
-            <Badge className={cn('text-[10px] px-1.5 py-0', sig.color)}>
-              <SigIcon className="w-2.5 h-2.5 mr-1" />
-              {sig.label}
-            </Badge>
-            {/* Chip flow */}
-            <span className={cn('text-xs flex items-center gap-1', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
-              <Users className="w-3 h-3" />
-              法人 {fmtChipAmount(chip5dRaw)}
-            </span>
-            {/* RSI */}
-            {rec.rsi14 != null && (
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <BarChart3 className="w-3 h-3" />
-                RSI {rec.rsi14.toFixed(1)}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Score */}
-        <div className="text-right shrink-0">
-          <div className="text-lg font-bold text-primary">{Math.round(rec.score)}</div>
-          <div className="text-[10px] text-muted-foreground">分</div>
-        </div>
-
-        {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" /> :
-                    <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />}
-      </div>
-
-      {/* ── Expanded detail ── */}
-      {expanded && (
-        <div className="px-4 pb-4 border-t border-border/40 pt-3 space-y-4">
-          {/* Score breakdown */}
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground mb-2">評分明細</p>
-            <ScoreBar label="籌碼" value={rec.chip_score  ?? 0} max={40} color="bg-blue-500" />
-            <ScoreBar label="技術" value={rec.tech_score  ?? 0} max={30} color="bg-purple-500" />
-            <ScoreBar label="ML"   value={rec.ml_score    ?? 0} max={30} color="bg-emerald-500" />
-          </div>
-
-          {/* Reason */}
-          <div>
-            <p className="text-xs font-medium text-muted-foreground mb-1.5">推薦理由</p>
-            <p className="text-sm leading-relaxed text-foreground/90">{rec.reason}</p>
-          </div>
-
-          {/* Watch points */}
-          {rec.watch_points?.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1.5 flex items-center gap-1">
-                <AlertCircle className="w-3 h-3" />
-                需注意
-              </p>
-              <ul className="space-y-1">
-                {rec.watch_points.map((pt: string, i: number) => (
-                  <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                    <span className="text-amber-500 shrink-0 mt-0.5">▸</span>
-                    {pt}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* ML confidence */}
-          {rec.confidence != null && (
-            <p className="text-[11px] text-muted-foreground">
-              ML 模型信心度：{(rec.confidence * 100).toFixed(0)}%
-              {rec.current_price != null && (
-                <span className="ml-3">現價：{rec.current_price.toFixed(2)}</span>
-              )}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
 }
 
 // ─── Sector flow bar ───────────────────────────────────────────────────────
@@ -212,6 +67,16 @@ function SectorFlowBar({ flow, maxAbs }: { flow: any; maxAbs: number }) {
 }
 
 // ─── Main panel ────────────────────────────────────────────────────────────
+function SectorFlowStaleNotice({ data, label = 'theme flow' }: { data: any; label?: string }) {
+  if (!data?.stale) return null
+  return (
+    <div className="mb-3 rounded-2xl border border-[#d6a85f]/30 bg-[#d6a85f]/10 px-3 py-2 text-[11px] leading-relaxed text-[#f1c16f]">
+      {label} 資料尚未更新到 {data.requested_date ?? data.date ?? 'requested date'}；
+      目前顯示最近可用資料 {data.stale_date ?? 'unknown'}。這代表今晚 pipeline 尚未完成或 sector flow 寫入失敗。
+    </div>
+  )
+}
+
 export function DailyRecommendationPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
 
@@ -221,25 +86,29 @@ export function DailyRecommendationPanel() {
     staleTime: 30 * 60 * 1000,
   })
 
-  const recs  = recData?.recommendations  ?? []
+  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
+  const recs = tradableRecs
 
   return (
     <div className="space-y-6">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between rounded-2xl border border-[#3a3125] bg-[#171714]/70 p-3">
         <div>
-          <h2 className="text-base font-semibold flex items-center gap-2">
-            <Star className="w-4 h-4 text-amber-400" />
-            每日選股推薦
+          <h2 className="text-base font-semibold flex items-center gap-2 text-[#fff7e8]">
+            <Star className="w-4 h-4 text-[#d6a85f]" />
+            今日候選清單
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {recData?.date ?? today} · ML + 籌碼 + LLM 綜合評分
+          <p className="text-xs text-[#8f877a] mt-0.5">
+            {recData?.date ?? today} · 模型、籌碼與理由整理
+          </p>
+          <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-[#b9b1a1]">
+            {AI_TOP_PICK_EXPLANATION}
           </p>
         </div>
         <Button
           variant="ghost" size="sm"
           onClick={() => refetch()}
-          className="text-xs gap-1.5"
+          className="text-xs gap-1.5 rounded-full text-[#f1c16f] hover:bg-[#d6a85f]/10"
           disabled={recLoading}
         >
           <RefreshCw className={cn('w-3.5 h-3.5', recLoading && 'animate-spin')} />
@@ -254,17 +123,45 @@ export function DailyRecommendationPanel() {
             <div key={i} className="h-20 rounded-xl bg-muted/40 animate-pulse" />
           ))}
         </div>
-      ) : recs.length === 0 ? (
+      ) : recs.length === 0 && emergingRecs.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground">
           <Star className="w-8 h-8 mx-auto mb-2 opacity-20" />
           <p className="text-sm">今日推薦尚未產生</p>
           <p className="text-xs mt-1">每日 15:35 自動更新</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {recs.map((rec: any, i: number) => (
-            <RecommendationCard key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
-          ))}
+        <div className="space-y-5">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <p className="text-xs font-semibold text-[#9fcca1]">上市櫃交易候選</p>
+                <p className="text-[11px] text-[#8f877a]">會進入 morning setup / debate / pending buys 的主流程。</p>
+              </div>
+              <Badge variant="outline" className="text-[10px] rounded-full border-[#9fcca1]/30 text-[#cbe4c7]">
+                {tradableRecs.length} 檔
+              </Badge>
+            </div>
+            {tradableRecs.map((rec: any, i: number) => (
+              <RecommendationCardClean key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
+            ))}
+          </div>
+
+          {emergingRecs.length > 0 && (
+            <div className="space-y-3 rounded-2xl border border-[#d6a85f]/24 bg-[#d6a85f]/[0.05] p-3">
+              <div className="flex items-center justify-between px-1">
+                <div>
+                  <p className="text-xs font-semibold text-[#f1c16f]">興櫃觀察名單</p>
+                  <p className="text-[11px] text-[#8f877a]">只做研究與人工觀察；不進 morning setup、不產生 pending buys。</p>
+                </div>
+                <Badge variant="outline" className="text-[10px] rounded-full border-[#d6a85f]/30 text-[#f1c16f]">
+                  {emergingRecs.length} 檔
+                </Badge>
+              </div>
+              {emergingRecs.slice(0, 24).map((rec: any, i: number) => (
+                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -369,7 +266,7 @@ function WordCloud({ items, type }: { items: { text: string; value: number; posi
   )
 }
 
-// Bot Dashboard 用 — 含象限 + RS（差異化）
+// 模擬交易室用 — 含象限 + RS（差異化）
 function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: string; color: string }) {
   if (!flows.length) return <p className="text-xs text-muted-foreground">無{title}主題</p>
   const maxAbs = Math.max(...flows.map((f: any) => Math.abs(f.total_net ?? 0)), 0.01)
@@ -429,7 +326,7 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
   )
 }
 
-// ─── Theme Flow Panel（Dashboard 用）— Ranking Table + Treemap ───────────────
+// ─── Theme Flow Panel（晨間概覽用）— Ranking Table + Treemap ───────────────
 export function ThemeFlowPanel() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
@@ -463,11 +360,13 @@ export function ThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-        <BarChart3 className="w-4 h-4 text-blue-400" />
-        主題輪動（三大法人近5日買賣超）
+    <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
+      <SectorFlowStaleNotice data={themeData} label="主題資金流" />
+      <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-[#fff7e8]">
+        <BarChart3 className="h-4 w-4 text-[#d6a85f]" />
+        主題輪動（三大法人近 5 日買賣超金額，單位：億元）
       </h3>
+      <p className="mb-3 text-[11px] text-muted-foreground">資料口徑：原始 chip_data 是股數；sector_flow 已由後端用收盤價換算成億元。若與每日總買賣超不同，優先查 source date、分類覆蓋率與 sector_flow_stocks 是否 stale。</p>
       {themeLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
@@ -692,11 +591,12 @@ export function BotThemeFlowPanel() {
     }))
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-        <BarChart3 className="w-4 h-4 text-blue-400" />
+    <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
+      <h3 className="text-sm font-medium mb-3 flex items-center gap-2 text-[#fff7e8]">
+        <BarChart3 className="w-4 h-4 text-[#d6a85f]" />
         主題輪動 + RRG 四象限
       </h3>
+      <SectorFlowStaleNotice data={themeData} label="Bot 主題資金流" />
       {isLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}

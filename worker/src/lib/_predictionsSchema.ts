@@ -10,6 +10,7 @@
 export const COL_STOCK_ID = 'stock_id'
 export const COL_MODEL_NAME = 'model_name'
 export const COL_GENERATED_AT = 'generated_at'
+export const COL_PREDICTION_DATE = 'prediction_date'
 export const COL_HORIZON = 'horizon'
 export const COL_DIRECTION_ACCURACY = 'direction_accuracy'
 export const COL_FORECAST_DATA = 'forecast_data'

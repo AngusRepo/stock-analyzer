@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
+try:
+    import httpx
+except ImportError:  # pragma: no cover - only hit in slim unit-test envs
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +56,12 @@ class MonteCarloResult:
     go_live_verdict: str = ""         # "PASS" / "FAIL" / "CAUTION"
     verdict_reason: str = ""
     mdds_sorted: list = None          # sorted MDD distribution (reuse, avoid recompute)
+    simulation_method: str = "iid_shuffle"
+    block_size: Optional[int] = None
+    regime_counts: dict[str, int] = None
 
 
-async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
+async def _d1_query(client, sql: str, params: list = None) -> list[dict]:
     """Execute a D1 SQL query via REST API."""
     if not CF_API_TOKEN:
         logger.error("CF_API_TOKEN not set")
@@ -90,7 +96,7 @@ async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) ->
     return []
 
 
-async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> bool:
+async def _d1_exec(client, sql: str, params: list = None) -> bool:
     """Execute a D1 SQL statement."""
     if not CF_API_TOKEN:
         return False
@@ -254,10 +260,115 @@ def _compute_mdd(returns: list[float]) -> float:
     return max_dd
 
 
+def _default_block_size(n_returns: int) -> int:
+    """Conservative moving-block size for trade-level bootstrap."""
+    if n_returns <= 1:
+        return 1
+    return max(2, min(20, int(n_returns ** 0.5)))
+
+
+def _sample_block_bootstrap_path(
+    trade_returns: list[float],
+    *,
+    rng: random.Random,
+    block_size: int,
+) -> list[float]:
+    n = len(trade_returns)
+    if n == 0:
+        return []
+    block_size = max(1, min(block_size, n))
+    path: list[float] = []
+    max_start = max(0, n - block_size)
+    while len(path) < n:
+        start = rng.randint(0, max_start) if max_start > 0 else 0
+        path.extend(trade_returns[start:start + block_size])
+    return path[:n]
+
+
+def _regime_counts(regimes: list[str] | None) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for regime in regimes or []:
+        key = str(regime or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _regime_segments(regimes: list[str]) -> list[tuple[str, int]]:
+    if not regimes:
+        return []
+    segments: list[tuple[str, int]] = []
+    current = regimes[0]
+    length = 1
+    for regime in regimes[1:]:
+        if regime == current:
+            length += 1
+        else:
+            segments.append((current, length))
+            current = regime
+            length = 1
+    segments.append((current, length))
+    return segments
+
+
+def _sample_regime_block_bootstrap_path(
+    trade_returns: list[float],
+    trade_regimes: list[str],
+    *,
+    rng: random.Random,
+    block_size: int,
+) -> list[float]:
+    by_regime: dict[str, list[float]] = {}
+    for ret, regime in zip(trade_returns, trade_regimes):
+        by_regime.setdefault(str(regime or "unknown"), []).append(ret)
+
+    path: list[float] = []
+    for regime, segment_len in _regime_segments(trade_regimes):
+        pool = by_regime.get(str(regime or "unknown")) or trade_returns
+        segment: list[float] = []
+        while len(segment) < segment_len:
+            segment.extend(_sample_block_bootstrap_path(pool, rng=rng, block_size=block_size))
+        path.extend(segment[:segment_len])
+    return path[:len(trade_returns)]
+
+
+def _extract_backtest_returns_and_regimes(raw: dict) -> tuple[list[float], list[str] | None]:
+    returns = [_r for _r in raw.get("all_returns") or [] if _as_number(_r) is not None]
+    regimes = raw.get("all_regimes")
+    if not returns:
+        trades = raw.get("trades", []) or []
+        returns = [
+            float(t["profit_ratio"])
+            for t in trades
+            if isinstance(t, dict) and _as_number(t.get("profit_ratio")) is not None
+        ]
+        trade_regimes = [
+            str(t.get("entry_regime") or t.get("regime") or "unknown")
+            for t in trades
+            if isinstance(t, dict) and _as_number(t.get("profit_ratio")) is not None
+        ]
+        regimes = trade_regimes if len(trade_regimes) == len(returns) and returns else None
+    else:
+        returns = [float(x) for x in returns]
+
+    if isinstance(regimes, list) and len(regimes) == len(returns):
+        return returns, [str(r or "unknown") for r in regimes]
+    return returns, None
+
+
+def _as_number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _run_monte_carlo(
     trade_returns: list[float],
     n_simulations: int = DEFAULT_N_SIMULATIONS,
     seed: int = 42,
+    method: str = "block_bootstrap",
+    block_size: Optional[int] = None,
+    trade_regimes: list[str] | None = None,
 ) -> MonteCarloResult:
     """
     Core Monte Carlo simulation:
@@ -266,12 +377,27 @@ def _run_monte_carlo(
     result = MonteCarloResult(
         n_simulations=n_simulations,
         n_trades=len(trade_returns),
+        simulation_method=method,
+        block_size=block_size,
+        regime_counts=_regime_counts(trade_regimes),
     )
 
     if len(trade_returns) < 5:
         result.go_live_verdict = "FAIL"
         result.verdict_reason = f"Insufficient trades ({len(trade_returns)}), need >= 5"
         return result
+
+    if method not in {"block_bootstrap", "regime_block_bootstrap", "iid_shuffle"}:
+        raise ValueError(f"Unsupported Monte Carlo method: {method}")
+
+    if method == "regime_block_bootstrap":
+        if not trade_regimes or len(trade_regimes) != len(trade_returns):
+            raise ValueError("trade_regimes must match trade_returns for regime_block_bootstrap")
+        result.block_size = block_size or _default_block_size(len(trade_returns))
+    elif method == "block_bootstrap":
+        result.block_size = block_size or _default_block_size(len(trade_returns))
+    else:
+        result.block_size = None
 
     # Historical MDD (actual order)
     result.historical_mdd = _compute_mdd(trade_returns)
@@ -281,9 +407,23 @@ def _run_monte_carlo(
     mdds = []
 
     for _ in range(n_simulations):
-        shuffled = trade_returns.copy()
-        rng.shuffle(shuffled)
-        mdds.append(_compute_mdd(shuffled))
+        if method == "regime_block_bootstrap":
+            path = _sample_regime_block_bootstrap_path(
+                trade_returns,
+                trade_regimes or [],
+                rng=rng,
+                block_size=result.block_size or 1,
+            )
+        elif method == "block_bootstrap":
+            path = _sample_block_bootstrap_path(
+                trade_returns,
+                rng=rng,
+                block_size=result.block_size or 1,
+            )
+        else:
+            path = trade_returns.copy()
+            rng.shuffle(path)
+        mdds.append(_compute_mdd(path))
 
     mdds.sort()
 
@@ -323,6 +463,8 @@ def _run_monte_carlo(
 async def run_monte_carlo_mdd(
     n_simulations: int = DEFAULT_N_SIMULATIONS,
     source: str = "paper",
+    method: str | None = None,
+    block_size: int | None = None,
 ) -> dict:
     """
     Full Monte Carlo MDD pipeline:
@@ -333,10 +475,13 @@ async def run_monte_carlo_mdd(
     """
     if not CF_API_TOKEN:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
+    if httpx is None:
+        return {"error": "httpx not installed", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
         # ── Step 1: Fetch trade returns ──
         trade_returns: list[float] = []
+        trade_regimes: list[str] | None = None
 
         data_quality_info: dict = {}
 
@@ -392,12 +537,7 @@ async def run_monte_carlo_mdd(
                 return {"error": "No backtest results found", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
-            # Prefer all_returns (complete, not truncated) over trades[:500]
-            if raw.get("all_returns"):
-                trade_returns = raw["all_returns"]
-            else:
-                trades = raw.get("trades", [])
-                trade_returns = [t["profit_ratio"] for t in trades]
+            trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
@@ -413,7 +553,16 @@ async def run_monte_carlo_mdd(
         )
 
         # ── Step 3: Run Monte Carlo ──
-        mc = _run_monte_carlo(trade_returns, n_simulations)
+        simulation_method = method or os.environ.get("MONTE_CARLO_METHOD", "").strip()
+        if not simulation_method:
+            simulation_method = "regime_block_bootstrap" if trade_regimes else "block_bootstrap"
+        mc = _run_monte_carlo(
+            trade_returns,
+            n_simulations,
+            method=simulation_method,
+            block_size=block_size,
+            trade_regimes=trade_regimes,
+        )
 
         # ── Step 4: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -432,6 +581,9 @@ async def run_monte_carlo_mdd(
             "histogram": buckets,
             "source": source,
             "n_trades": len(trade_returns),
+            "simulation_method": mc.simulation_method,
+            "block_size": mc.block_size,
+            "regime_counts": mc.regime_counts,
             "data_quality": data_quality_info or None,
         }, ensure_ascii=False)
 
@@ -475,6 +627,9 @@ async def run_monte_carlo_mdd(
             "mdd_median": f"{mc.mdd_median:.2%}",
             "go_live_verdict": mc.go_live_verdict,
             "verdict_reason": mc.verdict_reason,
+            "simulation_method": mc.simulation_method,
+            "block_size": mc.block_size,
+            "regime_counts": mc.regime_counts,
             "data_quality": data_quality_info or None,
         }
         logger.info(f"[MonteCarlo] Done: {mc.go_live_verdict} — 95th MDD = {mc.mdd_95th:.2%}")

@@ -24,7 +24,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "https://stockvision-worker.angus-solo-dev.workers.dev")
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip() or "http://127.0.0.1:8787"
 AUTH_TOKEN = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 

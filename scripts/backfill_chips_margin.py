@@ -32,13 +32,15 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 # ── D1 REST API ──────────────────────────────────────────────────────────────
 
 D1_API_URL = os.environ.get("D1_API_URL", "")
-D1_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-D1_DB_ID = os.environ.get("D1_DB_ID", "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
+D1_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+D1_DB_ID = os.environ.get("CF_D1_DB_ID", os.environ.get("D1_DB_ID", "")).strip()
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 
 def d1_url():
     if D1_API_URL:
         return D1_API_URL
+    if not (D1_ACCOUNT_ID and D1_DB_ID):
+        return ""
     return f"https://api.cloudflare.com/client/v4/accounts/{D1_ACCOUNT_ID}/d1/database/{D1_DB_ID}/query"
 
 def _http_get(url: str, headers: dict = None, timeout: int = 30) -> tuple[int, str]:
@@ -66,6 +68,13 @@ def _http_post_json(url: str, body: dict, headers: dict = None, timeout: int = 3
 
 def d1_exec(sql: str, params: list = None):
     """Execute SQL on D1."""
+    if not CF_API_TOKEN:
+        print("  D1 error: CF_API_TOKEN not set")
+        return None
+    url = d1_url()
+    if not url:
+        print("  D1 error: missing CF_ACCOUNT_ID/CF_D1_DB_ID (or set D1_API_URL)")
+        return None
     body = {"sql": sql}
     if params:
         body["params"] = params
@@ -73,7 +82,7 @@ def d1_exec(sql: str, params: list = None):
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json",
     }
-    status, text = _http_post_json(d1_url(), body, headers)
+    status, text = _http_post_json(url, body, headers)
     if status != 200:
         print(f"  D1 error: {status} {text[:200]}")
         return None

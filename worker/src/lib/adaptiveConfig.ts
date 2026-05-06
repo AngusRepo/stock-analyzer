@@ -1,106 +1,365 @@
-/**
- * adaptiveConfig.ts — Adaptive Parameter System KV 讀寫
- *
- * KV key: `ml:adaptive_params`
- * 每日 16:05 verify 完後由 adaptiveEngine 計算寫入，次日生效。
- */
+export type AdaptiveRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
+export type AdaptiveParamSource = 'ml-controller' | 'risk-assess' | 'manual' | 'fallback' | 'unknown'
 
-export interface AdaptiveParams {
-  // ─────────────────────────────────────────────────────────────────────────
-  // ⚠️ DEPRECATED FIELDS (backwards compat only, will be removed in Phase 3.5)
-  // 之前的設計：absolute value，但這跟 trading:config baseline 邏輯衝突
-  // ─────────────────────────────────────────────────────────────────────────
-  /** @deprecated 用 confidence_delta 取代；absolute value 會跟 baseline double-count */
-  confidence_threshold?: number           // legacy 0.55~0.75
+export interface AdaptiveParamProvenance {
+  owner: 'ml-controller'
+  source: AdaptiveParamSource | string
+  schema_version: 'adaptive-params-v2'
+  update_frequency: 'daily_after_verify'
+  computed_at: string
+  updated_at: string
+  fallback: boolean
+  regime?: AdaptiveRegime | 'unknown'
+}
 
-  /** @deprecated 改寫進 trading:config.sltp.slMultBase，這只應該裝 sl_add delta */
-  sl_mult_base?: number                  // legacy
+export interface AdaptiveScreenerDelta {
+  candidate_pool_delta?: number
+  ml_shortlist_delta?: number
+  emerging_research_delta?: number
+}
 
-  /** @deprecated 改寫進 trading:config.sltp.tpMultBase */
-  tp_mult_base?: number                  // legacy
-
-  /** @deprecated 改寫進 trading:config.signal.* */
-  strong_signal_score?: number
-  /** @deprecated 改寫進 trading:config.signal.buySignalScore */
-  buy_signal_score?: number
-  /** @deprecated 改寫進 trading:config.signal.holdSignalScore */
-  hold_signal_score?: number
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // 新 schema（純 T+1 daily delta，2026-04-07 引入）
-  // 設計原則：所有欄位都是「相對於 trading:config baseline 的 delta」
-  // paper.ts 讀法：effective = clip(baseline + delta, KV-driven range)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /** 信心門檻 daily delta（-0.10 ~ +0.20）對 trading:config.signal.buySignalScore */
-  confidence_delta: number
-
-  /** Position size daily delta（-0.04 ~ +0.04）對 trading:config.position.maxPctOfPortfolio */
-  position_pct_delta: number
-
-  /** SL/TP 加碼 (從 risk_level 算)，套在 trading:config.sltp.slMultBase/tpMultBase 上 */
-  sltp_add: {
-    sl_add: number   // 額外加寬的 ATR 倍數（相對 baseline）
+export interface AdaptiveRegimeOverride {
+  confidence_delta?: number
+  position_pct_delta?: number
+  sltp_add?: {
+    sl_add: number
     tp_add: number
   } | null
+  pf_quality_mult?: Record<string, number>
+  screener?: AdaptiveScreenerDelta
+  bandit_max_mult?: number
+  bandit_force_explore?: boolean
+}
 
-  // ── Ensemble PF 品質權重（per-model）─ 這個本來就是 multiplier 不是 absolute，留 ──
+export interface AdaptiveMetaLayerGovernance {
+  alpha_vote_models: string[]
+  state_space_overlays: string[]
+  meta_optimizers: string[]
+  adaptive_components: Record<string, string>
+  immutable_risk_boundaries: string[]
+}
+
+export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
+  alpha_vote_models: [
+    'XGBoost',
+    'CatBoost',
+    'ExtraTrees',
+    'LightGBM',
+    'FT-Transformer',
+    'Chronos',
+    'DLinear',
+    'PatchTST',
+  ],
+  state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
+  meta_optimizers: ['GAOptimizer'],
+  adaptive_components: {
+    ARF: 'drift-aware ensemble aggregation, not a standalone alpha vote',
+    LinUCB: 'contextual bandit model weighting with delayed reward protection',
+    Conformal: 'prediction uncertainty calibration and coverage guard',
+    Stacking: 'meta learner for ensemble blending after base-model predictions',
+    GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
+  },
+  immutable_risk_boundaries: [
+    'circuit',
+    'riskOverlay.hardGates',
+    'position.maxPctOfPortfolio',
+    'paperExecution.impossibleFillGuard',
+  ],
+}
+
+export interface AdaptiveParams {
+  /** @deprecated Use confidence_delta. Absolute thresholds double-count trading:config baselines. */
+  confidence_threshold?: number
+  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  sl_mult_base?: number
+  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  tp_mult_base?: number
+  /** @deprecated Use trading:config.signal. */
+  strong_signal_score?: number
+  /** @deprecated Use trading:config.signal.buySignalScore plus confidence_delta. */
+  buy_signal_score?: number
+  /** @deprecated Use trading:config.signal.holdSignalScore. */
+  hold_signal_score?: number
+
+  confidence_delta: number
+  position_pct_delta: number
+  sltp_add: {
+    sl_add: number
+    tp_add: number
+  } | null
   pf_quality_mult: Record<string, number>
-
-  // ── LinUCB 保護 ─ 這個是 absolute mult，留在 adaptive_params 因為跟 daily 表現相關 ──
-  bandit_max_mult: number                // 1.5~2.5
+  screener?: AdaptiveScreenerDelta
+  bandit_max_mult: number
   bandit_force_explore: boolean
+  computed_at: string
+  market_risk_score: number
+  recent_accuracy_30d: number
+  regime_at_compute?: number
+  regime_overrides?: Partial<Record<AdaptiveRegime, AdaptiveRegimeOverride>>
+  provenance: AdaptiveParamProvenance
+  meta_layer: AdaptiveMetaLayerGovernance
+  version: number
 
-  // ── Meta（審計用）─────────────────────────────────────────────────────────
-  computed_at: string                    // ISO timestamp（TW time）
-  market_risk_score: number              // 計算時的 risk score
-  recent_accuracy_30d: number            // 計算時的整體 30d 準確率（CB Layer2 也讀此值，避免重算）
-  regime_at_compute?: number             // 0-3，計算時的 market regime（Phase B 加）
-  version: number                        // 遞增版本號
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // DEPRECATED legacy field for backwards compat（Phase 3.5 移除）
-  // ─────────────────────────────────────────────────────────────────────────
-  /** @deprecated 改用 sltp_add */
+  /** @deprecated Use sltp_add. */
   sl_tp_override?: { sl_add: number; tp_add: number } | null
 }
 
+const KV_KEY = 'ml:adaptive_params'
+const CACHE_TTL_MS = 300_000
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
 export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
-  // 新 delta schema
   confidence_delta: 0,
   position_pct_delta: 0,
   sltp_add: null,
   pf_quality_mult: {},
+  screener: {},
   bandit_max_mult: 2.5,
   bandit_force_explore: false,
   computed_at: '',
   market_risk_score: 50,
   recent_accuracy_30d: 0.6,
+  regime_overrides: {},
+  provenance: {
+    owner: 'ml-controller',
+    source: 'fallback',
+    schema_version: 'adaptive-params-v2',
+    update_frequency: 'daily_after_verify',
+    computed_at: '',
+    updated_at: '',
+    fallback: true,
+  },
+  meta_layer: ADAPTIVE_META_LAYER_GOVERNANCE,
   version: 0,
-  // legacy fields kept undefined（讀 KV 時若有值才會出現）
 }
-
-const KV_KEY = 'ml:adaptive_params'
-const CACHE_TTL_MS = 300_000  // 5 min
 
 let _cached: AdaptiveParams | null = null
 let _cachedAt = 0
+
+function finiteNumber(value: unknown, fallback: number): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
+}
+
+function finiteBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeSltpAdd(value: unknown): { sl_add: number; tp_add: number } | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const sl = optionalNumber(raw.sl_add)
+  const tp = optionalNumber(raw.tp_add)
+  if (sl == null || tp == null) return null
+  return { sl_add: sl, tp_add: tp }
+}
+
+function normalizeNumberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const n = Number(raw)
+    if (Number.isFinite(n)) out[key] = n
+  }
+  return out
+}
+
+function normalizeScreenerDelta(value: unknown): AdaptiveScreenerDelta {
+  if (!value || typeof value !== 'object') return {}
+  const raw = value as Record<string, unknown>
+  const out: AdaptiveScreenerDelta = {}
+  for (const key of ['candidate_pool_delta', 'ml_shortlist_delta', 'emerging_research_delta'] as const) {
+    const n = optionalNumber(raw[key])
+    if (n != null) out[key] = n
+  }
+  return out
+}
+
+function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
+  if (!value || typeof value !== 'object') return {}
+  const raw = value as Record<string, unknown>
+  const out: AdaptiveRegimeOverride = {}
+  const confidence = optionalNumber(raw.confidence_delta)
+  const position = optionalNumber(raw.position_pct_delta)
+  const banditMax = optionalNumber(raw.bandit_max_mult)
+  if (confidence != null) out.confidence_delta = confidence
+  if (position != null) out.position_pct_delta = position
+  if (Object.prototype.hasOwnProperty.call(raw, 'sltp_add')) out.sltp_add = normalizeSltpAdd(raw.sltp_add)
+  if (raw.pf_quality_mult && typeof raw.pf_quality_mult === 'object') out.pf_quality_mult = normalizeNumberRecord(raw.pf_quality_mult)
+  if (raw.screener && typeof raw.screener === 'object') out.screener = normalizeScreenerDelta(raw.screener)
+  if (banditMax != null) out.bandit_max_mult = banditMax
+  if (typeof raw.bandit_force_explore === 'boolean') out.bandit_force_explore = raw.bandit_force_explore
+  return out
+}
+
+function normalizeRegimeOverrides(value: unknown): Partial<Record<AdaptiveRegime, AdaptiveRegimeOverride>> {
+  if (!value || typeof value !== 'object') return {}
+  const raw = value as Record<string, unknown>
+  const out: Partial<Record<AdaptiveRegime, AdaptiveRegimeOverride>> = {}
+  for (const regime of ['bull', 'bear', 'volatile', 'sideways'] as const) {
+    if (raw[regime]) out[regime] = normalizeRegimeOverride(raw[regime])
+  }
+  return out
+}
+
+export function normalizeAdaptiveRegime(raw: unknown): AdaptiveRegime | 'unknown' {
+  const value = String(raw ?? '').toLowerCase()
+  if (value.includes('bull')) return 'bull'
+  if (value.includes('bear')) return 'bear'
+  if (value.includes('vol')) return 'volatile'
+  if (value.includes('side') || value.includes('range') || value.includes('chop')) return 'sideways'
+  return 'unknown'
+}
+
+function normalizeProvenance(
+  raw: unknown,
+  params: Pick<AdaptiveParams, 'computed_at'>,
+  options: { source?: AdaptiveParamSource | string; fallback?: boolean } = {},
+): AdaptiveParamProvenance {
+  const source = options.source ?? ((raw && typeof raw === 'object' ? (raw as Record<string, unknown>).source : undefined) as string | undefined) ?? 'unknown'
+  const fallback = options.fallback ?? (source === 'fallback' || source === 'unknown')
+  const updated = nowIso()
+  const provenance = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const regime = normalizeAdaptiveRegime(provenance.regime)
+  return {
+    owner: 'ml-controller',
+    source,
+    schema_version: 'adaptive-params-v2',
+    update_frequency: 'daily_after_verify',
+    computed_at: String(provenance.computed_at ?? params.computed_at ?? ''),
+    updated_at: String(provenance.updated_at ?? updated),
+    fallback,
+    ...(regime !== 'unknown' ? { regime } : {}),
+  }
+}
+
+export function normalizeAdaptiveParams(
+  value: Partial<AdaptiveParams> | Record<string, unknown> | null | undefined,
+  options: { source?: AdaptiveParamSource | string; fallback?: boolean } = {},
+): AdaptiveParams {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const computedAt = String(raw.computed_at ?? DEFAULT_ADAPTIVE_PARAMS.computed_at)
+  const normalized: AdaptiveParams = {
+    confidence_delta: finiteNumber(raw.confidence_delta, DEFAULT_ADAPTIVE_PARAMS.confidence_delta),
+    position_pct_delta: finiteNumber(raw.position_pct_delta, DEFAULT_ADAPTIVE_PARAMS.position_pct_delta),
+    sltp_add: normalizeSltpAdd(raw.sltp_add),
+    pf_quality_mult: normalizeNumberRecord(raw.pf_quality_mult),
+    screener: normalizeScreenerDelta(raw.screener),
+    bandit_max_mult: finiteNumber(raw.bandit_max_mult, DEFAULT_ADAPTIVE_PARAMS.bandit_max_mult),
+    bandit_force_explore: finiteBoolean(raw.bandit_force_explore, DEFAULT_ADAPTIVE_PARAMS.bandit_force_explore),
+    computed_at: computedAt,
+    market_risk_score: finiteNumber(raw.market_risk_score, DEFAULT_ADAPTIVE_PARAMS.market_risk_score),
+    recent_accuracy_30d: finiteNumber(raw.recent_accuracy_30d, DEFAULT_ADAPTIVE_PARAMS.recent_accuracy_30d),
+    regime_at_compute: optionalNumber(raw.regime_at_compute),
+    regime_overrides: normalizeRegimeOverrides(raw.regime_overrides),
+    provenance: normalizeProvenance(raw.provenance, { computed_at: computedAt }, options),
+    meta_layer: ADAPTIVE_META_LAYER_GOVERNANCE,
+    version: Math.max(0, Math.round(finiteNumber(raw.version, DEFAULT_ADAPTIVE_PARAMS.version))),
+  }
+
+  for (const legacyKey of [
+    'confidence_threshold',
+    'sl_mult_base',
+    'tp_mult_base',
+    'strong_signal_score',
+    'buy_signal_score',
+    'hold_signal_score',
+  ] as const) {
+    const n = optionalNumber(raw[legacyKey])
+    if (n != null) normalized[legacyKey] = n
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'sl_tp_override')) {
+    normalized.sl_tp_override = normalizeSltpAdd(raw.sl_tp_override)
+  }
+  return normalized
+}
+
+export function resolveAdaptiveParamsForRegime(
+  params: AdaptiveParams,
+  regime: unknown,
+): AdaptiveParams {
+  const normalizedRegime = normalizeAdaptiveRegime(regime)
+  const normalized = normalizeAdaptiveParams(params, {
+    source: params.provenance?.source ?? 'unknown',
+    fallback: params.provenance?.fallback ?? false,
+  })
+  if (normalizedRegime === 'unknown') {
+    return {
+      ...normalized,
+      provenance: { ...normalized.provenance, regime: 'unknown' },
+    }
+  }
+
+  const override = normalized.regime_overrides?.[normalizedRegime]
+  if (!override) {
+    return {
+      ...normalized,
+      provenance: { ...normalized.provenance, regime: normalizedRegime },
+    }
+  }
+
+  return {
+    ...normalized,
+    ...override,
+    pf_quality_mult: {
+      ...normalized.pf_quality_mult,
+      ...(override.pf_quality_mult ?? {}),
+    },
+    screener: {
+      ...(normalized.screener ?? {}),
+      ...(override.screener ?? {}),
+    },
+    meta_layer: ADAPTIVE_META_LAYER_GOVERNANCE,
+    provenance: { ...normalized.provenance, regime: normalizedRegime },
+  }
+}
 
 export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams> {
   if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
   try {
     const raw = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
-    _cached = raw ?? DEFAULT_ADAPTIVE_PARAMS
+    _cached = normalizeAdaptiveParams(raw ?? DEFAULT_ADAPTIVE_PARAMS, {
+      source: raw ? raw.provenance?.source ?? 'unknown' : 'fallback',
+      fallback: !raw || !raw.provenance,
+    })
   } catch {
-    _cached = DEFAULT_ADAPTIVE_PARAMS
+    _cached = normalizeAdaptiveParams(DEFAULT_ADAPTIVE_PARAMS, { source: 'fallback', fallback: true })
   }
   _cachedAt = Date.now()
   return _cached
 }
 
-export async function setAdaptiveParams(kv: KVNamespace, params: AdaptiveParams): Promise<void> {
-  await kv.put(KV_KEY, JSON.stringify(params))
-  _cached = params
+async function readCurrentRegime(kv: KVNamespace): Promise<string | null> {
+  const meta = await kv.get('ml:regime:meta', 'json').catch(() => null) as Record<string, unknown> | null
+  if (meta?.label) return String(meta.label)
+  return await kv.get('ml:regime').catch(() => null)
+}
+
+export async function getAdaptiveParamsForRegime(
+  kv: KVNamespace,
+  regime?: string | null,
+): Promise<AdaptiveParams> {
+  const params = await getAdaptiveParams(kv)
+  const effectiveRegime = regime ?? await readCurrentRegime(kv)
+  return resolveAdaptiveParamsForRegime(params, effectiveRegime)
+}
+
+export async function setAdaptiveParams(
+  kv: KVNamespace,
+  params: AdaptiveParams,
+  options: { source?: AdaptiveParamSource | string; fallback?: boolean } = {},
+): Promise<void> {
+  const normalized = normalizeAdaptiveParams(params, options)
+  await kv.put(KV_KEY, JSON.stringify(normalized))
+  _cached = normalized
   _cachedAt = Date.now()
 }
 

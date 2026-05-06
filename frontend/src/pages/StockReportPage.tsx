@@ -25,18 +25,24 @@ const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; bo
 const MODEL_COLORS: Record<string, string> = {
   ARIMA: '#818cf8', XGBoost: '#fb923c', LightGBM: '#34d399',
   Prophet: '#60a5fa', LSTM: '#f472b6',
-  PatchTST: '#a78bfa', Chronos: '#fbbf24', MarkovSwitching: '#f97316',
+  PatchTST: '#a78bfa', Chronos: '#fbbf24', KalmanFilter: '#3b82f6', MarkovSwitching: '#f97316',
   RandomForest: '#2dd4bf', GradientBoosting: '#fb7185',
+}
+
+const STATE_SPACE_OVERLAYS = new Set(['KalmanFilter', 'MarkovSwitching'])
+
+function modelDisplayName(name: string): string {
+  return STATE_SPACE_OVERLAYS.has(name) ? `${name} overlay` : name
 }
 
 function SectionCard({ title, icon: Icon, children, className }: {
   title: string; icon?: any; children: React.ReactNode; className?: string
 }) {
   return (
-    <div className={cn('rounded-xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-sm p-5', className)}>
+    <div className={cn('rounded-2xl border border-[#3a3125] bg-[#171714]/86 p-5 shadow-[0_14px_50px_rgba(0,0,0,0.16)] backdrop-blur-sm', className)}>
       <div className="flex items-center gap-2 mb-4">
-        {Icon && <Icon className="w-4 h-4 text-primary" />}
-        <h3 className="text-sm font-bold">{title}</h3>
+        {Icon && <Icon className="w-4 h-4 text-[#d6a85f]" />}
+        <h3 className="text-sm font-bold text-[#fff7e8]">{title}</h3>
       </div>
       {children}
     </div>
@@ -47,11 +53,11 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   const pct = Math.round((value / max) * 100)
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-10 text-muted-foreground shrink-0">{label}</span>
-      <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
+      <span className="w-10 shrink-0 text-[#8f877a]">{label}</span>
+      <div className="flex-1 bg-[#27261f] rounded-full h-2 overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-10 text-right font-mono text-muted-foreground">{value}/{max}</span>
+      <span className="w-10 text-right font-mono text-[#8f877a]">{value}/{max}</span>
     </div>
   )
 }
@@ -113,11 +119,11 @@ export default function StockReportPage() {
   if (!symbol) return null
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 relative">
+    <div className="min-h-screen bg-[#111210] text-[#efe7d6] relative">
       {/* Background Glow */}
       <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute" style={{ left: '-10%', top: '5%', width: '50vw', height: '50vh', background: 'radial-gradient(ellipse at center, rgba(20,184,166,0.12) 0%, transparent 70%)', animation: 'blob-drift-1 25s ease-in-out infinite' }} />
-        <div className="absolute" style={{ right: '-5%', bottom: '0%', width: '40vw', height: '40vh', background: 'radial-gradient(ellipse at center, rgba(16,185,129,0.08) 0%, transparent 70%)', animation: 'blob-drift-3 22s ease-in-out infinite' }} />
+        <div className="absolute" style={{ left: '-10%', top: '5%', width: '50vw', height: '50vh', background: 'radial-gradient(ellipse at center, rgba(214,168,95,0.14) 0%, transparent 70%)', animation: 'blob-drift-1 25s ease-in-out infinite' }} />
+        <div className="absolute" style={{ right: '-5%', bottom: '0%', width: '40vw', height: '40vh', background: 'radial-gradient(ellipse at center, rgba(159,204,161,0.08) 0%, transparent 70%)', animation: 'blob-drift-3 22s ease-in-out infinite' }} />
       </div>
 
       <div className="relative z-10 max-w-4xl mx-auto px-4 py-6 space-y-6">
@@ -125,16 +131,17 @@ export default function StockReportPage() {
         {/* ═══ Header ═══ */}
         <div className="flex items-center gap-3">
           <Link href="/">
-            <button className="rounded-lg border border-white/[0.1] bg-white/[0.03] hover:bg-white/[0.07] p-2 transition-colors">
+            <button className="rounded-full border border-[#3a3125] bg-[#171714] hover:bg-[#1f211c] p-2 transition-colors">
               <ArrowLeft className="w-4 h-4" />
             </button>
           </Link>
           <div className="flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Stock note</p>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{stock?.name ?? symbol}</h1>
-              <span className="text-lg text-muted-foreground font-mono">{symbol}</span>
+              <h1 className="text-2xl font-bold text-[#fff7e8]">{stock?.name ?? symbol}</h1>
+              <span className="text-lg text-[#8f877a] font-mono">{symbol}</span>
               {stock?.market && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded border border-white/[0.1] text-muted-foreground">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[#3a3125] text-[#b9b1a1]">
                   {stock.market}
                 </span>
               )}
@@ -150,8 +157,8 @@ export default function StockReportPage() {
               </div>
             )}
           </div>
-          <div className="text-right text-xs text-muted-foreground">
-            <p>AI 個股報告</p>
+          <div className="text-right text-xs text-[#8f877a]">
+            <p>個股研究筆記</p>
             <p>{new Date().toLocaleDateString('zh-TW')}</p>
           </div>
         </div>
@@ -256,7 +263,7 @@ export default function StockReportPage() {
                         className="w-20 text-[10px] font-medium px-2 py-0.5 rounded-full text-black text-center shrink-0"
                         style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
                       >
-                        {m.name}
+                        {modelDisplayName(m.name)}
                       </span>
                       <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-red-400' : 'text-emerald-400')}>
                         {m.direction === 'up' ? '↑ 漲' : '↓ 跌'}

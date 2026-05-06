@@ -62,6 +62,17 @@ function isStockCode(s: string): boolean {
   return /^\d{4,6}$/.test(s.trim())
 }
 
+function isCommonStockCode(s: string): boolean {
+  return /^\d{4}$/.test(s.trim())
+}
+
+function parseOpenApiArray(text: string): any[] {
+  const normalized = text.replace(/^\uFEFF/, '').trimStart()
+  if (!normalized.startsWith('[')) return []
+  const body = JSON.parse(normalized)
+  return Array.isArray(body) ? body : []
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BulkChipRow {
@@ -75,6 +86,40 @@ export interface BulkChipRow {
   dealer_buy: number
   dealer_sell: number
   dealer_net: number
+}
+
+export function parseTwseChipRows(rows: string[][]): BulkChipRow[] {
+  return rows
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      foreign_buy:  parseTwNum(r[2]),
+      foreign_sell: parseTwNum(r[3]),
+      foreign_net:  parseTwNum(r[4]),
+      trust_buy:    parseTwNum(r[8]),
+      trust_sell:   parseTwNum(r[9]),
+      trust_net:    parseTwNum(r[10]),
+      dealer_buy:   parseTwNum(r[12]) + parseTwNum(r[15]),
+      dealer_sell:  parseTwNum(r[13]) + parseTwNum(r[16]),
+      dealer_net:   parseTwNum(r[11]),
+    }))
+}
+
+export function parseTpexChipRows(rows: string[][]): BulkChipRow[] {
+  return rows
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      foreign_buy:  parseTwNum(r[2]),
+      foreign_sell: parseTwNum(r[3]),
+      foreign_net:  parseTwNum(r[4]),
+      trust_buy:    parseTwNum(r[11]),
+      trust_sell:   parseTwNum(r[12]),
+      trust_net:    parseTwNum(r[13]),
+      dealer_buy:   parseTwNum(r[20]),
+      dealer_sell:  parseTwNum(r[21]),
+      dealer_net:   parseTwNum(r[22]),
+    }))
 }
 
 export interface BulkMarginRow {
@@ -624,21 +669,7 @@ export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
   if (!res.ok) throw new Error(`TWSE T86 HTTP ${res.status}`)
   const body = await res.json() as any
   if (body.stat !== 'OK' || !body.data) return []
-
-  return body.data
-    .filter((r: string[]) => isStockCode(r[0]))
-    .map((r: string[]) => ({
-      symbol: r[0].trim(),
-      foreign_buy:  parseTwNum(r[2]),
-      foreign_sell: parseTwNum(r[3]),
-      foreign_net:  parseTwNum(r[4]),
-      trust_buy:    parseTwNum(r[8]),
-      trust_sell:   parseTwNum(r[9]),
-      trust_net:    parseTwNum(r[10]),
-      dealer_buy:   parseTwNum(r[12]),  // 自行買賣
-      dealer_sell:  parseTwNum(r[13]),
-      dealer_net:   parseTwNum(r[11]),  // 合計淨額
-    }))
+  return parseTwseChipRows(body.data)
 }
 
 // ─── TPEX 3itrade: 上櫃三大法人 ─────────────────────────────────────────────
@@ -656,21 +687,7 @@ export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
   }
   const body = JSON.parse(text) as any
   if (body.stat !== 'ok' || !body.tables?.[0]?.data) return []
-
-  return body.tables[0].data
-    .filter((r: string[]) => isStockCode(r[0]))
-    .map((r: string[]) => ({
-      symbol: r[0].trim(),
-      foreign_buy:  parseTwNum(r[2]),
-      foreign_sell: parseTwNum(r[3]),
-      foreign_net:  parseTwNum(r[4]),
-      trust_buy:    parseTwNum(r[8]),
-      trust_sell:   parseTwNum(r[9]),
-      trust_net:    parseTwNum(r[10]),
-      dealer_buy:   parseTwNum(r[12]),
-      dealer_sell:  parseTwNum(r[13]),
-      dealer_net:   parseTwNum(r[11]),
-    }))
+  return parseTpexChipRows(body.tables[0].data)
 }
 
 // ─── TWSE MI_MARGN: 上市融資融券 ────────────────────────────────────────────
@@ -916,20 +933,10 @@ export async function fetchTwseStockDayAll(
 }
 
 /** TPEX 全市場今日收盤（openapi）*/
-export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
-  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
-  const res = await fetchWithRetry(url, {
-    headers: TWSE_HEADERS,
-    signal: AbortSignal.timeout(30000),
-  }, { label: 'TPEX_DAILY_QUOTES' })
-  if (!res.ok) return []
-  const text = await res.text()
-  if (!text.startsWith('[')) return []
-  const body = JSON.parse(text) as any[]
-  if (!Array.isArray(body)) return []
+export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
   // fields vary, common keys: SecuritiesCompanyCode, Open, High, Low, Close, TradingShares
   return body
-    .filter(r => isStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
+    .filter(r => isCommonStockCode(r.SecuritiesCompanyCode ?? r.Code ?? ''))
     .map(r => {
       const sym = (r.SecuritiesCompanyCode ?? r.Code ?? '').trim()
       const pf = (v: any) => v && v !== '--' ? parseFloat(String(v).replace(/,/g, '')) || null : null
@@ -944,6 +951,18 @@ export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
     })
 }
 
+export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
+  const res = await fetchWithRetry(url, {
+    headers: TWSE_HEADERS,
+    signal: AbortSignal.timeout(30000),
+  }, { label: 'TPEX_DAILY_QUOTES' })
+  if (!res.ok) return []
+  const text = await res.text()
+  const body = parseOpenApiArray(text)
+  return parseTpexDailyQuoteRows(body)
+}
+
 /** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
 export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics'
@@ -953,9 +972,7 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
   })
   if (!res.ok) return []
   const text = await res.text()
-  if (!text.startsWith('[')) return []
-  const body = JSON.parse(text) as any[]
-  if (!Array.isArray(body)) return []
+  const body = parseOpenApiArray(text)
   return body
     .filter(r => isStockCode(r.SecuritiesCompanyCode ?? ''))
     .map(r => {
@@ -1031,22 +1048,6 @@ export async function bulkFetchAndStorePrices(
       count += stmts.length
     }
   }
-  // ── 標記興櫃股 market='EMERGING'（讓 screener filter 生效）──
-  const emergingSymbols = emergingRows.status === 'fulfilled'
-    ? emergingRows.value.filter(r => idMap.has(r.symbol)).map(r => r.symbol)
-    : []
-  if (emergingSymbols.length) {
-    const EMG_BATCH = 50
-    for (let i = 0; i < emergingSymbols.length; i += EMG_BATCH) {
-      const batch = emergingSymbols.slice(i, i + EMG_BATCH)
-      const ph = batch.map(() => '?').join(',')
-      await db.prepare(
-        `UPDATE stocks SET market='EMERGING' WHERE symbol IN (${ph}) AND market != 'EMERGING'`
-      ).bind(...batch).run()
-    }
-    console.log(`[BulkPrice] Marked ${emergingSymbols.length} emerging stocks`)
-  }
-
   console.log(`[BulkPrice] Written: ${count} stock_prices rows to date=${effectiveDate} (TWSE ${twseRows.length} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
   return count
 }

@@ -18,18 +18,24 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from jinja2 import Environment, FileSystemLoader
 
+from services.model_pool_health import read_model_pool_health_rows
+
 logger = logging.getLogger("obsidian")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID",   "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "").strip()
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN",   "")
 GITHUB_TOKEN  = os.environ.get("GITHUB_TOKEN",   "")
 GITHUB_REPO_VAULT = os.environ.get("GITHUB_REPO_VAULT", "")  # e.g. "AngusRepo/stockvision-brain"
 GITHUB_REPO_MAIN  = os.environ.get("GITHUB_REPO_MAIN",  "")  # e.g. "AngusRepo/stock-analyzer"
 
-D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+D1_API = (
+    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+    if CF_ACCOUNT_ID and CF_D1_DB_ID
+    else ""
+)
 GITHUB_API = "https://api.github.com"
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
@@ -63,7 +69,7 @@ def _render(template_name: str, **kwargs) -> str:
 # ── D1 Helpers (same pattern as backtest_service.py) ─────────────────────────
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
-    if not CF_API_TOKEN:
+    if not (CF_API_TOKEN and D1_API):
         return []
     body: dict = {"sql": sql}
     if params:
@@ -310,10 +316,13 @@ class ObsidianWriter:
             week_end = (dt - timedelta(days=dt.weekday()) + timedelta(days=4)).strftime("%Y-%m-%d")
             week_number = dt.isocalendar()[1]
 
-            # Model health
-            models = await _d1_query(client,
-                "SELECT * FROM model_health_daily WHERE date=(SELECT MAX(date) FROM model_health_daily)")
-            degraded = [m for m in models if (m.get("accuracy_30d") or 1) < 0.50]
+            # Model health: model_pool.json is the V2 source of truth.
+            models = read_model_pool_health_rows()
+            degraded = [
+                m for m in models
+                if m.get("lifecycle_status") in ("degraded", "retired")
+                or ((m.get("ic_4w_avg") is not None) and m.get("ic_4w_avg") < 0)
+            ]
 
             # Weekly trades
             trades = await _d1_query(client,
@@ -371,14 +380,19 @@ class ObsidianWriter:
         sell_orders = [o for o in orders if o.get("side") == "sell"]
         ml_buys = [r for r in recommendations if r.get("signal") in ("BUY", "STRONG_BUY")]
 
-        # Get degraded models
+        # Get degraded models from the V2 model pool owner.
         degraded_str = "None"
         try:
-            models = await _d1_query(client,
-                "SELECT model_name, accuracy_30d FROM model_health_daily "
-                "WHERE date=(SELECT MAX(date) FROM model_health_daily) AND accuracy_30d < 0.50")
+            models = [
+                m for m in read_model_pool_health_rows()
+                if m.get("lifecycle_status") in ("degraded", "retired")
+                or ((m.get("ic_4w_avg") is not None) and m.get("ic_4w_avg") < 0)
+            ]
             if models:
-                degraded_str = ", ".join(f"{m['model_name']}({m['accuracy_30d']:.2f})" for m in models)
+                degraded_str = ", ".join(
+                    f"{m['model_name']}(IC={m.get('ic_4w_avg', 'N/A')})"
+                    for m in models
+                )
         except Exception:
             pass
 

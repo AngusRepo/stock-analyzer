@@ -16,12 +16,35 @@ NOTE: 5 feature models (XGBoost, CatBoost, ExtraTrees, LightGBM, FT-Transformer)
   - confidence_threshold 從 0.60 降至 0.55（adaptive via KV）
 """
 import logging
+import os
+import time
 import numpy as np
 from dataclasses import dataclass
 from typing import Literal, Any
 from .models import ModelPrediction
 
 logger = logging.getLogger("ensemble")
+_IC_WEIGHTS_CACHE: dict[str, float] | None = None
+_IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
+
+
+def _extract_model_pool_ic(pool: dict) -> dict[str, float]:
+    """Extract serving IC weights from model_pool.json."""
+    weights: dict[str, float] = {}
+    for name, entry in (pool.get("models") or {}).items():
+        ic_value = entry.get("rolling_ic")
+        if ic_value is None:
+            ic_value = entry.get("ic_4w_avg")
+        if ic_value is None:
+            history = entry.get("weekly_ic") or []
+            if history:
+                ic_value = history[-1]
+        try:
+            if ic_value is not None:
+                weights[name] = float(ic_value)
+        except (TypeError, ValueError):
+            continue
+    return weights
 
 @dataclass
 class EnsembleResult:
@@ -60,7 +83,7 @@ def weighted_vote(
     adaptive_params: dict | None = None,      # 來自 KV ml:adaptive_params（T+1 自適應）
     trading_config: dict | None = None,       # B12 fix (2026-04-08): KV trading:config（Optuna baseline）
     anomaly_score: float = 0.0,               # Isolation Forest soft penalty（不再 hard gate）
-    lifecycle_weights: dict[str, float] | None = None,  # P1#8 來自 model_lifecycle（降權/影子）
+    lifecycle_weights: dict[str, float] | None = None,  # 來自 model_pool.json
 ) -> EnsembleResult:
     """
     加權投票主邏輯（v12 + LinUCB bandit）：
@@ -390,25 +413,116 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_ic_weights() -> dict[str, float]:
-    """從 GCS 讀 ic_tracking.json，回傳 {model_name: IC} for IC-weighted ensemble。
-    Grinold-Kahn: each signal's contribution ∝ its IC.
-    """
+    """Load serving IC weights from model_pool.json only."""
+    global _IC_WEIGHTS_CACHE, _IC_WEIGHTS_CACHE_LOADED_AT
+    ttl = int(os.environ.get("IC_WEIGHTS_CACHE_TTL_SECONDS", "300") or "300")
+    if _IC_WEIGHTS_CACHE is not None and time.time() - _IC_WEIGHTS_CACHE_LOADED_AT < max(0, ttl):
+        return dict(_IC_WEIGHTS_CACHE)
     try:
-        from .model_store import _get_bucket
-        import json
-        bucket = _get_bucket()
-        if bucket is None:
-            return {}
-        blob = bucket.blob("universal/ic_tracking.json")
-        if not blob.exists():
-            return {}
-        data = json.loads(blob.download_as_text())
-        return {
-            name: info.get("oos_ic", 0.0)
-            for name, info in data.get("models", {}).items()
-        }
+        from .model_pool import load_pool
+        weights: dict[str, float] = {}
+        pool = load_pool()
+        if pool:
+            weights.update(_extract_model_pool_ic(pool))
+
+        _IC_WEIGHTS_CACHE = dict(weights)
+        _IC_WEIGHTS_CACHE_LOADED_AT = time.time()
+        return weights
     except Exception:
         return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-19 ML_POOL Plan A — Time-series signal → rank score (for ensemble)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def time_series_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
+    """Map a single-stock 5d forecast_pct (e.g. +0.025 = +2.5%) to rank 0~1.
+
+    Sigmoid centered at 0:
+      rank = 1 / (1 + exp(-forecast_pct * scale))
+
+    With scale=12:
+      forecast=0      → rank=0.50  (neutral)
+      forecast=+0.025 → rank=0.575 (mild bullish)
+      forecast=+0.050 → rank=0.646 (bullish, ~BUY threshold)
+      forecast=+0.100 → rank=0.769 (strong bullish, ~STRONG_BUY threshold)
+      forecast=-0.050 → rank=0.354 (bearish)
+
+    Time-series models output absolute %; sigmoid keeps them in (0,1) so
+    they're directly comparable to feature-model cross-sectional ranks.
+    """
+    import math
+    return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
+
+
+def merge_with_time_series(
+    feature_rank_scores: dict[str, float],
+    time_series_signals: dict[str, dict],
+    ic_weights: dict[str, float] | None = None,
+    model_status: dict[str, str] | None = None,
+    degraded_dampening: float = 1.0,
+    forecast_to_rank_scale: float = 12.0,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Combine 5 feature-model rank scores with 3 time-series forecasts.
+
+    2026-04-19 R1+R3 hybrid (replaces hardcoded lifecycle multipliers 0/0.1/1.0):
+      weight = max(0, ic) × status_filter × dampening_if_degraded
+        active:     max(0, ic)
+        degraded:   max(0, ic) × degraded_dampening (default 1.0 = pure IC)
+        challenger: 0  (shadow)
+        retired:    0  (excluded)
+
+    Args:
+      feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
+      time_series_signals: {name: {forecast_pct, ...}} for Chronos/DLinear/PatchTST
+        (key absent or value None → that model contributes nothing)
+      ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).
+      model_status: {name: "active"|"degraded"|"challenger"|"retired"} from
+        model_pool.json. None → all "active" (no ML_POOL applied).
+      degraded_dampening: extra multiplier on degraded models.
+        Default 1.0 (= pure IC, R3 industry standard).
+        KV-driven via trading:config.mlPool.degradedDampening.
+        Future: Optuna-searchable post #31 backtest Mode B.
+      forecast_to_rank_scale: sigmoid sharpness for time-series → rank.
+
+    Returns:
+      (merged_rank_scores, applied_weights)
+    """
+    merged: dict[str, float] = dict(feature_rank_scores)
+    for name, ts in (time_series_signals or {}).items():
+        if not ts or ts.get("forecast_pct") is None:
+            continue
+        merged[name] = time_series_to_rank(float(ts["forecast_pct"]), scale=forecast_to_rank_scale)
+
+    weights: dict[str, float] = {}
+    status_filter_map = {"active": 1.0, "degraded": 1.0, "challenger": 0.0, "retired": 0.0}
+    for name in merged:
+        status = (model_status or {}).get(name, "active")
+        sf = status_filter_map.get(status, 0.0)
+        if sf == 0.0:
+            weights[name] = 0.0
+            continue
+        ic_w = max(0.0, (ic_weights or {}).get(name, 0.0)) if ic_weights else 1.0
+        if status == "degraded":
+            ic_w *= float(degraded_dampening)
+        weights[name] = ic_w
+    return merged, weights
+
+
+def weighted_average_rank(rank_scores: dict[str, float], weights: dict[str, float]) -> float:
+    """Standard weighted average. Falls back to plain mean if all weights ≤ 0."""
+    weight_total = 0.0
+    weighted_sum = 0.0
+    for name, score in rank_scores.items():
+        w = max(0.0, weights.get(name, 0.0))
+        weighted_sum += score * w
+        weight_total += w
+    if weight_total <= 0:
+        scores = list(rank_scores.values())
+        return float(np.mean(scores)) if scores else 0.5
+    return weighted_sum / weight_total
 
 
 def rank_to_signal(
@@ -439,6 +553,7 @@ def rank_to_signal(
     Returns:
         EnsembleResult with signal/direction/confidence translated from rank
     """
+    eps = 1e-9
     if not rank_scores:
         return _no_signal(current_price, atr, "No rank scores")
 
@@ -446,13 +561,23 @@ def rank_to_signal(
     if ic_weights:
         weighted_sum = 0.0
         weight_total = 0.0
+        has_observed_ic = False
         for name, score in rank_scores.items():
-            w = max(0.0, ic_weights.get(name, 0.0))
+            raw_ic = float(ic_weights.get(name, 0.0) or 0.0)
+            if abs(raw_ic) > 1e-12:
+                has_observed_ic = True
+            w = max(0.0, raw_ic)
             weighted_sum += score * w
             weight_total += w
-        avg_rank = weighted_sum / weight_total if weight_total > 0 else 0.5
+        if weight_total > 0:
+            avg_rank = weighted_sum / weight_total
+        elif not has_observed_ic:
+            avg_rank = float(np.mean(list(rank_scores.values())))
+        else:
+            avg_rank = 0.5
     else:
         avg_rank = float(np.mean(list(rank_scores.values())))
+    avg_rank = float(np.clip(avg_rank, 0.0, 1.0))
     scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
 
@@ -462,16 +587,16 @@ def rank_to_signal(
     consensus = max(n_bullish, n_bearish) / len(scores)
 
     # Signal translation
-    if avg_rank >= strong_buy_threshold:
+    if avg_rank >= (strong_buy_threshold - eps):
         signal = "STRONG_BUY"
         direction = "up"
-    elif avg_rank >= buy_threshold:
+    elif avg_rank >= (buy_threshold - eps):
         signal = "BUY"
         direction = "up"
-    elif avg_rank <= strong_sell_threshold:
+    elif avg_rank <= (strong_sell_threshold + eps):
         signal = "STRONG_SELL"
         direction = "down"
-    elif avg_rank <= sell_threshold:
+    elif avg_rank <= (sell_threshold + eps):
         signal = "SELL"
         direction = "down"
     else:
@@ -479,16 +604,17 @@ def rank_to_signal(
         direction = "neutral"
 
     # Confidence: use rank directly (0~1) — higher rank = more confident bullish
-    confidence = round(avg_rank, 3)
+    confidence = round(min(1.0, abs(avg_rank - 0.5) * 2.0), 3)
 
     # Signal strength: 1~5 stars based on rank percentile
-    if avg_rank >= 0.90:
+    distance = abs(avg_rank - 0.5)
+    if distance >= 0.40:
         strength = 5
-    elif avg_rank >= 0.80:
+    elif distance >= 0.30:
         strength = 4
-    elif avg_rank >= 0.70:
+    elif distance >= 0.20:
         strength = 3
-    elif avg_rank >= 0.50:
+    elif distance >= 0.10:
         strength = 2
     else:
         strength = 1

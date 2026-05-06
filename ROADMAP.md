@@ -1,5 +1,14 @@
 # StockVision Roadmap — 30 Items
 
+## Next Major Runtime Refactor
+
+### Vectorized Prediction Runtime + Shared Feature Batch Owner
+- **What**: Move `predict_stock_v2_batch()` from chunked per-symbol loops to a true batch runtime: one feature-build owner prepares aligned feature matrices, one model-load/cache layer loads universal artifacts once per container, and model inference runs vectorized across the chunk.
+- **Where**: `ml-service/app/batch_prediction.py`, `ml-service/app/prediction_runtime.py`, `ml-service/app/model_store.py`, `ml-controller/services/modal_client.py`.
+- **Why**: Current `predict_batch_v2` is a useful Modal chunk batch, but inside each chunk it still loops `predict_stock_v2` per symbol. This reduces container count but does not fully eliminate duplicated feature prep and model dispatch overhead.
+- **Expected**: Lower Modal/GCS overhead, fewer repeated model-load paths, more predictable ML predict duration, and cleaner cost attribution.
+- **Guardrails**: Keep current per-symbol runtime as fallback until parity tests prove score/signals match; no trading behavior change without A/B evidence.
+
 > Updated: 2026-04-04
 > Status: P0 ready to execute
 
@@ -59,10 +68,10 @@
 
 ### #8 Model Lifecycle (Downweight / Shadow / Replace / Restore) ✅
 - **What**: 30d accuracy < 0.45 for 2 consecutive weeks → downweight to 0.05x. Restore > 0.55 → back to 1.0x. Balance guard: min 3 price + 3 feature models active. Substitute library with matching rules
-- **Where**: `ml-service/app/model_lifecycle.py` + `ml-controller/services/lifecycle_service.py` + `ml-controller/routers/lifecycle.py` + `ml-service/app/ensemble.py` lifecycle_weights param
+- **Where**: `universal/model_pool.json` + `ml-controller/routers/model_pool.py` + `ml-controller/services/model_ic_tracker.py` + `ml-controller/services/lifecycle_promotion_gate.py` + `worker/src/lib/controllerDailyWorkflows.ts`
 - **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause → candidate match)
 - **Expected**: Ensemble quality auto-maintained
-- **Impl**: D1 model_lifecycle_state + model_lifecycle_events tables. Worker reads lifecycle weights → passes to predict payload → ensemble applies lifecycle_mult. Weekly check in Sunday cron (after retrain). Admin taskMap for manual trigger
+- **Impl**: Weekly `model-ic-tracker` cron calls `/model_pool/compute_weekly_ic`, then `/model_pool/promote_check`; lifecycle state, events, lineage, weights, shadow / promote / degrade decisions live in `model_pool.json`.
 
 ### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna ✅
 - **What**: IC audit weak features excluded during retrain. Optuna 20-trial search per model (XGB/CatBoost/ExtraTrees/LightGBM)
@@ -140,7 +149,7 @@
 
 ### #15 Three-layer Observability ✅
 - **What**: L1 Trade (existing). L2 Decision: per-trade factor attribution. L3 Model: daily per-model health
-- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `worker/src/index.ts` L3 model_health_daily + KV
+- **Where**: `worker/src/routes/paper.ts` L2 decision_logs + `model_pool.json` L3 model lifecycle / IC lineage + KV
 - **Why**: Currently can only see "PnL is bad". Can't diagnose which layer is wrong
 - **Expected**: Answer "why are we losing money" with data
 - **Impl**: L2: INSERT decision_logs on each BUY with chip_pct/tech_pct/ml_pct contribution + debate verdict. L3: After daily verify, snapshot all 10 models' accuracy/PF/expectancy/lifecycle to D1 + KV. API: GET /api/observability/decisions + /model-health

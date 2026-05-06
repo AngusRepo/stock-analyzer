@@ -1,34 +1,8 @@
-"""
-linucb_bandit.py — LinUCB Contextual Bandit（第11個模型：自適應模型路由層）
+﻿"""
+LinUCB contextual bandit for alpha model weighting.
 
-定位：不直接預測股價，而是根據當前市場情境（context）學習「哪些 base model 在
-      此情境下最可靠」，動態調整各模型的信任權重。
-
-架構：
-  Context x (d=4)：
-    [0] hmm_regime_code    — HMM 市場狀態 (0=bull/1=bear/2=sideways/3=volatile)，歸一化到 [0,1]
-    [1] garch_vol_norm      — GARCH 波動率，除以 0.05 clip 到 [0,2]（2% ATR 為基準）
-    [2] market_risk_score   — 來自 market_env risk_score [0,1]
-    [3] bias_term           — 常數 1.0（截距項，標準 LinUCB 設計）
-
-  Arms (K=10)：
-    10 個 base models，名稱對應 ModelPrediction.model_name
-
-  Reward：
-    1.0 — model 預測方向 == 5日後實際方向
-    0.0 — 預測錯誤
-    （線上更新：每次 auto-trade cron 收到後日驗證結果時呼叫 update()）
-
-Algorithm（Disjoint LinUCB）：
-  初始化：A_a = I_d，b_a = 0_d，α = 0.3
-  選擇：UCB_a = θ_a^T x + α * sqrt(x^T A_a^{-1} x)，取最高 arm
-  更新：A_a += x x^T，b_a += r * x，θ_a = A_a^{-1} b_a
-
-持久化：以 numpy .npz 格式儲存 A/b matrices（由 model_store.py 管理路徑）
-
-整合點：
-  - ensemble.py weighted_vote() 可傳入 bandit_weights dict 修正各模型基礎權重
-  - linucb_select() 回傳各 arm 的 UCB 分數，轉換為 [0,2] 的乘數疊加到原始權重
+Arms are the 8 active alpha prediction models plus DoNothing. State-space
+models are market context overlays and must not become alpha arms.
 """
 import os
 import json
@@ -36,20 +10,12 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .model_pool import ALPHA_PREDICTION_MODELS
+
 # ── 常數 ──────────────────────────────────────────────────────────────────────
 
-ARM_NAMES = [
-    "KalmanFilter",
-    "DLinear",
-    "MarkovSwitching",
-    "PatchTST",
-    "Chronos",
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
-    "LightGBM",
-    "FT-Transformer",
-    "DoNothing",    # 第 11 個 arm：不出手基線。混沌市場時 bandit 可選擇「不交易」
+ARM_NAMES = list(ALPHA_PREDICTION_MODELS) + [
+    "DoNothing",    # 不出手基線。混沌市場時 bandit 可選擇「不交易」
 ]
 
 # DoNothing arm 的 reward 邏輯（在 main.py 處理）：
@@ -388,7 +354,7 @@ def linucb_select(
     Example:
         multipliers = linucb_select("bear", garch_vol=2.5, current_price=100,
                                     market_risk_score=0.7, bandit=bandit)
-        # {"KalmanFilter": 1.8, "XGBoost": 0.4, ...}
+        # {"XGBoost": 1.8, "Chronos": 0.4, ...}
     """
     _ap = adaptive_params or {}
     max_mult      = float(_ap.get("bandit_max_mult",      2.5))

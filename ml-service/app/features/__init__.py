@@ -364,6 +364,26 @@ def build_feature_matrix(
             df = df.with_columns((ret_5d_expr * short_incr).clip(0.0, 1.0).alias("short_squeeze_proxy"))
 
     # ── 4. Sentiment features ────────────────────────────────────────────────
+    # Keep V2 feature schema stable even when chip sources are absent.
+    chip_feature_defaults = {
+        "institutional_net": 0.0,
+        "chip_5d": 0.0,
+        "foreign_5d": 0.0,
+        "dealer_5d": 0.0,
+        "dealer_ratio_5d": 0.0,
+        "margin_ratio": 0.0,
+        "margin_change_5d_ts": 0.0,
+        "short_change_5d": 0.0,
+        "short_squeeze_proxy": 0.0,
+    }
+    missing_chip_feature_exprs = [
+        pl.lit(default).alias(name)
+        for name, default in chip_feature_defaults.items()
+        if name not in df.columns
+    ]
+    if missing_chip_feature_exprs:
+        df = df.with_columns(missing_chip_feature_exprs)
+
     if sentiment_scores:
         df_sent = (
             pl.DataFrame(sentiment_scores, infer_schema_length=None)
@@ -753,12 +773,12 @@ def build_feature_matrix(
     # ── 12. Stock-level features ─────────────────────────────────────────────
     if stock_meta:
         df = df.with_columns([
-            pl.lit(float(stock_meta.get("sector_encoded", 0))).alias("sector_encoded"),
-            pl.lit(float(stock_meta.get("market_cap_bucket", 2))).alias("market_cap_bucket"),
-            pl.lit(float(stock_meta.get("avg_volume_bucket", 2))).alias("avg_volume_bucket"),
-            pl.lit(float(stock_meta.get("sector_peer_return_1d", 0))).alias("sector_peer_return_1d"),
-            pl.lit(float(stock_meta.get("sector_peer_return_5d", 0))).alias("sector_peer_return_5d"),
-            pl.lit(float(stock_meta.get("stock_vs_sector", 0))).alias("stock_vs_sector"),
+            pl.lit(_meta_float(stock_meta, "sector_encoded", 0.0)).alias("sector_encoded"),
+            pl.lit(_meta_float(stock_meta, "market_cap_bucket", 2.0)).alias("market_cap_bucket"),
+            pl.lit(_meta_float(stock_meta, "avg_volume_bucket", 2.0)).alias("avg_volume_bucket"),
+            pl.lit(_meta_float(stock_meta, "sector_peer_return_1d", 0.0)).alias("sector_peer_return_1d"),
+            pl.lit(_meta_float(stock_meta, "sector_peer_return_5d", 0.0)).alias("sector_peer_return_5d"),
+            pl.lit(_meta_float(stock_meta, "stock_vs_sector", 0.0)).alias("stock_vs_sector"),
         ])
     else:
         df = df.with_columns([
@@ -855,7 +875,15 @@ def build_feature_matrix(
         lower_pct_cap=bp.get("lower_pct_cap", 0.03),
         max_days=bp.get("max_days", 20),
     )
-    df = df.with_columns(pl.Series("target_dir", target_dir))
+    # 2026-04-17 #3 fix: compute_triple_barrier_labels returns float NaN for
+    # unresolved rows (last max_days rows or missing data). Polars drop_nulls()
+    # only removes null values, NOT NaN floats → get_features leaks NaN into y
+    # → sklearn model.score(y_test) raises "Input y_true contains NaN" →
+    # [LightGBM] fallback across all stocks every predict.
+    # Replace float NaN with Polars null so drop_nulls() catches them cleanly.
+    df = df.with_columns(
+        pl.Series("target_dir", target_dir).fill_nan(None)
+    )
 
     return df
 
@@ -932,9 +960,100 @@ CATBOOST_EXTRA_COLS = [
 ]
 
 
+def sanitize_feature_frame(
+    df: pl.DataFrame,
+    *,
+    feature_cols: list[str],
+    required_target_cols: list[str] | None = None,
+) -> tuple[pl.DataFrame, dict]:
+    """Impute feature gaps and drop rows only for missing required targets."""
+
+    target_cols = [c for c in (required_target_cols or []) if c in df.columns]
+    input_rows = int(df.height)
+    report = {
+        "input_rows": input_rows,
+        "output_rows": input_rows,
+        "target_rows_dropped": 0,
+        "features": {},
+    }
+
+    cleaned = df
+    feature_exprs = []
+    for col in feature_cols:
+        if col not in cleaned.columns:
+            continue
+        arr = cleaned.select(pl.col(col).cast(pl.Float64, strict=False)).to_series().to_numpy()
+        arr = np.asarray(arr, dtype=float)
+        finite_mask = np.isfinite(arr)
+        finite_vals = arr[finite_mask]
+        fill_val = float(np.median(finite_vals)) if len(finite_vals) else 0.0
+        imputed = int(input_rows - int(finite_mask.sum()))
+        if imputed:
+            report["features"][col] = {
+                "imputed_values": imputed,
+                "fill_value": fill_val,
+            }
+        finite_expr = pl.col(col).cast(pl.Float64, strict=False)
+        feature_exprs.append(
+            pl.when(finite_expr.is_finite())
+            .then(finite_expr)
+            .otherwise(None)
+            .fill_null(fill_val)
+            .alias(col)
+        )
+    if feature_exprs:
+        cleaned = cleaned.with_columns(feature_exprs)
+
+    target_exprs = []
+    for col in target_cols:
+        target_expr = pl.col(col).cast(pl.Float64, strict=False)
+        target_exprs.append(
+            pl.when(target_expr.is_finite())
+            .then(target_expr)
+            .otherwise(None)
+            .alias(col)
+        )
+    if target_exprs:
+        cleaned = cleaned.with_columns(target_exprs)
+        before = cleaned.height
+        cleaned = cleaned.drop_nulls(target_cols)
+        report["target_rows_dropped"] = int(before - cleaned.height)
+
+    report["output_rows"] = int(cleaned.height)
+    return cleaned, report
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _meta_float(stock_meta: dict, key: str, default: float) -> float:
+    return safe_float(stock_meta.get(key, default), default)
+
+
+def close_or_adjusted(row: dict) -> float:
+    value = row.get("adj_close")
+    if value is None:
+        value = row.get("close")
+    return safe_float(value, 0.0)
+
+
+def close_price(row: dict) -> float:
+    value = row.get("close")
+    if value is None:
+        value = row.get("adj_close")
+    return safe_float(value, 0.0)
+
+
 def get_features(
     df: pl.DataFrame,
     target_col: str = "target_rank",
+    allow_missing_target: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """取得可用的特徵欄位，回傳 (X, y, feature_names)。
 
@@ -942,16 +1061,43 @@ def get_features(
       - "target_rank": cross-sectional rank 0~1 (regression, batch training)
       - "target_dir": binary triple-barrier (per-stock predict/retrain)
     Caller 必須顯式傳 target_col，不做 fallback。
+
+    allow_missing_target: 2026-04-17
+      False (default, training): 若 target_col 不在 df 中 → raise ValueError
+      True (predict mode): target_col 不存在時回傳 y=empty array；適用於單股
+        predict（target_rank 由 batch pool 產生，單股 df 沒有 rank）。
+        Caller 不應讀 y，只用 X_latest。
     """
     available = [c for c in FEATURE_COLS if c in df.columns]
     if target_col not in df.columns:
-        raise ValueError(f"target_col '{target_col}' not found in DataFrame. "
-                         f"Available: {[c for c in df.columns if c.startswith('target')]}")
+        if not allow_missing_target:
+            raise ValueError(f"target_col '{target_col}' not found in DataFrame. "
+                             f"Available: {[c for c in df.columns if c.startswith('target')]}")
+        # Predict mode: drop nulls on features only, y 回傳空陣列 (caller 不該讀)
+        df_clean, report = sanitize_feature_frame(
+            df.select(available),
+            feature_cols=available,
+            required_target_cols=[],
+        )
+        if report.get("features"):
+            print(f"[Features] predict feature sanitizer: {report}")
+        X = df_clean.to_numpy()
+        y = np.empty(len(X), dtype=np.float32)
+        return X, y, available
     select_cols = available + [target_col]
     # 加 target_5d 供 drop_nulls 同步過濾
     if "target_5d" in df.columns and "target_5d" not in select_cols:
         select_cols = select_cols + ["target_5d"]
-    df_clean = df.select(select_cols).drop_nulls()
+    required_targets = [target_col]
+    if "target_5d" in select_cols:
+        required_targets.append("target_5d")
+    df_clean, report = sanitize_feature_frame(
+        df.select(select_cols),
+        feature_cols=available,
+        required_target_cols=required_targets,
+    )
+    if report.get("features") or report.get("target_rows_dropped"):
+        print(f"[Features] training feature sanitizer: {report}")
     X = df_clean.select(available).to_numpy()
     y = df_clean[target_col].to_numpy()
     return X, y, available
@@ -970,7 +1116,16 @@ def get_catboost_features(
     select_cols = all_cols + [target_col]
     if "target_5d" in df.columns and "target_5d" not in select_cols:
         select_cols = select_cols + ["target_5d"]
-    df_clean = df.select(select_cols).drop_nulls()
+    required_targets = [target_col]
+    if "target_5d" in select_cols:
+        required_targets.append("target_5d")
+    df_clean, report = sanitize_feature_frame(
+        df.select(select_cols),
+        feature_cols=all_cols,
+        required_target_cols=required_targets,
+    )
+    if report.get("features") or report.get("target_rows_dropped"):
+        print(f"[Features] catboost feature sanitizer: {report}")
     X = df_clean.select(all_cols).to_numpy()
     y = df_clean[target_col].to_numpy()
     return X, y, all_cols

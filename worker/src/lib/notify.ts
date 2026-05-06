@@ -8,6 +8,8 @@
  *   await notifyCronSuccess(env, 'runDailyUpdate', { stocks_processed: 10 })
  */
 
+import { resolveReportDeliveryChannel } from './reportDeliveryChannel'
+
 interface Env {
   DB: any
   KV: any
@@ -193,18 +195,19 @@ export async function sendReportToChannels(
   emailSubject: string,
 ): Promise<string> {
   // P0 資安：webhook URL 只從 Worker secret 讀取，不存 KV（防洩漏後被推送假消息）
+  const channel = resolveReportDeliveryChannel(env)
   const webhookUrl = env.DISCORD_WEBHOOK_URL
-  if (webhookUrl) {
+  if (channel === 'discord' && webhookUrl) {
     await sendDiscordEmbeds(webhookUrl, embeds)
     return 'discord'
   }
   // Fallback: email
-  if (env.RESEND_API_KEY && env.ADMIN_EMAIL) {
+  if (channel === 'email' && env.RESEND_API_KEY && env.ADMIN_EMAIL) {
     await sendEmailReport(env.RESEND_API_KEY, env.ADMIN_EMAIL, emailSubject, embeds)
     return 'email'
   }
   console.warn('[Report] No Discord webhook AND no email config — report not sent')
-  return 'none'
+  return channel
 }
 
 /** 每日摘要推送 */

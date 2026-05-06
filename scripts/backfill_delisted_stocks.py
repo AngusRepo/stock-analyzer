@@ -21,11 +21,15 @@ import time
 import requests
 from datetime import datetime, timedelta
 
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "619a83ac9f20847d9e2f2920823b727d")
-CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79")
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_D1_DB_ID = os.environ.get("CF_D1_DB_ID", "").strip()
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 
-D1_API = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+D1_API = (
+    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DB_ID}/query"
+    if CF_ACCOUNT_ID and CF_D1_DB_ID
+    else ""
+)
 
 BACKFILL_START = "2023-01-01"
 
@@ -33,6 +37,9 @@ BACKFILL_START = "2023-01-01"
 def d1_exec(sql: str, params: list = None) -> bool:
     if not CF_API_TOKEN:
         print("ERROR: CF_API_TOKEN not set")
+        return False
+    if not D1_API:
+        print("ERROR: CF_ACCOUNT_ID/CF_D1_DB_ID not set")
         return False
     body = {"sql": sql}
     if params:
@@ -48,7 +55,7 @@ def d1_exec(sql: str, params: list = None) -> bool:
 
 
 def d1_query(sql: str, params: list = None) -> list[dict]:
-    if not CF_API_TOKEN:
+    if not (CF_API_TOKEN and D1_API):
         return []
     body = {"sql": sql}
     if params:

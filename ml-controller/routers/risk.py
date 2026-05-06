@@ -27,7 +27,7 @@ Worker 呼叫格式：
 回傳：
   {
     "adaptive_params": { ...AdaptiveParams dict... },
-    "summary": str    # 供 cron log 用的摘要字串
+    "summary": str    # 供 scheduler run log 用的摘要字串
   }
 """
 import logging

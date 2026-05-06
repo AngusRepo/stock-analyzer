@@ -361,7 +361,7 @@ class ObsidianWriter:
         數據來源：
           - weekly_audit_reports（L1/L2/L3 已由 audit graph 生成）
           - paper_daily_snapshots（週績效）
-          - model_health_daily（模型健康）
+          - model_pool.json（V2 模型健康 / IC lineage）
         """
 
     async def generate_pipeline_snapshot(self, date: str) -> dict:
@@ -378,7 +378,7 @@ class ObsidianWriter:
         """
         更新 Models/{model_name}.md（10 個模型各一個）
         數據來源：
-          - model_health_daily（最新健康指標）
+          - model_pool.json（最新健康指標 / IC lineage）
           - model_lifecycle_events（lifecycle 歷史）
         """
 

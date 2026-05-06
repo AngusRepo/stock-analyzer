@@ -7,9 +7,29 @@ dist/
 .env.production
 *.bak
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+.venv-smoke/
 *.pyc
 .modal.toml
 /tmp/
 *.log
 scripts/data/
 scripts/backfill_output*
+frontend/dev-dist/
+ml-service/.test_tmp/
+_external/
+
+# Local debug scratch files (underscore-prefix convention)
+_tmp_*
+worker/_*.json
+*_scratch.*
+osv-report*.json
+osv-report*.html
+STOCKVISION_DATA_QUALITY_MVP_V1.md
+uiux_gemini_package_*/
+uiux_gemini_package_*.zip
+# Ad-hoc Chinese-named D1 exports that occasionally leak to repo root
+上市櫃分類.json
+概念股分類.json

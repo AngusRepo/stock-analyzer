@@ -34,6 +34,12 @@ const MODEL_COLORS: Record<string, string> = {
   'FT-Transformer': '#6366f1',
 }
 
+const STATE_SPACE_OVERLAYS = new Set(['KalmanFilter', 'MarkovSwitching'])
+
+function modelDisplayName(name: string): string {
+  return STATE_SPACE_OVERLAYS.has(name) ? `${name} overlay` : name
+}
+
 function Section({ title, icon: Icon, children, className }: {
   title: string; icon?: any; children: React.ReactNode; className?: string
 }) {
@@ -209,7 +215,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
               <div key={m.name} className="flex items-center gap-2 text-xs">
                 <span className="w-20 text-[10px] font-medium px-2 py-0.5 rounded-full text-black text-center shrink-0"
                   style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}>
-                  {m.name}
+                  {modelDisplayName(m.name)}
                 </span>
                 <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-red-400' : 'text-emerald-400')}>
                   {m.direction === 'up' ? '↑ 漲' : '↓ 跌'}

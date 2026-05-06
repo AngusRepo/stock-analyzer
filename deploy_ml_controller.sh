@@ -1,0 +1,513 @@
+#!/usr/bin/env bash
+# deploy_ml_controller.sh — one-shot deploy for Cloud Run Service + Job image sync.
+#
+# Why this script exists (M31 2026-04-21):
+#   Cloud Run Service `ml-controller` and Cloud Run Job `pipeline-v2` share the
+#   same source but manage image pointers INDEPENDENTLY. `gcloud run deploy` only
+#   updates the Service; the Job silently keeps running the old image until a
+#   manual `gcloud run jobs update pipeline-v2 --image=<sha>` lands. Prior
+#   sessions shipped code, deployed Service, assumed `pipeline-v2` Job ran the
+#   new code — but Job stayed on old image for WEEKS (T2.1/T2.4 4/19 commits
+#   never reached production until 4/21). See mistake.md M31.
+#
+# 2026-04-21 T1.0 Option A update:
+#   Build context moved to repo root so Dockerfile can COPY both ml-controller/
+#   and ml-service/ into the image. This enables the new POST /admin/modal-deploy
+#   endpoint (ml-controller/routers/admin.py) to subprocess `modal deploy` from
+#   Cloud Run itself. Script now supports --with-modal flag to trigger Modal
+#   redeploy as the final verification step (absorbs roadmap #13).
+#
+# What this script does:
+#   1. Deploy ml-controller Service from REPO ROOT (root Dockerfile)
+#   2. Read back the new container image URI from Service spec
+#   3. Update pipeline-v2 Job image to match
+#   4. Verify Service + Job image match (fail loudly if not)
+#   5. (Optional, --with-modal) Trigger POST /admin/modal-deploy to refresh
+#      ml-service/modal_app.py on Modal cloud
+#
+# Usage:
+#   bash /path/to/stockvision-cloudflare-v12/deploy_ml_controller.sh [--check-only] [--with-modal]
+#
+# Flags:
+#   --check-only    Run local/live preflight checks only. Do not deploy.
+#   --with-modal    After Cloud Run deploy + Job sync, trigger Modal redeploy
+#                   via /admin/modal-deploy endpoint. ~3-5 min extra wall-clock.
+#
+# Exit codes:
+#   0 — Service + Job (+ Modal if --with-modal) all live on new code
+#   1 — sanity check failed (wrong dir / missing gcloud)
+#   2 — Service deploy failed
+#   3 — image SHA extraction failed
+#   4 — Job update failed
+#   5 — verification mismatch
+#   6 — Modal deploy failed (only with --with-modal)
+#   7 — preflight check failed
+#
+# Dependencies: gcloud CLI authenticated with project gen-lang-client-0602998820.
+#               curl (for --with-modal).
+
+set -euo pipefail
+
+REGION="asia-east1"
+SERVICE="ml-controller"
+JOB="pipeline-v2"
+ML_CONTROLLER_URL_DEFAULT="https://ml-controller-530028717113.asia-east1.run.app"
+GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-}"
+RETRAIN_LOCK_BUCKET="${RETRAIN_LOCK_BUCKET:-${GCS_BUCKET_NAME}}"
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-gen-lang-client-0602998820}"
+GCP_REGION="${GCP_REGION:-asia-east1}"
+PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
+VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
+STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MLC_DIR="$SCRIPT_DIR/ml-controller"
+MLS_DIR="$SCRIPT_DIR/ml-service"
+ROOT_DOCKERFILE="$SCRIPT_DIR/Dockerfile"
+PYTHON_BIN=""
+
+REQUIRED_ENV_VARS=(
+  GCS_BUCKET_NAME
+  RETRAIN_LOCK_BUCKET
+  GCP_PROJECT_ID
+  GCP_REGION
+  PIPELINE_JOB_NAME
+  VERIFY_JOB_NAME
+  STOCKVISION_WORKER_URL
+)
+
+# ── Parse flags ──────────────────────────────────────────────────────────────
+WITH_MODAL=0
+CHECK_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --check-only) CHECK_ONLY=1 ;;
+    --with-modal) WITH_MODAL=1 ;;
+    *) echo "Unknown flag: $arg (supported: --check-only, --with-modal)" >&2; exit 1 ;;
+  esac
+done
+
+require_nonempty() {
+  local var_name="$1"
+  local hint="$2"
+  local value="${!var_name:-}"
+  if [ -z "$value" ]; then
+    echo "❌ ERROR: $var_name is required. $hint" >&2
+    exit 7
+  fi
+}
+
+print_preflight_value() {
+  local var_name="$1"
+  printf '  %-20s %s\n' "$var_name" "${!var_name}"
+}
+
+detect_python() {
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "❌ ERROR: python/python3 not found in PATH (needed for preflight JSON parsing)" >&2
+    exit 1
+  fi
+}
+
+load_live_missing_envs() {
+  local service_json
+  service_json=$(gcloud run services describe "$SERVICE" \
+    --region="$REGION" \
+    --format=json 2>/dev/null || true)
+  if [ -z "$service_json" ]; then
+    return 0
+  fi
+
+  LIVE_MISSING_ENV_NAMES=$(SERVICE_JSON="$service_json" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+required = [
+    "GCS_BUCKET_NAME",
+    "RETRAIN_LOCK_BUCKET",
+    "GCP_PROJECT_ID",
+    "GCP_REGION",
+    "PIPELINE_JOB_NAME",
+    "VERIFY_JOB_NAME",
+    "STOCKVISION_WORKER_URL",
+]
+
+raw = os.environ.get("SERVICE_JSON", "")
+if not raw.strip():
+    print("")
+    raise SystemExit(0)
+
+doc = json.loads(raw)
+containers = (
+    doc.get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+    .get("containers", [])
+)
+envs = containers[0].get("env", []) if containers else []
+present = {
+    item.get("name"): item.get("value", "")
+    for item in envs
+    if isinstance(item, dict) and item.get("name")
+}
+missing = [name for name in required if not str(present.get(name, "")).strip()]
+print(", ".join(missing))
+PY
+)
+}
+
+load_live_image_state() {
+  LIVE_SERVICE_REV=$(gcloud run services describe "$SERVICE" \
+    --region="$REGION" \
+    --format="value(status.latestReadyRevisionName)" 2>/dev/null || true)
+  LIVE_SERVICE_IMG=$(gcloud run services describe "$SERVICE" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_JOB_IMG=$(gcloud run jobs describe "$JOB" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_VERIFY_JOB_ENTRYPOINT=$(gcloud run jobs describe "$VERIFY_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+}
+
+build_verify_job_env_file() {
+  local env_file="$1"
+  local meta_file="$2"
+  local pipeline_job_json
+  pipeline_job_json=$(gcloud run jobs describe "$JOB" \
+    --region="$REGION" \
+    --format=json)
+
+  PIPELINE_JOB_JSON="$pipeline_job_json" \
+  VERIFY_JOB_NAME="$VERIFY_JOB_NAME" \
+  STOCKVISION_WORKER_URL="$STOCKVISION_WORKER_URL" \
+  VERIFY_ENV_FILE="$env_file" \
+  "$PYTHON_BIN" - <<'PY' > "$meta_file"
+import json
+import os
+
+doc = json.loads(os.environ["PIPELINE_JOB_JSON"])
+spec = (
+    doc.get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+)
+container = (spec.get("template", {}) or {}).get("spec", {}).get("containers", [{}])[0]
+envs = {}
+for item in container.get("env", []):
+    name = item.get("name")
+    if not name:
+        continue
+    envs[name] = item.get("value", "")
+
+envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]
+envs["VERIFY_CALLBACK_TASK"] = "verify-v2"
+envs["STOCKVISION_WORKER_URL"] = os.environ["STOCKVISION_WORKER_URL"]
+
+with open(os.environ["VERIFY_ENV_FILE"], "w", encoding="utf-8") as fh:
+    for key in sorted(envs):
+        value = str(envs[key]).replace("\\", "\\\\").replace('"', '\\"')
+        fh.write(f'{key}: "{value}"\n')
+
+resources = container.get("resources", {}).get("limits", {})
+print(f'CPU={resources.get("cpu", "4")}')
+print(f'MEMORY={resources.get("memory", "4Gi")}')
+print(f'SERVICE_ACCOUNT={spec.get("serviceAccountName", "")}')
+print(f'MAX_RETRIES={spec.get("maxRetries", 3)}')
+PY
+}
+
+load_verify_job_template() {
+  local meta_file="$1"
+  VERIFY_JOB_CPU=""
+  VERIFY_JOB_MEMORY=""
+  VERIFY_JOB_SERVICE_ACCOUNT=""
+  VERIFY_JOB_MAX_RETRIES=""
+  while IFS='=' read -r key value; do
+    value="${value%$'\r'}"
+    case "$key" in
+      CPU) VERIFY_JOB_CPU="$value" ;;
+      MEMORY) VERIFY_JOB_MEMORY="$value" ;;
+      SERVICE_ACCOUNT) VERIFY_JOB_SERVICE_ACCOUNT="$value" ;;
+      MAX_RETRIES) VERIFY_JOB_MAX_RETRIES="$value" ;;
+    esac
+  done < "$meta_file"
+  # Verify is idempotent-ish but expensive: retries re-read/re-write D1 and can
+  # multiply Cloud Run cost. Let the scheduler surface one failed execution
+  # instead of retrying the full graph three more times.
+  VERIFY_JOB_MAX_RETRIES="${VERIFY_JOB_MAX_RETRIES_OVERRIDE:-0}"
+}
+
+sync_verify_job() {
+  local env_file="$1"
+  local service_account_args=()
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$VERIFY_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3b/4: Update Job $VERIFY_JOB_NAME image + entrypoint ==="
+    if ! gcloud run jobs update "$VERIFY_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=verify_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --max-retries="$VERIFY_JOB_MAX_RETRIES" \
+        "${service_account_args[@]}" \
+        --env-vars-file="$env_file"; then
+      echo "??Verify job update failed" >&2
+      exit 4
+    fi
+    echo "??Verify job update succeeded"
+  else
+    echo "=== Step 3b/4: Create Job $VERIFY_JOB_NAME from $JOB template ==="
+    if ! gcloud run jobs create "$VERIFY_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=verify_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --max-retries="$VERIFY_JOB_MAX_RETRIES" \
+        "${service_account_args[@]}" \
+        --env-vars-file="$env_file"; then
+      echo "??Verify job create failed" >&2
+      exit 4
+    fi
+    echo "??Verify job create succeeded"
+  fi
+  echo ""
+}
+
+run_preflight() {
+  echo "=== Preflight: local deploy inputs ==="
+  require_nonempty "GCS_BUCKET_NAME" "Example: export GCS_BUCKET_NAME=stockvision-models"
+  require_nonempty "RETRAIN_LOCK_BUCKET" "Usually mirror GCS_BUCKET_NAME for retrain locking"
+  require_nonempty "GCP_PROJECT_ID" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
+  require_nonempty "GCP_REGION" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
+  require_nonempty "PIPELINE_JOB_NAME" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
+  require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
+
+  for var_name in "${REQUIRED_ENV_VARS[@]}"; do
+    print_preflight_value "$var_name"
+  done
+  echo ""
+
+  echo "=== Preflight: current live service env drift ==="
+  load_live_missing_envs
+  if [ -z "${LIVE_MISSING_ENV_NAMES:-}" ]; then
+    echo "  Live service already has all required env keys."
+  else
+    echo "  Live service missing required env keys: $LIVE_MISSING_ENV_NAMES"
+    echo "  Deploy is expected to repair this via --update-env-vars."
+  fi
+  echo ""
+
+  echo "=== Preflight: Service / Job image sync ==="
+  load_live_image_state
+  if [ -n "${LIVE_SERVICE_REV:-}" ]; then
+    echo "  Live service revision : ${LIVE_SERVICE_REV}"
+  fi
+  if [ -n "${LIVE_SERVICE_IMG:-}" ]; then
+    echo "  Live service image    : ${LIVE_SERVICE_IMG}"
+  fi
+  if [ -n "${LIVE_JOB_IMG:-}" ]; then
+    echo "  Live job image        : ${LIVE_JOB_IMG}"
+  fi
+  if [ -n "${LIVE_VERIFY_JOB_IMG:-}" ]; then
+    echo "  Live verify image     : ${LIVE_VERIFY_JOB_IMG}"
+    echo "  Live verify entrypoint: ${LIVE_VERIFY_JOB_ENTRYPOINT:-unknown}"
+  fi
+
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ]; then
+    echo "  Unable to fully verify Service / Job image drift from current environment."
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ]; then
+    echo "  Service / Job image sync: OK"
+  else
+    echo "  Service / Job image sync: DRIFT DETECTED"
+    echo "  Deploy should re-sync the Job image after Service deploy."
+  fi
+  echo ""
+}
+
+# ── Sanity checks ────────────────────────────────────────────────────────────
+if ! command -v gcloud >/dev/null 2>&1; then
+  echo "❌ ERROR: gcloud CLI not found in PATH" >&2
+  exit 1
+fi
+detect_python
+if [ ! -d "$MLC_DIR" ] || [ ! -f "$MLC_DIR/main.py" ]; then
+  echo "❌ ERROR: ml-controller source not found at $MLC_DIR" >&2
+  exit 1
+fi
+if [ ! -d "$MLS_DIR" ] || [ ! -f "$MLS_DIR/modal_app.py" ]; then
+  echo "❌ ERROR: ml-service source not found at $MLS_DIR (required by root Dockerfile)" >&2
+  exit 1
+fi
+if [ ! -f "$ROOT_DOCKERFILE" ]; then
+  echo "❌ ERROR: root Dockerfile not found at $ROOT_DOCKERFILE" >&2
+  exit 1
+fi
+if [ "$WITH_MODAL" = "1" ] && ! command -v curl >/dev/null 2>&1; then
+  echo "❌ ERROR: --with-modal needs curl in PATH" >&2
+  exit 1
+fi
+
+run_preflight
+if [ "$CHECK_ONLY" = "1" ]; then
+  echo "✅ Preflight passed (--check-only). No deploy performed."
+  exit 0
+fi
+
+# ── Step 1/4: Deploy Service (from repo root so Dockerfile sees ml-service/) ─
+cd "$SCRIPT_DIR"
+echo "=== Step 1/4: Deploy Service $SERVICE (CWD=$SCRIPT_DIR, Dockerfile=repo root) ==="
+if ! gcloud run deploy "$SERVICE" \
+    --source . \
+    --region="$REGION" \
+    --timeout=3600 \
+    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}" \
+    --quiet; then
+  echo "❌ Service deploy failed" >&2
+  exit 2
+fi
+echo "✅ Service deploy succeeded"
+echo ""
+
+# ── Step 2/4: Extract new image SHA ──────────────────────────────────────────
+echo "=== Step 2/4: Extract new image SHA from Service ==="
+NEW_IMAGE=$(gcloud run services describe "$SERVICE" \
+  --region="$REGION" \
+  --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+if [ -z "${NEW_IMAGE:-}" ]; then
+  echo "❌ ERROR: Could not read Service image from describe output" >&2
+  exit 3
+fi
+echo "New Service image: $NEW_IMAGE"
+echo ""
+VERIFY_JOB_ENV_FILE=$(mktemp -t verify_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/verify_job_env.$$.yaml")
+VERIFY_JOB_META_FILE=$(mktemp -t verify_job_meta.XXXXXX.txt 2>/dev/null || echo "/tmp/verify_job_meta.$$.txt")
+trap 'rm -f "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE"' EXIT
+build_verify_job_env_file "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE"
+load_verify_job_template "$VERIFY_JOB_META_FILE"
+
+# ── Step 3/4: Update Job image ───────────────────────────────────────────────
+echo "=== Step 3/4: Update Job $JOB image to match Service ==="
+if ! gcloud run jobs update "$JOB" \
+    --region="$REGION" \
+    --image="$NEW_IMAGE" \
+    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}"; then
+  echo "❌ Job update failed" >&2
+  exit 4
+fi
+echo "✅ Job update succeeded"
+echo ""
+
+# ── Step 4/4: Verify ─────────────────────────────────────────────────────────
+sync_verify_job "$VERIFY_JOB_ENV_FILE"
+
+echo "=== Step 4/4: Verify Service and Job image match ==="
+SERVICE_IMG=$(gcloud run services describe "$SERVICE" --region="$REGION" \
+  --format="value(spec.template.spec.containers[0].image)")
+JOB_IMG=$(gcloud run jobs describe "$JOB" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
+VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
+VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+VERIFY_JOB_ARGS=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
+
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ]; then
+  echo "❌ VERIFICATION FAILED — images differ:" >&2
+  echo "  Service: $SERVICE_IMG" >&2
+  echo "  Job    : $JOB_IMG" >&2
+  echo "  Verify : $VERIFY_JOB_IMG" >&2
+  exit 5
+fi
+
+if [ "$VERIFY_JOB_COMMAND" != "python" ] || [ "$VERIFY_JOB_ARGS" != "-m;verify_job_main" ]; then
+  echo "??VERIFICATION FAILED ??verify job entrypoint drift:" >&2
+  echo "  command : $VERIFY_JOB_COMMAND" >&2
+  echo "  args    : $VERIFY_JOB_ARGS" >&2
+  exit 5
+fi
+
+SERVICE_REV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
+  --format="value(status.latestReadyRevisionName)")
+
+echo "✅ Verification passed — Service and Job on identical image"
+echo ""
+
+# ── Step 5 (optional): Modal deploy via /admin/modal-deploy ──────────────────
+MODAL_RESULT=""
+if [ "$WITH_MODAL" = "1" ]; then
+  echo "=== Step 5/5: Trigger Modal deploy (--with-modal) ==="
+  if [ -z "${ML_CONTROLLER_TOKEN:-}" ]; then
+    echo "❌ ERROR: ML_CONTROLLER_TOKEN is required for --with-modal" >&2
+    exit 6
+  fi
+  CTOKEN="${ML_CONTROLLER_TOKEN}"
+  URL="${ML_CONTROLLER_URL:-$ML_CONTROLLER_URL_DEFAULT}/admin/modal-deploy"
+  NOTE_JSON=$(printf '{"note":"deploy_ml_controller.sh rev=%s"}' "$SERVICE_REV")
+  # Use mktemp for portable temp file (Windows git-bash /tmp/ may not exist)
+  MODAL_RESP_FILE=$(mktemp -t modal_deploy_resp.XXXXXX.json 2>/dev/null || echo "/tmp/modal_deploy_resp.$$.json")
+  trap 'rm -f "$MODAL_RESP_FILE"' EXIT
+  echo "POST $URL"
+  set +e
+  HTTP_STATUS=$(curl -sS -o "$MODAL_RESP_FILE" -w "%{http_code}" \
+      -X POST "$URL" \
+      -H "X-Controller-Token: $CTOKEN" \
+      -H "Content-Type: application/json" \
+      --max-time 650 \
+      -d "$NOTE_JSON")
+  CURL_RC=$?
+  set -e
+  if [ "$CURL_RC" -ne 0 ] || [ "$HTTP_STATUS" != "200" ]; then
+    echo "❌ Modal deploy endpoint failed (curl_rc=$CURL_RC http=$HTTP_STATUS)" >&2
+    echo "Response body ($MODAL_RESP_FILE):" >&2
+    cat "$MODAL_RESP_FILE" >&2 || true
+    echo "" >&2
+    exit 6
+  fi
+  # Parse duration from response — surface parse failure instead of silent '?'
+  MODAL_DURATION=$("$PYTHON_BIN" -c "
+import json, sys
+try:
+    with open('$MODAL_RESP_FILE', encoding='utf-8') as f:
+        d = json.load(f)
+    v = d.get('duration_sec')
+    print(f'{v:.1f}' if isinstance(v, (int, float)) else str(v))
+except Exception as e:
+    print(f'parse_err:{type(e).__name__}', file=sys.stderr)
+    print('unknown')
+" 2>&1)
+  echo "✅ Modal deploy succeeded (duration ${MODAL_DURATION}s)"
+  MODAL_RESULT="Modal         : redeployed (${MODAL_DURATION}s)"
+  echo ""
+fi
+
+echo "=== Deploy Summary ==="
+echo "  Service revision : $SERVICE_REV"
+echo "  Image            : $SERVICE_IMG"
+echo "  Pipeline job     : synced"
+echo "  Verify job       : synced"
+[ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
+echo ""
+echo "Next step: trigger pipeline-v2 to verify new code path executes. Example:"
+echo "  curl -sX POST '$ML_CONTROLLER_URL_DEFAULT/pipeline/v2/run?date=\$(date +%F)' \\"
+echo "       -H 'X-Controller-Token: \$CTOKEN' -H 'Content-Length: 0' -d ''"

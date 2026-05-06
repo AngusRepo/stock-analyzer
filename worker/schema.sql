@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   stock_id           INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
   model_name         TEXT NOT NULL,
   generated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  prediction_date    TEXT,              -- pipeline business date; do not infer from generated_at
   horizon            INTEGER DEFAULT 30,
   rmse               REAL, mape REAL, direction_accuracy REAL,
   best_model         INTEGER DEFAULT 0,
@@ -139,6 +140,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pred_stock    ON predictions(stock_id, model_name);
+CREATE INDEX IF NOT EXISTS idx_predictions_business_date ON predictions(prediction_date, stock_id, model_name);
 CREATE INDEX IF NOT EXISTS idx_pred_verify   ON predictions(stock_id, verified_at);
 CREATE INDEX IF NOT EXISTS idx_pred_unverify ON predictions(stock_id, direction_correct) WHERE direction_correct IS NULL;
 
@@ -312,6 +314,27 @@ CREATE TABLE IF NOT EXISTS system_logs (
 CREATE INDEX IF NOT EXISTS idx_system_logs ON system_logs(created_at DESC);
 
 
+-- OBS 統一事件 audit surface（P8 observability contract）
+CREATE TABLE IF NOT EXISTS observability_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id    TEXT NOT NULL,
+  date        TEXT NOT NULL,
+  severity    TEXT NOT NULL CHECK(severity IN ('ok','info','warn','error')),
+  domain      TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  owner       TEXT NOT NULL,
+  impact      TEXT,
+  next_action TEXT,
+  evidence    TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_observability_events_date ON observability_events(date, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_observability_events_domain ON observability_events(domain, created_at DESC);
+
+
 -- 聊天對話持久化
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -374,7 +397,16 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
   sector_rank   TEXT,                   -- 族群相對強弱排名
   chip_score    REAL DEFAULT 0,          -- 籌碼分數 (0-40)
   tech_score    REAL DEFAULT 0,          -- 技術分數 (0-30)
+  momentum_score REAL DEFAULT 0,         -- Screener 動能/成交量分數 (0-20)
   ml_score      REAL DEFAULT 0,          -- ML 分數 (0-30)
+  market_segment TEXT,
+  recommendation_lane TEXT DEFAULT 'tradable',
+  eligible_for_ml INTEGER DEFAULT 1,
+  eligible_for_pending_buy INTEGER DEFAULT 1,
+  alpha_context TEXT,
+  alpha_allocation TEXT,
+  ml_vote_summary TEXT,
+  score_components TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(date, stock_id)
 );
@@ -398,6 +430,39 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   UNIQUE(date, sector, classification)
 );
 CREATE INDEX IF NOT EXISTS idx_sector_flow_date ON sector_flow(date DESC, total_net DESC);
+
+CREATE TABLE IF NOT EXISTS screener_funnel_runs (
+  run_id          TEXT PRIMARY KEY,
+  date            TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'success',
+  universe_count  INTEGER DEFAULT 0,
+  candidate_count INTEGER DEFAULT 0,
+  final_count     INTEGER DEFAULT 0,
+  emerging_count  INTEGER DEFAULT 0,
+  metadata        TEXT,
+  debug_log       TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_runs_date ON screener_funnel_runs(date DESC, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS screener_funnel_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT NOT NULL,
+  date          TEXT NOT NULL,
+  symbol        TEXT NOT NULL,
+  name          TEXT,
+  stage         TEXT NOT NULL,
+  decision      TEXT NOT NULL,
+  reason_code   TEXT NOT NULL,
+  score_before  REAL,
+  score_after   REAL,
+  rank          INTEGER,
+  evidence      TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(run_id) REFERENCES screener_funnel_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run ON screener_funnel_items(run_id, stage, decision);
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_items(symbol, date DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡

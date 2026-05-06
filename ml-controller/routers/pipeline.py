@@ -1,78 +1,80 @@
 """
 pipeline.py — Daily prediction pipeline endpoints
 
-POST /pipeline/v2/run → Real LangGraph StateGraph (2026-04-07 LangGraph A+B refactor)
-                        Since 2026-04-08 Part 5 Option A: fire-and-forget + callback
-POST /pipeline/run    → [DEPRECATED] Old fake-LangGraph fire-and-forget shell
+POST /pipeline/v2/run → Triggers the Cloud Run Job `pipeline-v2` which runs the
+                        LangGraph V2 pipeline to completion and callbacks Worker
+                        /api/admin/scheduler-callback with the final status.
+
+History:
+  - 2026-04-07 LangGraph A+B refactor (fake → real StateGraph in controller)
+  - 2026-04-16: Cloud Run Job handoff replaced request-scoped background work.
+                container idle-kills after ~15 min and silently truncated every
+                pipeline since 4/13, leaving bot with 4 trading days of 0 orders.
+                The Job has its own lifecycle and runs to completion.
 """
+from __future__ import annotations
+
+import logging
 import os
 import time
 import uuid
-import asyncio
-import logging
-import httpx
 
-from fastapi import APIRouter, Query
+import httpx
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
+
+from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
-WORKER_URL = os.environ.get(
-    "STOCKVISION_WORKER_URL",
-    "https://stockvision-worker.angus-solo-dev.workers.dev"
-)
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
+# Shared module-level Jobs client — the underlying gRPC channel is reusable
+# across requests and lazy-initialised inside the class.
+_jobs_client = CloudRunJobsClient()
 
-# ─── 2026-04-08 Part 5 Option A: Fire-and-forget + callback ──────────────────
+
+# ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
 #
-# Problem: CF Worker fetch() to Cloud Run has ~100-150s subrequest timeout
-# (empirical, not documented). Pipelines > 144s → Worker sees HTTP 524 and
-# logs cron:log:pipeline as error even though ml-controller actually finishes
-# successfully. Dashboard shows red for successful runs.
-#
-# Solution: Decouple trigger from observation.
-#   1. /pipeline/v2/run starts asyncio.create_task and returns 202 immediately
-#      (< 100ms). Worker gets trigger confirmation, not completion.
-#   2. Background task runs the full pipeline.
-#   3. On completion, background task POSTs Worker /api/admin/cron-callback
-#      with the real final status. Worker overwrites cron:log:pipeline.
-#
-# Trade-off: Worker's initial log says "triggered" (near-instant), then the
-# callback overwrites it with "success" or "error". Dashboard is eventually
-# consistent within pipeline wall-clock (~2-5 min).
-
-# In-memory sentinel for concurrent runs (per process). Multiple Cloud Run
-# revisions could each run one pipeline simultaneously, but since run_pipeline_v2
-# writes to the same D1 tables with INSERT OR REPLACE, concurrent runs would
-# just re-write the same rows — not corrupt, just wasted compute.
-_IN_FLIGHT: set[str] = set()
+# These two functions are kept in this router module because:
+#   1. They're the dashboard-facing contract (scheduler:run:{task}:{date} payload shape).
+#   2. The Cloud Run Job entrypoint (`pipeline_job_main.py`) imports them so the
+#      callback behaviour is identical whether the pipeline ran in a Job or was
+#      triggered ad-hoc some future way. Avoid duplicating the payload spec.
 
 
-async def _callback_worker(payload: dict, client: httpx.AsyncClient | None = None) -> None:
-    """
-    POST to Worker /api/admin/cron-callback with pipeline completion status.
-    Best-effort: failure to callback is logged but does not raise.
-    """
-    url = f"{WORKER_URL.rstrip('/')}/api/admin/cron-callback"
+async def _callback_worker(
+    payload: dict, client: httpx.AsyncClient | None = None
+) -> None:
+    """POST to Worker /api/admin/scheduler-callback. Best-effort; never raises."""
+    if not WORKER_URL:
+        logger.warning(
+            "[Pipeline callback] STOCKVISION_WORKER_URL missing; skip callback for task=%s",
+            payload.get("task"),
+        )
+        return
+    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
     headers = {"Content-Type": "application/json"}
     if WORKER_AUTH:
         headers["Authorization"] = f"Bearer {WORKER_AUTH}"
 
-    async def _post(c: httpx.AsyncClient):
+    async def _post(c: httpx.AsyncClient) -> None:
         try:
             resp = await c.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
                 logger.warning(
-                    f"[Pipeline V2 callback] Worker returned "
-                    f"{resp.status_code} for task={payload.get('task')}: "
-                    f"{resp.text[:200]}"
+                    "[Pipeline callback] Worker returned %d for task=%s: %s",
+                    resp.status_code,
+                    payload.get("task"),
+                    resp.text[:200],
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(
-                f"[Pipeline V2 callback] Worker unreachable "
-                f"(task={payload.get('task')}): {e}"
+                "[Pipeline callback] Worker unreachable (task=%s): %s",
+                payload.get("task"),
+                e,
             )
 
     if client is not None:
@@ -88,190 +90,102 @@ async def _emit_subtask_callbacks(
     overall_status: str,
     overall_error: str | None,
     elapsed_ms: int,
+    run_date: str | None = None,
 ) -> None:
-    """
-    Emit individual cron:log entries for dashboard tiles that reflect the
-    sub-steps inside pipeline (screener / ml-predict / recommendation).
+    """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
-    Worker's dashboard reads cron:log:{task}:{date} per task in TASK_NAMES
-    (cronLogger.ts). Pipeline endpoint runs them all internally but writes
-    only cron:log:pipeline, so dashboard tiles for those individual tasks
-    remain dark. This batches the reverse callbacks so the UI lights up.
-
-    Status derivation:
-      - If overall_status == 'error': all sub-tasks marked 'error' with same error
-      - Otherwise per-sub-task status derived from metrics (rows > 0 = success)
+    Dashboard reads scheduler:run:{task}:{date}; pipeline runs screener / ml-predict /
+    recommendation internally but only writes scheduler:run:pipeline. This reverse-
+    callback pattern keeps the UI tiles aligned with reality.
     """
-    metrics = {}
+    metrics: dict = {}
     if isinstance(result, dict):
         metrics = result.get("metrics") or {}
 
-    # node_write_d1 populates these fields (graphs/daily_pipeline_v2.py:272-278)
+    # Populated by node_write_d1 in graphs/daily_pipeline_v2.py.
     predictions_n = int(metrics.get("predictions_written", 0) or 0)
     recos_n = int(metrics.get("recommendations_updated", 0) or 0)
 
-    # Dashboard tile mapping:
-    # - 'screener': lit when pipeline produced predictions (screener candidates > 0
-    #    is implicit; no direct candidate count in metrics yet)
-    # - 'ml-predict': lit when predictions_written > 0
-    # - 'recommendation': lit when recommendations_updated > 0
     subtasks = [
-        (
-            "screener",
-            predictions_n > 0,
-            f"run_id={run_id} predictions_written={predictions_n}",
-        ),
-        (
-            "ml-predict",
-            predictions_n > 0,
-            f"run_id={run_id} predictions={predictions_n}",
-        ),
-        (
-            "recommendation",
-            recos_n > 0,
-            f"run_id={run_id} recos={recos_n}",
-        ),
+        ("screener", predictions_n > 0, f"run_id={run_id} predictions_written={predictions_n}"),
+        ("ml-predict", predictions_n > 0, f"run_id={run_id} predictions={predictions_n}"),
+        ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
     ]
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         for task, ok, summary in subtasks:
             status = "success" if (overall_status == "success" and ok) else "error"
-            payload = {
+            payload: dict = {
                 "task": task,
                 "status": status,
                 "summary": summary,
                 "duration_ms": elapsed_ms,
                 "run_id": run_id,
             }
+            if run_date:
+                payload["run_date"] = run_date
             if status == "error":
                 payload["error"] = overall_error or f"{task}: no output"
             await _callback_worker(payload, client=client)
 
 
-async def _run_pipeline_v2_with_callback(run_id: str, run_date: str) -> None:
-    """Background task: runs pipeline and posts completion to Worker."""
-    from graphs.daily_pipeline_v2 import run_pipeline_v2
+# ─── V2 trigger endpoint ─────────────────────────────────────────────────────
 
-    t0 = time.time()
-    status = "error"
-    summary = ""
-    error: str | None = None
-    result: dict | None = None
-
-    try:
-        result = await run_pipeline_v2(run_date=run_date)
-        # run_pipeline_v2 returns {"status": "completed"|"error", "metrics": {...}, ...}
-        if isinstance(result, dict) and result.get("status") == "completed":
-            status = "success"
-            metrics = result.get("metrics") or {}
-            summary = (
-                f"run_id={run_id} "
-                f"preds={metrics.get('predictions_written', 0)} "
-                f"recos={metrics.get('recommendations_updated', 0)} "
-                f"llm_reasons={metrics.get('llm_reasons_count', 0)}"
-            )
-        else:
-            status = "error"
-            err_detail = (
-                result.get("error") if isinstance(result, dict) else str(result)
-            )
-            error = str(err_detail or "pipeline returned non-completed status")
-            summary = f"run_id={run_id} {error[:120]}"
-    except Exception as e:
-        logger.exception("[Pipeline V2 bg] Failed")
-        error = f"{type(e).__name__}: {e}"
-        summary = f"run_id={run_id} {error[:120]}"
-    finally:
-        elapsed_ms = int((time.time() - t0) * 1000)
-        _IN_FLIGHT.discard(run_id)
-
-        # Overall pipeline callback (top-level cron:log:pipeline tile)
-        overall_payload = {
-            "task": "pipeline",
-            "status": status,
-            "summary": summary,
-            "duration_ms": elapsed_ms,
-            "run_id": run_id,
-        }
-        if error:
-            overall_payload["error"] = error
-        await _callback_worker(overall_payload)
-
-        # Per-sub-task callbacks (screener / ml-predict / recommendation)
-        # so dashboard tiles reflect pipeline internals.
-        await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms)
-
-        logger.info(
-            f"[Pipeline V2 bg] {run_id} finished: status={status} "
-            f"elapsed={elapsed_ms}ms"
-        )
-
-
-# ─── V2 ENDPOINT — Fire-and-forget with callback ─────────────────────────────
 
 @router.post("/v2/run")
 async def trigger_pipeline_v2(
     date: str = Query(default="", description="Run date (YYYY-MM-DD, default today TW)"),
 ):
-    """
-    LangGraph V2 daily pipeline (2026-04-08 Option A: fire-and-forget):
-      load_inputs → load_market_env → compute_sector_flow → build_payloads
-        → ml_predict → recommend → gen_llm_reasons → write_d1
+    """Trigger the Cloud Run Job `pipeline-v2` and return 202 with execution id.
 
-    Returns 202 immediately with a run_id. Pipeline runs in background.
-    When complete, ml-controller POSTs Worker /api/admin/cron-callback with
-    final status. Worker overwrites cron:log:pipeline accordingly.
+    The Job runs `pipeline_job_main.py` which drives run_pipeline_v2() to
+    completion and POSTs Worker /api/admin/scheduler-callback when done. This
+    endpoint returns as soon as the Job execution is accepted by Cloud Run
+    (~1 s), not when the pipeline finishes.
 
-    See memory/project_session_2026_04_08_part5.md for rationale (CF Worker
-    subrequest ~144s timeout vs ml-controller pipeline ~2-5 min wall clock).
+    Worker subrequest timeout (~100-150 s) is far larger than the Jobs API
+    round-trip, so no timeout concerns on the trigger side.
     """
     run_id = f"pv2-{int(time.time())}-{uuid.uuid4().hex[:8]}"
-    if run_id in _IN_FLIGHT:
-        # Extremely unlikely given uuid, but cheap to check
-        return JSONResponse(
-            status_code=409,
-            content={"status": "error", "error": "run_id collision", "run_id": run_id},
+
+    try:
+        execution = _jobs_client.run_job(
+            env_overrides={"PIPELINE_RUN_DATE": date} if date else None,
         )
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "pipeline-v2 already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "date": date or "today",
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[Pipeline V2] Failed to trigger Job execution")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run Jobs trigger failed: {type(e).__name__}: {e}",
+        ) from e
 
-    _IN_FLIGHT.add(run_id)
-    # Fire-and-forget — DO NOT await
-    asyncio.create_task(_run_pipeline_v2_with_callback(run_id, date))
-
-    logger.info(f"[Pipeline V2] Triggered run_id={run_id} date={date or 'today'}")
+    logger.info(
+        "[Pipeline V2] Triggered run_id=%s date=%s execution=%s",
+        run_id,
+        date or "today",
+        execution.execution_id,
+    )
     return JSONResponse(
         status_code=202,
         content={
             "status": "triggered",
             "run_id": run_id,
             "date": date or "today",
-            "note": "Pipeline running in background; cron:log:pipeline will be overwritten on completion",
+            "execution_id": execution.execution_id,
+            "execution_name": execution.execution_name,
+            "note": (
+                "Pipeline running as Cloud Run Job; scheduler:run:pipeline will be "
+                "overwritten on completion via /api/admin/scheduler-callback."
+            ),
         },
     )
-
-
-# ─── LEGACY ENDPOINT — Deprecated, kept for fallback ─────────────────────────
-
-@router.post("/run")
-async def trigger_pipeline_legacy(
-    resume: bool = Query(default=True, description="Resume from checkpoint if available"),
-    date: str = Query(default="", description="Run date (YYYY-MM-DD, default today)"),
-):
-    """
-    [DEPRECATED 2026-04-07] Use /pipeline/v2/run instead.
-
-    Old fake-LangGraph fire-and-forget shell that suffered from "假 success" — step fn
-    打 worker /admin/trigger/{task} 立刻 return 200，但 worker 那邊 background fn 被 30 sec
-    waitUntil 砍掉，整條 pipeline 看似 success 實際 0 prediction 寫入。
-
-    Will be removed 2026-04-21 after 1 week of V2 stability.
-    """
-    logger.warning("[Pipeline] /pipeline/run is DEPRECATED, use /pipeline/v2/run")
-    try:
-        from graphs.daily_pipeline import build_daily_pipeline
-        pipeline = build_daily_pipeline(WORKER_URL, WORKER_AUTH)
-        result = await pipeline.run(run_date=date, resume=resume)
-        result["deprecation_warning"] = "Use /pipeline/v2/run — this endpoint will be removed 2026-04-21"
-        return result
-    except Exception as e:
-        logger.exception("[Pipeline Legacy] Failed")
-        return {"status": "error", "error": str(e)}

@@ -25,6 +25,9 @@ from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 from sklearn.metrics import silhouette_score
 
+from app.model_store import _get_bucket
+from app.purged_cv import dynamic_embargo_days
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 1: Silhouette Clustering (保留 V2，不動)
@@ -162,6 +165,42 @@ def _train_lgbm_regression(X_train: np.ndarray, y_train: np.ndarray,
     return booster
 
 
+def _permuted_target(
+    y: np.ndarray,
+    *,
+    rng: np.random.RandomState,
+    dates: np.ndarray | None = None,
+    sectors: np.ndarray | None = None,
+    mode: str = "within_date",
+) -> np.ndarray:
+    """Permute cross-sectional rank targets without destroying date structure."""
+
+    y_arr = np.asarray(y).copy()
+    mode_norm = str(mode or "within_date").strip().lower()
+    if mode_norm == "global":
+        return rng.permutation(y_arr)
+
+    out = y_arr.copy()
+    if dates is None or len(dates) != len(y_arr):
+        return rng.permutation(y_arr)
+
+    date_arr = np.asarray(dates).astype(str)
+    sector_arr = None
+    if sectors is not None and len(sectors) == len(y_arr):
+        sector_arr = np.asarray(sectors).astype(str)
+
+    if mode_norm in {"within_date_sector", "within_sector_date"} and sector_arr is not None:
+        group_keys = np.asarray([f"{d}::{s}" for d, s in zip(date_arr, sector_arr)], dtype=str)
+    else:
+        group_keys = date_arr
+
+    for key in np.unique(group_keys):
+        idx = np.where(group_keys == key)[0]
+        if len(idx) > 1:
+            out[idx] = rng.permutation(out[idx])
+    return out
+
+
 def target_permutation(
     X_train: np.ndarray, y_train: np.ndarray,
     X_val: np.ndarray, y_val: np.ndarray,
@@ -169,6 +208,9 @@ def target_permutation(
     max_permutations: int = 100,
     ks_alpha: float = 0.05,
     ks_check_interval: int = 10,
+    dates_train: np.ndarray | None = None,
+    sectors_train: np.ndarray | None = None,
+    permutation_mode: str = "within_date",
 ) -> dict:
     """Target Permutation feature selection.
 
@@ -215,9 +257,13 @@ def target_permutation(
     actual_rounds = 0
 
     for perm_i in range(max_permutations):
-        # Full random permutation per Altmann et al. (2010) — breaks ALL
-        # feature-target associations including cross-date rank structure.
-        y_shuffled = rng.permutation(y_train)
+        y_shuffled = _permuted_target(
+            y_train,
+            rng=rng,
+            dates=dates_train,
+            sectors=sectors_train,
+            mode=permutation_mode,
+        )
         null_model = _train_lgbm_regression(X_train, y_shuffled, X_val, y_val,
                                              seed=42 + perm_i + 1)
         null_imp = null_model.feature_importance(importance_type="gain").astype(np.float64)
@@ -283,6 +329,12 @@ def target_permutation(
         "n_permutations": actual_rounds,
         "per_feature": per_feature,
         "elapsed_s": elapsed,
+        "permutation_mode": permutation_mode,
+        "sector_aware": bool(
+            str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
+            and sectors_train is not None
+            and len(sectors_train) == len(y_train)
+        ),
     }
 
 
@@ -295,6 +347,9 @@ def signal_sanity_gate(
     X_val: np.ndarray, y_val: np.ndarray,
     n_permutations: int = 30,
     alpha: float = 0.05,
+    dates_train: np.ndarray | None = None,
+    sectors_train: np.ndarray | None = None,
+    permutation_mode: str = "within_date",
 ) -> dict:
     """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
 
@@ -320,7 +375,13 @@ def signal_sanity_gate(
     rng = np.random.RandomState(99)
     null_ics = []
     for i in range(n_permutations):
-        y_shuf = rng.permutation(y_train)
+        y_shuf = _permuted_target(
+            y_train,
+            rng=rng,
+            dates=dates_train,
+            sectors=sectors_train,
+            mode=permutation_mode,
+        )
         null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
         null_preds = null_model.predict(X_val)
         if np.std(null_preds) < 1e-10:
@@ -346,6 +407,12 @@ def signal_sanity_gate(
         "null_ic_std": round(float(null_arr.std()), 6),
         "n_permutations": n_permutations,
         "elapsed_s": elapsed,
+        "permutation_mode": permutation_mode,
+        "sector_aware": bool(
+            str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
+            and sectors_train is not None
+            and len(sectors_train) == len(y_train)
+        ),
     }
 
 
@@ -413,6 +480,151 @@ def ic_icir_check(
 # Step 4: Elbow Detection (kneed)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def mutual_information_evidence(
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_names: list[str],
+    *,
+    random_state: int = 42,
+) -> dict:
+    """Nonlinear feature evidence using sklearn mutual information."""
+
+    t0 = time.time()
+    try:
+        from sklearn.feature_selection import mutual_info_regression
+
+        raw = mutual_info_regression(
+            np.asarray(X, dtype=float),
+            np.asarray(y, dtype=float),
+            random_state=random_state,
+        )
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "per_feature": {}, "elapsed_s": 0.0}
+
+    raw = np.nan_to_num(np.asarray(raw, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    max_val = float(raw.max()) if raw.size else 0.0
+    norm = raw / max(max_val, 1e-12)
+    per_feature = {
+        name: {"mi": round(float(raw[i]), 8), "score": round(float(norm[i]), 6)}
+        for i, name in enumerate(feature_names)
+    }
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[MutualInfo] Computed MI evidence for {len(feature_names)} features ({elapsed}s)")
+    return {"status": "ok", "elapsed_s": elapsed, "top_features": top, "per_feature": per_feature}
+
+
+def stability_selection_evidence(
+    X: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    feature_names: list[str],
+    *,
+    n_blocks: int = 5,
+) -> dict:
+    """Block/date-aware stability evidence for feature signals."""
+
+    t0 = time.time()
+    date_arr = np.asarray(dates).astype(str)
+    unique_dates = np.sort(np.unique(date_arr))
+    if len(unique_dates) < 3:
+        return {"status": "insufficient_dates", "blocks": 0, "per_feature": {}, "elapsed_s": 0.0}
+
+    blocks = [b for b in np.array_split(unique_dates, min(n_blocks, len(unique_dates))) if len(b)]
+    per_feature: dict[str, dict] = {}
+    for i, name in enumerate(feature_names):
+        block_ics: list[float] = []
+        vals = X[:, i]
+        for block_dates in blocks:
+            mask = np.isin(date_arr, block_dates)
+            if int(mask.sum()) < 10:
+                continue
+            f_b = vals[mask]
+            y_b = y[mask]
+            if np.std(f_b) < 1e-10 or np.std(y_b) < 1e-10:
+                continue
+            rho, _ = stats.spearmanr(f_b, y_b)
+            if not np.isnan(rho):
+                block_ics.append(float(rho))
+
+        if not block_ics:
+            per_feature[name] = {"score": 0.0, "positive_ratio": 0.0, "mean_ic": 0.0, "blocks": 0}
+            continue
+
+        positive_ratio = float(np.mean([ic > 0 for ic in block_ics]))
+        mean_ic = float(np.mean(block_ics))
+        ic_std = float(np.std(block_ics))
+        stability = positive_ratio * max(mean_ic, 0.0) / max(ic_std, 0.05)
+        per_feature[name] = {
+            "score": round(float(np.clip(stability, 0.0, 1.0)), 6),
+            "positive_ratio": round(positive_ratio, 4),
+            "mean_ic": round(mean_ic, 6),
+            "blocks": len(block_ics),
+        }
+
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[StabilitySelection] Computed block stability for {len(feature_names)} features ({elapsed}s)")
+    return {
+        "status": "ok",
+        "elapsed_s": elapsed,
+        "blocks": len(blocks),
+        "top_features": top,
+        "per_feature": per_feature,
+    }
+
+
+def cur_representative_evidence(
+    X: np.ndarray,
+    feature_names: list[str],
+    cluster_result: dict,
+    *,
+    max_components: int = 12,
+    max_rows: int = 5000,
+) -> dict:
+    """CUR-style column leverage evidence for representative feature selection."""
+
+    t0 = time.time()
+    if X.size == 0 or not feature_names:
+        return {"status": "empty", "per_feature": {}, "elapsed_s": 0.0}
+
+    X_arr = np.asarray(X, dtype=float)
+    if len(X_arr) > max_rows:
+        idx = np.linspace(0, len(X_arr) - 1, max_rows).astype(int)
+        X_arr = X_arr[idx]
+    X_arr = np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0)
+    X_arr = X_arr - X_arr.mean(axis=0, keepdims=True)
+    X_arr = X_arr / np.maximum(X_arr.std(axis=0, keepdims=True), 1e-9)
+
+    try:
+        _, _, vt = np.linalg.svd(X_arr, full_matrices=False)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "per_feature": {}, "elapsed_s": 0.0}
+
+    k = min(max_components, vt.shape[0])
+    leverage = np.sum(vt[:k, :] ** 2, axis=0)
+    max_val = float(leverage.max()) if leverage.size else 0.0
+    norm = leverage / max(max_val, 1e-12)
+    per_feature = {
+        name: {
+            "leverage": round(float(leverage[i]), 8),
+            "score": round(float(norm[i]), 6),
+            "cluster": cluster_result.get("feature_to_group", {}).get(name),
+        }
+        for i, name in enumerate(feature_names)
+    }
+    top = sorted(per_feature, key=lambda n: per_feature[n]["score"], reverse=True)[:20]
+    elapsed = round(time.time() - t0, 1)
+    print(f"[CUR] Computed column leverage evidence for {len(feature_names)} features ({elapsed}s)")
+    return {
+        "status": "ok",
+        "elapsed_s": elapsed,
+        "components": k,
+        "top_features": top,
+        "per_feature": per_feature,
+    }
+
+
 def elbow_detection(per_feature: dict[str, dict], score_key: str = "score") -> dict:
     """Data-driven threshold via kneed Elbow detection.
 
@@ -469,14 +681,23 @@ def optuna_k_sweep(
     X_train: np.ndarray, y_train: np.ndarray,
     X_val: np.ndarray, y_val: np.ndarray,
     feature_names: list[str],
-    n_trials: int = 50,
+    n_trials: int = 150,        # 2026-04-17: 50→150 (NSGAII 2-objective Pareto 建議 150-200)
     score_key: str = "score",
-    pareto_ic_ratio: float = 0.95,  # Pareto front: IC >= ratio × max_IC → pick min K
+    min_k: int = 20,            # 2026-04-17: MIN_K guard（共線性保護，少於 20 稀釋 ensemble diversity）
 ) -> dict:
     """Optuna K sweep: multi-objective Pareto (maximize IC, minimize K).
 
     Replaces single-objective maximize IC with Pareto front to avoid overfitting K.
-    From the Pareto front, select the trial with IC >= 0.95 × max_IC and smallest K.
+
+    Selection rule (Plan B, 2026-04-17):
+      1. Optuna NSGAII explores (K, IC) Pareto front
+      2. Kneedle knee detection ONLY on Pareto front — finds marginal IC gain 趨緩 的拐點
+      3. MIN_K=20 guard 避免共線性下被壓到個位數 K
+
+    Why Kneedle on Pareto front (not full sweep): V1 Permutation Importance 的教訓是
+    Kneedle 直接用在 feature importance 曲線會 correlation dilution；這裡 Kneedle 只作用
+    在 Pareto 已 dominated-filter 的 (K, IC) 點，是二階事後選取，不走回頭路。
+    見 memory/project_feature_selection_locked_plan.md。
 
     Returns same format as elbow_detection for backward compat:
         {"active": [...], "reserve": [...], "threshold": float, "knee_index": int,
@@ -537,34 +758,67 @@ def optuna_k_sweep(
             ic_val, k_val = trial.values
             sweep_results.append({"k": int(trial.params["k"]), "ic": round(float(ic_val), 6)})
 
-    # Select best trial from Pareto front:
-    # IC >= 0.95 × max_IC → pick the one with minimum K
+    # Select best K from Pareto front using Kneedle knee detection (Plan B, 2026-04-17)
     pareto_trials = study.best_trials  # Pareto-optimal trials
     if not pareto_trials:
         # Fallback: use all trials
         pareto_trials = [t for t in study.trials if t.values is not None]
 
-    max_ic = max((t.values[0] for t in pareto_trials if t.values), default=0.0)
-    ic_threshold = pareto_ic_ratio * max_ic
+    # Build (K, IC) points from Pareto front, sorted by K ascending
+    pareto_pts = sorted(
+        [
+            (int(t.params["k"]), float(t.values[0]))
+            for t in pareto_trials
+            if t.values is not None and "k" in t.params
+        ],
+        key=lambda x: x[0],
+    )
 
-    candidates = [
-        t for t in pareto_trials
-        if t.values and t.values[0] >= ic_threshold
-    ]
-    if not candidates:
-        candidates = pareto_trials  # fallback: all Pareto trials
+    best_k = n_max
+    best_ic = 0.0
+    knee_method = "fallback"
 
-    # Pick minimum K among candidates
-    best_trial = min(candidates, key=lambda t: t.params.get("k", n_max))
-    best_k = best_trial.params["k"]
-    best_ic = best_trial.values[0] if best_trial.values else 0.0
+    if pareto_pts:
+        ks = [p[0] for p in pareto_pts]
+        ics = [p[1] for p in pareto_pts]
+        max_ic = max(ics)
+
+        # Kneedle knee on Pareto front — needs >= 3 points to detect curvature
+        knee_k: int | None = None
+        if len(pareto_pts) >= 3:
+            try:
+                from kneed import KneeLocator
+                kl = KneeLocator(ks, ics, curve="concave", direction="increasing")
+                if kl.knee is not None:
+                    knee_k = int(kl.knee)
+                    knee_method = "kneedle"
+            except Exception as _kne:
+                print(f"[OptunaKSweep] Kneedle failed: {_kne}, falling back to 0.8 × max_IC rule")
+
+        # Fallback 1: min-K with IC ≥ 0.8 × max_IC (less aggressive than 0.95)
+        if knee_k is None:
+            fallback_k = next((k for k, ic in pareto_pts if ic >= 0.8 * max_ic), pareto_pts[-1][0])
+            knee_k = fallback_k
+            knee_method = "0.8_threshold"
+
+        # MIN_K guard: 共線性保護
+        best_k = max(int(knee_k), min_k)
+        # Find actual IC at best_k (or closest Pareto point)
+        best_ic = next((ic for k, ic in pareto_pts if k == best_k), 0.0)
+        if best_ic == 0.0:
+            # best_k was promoted by MIN_K guard — use IC of first Pareto point with k >= best_k
+            best_ic = next((ic for k, ic in pareto_pts if k >= best_k), max_ic)
+
+    # Clamp best_k to available feature count
+    best_k = min(best_k, n_max)
 
     active = sorted_names[:best_k]
     reserve = sorted_names[best_k:]
     threshold = per_feature.get(sorted_names[best_k - 1], {}).get(score_key, 0) if best_k > 0 else 0
 
     elapsed = round(time.time() - t0, 1)
-    print(f"[OptunaKSweep] Pareto best K={best_k}/{n_max} (IC={best_ic:.4f}, threshold={ic_threshold:.4f}), "
+    print(f"[OptunaKSweep] Pareto+Kneedle best K={best_k}/{n_max} (IC={best_ic:.4f}, "
+          f"method={knee_method}, min_k_guard={min_k}), "
           f"active={len(active)}, reserve={len(reserve)}, {elapsed}s")
 
     pareto_front = [
@@ -633,6 +887,8 @@ def update_feature_pool(
     ic_results: dict | None = None,
     all_feature_names: list[str] | None = None,  # for ft_active (full 106 features)
     k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
+    gate_result: dict | None = None,              # P0-9: Signal Sanity Gate result
+    extra_evidence: dict | None = None,
 ) -> dict:
     """Build feature_pool.json structure with dual pool output.
 
@@ -640,19 +896,44 @@ def update_feature_pool(
     ft_active:   all feature names for FT-Transformer (skip_feature_pool=True path)
     active:      backward-compat alias for tree_active
     """
-    from datetime import datetime
+    from datetime import UTC, datetime
+    from .training_policy import FEATURE_SELECTION_GOVERNANCE, MODEL_FEATURE_POLICIES
 
     dropped = cluster_result.get("dropped_features", [])
     reserve = sorted(set(reserve + dropped))
+    tree_active = sorted(active)
+    ft_active = sorted(all_feature_names) if all_feature_names else tree_active
+    model_policies = {
+        name: policy.to_dict()
+        for name, policy in MODEL_FEATURE_POLICIES.items()
+    }
 
     pool = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "method": "target_permutation_2.0",
-        "active": sorted(active),           # backward compat
-        "tree_active": sorted(active),      # explicit: tree models use this
-        "ft_active": sorted(all_feature_names) if all_feature_names else sorted(active),  # FT-T uses all features
+        "active": tree_active,           # backward compat
+        "tree_active": tree_active,      # explicit: tree models use this
+        "ft_active": ft_active,          # FT-T uses the governed wide tabular schema
         "reserve": reserve,
         "candidate": [],
+        "feature_policy_schema_version": "feature-pool-policy-v1",
+        "selection_governance": FEATURE_SELECTION_GOVERNANCE,
+        "model_feature_policies": model_policies,
+        "selection_evidence": {
+            "tree": {
+                "feature_source": "feature_pool.tree_active",
+                "feature_count": len(tree_active),
+                "selection_required": True,
+                "methods": ["signal_sanity_gate", "target_permutation", "correlation_clustering", "ic_icir", "optuna_k_sweep", "diversity_guard"],
+            },
+            "ftt": {
+                "feature_source": "feature_pool.ft_active",
+                "feature_count": len(ft_active),
+                "selection_required": False,
+                "methods": ["schema_parity", "missingness_mask", "selection_evidence_reference"],
+            },
+            "governance": extra_evidence or {},
+        },
         "cluster_info": {
             "n_groups": cluster_result["n_groups"],
             "best_k": cluster_result["best_k"],
@@ -661,6 +942,8 @@ def update_feature_pool(
         "target_permutation": {
             "n_permutations": tp_stats.get("n_permutations", 0),
             "elapsed_s": tp_stats.get("elapsed_s", 0),
+            "permutation_mode": tp_stats.get("permutation_mode"),
+            "sector_aware": bool(tp_stats.get("sector_aware")),
         },
         "ic_icir": {
             "stable_count": sum(1 for v in (ic_results or {}).values() if v.get("stable")),
@@ -672,31 +955,45 @@ def update_feature_pool(
             "sweep_results": (k_sweep_result or {}).get("sweep_results", []),
             "pareto_front": (k_sweep_result or {}).get("pareto_front", []),
         } if k_sweep_result else {},
+        "signal_gate": gate_result if gate_result else {},  # P0-9: Signal Sanity Gate metadata
     }
     return pool
 
 
-def save_feature_pool(pool: dict) -> None:
-    """Save feature_pool.json to GCS."""
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
+    """Save feature_pool.json to GCS.
+
+    gcs_prefix=None → production: writes universal/feature_pool.json + universal/powershap_history/YYYY-MM.json
+    gcs_prefix=str  → walk-forward: writes {gcs_prefix}/feature_pool.json ONLY (no monthly snapshot)
+    """
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS_BUCKET_NAME not configured or bucket unavailable")
 
     pool_json = json.dumps(pool, ensure_ascii=False, indent=2)
-    bucket.blob("universal/feature_pool.json").upload_from_string(
-        pool_json, content_type="application/json"
-    )
 
-    month = pool["updated_at"][:7]
-    bucket.blob(f"universal/powershap_history/{month}.json").upload_from_string(
-        pool_json, content_type="application/json"
-    )
-    print(f"[FeatureSelection] Saved feature_pool.json + history/{month}.json to GCS")
+    if gcs_prefix:
+        # Walk-forward per-window write (no monthly snapshot)
+        path = f"{gcs_prefix.rstrip('/')}/feature_pool.json"
+        bucket.blob(path).upload_from_string(pool_json, content_type="application/json")
+        print(f"[FeatureSelection] Saved {path} to GCS (wf scope)")
+    else:
+        # Production canonical write.
+        bucket.blob("universal/feature_pool.json").upload_from_string(
+            pool_json, content_type="application/json"
+        )
+        month = pool["updated_at"][:7]
+        bucket.blob(f"universal/powershap_history/{month}.json").upload_from_string(
+            pool_json, content_type="application/json"
+        )
+        print(f"[FeatureSelection] Saved feature_pool.json + history/{month}.json to GCS")
 
 
 def load_feature_pool() -> Optional[dict]:
     """Load feature_pool.json from GCS."""
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    bucket = _get_bucket()
+    if bucket is None:
+        return None
     try:
         blob = bucket.blob("universal/feature_pool.json")
         return json.loads(blob.download_as_text())
@@ -709,21 +1006,39 @@ def load_feature_pool() -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_feature_selection_pipeline(
-    max_rounds: int = 100,
-    alpha: float = 0.01,
+    max_rounds: int | None = None,
+    alpha: float | None = None,
     dry_run: bool = False,
-    **_kwargs,  # absorb legacy params (required_power etc.)
+    icir_weight: float | None = None,
+    train_end_date: str | None = None,  # 2026-04-19 N2: walk-forward — filter dates ≤ this (no future leak)
+    gcs_prefix: str | None = None,       # 2026-04-19 N2: walk-forward — write to {prefix}/feature_pool.json
+    **_kwargs,  # absorb deprecated params kept in old scheduler payloads
 ) -> dict:
     """Full 2.0 pipeline:
     Load prep data → Signal Sanity Gate → Silhouette → Target Permutation →
     IC/ICIR → Optuna K sweep (Pareto) → Diversity Guard → Save dual pool.
 
     Reads training data from GCS prep npz (same format as retrain).
+
+    Walk-forward mode (train_end_date + gcs_prefix set):
+      - Filter prep data to dates ≤ train_end_date BEFORE any computation
+        → no look-ahead bias for that window
+      - Write per-window pool to {gcs_prefix}/feature_pool.json (no monthly snapshot)
     """
     t0 = time.time()
+    from .training_policy import FeatureSelectionPolicy
 
-    from google.cloud import storage
-    bucket = storage.Client().bucket("stockvision-models")
+    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(
+        {"max_rounds": max_rounds, "alpha": alpha, "icir_weight": icir_weight}
+    )
+    max_rounds = int(selection_params["max_rounds"])
+    alpha = float(selection_params["alpha"])
+    icir_weight = float(selection_params["icir_weight"])
+    permutation_mode = str(selection_params["permutation_mode"])
+
+    bucket = _get_bucket()
+    if bucket is None:
+        return {"error": "GCS_BUCKET_NAME not configured or bucket unavailable"}
 
     # ── 1. Load prep data ────────────────────────────────────────────────────
     prep_blobs = sorted(
@@ -733,7 +1048,8 @@ def run_feature_selection_pipeline(
     if not prep_blobs:
         return {"error": "No prep data in GCS. Run retrain first."}
 
-    all_X, all_y, all_dates = [], [], []
+    all_X, all_y, all_dates, all_sectors = [], [], [], []
+    sector_blob_count = 0
     for blob in prep_blobs:
         buf = io.BytesIO()
         blob.download_to_file(buf)
@@ -742,21 +1058,49 @@ def run_feature_selection_pipeline(
         all_X.append(data["X"])
         all_y.append(data["y"])
         all_dates.append(data["dates"])
+        if "sectors" in data.files:
+            all_sectors.append(data["sectors"])
+            sector_blob_count += 1
     X = np.vstack(all_X)
     y = np.concatenate(all_y)
     dates = np.concatenate(all_dates)
+    sectors = np.concatenate(all_sectors) if sector_blob_count == len(prep_blobs) else None
 
     # Feature names
     fn_blob = bucket.blob("universal/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text())
     print(f"[FeatureSelection] Loaded {len(X)} samples, {len(feature_names)} features")
 
+    # ── 1b. Walk-forward date-range filter (zero look-ahead) ─────────────────
+    # Apply BEFORE nan_to_num + cluster + signal gate so all downstream stages
+    # only see data ≤ train_end_date. target_rank in prep is per-date cross-
+    # sectional (compute_cross_sectional_rank, features/__init__.py:93) so
+    # post-hoc date filtering preserves rank validity for retained dates.
+    if train_end_date is not None:
+        dates_str = np.array([str(d) for d in dates])
+        wf_mask = dates_str <= train_end_date
+        kept = int(wf_mask.sum())
+        if kept == 0:
+            return {"error": f"walk_forward_filter: no samples ≤ {train_end_date}"}
+        print(f"[FeatureSelection] WF filter: dates ≤ {train_end_date} → "
+              f"{kept}/{len(X)} samples retained")
+        X = X[wf_mask]
+        y = y[wf_mask]
+        dates = dates[wf_mask]
+        if sectors is not None:
+            sectors = sectors[wf_mask]
+
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     # ── 2. Purged time-based split: 70 / embargo / 10(val) / embargo / 20(test) ──
-    embargo_days = 10  # ~1.3%T per De Prado AFML Ch.7 (aligned with main.py)
     sorted_dates = np.sort(np.unique(dates))
     n_dates = len(sorted_dates)
+    embargo_days = dynamic_embargo_days(
+        n_dates,
+        base_days=10,
+        embargo_pct=0.015,
+        max_days=20,
+    )
 
     cut70_idx = int(n_dates * 0.7)
     cut80_idx = int(n_dates * 0.8)
@@ -774,13 +1118,26 @@ def run_feature_selection_pipeline(
     X_train, y_train = X[train_mask], y[train_mask]
     X_val, y_val = X[val_mask], y[val_mask]
     X_test, y_test = X[test_mask], y[test_mask]
+    dates_train = dates[train_mask]
+    dates_val = dates[val_mask]
+    sectors_train = sectors[train_mask] if sectors is not None else None
 
     print(f"[FeatureSelection] Purged split: train={len(X_train)}, val={len(X_val)}, "
           f"test={len(X_test)}, embargo={embargo_days}d")
 
     # ── 2b. Signal Sanity Gate (P0-6) ───────────────────────────────────────
     print(f"[FeatureSelection] Running signal sanity gate (30 permutations)...")
-    gate_result = signal_sanity_gate(X_train, y_train, X_val, y_val, n_permutations=30, alpha=alpha)
+    gate_result = signal_sanity_gate(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        n_permutations=30,
+        alpha=alpha,
+        dates_train=dates_train,
+        sectors_train=sectors_train,
+        permutation_mode=permutation_mode,
+    )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
               f"no learnable signal in data. Aborting (keeping previous pool).")
@@ -788,7 +1145,10 @@ def run_feature_selection_pipeline(
     print(f"[FeatureSelection] ✅ Signal sanity gate passed (p={gate_result.get('p_value')})")
 
     # ── 3. Silhouette clustering ─────────────────────────────────────────────
-    cluster_result = cluster_features(X, feature_names)
+    cluster_result = cluster_features(X_train, feature_names)
+    mi_result = mutual_information_evidence(X_train, y_train, feature_names)
+    stability_result = stability_selection_evidence(X_train, y_train, dates_train, feature_names)
+    cur_result = cur_representative_evidence(X_train, feature_names, cluster_result)
 
     # ── 4. Target Permutation ────────────────────────────────────────────────
     tp_result = target_permutation(
@@ -797,14 +1157,17 @@ def run_feature_selection_pipeline(
         max_permutations=max_rounds,
         ks_alpha=0.05,
         ks_check_interval=10,
+        dates_train=dates_train,
+        sectors_train=sectors_train,
+        permutation_mode=permutation_mode,
     )
 
     if "error" in tp_result:
         return tp_result
 
-    # ── 5. IC/ICIR stability check (on test set) ────────────────────────────
-    dates_test = dates[test_mask]
-    ic_results = ic_icir_check(X_test, y_test, dates_test, feature_names)
+    # ── 5. IC/ICIR selection on validation; keep test as final audit only ───
+    ic_results = ic_icir_check(X_val, y_val, dates_val, feature_names)
+    final_oos_audit = ic_icir_check(X_test, y_test, dates[test_mask], feature_names)
 
     # ── 6. Combine TP score + IC stability into final score ─────────────────
     combined_scores = {}
@@ -813,18 +1176,26 @@ def run_feature_selection_pipeline(
         ic_info = ic_results.get(name, {})
         ic_stable = 1.0 if ic_info.get("stable", False) else 0.0
         icir = ic_info.get("icir", 0)
+        mi_score = (mi_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        stability_score = (stability_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        cur_score = (cur_result.get("per_feature") or {}).get(name, {}).get("score", 0)
+        governance_bonus = 0.05 * mi_score + 0.08 * stability_score + 0.03 * cur_score
         combined_scores[name] = {
-            "score": round(tp_score + icir * 0.1, 4),
+            "score": round(tp_score + icir * icir_weight + governance_bonus, 4),
             "tp_score": tp_score,
             "icir": icir,
             "ic_stable": bool(ic_stable),
+            "mi_score": round(float(mi_score), 6),
+            "stability_score": round(float(stability_score), 6),
+            "cur_score": round(float(cur_score), 6),
+            "governance_bonus": round(float(governance_bonus), 6),
         }
 
-    # ── 7. K selection: Optuna Pareto sweep (P0-2) ──────────────────────────
+    # ── 7. K selection: Optuna Pareto sweep + Kneedle (Plan B, 2026-04-17) ───
     try:
         k_sweep_result = optuna_k_sweep(
             combined_scores, X_train, y_train, X_val, y_val,
-            feature_names=feature_names, n_trials=50,
+            feature_names=feature_names,  # n_trials/min_k 走 function 預設 (150/20)
         )
         print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
               f"best_ic={k_sweep_result.get('best_ic')}")
@@ -854,40 +1225,52 @@ def run_feature_selection_pipeline(
         tp_stats={
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
+            "permutation_mode": tp_result.get("permutation_mode"),
+            "sector_aware": tp_result.get("sector_aware"),
         },
         ic_results=ic_results,
         gate_result=gate_result,
         k_sweep_result=k_sweep_result,
+        extra_evidence={
+            "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
+            "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},
+            "cur": {k: v for k, v in cur_result.items() if k != "per_feature"},
+        },
     )
 
     if not dry_run:
-        save_feature_pool(pool)
+        save_feature_pool(pool, gcs_prefix=gcs_prefix)
     else:
         print("[FeatureSelection] DRY RUN — skipping GCS save")
 
     # ── 10. SHAP baseline comparison (if shap_audit.json exists) ─────────────
+    # WF mode: skip — universal/shap_audit.json reflects post-train_end data
+    # so the comparison would inject look-ahead context.
     shap_overlap = None
-    try:
-        shap_blob = bucket.blob("universal/shap_audit.json")
-        if shap_blob.exists():
-            shap_data = json.loads(shap_blob.download_as_text())
-            shap_keep = set(shap_data.get("keep", []))
-            tp_active = set(active_final)
-            overlap = shap_keep & tp_active
-            only_shap = shap_keep - tp_active
-            only_tp = tp_active - shap_keep
-            shap_overlap = {
-                "overlap": len(overlap),
-                "shap_total": len(shap_keep),
-                "tp_total": len(tp_active),
-                "overlap_ratio": round(len(overlap) / max(len(shap_keep), 1), 3),
-                "only_in_shap": sorted(only_shap)[:20],
-                "only_in_tp": sorted(only_tp)[:20],
-            }
-            print(f"[FeatureSelection] SHAP baseline comparison: "
-                  f"{len(overlap)}/{len(shap_keep)} overlap ({shap_overlap['overlap_ratio']:.0%})")
-    except Exception as e:
-        print(f"[FeatureSelection] SHAP comparison skipped: {e}")
+    if train_end_date is not None:
+        print("[FeatureSelection] SHAP comparison skipped in walk-forward mode")
+    else:
+        try:
+            shap_blob = bucket.blob("universal/shap_audit.json")
+            if shap_blob.exists():
+                shap_data = json.loads(shap_blob.download_as_text())
+                shap_keep = set(shap_data.get("keep", []))
+                tp_active = set(active_final)
+                overlap = shap_keep & tp_active
+                only_shap = shap_keep - tp_active
+                only_tp = tp_active - shap_keep
+                shap_overlap = {
+                    "overlap": len(overlap),
+                    "shap_total": len(shap_keep),
+                    "tp_total": len(tp_active),
+                    "overlap_ratio": round(len(overlap) / max(len(shap_keep), 1), 3),
+                    "only_in_shap": sorted(only_shap)[:20],
+                    "only_in_tp": sorted(only_tp)[:20],
+                }
+                print(f"[FeatureSelection] SHAP baseline comparison: "
+                      f"{len(overlap)}/{len(shap_keep)} overlap ({shap_overlap['overlap_ratio']:.0%})")
+        except Exception as e:
+            print(f"[FeatureSelection] SHAP comparison skipped: {e}")
 
     elapsed = round(time.time() - t0, 1)
     print(f"\n[FeatureSelection] === PIPELINE COMPLETE ({elapsed}s) ===")
@@ -899,16 +1282,29 @@ def run_feature_selection_pipeline(
         "target_permutation": {
             "n_permutations": tp_result["n_permutations"],
             "elapsed_s": tp_result["elapsed_s"],
+            "permutation_mode": tp_result.get("permutation_mode"),
+            "sector_aware": tp_result.get("sector_aware"),
             "per_feature_sample": {k: v for k, v in list(tp_result["per_feature"].items())[:10]},
         },
         "ic_icir": {
             "stable_count": sum(1 for v in ic_results.values() if v["stable"]),
             "total": len(ic_results),
+            "selection_split": "validation",
+        },
+        "final_oos_audit": {
+            "stable_count": sum(1 for v in final_oos_audit.values() if v["stable"]),
+            "total": len(final_oos_audit),
+            "used_for_selection": False,
         },
         "signal_gate": gate_result,
         "k_sweep": {
             "best_k": k_sweep_result.get("best_k"),
             "best_ic": k_sweep_result.get("best_ic"),
+        },
+        "feature_governance": {
+            "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
+            "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},
+            "cur": {k: v for k, v in cur_result.items() if k != "per_feature"},
         },
         "shap_comparison": shap_overlap,
         "elapsed_s": elapsed,

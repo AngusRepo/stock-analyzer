@@ -2,9 +2,30 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
+import { execSync } from 'node:child_process'
 import { VitePWA } from 'vite-plugin-pwa'
 
+function resolveBuildId() {
+  const envBuildId = process.env.CF_PAGES_COMMIT_SHA || process.env.VITE_BUILD_ID
+  if (envBuildId) return envBuildId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16)
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: path.resolve(__dirname, '..'),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim().replace(/[^a-zA-Z0-9_-]/g, '')
+  } catch {
+    return new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 12)
+  }
+}
+
+const BUILD_ID = resolveBuildId()
+const BUILD_STAMP = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_BUILD_ID': JSON.stringify(BUILD_ID),
+    'import.meta.env.VITE_BUILD_STAMP': JSON.stringify(BUILD_STAMP),
+  },
   plugins: [
     react(),
     tailwindcss(),
@@ -13,6 +34,12 @@ export default defineConfig({
       devOptions: { enabled: true },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // 2026-04-21 fix: without these flags new sw waits for all tabs to
+        // close before activating → user sees stale bundle after deploy.
+        // skipWaiting + clientsClaim makes new sw take over on next refresh.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // API calls: never cache financial data
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
@@ -63,6 +90,9 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       output: {
+        entryFileNames: `assets/[name]-${BUILD_ID}-[hash].js`,
+        chunkFileNames: `assets/[name]-${BUILD_ID}-[hash].js`,
+        assetFileNames: `assets/[name]-${BUILD_ID}-[hash][extname]`,
         manualChunks: {
           'vendor-react':  ['react', 'react-dom', 'react-router-dom'],
           'vendor-query':  ['@tanstack/react-query'],

@@ -10,171 +10,13 @@
  */
 
 import type { Bindings } from '../types'
-// Types originally from finmind.ts (FinMind API 已棄用，只保留 type 給 screener 內部用)
-export interface FMStockPrice {
-  date: string
-  stock_id: string
-  Trading_Volume: number
-  Trading_money: number
-  open: number
-  max: number
-  min: number
-  close: number
-  spread: number
-  Trading_turnover: number
-}
-
-export interface FMChip {
-  date: string
-  stock_id: string
-  name: string
-  buy: number
-  sell: number
-}
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
-
-// ─────────────────────────────────────────────────────────────────────────────
-// D1 Reader — Source of truth (取代舊 TWSE/TPEx in-memory fetcher)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 背景：原本 marketScreener 自己對 TWSE/TPEx fetch 20 天歷史，與 bulkFetch 寫
-// 進 D1 的資料完全脫鉤，導致：
-//   1. stale fallback 污染（fetchTwseStockDayAll 對假日呼叫返回 stale data）
-//   2. screener / paper.ts / backtest_engine 三個元件用三套不同的歷史資料
-//   3. Sprint 5 Optuna 搜出來的參數對不上 production
-//
-// 重構後 (2026-04-07)：唯一 source = D1 (bulkFetchAndStorePrices 寫入)。
-// 詳見 memory/project_screener_d1_decoupling.md
-//
-/**
- * 從 D1 讀全市場最近 N 個交易日的 prices + chips。
- * 取代 fetchMultiDayMarketData() — source-of-truth 統一為 D1。
- *
- * @param env - Cloudflare Worker bindings
- * @param priceDays - 抓幾個交易日的 prices（default 20）
- * @param chipDays - 抓幾個交易日的 chips（default 5）
- * @returns 跟 fetchMultiDayMarketData 相同 shape，方便 buildStockData 直接吃
- */
-async function loadMarketDataFromD1(
-  env: Bindings,
-  priceDays: number = 20,
-  chipDays: number = 5,
-): Promise<{
-  allPrices: FMStockPrice[]
-  allChips: FMChip[]
-  tpexSymbols: Set<string>
-}> {
-  // 用「日曆天 ≈ 交易日 × 1.5 + 緩衝」抓夠範圍，後面用 DISTINCT date 取最近 N 個交易日
-  const lookbackDays = Math.ceil(priceDays * 1.5) + 7
-  const chipLookback = Math.ceil(chipDays * 1.5) + 5
-
-  // ── 1. 取最近 priceDays 個有資料的交易日 ──
-  const { results: dateRows } = await env.DB.prepare(
-    `SELECT DISTINCT date FROM stock_prices
-     WHERE date >= date('now', '-${lookbackDays} days')
-     ORDER BY date DESC LIMIT ?`
-  ).bind(priceDays).all<{ date: string }>()
-  const tradingDates = (dateRows ?? []).map(r => r.date).sort()
-  if (!tradingDates.length) {
-    console.warn('[Screener D1] No trading dates in D1 stock_prices')
-    return { allPrices: [], allChips: [], tpexSymbols: new Set() }
-  }
-  const minDate = tradingDates[0]
-  const maxDate = tradingDates[tradingDates.length - 1]
-
-  // ── 2. 全市場 prices JOIN stocks（含 market 標記） ──
-  // 預估 ~2300 stocks × 20 days = 46k rows，安全在 D1 100k limit 內
-  const { results: priceRows } = await env.DB.prepare(
-    `SELECT s.symbol, s.market, sp.date,
-            sp.open, sp.high, sp.low, sp.close,
-            sp.volume, sp.avg_price
-     FROM stock_prices sp
-     JOIN stocks s ON sp.stock_id = s.id
-     WHERE sp.date >= ? AND sp.date <= ?
-     ORDER BY s.symbol, sp.date`
-  ).bind(minDate, maxDate)
-   .all<{ symbol: string; market: string | null; date: string;
-          open: number; high: number; low: number; close: number;
-          volume: number; avg_price: number | null }>()
-
-  const allPrices: FMStockPrice[] = []
-  const tpexSymbols = new Set<string>()
-  for (const r of (priceRows ?? [])) {
-    if (!r.close || r.close <= 0) continue
-    if (r.market === 'OTC') tpexSymbols.add(r.symbol)
-    allPrices.push({
-      date: r.date,
-      stock_id: r.symbol,
-      Trading_Volume: r.volume ?? 0,
-      Trading_money: Math.round((r.avg_price ?? r.close) * (r.volume ?? 0)),
-      open: r.open,
-      max: r.high,
-      min: r.low,
-      close: r.close,
-      spread: 0,            // unused by scoreMultiFactor
-      Trading_turnover: 0,  // unused
-    })
-  }
-
-  // ── 3. 全市場 chips（最近 chipDays 個交易日） ──
-  // chip_data 用 symbol 欄位，不需 JOIN stocks
-  const { results: chipDateRows } = await env.DB.prepare(
-    `SELECT DISTINCT date FROM chip_data
-     WHERE date >= date('now', '-${chipLookback} days')
-     ORDER BY date DESC LIMIT ?`
-  ).bind(chipDays).all<{ date: string }>()
-  const chipDates = (chipDateRows ?? []).map(r => r.date).sort()
-
-  const allChips: FMChip[] = []
-  if (chipDates.length) {
-    const minChipDate = chipDates[0]
-    const maxChipDate = chipDates[chipDates.length - 1]
-    const { results: chipRows } = await env.DB.prepare(
-      `SELECT symbol, date, foreign_buy, foreign_sell,
-              trust_buy, trust_sell
-       FROM chip_data
-       WHERE date >= ? AND date <= ?`
-    ).bind(minChipDate, maxChipDate)
-     .all<{ symbol: string; date: string;
-            foreign_buy: number | null; foreign_sell: number | null;
-            trust_buy: number | null; trust_sell: number | null }>()
-
-    // 轉換成 marketScreener 內部 FMChip 格式（每股每日 2 筆：外資 + 投信）
-    // buildStockData (line ~330) 只看 name='外資'/'投信' 的 net = buy - sell
-    // 不寫 '自營商' 因為 buildStockData 沒在用
-    for (const r of (chipRows ?? [])) {
-      if (r.foreign_buy != null || r.foreign_sell != null) {
-        allChips.push({
-          date: r.date, stock_id: r.symbol, name: '外資',
-          buy: r.foreign_buy ?? 0, sell: r.foreign_sell ?? 0,
-        })
-      }
-      if (r.trust_buy != null || r.trust_sell != null) {
-        allChips.push({
-          date: r.date, stock_id: r.symbol, name: '投信',
-          buy: r.trust_buy ?? 0, sell: r.trust_sell ?? 0,
-        })
-      }
-    }
-  }
-
-  console.log(
-    `[Screener D1] Loaded ${allPrices.length} price rows ` +
-    `(${tradingDates.length} trading days, ${minDate}~${maxDate}) + ` +
-    `${allChips.length} chip rows (${chipDates.length} days, ${tpexSymbols.size} OTC)`
-  )
-
-  return { allPrices, allChips, tpexSymbols }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [REMOVED 2026-04-07] 5 個 in-memory fetcher 已刪除：
-//   fetchTWSEAllPrices / fetchTPExAllPrices /
-//   fetchTWSEInstitutional / fetchTPExInstitutional /
-//   fetchMultiDayMarketData
-// 由 loadMarketDataFromD1() 取代，source-of-truth 統一為 D1 (bulkFetch 寫入)。
-// 詳見 memory/project_screener_d1_decoupling.md
-// ─────────────────────────────────────────────────────────────────────────────
+import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
+import { computeAndStoreIndicators } from './technicalIndicators'
+import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
+import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
+import { getAdaptiveParamsForRegime } from './adaptiveConfig'
+import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -197,21 +39,224 @@ export interface ScreenerCandidate {
   sector: string
   score: number
   reason: string
+  strategy_matches?: Array<{ specId: string; alphaBucket: string; status: string; label: string; reason: string }>
+  strategy_tags?: string[]
+  strategy_watch_points?: string[]
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
-
-/** 計算 N 個交易日前的日期（粗略：日曆天 * 1.5，台北時區） */
-function tradingDaysAgo(n: number): string {
-  const tw = new Date(Date.now() + 8 * 3600_000)
-  tw.setDate(tw.getDate() - Math.ceil(n * 1.5))
-  return tw.toISOString().slice(0, 10)
-}
 
 function today(): string {
   // 用台北時間（UTC+8），確保收盤後取到當天資料
   const tw = new Date(Date.now() + 8 * 3600_000)
   return tw.toISOString().slice(0, 10)
+}
+
+function resolveScreenerRunDate(runDate?: string | null): string {
+  const value = (runDate || '').trim()
+  if (!value) return today()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid screener run date: ${value}; expected YYYY-MM-DD`)
+  }
+  return value
+}
+
+async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
+  try {
+    const value = await kv.get(key, 'json') as unknown
+    return Array.isArray(value) ? value.map(String).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+async function loadRestrictedScreenerSymbols(env: Bindings): Promise<Set<string>> {
+  const restricted = new Set<string>()
+  const [cachedPunished, cachedAttention] = await Promise.all([
+    readSymbolList(env.KV, 'market:punished_stocks'),
+    readSymbolList(env.KV, 'market:attention_stocks'),
+  ])
+  for (const symbol of cachedPunished) restricted.add(symbol)
+  for (const symbol of cachedAttention) restricted.add(symbol)
+
+  try {
+    const { fetchPunishedStocks } = await import('./twseApi')
+    const punished = await fetchPunishedStocks()
+    if (punished.length) {
+      for (const symbol of punished) restricted.add(symbol)
+      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
+    }
+  } catch (e) {
+    console.warn('[Screener v2] punished stock fetch failed; using KV fallback:', e)
+  }
+
+  return restricted
+}
+
+export interface ScreenerSelectionFlag {
+  highFreq: boolean
+  newMoney: boolean
+  freq20d: number
+}
+
+export async function loadSelectionHistoryFlags(
+  db: D1Database,
+  symbols: string[],
+  endDate: string,
+  options: { highFreqThreshold?: number } = {},
+): Promise<Map<string, ScreenerSelectionFlag>> {
+  const uniqueSymbols = [...new Set(symbols.filter(Boolean))]
+  const selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
+  for (const sym of uniqueSymbols) {
+    selectionFlagMap.set(sym, { highFreq: false, newMoney: true, freq20d: 0 })
+  }
+  if (!uniqueSymbols.length) return selectionFlagMap
+
+  const placeholders = uniqueSymbols.map(() => '?').join(',')
+  const highFreqThreshold = Math.max(1, Math.floor(options.highFreqThreshold ?? 12))
+
+  const { results: freqRows } = await db.prepare(
+    `SELECT symbol, COUNT(*) as freq20d FROM screener_selection_history
+     WHERE date >= date(?, '-20 days') AND date < ? AND symbol IN (${placeholders})
+     GROUP BY symbol`,
+  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string; freq20d: number }>()
+
+  const { results: recentRows } = await db.prepare(
+    `SELECT symbol FROM screener_selection_history
+     WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
+     GROUP BY symbol`,
+  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string }>()
+
+  const freqMap = new Map((freqRows ?? []).map(r => [r.symbol, Number(r.freq20d ?? 0)]))
+  const seenIn30d = new Set((recentRows ?? []).map(r => r.symbol))
+  for (const sym of uniqueSymbols) {
+    const freq = freqMap.get(sym) ?? 0
+    selectionFlagMap.set(sym, {
+      freq20d: freq,
+      highFreq: freq >= highFreqThreshold,
+      newMoney: !seenIn30d.has(sym),
+    })
+  }
+  return selectionFlagMap
+}
+
+interface ScreenerFunnelItemInput {
+  symbol: string
+  name?: string | null
+  stage: string
+  decision: 'pass' | 'drop' | 'selected' | 'observe'
+  reasonCode: string
+  scoreBefore?: number | null
+  scoreAfter?: number | null
+  rank?: number | null
+  evidence?: Record<string, unknown>
+}
+
+function pushFunnelItem(items: ScreenerFunnelItemInput[], item: ScreenerFunnelItemInput): void {
+  items.push({
+    ...item,
+    symbol: String(item.symbol || '').trim(),
+    evidence: item.evidence ?? {},
+  })
+}
+
+export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>(candidates: T[]): T[] {
+  const seen = new Set<string>()
+  const deduped: T[] = []
+  for (const candidate of candidates) {
+    const symbol = String(candidate.symbol ?? '').trim().toUpperCase()
+    if (!symbol || seen.has(symbol)) continue
+    seen.add(symbol)
+    deduped.push(candidate)
+  }
+  return deduped
+}
+
+export async function queryTopConceptTagsForSymbols(
+  db: D1Database,
+  symbols: string[],
+  chunkSize = 400,
+): Promise<Array<{ symbol: string; tag: string }>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  const safeChunkSize = Math.max(1, Math.min(400, Math.floor(chunkSize || 400)))
+  const rows: Array<{ symbol: string; tag: string }> = []
+
+  for (let i = 0; i < uniqueSymbols.length; i += safeChunkSize) {
+    const chunk = uniqueSymbols.slice(i, i + safeChunkSize)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT symbol, tag FROM stock_tags
+       WHERE tag_type='concept' AND symbol IN (${placeholders})
+       ORDER BY symbol, weight DESC`
+    ).bind(...chunk).all<{ symbol: string; tag: string }>()
+    rows.push(...(results ?? []))
+  }
+
+  return rows
+}
+
+async function writeScreenerFunnel(
+  env: Bindings,
+  input: {
+    runId: string
+    date: string
+    status: 'success' | 'skipped' | 'error'
+    universeCount: number
+    candidateCount: number
+    finalCount: number
+    emergingCount: number
+    metadata: Record<string, unknown>
+    debugLog: string[]
+    items: ScreenerFunnelItemInput[]
+  },
+): Promise<void> {
+  await env.DB.prepare(`
+    INSERT INTO screener_funnel_runs
+      (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      status=excluded.status,
+      universe_count=excluded.universe_count,
+      candidate_count=excluded.candidate_count,
+      final_count=excluded.final_count,
+      emerging_count=excluded.emerging_count,
+      metadata=excluded.metadata,
+      debug_log=excluded.debug_log
+  `).bind(
+    input.runId,
+    input.date,
+    input.status,
+    input.universeCount,
+    input.candidateCount,
+    input.finalCount,
+    input.emergingCount,
+    JSON.stringify(input.metadata),
+    JSON.stringify(input.debugLog.slice(-80)),
+  ).run()
+
+  if (!input.items.length) return
+  const batch = input.items.slice(0, 2500).map((item) =>
+    env.DB.prepare(`
+      INSERT INTO screener_funnel_items
+        (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      input.runId,
+      input.date,
+      item.symbol,
+      item.name ?? null,
+      item.stage,
+      item.decision,
+      item.reasonCode,
+      item.scoreBefore ?? null,
+      item.scoreAfter ?? null,
+      item.rank ?? null,
+      JSON.stringify(item.evidence ?? {}),
+    )
+  )
+  for (let i = 0; i < batch.length; i += 50) {
+    await env.DB.batch(batch.slice(i, i + 50))
+  }
 }
 
 /** Clamp value to [min, max] */
@@ -285,6 +330,10 @@ function buildStockData(
     if (!dateMap.has(c.date)) dateMap.set(c.date, { foreign: 0, trust: 0 })
     const entry = dateMap.get(c.date)!
     const net = c.buy - c.sell
+    const chipName = String(c.name ?? '').toLowerCase()
+    if (chipName.includes('foreign')) entry.foreign += net
+    if (chipName.includes('trust')) entry.trust += net
+    if (chipName.includes('dealer')) (entry as any).dealer = ((entry as any).dealer ?? 0) + net
     if (c.name.includes('外資')) entry.foreign += net
     if (c.name.includes('投信')) entry.trust += net
   }
@@ -410,8 +459,8 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
 /**
  * Step 2: 多因子評分（FinLab 優化版）
  *
- * 籌碼(0-40): 用相對比例（佔日均成交%），不偏向權值股
- * 技術(0-30): RSI 40-80 全給分，超買不扣分（FinLab 驗證）
+ * 籌碼(0-40): 用 5 日法人淨買超 / 20 日均成交金額，避免大型股金額偏誤
+ * 技術(0-30): 趨勢品質分數；高 RSI 只視為動能，不當成無風險滿分
  * 動能(0-20): 超額報酬 + 量能比 + 價格意圖因子 + RSI 鈍化
  */
 // Sprint 6a.7b: exported for cross-runtime parity test
@@ -443,7 +492,7 @@ export function scoreMultiFactor(
     for (let i = sortedDates.length - 1; i >= 0; i--) {
       const d = sortedDates[i]
       const nets = chipDates.get(d)!
-      const dayNet = nets.foreign + nets.trust
+      const dayNet = nets.foreign + nets.trust + ((nets as any).dealer ?? 0)
       netBuyShares += dayNet
       if (!streakBroken) {
         if (dayNet > 0) consecBuyDays++
@@ -456,30 +505,30 @@ export function scoreMultiFactor(
     const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
     const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
 
-    // 相對比例分級（消除大小型股偏差）
-    const chipTiers = sc?.chipScoreTiers ?? [36, 28, 20, 12, 5]
-    const chipThresholds = sc?.chipIntensityThresholds ?? [0.20, 0.10, 0.05, 0, -0.05]
-    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]       // 佔日均成交 20%+ 極強
-    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]  // 10%+
-    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]  // 5%+
-    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]  // 正向
+    // 相對比例分級：80%+ ADTV 才接近極端累積，避免牛市中大量候選股都接近滿分。
+    const chipTiers = sc?.chipScoreTiers ?? [32, 24, 16, 8, 2]
+    const chipThresholds = sc?.chipIntensityThresholds ?? [0.80, 0.45, 0.20, 0.05, -0.05]
+    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]
+    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]
+    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]
+    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]
     else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 微賣
     // else 0
 
     if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
 
     // 連續買超天數 bonus
-    const cbBonus = sc?.consecBuyBonusTiers ?? [4, 2]
+    const cbBonus = sc?.consecBuyBonusTiers ?? [3, 1]
     const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
     if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`連買${consecBuyDays}天`) }
     else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
   }
   chip_score = clamp(chip_score, 0, 40)
 
-  // ── P0-2: 技術面 (0-30) — RSI 區間放寬，超買不扣分 ──
+  // ── P0-2: 技術面 (0-30) — 趨勢品質，避免超買股無條件滿分 ──
   let tech_score = 0
 
-  // RSI 14（FinLab 驗證：超買不隱含回調，40-80 全給分）
+  // RSI 14：50-68 是趨勢健康區；75+ 代表動能強但追高風險也升高。
   let rsiValue = 50
   if (prices.length >= 15) {
     const changes14 = prices.slice(-15).map((p, i, arr) =>
@@ -492,13 +541,12 @@ export function scoreMultiFactor(
     const rsi = 100 - 100 / (1 + avgGain / avgLoss)
     rsiValue = rsi
 
-    // 放寬版評分（原本 55-70 才給高分，現在 40-80 都給分）
-    const rsiTiers = sc?.rsiScoreTiers ?? [12, 8, 6, 8, 3]
-    if (rsi >= 55 && rsi <= 75) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[1]
-    else if (rsi >= 40 && rsi < 45) tech_score += rsiTiers[2]
-    else if (rsi > 75) tech_score += rsiTiers[3]  // 超買不扣分，動能延續
-    else if (rsi >= 30 && rsi < 40) tech_score += rsiTiers[4]  // 超賣反彈潛力
+    const rsiTiers = sc?.rsiScoreTiers ?? [10, 6, 4, 2, 2]
+    if (rsi >= 55 && rsi <= 68) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi > 68 && rsi <= 75) { tech_score += rsiTiers[1]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
+    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[2]
+    else if (rsi > 75 && rsi <= 85) tech_score += rsiTiers[3]
+    else if (rsi >= 30 && rsi < 45) tech_score += rsiTiers[4]
   }
 
   // MACD（近似 EMA12 - EMA26）
@@ -506,18 +554,19 @@ export function scoreMultiFactor(
     const ma12 = prices.slice(-12).reduce((s, p) => s + p.close, 0) / 12
     const ma26 = prices.slice(-Math.min(26, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(26, prices.length)
     const macdApprox = ma12 - ma26
-    if (macdApprox > 0) { tech_score += 8; reasons.push('MACD 多頭') }
-    else if (macdApprox > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 3
+    if (macdApprox > 0) { tech_score += 6; reasons.push('MACD 多頭') }
+    else if (macdApprox > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 2
   }
 
   // 均線排列
   if (prices.length >= 5) {
     const ma5 = prices.slice(-5).reduce((s, p) => s + p.close, 0) / 5
-    if (latest.close > ma5) tech_score += 3
+    if (latest.close > ma5) tech_score += 1
   }
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
-    if (latest.close > ma20) { tech_score += 4; reasons.push('站上MA20') }
+    if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
+
   }
 
   // P3-5: NATR 低波動加分（低波動 + 趨勢中 = 穩健上漲）
@@ -534,12 +583,12 @@ export function scoreMultiFactor(
     const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
     const keltnerMult = sc?.keltnerMultiplier ?? 1.5
     if (latest.close > ma20 + keltnerMult * atr14 && atr14 > 0) {
-      tech_score += 3
+      tech_score += 2
       reasons.push('突破肯特納')
     }
 
     // NATR 低波動：< threshold 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
-    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 2
+    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 1
   }
   tech_score = clamp(tech_score, 0, 30)
 
@@ -687,7 +736,6 @@ async function deduplicateByCorrelation(
         // 移除分數低的
         const loser = candidates[i].score >= candidates[j].score ? candidates[j].symbol : candidates[i].symbol
         removed.add(loser)
-        console.log(`[Dedup] ${candidates[i].symbol} ↔ ${candidates[j].symbol} corr=${corr.toFixed(2)} → remove ${loser}`)
       }
     }
   }
@@ -698,16 +746,20 @@ async function deduplicateByCorrelation(
 /**
  * Bottom-up 全市場選股主流程（v2）
  */
-export async function runBottomUpScreener(env: Bindings): Promise<{
+export async function runBottomUpScreener(env: Bindings, runDate?: string | null): Promise<{
   hotSectors: SectorHeatScore[]
   candidates: ScreenerCandidate[]
+  emergingResearchCandidates?: ScreenerCandidate[]
   debugLog?: string[]
 }> {
-  console.log('[Screener v2] Starting bottom-up multi-factor screening...')
   const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
-  const endDate = today()
+  const adaptiveParams = await getAdaptiveParamsForRegime(env.KV)
+  const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
+  const endDate = resolveScreenerRunDate(runDate)
+  const runId = `screener-${endDate}-${Date.now()}`
+  const funnelItems: ScreenerFunnelItemInput[] = []
 
   // ── 資料抓取（平行）──
   const { detectPttBuzz, storePttBuzz, loadBuzzKeywords } = await import('./pttBuzz')
@@ -716,20 +768,23 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   type BuzzResult = Awaited<ReturnType<typeof detectPttBuzz>>
   let allPrices: FMStockPrice[]
+  let emergingResearchPrices: FMStockPrice[]
   let allChips: FMChip[]
   let tpexSymbolSet = new Set<string>()
   let combinedBuzz: BuzzResult = []
+  let conceptBuzzScore = new Map<string, number>()
 
   try {
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz] = await Promise.all([
-      loadMarketDataFromD1(env, 20, 5),
+      loadMarketDataFromD1(env, 20, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
     ])
     allPrices = marketData.allPrices
+    emergingResearchPrices = marketData.emergingResearchPrices
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols
 
@@ -762,9 +817,13 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       topPosts: v.posts.slice(0, 3),
     }))
     const zSumMap = new Map([...buzzMap.entries()].map(([k, v]) => [k, v.zSum]))
+    conceptBuzzScore = zSumMap
     combinedBuzz.sort((a, b) => (zSumMap.get(b.concept) ?? 0) - (zSumMap.get(a.concept) ?? 0))
 
-    console.log(`[Screener v2] Data: ${allPrices.length} prices, ${allChips.length} chips | Buzz: ${combinedBuzz.length}`)
+    debugLog.push(
+      `[Data] prices=${allPrices.length} emerging_research=${emergingResearchPrices.length} ` +
+      `chips=${allChips.length} buzz=${combinedBuzz.length} lanes=${JSON.stringify(marketData.laneCounts)}`,
+    )
   } catch (e) {
     console.error('[Screener v2] Data fetch failed:', e)
     return { hotSectors: [], candidates: [] }
@@ -776,17 +835,9 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // ── 處置股排除 ──
-  let punishedSet = new Set<string>()
-  try {
-    const { fetchPunishedStocks } = await import('./twseApi')
-    const punished = await fetchPunishedStocks()
-    punishedSet = new Set(punished)
-    if (punished.length) {
-      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
-    }
-  } catch (e) {
-    console.warn('[Screener v2] 處置股抓取失敗:', e)
-  }
+  const punishedSet = await loadRestrictedScreenerSymbols(env)
+  // restricted symbols are loaded once through loadRestrictedScreenerSymbols above.
+  debugLog.push(`[Guard] restricted symbols loaded=${punishedSet.size} (punished + attention, KV fallback enabled)`)
 
   // ── 讀取官方產業 mapping + 概念標籤 ──
   const industryMap = await getIndustryMapping(env.DB, env.KV)
@@ -794,9 +845,11 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     "SELECT symbol, tag, weight FROM stock_tags WHERE tag_type='concept'"
   ).all<{ symbol: string; tag: string; weight: number }>()
   const symbolConceptTags = new Map<string, string[]>()
+  const conceptCrowding = new Map<string, number>()
   for (const r of (tagRows ?? [])) {
     if (!symbolConceptTags.has(r.symbol)) symbolConceptTags.set(r.symbol, [])
     symbolConceptTags.get(r.symbol)!.push(r.tag)
+    conceptCrowding.set(r.tag, (conceptCrowding.get(r.tag) ?? 0) + 1)
   }
 
   // ── 股票名稱 mapping ──
@@ -808,10 +861,14 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   // 0050 追蹤加權指數，是最穩定的大盤代理。若沒有就用加權指數近似
   let marketReturn5d = 0
   try {
-    const latestDate = await env.DB.prepare("SELECT MAX(date) as d FROM stock_prices").first<{ d: string }>()
+    const latestDate = await env.DB.prepare(
+      'SELECT MAX(date) as d FROM stock_prices WHERE date <= ?',
+    ).bind(endDate).first<{ d: string }>()
     const fiveDaysAgoDate = await env.DB.prepare(
-      "SELECT date FROM (SELECT DISTINCT date FROM stock_prices ORDER BY date DESC LIMIT 6) ORDER BY date ASC LIMIT 1"
-    ).first<{ date: string }>()
+      `SELECT date
+         FROM (SELECT DISTINCT date FROM stock_prices WHERE date <= ? ORDER BY date DESC LIMIT 6)
+        ORDER BY date ASC LIMIT 1`,
+    ).bind(endDate).first<{ date: string }>()
 
     if (latestDate?.d && fiveDaysAgoDate?.date) {
       // 嘗試 0050 ETF
@@ -843,12 +900,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.warn('[Screener v2] D1 marketReturn 查詢失敗，fallback API:', e)
   }
 
-  // [REMOVED 2026-04-07] Step 0.5「D1 stock_prices 補充」邏輯已刪除：
-  // 重構後 loadMarketDataFromD1 是 primary source，不再需要 API + D1 merge。
-  // 詳見 memory/project_screener_d1_decoupling.md
-
   // ── Step 1: Universe hard filter ──
-  console.log('[Screener v2] Step 1: Universe filtering...')
   const universe: { stockId: string; prices: FMStockPrice[] }[] = []
   let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0
 
@@ -857,26 +909,45 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const latest = prices[prices.length - 1]
 
     // Hard filters
-    if (latest.close < sc.minPrice || latest.close > sc.maxPrice) { skipPrice++; continue }
-    if (latest.Trading_Volume === 0) { skipVolZero++; continue }
-    if (punishedSet.has(stockId)) { skipPunish++; continue }
+    if (latest.close < sc.minPrice || latest.close > sc.maxPrice) {
+      skipPrice++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'price_out_of_range', evidence: { close: latest.close, minPrice: sc.minPrice, maxPrice: sc.maxPrice } })
+      continue
+    }
+    if (latest.Trading_Volume === 0) {
+      skipVolZero++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'zero_volume', evidence: { volume: latest.Trading_Volume } })
+      continue
+    }
+    if (punishedSet.has(stockId)) {
+      skipPunish++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'restricted_attention_or_punished', evidence: { restricted: true } })
+      continue
+    }
 
     const volSlice = prices.slice(-Math.min(20, prices.length))
     const avgVol20 = volSlice.reduce((s, p) => s + p.Trading_Volume, 0) / volSlice.length
-    if (avgVol20 < sc.minAvgVolume) { skipVol++; continue }
+    if (avgVol20 < sc.minAvgVolume) {
+      skipVol++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'avg_volume_below_min', evidence: { avgVol20, minAvgVolume: sc.minAvgVolume } })
+      continue
+    }
 
     const avgDailyTurnover = avgVol20 * latest.close
-    if (avgDailyTurnover < sc.minDailyTurnover) { skipTurnover++; continue }
+    if (avgDailyTurnover < sc.minDailyTurnover) {
+      skipTurnover++
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'turnover_below_min', evidence: { avgDailyTurnover, minDailyTurnover: sc.minDailyTurnover } })
+      continue
+    }
 
     universe.push({ stockId, prices })
+    pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'pass', reasonCode: 'hard_filters_passed', evidence: { close: latest.close, avgVol20, avgDailyTurnover } })
   }
   const universeMsg = `[Step 1] Universe: ${universe.length} 檔通過 | 篩掉: 股價=${skipPrice} 均量=${skipVol} 成交額=${skipTurnover} 處置=${skipPunish} 零量=${skipVolZero} 天數不足=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero}`
   debugLog.push(universeMsg)
-  console.log(universeMsg)
 
   // ── Step 2: 多因子評分 ──
-  console.log('[Screener v2] Step 2: Multi-factor scoring...')
-  type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string }
+  type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string; market_segment: string }
   const scored: ScoredCandidate[] = []
 
   for (const { stockId, prices } of universe) {
@@ -897,8 +968,25 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
       reason: reasons.slice(0, 3).join('；') || '符合篩選條件',
       chip_score, tech_score, momentum_score,
       industry,
+      market_segment: 'listed_otc',
+    })
+    pushFunnelItem(funnelItems, {
+      symbol: stockId,
+      name: info?.name ?? stockId,
+      stage: 'scoring',
+      decision: 'pass',
+      reasonCode: 'base_score_computed',
+      scoreAfter: base_score,
+      evidence: { chip_score, tech_score, momentum_score, reasons },
     })
   }
+
+  applyScreenerScoreCalibration(scored, screenerPolicy.scoreCalibration)
+  debugLog.push(
+    `[Step 2b] score calibration ${screenerPolicy.scoreCalibration.enabled ? screenerPolicy.scoreCalibration.method : 'disabled'} ` +
+    `pool=${screenerPolicy.sizing.candidatePoolSize} shortlist=${screenerPolicy.sizing.mlShortlistSize} ` +
+    `emerging=${screenerPolicy.sizing.emergingResearchSize}`,
+  )
 
   // Step 2 debug: top 30 scored
   debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
@@ -916,59 +1004,96 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
   // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
-  // Part 5 memory 裡 cfg.rrg.*Bonus/Penalty 是 dead code：schema + optuna push 有
+  // RRG bonus config is consumed below from trading config / Optuna pushes.
   // 但沒 consumer。這裡接上：讀 ml-controller 寫的 sector_flow (classification='theme'
   // + 最新 date + 非空 quadrant)，把每檔候選股的 top concept tag 對應到 quadrant，
   // 然後用 cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}
   // 調整 score。保留原本 base_score 語意不變（調整後存回 c.score）。
-  // RRG quadrant 本身的 threshold (RS=100, Mom=0) 仍由 _rrg_calculator.py hardcode，
-  // 因為是 de Kempenaer RRG 方法論的數學定義，不該 tunable。
+  // RRG quadrant axes (RS=100, Mom=0) are canonical de Kempenaer coordinates,
+  // so they stay fixed rather than becoming Optuna-tunable policy knobs.
   const sectorHeatScores: SectorHeatScore[] = []
   let rrgAdjustedCount = 0
   const rrgCfg = cfg.rrg
   if (rrgCfg && scored.length > 0) {
     try {
-      const ph = scored.map(() => '?').join(',')
       // (a) 每檔候選股的 top (highest weight) concept tag
-      const { results: topTagRows } = await env.DB.prepare(
-        `SELECT symbol, tag FROM stock_tags
-         WHERE tag_type='concept' AND symbol IN (${ph})
-         ORDER BY symbol, weight DESC`
-      ).bind(...scored.map(c => c.symbol)).all<{ symbol: string; tag: string }>()
-      const symbolTopTag = new Map<string, string>()
+      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, scored.map(c => c.symbol))
+      const symbolTags = new Map<string, string[]>()
       for (const r of topTagRows ?? []) {
-        if (!symbolTopTag.has(r.symbol)) symbolTopTag.set(r.symbol, r.tag)
+        const tags = symbolTags.get(r.symbol) ?? []
+        tags.push(r.tag)
+        symbolTags.set(r.symbol, tags)
       }
       // (b) 最新 sector_flow (theme) 的 quadrant
       const { results: qRows } = await env.DB.prepare(
-        `SELECT sector, quadrant FROM sector_flow
+        `SELECT sector, quadrant, rs_ratio, rs_momentum FROM sector_flow
          WHERE classification='theme' AND quadrant IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification='theme' AND quadrant IS NOT NULL)`
-      ).all<{ sector: string; quadrant: string }>()
-      const themeQuadrant = new Map<string, string>()
-      for (const r of qRows ?? []) themeQuadrant.set(r.sector, r.quadrant)
+      ).all<{ sector: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
+      const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number }>()
+      for (const r of qRows ?? []) themeQuadrant.set(r.sector, {
+        quadrant: r.quadrant,
+        rsRatio: Number(r.rs_ratio ?? 100),
+        rsMomentum: Number(r.rs_momentum ?? 0),
+      })
+      const latestThemeUniverse = new Set(themeQuadrant.keys())
 
       // Apply bonus to each scored candidate
       for (const c of scored) {
-        const tag = symbolTopTag.get(c.symbol)
+        const tags = symbolTags.get(c.symbol) ?? []
+        const tag = tags.find((candidateTag) => latestThemeUniverse.has(candidateTag)) ?? tags[0]
         if (!tag) continue
-        const q = themeQuadrant.get(tag)
-        if (!q) continue
-        let bonus = 0
-        if (q === 'Leading')       bonus = rrgCfg.leadingBonus
-        else if (q === 'Improving') bonus = rrgCfg.improvingBonus
-        else if (q === 'Weakening') bonus = rrgCfg.weakeningBonus
-        else if (q === 'Lagging')   bonus = rrgCfg.laggingPenalty
-        if (bonus !== 0) {
-          c.score += bonus
-          const sign = bonus > 0 ? '+' : ''
-          c.reason = `[RRG ${q} ${sign}${bonus}] ${c.reason}`
+        const overlay = themeQuadrant.get(tag)
+        if (!overlay) {
+          pushFunnelItem(funnelItems, {
+            symbol: c.symbol,
+            name: c.name,
+            stage: 'rrg_overlay',
+            decision: 'observe',
+            reasonCode: 'rrg_overlay_unmapped_neutral',
+            scoreBefore: c.score,
+            scoreAfter: c.score,
+            evidence: { tag, latestThemeUniverseSize: latestThemeUniverse.size },
+          })
+          continue
+        }
+        const { quadrant: q, rsRatio, rsMomentum } = overlay
+        let adjustment = 0
+        let reasonCode = 'rrg_overlay_neutral'
+        if (q === 'Leading' && rsRatio >= 100 && rsMomentum >= 0) {
+          adjustment = Math.min(4, Math.max(0, Number(rrgCfg.leadingBonus ?? 0)))
+          reasonCode = 'rrg_overlay_leading_confirmed'
+        } else if (q === 'Improving' && rsMomentum > 0) {
+          adjustment = Math.min(3, Math.max(0, Number(rrgCfg.improvingBonus ?? 0)))
+          reasonCode = 'rrg_overlay_improving_tailwind'
+        } else if (q === 'Weakening' && rsMomentum < 0) {
+          adjustment = Math.min(0, Number(rrgCfg.weakeningBonus ?? -2) || -2)
+          reasonCode = 'rrg_overlay_weakening_risk'
+        } else if (q === 'Lagging') {
+          adjustment = Math.max(-6, Math.min(-2, Number(rrgCfg.laggingPenalty ?? -4)))
+          reasonCode = 'rrg_overlay_lagging_risk'
+        }
+        if (adjustment !== 0) {
+          const before = c.score
+          c.score += adjustment
+          const sign = adjustment > 0 ? '+' : ''
+          c.reason = `[rrg_overlay ${q} ${sign}${adjustment}] ${c.reason}`
           rrgAdjustedCount++
+          pushFunnelItem(funnelItems, {
+            symbol: c.symbol,
+            name: c.name,
+            stage: 'rrg_overlay',
+            decision: 'observe',
+            reasonCode,
+            scoreBefore: before,
+            scoreAfter: c.score,
+            evidence: { tag, quadrant: q, rsRatio, rsMomentum, adjustment },
+          })
         }
       }
       debugLog.push(
-        `[Step 3] RRG quadrant bonus applied to ${rrgAdjustedCount}/${scored.length} ` +
+        `[Step 3] RRG overlay applied to ${rrgAdjustedCount}/${scored.length} ` +
         `(themes loaded: ${themeQuadrant.size}, ` +
         `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
       )
@@ -981,12 +1106,10 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // ── Step 4: 情緒面加分 ──
-  console.log('[Screener v2] Step 4: Sentiment scoring...')
-
   // 4a. 新聞情緒（D1 查詢）
   try {
     // 批次查所有候選的近 7 天新聞情緒
-    const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, 100).map(c => c.symbol)
+    const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
     if (topSymbols.length > 0) {
       // 查 stocks 表拿 stock_id
       const ph = topSymbols.map(() => '?').join(',')
@@ -1027,9 +1150,25 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const tags = symbolConceptTags.get(c.symbol) ?? []
     const matchedHot = tags.filter(t => hotConcepts.has(t))
     if (matchedHot.length > 0) {
-      const buzzBonus = Math.min(5, matchedHot.length * 3)
+      const bestTag = matchedHot
+        .map(tag => ({ tag, score: conceptBuzzScore.get(tag) ?? 0, crowding: conceptCrowding.get(tag) ?? 1 }))
+        .sort((a, b) => b.score - a.score)[0]
+      const sourceStrength = Math.max(0, bestTag?.score ?? 0)
+      const crowdingPenalty = Math.min(2, Math.log10(Math.max(1, bestTag?.crowding ?? 1)))
+      const buzzBonus = Math.max(0, Math.min(4, sourceStrength * 1.5 + matchedHot.length - crowdingPenalty))
+      const before = c.score
       c.score += buzzBonus
-      if (buzzBonus >= 3) c.reason += `；${matchedHot[0]}概念`
+      c.reason += ` | buzz_evidence:${bestTag.tag}+${buzzBonus.toFixed(1)}`
+      pushFunnelItem(funnelItems, {
+        symbol: c.symbol,
+        name: c.name,
+        stage: 'buzz_evidence',
+        decision: 'observe',
+        reasonCode: 'weighted_keyword_evidence',
+        scoreBefore: before,
+        scoreAfter: c.score,
+        evidence: { concept: bestTag.tag, matchedHot, sourceStrength, crowding: bestTag.crowding, crowdingPenalty, buzzBonus },
+      })
     }
   }
 
@@ -1042,12 +1181,11 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | total=${c.score.toFixed(1)} | ${c.reason}`)
   }
 
-  console.log('[Screener v2] Step 5: Sort, dedup, truncate...')
   scored.sort((a, b) => b.score - a.score)
 
   // ── Step 4b: 基本面加分（F-Score + 毛利率事件）──
   try {
-    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
+    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
     if (topSymbols4b.length > 0) {
       const ph = topSymbols4b.map(() => '?').join(',')
 
@@ -1141,16 +1279,16 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
 
   // ── Step 4c: 趨勢品質 + ADX + 流動性分級（D1 60 天歷史）──
   try {
-    const top80 = scored.sort((a, b) => b.score - a.score).slice(0, 80).map(c => c.symbol)
-    if (top80.length > 0) {
-      const ph = top80.map(() => '?').join(',')
+    const policyPoolSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
+    if (policyPoolSymbols.length > 0) {
+      const ph = policyPoolSymbols.map(() => '?').join(',')
       // 查 60 天 OHLCV（ADX 需要 high/low）
       const { results: histRows } = await env.DB.prepare(`
         SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
         FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
         WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
         ORDER BY s.symbol, sp.date
-      `).bind(...top80).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
+      `).bind(...policyPoolSymbols).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
 
       // 按 symbol 分組
       const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
@@ -1282,6 +1420,60 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   }
 
   // 5a+5b: 同產業上限
+  let selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
+  try {
+    const policyPoolSymbols = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, screenerPolicy.sizing.candidatePoolSize)
+      .map(c => c.symbol)
+    selectionFlagMap = await loadSelectionHistoryFlags(env.DB, policyPoolSymbols, endDate, {
+      highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+    })
+    const highFreqPenalty = Number((sc as any).highFreqPenalty ?? 6)
+    const newMoneyBonus = Number((sc as any).newMoneyBonus ?? 2)
+    let highFreqAdjusted = 0
+    let newMoneyAdjusted = 0
+    for (const c of scored) {
+      const flag = selectionFlagMap.get(c.symbol)
+      if (!flag) continue
+      if (flag.highFreq && highFreqPenalty > 0) {
+        const before = c.score
+        c.score -= highFreqPenalty
+        c.reason += ` | high_freq_penalty -${highFreqPenalty}`
+        highFreqAdjusted++
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'diversity_cooldown',
+          decision: 'observe',
+          reasonCode: 'high_frequency_cooldown',
+          scoreBefore: before,
+          scoreAfter: c.score,
+          evidence: { freq20d: flag.freq20d, highFreqPenalty },
+        })
+      }
+      if (flag.newMoney && newMoneyBonus > 0) {
+        const before = c.score
+        c.score += newMoneyBonus
+        c.reason += ` | new_money +${newMoneyBonus}`
+        newMoneyAdjusted++
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'diversity_cooldown',
+          decision: 'observe',
+          reasonCode: 'new_money_boost',
+          scoreBefore: before,
+          scoreAfter: c.score,
+          evidence: { freq20d: flag.freq20d, newMoneyBonus },
+        })
+      }
+    }
+    debugLog.push(`[Step 4e] selection diversity: high_freq_penalty=${highFreqAdjusted} new_money_bonus=${newMoneyAdjusted}`)
+  } catch (e) {
+    console.warn('[Screener v2] selection diversity failed:', e)
+  }
+
   const maxPerIndustry = (sc as any).maxPerIndustry ?? 5
   const industryCount = new Map<string, number>()
   let afterIndustryLimit = scored.filter(c => {
@@ -1295,22 +1487,23 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const corrThreshold = (sc as any).correlationThreshold ?? 0.8
   const corrWindow = (sc as any).correlationWindow ?? 60
   try {
-    // 只對 top 50 做去重（節省計算）
-    const top50 = afterIndustryLimit.slice(0, 50)
+    // Only deduplicate the active policy pool to keep the Worker bounded.
+    const top50 = afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize)
     afterIndustryLimit = [
       ...(await deduplicateByCorrelation(top50, env.DB, corrThreshold, corrWindow)) as ScoredCandidate[],
-      ...afterIndustryLimit.slice(50),
+      ...afterIndustryLimit.slice(screenerPolicy.sizing.candidatePoolSize),
     ]
   } catch (e) {
     console.warn('[Screener v2] Correlation dedup failed:', e)
   }
 
   // 5d: top N 截斷
-  const maxCandidates = (sc as any).maxCandidates ?? 25
-  const finalCandidates: ScreenerCandidate[] = afterIndustryLimit.slice(0, maxCandidates)
+  const maxCandidates = screenerPolicy.sizing.mlShortlistSize
+  const finalCandidates = dedupeScreenerCandidatesBySymbol(
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
+  )
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
-  console.log(step5Msg)
 
   // 被產業上限篩掉的
   const removedByIndustry = scored.filter(c => !afterIndustryLimit.includes(c)).slice(0, 10)
@@ -1326,6 +1519,46 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 被截斷的
   const truncated = afterIndustryLimit.slice(maxCandidates)
+  const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
+  const emergingResearchCandidates: ScreenerCandidate[] = []
+  const emergingData = buildStockData(emergingResearchPrices, allChips)
+  try {
+    const emergingScored: ScoredCandidate[] = []
+    for (const [stockId, prices] of emergingData.prices) {
+      if (prices.length < 3) continue
+      if (punishedSet.has(stockId)) continue
+      const latest = prices[prices.length - 1]
+      if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
+      if (latest.Trading_Volume === 0) continue
+      const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
+        prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
+      )
+      const info = sectorMap[stockId]
+      const industry = industryMap.get(stockId) ?? '其他'
+      emergingScored.push({
+        symbol: stockId,
+        name: info?.name ?? stockId,
+        sector: industry,
+        score: base_score,
+        reason: reasons.slice(0, 3).join(' | ') || 'emerging research watchlist',
+        chip_score,
+        tech_score,
+        momentum_score,
+        industry,
+        market_segment: 'emerging',
+      })
+    }
+    applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
+    emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol(
+      annotateCandidatesWithStrategySpecs(
+        emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
+      ),
+    ))
+    debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
+  } catch (e) {
+    console.warn('[Screener v2] Emerging research lane failed:', e)
+    debugLog.push(`[Step 5e] emerging research lane skipped (error): ${e}`)
+  }
   if (truncated.length) {
     debugLog.push(`[Step 5d] 被 top ${maxCandidates} 截斷（前 10）:`)
     for (const c of truncated.slice(0, 10)) {
@@ -1354,14 +1587,37 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
         for (let i = finalCandidates.length - 1; i >= 0; i--) {
           if (delistRisk.has(finalCandidates[i].symbol)) finalCandidates.splice(i, 1)
         }
-        if (removed.length) console.log(`[Screener v2] DelistingMonitor: removed ${removed.map(c => c.symbol).join(', ')}`)
+        if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
       }
     }
   } catch (e) {
     console.warn('[Screener v2] DelistingMonitor failed:', e)
   }
 
-  console.log(`[Screener v2] Final: ${finalCandidates.length} candidates`)
+  debugLog.push(`[Final] candidates=${finalCandidates.length}`)
+  finalCandidates.forEach((c, index) => {
+    const sc = c as any
+    const flag = selectionFlagMap.get(c.symbol)
+    pushFunnelItem(funnelItems, {
+      symbol: c.symbol,
+      name: c.name,
+      stage: 'final_selection',
+      decision: 'selected',
+      reasonCode: 'selected_for_ml_shortlist',
+      scoreAfter: Number(sc.score ?? 0),
+      rank: index + 1,
+      evidence: {
+        industry: sc.industry ?? c.sector,
+        chip_score: sc.chip_score,
+        tech_score: sc.tech_score,
+        momentum_score: sc.momentum_score,
+        highFreq: flag?.highFreq ?? false,
+        newMoney: flag?.newMoney ?? false,
+        freq20d: flag?.freq20d ?? 0,
+        strategy_tags: sc.strategy_tags ?? [],
+      },
+    })
+  })
 
   // ── DB 寫入 ──
   try {
@@ -1370,58 +1626,199 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     console.error('[Screener v2] Watchlist update failed:', e)
   }
 
-  // Screener 分數寫入 daily_recommendations（chip+tech+current_price，ML 由 recommendation 補）
+  // ── #15 Selection frequency tag (dannyquant_tw 啟發, 2026-04-21) ──────────
+  // Query 前 20 天 / 30 天的 screener selection history 並為本日候選算兩個 flag:
+  //   high_freq: 20d count ≥ 12
+  //   new_money: 30d count = 0 (今天首次出現)
+  // Forward-only: deploy 日起累積，20d 後 high_freq 才成熟、30d 後 new_money 有信度
   try {
-    await env.DB.prepare("DELETE FROM daily_recommendations WHERE date = ?").bind(endDate).run()
+    const symbolsList = finalCandidates.map(c => c.symbol)
+    if (symbolsList.length > 0) {
+      const refreshedFlags = await loadSelectionHistoryFlags(env.DB, symbolsList, endDate, {
+        highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
+      })
+      for (const [sym, flag] of refreshedFlags) selectionFlagMap.set(sym, flag)
+    }
+  } catch (e) {
+    console.warn('[Screener v2] #15 selection flag query failed (likely table missing, skip):', e)
+  }
+
+  // ── #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發) ──
+  // sectorLeaderBonus(symbol, sector) → bonus points if avg 60d corr > threshold.
+  // 連動族群 leaders 的候選 = 跟 ETF/基金 flow 同向，加分反映此 edge。
+  // Fire-and-forget: table 缺或運算失敗皆 0 bonus 不擋主流程。
+  const sectorBonusMap = new Map<string, { bonus: number; avgCorr: number | null }>()
+  try {
+    const { sectorLeaderBonus } = await import('./sectorCorrelation')
+    const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
+    const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
+    const concurrency = 5
+    for (let i = 0; i < finalCandidates.length; i += concurrency) {
+      const chunk = finalCandidates.slice(i, i + concurrency)
+      const results = await Promise.all(chunk.map(c =>
+        sectorLeaderBonus(env.DB, c.symbol, c.sector ?? null, corrThreshold, bonusPoints)
+          .catch(() => ({ bonus: 0, avgCorr: null, leaderCount: 0 }))
+      ))
+      for (let j = 0; j < chunk.length; j++) {
+        sectorBonusMap.set(chunk[j].symbol, { bonus: results[j].bonus, avgCorr: results[j].avgCorr })
+      }
+    }
+    const matched = [...sectorBonusMap.values()].filter(b => b.bonus > 0).length
+    debugLog.push(`[Step 4d] sector leader bonus: ${matched}/${finalCandidates.length} corr>${corrThreshold} (+${bonusPoints})`)
+  } catch (e) {
+    console.warn('[Screener v2] #16 sector bonus failed (table missing or cold start):', e)
+  }
+
+  // Screener 只負責 seed chip/tech/price；ML-enriched recommendations 由 ml-controller 擁有。
+  try {
     const recBatch = finalCandidates.map((c, i) => {
       const sc = c as any
       // 從即時 API 資料取最新收盤價（不寫 null）
       const latestPrices = data.prices.get(c.symbol)
       const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
-      return env.DB.prepare(`
-        INSERT INTO daily_recommendations
-          (date, stock_id, symbol, name, sector, rank, score,
-           chip_score, tech_score, ml_score, current_price,
-           reason, watch_points, has_buy_signal, industry)
-        VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?, ?, ?,
-                ?, ?, 0, ?, ?, '[]', 0, ?)
-      `).bind(
-        endDate, c.symbol, c.symbol, c.name ?? null, c.sector ?? null,
-        i + 1, Math.round((sc.chip_score + sc.tech_score + sc.momentum_score) * 10) / 10,
-        sc.chip_score ?? 0, sc.tech_score ?? 0,
-        currentPrice ?? null,
-        c.reason ?? null, sc.industry ?? c.sector ?? null,
+      // #15 tag prefix + #16 sector leader bonus 一起 append 到 reason
+      const flag = selectionFlagMap.get(c.symbol)
+      const sectorB = sectorBonusMap.get(c.symbol)
+      const tagParts: string[] = []
+      if (flag?.highFreq) tagParts.push(`📌 高頻 (20d 入選 ${flag.freq20d} 次)`)
+      if (flag?.newMoney) tagParts.push('🆕 新資金 (30d 首見)')
+      if (sectorB && sectorB.bonus > 0 && sectorB.avgCorr !== null) {
+        tagParts.push(`🔗 族群連動 (corr=${sectorB.avgCorr.toFixed(2)}, +${sectorB.bonus})`)
+      }
+      for (const tag of sc.strategy_tags ?? []) tagParts.push(tag)
+      const seed = buildScreenerSeedRow({
+        candidate: c as any,
+        rank: i + 1,
+        currentPrice,
+        sectorBonus: sectorB?.bonus ?? 0,
+        tags: tagParts,
+      })
+      const watchPoints = [
+        ...seed.watchPoints,
+        `screener_funnel:rank=${i + 1},freq20d=${flag?.freq20d ?? 0},high_freq=${flag?.highFreq ? 'yes' : 'no'},new_money=${flag?.newMoney ? 'yes' : 'no'}`,
+        ...(sc.strategy_watch_points ?? []),
+      ]
+      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+        endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
+        seed.rank, seed.row.seedScore,
+        seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
+        seed.row.currentPrice,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
+        'tradable',
+        1,
+        1,
       )
     })
+    const emergingRecBatch = emergingResearchCandidates.map((c, i) => {
+      const sc = c as any
+      const latestPrices = emergingData.prices.get(c.symbol)
+      const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
+      const seed = buildScreenerSeedRow({
+        candidate: c as any,
+        rank: 100 + i + 1,
+        currentPrice,
+        tags: [
+          'research_only:emerging_not_for_auto_trade',
+          'board_lane:emerging_watchlist',
+          ...(sc.strategy_tags ?? []),
+        ],
+      })
+      const watchPoints = [
+        ...seed.watchPoints,
+        'research_only:emerging_not_for_auto_trade',
+        'board_lane:emerging_watchlist',
+        ...(sc.strategy_watch_points ?? []),
+      ]
+      return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
+        endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
+        seed.rank, seed.row.seedScore,
+        seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
+        seed.row.currentPrice,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        'EMERGING',
+        'emerging_watchlist',
+        1,
+        0,
+      )
+    })
+    recBatch.push(...emergingRecBatch)
     const BATCH = 50
     for (let b = 0; b < recBatch.length; b += BATCH) {
       await env.DB.batch(recBatch.slice(b, b + BATCH))
     }
 
-    // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
-    await env.DB.prepare(
-      "UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (SELECT symbol FROM daily_recommendations WHERE date=?)"
-    ).bind(endDate).run()
+    const seedSymbols = [
+      ...finalCandidates.map(c => c.symbol),
+      ...emergingResearchCandidates.map(c => c.symbol),
+    ].map(s => String(s || '').trim()).filter(Boolean)
+    await env.DB.prepare(buildScreenerSeedPruneSql(seedSymbols.length))
+      .bind(endDate, ...seedSymbols)
+      .run()
 
-    console.log(`[Screener v2] daily_recommendations 寫入 ${finalCandidates.length} 筆（chip+tech+price）`)
+    // 保證所有候選都 in_current_watchlist=1（防止 updateScreenerWatchlist batch 失敗的邊界情況）
+    if (finalCandidates.length > 0) {
+      const ph = finalCandidates.map(() => '?').join(',')
+      await env.DB.prepare(
+        `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
+      ).bind(...finalCandidates.map(c => c.symbol)).run()
+    }
+
+    debugLog.push(
+      `[DB] daily_recommendations seed/upsert tradable=${finalCandidates.length} ` +
+      `emerging_research=${emergingResearchCandidates.length}; ML owner fields preserved`,
+    )
+
+    // #15 同步寫 screener_selection_history 供下次 run 計算 freq flag
+    try {
+      const histBatch = finalCandidates.map(c => {
+        const sc = c as any
+        const combined = Math.round(((sc.chip_score ?? 0) + (sc.tech_score ?? 0) + (sc.momentum_score ?? 0)) * 10) / 10
+        return env.DB.prepare(
+          `INSERT OR IGNORE INTO screener_selection_history (date, stock_id, symbol, score, industry)
+           VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?)`
+        ).bind(endDate, c.symbol, c.symbol, combined, sc.industry ?? c.sector ?? null)
+      })
+      for (let b = 0; b < histBatch.length; b += 50) {
+        await env.DB.batch(histBatch.slice(b, b + 50))
+      }
+      const hiCount = [...selectionFlagMap.values()].filter(f => f.highFreq).length
+      const newCount = [...selectionFlagMap.values()].filter(f => f.newMoney).length
+      debugLog.push(`[DB] selection history +${finalCandidates.length} rows | high_freq=${hiCount} new_money=${newCount}`)
+    } catch (e) {
+      console.warn('[Screener v2] #15 history insert failed (likely table missing, skip):', e)
+    }
 
     // 對缺 technical_indicators 的新股立即計算（不等 Queue，避免 ML NO_SIGNAL）
     try {
-      const { computeAndStoreIndicators } = await import('../routes/stocks')
-      const { results: noTiStocks } = await env.DB.prepare(`
+      const seedSymbolsForIndicators = [
+        ...finalCandidates.map(c => c.symbol),
+        ...emergingResearchCandidates.map(c => c.symbol),
+      ].map(s => String(s || '').trim()).filter(Boolean)
+      if (!seedSymbolsForIndicators.length) {
+        debugLog.push('[DB] skipped technical_indicators seed backfill: no seed symbols')
+      } else {
+        const ph = seedSymbolsForIndicators.map(() => '?').join(',')
+        const { results: noTiStocks } = await env.DB.prepare(`
         SELECT s.id, s.symbol FROM stocks s
-        WHERE s.in_current_watchlist = 1
-          AND NOT EXISTS (SELECT 1 FROM technical_indicators ti WHERE ti.stock_id = s.id AND ti.date >= date('now', '-3 days'))
+        WHERE s.symbol IN (${ph})
+          AND NOT EXISTS (
+            SELECT 1 FROM technical_indicators ti
+             WHERE ti.stock_id = s.id
+               AND ti.date >= date(?, '-3 days')
+               AND ti.date <= ?
+          )
           AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
-      `).all<{ id: number; symbol: string }>()
+      `).bind(...seedSymbolsForIndicators, endDate, endDate).all<{ id: number; symbol: string }>()
 
-      if (noTiStocks?.length) {
-        let computed = 0
-        for (const stock of noTiStocks) {
-          await computeAndStoreIndicators(env.DB, stock.id)
-          computed++
+        if (noTiStocks?.length) {
+          let computed = 0
+          for (const stock of noTiStocks) {
+            await computeAndStoreIndicators(env.DB, stock.id, endDate)
+            computed++
+          }
+          debugLog.push(`[DB] backfilled technical_indicators for seed symbols=${computed}: ${noTiStocks.map(s => s.symbol).join(', ')}`)
         }
-        console.log(`[Screener v2] 補算 ${computed} 支新股的 technical_indicators: ${noTiStocks.map(s => s.symbol).join(', ')}`)
       }
     } catch (e) {
       console.warn('[Screener v2] 新股 TI 補算失敗 (non-blocking):', e)
@@ -1446,7 +1843,7 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     const history = await loadOversoldHistory(env.DB, endDate)
     const assessment = assessZone(indicator.pct_oversold, history)
     await writeMomentumSnapshot(env.DB, endDate, indicator, assessment)
-    console.log(
+    debugLog.push(
       `[Screener v2] momentum zone ${assessment.zone} ` +
       `(pct_oversold=${(indicator.pct_oversold * 100).toFixed(1)}%, ` +
       `rank=${(assessment.percentile_rank * 100).toFixed(1)}, history=${assessment.n_history})`
@@ -1486,7 +1883,30 @@ export async function runBottomUpScreener(env: Bindings): Promise<{
     debugLog.push(`  ${c.symbol} ${(c as any).name ?? ''} ${(c as any).industry ?? c.sector} score=${c.score.toFixed(1)}`)
   }
 
-  return { hotSectors: sectorHeatScores, candidates: finalCandidates, debugLog }
+  try {
+    await writeScreenerFunnel(env, {
+      runId,
+      date: endDate,
+      status: 'success',
+      universeCount: universe.length,
+      candidateCount: scored.length,
+      finalCount: finalCandidates.length,
+      emergingCount: emergingResearchCandidates.length,
+      metadata: {
+        candidatePoolSize: screenerPolicy.sizing.candidatePoolSize,
+        mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
+        emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
+        restrictedCount: punishedSet.size,
+        buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
+      },
+      debugLog,
+      items: funnelItems,
+    })
+  } catch (e) {
+    console.warn('[Screener v2] funnel write failed:', e)
+  }
+
+  return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

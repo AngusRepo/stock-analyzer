@@ -25,6 +25,7 @@ MIN_CALIBRATION_SIZE = 20       # 最少需要多少歷史 residuals 才啟動�
 MAX_RESIDUALS        = 500      # 最多保留多少筆 residuals（滑動窗口）
 DEFAULT_COVERAGE     = 0.90     # 預設 coverage level（90% prediction interval, overridden at runtime via params）
 STATE_DIR            = "/tmp/conformal_state"
+GCS_STATE_KEY        = "meta/conformal_state.json"
 
 
 class ConformalCalibrator:
@@ -132,12 +133,21 @@ class ConformalCalibrator:
         """保存 residuals 到磁碟"""
         save_dir = Path(path or STATE_DIR)
         save_dir.mkdir(parents=True, exist_ok=True)
-        state = {
+        state = self.to_state()
+        (save_dir / "conformal_state.json").write_text(json.dumps(state))
+        logger.info(f"[Conformal] saved {len(self.residuals)} residuals")
+
+    def to_state(self) -> dict:
+        return {
             "residuals": self.residuals[-MAX_RESIDUALS:],
             "anomaly_residuals": self.anomaly_residuals[-MAX_RESIDUALS:],
         }
-        (save_dir / "conformal_state.json").write_text(json.dumps(state))
-        logger.info(f"[Conformal] saved {len(self.residuals)} residuals")
+
+    def load_state(self, state: dict) -> None:
+        self.residuals = [float(x) for x in state.get("residuals", [])][-MAX_RESIDUALS:]
+        self.anomaly_residuals = [
+            (float(x[0]), float(x[1])) for x in state.get("anomaly_residuals", [])
+        ][-MAX_RESIDUALS:]
 
     @classmethod
     def load(cls, path: str | None = None) -> "ConformalCalibrator":
@@ -147,10 +157,7 @@ class ConformalCalibrator:
         if state_file.exists():
             try:
                 state = json.loads(state_file.read_text())
-                cal.residuals = state.get("residuals", [])
-                cal.anomaly_residuals = [
-                    tuple(x) for x in state.get("anomaly_residuals", [])
-                ]
+                cal.load_state(state)
                 logger.info(f"[Conformal] loaded {len(cal.residuals)} residuals")
             except Exception as e:
                 logger.warning(f"[Conformal] load failed: {e}")
@@ -163,9 +170,55 @@ class ConformalCalibrator:
 
 # ── Convenience functions ─────────────────────────────────────────────────────
 
+def _get_bucket():
+    from .model_store import _get_bucket as _model_store_bucket
+    return _model_store_bucket()
+
+
+def _load_conformal_gcs() -> Optional[ConformalCalibrator]:
+    try:
+        bucket = _get_bucket()
+        blob = bucket.blob(GCS_STATE_KEY)
+        if not blob.exists():
+            return None
+        state = json.loads(blob.download_as_text())
+        cal = ConformalCalibrator()
+        cal.load_state(state)
+        logger.info(f"[Conformal] loaded {len(cal.residuals)} residuals from GCS")
+        return cal
+    except Exception as e:
+        logger.warning(f"[Conformal] GCS load failed: {e}")
+        return None
+
+
+def _save_conformal_gcs(calibrator: ConformalCalibrator) -> bool:
+    try:
+        bucket = _get_bucket()
+        bucket.blob(GCS_STATE_KEY).upload_from_string(
+            json.dumps(calibrator.to_state()),
+            content_type="application/json",
+        )
+        logger.info(f"[Conformal] saved {len(calibrator.residuals)} residuals to GCS")
+        return True
+    except Exception as e:
+        logger.warning(f"[Conformal] GCS save failed: {e}")
+        return False
+
+
 def load_conformal(path: str | None = None) -> ConformalCalibrator:
-    """載入 Conformal Calibrator（冷啟動安全）"""
-    return ConformalCalibrator.load(path)
+    """Load Conformal calibrator. GCS is authoritative; local storage is fallback."""
+    return _load_conformal_gcs() or ConformalCalibrator.load(path)
+
+
+def save_conformal(calibrator: ConformalCalibrator, path: str | None = None) -> dict:
+    """Persist Conformal calibrator to GCS and local fallback."""
+    gcs_saved = _save_conformal_gcs(calibrator)
+    calibrator.save(path)
+    return {
+        "gcs_saved": gcs_saved,
+        "local_saved": True,
+        "n_residuals": len(calibrator.residuals),
+    }
 
 
 def apply_conformal_calibration(

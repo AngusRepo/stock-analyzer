@@ -56,7 +56,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import polars as pl
@@ -208,10 +208,20 @@ class BacktestDataset:
 
         # Layer 1: Polars DataFrame cache + Layer 2: Numpy snapshot
         # M14: sorted(keys) for deterministic iteration
+        #
+        # B1 fix (2026-04-20): Polars ≥1.0 `partition_by(..., as_dict=True)` returns
+        # tuple keys even for single-column partitions (e.g. ("2330",) not "2330").
+        # This silently made `_price_np["2330"]` miss → replay_screener_for_date
+        # returned 0 candidates → 0 trades regression since 2.0 migration (73c2c8b).
+        # Unwrap to str key so `get_price_history_np(symbol: str)` lookup hits.
+        def _unwrap(key):
+            return key[0] if isinstance(key, tuple) else key
+
         if not self.prices.is_empty():
             partitions = self.prices.partition_by("symbol", as_dict=True)
-            for sym in sorted(partitions.keys()):
-                grp = partitions[sym]
+            for key in sorted(partitions.keys()):
+                sym = _unwrap(key)
+                grp = partitions[key]
                 df = grp.drop("symbol").sort("date")
                 self._price_cache[sym] = df
                 dates_arr = df.get_column("date").to_numpy().astype("U10")
@@ -226,8 +236,9 @@ class BacktestDataset:
 
         if not self.chips.is_empty():
             partitions = self.chips.partition_by("symbol", as_dict=True)
-            for sym in sorted(partitions.keys()):
-                grp = partitions[sym]
+            for key in sorted(partitions.keys()):
+                sym = _unwrap(key)
+                grp = partitions[key]
                 df = grp.drop("symbol").sort("date")
                 self._chip_cache[sym] = df
                 dates_arr = df.get_column("date").to_numpy().astype("U10")
@@ -341,7 +352,11 @@ class BacktestDataset:
             WHERE {' AND '.join(base_where)}
         """
         rows = d1_client.query(sql, base_params)
-        df = pl.DataFrame(rows) if rows else pl.DataFrame()
+        # 2026-04-18 #32 dry-run fix: delisted_date is sparse (mostly null with
+        # occasional date strings) → default schema infer crashes with
+        # "could not append value '2026-01-22' of type str". Set infer_schema_length=None
+        # to let Polars scan all rows before deciding the column's dtype.
+        df = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
         # Large subset path: filter in Polars after fetching full tradable universe
         if symbols and len(symbols) > 80 and not df.is_empty():
@@ -377,7 +392,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pl.DataFrame(rows)
+                df = pl.DataFrame(rows, infer_schema_length=None)
                 # Map stock_id → symbol via join
                 map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
                 df = df.join(map_df, on="stock_id", how="inner")
@@ -390,7 +405,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.drop("stock_id", strict=False)
         df = df.sort(["symbol", "date"])
         return df
@@ -419,7 +434,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                df = pl.DataFrame(rows)
+                df = pl.DataFrame(rows, infer_schema_length=None)
                 map_df = pl.DataFrame({"stock_id": list(symbol_map.keys()), "symbol": list(symbol_map.values())})
                 df = df.join(map_df, on="stock_id", how="inner")
                 chunks.append(df)
@@ -431,7 +446,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.drop("stock_id", strict=False)
         df = df.sort(["symbol", "date"])
         return df
@@ -462,7 +477,7 @@ class BacktestDataset:
             """
             rows = d1_client.query(sql, [chunk_start, chunk_end])
             if rows:
-                chunks.append(pl.DataFrame(rows))
+                chunks.append(pl.DataFrame(rows, infer_schema_length=None))
 
             if chunk_end == end_date:
                 break
@@ -471,7 +486,7 @@ class BacktestDataset:
         if not chunks:
             return _empty_flat_df()
 
-        df = pl.concat(chunks)
+        df = pl.concat(chunks, how="diagonal_relaxed")
         df = df.sort(["symbol", "date"])
         return df
 
@@ -492,7 +507,7 @@ class BacktestDataset:
         rows = d1_client.query(sql, [start_date, end_date])
         if not rows:
             return pl.DataFrame()
-        df = pl.DataFrame(rows)
+        df = pl.DataFrame(rows, infer_schema_length=None)
         df = df.sort("date")
         return df
 
@@ -656,18 +671,22 @@ class ScreenerParams:
     min_daily_turnover: float = 5_000_000
     max_per_industry: int = 5
     max_candidates: int = 25
-    chip_score_tiers: list[float] = field(default_factory=lambda: [36, 28, 20, 12, 5])
+    chip_score_tiers: list[float] = field(default_factory=lambda: [32, 24, 16, 8, 2])
     chip_intensity_thresholds: list[float] = field(
-        default_factory=lambda: [0.20, 0.10, 0.05, 0, -0.05]
+        default_factory=lambda: [0.80, 0.45, 0.20, 0.05, -0.05]
     )
-    consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [4, 2])
+    consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [3, 1])
     consec_buy_day_thresholds: list[int] = field(default_factory=lambda: [5, 3])
-    rsi_score_tiers: list[float] = field(default_factory=lambda: [12, 8, 6, 8, 3])
+    rsi_score_tiers: list[float] = field(default_factory=lambda: [10, 6, 4, 2, 2])
     macd_negative_factor: float = 0.5
     keltner_multiplier: float = 1.5
     natr_threshold: float = 3.0
     excess_return_range: tuple[float, float] = (-0.03, 0.05)
     vol_ratio_range: tuple[float, float] = (0.7, 2.5)
+    score_calibration_enabled: bool = True
+    score_calibration_min_size: int = 30
+    score_calibration_percentile_weight: float = 0.65
+    score_calibration_zscore_weight: float = 0.35
 
     @classmethod
     def from_trading_config(cls, tc: dict) -> "ScreenerParams":
@@ -680,16 +699,20 @@ class ScreenerParams:
             min_daily_turnover=sc.get("minDailyTurnover", 5_000_000),
             max_per_industry=sc.get("maxPerIndustry", 5),
             max_candidates=sc.get("maxCandidates", 25),
-            chip_score_tiers=sc.get("chipScoreTiers", [36, 28, 20, 12, 5]),
-            chip_intensity_thresholds=sc.get("chipIntensityThresholds", [0.20, 0.10, 0.05, 0, -0.05]),
-            consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [4, 2]),
+            chip_score_tiers=sc.get("chipScoreTiers", [32, 24, 16, 8, 2]),
+            chip_intensity_thresholds=sc.get("chipIntensityThresholds", [0.80, 0.45, 0.20, 0.05, -0.05]),
+            consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [3, 1]),
             consec_buy_day_thresholds=sc.get("consecBuyDayThresholds", [5, 3]),
-            rsi_score_tiers=sc.get("rsiScoreTiers", [12, 8, 6, 8, 3]),
+            rsi_score_tiers=sc.get("rsiScoreTiers", [10, 6, 4, 2, 2]),
             macd_negative_factor=sc.get("macdNegativeFactor", 0.5),
             keltner_multiplier=sc.get("keltnerMultiplier", 1.5),
             natr_threshold=sc.get("natrThreshold", 3.0),
             excess_return_range=tuple(sc.get("excessReturnRange", [-0.03, 0.05])),
             vol_ratio_range=tuple(sc.get("volRatioRange", [0.7, 2.5])),
+            score_calibration_enabled=sc.get("scoreCalibrationEnabled", True) is not False,
+            score_calibration_min_size=int(sc.get("scoreCalibrationMinSize", 30)),
+            score_calibration_percentile_weight=float(sc.get("scoreCalibrationPercentileWeight", 0.65)),
+            score_calibration_zscore_weight=float(sc.get("scoreCalibrationZScoreWeight", 0.35)),
         )
 
 
@@ -732,11 +755,171 @@ class Candidate:
     combined_score: float      # Hybrid Ranking (Architecture C)
     reasons: list[str] = field(default_factory=list)
     has_buy_signal: int = 0    # 1 = top-K promoted, 0 = not
+    # 2026-04-20 #31 Mode B: real ML confidence loaded from D1 historical
+    # predictions (None when running Mode A or no historical row available).
+    confidence: Optional[float] = None
+    alpha_context: dict[str, Any] = field(default_factory=dict)
+    alpha_allocation: dict[str, Any] = field(default_factory=dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-20 #31 ML Predictions cache (Mode B prerequisite)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MLPredictionsCache:
+    """Pre-loads ensemble-row predictions from D1 for the entire backtest
+    date range so simulate_entries_for_date can apply realistic confidence
+    filters + Kelly sizing instead of the ml_conf_placeholder=0.60 hardcode.
+
+    Storage: dict {(symbol, date) → confidence float in [0,1]}.
+    Returns None on miss (caller decides skip vs default behavior).
+
+    Source:
+      D1 predictions WHERE
+        model_name='ensemble' AND
+        prediction_date BETWEEN start_date AND end_date
+
+    confidence is read from `direction_accuracy` column (set at INSERT time
+    by recommendation_service to ml result["confidence"], which is the
+    rank_to_signal output for the feature-model ensemble; post-Migration C this
+    is the same value, ensemble_v2.avg_rank delta is small until time-series
+    IC accumulates). Stage 4 follow-up may add ensemble_v2_confidence column.
+    """
+
+    def __init__(self, predictions: dict[tuple[str, str], float]):
+        self._cache = predictions
+        self._n = len(predictions)
+        self._symbols = {sym for sym, _ in predictions}
+        self._dates = {d for _, d in predictions}
+
+    @classmethod
+    def load_from_d1(cls, start_date: str, end_date: str) -> "MLPredictionsCache":
+        """Bulk pull historical ensemble predictions for the date range.
+
+        Cross-references stocks.id → symbol so the dict is keyed by symbol
+        (matching Candidate.symbol). Returns empty cache if no D1 rows.
+        """
+        from services.d1_client import query as d1_query
+        sql = """
+            SELECT s.symbol, p.prediction_date AS d, p.direction_accuracy AS conf
+            FROM predictions p
+            JOIN stocks s ON s.id = p.stock_id
+            WHERE p.model_name = 'ensemble'
+              AND p.prediction_date >= ?
+              AND p.prediction_date <= ?
+              AND p.direction_accuracy IS NOT NULL
+        """
+        rows = d1_query(sql, [start_date, end_date])
+        out: dict[tuple[str, str], float] = {}
+        for r in rows:
+            try:
+                out[(r["symbol"], r["d"])] = float(r["conf"])
+            except (TypeError, ValueError):
+                continue
+        logger.info(
+            f"[MLPredictionsCache] Loaded {len(out)} (symbol,date) "
+            f"predictions for {start_date}..{end_date}"
+        )
+        return cls(out)
+
+    @classmethod
+    def empty(cls) -> "MLPredictionsCache":
+        return cls({})
+
+    def get(self, symbol: str, date: str) -> Optional[float]:
+        """O(1) lookup — returns confidence in [0,1] or None on miss."""
+        return self._cache.get((symbol, date))
+
+    def coverage(self, symbol_date_pairs: list[tuple[str, str]]) -> dict:
+        """Reports how many of the requested pairs we have predictions for.
+
+        Used by replay_period to log Mode B coverage so user knows what
+        fraction of decision points have real ML confidence vs missing.
+        """
+        n_total = len(symbol_date_pairs)
+        n_hit = sum(1 for sd in symbol_date_pairs if sd in self._cache)
+        return {
+            "total": n_total,
+            "hit": n_hit,
+            "miss": n_total - n_hit,
+            "ratio": round(n_hit / max(n_total, 1), 4),
+            "cache_size": self._n,
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scoring (pure function — all inputs are preloaded arrays)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def apply_alpha_framework_to_candidates(
+    candidates: list[Candidate],
+    *,
+    alpha_policy: dict | None,
+    regime_label: str | None,
+    payload_by_symbol: dict[str, dict] | None = None,
+    regime_surface: dict | None = None,
+    slate_size: int | None = None,
+    buy_signal_count: int | None = None,
+) -> list[Candidate]:
+    """Apply alpha bucket allocation to replay candidates before entry simulation."""
+    if not candidates or not alpha_policy:
+        return candidates
+
+    from services.alpha_framework import (
+        apply_alpha_context,
+        build_alpha_context,
+        normalize_alpha_policy,
+        regime_aware_allocate,
+    )
+
+    policy = normalize_alpha_policy(alpha_policy)
+    rows: list[dict[str, Any]] = []
+    by_symbol = {candidate.symbol: candidate for candidate in candidates}
+    for candidate in candidates:
+        row = {
+            "symbol": candidate.symbol,
+            "current_price": candidate.close,
+            "score": candidate.combined_score,
+            "chip_score": candidate.chip_score,
+            "tech_score": candidate.tech_score,
+            "momentum_score": candidate.momentum_score,
+            "confidence": candidate.confidence if candidate.confidence is not None else 0.5,
+            "has_buy_signal": candidate.has_buy_signal,
+            "watch_points": [],
+        }
+        ml = {"confidence": row["confidence"], "forecast_pct": 0.0}
+        ctx = build_alpha_context(
+            row,
+            ml,
+            (payload_by_symbol or {}).get(candidate.symbol),
+            regime_label,
+            regime_surface=regime_surface,
+            policy=policy,
+        )
+        apply_alpha_context(row, ml, ctx)
+        candidate.alpha_context = row.get("alpha_context") or {}
+        rows.append(row)
+
+    allocated = regime_aware_allocate(
+        rows,
+        regime_label,
+        slate_size=slate_size,
+        policy=policy,
+        regime_surface=regime_surface,
+    )
+    selected_count = max(1, buy_signal_count or slate_size or policy["allocation"]["slate_size"])
+    selected = {row["symbol"]: row for row in allocated[:selected_count]}
+    ordered: list[Candidate] = []
+    for row in allocated:
+        candidate = by_symbol[row["symbol"]]
+        candidate.combined_score = float(row.get("score") or candidate.combined_score)
+        candidate.alpha_context = row.get("alpha_context") or candidate.alpha_context
+        candidate.alpha_allocation = row.get("alpha_allocation") or {}
+        candidate.has_buy_signal = 1 if row["symbol"] in selected else 0
+        ordered.append(candidate)
+    return ordered
+
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -751,6 +934,59 @@ def _normalize(value: float, lower: float, upper: float, max_score: float) -> fl
     if value >= upper:
         return max_score
     return (value - lower) / (upper - lower) * max_score
+
+
+def _percentile(values: list[float], value: float) -> float:
+    if len(values) <= 1:
+        return 0.5
+    below = sum(1 for v in values if v < value)
+    equal = sum(1 for v in values if v == value)
+    return _clamp((below + equal * 0.5) / len(values), 0.0, 1.0)
+
+
+def _zscore_component(values: list[float], value: float) -> float:
+    if len(values) <= 1:
+        return 0.5
+    arr = np.asarray(values, dtype=np.float64)
+    std = float(arr.std())
+    if std < 1e-9:
+        return 0.5
+    z = (value - float(arr.mean())) / std
+    return _clamp((z + 2.0) / 4.0, 0.0, 1.0)
+
+
+def _calibrate_factor_score(raw: float, values: list[float], max_score: float, sc: ScreenerParams) -> float:
+    p = _percentile(values, raw)
+    z = _zscore_component(values, raw)
+    pw = _clamp(sc.score_calibration_percentile_weight, 0.0, 1.0)
+    zw = _clamp(sc.score_calibration_zscore_weight, 0.0, 1.0)
+    weight_sum = max(0.001, pw + zw)
+    normalized = (p * pw + z * zw) / weight_sum
+    return round(min(raw, normalized * max_score), 1)
+
+
+def apply_screener_score_calibration(candidates: list[Candidate], sc: ScreenerParams) -> list[Candidate]:
+    if not sc.score_calibration_enabled or len(candidates) < sc.score_calibration_min_size:
+        return candidates
+
+    chip_values = [float(c.chip_score or 0.0) for c in candidates]
+    tech_values = [float(c.tech_score or 0.0) for c in candidates]
+    momentum_values = [float(c.momentum_score or 0.0) for c in candidates]
+    for c in candidates:
+        raw_chip = float(c.chip_score or 0.0)
+        raw_tech = float(c.tech_score or 0.0)
+        raw_momentum = float(c.momentum_score or 0.0)
+        chip = _calibrate_factor_score(raw_chip, chip_values, 40.0, sc)
+        tech = _calibrate_factor_score(raw_tech, tech_values, 30.0, sc)
+        momentum = _calibrate_factor_score(raw_momentum, momentum_values, 20.0, sc)
+        delta = (chip - raw_chip) + (tech - raw_tech) + (momentum - raw_momentum)
+        c.chip_score = chip
+        c.tech_score = tech
+        c.momentum_score = momentum
+        c.base_score = round(float(c.base_score) + delta, 1)
+        if delta < -0.5:
+            c.reasons = [*c.reasons[:3], f"cross-section calibration {delta:.1f}"][:4]
+    return candidates
 
 
 def score_multi_factor_np(
@@ -848,16 +1084,17 @@ def score_multi_factor_np(
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
         tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 75:
+        if 55 <= rsi <= 68:
             tech_score += tiers[0]
             reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
+        elif 68 < rsi <= 75:
             tech_score += tiers[1]
-        elif 40 <= rsi < 45:
+            reasons.append(f"RSI {rsi:.0f}")
+        elif 45 <= rsi < 55:
             tech_score += tiers[2]
-        elif rsi > 75:
+        elif 75 < rsi <= 85:
             tech_score += tiers[3]
-        elif 30 <= rsi < 40:
+        elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
     # MACD approximation
@@ -867,18 +1104,18 @@ def score_multi_factor_np(
         ma26 = float(closes[-ma26_window:].mean())
         macd_approx = ma12 - ma26
         if macd_approx > 0:
-            tech_score += 8
+            tech_score += 6
             reasons.append("MACD 多頭")
         elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
-            tech_score += 3
+            tech_score += 2
 
     # MA alignment
     if n >= 5 and latest_close > float(closes[-5:].mean()):
-        tech_score += 3
+        tech_score += 1
     if n >= 20:
         ma20 = float(closes[-20:].mean())
         if latest_close > ma20:
-            tech_score += 4
+            tech_score += 3
             reasons.append("站上MA20")
 
     # ATR14 + NATR + Keltner
@@ -900,11 +1137,11 @@ def score_multi_factor_np(
         ma20_window = min(20, n)
         ma20 = float(closes[-ma20_window:].mean())
         if atr14 > 0 and latest_close > ma20 + sc.keltner_multiplier * atr14:
-            tech_score += 3
+            tech_score += 2
             reasons.append("突破肯特納")
 
         if natr < sc.natr_threshold and latest_close > ma20:
-            tech_score += 2
+            tech_score += 1
 
     tech_score = _clamp(tech_score, 0, 30)
 
@@ -1061,16 +1298,17 @@ def score_multi_factor(
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
         tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 75:
+        if 55 <= rsi <= 68:
             tech_score += tiers[0]
             reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
+        elif 68 < rsi <= 75:
             tech_score += tiers[1]
-        elif 40 <= rsi < 45:
+            reasons.append(f"RSI {rsi:.0f}")
+        elif 45 <= rsi < 55:
             tech_score += tiers[2]
-        elif rsi > 75:
+        elif 75 < rsi <= 85:
             tech_score += tiers[3]
-        elif 30 <= rsi < 40:
+        elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
     # MACD approximation
@@ -1080,18 +1318,18 @@ def score_multi_factor(
         ma26 = closes[-ma26_window:].mean()
         macd_approx = ma12 - ma26
         if macd_approx > 0:
-            tech_score += 8
+            tech_score += 6
             reasons.append("MACD 多頭")
         elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
-            tech_score += 3
+            tech_score += 2
 
     # MA alignment
     if n >= 5 and latest_close > closes[-5:].mean():
-        tech_score += 3
+        tech_score += 1
     if n >= 20:
         ma20 = closes[-20:].mean()
         if latest_close > ma20:
-            tech_score += 4
+            tech_score += 3
             reasons.append("站上MA20")
 
     # ATR14 + NATR + Keltner
@@ -1112,11 +1350,11 @@ def score_multi_factor(
         ma20_window = min(20, n)
         ma20 = closes[-ma20_window:].mean()
         if atr14 > 0 and latest_close > ma20 + sc.keltner_multiplier * atr14:
-            tech_score += 3
+            tech_score += 2
             reasons.append("突破肯特納")
 
         if natr < sc.natr_threshold and latest_close > ma20:
-            tech_score += 2
+            tech_score += 1
 
     tech_score = _clamp(tech_score, 0, 30)
 
@@ -1236,6 +1474,9 @@ def replay_screener_for_date(
     screener: ScreenerParams,
     ranking: RankingParams,
     lookback_days: int = 22,
+    alpha_policy: dict | None = None,
+    regime_label: str | None = None,
+    regime_surface: dict | None = None,
 ) -> list[Candidate]:
     """
     Replay the Worker bottom-up screener for one decision date T.
@@ -1268,6 +1509,7 @@ def replay_screener_for_date(
 
     market_return_5d = _calc_market_return_5d(dataset, date)
     scored: list[Candidate] = []
+    alpha_payload_by_symbol: dict[str, dict] = {}
 
     # Preload stocks sector lookup
     sector_map = dict(zip(
@@ -1308,6 +1550,23 @@ def replay_screener_for_date(
         base, chip_s, tech_s, mom_s, reasons = score_multi_factor_np(
             pnp, cnp, market_return_5d, screener
         )
+        if alpha_policy:
+            alpha_payload_by_symbol[symbol] = {
+                "prices": [
+                    {
+                        "close": float(close),
+                        "high": float(high),
+                        "low": float(low),
+                        "volume": float(volume),
+                    }
+                    for close, high, low, volume in zip(
+                        pnp["close"],
+                        pnp["high"],
+                        pnp["low"],
+                        pnp["volume"],
+                    )
+                ],
+            }
 
         scored.append(Candidate(
             symbol=symbol,
@@ -1324,6 +1583,8 @@ def replay_screener_for_date(
 
     if not scored:
         return []
+
+    apply_screener_score_calibration(scored, screener)
 
     # Sort by base_score before industry cap
     scored.sort(key=lambda c: c.base_score, reverse=True)
@@ -1360,10 +1621,274 @@ def replay_screener_for_date(
 
     # Promote top_k to has_buy_signal = 1
     if ranking.enabled:
-        for c in final_candidates[: ranking.top_k]:
-            c.has_buy_signal = 1
+        if alpha_policy:
+            from services.alpha_framework import normalize_alpha_policy
+
+            policy = normalize_alpha_policy(alpha_policy)
+            final_candidates = apply_alpha_framework_to_candidates(
+                final_candidates,
+                alpha_policy=policy,
+                regime_label=regime_label,
+                regime_surface=regime_surface,
+                payload_by_symbol=alpha_payload_by_symbol,
+                slate_size=max(ranking.top_k, int(policy["allocation"]["slate_size"])),
+                buy_signal_count=ranking.top_k,
+            )
+        else:
+            for c in final_candidates[: ranking.top_k]:
+                c.has_buy_signal = 1
 
     return final_candidates
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B1 Diagnostic (2026-04-20 — regression: 0 candidates in Mode A replay)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Screener funnel counters + dataset-level cache sanity, for locating the stage
+# where replay_screener_for_date drops symbols to 0. Used by /backtest/diagnose.
+# See memory/project_session_2026_04_20_evening.md for the regression story.
+
+def diagnose_replay_for_date(
+    dataset: "BacktestDataset",
+    date: str,
+    screener: ScreenerParams,
+    ranking: RankingParams,
+    lookback_days: int = 22,
+    max_dropped_samples: int = 10,
+) -> dict:
+    """
+    Instrumented clone of `replay_screener_for_date` that returns stage-by-stage
+    counts + sample dropped symbols (with the reason each was dropped) instead
+    of the candidate list. Read-only — does NOT mutate dataset or write D1.
+
+    Returns shape (all counts are ints; *_samples are lists of str symbols):
+
+        {
+          "date": "YYYY-MM-DD",
+          "dataset_sanity": {
+            "trading_days_count": int,
+            "price_np_size": int, "chip_np_size": int,
+            "price_np_key_type": "str"|"tuple"|"other",
+            "price_np_sample_keys": [...up to 5 raw key reprs],
+            "price_cache_df_key_type": "str"|"tuple"|"other",
+            "universe_size_at_date": int,
+            "universe_sample_5": [...],
+            "lookup_2330_as_str":   True if "2330" is a key in _price_np,
+            "lookup_2330_as_tuple": True if ("2330",) is a key,
+            "get_price_history_np_2330": dict|None summary,
+          },
+          "funnel": {
+            "S0_universe": int,
+            "S1_pnp_none": int, "S1_pnp_short": int, "S1_pnp_ok": int,
+            "S2_price_low_fail": int, "S2_price_high_fail": int,
+            "S2_volume_zero_fail": int, "S2_avg_vol_fail": int,
+            "S2_turnover_fail": int,
+            "S2_hard_filter_pass": int,
+            "S3_scored": int,
+            "S4_after_industry_cap": int,
+            "S5_final_candidates": int,
+            "S6_has_buy_signal": int,
+          },
+          "dropped_samples": {
+            "pnp_none": [...], "pnp_short": [...],
+            "price_low": [...], "price_high": [...], "volume_zero": [...],
+            "avg_vol_low": [...], "turnover_low": [...],
+          },
+          "passed_samples": [{"symbol","close","base","chip","tech","mom"}, ...]
+        }
+    """
+    from dataclasses import asdict as _asdict  # local import to keep top clean
+
+    # ── Stage 0: universe ────────────────────────────────────────────────────
+    universe_symbols = sorted(dataset.get_universe_at(date))
+    funnel: dict[str, int] = {"S0_universe": len(universe_symbols)}
+    dropped: dict[str, list[str]] = {
+        "pnp_none": [], "pnp_short": [],
+        "price_low": [], "price_high": [],
+        "volume_zero": [], "avg_vol_low": [], "turnover_low": [],
+    }
+
+    def _push(bucket: str, sym: str) -> None:
+        if len(dropped[bucket]) < max_dropped_samples:
+            dropped[bucket].append(sym)
+
+    # ── Dataset-level sanity (A1 cache keys — suspected tuple vs str bug) ────
+    sample_sym = "2330"
+    price_np_keys = list(dataset._price_np.keys())
+    price_df_keys = list(dataset._price_cache.keys())
+
+    def _key_type(keys: list) -> str:
+        if not keys:
+            return "empty"
+        k0 = keys[0]
+        if isinstance(k0, tuple):
+            return "tuple"
+        if isinstance(k0, str):
+            return "str"
+        return f"other:{type(k0).__name__}"
+
+    pnp_2330 = dataset.get_price_history_np(sample_sym, date, lookback_days)
+    sanity = {
+        "trading_days_count": len(dataset.trading_days),
+        "price_np_size": len(price_np_keys),
+        "chip_np_size": len(dataset._chip_np),
+        "price_np_key_type": _key_type(price_np_keys),
+        "price_np_sample_keys": [repr(k) for k in price_np_keys[:5]],
+        "price_cache_df_key_type": _key_type(price_df_keys),
+        "universe_size_at_date": len(universe_symbols),
+        "universe_sample_5": universe_symbols[:5],
+        "lookup_2330_as_str":   (sample_sym in dataset._price_np),
+        "lookup_2330_as_tuple": ((sample_sym,) in dataset._price_np),
+        "get_price_history_np_2330": (
+            {"n": pnp_2330["n"],
+             "first_date": str(pnp_2330["dates"][0]),
+             "last_date":  str(pnp_2330["dates"][-1])}
+            if pnp_2330 is not None else None
+        ),
+    }
+
+    if not universe_symbols:
+        funnel.update({
+            "S1_pnp_none": 0, "S1_pnp_short": 0, "S1_pnp_ok": 0,
+            "S2_price_low_fail": 0, "S2_price_high_fail": 0,
+            "S2_volume_zero_fail": 0, "S2_avg_vol_fail": 0,
+            "S2_turnover_fail": 0, "S2_hard_filter_pass": 0,
+            "S3_scored": 0, "S4_after_industry_cap": 0,
+            "S5_final_candidates": 0, "S6_has_buy_signal": 0,
+        })
+        return {"date": date, "dataset_sanity": sanity,
+                "funnel": funnel, "dropped_samples": dropped,
+                "passed_samples": []}
+
+    market_return_5d = _calc_market_return_5d(dataset, date)
+
+    # Sector lookup (same as replay_screener_for_date)
+    sector_map = dict(zip(
+        dataset.stocks.get_column("symbol").to_list(),
+        dataset.stocks.get_column("sector").fill_null("其他").to_list(),
+    ))
+
+    # ── Stage 1-3: per-symbol filter + scoring ───────────────────────────────
+    pnp_none = pnp_short = pnp_ok = 0
+    price_low_fail = price_high_fail = 0
+    volume_zero_fail = avg_vol_fail = turnover_fail = 0
+
+    scored: list[Candidate] = []
+    passed_samples: list[dict] = []
+
+    for symbol in universe_symbols:
+        pnp = dataset.get_price_history_np(symbol, date, lookback_days)
+        if pnp is None:
+            pnp_none += 1
+            _push("pnp_none", symbol)
+            continue
+        if pnp["n"] < 3:
+            pnp_short += 1
+            _push("pnp_short", symbol)
+            continue
+        pnp_ok += 1
+
+        closes = pnp["close"]
+        volumes = pnp["volume"]
+        latest_close = float(closes[-1])
+        latest_volume = float(volumes[-1])
+
+        if latest_close < screener.min_price:
+            price_low_fail += 1
+            _push("price_low", symbol)
+            continue
+        if latest_close > screener.max_price:
+            price_high_fail += 1
+            _push("price_high", symbol)
+            continue
+        if latest_volume == 0:
+            volume_zero_fail += 1
+            _push("volume_zero", symbol)
+            continue
+
+        vol_tail = volumes[-min(20, pnp["n"]):]
+        avg_vol_20 = float(vol_tail.mean())
+        if avg_vol_20 < screener.min_avg_volume:
+            avg_vol_fail += 1
+            _push("avg_vol_low", symbol)
+            continue
+        avg_daily_turnover = avg_vol_20 * latest_close
+        if avg_daily_turnover < screener.min_daily_turnover:
+            turnover_fail += 1
+            _push("turnover_low", symbol)
+            continue
+
+        cnp = dataset.get_chip_history_np(symbol, date, lookback_days=5)
+        base, chip_s, tech_s, mom_s, reasons = score_multi_factor_np(
+            pnp, cnp, market_return_5d, screener
+        )
+        scored.append(Candidate(
+            symbol=symbol, date=date, close=latest_close,
+            industry=sector_map.get(symbol, "其他"),
+            base_score=base, chip_score=chip_s, tech_score=tech_s,
+            momentum_score=mom_s, combined_score=0.0, reasons=reasons[:3],
+        ))
+        if len(passed_samples) < max_dropped_samples:
+            passed_samples.append({
+                "symbol": symbol, "close": round(latest_close, 2),
+                "base": round(base, 2), "chip": round(chip_s, 2),
+                "tech": round(tech_s, 2), "mom": round(mom_s, 2),
+            })
+
+    apply_screener_score_calibration(scored, screener)
+
+    # ── Stage 4-6: ranking pipeline (mirrors replay_screener_for_date) ───────
+    scored.sort(key=lambda c: c.base_score, reverse=True)
+    industry_count: dict[str, int] = {}
+    after_industry: list[Candidate] = []
+    for c in scored:
+        cnt = industry_count.get(c.industry, 0)
+        if cnt >= screener.max_per_industry:
+            continue
+        industry_count[c.industry] = cnt + 1
+        after_industry.append(c)
+
+    final_candidates = after_industry[: screener.max_candidates]
+    for c in final_candidates:
+        screener_norm = min(
+            1.0, (c.chip_score + c.tech_score) / ranking.screener_denominator
+        )
+        c.combined_score = (
+            ranking.alpha * screener_norm
+            + ranking.beta * 0.5      # ML_CONF_PLACEHOLDER
+            + ranking.gamma * 0.35    # SIGNAL_TIER_PLACEHOLDER
+        )
+    final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
+    promoted = 0
+    if ranking.enabled:
+        for c in final_candidates[: ranking.top_k]:
+            c.has_buy_signal = 1
+            promoted += 1
+
+    funnel.update({
+        "S1_pnp_none": pnp_none,
+        "S1_pnp_short": pnp_short,
+        "S1_pnp_ok": pnp_ok,
+        "S2_price_low_fail": price_low_fail,
+        "S2_price_high_fail": price_high_fail,
+        "S2_volume_zero_fail": volume_zero_fail,
+        "S2_avg_vol_fail": avg_vol_fail,
+        "S2_turnover_fail": turnover_fail,
+        "S2_hard_filter_pass": len(scored),
+        "S3_scored": len(scored),
+        "S4_after_industry_cap": len(after_industry),
+        "S5_final_candidates": len(final_candidates),
+        "S6_has_buy_signal": promoted,
+    })
+
+    return {
+        "date": date,
+        "dataset_sanity": sanity,
+        "funnel": funnel,
+        "dropped_samples": dropped,
+        "passed_samples": passed_samples,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1450,14 +1975,40 @@ class SLTPParams:
     vol_threshold_high: float = 0.03
 
     @classmethod
-    def from_trading_config(cls, tc: dict) -> "SLTPParams":
-        s = tc.get("sltp", {})
+    def from_trading_config(cls, tc: dict, regime_label: Optional[str] = None) -> "SLTPParams":
+        """Build from trading:config dict.
+
+        #28b T2.4 (2026-04-21): if regime_label provided AND
+        tc["sltp_per_regime"][canonical_label] overlay exists, overlay
+        wins over flat sltp fields (matches worker resolveSltpForRegime
+        pattern). Backward-compat: regime_label=None or missing overlay
+        → uses flat sltp only.
+        """
+        s = dict(tc.get("sltp", {}))
+        if regime_label:
+            canonical = _canonical_regime_label(regime_label)
+            if canonical:
+                overlay = ((tc.get("sltp_per_regime") or {}).get(canonical) or {})
+                s = {**s, **overlay}  # shallow merge
         return cls(
             sl_mult_base=s.get("slMultBase", 1.6806),
             tp_mult_base=s.get("tpMultBase", 2.9632),
             vol_threshold_low=s.get("volThresholdLow", 0.015),
             vol_threshold_high=s.get("volThresholdHigh", 0.03),
         )
+
+
+# #28b T2.4: regime label normalization (mirrors worker _normalizeRegimeLabel)
+def _canonical_regime_label(label: str) -> Optional[str]:
+    """Normalize 'bull', 'bull_market', 'BULL' → 'bull_market'. Returns None on unknown."""
+    if not label:
+        return None
+    lower = str(label).lower().strip()
+    if lower.startswith("bull"):     return "bull_market"
+    if lower.startswith("bear"):     return "bear_market"
+    if lower.startswith("volatile"): return "volatile"
+    if lower.startswith("sideway"):  return "sideways"
+    return None
 
 
 @dataclass
@@ -1735,6 +2286,41 @@ def simulate_entries_for_date(
     fees: FeeParams,
     ml_conf_placeholder: float = 0.60,
     replay_days: list[str] | None = None,
+    # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
+    ml_predictions: Optional["MLPredictionsCache"] = None,
+    buy_conf_threshold: Optional[float] = None,
+    # 2026-04-20 #28 P2 L2 Layer 1 + 2 circuit breakers (Mode B only)
+    #   circuit_cfg: dict view of trading:config.circuit (paper.ts source-of-truth)
+    #   current_drawdown_30d: from compute_drawdown_30d(equity_curve, day)
+    #   recent_accuracy_30d: from compute_rolling_accuracy_30d(verified_preds, day)
+    # All three None = Mode A (skip breakers entirely).
+    circuit_cfg: Optional[dict] = None,
+    current_drawdown_30d: Optional[float] = None,
+    recent_accuracy_30d: Optional[float] = None,
+    # 2026-04-20 #28 P3 effective confidence (L2_formula delta + clip)
+    #   l2_formula_cfg: dict view of trading:config.L2_formula
+    #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
+    l2_formula_cfg: Optional[dict] = None,
+    risk_score: Optional[int] = None,
+    # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling + bull align
+    #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
+    #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
+    #     → 'yellow' maps to paper.ts 'medium' for medium_risk_scale (#28 P5)
+    #   bull_align_pct: market_breadth.bull_alignment_pct for `day` (0-100 %)
+    #     → if < circuit.bullAlignmentThreshold → budget × 0.5 (paper.ts:347-352)
+    risk_level: Optional[str] = None,
+    bull_align_pct: Optional[float] = None,
+    # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
+    #   prev_night_drop: us_market_signals.gspc_return for most recent US close
+    #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
+    #     Conservative Mode B: apply adjust factor by magnitude alone, without
+    #     paper.ts's debate-verdict gate (backtest has no debate runtime).
+    #   pf_30d / pf_90d: rolling portfolio profit factor from replay's own
+    #     all_trades (Mode B self-generates). Blended via pf_quality_*_weight
+    #     + clipped by pf_quality_clip_lo/hi per adaptive.compute_pf_quality_mults.
+    prev_night_drop: Optional[float] = None,
+    pf_30d: Optional[float] = None,
+    pf_90d: Optional[float] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -1761,6 +2347,37 @@ def simulate_entries_for_date(
     if not buy_candidates:
         return attempts
 
+    # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
+    # Only apply when Mode B is active (ml_predictions cache present) AND
+    # circuit_cfg explicitly provided. Mode A skips entirely to preserve
+    # existing Optuna 5.x parity.
+    if ml_predictions is not None and circuit_cfg is not None:
+        dd_halt_thresh = float(circuit_cfg.get("drawdownHalt", 0.15))
+        low_acc_thresh = float(circuit_cfg.get("lowAccuracyThreshold", 0.45))
+        raised_conf    = float(circuit_cfg.get("drawdownRaisedConf", 0.70))
+
+        # Layer 1: rolling 30d drawdown > drawdownHalt → halt ALL entries today
+        # Source: paper.ts checkCircuitBreakers lines 269-273 (identical threshold)
+        if current_drawdown_30d is not None and current_drawdown_30d > dd_halt_thresh:
+            halt_reason = (f"L1 halt: dd_30d {current_drawdown_30d:.1%} "
+                           f"> drawdownHalt {dd_halt_thresh:.1%}")
+            for c in buy_candidates:
+                attempts.append(EntryAttempt(
+                    symbol=c.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_circuit_halt", adjusted_entry=c.close,
+                    reason=f"Mode B: {halt_reason}",
+                ))
+            return attempts
+
+        # Layer 2: 30d rolling accuracy < lowAccuracyThreshold → raise conf gate
+        # Source: paper.ts checkCircuitBreakers lines 324-328
+        if (recent_accuracy_30d is not None
+                and recent_accuracy_30d < low_acc_thresh
+                and buy_conf_threshold is not None):
+            new_conf = max(buy_conf_threshold, raised_conf)
+            if new_conf > buy_conf_threshold:
+                buy_conf_threshold = new_conf  # local rebind — caller unaffected
+
     # Gap proxy (shared across all candidates today)
     gap_pct = _gap_pct_from_benchmark(dataset, decision_date, entry_date)
 
@@ -1769,7 +2386,78 @@ def simulate_entries_for_date(
     for p_open in account.positions.values():
         industry_count[p_open.industry] = industry_count.get(p_open.industry, 0) + 1
 
+    # 2026-04-20 #28 P3: effective confidence delta formula (adaptive.py port)
+    # Compute once per day — same risk_score + acc for every candidate today.
+    # effective_conf = clip(real_conf + delta(risk_score, acc, L2), lo, hi)
+    # See adaptive.py compute_confidence_delta source of truth.
+    effective_delta: float = 0.0
+    effective_clip_lo: float = 0.0
+    effective_clip_hi: float = 1.0
+    apply_effective_conf = (
+        ml_predictions is not None
+        and l2_formula_cfg is not None
+        and risk_score is not None
+        and recent_accuracy_30d is not None
+    )
+    if apply_effective_conf:
+        from services.adaptive import compute_confidence_delta
+        effective_delta = compute_confidence_delta(
+            float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
+        )
+        effective_clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
+        effective_clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
+
+    # 2026-04-20 #28 P4: SLTP risk-level add (adaptive.compute_sltp_override port)
+    # Compute once per day — same risk_level modifies sl_mult_base / tp_mult_base
+    # for every candidate today. orange/red/black only; green/yellow return None.
+    # Source: paper.ts pollIntradayStopLoss SL/TP × ATR reads these post-override.
+    effective_sl_mult: float = sltp.sl_mult_base
+    effective_tp_mult: float = sltp.tp_mult_base
+    if (ml_predictions is not None
+            and l2_formula_cfg is not None
+            and risk_level in ("orange", "red", "black")):
+        from services.adaptive import compute_sltp_override
+        override = compute_sltp_override(risk_level, l2_formula_cfg)
+        if override:
+            effective_sl_mult = sltp.sl_mult_base + float(override.get("sl_add", 0.0))
+            effective_tp_mult = sltp.tp_mult_base + float(override.get("tp_add", 0.0))
+
     for cand in buy_candidates:
+        # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
+        # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
+        # using ml_conf_placeholder=0.60 hardcode.
+        if ml_predictions is not None:
+            real_conf = ml_predictions.get(cand.symbol, cand.date)
+            if real_conf is None:
+                attempts.append(EntryAttempt(
+                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_no_ml_pred", adjusted_entry=cand.close,
+                    reason=f"Mode B: no historical prediction in D1 for ({cand.symbol},{cand.date})",
+                ))
+                continue
+
+            # 2026-04-20 #28 P3: apply effective confidence delta (adaptive.py formula)
+            if apply_effective_conf:
+                effective_conf = max(
+                    effective_clip_lo,
+                    min(effective_clip_hi, real_conf + effective_delta),
+                )
+            else:
+                effective_conf = real_conf
+            cand.confidence = effective_conf
+
+            if buy_conf_threshold is not None and effective_conf < buy_conf_threshold:
+                attempts.append(EntryAttempt(
+                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_low_conf", adjusted_entry=cand.close,
+                    reason=(
+                        f"Mode B: eff_conf {effective_conf:.3f} "
+                        f"(raw {real_conf:.3f} + delta {effective_delta:+.3f}) "
+                        f"< threshold {buy_conf_threshold:.3f}"
+                    ),
+                ))
+                continue
+
         # Skip symbols already held — paper.ts merges into existing paper_positions
         # via UPDATE avg_cost, but for Mode A backtest we take the simpler path of
         # skipping dupes to avoid silent overwrite of OpenPosition dict (which would
@@ -1815,9 +2503,10 @@ def simulate_entries_for_date(
             atr14 = cand.close * 0.02
 
         # Synthesize stop/target from ATR × sltp params (Optuna-searchable)
+        # #28 P4: use effective_sl_mult / effective_tp_mult (includes L2 risk-level add)
         ml_entry = cand.close
         ml_stop, ml_tp1, _ = _synth_stop_target(
-            ml_entry, atr14, sltp.sl_mult_base, sltp.tp_mult_base
+            ml_entry, atr14, effective_sl_mult, effective_tp_mult
         )
 
         # Gap-aware adjustment
@@ -1831,9 +2520,31 @@ def simulate_entries_for_date(
             ))
             continue
 
-        # Kelly or risk-parity sizing
+        # 2026-04-20 #28 P5: Night-drop entry/stop adjustment (Mode B only)
+        # Paper.ts:1673-1684 gates on debateVerdict in prod; backtest has no
+        # debate runtime, so apply adjust purely by drop magnitude (most
+        # conservative path — see P5 header note). Ratio convention:
+        #   prev_night_drop is a return ratio (-0.015 for -1.5%), so L2 KV
+        #   `night_drop_severe_pct` etc. MUST be stored in the same ratio
+        #   form (e.g. -0.015, not -1.5). Mismatch = adjust never triggers.
+        if (ml_predictions is not None
+                and l2_formula_cfg is not None
+                and prev_night_drop is not None):
+            severe_thr = float(l2_formula_cfg.get("night_drop_severe_pct", -0.015))
+            mild_thr   = float(l2_formula_cfg.get("night_drop_mild_pct",   -0.008))
+            if prev_night_drop < severe_thr:
+                severe_adj = float(l2_formula_cfg.get("night_drop_severe_adjust", 0.98))
+                adjusted_entry *= severe_adj
+                adjusted_stop  *= severe_adj
+            elif prev_night_drop < mild_thr:
+                mild_adj = float(l2_formula_cfg.get("night_drop_mild_adjust", 0.99))
+                adjusted_entry *= mild_adj
+                adjusted_stop  *= mild_adj
+
+        # Kelly or risk-parity sizing — Mode B uses real confidence when available
+        effective_conf = cand.confidence if cand.confidence is not None else ml_conf_placeholder
         kelly_pct = calc_kelly_pct(
-            confidence=ml_conf_placeholder,
+            confidence=effective_conf,
             entry_price=adjusted_entry,
             stop_loss=adjusted_stop,
             target1=ml_tp1,
@@ -1869,6 +2580,57 @@ def simulate_entries_for_date(
                 daily_remaining,
             )
             sizing_mode = "risk_parity"
+
+        # 2026-04-20 #28 P4: Mode B budget multipliers (dd scale, bull align).
+        # Applied AFTER Kelly/risk-parity so confidence-based sizing stays primary.
+        if ml_predictions is not None and circuit_cfg is not None:
+            # Layer 3: drawdownScaleStart → mddMultFloor linear scaling.
+            # Paper.ts source 269-279: mdd_mult = max(floor, (halt-dd)/(halt-start)).
+            # Applied only inside (dd_scale_start, dd_halt]; outside this range no
+            # scaling (> dd_halt is caught by Layer 1 halt; ≤ dd_scale_start = 1.0).
+            if current_drawdown_30d is not None:
+                dd_scale_start = float(circuit_cfg.get("drawdownScaleStart", 0.03))
+                dd_halt = float(circuit_cfg.get("drawdownHalt", 0.15))
+                mdd_floor = float(circuit_cfg.get("mddMultFloor", 0.2))
+                if (current_drawdown_30d > dd_scale_start
+                        and current_drawdown_30d <= dd_halt
+                        and dd_halt > dd_scale_start):
+                    mdd_mult = max(
+                        mdd_floor,
+                        (dd_halt - current_drawdown_30d) / (dd_halt - dd_scale_start),
+                    )
+                    budget *= mdd_mult
+
+            # Layer 4: bullAlignmentThreshold → halve position when breadth weak.
+            # Paper.ts source 347-352: position × 0.5 when < threshold.
+            if bull_align_pct is not None:
+                bull_thresh = float(circuit_cfg.get("bullAlignmentThreshold", 20))
+                if bull_align_pct < bull_thresh:
+                    budget *= 0.5
+
+        # 2026-04-20 #28 P5: medium_risk_scale + PF quality blend (Mode B only).
+        # Both live under L2_formula, applied on budget AFTER circuit-level mults.
+        if ml_predictions is not None and l2_formula_cfg is not None:
+            # medium_risk_scale: yellow is our D1 mapping of paper.ts's 'medium'
+            # (paper.ts runtime fetches from Shioaji proxy whose domain is
+            # 'low/medium/high/extreme'; we use D1 market_risk.risk_level whose
+            # yellow tier is the semantic equivalent of paper.ts 'medium').
+            if risk_level == "yellow":
+                medium_scale = float(l2_formula_cfg.get("medium_risk_scale", 0.5))
+                budget *= medium_scale
+
+            # PF quality blend: weight 30d + 90d rolling PF then clip.
+            # Port of adaptive.compute_pf_quality_mults simplified for Mode B
+            # (production version is per-model; backtest has single portfolio).
+            if pf_30d is not None and pf_90d is not None:
+                w30 = float(l2_formula_cfg.get("pf_quality_30d_weight", 0.7))
+                w90 = float(l2_formula_cfg.get("pf_quality_90d_weight", 0.3))
+                clip_lo = float(l2_formula_cfg.get("pf_quality_clip_lo", 0.3))
+                clip_hi = float(l2_formula_cfg.get("pf_quality_clip_hi", 1.8))
+                pf30_c = max(clip_lo, min(clip_hi, pf_30d))
+                pf90_c = max(clip_lo, min(clip_hi, pf_90d))
+                pf_mult = max(clip_lo, min(clip_hi, pf30_c * w30 + pf90_c * w90))
+                budget *= pf_mult
 
         if budget <= 0:
             attempts.append(EntryAttempt(
@@ -2665,6 +3427,7 @@ class BacktestMetrics:
     # Raw data for downstream analysis
     equity_curve: list[tuple[str, float]] = field(default_factory=list)  # (date, equity)
     trades: list[Trade] = field(default_factory=list)
+    partition_returns: list[float] = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2754,6 +3517,35 @@ def _compute_cagr(initial: float, final: float, start: str, end: str) -> Optiona
     except (ValueError, TypeError):
         return None
     return (final / initial) ** (1 / years) - 1
+
+
+def compute_trade_partition_returns(
+    trades: list[Trade],
+    n_partitions: int = 6,
+) -> list[float]:
+    """Time-ordered compound trade returns for CSCV/PBO candidate comparison."""
+    if n_partitions <= 0:
+        raise ValueError("n_partitions must be positive")
+    if not trades:
+        return [0.0 for _ in range(n_partitions)]
+
+    sorted_trades = sorted(
+        trades,
+        key=lambda t: (str(t.exit_date or ""), str(t.entry_date or ""), str(t.symbol or "")),
+    )
+    buckets: list[list[float]] = [[] for _ in range(n_partitions)]
+    total = len(sorted_trades)
+    for idx, trade in enumerate(sorted_trades):
+        bucket_idx = min((idx * n_partitions) // total, n_partitions - 1)
+        buckets[bucket_idx].append(float(trade.profit_ratio or 0.0))
+
+    out: list[float] = []
+    for bucket in buckets:
+        equity = 1.0
+        for ret in bucket:
+            equity *= 1.0 + ret
+        out.append(round(equity - 1.0, 10))
+    return out
 
 
 def _apply_sanity_flags(m: BacktestMetrics) -> None:
@@ -2900,6 +3692,7 @@ def compute_metrics(
 
     # Sanity flags (reject overfit Optuna trials)
     _apply_sanity_flags(m)
+    m.partition_returns = compute_trade_partition_returns(trades)
 
     return m
 
@@ -3191,6 +3984,7 @@ def replay_period(
     initial_capital: float = 1_000_000,
     mode: str = "A",
     verbose: bool = False,
+    regime_label: Optional[str] = None,
 ) -> BacktestMetrics:
     """
     Full Mode A rule-based backtest replay over [start_date, end_date].
@@ -3222,7 +4016,8 @@ def replay_period(
     screener_p = ScreenerParams.from_trading_config(params)
     ranking_p = RankingParams.from_trading_config(params)
     pos_p = PositionSizeParams.from_trading_config(params)
-    sltp_p = SLTPParams.from_trading_config(params)
+    # #28b T2.4 (2026-04-21): optional regime_label applies sltp_per_regime overlay
+    sltp_p = SLTPParams.from_trading_config(params, regime_label=regime_label)
     exit_p = ExitParams.from_trading_config(params)
     fees_p = FeeParams.from_trading_config(params)
 
@@ -3250,6 +4045,61 @@ def replay_period(
         f"({len(replay_days)} days) mode={mode}"
     )
 
+    # ── 2026-04-20 #31 Mode B: load historical ML predictions cache ───────
+    # Mode B reads ensemble-row direction_accuracy from D1 to derive real
+    # per-(symbol, date) confidence. Mode A keeps using ml_conf_placeholder.
+    # buyConfThreshold pulled from circuit subsection (KV trading:config).
+    ml_cache: Optional[MLPredictionsCache] = None
+    buy_conf_threshold: Optional[float] = None
+    circuit_cfg_b: Optional[dict] = None   # #28 P2: shared across days
+    verified_preds_cache: list[dict] = []  # #28 P2: verified predictions for rolling acc
+    from services.backtest_state import (
+        BacktestMarketState, load_verified_predictions,
+        compute_rolling_accuracy_30d, compute_drawdown_30d,
+        compute_profit_factor, get_prev_night_drop,
+    )
+    market_state: Optional[BacktestMarketState] = None
+
+    if mode == "B":
+        try:
+            ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
+            circuit_cfg_b = (params or {}).get("circuit", {}) or {}
+            buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
+            logger.info(
+                f"[BacktestEngine] Mode B: cache_size={ml_cache._n}, "
+                f"buy_conf_threshold={buy_conf_threshold}"
+            )
+            if ml_cache._n == 0:
+                logger.warning(
+                    "[BacktestEngine] Mode B: empty ML cache — every candidate "
+                    "will be skipped 'no_ml_pred'. Run Stage 2 cron / verify "
+                    "or backfill historical predictions first."
+                )
+            # 2026-04-20 #28 P2: preload per-date market state + verified
+            # predictions for L2 circuit breakers (Layer 1 dd halt, Layer 2
+            # low-accuracy conf raise). Both are one-shot reads — O(1) lookup
+            # per-day inside the replay loop.
+            try:
+                market_state = BacktestMarketState(start_date, end_date)
+                verified_preds_cache = load_verified_predictions(start_date, end_date)
+                logger.info(
+                    f"[BacktestEngine] Mode B #28 P2: preloaded market state "
+                    f"(risk={len(market_state._risk)}) + "
+                    f"verified_preds={len(verified_preds_cache)}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[BacktestEngine] #28 P2 state preload failed: {e} — "
+                    f"circuit breakers will be disabled this run"
+                )
+                market_state = None
+                verified_preds_cache = []
+        except Exception as e:
+            logger.error(f"[BacktestEngine] Mode B cache load failed: {e} — falling back to Mode A behavior")
+            ml_cache = None
+            buy_conf_threshold = None
+            circuit_cfg_b = None
+
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
         cash=initial_capital,
@@ -3275,6 +4125,18 @@ def replay_period(
 
         # Step 2: attempt entries from prev day's candidates (T-1 → T fill)
         if prev_candidates and prev_decision_date is not None:
+            # 2026-04-20 #28 P2: compute per-day rolling metrics for Mode B
+            # circuit breakers. Cheap filter operations over trades/equity/preds
+            # caches already in memory (no D1 round-trip per day).
+            current_dd_b: Optional[float] = None
+            recent_acc_b: Optional[float] = None
+            if mode == "B" and circuit_cfg_b is not None:
+                current_dd_b = compute_drawdown_30d(equity_curve, day, window_days=30)
+                if verified_preds_cache:
+                    recent_acc_b = compute_rolling_accuracy_30d(
+                        verified_preds_cache, day, window_days=30, min_samples=10,
+                    )
+
             attempts = simulate_entries_for_date(
                 dataset=dataset,
                 decision_date=prev_decision_date,
@@ -3285,6 +4147,45 @@ def replay_period(
                 sltp=sltp_p,
                 fees=fees_p,
                 replay_days=replay_days,
+                # 2026-04-20 #31 Mode B
+                ml_predictions=ml_cache,
+                buy_conf_threshold=buy_conf_threshold,
+                # 2026-04-20 #28 P2 circuit breakers
+                circuit_cfg=circuit_cfg_b,
+                current_drawdown_30d=current_dd_b,
+                recent_accuracy_30d=recent_acc_b,
+                # 2026-04-20 #28 P3 effective confidence delta
+                l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
+                risk_score=(
+                    market_state.get_risk(day).risk_score
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else None
+                ),
+                # 2026-04-20 #28 P4 SLTP add + bull align
+                risk_level=(
+                    market_state.get_risk(day).risk_level
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else None
+                ),
+                bull_align_pct=(
+                    market_state.get_breadth(day).bull_alignment_pct
+                    if (mode == "B" and market_state is not None and market_state.get_breadth(day))
+                    else None
+                ),
+                # 2026-04-20 #28 P5 night drop + PF quality blend
+                prev_night_drop=(
+                    get_prev_night_drop(market_state, day, lookback_days=3)
+                    if (mode == "B" and market_state is not None)
+                    else None
+                ),
+                pf_30d=(
+                    compute_profit_factor(all_trades, day, window_days=30, min_trades=5)
+                    if mode == "B" and circuit_cfg_b is not None else None
+                ),
+                pf_90d=(
+                    compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
+                    if mode == "B" and circuit_cfg_b is not None else None
+                ),
             )
             all_attempts.extend(attempts)
 
@@ -3300,6 +4201,12 @@ def replay_period(
                 date=day,
                 screener=screener_p,
                 ranking=ranking_p,
+                alpha_policy=(params or {}).get("alphaFramework") or (params or {}).get("alpha_framework"),
+                regime_label=(
+                    market_state.get_risk(day).risk_level
+                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    else regime_label
+                ),
             )
             prev_decision_date = day
 
@@ -3384,6 +4291,7 @@ def replay_period_loading(
     mode: str = "A",
     symbols: Optional[list[str]] = None,
     verbose: bool = False,
+    regime_label: Optional[str] = None,
 ) -> BacktestMetrics:
     """
     Convenience wrapper: loads dataset from D1 then runs replay.
@@ -3406,6 +4314,7 @@ def replay_period_loading(
         initial_capital=initial_capital,
         mode=mode,
         verbose=verbose,
+        regime_label=regime_label,
     )
 
 

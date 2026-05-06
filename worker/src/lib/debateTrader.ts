@@ -6,11 +6,20 @@
  *
  * LLM 三層 fallback（成本最低優先）：
  *   1. 本地 Tunnel → Claude Opus（Max Plan 已付費，透過 Cloudflare Tunnel 呼叫）
- *   2. Workers AI  → Llama 3.3 70B（$5 plan 包含，免費）
+ *   2. Gemini 3.1 Flash Lite（主力；便宜+快速+中文好）
  *   3. Anthropic API → Claude Haiku（花錢，最後手段）
  *
  * Verdict: APPROVE → normal buy / DOWNGRADE → halve position / REJECT → skip
+ *
+ * 2026-04-20 #18 FinMem: 若 env.DB 可用，runBuyDebate 會：
+ *   - 讀 debate_memory last 7d/30d/90d 同 symbol thesis 注入 mlContext
+ *   - 結束後把 verdict / conviction / summary 寫入 debate_memory
  */
+
+import {
+  insertDebateMemory, getHistoricalThesis, renderHistoricalThesisBlock,
+  verdictToDirection,
+} from './debateMemory'
 
 // ─── P1#14: Prompt Injection Detection ────────────────────────────────────────
 const DANGER_PATTERNS: Array<[RegExp, string, string]> = [
@@ -49,7 +58,7 @@ export interface DebateResult {
   verdict: DebateVerdict
   rounds: number
   summary: string  // stored in paper_orders.note
-  llmSource: string // 'tunnel' | 'workers_ai' | 'anthropic_api'
+  llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
   convictionScore: number // 0-100, judge 的信念度評分
 }
 
@@ -65,6 +74,7 @@ export interface LLMEnv {
   GEMINI_API_KEY?: string     // Gemini 3.1 Flash Lite (primary cheap+fast)
   ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort fallback)
   KV?: KVNamespace            // 讀 ml:config.debate_model（可 runtime 換模型）
+  DB?: any                    // D1 for FinMem historical thesis (optional, graceful degrade)
 }
 
 // KV 型別（簡化，與 Cloudflare 相容）
@@ -93,7 +103,7 @@ async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
 /**
  * 依優先順序嘗試呼叫 LLM：
  *   1. 本地 Tunnel (Claude Opus) — 最強品質，Max Plan 免費
- *   2. Workers AI (Llama 3.3 70B) — $5 plan 包含
+ *   2. Gemini 3.1 Flash Lite — 主力（便宜+快速+中文好）
  *   3. Anthropic API (Haiku) — 花錢，最後手段
  */
 export async function callLLM(
@@ -218,6 +228,77 @@ async function readMaxRounds(kv?: KVNamespace): Promise<number> {
   }
 }
 
+// ─── 2026-04-18 #39: ml-controller batch migration ────────────────────────────
+
+export interface BatchDebateCandidate {
+  symbol: string
+  stock_name: string
+  signal: string
+  confidence: number
+  reasoning: string
+  us_context?: string
+  taifex_context?: string
+  stock_profile?: StockProfile
+  cache_key_date?: string
+}
+
+/**
+ * Call ml-controller POST /debate/buy_batch — runs all debates in parallel
+ * inside ml-controller (asyncio.gather), returning a Map<symbol, result>.
+ *
+ * This solves the Worker waitUntil 30s limit: instead of N sequential LLM
+ * rounds (M5 budget overflow with >3 candidates), Worker makes ONE HTTP call
+ * and ml-controller fans out server-side.
+ *
+ * Returns null if ML_CONTROLLER_URL missing or endpoint unreachable — caller
+ * should fall back to inline runBuyDebate loop.
+ */
+export async function runBuyDebateBatchViaController(
+  candidates: BatchDebateCandidate[],
+  env: { ML_CONTROLLER_URL?: string; ML_CONTROLLER_SECRET?: string },
+  concurrent: number = 5,
+): Promise<Map<string, DebateResult> | null> {
+  const url = env.ML_CONTROLLER_URL
+  if (!url || candidates.length === 0) return null
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+
+  try {
+    const timeoutMs = Math.min(290_000, 60_000 + candidates.length * 20_000)
+    const resp = await fetch(`${url}/debate/buy_batch`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ candidates, concurrent }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!resp.ok) {
+      console.warn(`[Debate-Batch] ml-controller HTTP ${resp.status}`)
+      return null
+    }
+    const json = await resp.json() as any
+    const results = json?.results as any[] | undefined
+    if (!Array.isArray(results)) return null
+    const map = new Map<string, DebateResult>()
+    for (const r of results) {
+      if (!r || r.error) {
+        console.warn(`[Debate-Batch] ${r?.symbol ?? '?'} error: ${r?.error}`)
+        continue
+      }
+      map.set(r.symbol, {
+        verdict: r.verdict as DebateVerdict,
+        rounds: r.rounds ?? 0,
+        summary: r.summary ?? '',
+        llmSource: r.llm_source ?? 'ml-controller',
+        convictionScore: r.conviction_score ?? 60,
+      })
+    }
+    return map
+  } catch (e) {
+    console.warn(`[Debate-Batch] ml-controller call failed: ${e}`)
+    return null
+  }
+}
+
+
 export async function runBuyDebate(
   symbol: string,
   stockName: string,
@@ -242,6 +323,10 @@ export async function runBuyDebate(
     if (suppliers) profileLines.push(`【主要供應商】${suppliers.replace(/\*\*/g, '').slice(0, 150)}`)
   }
 
+  // 2026-04-20 #18 FinMem: 讀歷史 thesis（graceful degrade when DB 缺或 table 空）
+  const historicalBundle = await getHistoricalThesis(env.DB, symbol)
+  const historicalBlock = renderHistoricalThesisBlock(historicalBundle)
+
   const mlContext = [
     `Stock: ${symbol} (${stockName})`,
     `Signal: ${signal} | Confidence: ${(confidence * 100).toFixed(1)}%`,
@@ -250,6 +335,7 @@ export async function runBuyDebate(
     ...profileLines,
     `ML Ensemble Reasoning:`,
     reasoning,
+    ...(historicalBlock ? ['', historicalBlock] : []),
   ].join('\n')
 
   // ── Multi-round debate (Phase 4 Batch D) ─────────────────────────────────
@@ -454,6 +540,20 @@ export async function runBuyDebate(
     `Reaper(last): ${(reaperCases[reaperCases.length - 1] ?? '').slice(0, 100)} | `,
     `Fulcrum: ${fulcrumResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)
+
+  // 2026-04-20 #18 FinMem: 寫入 debate_memory（graceful no-op 若 env.DB 缺）
+  // thesis_summary = Fulcrum 判決理由（裁掉 prompt-side 元信息），最能代表當日 thesis。
+  const thesisForMemory = fulcrumResponse.replace(/VERDICT:.*\n?/i, '').trim().slice(0, 200)
+  const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  await insertDebateMemory(env.DB, {
+    symbol,
+    debate_date: twToday,
+    thesis_summary: thesisForMemory || summary.slice(0, 200),
+    direction: verdictToDirection(verdict, convictionScore),
+    verdict,
+    conviction_score: convictionScore,
+    llm_source: llmSource,
+  })
 
   return { verdict, rounds: totalRounds, summary, llmSource, convictionScore }
 }

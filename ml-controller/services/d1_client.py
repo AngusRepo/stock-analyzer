@@ -11,15 +11,23 @@ Required env vars (Cloud Run env):
 from __future__ import annotations
 import os
 import logging
+import random
+import time
 from typing import Any, Optional
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:  # allow pure domain tests to import services without HTTP deps
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
 
 
 def _check_env():
@@ -34,9 +42,23 @@ def _check_env():
         )
 
 
+def _sleep_before_retry(attempt: int) -> None:
+    delay = min(0.5 * (2 ** attempt), 4.0) + random.uniform(0.0, 0.25)
+    time.sleep(delay)
+
+
+def _is_retryable_d1_response(status_code: int, text: str) -> bool:
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+    lowered = (text or "").lower()
+    return "d1 db is overloaded" in lowered or "requests queued for too long" in lowered
+
+
 def _post(body: dict, timeout: float = 60.0) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
     _check_env()
+    if httpx is None:
+        raise RuntimeError("D1 request failed: httpx not installed")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
         f"/d1/database/{CF_D1_DB_ID}/query"
@@ -45,16 +67,39 @@ def _post(body: dict, timeout: float = 60.0) -> dict:
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json",
     }
-    try:
-        resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
-    except httpx.RequestError as e:
-        raise RuntimeError(f"D1 request failed: network error: {e}") from e
-    if resp.status_code != 200:
-        raise RuntimeError(f"D1 request failed: HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    if not data.get("success"):
-        raise RuntimeError(f"D1 request unsuccessful: {data.get('errors', data)}")
-    return data
+    last_error: RuntimeError | None = None
+    max_attempts = max(1, MAX_D1_RETRIES + 1)
+
+    for attempt in range(max_attempts):
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.RequestError as e:
+            last_error = RuntimeError(f"D1 request failed: network error: {e}")
+            if attempt < max_attempts - 1:
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error from e
+
+        if resp.status_code != 200:
+            last_error = RuntimeError(f"D1 request failed: HTTP {resp.status_code}: {resp.text[:300]}")
+            if _is_retryable_d1_response(resp.status_code, resp.text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 response attempt=%s status=%s", attempt + 1, resp.status_code)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+
+        data = resp.json()
+        if not data.get("success"):
+            error_text = str(data.get("errors", data))
+            last_error = RuntimeError(f"D1 request unsuccessful: {data.get('errors', data)}")
+            if _is_retryable_d1_response(resp.status_code, error_text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 payload error attempt=%s", attempt + 1)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+        return data
+
+    raise last_error or RuntimeError("D1 request failed: exhausted retries")
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
@@ -98,14 +143,13 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
 def batch_execute(
     statements: list[tuple[str, list[Any]]],
     timeout: float = 30.0,
+    chunk_size: int = 250,
 ) -> dict:
-    """
-    Execute multiple INSERT/UPDATE/DELETE statements sequentially.
+    """Execute multiple INSERT/UPDATE/DELETE statements.
 
-    CF D1 REST API /query endpoint only accepts single statement body
-    (object with sql + params), NOT array. So we loop one-by-one.
-    For true atomic batching CF has a separate transactions API but
-    it's behind a different binding type.
+    Prefer the Worker internal D1 binding endpoint, which uses `env.DB.batch()`
+    and is a real Cloudflare-side batch. Fall back to the legacy REST loop only
+    when the Worker route is not configured or temporarily fails.
 
     Args:
         statements: list of (sql, params) tuples
@@ -116,6 +160,12 @@ def batch_execute(
     """
     if not statements:
         return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
+
+    if WORKER_URL and WORKER_AUTH:
+        try:
+            return _worker_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+        except RuntimeError as e:
+            logger.warning("[d1_client] worker batch failed, falling back to REST loop: %s", e)
 
     success_count = 0
     error_count = 0
@@ -147,4 +197,62 @@ def batch_execute(
         "changes_total": total_changes,
         "first_error": first_error,
         "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "rest_loop_fallback",
+    }
+
+
+def _worker_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    timeout: float = 30.0,
+    chunk_size: int = 250,
+) -> dict:
+    if not statements:
+        return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0, "mode": "worker_d1_batch"}
+    if httpx is None:
+        raise RuntimeError("Worker D1 batch failed: httpx not installed")
+
+    url = f"{WORKER_URL.rstrip('/')}/api/internal/d1/batch"
+    headers = {
+        "Authorization": f"Bearer {WORKER_AUTH}",
+        "Content-Type": "application/json",
+    }
+
+    total = 0
+    success_count = 0
+    error_count = 0
+    changes_total = 0
+    first_error: str | None = None
+    chunk = max(1, min(int(chunk_size or 250), 500))
+
+    for i in range(0, len(statements), chunk):
+        part = statements[i:i + chunk]
+        body = {
+            "statements": [{"sql": sql, "params": params or []} for sql, params in part],
+            "max_statements": chunk,
+        }
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.RequestError as e:
+            raise RuntimeError(f"Worker D1 batch failed: network error: {e}") from e
+        if resp.status_code != 200:
+            raise RuntimeError(f"Worker D1 batch failed: HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
+        total += int(data.get("total") or len(part))
+        success_count += int(data.get("success_count") or len(part))
+        error_count += int(data.get("error_count") or 0)
+        changes_total += int(data.get("changes_total") or 0)
+        if data.get("first_error") and first_error is None:
+            first_error = str(data["first_error"])
+
+    return {
+        "total": total,
+        "success_count": success_count,
+        "error_count": error_count,
+        "changes_total": changes_total,
+        "first_error": first_error,
+        "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "worker_d1_batch",
+        "chunk_size": chunk,
     }

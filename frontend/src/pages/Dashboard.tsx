@@ -1,5 +1,5 @@
 /**
- * Dashboard — StockVision 主頁
+ * 晨間概覽 — StockVision 主頁
  *
  * UX 改進：
  * 1. Hero 顯示完整報價（收盤、漲跌、成交量、52週高低）
@@ -21,7 +21,7 @@ import { toast } from 'sonner'
 import { Toaster } from '@/components/ui/sonner'
 import {
   Trash2, RefreshCw, BarChart2, Home,
-  PieChart, Brain, LogIn, Activity, Sparkles,
+  PieChart, Brain, LogIn, Sparkles,
   Newspaper, LogOut, ChevronRight, Search, Layers, ShieldAlert, Bell,
   Star, ShieldCheck, Users } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -40,11 +40,19 @@ import NewsPanel from '@/components/NewsPanel'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
-import { DailyRecommendationPanel, ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { DailyRecommendationPanelV2 } from '@/components/DailyRecommendationPanelV2'
 import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import {
+  WorkstationCatCard,
+  WorkstationPageTitle,
+  WorkstationPanel,
+  WorkstationPill,
+  WorkstationTickerStrip,
+} from '@/components/workstation/WorkstationChrome'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -232,51 +240,123 @@ function AttentionStocksCard() {
   const { data } = useQuery({ queryKey: ['attention-stocks'], queryFn: marketApi.attentionStocks, staleTime: 3600_000 })
   if (!data?.length) return null
   return (
-    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-4">
-      <h3 className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-        <ShieldAlert className="w-3.5 h-3.5" />
+    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-3">
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-400/80">
+        <ShieldAlert className="h-3.5 w-3.5" />
         注意股
+        <span className="ml-auto font-mono text-[10px] text-amber-300/60">{data.length} 檔</span>
       </h3>
-      <div className="flex flex-wrap gap-1.5">
-        {data.slice(0, 20).map((item: any, i: number) => {
+      <div className="flex flex-wrap gap-1">
+        {data.slice(0, 12).map((item: any, i: number) => {
           const sym = typeof item === 'string' ? item : (item.symbol || item.code)
           const name = typeof item === 'string' ? '' : (item.name || '')
           return (
-            <span key={i} className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 border border-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-300">
+            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-amber-500/15 bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300">
               <span className="font-mono">{sym}</span>
               {name && <span className="text-amber-400/60">{name}</span>}
             </span>
           )
         })}
       </div>
+      {data.length > 12 && <p className="mt-2 text-[10px] text-amber-300/50">另有 {data.length - 12} 檔，完整清單請到資料品質/風控 drilldown。</p>}
     </div>
   )
 }
 
-function MarketOverviewRow() {
+function MarketPulsePanel() {
   const { data: indices } = useQuery({
     queryKey: ['market', 'indices'],
     queryFn: marketApi.indices,
     staleTime: 5 * 60_000,
     refetchInterval: 5 * 60_000,
   })
-  const items = Array.isArray(indices) ? indices : []
-  if (!items.length) return null
+  const { data: risk } = useQuery({
+    queryKey: ['market', 'risk'],
+    queryFn: marketApi.risk,
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+  })
+
+  const indexItems = Array.isArray(indices)
+    ? indices
+    : [indices?.twii, indices?.twoii, indices?.nasdaq, indices?.sp500].filter(Boolean)
+  const riskScore = Number(risk?.risk_score ?? risk?.riskScore ?? risk?.score ?? NaN)
+  const riskLabel = risk?.risk_level ?? risk?.riskLevel ?? risk?.level ?? '待資料回補'
+  const riskTone = Number.isFinite(riskScore)
+    ? riskScore >= 70
+      ? 'text-rose-300'
+      : riskScore >= 40
+        ? 'text-amber-300'
+        : 'text-emerald-300'
+    : 'text-[#9badbf]'
+
+  const decisionCards = [
+    {
+      label: '市場風險',
+      value: Number.isFinite(riskScore) ? `${riskScore.toFixed(0)}/100` : '--',
+      detail: riskLabel,
+      helper: '是否適合放大部位？',
+      tone: riskTone,
+    },
+    {
+      label: '指數狀態',
+      value: indexItems.length ? `${indexItems.length} 組可讀` : '待行情',
+      detail: indexItems.length ? 'TWII / OTC 已進概覽' : '行情 API 尚未回補，先看推薦與風險',
+      helper: '大盤是否支持候選清單？',
+      tone: indexItems.length ? 'text-[#9cc7ef]' : 'text-amber-300',
+    },
+    {
+      label: '推薦可信度',
+      value: '資料先決',
+      detail: '資料品質、模型分數與 T2/debate 對齊後才進行動',
+      helper: 'AI 候選是否可進下一步？',
+      tone: 'text-[#8fc8a9]',
+    },
+  ]
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-      {items.slice(0, 4).map((idx: any) => {
-        const up = (idx.change ?? 0) >= 0
-        return (
-          <div key={idx.symbol ?? idx.name} className="rounded-lg border border-border bg-card p-2.5">
-            <p className="text-[10px] text-muted-foreground truncate">{idx.name ?? idx.symbol}</p>
-            <p className="text-sm font-bold font-mono">{(idx.close ?? idx.price ?? 0).toLocaleString()}</p>
-            <p className={`text-xs font-mono ${up ? 'text-red-400' : 'text-emerald-400'}`}>
-              {up ? '+' : ''}{(idx.change ?? 0).toFixed(0)} ({up ? '+' : ''}{(idx.changePct ?? 0).toFixed(2)}%)
-            </p>
+    <div className="space-y-3">
+      <div>
+        <p className="text-[11px] leading-5 text-[#a8b6c5]">
+          這一區先回答三件事：今天風險高不高、指數資料是否可用、AI 推薦是否值得進下一步。
+        </p>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-3">
+        {decisionCards.map((card) => (
+          <div key={card.label} className="rounded-xl border border-[#2b3a49] bg-[#0f151d]/70 p-3">
+            <p className="text-[10px] tracking-[0.14em] text-[#75879a]">{card.label}</p>
+            <p className={`mt-1 font-mono text-lg font-semibold ${card.tone}`}>{card.value}</p>
+            <p className="mt-1 text-xs text-[#d4dde7]">{card.detail}</p>
+            <p className="mt-2 text-[11px] text-[#8b9bab]">{card.helper}</p>
           </div>
-        )
-      })}
+        ))}
+      </div>
+
+      {indexItems.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {indexItems.slice(0, 4).map((idx: any) => {
+            const change = idx.change ?? idx.change_value ?? 0
+            const changePct = idx.changePct ?? idx.change_pct ?? 0
+            const current = idx.current ?? idx.close ?? idx.price ?? 0
+            const up = change >= 0
+            return (
+              <div key={idx.symbol ?? idx.name} className="rounded-lg border border-[#2b3a49] bg-[#111821]/70 p-2.5">
+                <p className="truncate text-[10px] text-[#8b9bab]">{idx.name ?? idx.symbol}</p>
+                <p className="font-mono text-sm font-bold text-[#e6edf3]">{Number(current).toLocaleString()}</p>
+                <p className={`font-mono text-xs ${up ? 'text-red-400' : 'text-emerald-400'}`}>
+                  {up ? '+' : ''}{Number(change).toFixed(0)} ({up ? '+' : ''}{Number(changePct).toFixed(2)}%)
+                </p>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        <a href="/obs" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">查 Observability</a>
+        <a href="/bot" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">檢查模擬交易</a>
+      </div>
     </div>
   )
 }
@@ -359,82 +439,126 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
   )
 }
 
-// ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
-function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
-  const isAdmin = user?.role === 'admin'
+function MorningBriefingCard() {
+  const items = [
+    { label: '市場情緒', value: '先觀察主題與資金流', tone: 'text-[#9cc7ef]', href: '/obs' },
+    { label: '可觀測性', value: '確認 SLO / Trace / Freshness', tone: 'text-[#8fc8a9]', href: '/obs' },
+    { label: '待處理事項', value: '查看模擬交易與提醒', tone: 'text-[#d4a44f]', href: '/bot' },
+  ]
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="w-full px-4 py-4 space-y-4">
-
-        {/* 搜尋區塊 */}
-        <div className="text-center">
-          <h2 className="text-lg font-bold mb-1">StockVision</h2>
-          <p className="text-muted-foreground text-xs max-w-xs mx-auto mb-3">
-            搜尋台股或美股，即可查看技術分析、籌碼、基本面與 AI 預測
+    <section className="overflow-hidden rounded-xl border border-[#2b3a49] bg-[linear-gradient(135deg,#171714,#111821_55%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.22)]">
+      <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-[#d6a85f]">MORNING BRIEF</p>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">先看市場，再看推薦，不急著按鈕</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#a8b6c5]">
+            Dashboard 是給一般朋友也看得懂的版本：先把市場風險、資料可信度、AI 候選與興櫃研究分流放在第一屏。
           </p>
-          <div className="max-w-sm mx-auto mb-3">
-            <StockSearchCombobox onSelect={onSelect} />
-          </div>
-          <div className="max-w-lg mx-auto">
-            <p className="text-xs text-muted-foreground mb-2">熱門股票</p>
-            <div className="grid grid-cols-5 gap-1.5">
-              {QUICK_STOCKS.map(s => (
-                <button
-                  key={s.symbol}
-                  onClick={() => onSelect({ id: 0, ...s })}
-                  className="rounded-lg border border-border bg-card hover:bg-white/[0.07] hover:border-white/[0.15] transition-all px-2 py-1.5 text-center"
-                >
-                  <p className="text-xs font-bold">{s.symbol}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{s.name}</p>
-                </button>
-              ))}
-            </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {items.map((item) => (
+            <a key={item.label} href={item.href} className="rounded-xl border border-[#2b3a49] bg-[#070a10]/55 p-3 transition hover:border-[#f0b90b]/35 hover:bg-[#111821]/80">
+              <p className="text-[11px] text-[#8b9bab]">{item.label}</p>
+              <p className={`mt-1 text-sm font-semibold ${item.tone}`}>{item.value}</p>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => void }) {
+  return (
+    <WorkstationPanel title="標的入口" kicker="search, quick tickers, personal watch">
+      <div className="space-y-3 p-3">
+        <div>
+          <h2 className="font-['Space_Grotesk'] text-lg font-semibold text-[#f2ead8]">想看哪檔？</h2>
+          <p className="mt-1 text-xs leading-5 text-[#8b9bab]">搜尋標的進研究筆記；每日推薦與自選股則留在首頁工作台。</p>
+        </div>
+        <StockSearchCombobox onSelect={onSelect} />
+        <div>
+          <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8ba0]">quick launch</p>
+          <div className="grid grid-cols-5 gap-1.5">
+            {QUICK_STOCKS.map(s => (
+              <button
+                key={s.symbol}
+                onClick={() => onSelect({ id: 0, ...s })}
+                className="rounded-lg border border-[#2b3a49] bg-[#070a10] px-2 py-2 text-center transition-all hover:border-[#f0b90b]/45 hover:bg-[#171714]"
+              >
+                <p className="text-xs font-bold text-[#f2ead8]">{s.symbol}</p>
+                <p className="truncate text-[10px] text-[#8b9bab]">{s.name}</p>
+              </button>
+            ))}
           </div>
         </div>
+      </div>
+    </WorkstationPanel>
+  )
+}
 
-        {/* 大盤行情 */}
-        <MarketOverviewRow />
+// ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
+function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="w-full space-y-4 px-4 py-4">
 
-        {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <MorningBriefingCard />
 
-          {/* 左欄：自選股 + 大盤風險 + Bot */}
-          <div className="space-y-4">
-            <WatchlistCards onSelect={onSelect} />
+        <WorkstationTickerStrip
+          items={[
+            { label: 'Dashboard audience', value: '朋友也看得懂', tone: 'info', detail: '保留市場判讀與候選，不塞 admin 細節。' },
+            { label: 'Trading lane', value: '上市櫃交易流', tone: 'ok', detail: '才會進 morning setup / debate。' },
+            { label: 'Research lane', value: '興櫃研究流', tone: 'warn', detail: '只觀察，不自動交易。' },
+            { label: 'Quality first', value: '資料先決', tone: 'neutral', detail: 'DQ / OBS 失敗時推薦視為降級。' },
+          ]}
+        />
 
-            <div className="space-y-3">
-              <MarketRiskPanel />
-              {isAdmin && (
-                <a href="/bot" className="block rounded-xl border border-border bg-card hover:bg-white/[0.07] hover:border-teal-500/30 transition-all p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
-                      <Activity className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold">Auto Trade Bot</p>
-                      <p className="text-xs text-muted-foreground">持倉 · 交易紀錄 · Bot 狀態</p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 ml-auto text-muted-foreground shrink-0" />
-                  </div>
-                </a>
-              )}
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[390px_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <StockSearchWorkbench onSelect={onSelect} />
+            <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
+              <div className="space-y-3 p-3">
+                <MarketRiskPanel />
+                <MarketPulsePanel />
+              </div>
+            </WorkstationPanel>
+            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-1">
+              <WorkstationCatCard
+                src="/stockvision-cats/01_bull_market_train.png"
+                title="牛市列車"
+                caption="行情很熱也先看號誌，別看到列車就直接跳上去。"
+                tone="ok"
+              />
+              <WorkstationCatCard
+                src="/stockvision-cats/04_small_green_observe_first.png"
+                title="小綠先觀察"
+                caption="AI 候選清單有訊號，但還是要等資料品質、T2 與市場結構一起點頭。"
+                tone="info"
+              />
+            </div>
+            <WorkstationPanel title="自選雷達" kicker="watchlist">
+              <div className="p-3">
+                <WatchlistCards onSelect={onSelect} />
+              </div>
+            </WorkstationPanel>
+          </div>
+
+          <div className="space-y-3">
+            <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
+              <div className="p-3">
+                <DailyRecommendationPanelV2 />
+              </div>
+            </WorkstationPanel>
+            <div className="grid gap-3 xl:grid-cols-[1.2fr_0.8fr]">
+              <ThemeFlowPanel />
+              <div className="space-y-3">
+                <AttentionStocksCard />
+                <ExDividendCard />
+              </div>
             </div>
           </div>
-
-          {/* 中左欄：每日選股推薦 */}
-          <div className="space-y-4">
-            <DailyRecommendationPanel />
-            <ExDividendCard />
-          </div>
-
-          {/* 中右欄：主題輪動 */}
-          <div className="space-y-4">
-            <ThemeFlowPanel />
-            <AttentionStocksCard />
-          </div>
-
-
         </div>
       </div>
     </div>
@@ -454,7 +578,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">{children}</h3>
 }
 
-// ── 主 Dashboard ──────────────────────────────────────────────────────────────
+// ── 晨間概覽主頁 ──────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const qc = useQueryClient()
   const { user, isAuthenticated, login, logout } = useAuth()
@@ -611,6 +735,19 @@ export default function Dashboard() {
         <TooltipProvider>
           <Toaster />
           <AppShell>
+            <div className="p-4 pb-0 lg:p-5 lg:pb-0">
+              <WorkstationPageTitle
+                kicker="Morning overview"
+                title={activeStock ? `${activeStock.symbol} 研究筆記` : '晨間概覽'}
+                description="用比較輕的節奏整理市場、推薦與 Observability；需要細節時再進研究室或監控中心。"
+                action={
+                  <div className="flex flex-wrap gap-2">
+                    <WorkstationPill tone="info">今日焦點</WorkstationPill>
+                    {activeStock && <WorkstationPill tone="ok">{activeStock.market}</WorkstationPill>}
+                  </div>
+                }
+              />
+            </div>
             {!activeStock ? (
               <EmptyState onSelect={handleSelect} user={user} />
             ) : (

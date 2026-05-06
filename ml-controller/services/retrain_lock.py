@@ -13,7 +13,7 @@ known failure modes:
      TTL is meaningless right after a deploy.
 
 This module moves the lock into GCS as a small JSON blob under
-`gs://stockvision-models/locks/retrain/<key>.json`. Acquisition is atomic
+`gs://<configured-lock-bucket>/locks/retrain/<key>.json`. Acquisition is atomic
 via `if_generation_match=0` (create-if-absent) — GCS's generation semantics
 provide linearizable compare-and-set, so two instances racing on the same
 key will have exactly one winner.
@@ -52,7 +52,10 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-DEFAULT_BUCKET = os.environ.get("RETRAIN_LOCK_BUCKET", "stockvision-models")
+DEFAULT_BUCKET = (
+    os.environ.get("RETRAIN_LOCK_BUCKET", "").strip()
+    or os.environ.get("GCS_BUCKET_NAME", "").strip()
+)
 LOCK_PREFIX = "locks/retrain/"
 # Process-local instance identifier (helps debug cross-instance contention)
 _INSTANCE_ID = os.environ.get("K_REVISION") or os.environ.get("HOSTNAME") or f"pid{os.getpid()}"
@@ -107,6 +110,9 @@ _GCS_CLIENT = None
 def _get_bucket(bucket_name: str = DEFAULT_BUCKET):
     """Lazy-init a GCS bucket handle.  Returns None on import/auth failure."""
     global _GCS_CLIENT
+    if not bucket_name:
+        logger.warning("[retrain_lock] RETRAIN_LOCK_BUCKET / GCS_BUCKET_NAME not set; lock disabled")
+        return None
     try:
         if _GCS_CLIENT is None:
             from google.cloud import storage  # type: ignore

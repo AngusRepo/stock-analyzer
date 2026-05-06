@@ -36,7 +36,9 @@ SERVICE_TOKEN = os.environ.get("PROXY_SERVICE_TOKEN", "")  # Worker 驗證用
 api = None
 connected = False
 last_ticks: dict[str, dict] = {}   # symbol → latest tick data
+last_bidasks: dict[str, dict] = {}
 subscribed: set[str] = set()
+bidask_subscribed: set[str] = set()
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
@@ -93,6 +95,36 @@ def init_shioaji():
             if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
                 buf.append((now_ts, tick.close))
 
+        @api.on_bidask_stk_v1()
+        def on_bidask(exchange, bidask):
+            symbol = bidask.code
+
+            def to_float_list(values):
+                return [float(v) for v in list(values or [])]
+
+            def to_int_list(values):
+                return [int(v) for v in list(values or [])]
+
+            bid_prices = to_float_list(getattr(bidask, "bid_price", []))
+            bid_volumes = to_int_list(getattr(bidask, "bid_volume", []))
+            ask_prices = to_float_list(getattr(bidask, "ask_price", []))
+            ask_volumes = to_int_list(getattr(bidask, "ask_volume", []))
+            bid1 = bid_prices[0] if bid_prices else None
+            ask1 = ask_prices[0] if ask_prices else None
+            mid = (bid1 + ask1) / 2 if bid1 and ask1 else None
+
+            last_bidasks[symbol] = {
+                "symbol": symbol,
+                "bid_prices": bid_prices,
+                "bid_volumes": bid_volumes,
+                "ask_prices": ask_prices,
+                "ask_volumes": ask_volumes,
+                "price": mid,
+                "timestamp": bidask.datetime.isoformat() if hasattr(bidask, "datetime") else None,
+                "updated_at": datetime.now(TW_TZ).isoformat(),
+                "simtrade": bool(getattr(bidask, "simtrade", False)),
+            }
+
     except Exception as e:
         print(f"[Shioaji] Init failed: {e}")
         connected = False
@@ -114,8 +146,6 @@ def subscribe_symbol(symbol: str):
     global api
     if not api or not connected:
         return False
-    if symbol in subscribed:
-        return True
     try:
         import shioaji as sj
         contract = api.Contracts.Stocks.get(symbol)
@@ -123,9 +153,14 @@ def subscribe_symbol(symbol: str):
             # 嘗試 OTC
             contract = api.Contracts.Stocks.get(symbol)
         if contract:
-            api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
-            subscribed.add(symbol)
-            print(f"[Shioaji] Subscribed: {symbol}")
+            if symbol not in subscribed:
+                api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
+                subscribed.add(symbol)
+                print(f"[Shioaji] Tick subscribed: {symbol}")
+            if symbol not in bidask_subscribed:
+                api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.BidAsk, version=sj.constant.QuoteVersion.v1)
+                bidask_subscribed.add(symbol)
+                print(f"[Shioaji] BidAsk subscribed: {symbol}")
             return True
         else:
             print(f"[Shioaji] Contract not found: {symbol}")
@@ -149,6 +184,8 @@ def get_snapshot(symbol: str) -> dict | None:
             return {
                 "symbol": symbol,
                 "price": s.close,
+                "last": s.close,
+                "close": s.close,
                 "open": s.open,
                 "high": s.high,
                 "low": s.low,
@@ -194,7 +231,9 @@ def health():
         "status": "ok" if connected else "disconnected",
         "connected": connected,
         "subscribed_count": len(subscribed),
+        "bidask_subscribed_count": len(bidask_subscribed),
         "cached_ticks": len(last_ticks),
+        "cached_bidasks": len(last_bidasks),
         "market_hours": is_market_hours(),
         "tw_time": get_tw_now().isoformat(),
     }
@@ -239,6 +278,21 @@ def batch_quotes(req: BatchRequest, authorization: str | None = None):
             continue
         # 訂閱 + snapshot
         subscribe_symbol(symbol)
+        snap = get_snapshot(symbol)
+        if snap:
+            results[symbol] = snap
+
+    return {"status": "ok", "count": len(results), "data": results}
+
+
+@app.post("/snapshots")
+def batch_snapshots(req: BatchRequest, authorization: str | None = None):
+    """Batch snapshot endpoint used by the Worker execution core."""
+    verify_token(authorization)
+    results: dict[str, dict] = {}
+
+    for symbol in req.symbols:
+        symbol = symbol.upper().strip()
         snap = get_snapshot(symbol)
         if snap:
             results[symbol] = snap
@@ -368,34 +422,45 @@ def market_risk(authorization: str | None = None):
 # ── 五檔報價 + Orderbook Features ─────────────────────────────────────────
 @app.get("/orderbook/{symbol}")
 def orderbook(symbol: str, authorization: str | None = None):
-    """
-    取個股 L5 五檔報價 + 計算 orderbook features：
-    - bid_ask_imbalance: (bid_vol - ask_vol) / (bid_vol + ask_vol)，-1~+1
-    - spread_pct: (ask_1 - bid_1) / mid_price * 100，越大流動性越差
-    - bid_concentration: bid_1_vol / total_bid_vol，大單集中度
-    """
+    """Return latest streaming BidAsk L5 depth and derived orderbook features."""
     verify_token(authorization)
     symbol = symbol.upper().strip()
 
-    if not api or not connected:
-        raise HTTPException(503, "Shioaji not connected")
-
     try:
-        contract = api.Contracts.Stocks.get(symbol)
-        if not contract:
+        if not api or not connected:
+            raise HTTPException(503, "Shioaji not connected")
+
+        if symbol not in last_bidasks:
+            if not subscribe_symbol(symbol):
+                raise HTTPException(404, f"Contract not found: {symbol}")
+            time.sleep(0.2)
+
+        depth = last_bidasks.get(symbol)
+        if not depth:
+            return {
+                "status": "no_depth",
+                "symbol": symbol,
+                "depth_available": False,
+                "price": None,
+                "bid_prices": [],
+                "bid_volumes": [],
+                "ask_prices": [],
+                "ask_volumes": [],
+                "features": {
+                    "bid_ask_imbalance": None,
+                    "spread_pct": None,
+                    "bid_concentration": None,
+                },
+                "updated_at": datetime.now(TW_TZ).isoformat(),
+            }
+
+        bid_prices = depth["bid_prices"][:5]
+        bid_volumes = depth["bid_volumes"][:5]
+        ask_prices = depth["ask_prices"][:5]
+        ask_volumes = depth["ask_volumes"][:5]
+
+        if len(bid_prices) == 0 and len(ask_prices) == 0:
             raise HTTPException(404, f"Contract not found: {symbol}")
-
-        snapshots = api.snapshots([contract])
-        if not snapshots or len(snapshots) == 0:
-            raise HTTPException(404, f"No snapshot for {symbol}")
-
-        s = snapshots[0]
-
-        # L5 五檔（Shioaji snapshot 回傳 list[5]）
-        bid_prices = list(s.bid_price) if hasattr(s, 'bid_price') else []
-        bid_volumes = list(s.bid_volume) if hasattr(s, 'bid_volume') else []
-        ask_prices = list(s.ask_price) if hasattr(s, 'ask_price') else []
-        ask_volumes = list(s.ask_volume) if hasattr(s, 'ask_volume') else []
 
         total_bid_vol = sum(bid_volumes) if bid_volumes else 0
         total_ask_vol = sum(ask_volumes) if ask_volumes else 0
@@ -407,7 +472,7 @@ def orderbook(symbol: str, authorization: str | None = None):
         # Spread: 內外盤價差比例
         bid1 = bid_prices[0] if bid_prices else 0
         ask1 = ask_prices[0] if ask_prices else 0
-        mid = (bid1 + ask1) / 2 if bid1 and ask1 else s.close
+        mid = (bid1 + ask1) / 2 if bid1 and ask1 else depth.get("price") or 0
         spread_pct = ((ask1 - bid1) / mid * 100) if mid > 0 and bid1 and ask1 else 0
 
         # Bid Concentration: 內盤第一檔集中度（大單守護）
@@ -416,7 +481,8 @@ def orderbook(symbol: str, authorization: str | None = None):
         return {
             "status": "ok",
             "symbol": symbol,
-            "price": s.close,
+            "depth_available": len(bid_prices) >= 5 and len(ask_prices) >= 5,
+            "price": depth.get("price"),
             "bid_prices": bid_prices,
             "bid_volumes": bid_volumes,
             "ask_prices": ask_prices,
@@ -426,7 +492,7 @@ def orderbook(symbol: str, authorization: str | None = None):
                 "spread_pct": round(spread_pct, 4),
                 "bid_concentration": round(bid_concentration, 4),
             },
-            "updated_at": datetime.now(TW_TZ).isoformat(),
+            "updated_at": depth.get("updated_at") or datetime.now(TW_TZ).isoformat(),
         }
 
     except HTTPException:

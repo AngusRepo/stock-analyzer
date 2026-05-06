@@ -1,0 +1,523 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from services import recommendation_service  # noqa: E402
+from services import modal_client  # noqa: E402
+from services.recommendation_service import (  # noqa: E402
+    build_reason,
+    build_ml_vote_summary_data,
+    filter_and_score_recommendations,
+    hybrid_ranking_promotion,
+    prune_predictions_outside_universe,
+    update_recommendations_in_d1,
+    write_predictions_to_d1,
+)
+
+
+def _screener_rec(symbol: str) -> dict:
+    return {
+        "id": 1,
+        "stock_id": 1,
+        "date": "2026-04-22",
+        "symbol": symbol,
+        "name": symbol,
+        "sector": "Semis",
+        "industry": "IC",
+        "market_segment": "LISTED",
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": 1,
+        "chip_score": 18.0,
+        "tech_score": 12.0,
+    }
+
+
+def _payload(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "prices": [{"date": "2026-04-21", "close": 100.0, "open": 99.0, "high": 101.0, "low": 98.0}],
+        "indicators": [{"date": "2026-04-21", "rsi14": 58.0, "macdHist": 0.4, "ma20": 96.0}],
+        "chips": [{"date": "2026-04-21", "foreign_net": 1200, "trust_net": 300}],
+        "market_env": {},
+    }
+
+
+def _prediction_with_ensemble_v2() -> dict:
+    return {
+        "signal": "HOLD",
+        "confidence": 0.31,
+        "forecast_pct": 0.004,
+        "direction": "neutral",
+        "ensemble_v2": {
+            "signal": "BUY",
+            "confidence": 0.79,
+            "forecast_pct": 0.034,
+            "signal_source": "ensemble_v2_topk_policy",
+            "signal_raw": "HOLD",
+        },
+        "models": {
+            "XGBoost": {"direction": "up"},
+            "CatBoost": {"direction": "up"},
+            "Chronos": {"direction": "up"},
+        },
+    }
+
+
+def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    final, sell_count = filter_and_score_recommendations(
+        [_screener_rec("2330")],
+        {"2330": _prediction_with_ensemble_v2()},
+        [_payload("2330")],
+    )
+
+    assert sell_count == 0
+    assert len(final) == 1
+    row = final[0]
+
+    assert row["signal"] == "BUY"
+    assert row["confidence"] == pytest.approx(0.79, abs=1e-6)
+    assert row["signal_source"] == "ensemble_v2_topk_policy"
+    assert row["signal_raw"] == "HOLD"
+    assert row["has_buy_signal"] == 1
+    assert row["ml_score"] == 0
+    assert row["stock_id"] == 1
+
+
+def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    prices = [
+        {
+            "date": f"2026-04-{i + 1:02d}",
+            "close": 50.0 + i,
+            "open": 49.5 + i,
+            "high": 51.0 + i,
+            "low": 49.0 + i,
+        }
+        for i in range(40)
+    ]
+    payload = {
+        "symbol": "3585",
+        "prices": prices,
+        "indicators": [],
+        "chips": [],
+        "stock_meta": {
+            "market_segment": "EMERGING",
+            "recommendation_lane": "emerging_watchlist",
+            "eligible_for_ml": True,
+            "eligible_for_execution": False,
+        },
+    }
+
+    final, sell_count = filter_and_score_recommendations(
+        [{**_screener_rec("3585"), "market_segment": "EMERGING", "eligible_for_pending_buy": 0}],
+        {"3585": _prediction_with_ensemble_v2()},
+        [payload],
+    )
+
+    assert sell_count == 0
+    assert len(final) == 1
+    assert final[0]["rsi14"] is not None
+    assert final[0]["macd_hist"] is not None
+    assert final[0]["macd_hist"] > 0
+    assert final[0]["current_price"] == 89.0
+
+
+def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    rec = {
+        **_screener_rec("7879"),
+        "market_segment": "EMERGING",
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": 0,
+    }
+
+    final, _sell_count = filter_and_score_recommendations(
+        [rec],
+        {"7879": _prediction_with_ensemble_v2()},
+        [_payload("7879")],
+    )
+
+    row = final[0]
+    assert row["market_segment"] == "EMERGING"
+    assert row["recommendation_lane"] == "emerging_watchlist"
+    assert row["eligible_for_pending_buy"] is False
+    assert row["has_buy_signal"] == 0
+    assert "research_only:emerging_not_for_auto_trade" in row["watch_points"]
+
+
+def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    prediction = {
+        "signal": "HOLD",
+        "confidence": 0.44,
+        "forecast_pct": -0.01,
+        "ensemble_v2": {
+            "signal": "HOLD",
+            "confidence": 0.5,
+            "forecast_pct": 0.0,
+            "signal_source": "ensemble_v2",
+            "reason": "no_positive_lifecycle_weight",
+            "weight_total": 0.0,
+        },
+        "models": {"XGBoost": {"direction": "up"}},
+    }
+
+    final, _sell_count = filter_and_score_recommendations(
+        [_screener_rec("5292")],
+        {"5292": prediction},
+        [_payload("5292")],
+    )
+
+    assert final[0]["signal"] == "HOLD"
+    assert final[0]["ml_forecast_pct"] == 0.0
+    assert final[0]["ml_score"] == 0
+    assert "暫無正 IC 權重" in final[0]["reason"]
+
+
+def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
+    reason = build_reason({
+        "foreign_net_5d": 6.0,
+        "trust_net_5d": 0,
+        "rsi14": 63,
+        "macd_hist": 0.2,
+        "current_price": 100,
+        "ma20": 95,
+        "ml_vote_summary": "ML 資料不足",
+    })
+
+    assert "600000000" not in reason
+    assert "6.0" in reason
+    assert "億" in reason
+
+
+def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements), "changes_total": len(statements)}
+
+    def _fake_execute(sql, params, timeout=60):
+        captured["cleanup_sql"] = sql
+        captured["cleanup_params"] = params
+        captured["cleanup_timeout"] = timeout
+        return {"meta": {"changes": 2}}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"stock_id": 1}],
+    )
+
+    update_recommendations_in_d1([{
+        "date": "2026-04-27",
+        "stock_id": 1,
+        "symbol": "2330",
+        "name": "TSMC",
+        "sector": "Semis",
+        "industry": "IC",
+        "chip_score": 12.0,
+        "tech_score": 20.0,
+        "ml_score": 25.0,
+        "score": 57.0,
+        "signal": "BUY",
+        "confidence": 0.78,
+        "has_buy_signal": 1,
+        "reason": "ok",
+        "watch_points": ["watch"],
+        "current_price": 100.0,
+    }], "2026-04-27")
+
+    assert "DELETE FROM daily_recommendations" in captured["cleanup_sql"]
+    assert "stock_id NOT IN" in captured["cleanup_sql"]
+    assert captured["cleanup_params"] == ["2026-04-27", 1]
+
+    sql, params = captured["statements"][0]
+    assert "UPDATE daily_recommendations SET" in sql
+    assert "WHERE date=? AND stock_id=?" in sql
+    assert params[:4] == ["2330", "TSMC", "Semis", 1]
+    assert params[-2:] == ["2026-04-27", 1]
+
+
+def test_hybrid_ranking_promotion_marks_signal_source():
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "confidence": 0.38,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+    )
+
+    assert promoted[0]["ranking_promoted"] is True
+    assert promoted[0]["signal"] == "BUY"
+    assert promoted[0]["signal_raw"] == "HOLD"
+    assert promoted[0]["signal_source"] == "ranking_promotion"
+
+
+def test_hybrid_ranking_promotion_blocks_negative_forecast():
+    rows = [{
+        "symbol": "5292",
+        "chip_score": 36.0,
+        "tech_score": 30.0,
+        "confidence": 0.5,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": -0.01,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+    )
+
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0].get("ranking_promoted") is not True
+    assert promoted[0]["promotion_blocked_reason"] == "negative_or_below_min_forecast"
+
+
+def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied():
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "confidence": 0.72,
+        "signal": "BUY",
+        "signal_source": "ensemble_v2_topk_policy",
+        "has_buy_signal": 1,
+        "topk_forced": True,
+    }, {
+        "symbol": "2317",
+        "chip_score": 19.0,
+        "tech_score": 14.0,
+        "confidence": 0.41,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 3, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+    )
+
+    assert promoted[0]["signal_source"] == "ensemble_v2_topk_policy"
+    assert promoted[1]["signal"] == "HOLD"
+    assert promoted[1].get("ranking_promoted") is not True
+
+
+def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
+    rows = [
+        {
+            "symbol": "2330",
+            "chip_score": 20.0,
+            "tech_score": 15.0,
+            "confidence": 0.76,
+            "signal": "BUY",
+            "has_buy_signal": 1,
+            "score": 70.0,
+            "alpha_context": {"edge_bucket": "trend_following"},
+        },
+        {
+            "symbol": "2317",
+            "chip_score": 19.0,
+            "tech_score": 14.0,
+            "confidence": 0.72,
+            "signal": "BUY",
+            "has_buy_signal": 1,
+            "score": 69.0,
+            "alpha_context": {"edge_bucket": "mean_reversion"},
+        },
+        {
+            "symbol": "2454",
+            "chip_score": 18.0,
+            "tech_score": 13.0,
+            "confidence": 0.70,
+            "signal": "BUY",
+            "has_buy_signal": 1,
+            "score": 68.0,
+            "alpha_context": {"edge_bucket": "defensive_accumulation"},
+        },
+    ]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        alpha_policy={"allocation": {"slateSize": 2}},
+        regime_label="sideways",
+    )
+
+    selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
+    assert len(selected) == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
+    monkeypatch.setattr(modal_client, "_USE_MODAL", False)
+    monkeypatch.setattr(modal_client, "_ML_SERVICE_URL", "https://ml.example.com")
+
+    observed = {}
+
+    async def _fake_http_batch(path: str, payloads: list[dict], concurrency: int):
+        observed["path"] = path
+        observed["concurrency"] = concurrency
+        observed["payloads"] = payloads
+        return [{"ok": True}]
+
+    monkeypatch.setattr(modal_client, "_http_batch", _fake_http_batch)
+
+    result = await modal_client.batch_predict([{"symbol": "2330"}])
+
+    assert result == [{"ok": True}]
+    assert observed["path"] == "/predict/v2"
+
+
+def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    predictions = {
+        "2330": {
+            "signal": "HOLD",
+            "confidence": 0.31,
+            "forecast_pct": 0.004,
+            "entry_price": 100.0,
+            "stop_loss": 95.0,
+            "target1": 108.0,
+            "target2": 112.0,
+            "feature_version": "v2",
+            "ensemble_v2": {
+                "signal": "BUY",
+                "signal_source": "ensemble_v2_topk_policy",
+            },
+            "models": {},
+            "forecasts": {},
+            "arf_features": {},
+        }
+    }
+
+    write_predictions_to_d1(predictions, {"2330": 1})
+
+    insert_params = captured["statements"][2][1]
+    forecast_data = insert_params[4]
+    assert '"signal_source": "ensemble_v2_topk_policy"' in forecast_data
+
+
+def test_ml_vote_summary_counts_weight_gated_models_as_reported():
+    summary = build_ml_vote_summary_data(
+        {
+            "rank_scores": {
+                "XGBoost": 0.61,
+                "CatBoost": 0.58,
+                "ExtraTrees": 0.52,
+                "LightGBM": 0.47,
+                "FT-Transformer": 0.56,
+            },
+            "chronos": {"forecast_pct": 0.02},
+            "dlinear": {"forecast_pct": -0.01},
+            "patchtst": {"forecast_pct": 0.015},
+            "ensemble_v2": {
+                "forecast_pct": 0.0066,
+                "weights": {
+                    "XGBoost": 0.02,
+                    "CatBoost": 0.03,
+                    "ExtraTrees": 0.02,
+                    "LightGBM": 0.06,
+                    "FT-Transformer": 0.0,
+                    "Chronos": 0.24,
+                    "DLinear": 0.0,
+                    "PatchTST": 0.17,
+                },
+                "contributing_models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "Chronos", "PatchTST"],
+            },
+        },
+        {"up": 0, "down": 0, "total": 0},
+    )
+
+    assert summary["reported"] == 8
+    assert summary["missing"] == 0
+    assert summary["activeWeightCount"] == 6
+    assert summary["zeroWeightModels"] == ["FT-Transformer", "DLinear"]
+
+
+def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    written = write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "HOLD",
+                "confidence": 0.31,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target1": 108.0,
+                "target2": 112.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "HOLD", "signal_source": "ensemble_v2"},
+                "rank_scores": {"XGBoost": 0.6},
+            }
+        },
+        {"2330": 1},
+        run_date="2026-04-29",
+    )
+
+    stale_cleanup_sql, stale_cleanup_params = captured["statements"][1]
+    assert "model_name!='ensemble'" in stale_cleanup_sql
+    assert "prediction_date = ?" in stale_cleanup_sql
+    assert stale_cleanup_params == [1, "2026-04-29"]
+    assert written == 2
+
+
+def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):
+    captured = {}
+
+    def _fake_execute(sql, params, timeout=60):
+        captured["sql"] = sql
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"meta": {"changes": 12}}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+
+    deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
+
+    assert deleted == 12
+    assert "DELETE FROM predictions" in captured["sql"]
+    assert "prediction_date = ?" in captured["sql"]
+    assert "stock_id NOT IN (?,?,?)" in captured["sql"]
+    assert captured["params"] == ["2026-04-30", 1, 2, 3]

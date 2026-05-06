@@ -10,17 +10,75 @@ in-memory. Reduces D1 round-trips from ~270 (33 stocks × 8) to ~10.
 """
 from __future__ import annotations
 import logging
+import json
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 from services import d1_client, kv_client
+from services.adaptive import resolve_adaptive_params_for_regime
+from services.market_segment_policy import policy_for_segment
 
 logger = logging.getLogger(__name__)
+
+
+def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
+    """Build legacy PredictRequest lifecycle_weights from model_pool.json.
+
+    model_pool.json is the source of truth. The returned map is only a transport
+    adapter for older prediction code that still accepts lifecycle_weights.
+    """
+    try:
+        import json as _json
+        import os
+        from google.cloud import storage
+
+        bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+        if not bucket_name:
+            return {}
+
+        blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
+        if not blob.exists():
+            return {}
+
+        pool = _json.loads(blob.download_as_text())
+        degraded_dampening = (
+            trading_cfg.get("mlPool", {}).get("degradedDampening")
+            if isinstance(trading_cfg.get("mlPool"), dict)
+            else None
+        )
+        degraded_dampening = float(degraded_dampening if degraded_dampening is not None else 1.0)
+
+        weights: dict[str, float] = {}
+        for name, entry in (pool.get("models") or {}).items():
+            status = entry.get("status", "active")
+            if status == "degraded":
+                weights[name] = degraded_dampening
+            elif status in ("retired", "challenger"):
+                weights[name] = 0.0
+        return weights
+    except Exception as e:
+        logger.warning(f"[payload_builder] model_pool lifecycle weights read failed: {e}")
+        return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data shapes (match worker payload schema 1:1)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _load_current_regime_label() -> str | None:
+    meta = kv_client.get_json("ml:regime:meta", default={}) or {}
+    if isinstance(meta, dict) and meta.get("label"):
+        return str(meta["label"])
+    raw = kv_client.get("ml:regime")
+    return str(raw) if raw else None
+
+
+def load_effective_adaptive_params() -> dict:
+    """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
+    raw = kv_client.get_json("ml:adaptive_params", default={}) or {}
+    regime = _load_current_regime_label()
+    return resolve_adaptive_params_for_regime(raw, regime)
+
 
 @dataclass
 class MarketEnv:
@@ -66,6 +124,7 @@ class PredictPayload:
     lifecycle_weights: dict[str, float] = field(default_factory=dict)
     barrier_params: dict = field(default_factory=dict)
     stock_meta: dict = field(default_factory=dict)  # Universal Model: sector/cap/volume/cross-sectional
+    runtime_options: dict = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -318,14 +377,18 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     us_signal = kv_client.get_json(f"us:leading:{run_date}", default={}) or {}
 
     # ── 5. Latest market_breadth ────────────────────────────────────────────
-    breadth_rows = d1_client.query(
-        "SELECT date, advance_ratio, bull_alignment_pct "
-        "FROM market_breadth ORDER BY date DESC LIMIT 5"
-    )
+    try:
+        breadth_rows = d1_client.query(
+            "SELECT date, advance_ratio, bull_alignment_pct "
+            "FROM market_breadth ORDER BY date DESC LIMIT 5"
+        )
+    except RuntimeError as e:
+        logger.warning("[payload_builder] market_breadth unavailable; degrading market_env: %s", e)
+        breadth_rows = []
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
     # ── 6. Adaptive params from KV ──────────────────────────────────────────
-    adaptive_params = kv_client.get_json("ml:adaptive_params", default={}) or {}
+    adaptive_params = load_effective_adaptive_params()
 
     # ── 7. Trading config → barrier_params ──────────────────────────────────
     trading_cfg = kv_client.get_json("trading:config", default={}) or {}
@@ -338,21 +401,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "max_days": barrier_cfg.get("maxDays"),
     }
 
-    # ── 8. Lifecycle weights from D1 model_lifecycle_state ──────────────────
-    lifecycle_weights: dict[str, float] = {}
-    try:
-        lc_rows = d1_client.query(
-            "SELECT state_json FROM model_lifecycle_state WHERE id=1"
-        )
-        if lc_rows:
-            import json as _json
-            states = _json.loads(lc_rows[0]["state_json"])
-            for name, s in (states or {}).items():
-                wm = s.get("weight_mult")
-                if wm is not None and wm != 1.0:
-                    lifecycle_weights[name] = wm
-    except Exception as e:
-        logger.warning(f"[payload_builder] Lifecycle weights read failed: {e}")
+    # 8. Lifecycle weights from model_pool.json (single source of truth).
+    lifecycle_weights = _load_lifecycle_weights_from_model_pool(trading_cfg)
 
     # ── Build MarketEnv ─────────────────────────────────────────────────────
     market_env = MarketEnv(
@@ -614,9 +664,147 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_active_stocks() -> list[dict]:
-    """Read all stocks in current watchlist from D1."""
-    return d1_client.query("SELECT * FROM stocks WHERE in_current_watchlist=1 ORDER BY id ASC")
+def _normalize_market(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"TWSE", "TSE", "LISTED"}:
+        return "LISTED"
+    if text in {"OTC", "TPEX"}:
+        return "OTC"
+    if text in {"EMERGING", "ESB"}:
+        return "EMERGING"
+    return "UNKNOWN"
+
+
+def _watch_points_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v) for v in value if isinstance(v, (str, int, float))]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(v) for v in parsed if isinstance(v, (str, int, float))]
+        except Exception:
+            return [value]
+    return []
+
+
+def infer_market_segment(stock: dict, latest_price: dict | None = None) -> str:
+    """Single ML-facing market segment contract.
+
+    Price-shape wins over stale stock master metadata: avg_price-only rows are
+    emerging-board style even when `stocks.market` still says OTC.
+    """
+    latest_price = latest_price or {}
+    if latest_price.get("open") is None and latest_price.get("avg_price") is not None:
+        try:
+            if float(latest_price.get("avg_price") or 0) > 0:
+                return "EMERGING"
+        except Exception:
+            pass
+    lane = str(stock.get("recommendation_lane") or "").strip()
+    if lane == "emerging_watchlist":
+        return "EMERGING"
+    return _normalize_market(stock.get("market"))
+
+
+def _lane_for_segment(segment: str, stock: dict | None = None) -> str:
+    explicit = str((stock or {}).get("recommendation_lane") or "").strip()
+    if explicit:
+        return explicit
+    if segment == "EMERGING":
+        return "emerging_watchlist"
+    if segment in {"LISTED", "OTC"}:
+        return "tradable"
+    return "research_only"
+
+
+def build_stock_meta_with_segment(
+    base_meta: dict,
+    stock: dict,
+    latest_price: dict | None = None,
+) -> dict:
+    segment = infer_market_segment(stock, latest_price)
+    policy = policy_for_segment(segment)
+    lane = str(stock.get("recommendation_lane") or "").strip() or policy.recommendation_lane
+    if not policy.eligible_for_execution:
+        lane = policy.recommendation_lane
+    eligible_for_execution = policy.eligible_for_execution and lane == "tradable"
+    return {
+        **base_meta,
+        "market_segment": segment,
+        "recommendation_lane": lane,
+        "eligible_for_ml": policy.eligible_for_ml,
+        "eligible_for_execution": eligible_for_execution,
+        "eligible_for_pending_buy": eligible_for_execution,
+        "segment_serving_mode": policy.serving_mode,
+        "segment_model_pool_scope": policy.model_pool_scope,
+        "segment_calibration_scope": policy.calibration_scope,
+        "segment_calibration_artifact_prefix": policy.calibration_artifact_prefix,
+        "train_serve_parity_required": policy.train_serve_parity_required,
+        "segment_min_ic_samples": policy.min_ic_samples,
+        "segment_min_active_days": policy.min_active_days,
+    }
+
+
+def build_ml_universe(active_stocks: list[dict], screener_recs: list[dict]) -> list[dict]:
+    """Union execution watchlist with research-only ML candidates.
+
+    Execution watchlist remains the source for auto-tradable names. Emerging
+    recommendations are added only to ML serving so we can collect predictions,
+    IC, and calibration evidence without letting them reach pending buys.
+    """
+    by_symbol: dict[str, dict] = {}
+    for stock in active_stocks or []:
+        symbol = str(stock.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        segment = infer_market_segment(stock)
+        lane = _lane_for_segment(segment, stock)
+        by_symbol[symbol] = {
+            **stock,
+            "market_segment": segment,
+            "recommendation_lane": lane,
+            "eligible_for_ml": True,
+            "eligible_for_execution": lane == "tradable",
+        }
+
+    for rec in screener_recs or []:
+        symbol = str(rec.get("symbol") or "").strip()
+        stock_id = rec.get("stock_id") or rec.get("id")
+        if not symbol or not stock_id or symbol in by_symbol:
+            continue
+        points = _watch_points_list(rec.get("watch_points"))
+        segment = str(rec.get("market_segment") or rec.get("market") or "").strip().upper()
+        if not segment:
+            segment = "EMERGING" if str(rec.get("recommendation_lane") or "") == "emerging_watchlist" else "LISTED"
+        lane = str(rec.get("recommendation_lane") or "").strip()
+        is_emerging_research = (
+            "research_only:emerging_not_for_auto_trade" in points
+            or "board_lane:emerging_watchlist" in points
+            or lane == "emerging_watchlist"
+            or _normalize_market(segment) == "EMERGING"
+        )
+        if is_emerging_research:
+            segment = "EMERGING"
+            lane = "emerging_watchlist"
+        else:
+            segment = _normalize_market(segment)
+            lane = lane or ("tradable" if segment in {"LISTED", "OTC"} else "research_only")
+        eligible_for_execution = lane == "tradable" and segment in {"LISTED", "OTC"}
+        by_symbol[symbol] = {
+            "id": stock_id,
+            "symbol": symbol,
+            "name": rec.get("name") or symbol,
+            "market": segment,
+            "sector": rec.get("sector"),
+            "source": "daily_recommendations",
+            "market_segment": segment,
+            "recommendation_lane": lane,
+            "eligible_for_ml": True,
+            "eligible_for_execution": eligible_for_execution,
+        }
+
+    return sorted(by_symbol.values(), key=lambda row: int(row.get("id") or 0))
 
 
 def _build_stock_meta(
@@ -738,6 +926,10 @@ def build_payloads(
             "retail_pct": misc.get("retail_pct"),
         }
 
+        latest_price = prices_by_id.get(sid, [])[-1] if prices_by_id.get(sid) else {}
+        stock_meta = _build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, []))
+        stock_meta = build_stock_meta_with_segment(stock_meta, stock, latest_price)
+
         payloads.append(PredictPayload(
             stock_id=sid,
             symbol=symbol,
@@ -754,7 +946,12 @@ def build_payloads(
             trading_config=trading_config or {},
             lifecycle_weights=lifecycle_weights,
             barrier_params=barrier_params,
-            stock_meta=_build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, [])),
+            stock_meta=stock_meta,
+            runtime_options={
+                "embedded_time_series": False,
+                "embedded_state_space": False,
+                "owner": "daily_pipeline_v2.batch_predict",
+            },
         ))
 
     logger.info(f"[payload_builder] Built {len(payloads)} payloads")

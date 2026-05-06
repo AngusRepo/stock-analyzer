@@ -10,6 +10,20 @@ from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 
+ALPHA_VOTE_MODELS = [
+    "XGBoost",
+    "CatBoost",
+    "ExtraTrees",
+    "LightGBM",
+    "FT-Transformer",
+    "Chronos",
+    "DLinear",
+    "PatchTST",
+]
+STATE_SPACE_OVERLAYS = ["KalmanFilter", "MarkovSwitching"]
+META_OPTIMIZERS = ["GAOptimizer"]
+REGIME_KEYS = ("bull", "bear", "volatile", "sideways")
+
 
 def _clip(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -146,6 +160,78 @@ def compute_bandit_protection(losses_5d: int, total_5d: int, L2_formula: dict | 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def compute_regime_overrides(
+    confidence_delta: float,
+    bandit_max_mult: float,
+    L2_formula: dict | None = None,
+) -> dict[str, dict]:
+    """Controller-owned per-regime adaptive deltas."""
+    L2 = L2_formula or {}
+    shifts = {
+        "bull": float(L2.get("regime_conf_delta_shift_bull", -0.02)),
+        "bear": float(L2.get("regime_conf_delta_shift_bear", 0.04)),
+        "volatile": float(L2.get("regime_conf_delta_shift_volatile", 0.04)),
+        "sideways": float(L2.get("regime_conf_delta_shift_sideways", 0.02)),
+    }
+    bandit_caps = {
+        "bull": float(L2.get("regime_bandit_max_mult_bull", bandit_max_mult)),
+        "bear": float(L2.get("regime_bandit_max_mult_bear", min(bandit_max_mult, 2.0))),
+        "volatile": float(L2.get("regime_bandit_max_mult_volatile", min(bandit_max_mult, 1.5))),
+        "sideways": float(L2.get("regime_bandit_max_mult_sideways", min(bandit_max_mult, 2.2))),
+    }
+    return {
+        regime: {
+            "confidence_delta": round(_clip(confidence_delta + shifts[regime], -0.10, 0.20), 4),
+            "bandit_max_mult": round(_clip(bandit_caps[regime], 1.0, 2.5), 4),
+        }
+        for regime in REGIME_KEYS
+    }
+
+
+def normalize_regime_label(raw: object) -> str:
+    value = str(raw or "").lower()
+    if "bull" in value:
+        return "bull"
+    if "bear" in value:
+        return "bear"
+    if "vol" in value:
+        return "volatile"
+    if "side" in value or "range" in value or "chop" in value:
+        return "sideways"
+    return "unknown"
+
+
+def resolve_adaptive_params_for_regime(params: dict | None, regime: object) -> dict:
+    """Apply P8 per-regime adaptive deltas before payloads reach Modal."""
+    base = dict(params or {})
+    normalized = normalize_regime_label(regime)
+    overrides = base.get("regime_overrides") if isinstance(base.get("regime_overrides"), dict) else {}
+    override = overrides.get(normalized) if normalized != "unknown" else None
+    if isinstance(override, dict):
+        merged = {**base, **override}
+        if isinstance(base.get("pf_quality_mult"), dict) or isinstance(override.get("pf_quality_mult"), dict):
+            merged["pf_quality_mult"] = {
+                **(base.get("pf_quality_mult") if isinstance(base.get("pf_quality_mult"), dict) else {}),
+                **(override.get("pf_quality_mult") if isinstance(override.get("pf_quality_mult"), dict) else {}),
+            }
+        if isinstance(base.get("screener"), dict) or isinstance(override.get("screener"), dict):
+            merged["screener"] = {
+                **(base.get("screener") if isinstance(base.get("screener"), dict) else {}),
+                **(override.get("screener") if isinstance(override.get("screener"), dict) else {}),
+            }
+        base = merged
+
+    provenance = dict(base.get("provenance") or {})
+    provenance.update({
+        "owner": "ml-controller",
+        "schema_version": "adaptive-params-v2",
+        "update_frequency": "daily_after_verify",
+        "regime": normalized,
+    })
+    base["provenance"] = provenance
+    return base
+
+
 def compute_adaptive_params(
     risk_score: float,
     risk_level: str,
@@ -177,6 +263,8 @@ def compute_adaptive_params(
     pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
     sl_tp_add       = compute_sltp_override(risk_level, L2)
     bandit          = compute_bandit_protection(losses_5d, total_5d, L2)
+    computed_at     = _tw_now()
+    regime_overrides = compute_regime_overrides(conf_delta, bandit["bandit_max_mult"], L2)
 
     # legacy backwards compat: 計算 effective absolute confidence threshold
     eff_lo = float(L2.get("confidence_effective_clip_lo", 0.45))
@@ -191,9 +279,36 @@ def compute_adaptive_params(
         "pf_quality_mult":       pf_quality_mult,
         "bandit_max_mult":       bandit["bandit_max_mult"],
         "bandit_force_explore":  bandit["bandit_force_explore"],
-        "computed_at":           _tw_now(),
+        "computed_at":           computed_at,
         "market_risk_score":     risk_score,
         "recent_accuracy_30d":   round(accuracy_30d, 2),
+        "regime_overrides":      regime_overrides,
+        "provenance": {
+            "owner": "ml-controller",
+            "source": "risk-assess",
+            "schema_version": "adaptive-params-v2",
+            "update_frequency": "daily_after_verify",
+            "computed_at": computed_at,
+            "fallback": False,
+        },
+        "meta_layer": {
+            "alpha_vote_models": ALPHA_VOTE_MODELS,
+            "state_space_overlays": STATE_SPACE_OVERLAYS,
+            "meta_optimizers": META_OPTIMIZERS,
+            "adaptive_components": {
+                "ARF": "drift-aware ensemble aggregation, not a standalone alpha vote",
+                "LinUCB": "contextual bandit model weighting with delayed reward protection",
+                "Conformal": "prediction uncertainty calibration and coverage guard",
+                "Stacking": "meta learner for ensemble blending after base-model predictions",
+                "GAOptimizer": "meta optimizer for ensemble weights, strategy params, and risk params",
+            },
+            "immutable_risk_boundaries": [
+                "circuit",
+                "riskOverlay.hardGates",
+                "position.maxPctOfPortfolio",
+                "paperExecution.impossibleFillGuard",
+            ],
+        },
         "version":               current_version + 1,
 
         # legacy fields (Phase 2 後移除)

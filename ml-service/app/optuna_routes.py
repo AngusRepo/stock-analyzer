@@ -10,7 +10,7 @@ optuna_routes.py — Optuna endpoint 統一介面
 
 取代「dump CSV → 跑 script → 手動 push」流程
 
-Worker monthly cron `0 16 1-7 * 6` 會呼叫這些 endpoint。
+GCP Scheduler monthly groc `first saturday of month 16:00` 會呼叫這些 endpoint。
 """
 from __future__ import annotations
 import logging

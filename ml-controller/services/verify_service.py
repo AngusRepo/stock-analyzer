@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from . import d1_client
@@ -27,29 +27,90 @@ from ._trade_simulator import simulate_trade
 
 logger = logging.getLogger(__name__)
 
+VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_pending_predictions(lookback_days: int = 5, limit: int = 200) -> list[dict]:
+def _parse_run_date(run_date: str | None = None) -> date:
+    if run_date:
+        return datetime.fromisoformat(run_date).date()
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+
+
+def _resolve_verification_prediction_window(
+    as_of: date,
+    lookback_days: int,
+    stale_grace_days: int,
+) -> tuple[str, str]:
+    """
+    Resolve the mature prediction window from actual price dates.
+
+    `lookback_days` used to be applied as calendar days. That misses predictions
+    around holidays/weekends (for example 2026-04-30 -> 2026-05-04 after the
+    5/1 Taiwan holiday). The verification contract should follow completed
+    trading sessions, so the newest verifiable prediction date is the trading
+    day immediately before the latest available price date.
+    """
+    latest_rows = d1_client.query(
+        "SELECT MAX(date) AS latest_date FROM stock_prices WHERE date <= ?",
+        params=[as_of.isoformat()],
+    )
+    latest_price_date = latest_rows[0].get("latest_date") if latest_rows else None
+    if latest_price_date:
+        prev_rows = d1_client.query(
+            "SELECT MAX(date) AS previous_date FROM stock_prices WHERE date < ?",
+            params=[latest_price_date],
+        )
+        previous_price_date = prev_rows[0].get("previous_date") if prev_rows else None
+        if previous_price_date:
+            max_prediction_date = str(previous_price_date)
+            min_prediction_date = (
+                datetime.fromisoformat(max_prediction_date).date() - timedelta(days=stale_grace_days)
+            ).isoformat()
+            return min_prediction_date, max_prediction_date
+
+    max_prediction_date = (as_of - timedelta(days=lookback_days)).isoformat()
+    min_prediction_date = (as_of - timedelta(days=lookback_days + stale_grace_days)).isoformat()
+    return min_prediction_date, max_prediction_date
+
+
+def load_pending_predictions(
+    lookback_days: int = 5,
+    limit: int = 200,
+    run_date: str | None = None,
+    stale_grace_days: int = 10,
+) -> list[dict]:
     """
     Load predictions that need verification.
 
-    Matches worker predictionVerifier.ts:35-44 query exactly.
+    Load only the verifiable window for this run.
+
+    The old query used `prediction_date <= today-lookback` with no lower bound,
+    so stale unverified rows permanently sat at the front of the queue and every
+    nightly verify spent money re-reading old backlog. The V2 contract now uses
+    completed price sessions to avoid calendar-day gaps around holidays/weekends.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    as_of = _parse_run_date(run_date)
+    min_prediction_date, max_prediction_date = _resolve_verification_prediction_window(
+        as_of,
+        lookback_days,
+        stale_grace_days,
+    )
     sql = """
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
-        WHERE p.direction_correct IS NULL
-          AND p.generated_at < ?
+        WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
+          AND p.prediction_date BETWEEN ? AND ?
+          AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
-        ORDER BY p.generated_at ASC
+        ORDER BY p.prediction_date DESC, p.generated_at ASC
         LIMIT ?
     """
-    rows = d1_client.query(sql, params=[cutoff, limit])
+    rows = d1_client.query(sql, params=[min_prediction_date, max_prediction_date, limit])
     logger.info(f"[verify] Loaded {len(rows)} pending predictions")
     return rows
 
@@ -62,15 +123,18 @@ def load_market_risk() -> dict:
     return rows[0] if rows else {}
 
 
-def load_bars_for_prediction(stock_id: int, generated_at: str) -> list[dict]:
+def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: str | None = None) -> list[dict]:
     """
     Load 7 days of OHLC bars starting from day after generated_at.
 
     Matches worker predictionVerifier.ts:81-90 exactly.
     """
-    gen_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-    look_from = (gen_date + timedelta(days=1)).date().isoformat()
-    look_to = (gen_date + timedelta(days=10)).date().isoformat()
+    if prediction_date:
+        business_date = datetime.fromisoformat(prediction_date).date()
+    else:
+        business_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
+    look_from = (business_date + timedelta(days=1)).isoformat()
+    look_to = (business_date + timedelta(days=10)).isoformat()
 
     sql = """
         SELECT date, open, high, low, close
@@ -81,7 +145,64 @@ def load_bars_for_prediction(stock_id: int, generated_at: str) -> list[dict]:
     return d1_client.query(sql, params=[stock_id, look_from, look_to])
 
 
-def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
+def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> dict[int, list[dict]]:
+    """Load OHLC bars for all pending predictions in a few D1 reads."""
+    if not predictions:
+        return {}
+
+    windows: list[tuple[int, str, str]] = []
+    for pred in predictions:
+        if pred.get("prediction_date"):
+            business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
+        else:
+            business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+        windows.append((
+            int(pred["stock_id"]),
+            (business_date + timedelta(days=1)).isoformat(),
+            (business_date + timedelta(days=10)).isoformat(),
+        ))
+
+    stock_ids = sorted({w[0] for w in windows})
+    min_date = min(w[1] for w in windows)
+    max_date = max(w[2] for w in windows)
+    bars_by_stock: dict[int, list[dict]] = {}
+
+    for i in range(0, len(stock_ids), chunk_size):
+        chunk = stock_ids[i:i + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = d1_client.query(
+            f"""
+            SELECT stock_id, date, open, high, low, close
+            FROM stock_prices
+            WHERE stock_id IN ({placeholders})
+              AND date >= ?
+              AND date <= ?
+            ORDER BY stock_id ASC, date ASC
+            """,
+            params=[*chunk, min_date, max_date],
+        )
+        for row in rows:
+            bars_by_stock.setdefault(int(row["stock_id"]), []).append(row)
+
+    return bars_by_stock
+
+
+def _prediction_bar_window(pred: dict) -> tuple[str, str]:
+    if pred.get("prediction_date"):
+        business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
+    else:
+        business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+    return (
+        (business_date + timedelta(days=1)).isoformat(),
+        (business_date + timedelta(days=10)).isoformat(),
+    )
+
+
+def verify_single_prediction(
+    pred: dict,
+    market_risk: dict,
+    bars_override: list[dict] | None = None,
+) -> dict | None:
     """
     Verify a single prediction: parse forecast_data, load bars, simulate trade.
 
@@ -102,13 +223,6 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
     )
 
     # Neutral — mark as -1 (skipped) and return
-    if predicted_direction == "neutral":
-        d1_client.execute(
-            "UPDATE predictions SET direction_correct=-1, verified_at=datetime('now') WHERE id=?",
-            params=[pred["id"]],
-        )
-        return None
-
     # Predicted price (horizon midpoint, fall back to last)
     forecasts: list = fd.get("forecasts") or []
     predicted_price = None
@@ -118,7 +232,10 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
             predicted_price = mid.get("forecast")
 
     # ── Load bars ────────────────────────────────────────────────────────────
-    bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"])
+    if bars_override is None:
+        bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"], pred.get("prediction_date"))
+    else:
+        bars = bars_override
     if not bars:
         return None  # data not arrived yet
 
@@ -140,11 +257,38 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
         actual_direction = "down"
     else:
         actual_direction = "neutral"
-    is_correct = 1 if predicted_direction == actual_direction else 0
-
     price_error_pct = None
     if predicted_price is not None:
         price_error_pct = abs((predicted_price - actual_price) / actual_price) * 100
+
+    # Neutral/HOLD rows are not directional trade calls, but weekly IC needs
+    # actual_return_pct for every per-model rank_score row.
+    if predicted_direction == "neutral":
+        return {
+            "id": pred["id"],
+            "stock_id": pred["stock_id"],
+            "model_name": pred.get("model_name"),
+            "bind": [
+                predicted_direction,
+                predicted_price,
+                actual_direction,
+                actual_price,
+                -1,
+                price_error_pct,
+                market_risk.get("risk_level"),
+                market_risk.get("risk_score"),
+                actual_return_pct,
+                None,
+                None,
+                None,
+                None,
+                None,
+                pred["id"],
+            ],
+            "arf": None,
+        }
+
+    is_correct = 1 if predicted_direction == actual_direction else 0
 
     # ── Simulate trade ───────────────────────────────────────────────────────
     sim: TradeSimulationResult = simulate_trade(
@@ -159,6 +303,8 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
     # ── Build update binding (matches UPDATE_VERIFY_SQL parameter order) ─────
     return {
         "id": pred["id"],
+        "stock_id": pred["stock_id"],
+        "model_name": pred.get("model_name"),
         "bind": [
             predicted_direction,
             predicted_price,
@@ -181,7 +327,9 @@ def verify_single_prediction(pred: dict, market_risk: dict) -> dict | None:
             "symbol": pred.get("symbol"),
             "predicted_direction": predicted_direction,
             "actual_direction": actual_direction,
+            "actual_return_pct": actual_return_pct,
             "realized_pnl_r": sim.trade_pnl_r,
+            "forecast_pct": fd.get("forecast_pct") or 0.0,
             "arf_features": fd.get("arf_features") or [],
             "prediction_id": pred["id"],
         } if (fd.get("arf_features") and len(fd.get("arf_features") or []) > 0) else None,
@@ -195,6 +343,55 @@ def write_verified_predictions(updates: list[dict]) -> int:
     statements = [(UPDATE_VERIFY_SQL, u["bind"]) for u in updates]
     result = d1_client.batch_execute(statements)
     return result.get("changes_total", 0)
+
+
+def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict:
+    """Simulate pending predictions and return batched D1/ARF update payloads."""
+    updates: list[dict] = []
+    arf_batch: list[dict] = []
+    errors: list[str] = []
+    bars_by_stock = load_bars_for_predictions(pending)
+
+    for pred in pending:
+        try:
+            look_from, look_to = _prediction_bar_window(pred)
+            pred_bars = [
+                b for b in bars_by_stock.get(int(pred["stock_id"]), [])
+                if look_from <= str(b.get("date")) <= look_to
+            ][:7]
+            result = verify_single_prediction(
+                pred,
+                market_risk,
+                bars_override=pred_bars,
+            )
+            if result is None:
+                continue
+            updates.append(result)
+            if result.get("arf"):
+                arf_batch.append(result["arf"])
+        except Exception as e:
+            msg = f"prediction {pred.get('id')} failed: {e}"
+            logger.error(f"[verify] Failed pred {pred.get('id')}: {e}")
+            errors.append(msg)
+
+    return {
+        "verify_updates": updates,
+        "arf_feedback_items": arf_batch,
+        "errors": errors,
+    }
+
+
+def summarize_verification_updates(pending_count: int, updates: list[dict]) -> dict:
+    """Build stable summary metrics for verified prediction updates."""
+    verified = len(updates)
+    correct = sum(1 for u in updates if u["bind"][4] == 1)
+    total_pnl = sum(u["bind"][10] or 0 for u in updates)
+    return {
+        "pending": pending_count,
+        "verified": verified,
+        "correct": correct,
+        "total_pnl_pct": total_pnl,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -498,43 +695,26 @@ def run_verify_pipeline(lookback_days: int = 5, limit: int = 200) -> dict:
             "arf_feedback_items": [],
         }
 
-    market_risk = load_market_risk()
-    updates: list[dict] = []
-    arf_batch: list[dict] = []
-
-    for pred in pending:
-        try:
-            result = verify_single_prediction(pred, market_risk)
-            if result is None:
-                continue
-            updates.append(result)
-            if result.get("arf"):
-                arf_batch.append(result["arf"])
-        except Exception as e:
-            logger.error(f"[verify] Failed pred {pred.get('id')}: {e}")
+    prepared = prepare_verification_updates(pending, load_market_risk())
+    updates = prepared["verify_updates"]
 
     # Write back all at once (batch)
     write_verified_predictions(updates)
 
-    verified = len(updates)
-    correct = sum(1 for u in updates if u["bind"][4] == 1)
-    total_pnl = sum(u["bind"][10] or 0 for u in updates)  # trade_pnl_pct index
+    summary = summarize_verification_updates(len(pending), updates)
 
-    accuracy_pct = (correct / verified * 100) if verified else 0
+    accuracy_pct = (summary["correct"] / summary["verified"] * 100) if summary["verified"] else 0
     logger.info(
-        f"[verify] Verified {verified}, correct {correct} ({accuracy_pct:.1f}%) "
-        f"total simulated PnL: {total_pnl * 100:.1f}%"
+        f"[verify] Verified {summary['verified']}, correct {summary['correct']} ({accuracy_pct:.1f}%) "
+        f"total simulated PnL: {summary['total_pnl_pct'] * 100:.1f}%"
     )
 
     ma_count = update_model_accuracy()
     tp_count = update_trade_performance()
 
     return {
-        "pending": len(pending),
-        "verified": verified,
-        "correct": correct,
-        "total_pnl_pct": total_pnl,
+        **summary,
         "model_accuracy_groups": ma_count,
         "trade_performance_groups": tp_count,
-        "arf_feedback_items": arf_batch,
+        "arf_feedback_items": prepared["arf_feedback_items"],
     }

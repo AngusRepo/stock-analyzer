@@ -1,15 +1,20 @@
 import type { Context, Next } from 'hono'
 import type { Bindings, Variables } from '../types'
 
+type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>
+
 // ─── JWT (using Web Crypto API, no external deps) ────────────────────────────
 function base64url(data: ArrayBuffer | Uint8Array): string {
   return btoa(String.fromCharCode(...new Uint8Array(data)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-function b64urlDecode(s: string): Uint8Array {
+function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/').padEnd(s.length + (4 - s.length % 4) % 4, '=')
-  return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  const raw = atob(b64)
+  const bytes = new Uint8Array(new ArrayBuffer(raw.length))
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+  return bytes
 }
 
 async function getHmacKey(secret: string) {
@@ -42,6 +47,54 @@ export async function verifyJWT(token: string, secret: string): Promise<Record<s
     if (payload.exp && payload.exp < Math.floor(Date.now()/1000)) return null
     return payload
   } catch { return null }
+}
+
+export function getBearerToken(authHeader?: string | null): string | null {
+  if (!authHeader) return null
+  const raw = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
+  const token = raw.trim()
+  return token.length > 0 ? token : null
+}
+
+export function hasServiceToken(token: string | null | undefined, serviceToken?: string): boolean {
+  return Boolean(token && serviceToken && token === serviceToken)
+}
+
+async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unknown> | null> {
+  const token = getBearerToken(c.req.header('Authorization'))
+  if (!token) return null
+  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) {
+    return { role: 'service', sub: 'service' }
+  }
+  return verifyJWT(token, c.env.JWT_SECRET)
+}
+
+export async function requireServiceToken(c: AppContext): Promise<Response | null> {
+  const token = getBearerToken(c.req.header('Authorization'))
+  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) return null
+  return c.json({ error: 'Unauthorized' }, 401)
+}
+
+export async function requireValidToken(c: AppContext): Promise<Response | null> {
+  const payload = await getJwtOrServicePayload(c)
+  if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  return null
+}
+
+export async function requireAdminJWT(c: AppContext): Promise<Response | null> {
+  const token = getBearerToken(c.req.header('Authorization'))
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const payload = await verifyJWT(token, c.env.JWT_SECRET)
+  if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  if (payload.role !== 'admin') return c.json({ error: 'Admin only' }, 403)
+  return null
+}
+
+export async function requireAdminOrServiceToken(c: AppContext): Promise<Response | null> {
+  const payload = await getJwtOrServicePayload(c)
+  if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  if (payload.role === 'service' || payload.role === 'admin') return null
+  return c.json({ error: 'Admin only' }, 403)
 }
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────

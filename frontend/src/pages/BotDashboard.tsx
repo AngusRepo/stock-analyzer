@@ -1,5 +1,5 @@
 /**
- * BotDashboard — Auto Trade Bot 專頁
+ * 模擬交易室 — Auto Trade Bot 專頁
  *
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
@@ -17,11 +17,22 @@ import {
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { BotThemeFlowPanel, RecommendationCard } from '@/components/DailyRecommendationPanel'
+import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
+import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
-import { Input } from '@/components/ui/input'
 import { stocksApi } from '@/lib/api'
+import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
+import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
+import {
+  WorkstationCatCard,
+  WorkstationFlow,
+  WorkstationPageTitle,
+  WorkstationPanel,
+  WorkstationPill,
+  WorkstationTickerStrip,
+} from '@/components/workstation/WorkstationChrome'
+import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -114,13 +125,15 @@ function PortfolioSummary() {
   const sellOrderCount = realizedData?.tradeCount ?? 0
 
   const acc = account?.account ?? account ?? {}
-  const cash = acc?.cash ?? 0
-  const initialCash = acc?.initial_cash ?? 1_000_000
+  const positionSummary = positions?.summary ?? null
+  const cash = positionSummary?.cash ?? acc?.cash ?? 0
+  const initialCash = acc?.initial_cash ?? positionSummary?.initial_cash ?? 1_000_000
   const posArr = positions?.positions ?? positions ?? []
   const positionValue = Array.isArray(posArr)
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
     : 0
-  const totalAssets = cash + positionValue
+  const netUnsettledSettlement = positionSummary?.net_unsettled_settlement ?? 0
+  const totalAssets = positionSummary?.total_value ?? (cash + positionValue + netUnsettledSettlement)
   const totalReturn = initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
@@ -132,7 +145,11 @@ function PortfolioSummary() {
   const daysSinceStart = first?.date
     ? Math.max(1, (Date.now() - new Date(first.date).getTime()) / 86400000)
     : 1
-  const annualizedReturn = daysSinceStart > 0 ? totalReturn * (365 / daysSinceStart) : 0
+  const annualizedReturn = typeof latest?.cagr === 'number' && Number.isFinite(latest.cagr)
+    ? latest.cagr
+    : daysSinceStart > 0
+      ? Math.pow(1 + totalReturn, 365 / daysSinceStart) - 1
+      : 0
 
   // 最大回撤
   const maxDrawdown = snapshots.length > 0
@@ -182,6 +199,11 @@ function PortfolioSummary() {
         <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">總資產</div>
         <div className="text-3xl font-mono font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
         <span className={`text-sm font-mono font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+        {netUnsettledSettlement !== 0 && (
+          <div className="text-[11px] text-muted-foreground/70 mt-1">
+            含未交割 {netUnsettledSettlement > 0 ? '+' : ''}${fmt(Math.round(netUnsettledSettlement))}
+          </div>
+        )}
       </div>
       {/* 指標列 */}
       {[
@@ -225,6 +247,115 @@ function PortfolioSummary() {
 
 // ─── Today's ML Signals ─────────────────────────────────────────────────────
 
+function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: boolean; meta?: any }) {
+  const execution = state?.execution_counts ?? {}
+  const events = Array.isArray(meta?.execution_events) ? meta.execution_events.slice(-3) : []
+  const stateClass =
+    state?.state === 'ready_to_execute' ? 'border-emerald-500/30 text-emerald-400'
+      : state?.state === 'debate_pending' ? 'border-sky-500/30 text-sky-400'
+        : state?.state === 'filled' ? 'border-teal-500/30 text-teal-300'
+          : state?.state === 'skipped' || state?.state === 'expired' || state?.state === 'closed' ? 'border-zinc-500/30 text-zinc-300'
+            : state?.state === 'error' || state?.state === 'halted' ? 'border-red-500/40 text-red-300'
+              : state?.state === 'base_ready' ? 'border-amber-500/30 text-amber-300'
+                : 'border-muted-foreground/30 text-muted-foreground'
+
+  return (
+    <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+      <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${stateClass}`}>
+        {state?.label ?? 'pending buys'}
+      </Badge>
+      <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-400">
+        active {state?.active_count ?? 0}/{state?.total_count ?? 0}
+      </Badge>
+      {(execution.filled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-cyan-500/30 text-cyan-300">
+          filled {execution.filled}
+        </Badge>
+      )}
+      {(execution.partially_filled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          partial {execution.partially_filled}
+        </Badge>
+      )}
+      {(execution.submitted ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+          submitted {execution.submitted}
+        </Badge>
+      )}
+      {(execution.requoted ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          requoted {execution.requoted}
+        </Badge>
+      )}
+      {(execution.stale_quote ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          stale quote {execution.stale_quote}
+        </Badge>
+      )}
+      {(execution.quote_unavailable ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+          quote missing {execution.quote_unavailable}
+        </Badge>
+      )}
+      {(execution.skipped ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          skipped {execution.skipped}
+        </Badge>
+      )}
+      {(execution.cancelled ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-300">
+          cancelled {execution.cancelled}
+        </Badge>
+      )}
+      {(execution.expired ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-400">
+          expired {execution.expired}
+        </Badge>
+      )}
+      {(execution.rejected ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+          rejected {execution.rejected}
+        </Badge>
+      )}
+      {stale && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/40 text-amber-400">
+          stale
+        </Badge>
+      )}
+      {state?.error_message && <span className="text-red-300/80">{state.error_message}</span>}
+      {events.map((event: any, idx: number) => {
+        const raw = formatExecutionEvent({
+          kind: 'execution',
+          status: event.status,
+          reason: event.reason,
+          detail: event.detail,
+        })
+        return (
+          <span key={`${event.symbol}-${event.status}-${idx}`} className="text-muted-foreground/70">
+            {event.symbol} {explainExecutionEvent(raw) ?? `${event.status}: ${event.reason}`}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+function pendingBuyEmptyMessage(meta?: any): string {
+  const counts = meta?.execution_counts ?? {}
+  const cancelled = Number(counts.cancelled ?? 0)
+  const filled = Number(counts.filled ?? 0)
+  const skipped = Number(counts.skipped ?? 0)
+  const expired = Number(counts.expired ?? 0)
+  const terminal = cancelled + filled + skipped + expired
+  if (cancelled > 0 && terminal > 0) {
+    return '今日執行池的 pending buys 已被風控取消；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+  }
+  if (terminal > 0) {
+    return '今日執行池的 pending buys 已進入終態；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+  }
+  return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
+}
+
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   // T2 過濾後的掛單（非 raw recommendations）
   const { data: pbData, isLoading } = useQuery({
@@ -234,6 +365,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   })
   const buys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
   const showingDate = pbData?.date ?? ''
+  const isStalePending = Boolean(pbData?.is_stale)
+  const pendingState = pbData?.state
+  const pendingMeta = pbData?.meta
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -250,23 +384,65 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
   if (!buys.length) {
-    return <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+    return (
+      <div className="space-y-3">
+        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys execution state</div>
+        <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
+        <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
+          {pendingBuyEmptyMessage(pendingMeta)}
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
+      <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
+        const executionBadge = formatExecutionStatusBadge(b.execution_status)
+        const partialRemaining = formatPartialFillRemaining(b.watch_points)
+        // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
+        // prefix with price line. Previously price line 100% replaced reason.
+        // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
+        // that shouldn't be shown to end users (it's a hint for debate LLM).
+        const priceLine = `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`
+        const stripProvenance = (s: string): string => {
+          // Remove "⚠️ Signal Provenance (...): ... Judge on ... context." paragraph.
+          // Preserves zh-TW LLM reason that follows (separated by blank line or period).
+          return s.replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/, '').trim()
+        }
+        const cleanReason = b.reason ? stripProvenance(b.reason) : ''
         const rec = {
           symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
           current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
-          reason: `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`,
+          reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
+          watch_points: b.watch_points ?? null,
           chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
+          alpha_context: b.alpha_context ?? null,
+          alpha_allocation: b.alpha_allocation ?? null,
+          ml_vote_summary: b.ml_vote_summary ?? null,
+          prediction_forecast_data: b.prediction_forecast_data ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
             <RecommendationCard rec={rec} rank={idx + 1} />
+            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] font-mono text-muted-foreground">
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                <span>execution: {executionBadge.label}</span>
+                <span>debate: {b.debate_status ?? 'pending'}</span>
+                <span>source: {b.source ?? 'morning_setup'}</span>
+                <span>retry: {b.retry_count ?? 0}</span>
+              </div>
+              <div className="mt-1 text-muted-foreground/70">
+                base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
+              </div>
+              <div className="mt-1 text-muted-foreground/70">
+                {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
+              </div>
+            </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
               className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
@@ -288,12 +464,19 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     queryFn: () => recommendationsApi.daily(),
     staleTime: 5 * 60_000,
   })
-  const recs = recData?.recommendations ?? recData?.data ?? []
+  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
+  const recs = tradableRecs
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">尚無推薦</div>
+  if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
-    <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} · 推薦（未經 T2 篩選）</div>
+      <div className="space-y-2">
+        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
+      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
+          source: daily recommendations
+        </Badge>
+        <span className="text-muted-foreground/70">這是 pipeline 產出的推薦候選；下一個交易日 morning setup / debate 後才會產生 pending buys。</span>
+      </div>
       {recs.slice(0, 12).map((r: any, idx: number) => (
         <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
           <RecommendationCard rec={r} rank={idx + 1} />
@@ -306,11 +489,62 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
           </button>
         </div>
       ))}
+      {emergingRecs.length > 0 && (
+        <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <div>
+              <p className="text-[11px] font-semibold text-amber-300">興櫃觀察名單</p>
+              <p className="text-[10px] text-muted-foreground/70">研究用，不進 morning setup / pending buys。</p>
+            </div>
+            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+              {emergingRecs.length} 檔
+            </Badge>
+          </div>
+          {emergingRecs.slice(0, 8).map((r: any, idx: number) => (
+            <div key={`emerging-${r.symbol}`} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-amber-500/40 rounded-xl' : ''}`}>
+              <RecommendationCard rec={r} rank={idx + 1} />
+              <button
+                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                title="查看 K 線"
+              >
+                <Activity className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
 // ─── Open Positions（完整庫存）──────────────────────────────────────────────
+
+function parseOrderNote(note: unknown): Record<string, any> {
+  if (!note) return {}
+  if (typeof note === 'object') return note as Record<string, any>
+  if (typeof note !== 'string') return {}
+  try {
+    const parsed = JSON.parse(note)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return { reason: note }
+  }
+}
+
+function formatTwOrderTime(createdAt?: string | null): string {
+  if (!createdAt) return '-'
+  const ts = new Date(createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}Z`).getTime()
+  if (!Number.isFinite(ts)) return createdAt
+  return new Date(ts + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ')
+}
+
+function summarizeOrderReason(order: any): string {
+  const note = parseOrderNote(order?.note)
+  if (note.reason) return String(note.reason)
+  if (note.ml_entry) return `entry ${note.ml_entry} / stop ${note.ml_stop ?? '-'} / T1 ${note.ml_t1 ?? '-'} / T2 ${note.ml_t2 ?? '-'}`
+  return typeof order?.note === 'string' ? order.note : '-'
+}
 
 function PositionsTable() {
   const { data, isLoading } = useQuery({
@@ -340,14 +574,92 @@ function PositionsTable() {
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
   if (!Array.isArray(positions) || positions.length === 0) {
+    const latestOrder = orders[0]
+    const latestIsSell = latestOrder?.side === 'sell'
+    const latestIsBuy = latestOrder?.side === 'buy'
+    const latestReason = summarizeOrderReason(latestOrder)
+
     return (
-      <div className="text-center py-12 text-muted-foreground">
-        <Wallet className="w-12 h-12 mx-auto mb-3 opacity-30" />
-        <p>目前無持倉</p>
-        <p className="text-xs mt-1">Bot 會在 ML 訊號觸發時自動建倉</p>
-        {summary && (
-          <div className="mt-4 text-xs text-muted-foreground/60">
-            現金 ${fmt(summary.cash)} | 總資產 ${fmt(summary.total_value)}
+      <div className="p-4">
+        <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
+          <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4">
+            <Wallet className="mb-3 h-8 w-8 text-[#d6a85f]/70" />
+            <WorkstationPill tone={latestIsBuy ? 'error' : latestIsSell ? 'warn' : 'neutral'}>
+              {latestIsSell ? '無持倉：最新紀錄為賣出' : latestIsBuy ? '資料需檢查' : '目前無持倉'}
+            </WorkstationPill>
+            <p className="mt-3 text-sm font-semibold text-[#e6edf3]">
+              {latestIsSell
+                ? `${latestOrder.symbol} 已於 ${formatTwOrderTime(latestOrder.created_at)} 出場`
+                : latestIsBuy
+                  ? `${latestOrder.symbol} 有買進紀錄但 position 為空`
+                  : '目前沒有 open position'}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-[#8b9bab]">
+              {latestIsSell
+                ? '持倉 API 仍正常；畫面為空是因為 D1 的 paper_positions 已無 shares > 0。'
+                : latestIsBuy
+                  ? '這代表 order 與 position 可能不同步，應檢查 paper_positions upsert / exit audit。'
+                  : 'Bot 會在 pending buy 通過 quote sanity 與 execution guard 後建立持倉。'}
+            </p>
+            {summary && (
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
+                  <p className="text-[#8b9bab]">現金</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(summary.cash)}</p>
+                </div>
+                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
+                  <p className="text-[#8b9bab]">總資產</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(summary.total_value)}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {latestOrder && (
+            <div className="rounded-xl border border-[#3a3125] bg-[linear-gradient(135deg,#15130d,#0b1118)] p-4">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]/80">
+                    latest order evidence
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold text-[#f2ead8]">最近交易證據</h3>
+                </div>
+                <WorkstationPill tone={latestIsSell ? 'warn' : 'info'}>{latestOrder.side}</WorkstationPill>
+              </div>
+              <div className="grid gap-2 text-xs sm:grid-cols-4">
+                <div>
+                  <p className="text-[#8b9bab]">標的</p>
+                  <p className="font-mono text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">股數</p>
+                  <p className="font-mono text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">價格</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">時間</p>
+                  <p className="font-mono text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
+                </div>
+              </div>
+              <div className="mt-3 rounded-lg border border-[#2b3a49] bg-[#070a10] p-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">原因 / note</p>
+                <p className="mt-1 text-xs leading-5 text-[#c8d3df]">{latestReason}</p>
+              </div>
+            </div>
+          )}
+
+          {!latestOrder && (
+            <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4 text-sm text-muted-foreground">
+              交易紀錄也為空，代表目前 paper trading 尚未建立任何 open/closed order。
+            </div>
+          )}
+        </div>
+        {realizedPnl !== 0 && (
+          <div className="mt-3 text-right text-xs text-muted-foreground">
+            已實現損益粗估 <span className={pctClass(realizedPnl)}>{realizedPnl >= 0 ? '+' : ''}${fmt(Math.round(realizedPnl))}</span>
           </div>
         )}
       </div>
@@ -526,7 +838,7 @@ function TradeHistory() {
   )
 }
 
-// ─── Bot Status（Live Cron Logs）─────────────────────────────────────────────
+// ─── Bot Status（Live Scheduler Runs）────────────────────────────────────────
 
 function BotStatusPanel() {
   const { data: risk } = useQuery({
@@ -554,15 +866,89 @@ function BotStatusPanel() {
         </div>
       </div>
 
-      {/* Cron Logs → moved to Scheduler Dashboard */}
+      {/* 排程執行細節集中在排程節奏頁。 */}
+      <GateCalibrationPanel />
+
       <div className="text-center py-4 text-muted-foreground text-sm">
-        <p>Cron 排程已移至 <a href="/scheduler" className="text-sky-400 hover:underline">Scheduler Dashboard</a></p>
+        <p>排程紀錄已移到 <a href="/scheduler" className="text-sky-400 hover:underline">排程節奏</a></p>
       </div>
     </div>
   )
 }
 
 // ─── Performance Chart（Benchmark overlay + Period selector）────────────────
+
+function GateCalibrationPanel() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['paper', 'gate-calibration', 7],
+    queryFn: () => paperApi.gateCalibration(7),
+    staleTime: 60_000,
+    refetchInterval: isTWMarketOpen() ? 60_000 : false,
+  })
+
+  const rows: any[] = Array.isArray(data?.rows) ? data.rows : []
+  const total = data?.total_events ?? 0
+  const deferred = data?.deferred_events ?? 0
+  const filled = data?.filled_events ?? 0
+  const skipped = data?.skipped_events ?? 0
+  const deferRate = total > 0 ? deferred / total : 0
+  const topRows = rows.slice(0, 5)
+
+  function describeGate(row: any): string {
+    const raw = formatExecutionEvent({
+      kind: 'execution',
+      status: row.status ?? 'unknown',
+      reason: row.reason ?? 'unknown',
+      detail: null,
+    })
+    return explainExecutionEvent(raw) ?? `${row.status}: ${row.reason}`
+  }
+
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-foreground/80">進場卡控校準</div>
+          <div className="mt-1 text-[11px] text-muted-foreground/75">
+            近 7 天統計 execution gate 是否過度保守；這裡看原因分布，不再用感覺判斷。
+          </div>
+        </div>
+        <Badge variant="outline" className={`h-6 text-[10px] ${deferRate > 0.8 ? 'border-amber-500/40 text-amber-300' : 'border-emerald-500/30 text-emerald-300'}`}>
+          defer {(deferRate * 100).toFixed(0)}%
+        </Badge>
+      </div>
+
+      {isLoading ? (
+        <div className="mt-3 text-xs text-muted-foreground/60">Loading...</div>
+      ) : total === 0 ? (
+        <div className="mt-3 text-xs text-muted-foreground/60">近 7 天尚無 execution event，可等下一輪 intraday 後觀察。</div>
+      ) : (
+        <>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            {[
+              { label: 'filled', value: filled, cls: 'text-emerald-300' },
+              { label: 'deferred', value: deferred, cls: 'text-amber-300' },
+              { label: 'skipped', value: skipped, cls: 'text-zinc-300' },
+            ].map((item) => (
+              <div key={item.label} className="rounded-md bg-black/20 px-2 py-1.5">
+                <div className="text-[10px] uppercase text-muted-foreground/60">{item.label}</div>
+                <div className={`font-mono text-sm ${item.cls}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 space-y-1.5">
+            {topRows.map((row, idx) => (
+              <div key={`${row.status}-${row.reason}-${idx}`} className="flex items-start justify-between gap-3 text-[11px]">
+                <span className="leading-relaxed text-muted-foreground/80">{describeGate(row)}</span>
+                <span className="shrink-0 font-mono text-foreground/70">x{row.count}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 const PERIODS = [
   { key: '1W', days: 7, label: '1W' },
@@ -719,15 +1105,15 @@ function BacktestCard() {
   }
 
   const metrics = [
-    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1 },
-    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5 },
-    { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15 },
-    { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5 },
-    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5 },
-    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0 },
-    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1 },
-    { label: 'Trades', value: data.total_trades ?? '-', good: true },
-    { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0 },
+    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1, hint: '每承擔一單位波動換到多少超額報酬；>1 才算有基本效率。' },
+    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5, hint: '只看下跌波動的風險調整報酬；比 Sharpe 更貼近實際痛感。' },
+    { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15, hint: '歷史最大資金回撤；代表策略最壞連續虧損壓力。' },
+    { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5, hint: '交易勝率；要搭配 PF/Expectancy 看，單獨高不一定好。' },
+    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5, hint: '總獲利 / 總虧損；>1 表示有正收益，>1.5 較健康。' },
+    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0, hint: '年化複合報酬；用來比較不同期間策略。' },
+    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1, hint: 'CAGR / MDD；衡量報酬是否值得承受最大回撤。' },
+    { label: 'Trades', value: data.total_trades ?? '-', good: true, hint: '樣本數；太少時 Sharpe、勝率、PF 都容易失真。' },
+    { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0, hint: '每筆交易平均期望值；>0 才代表長期下注有正期望。' },
   ]
 
   // MC MDD verdict badge
@@ -743,22 +1129,26 @@ function BacktestCard() {
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
+      <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Scale className="w-4 h-4" /> Backtest
           <span className="text-muted-foreground/60 text-xs ml-auto">{data.run_date} · {data.strategy}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-3">
         <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
-            <div key={m.label} className="text-center">
+            <div key={m.label} className="text-center" title={m.hint}>
               <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{m.label}</div>
               <div className={`text-sm font-mono mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
                 {m.value}
               </div>
             </div>
-          ))}
+            ))}
+        </div>
+        <div className="mt-3 rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-[10px] leading-relaxed text-muted-foreground/80">
+          <div className="mb-1 font-medium text-foreground/70">怎麼讀這張卡</div>
+          <div>先看 MDD / Calmar 判斷風險是否可承受，再看 Sharpe / Sortino 判斷報酬品質，最後用 PF / Expectancy 確認每筆交易是否真的有正期望；Trades 太少時所有結論都只能當觀察，不應直接 go-live。</div>
         </div>
         {/* MC + PBO go-live verdicts */}
         {(mcVerdict || pboVerdict) && (
@@ -786,7 +1176,7 @@ function BacktestCard() {
 // ─── Adaptive Params Card ────────────────────────────────────────────────────
 
 function AdaptiveParamsCard() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['adaptive', 'params'],
     queryFn: adaptiveApi.get,
     staleTime: 5 * 60_000,
@@ -801,6 +1191,21 @@ function AdaptiveParamsCard() {
           </CardTitle>
         </CardHeader>
         <CardContent><p className="text-muted-foreground/60 text-xs">Loading...</p></CardContent>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card className="bg-card border-border backdrop-blur-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <Cpu className="w-4 h-4" /> Adaptive Params
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-red-400 text-xs">載入失敗：{error instanceof Error ? error.message : 'unknown error'}</p>
+        </CardContent>
       </Card>
     )
   }
@@ -831,27 +1236,27 @@ function AdaptiveParamsCard() {
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
+      <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Cpu className="w-4 h-4" /> Adaptive Params
           <span className="text-muted-foreground/60 text-xs ml-auto">v{version} · {computedAt}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-          <div className="text-center">
+      <CardContent className="pb-3">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">信心門檻</div>
             <div className={`text-sm font-mono mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Risk Score</div>
             <div className={`text-sm font-mono mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">30d 準確率</div>
             <div className={`text-sm font-mono mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Bandit</div>
             <div className={`text-sm font-mono mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
               {forceExplore ? '強制探索' : `×${banditMult.toFixed(1)}`}
@@ -870,164 +1275,11 @@ function AdaptiveParamsCard() {
 
 // ─── Trade Journal Analytics ────────────────────────────────────────────────
 
-function TradeJournalAnalytics() {
-  const { data: journalData } = useQuery({
-    queryKey: ['paper', 'journal'],
-    queryFn: paperApi.journal,
-    staleTime: 5 * 60_000,
-  })
-
-  const metrics = journalData?.metrics ?? null
-
-  if (!metrics) {
-    return (
-      <Card className="bg-card border-border backdrop-blur-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">交易分析</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground/60 text-xs">尚無已實現交易</p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const kpis = [
-    { label: '勝率', value: `${(metrics.winRate * 100).toFixed(1)}%`, cls: metrics.winRate >= 0.5 ? 'text-red-400' : 'text-emerald-400' },
-    { label: '平均持有', value: `${metrics.avgHoldDays}天`, cls: 'text-foreground/80' },
-    { label: '最佳交易', value: metrics.best ? `${metrics.best.symbol} +$${fmt(Math.round(metrics.best.pnl))}` : '-', cls: 'text-red-400' },
-    { label: '最差交易', value: metrics.worst ? `${metrics.worst.symbol} $${fmt(Math.round(metrics.worst.pnl))}` : '-', cls: 'text-emerald-400' },
-    { label: '平均獲利', value: `$${fmt(Math.round(metrics.avgWin))}`, cls: 'text-red-400' },
-    { label: '平均虧損', value: `-$${fmt(Math.round(metrics.avgLoss))}`, cls: 'text-emerald-400' },
-    { label: 'Profit Factor', value: metrics.profitFactor === Infinity ? '∞' : metrics.profitFactor.toFixed(2), cls: metrics.profitFactor >= 1.5 ? 'text-red-400' : metrics.profitFactor >= 1 ? 'text-foreground/80' : 'text-emerald-400' },
-    { label: 'Expectancy', value: `${metrics.expectancy >= 0 ? '+' : ''}$${fmt(Math.round(metrics.expectancy))}`, cls: pctClass(metrics.expectancy) },
-  ]
-
-  return (
-    <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          交易分析 <span className="text-muted-foreground/60 text-xs ml-2">{metrics.totalTrades} 筆</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {kpis.map(k => (
-            <div key={k.label} className="text-center">
-              <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{k.label}</div>
-              <div className={`text-sm font-mono mt-0.5 ${k.cls}`}>{k.value}</div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
 
 // ─── Position Sizing Calculator ─────────────────────────────────────────────
 
-function PositionSizer() {
-  const { data: account } = useQuery({
-    queryKey: ['paper', 'account'],
-    queryFn: paperApi.account,
-    staleTime: 60_000,
-  })
-  const acc = account?.account ?? account ?? {}
-  const defaultCash = acc?.cash ?? 1_000_000
 
-  const [cash, setCash] = useState<string>('')
-  const [riskPct, setRiskPct] = useState<string>('2')
-  const [entryPrice, setEntryPrice] = useState<string>('')
-  const [stopLoss, setStopLoss] = useState<string>('')
-
-  const cashVal = parseFloat(cash) || defaultCash
-  const riskVal = (parseFloat(riskPct) || 2) / 100
-  const entry = parseFloat(entryPrice) || 0
-  const sl = parseFloat(stopLoss) || 0
-
-  const riskAmt = cashVal * riskVal
-  const priceRisk = entry > 0 && sl > 0 ? Math.abs(entry - sl) : 0
-  const shares = priceRisk > 0 ? Math.floor(riskAmt / priceRisk) : 0
-  const lots = Math.floor(shares / 1000)
-  const positionValue = shares * entry
-  const allocation = cashVal > 0 ? (positionValue / cashVal) * 100 : 0
-
-  const canCalc = entry > 0 && sl > 0 && entry !== sl
-
-  return (
-    <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">部位計算器</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Inputs */}
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">帳戶資金</label>
-            <Input
-              type="number"
-              placeholder={fmt(Math.round(defaultCash))}
-              value={cash}
-              onChange={e => setCash(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">風險 %</label>
-            <Input
-              type="number"
-              placeholder="2"
-              value={riskPct}
-              onChange={e => setRiskPct(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">進場價</label>
-            <Input
-              type="number"
-              placeholder="0"
-              value={entryPrice}
-              onChange={e => setEntryPrice(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground uppercase tracking-wider">停損價</label>
-            <Input
-              type="number"
-              placeholder="0"
-              value={stopLoss}
-              onChange={e => setStopLoss(e.target.value)}
-              className="h-8 text-sm font-mono mt-0.5"
-            />
-          </div>
-        </div>
-
-        {/* Results */}
-        {canCalc && (
-          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50">
-            {[
-              { label: '風險金額', value: `$${fmt(Math.round(riskAmt))}` },
-              { label: '價差風險', value: `$${fmt(priceRisk, 1)}` },
-              { label: '股數', value: fmt(shares) },
-              { label: '張數', value: `${lots} 張` },
-              { label: '部位價值', value: `$${fmt(Math.round(positionValue))}` },
-              { label: '佔比', value: `${allocation.toFixed(1)}%` },
-            ].map(r => (
-              <div key={r.label} className="text-center">
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{r.label}</div>
-                <div className="text-sm font-mono text-foreground/80 mt-0.5">{r.value}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-// ─── Main Dashboard ─────────────────────────────────────────────────────────
+// ─── 模擬交易主頁 ─────────────────────────────────────────────────────────
 
 export default function BotDashboard() {
   const { isAuthenticated, login } = useAuth()
@@ -1045,13 +1297,35 @@ export default function BotDashboard() {
   if (!isAuthenticated) {
     return (
       <AppShell>
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center space-y-4">
-            <Bot className="w-12 h-12 mx-auto text-emerald-400/60" />
-            <p className="text-muted-foreground">請先登入以查看 Bot Dashboard</p>
-            <button onClick={login} className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-500/30 rounded-lg text-sm">
-              Google 登入
-            </button>
+        <div className="flex min-h-full items-center justify-center p-4 lg:p-5">
+          <div className="w-full max-w-4xl space-y-3">
+            <WorkstationPageTitle
+              kicker="Paper trading companion"
+              title="模擬交易室"
+              description="登入後查看待買清單、辯論結果、成交、滑價、停利停損與資產變化；未登入時只顯示預覽，不讀交易資料。"
+              action={<WorkstationPill tone="warn">需要登入</WorkstationPill>}
+            />
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <WorkstationCatCard
+                src="/stockvision-cats/02_red_market_royal_cat.png"
+                title="紅盤也要端著"
+                caption="登入後再看真實資產與持倉；紅歸紅，交割與滑價不能亂算。"
+                tone="warn"
+              />
+              <WorkstationCatCard
+                src="/stockvision-cats/03_ai_signal_skewer_stall.png"
+                title="AI 串燒別亂買"
+                caption="推薦只是候選，真正進場前還要過 debate、T2 與 quote sanity。"
+                tone="info"
+              />
+            </div>
+            <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center">
+              <Bot className="mx-auto h-12 w-12 text-[#d6a85f]/80" />
+              <p className="mt-3 text-sm text-[#b9b1a1]">請先登入以查看模擬交易室</p>
+              <button onClick={login} className="mt-4 rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
+                Google 登入
+              </button>
+            </div>
           </div>
         </div>
       </AppShell>
@@ -1061,50 +1335,87 @@ export default function BotDashboard() {
   return (
     <AppShell>
       <div className="p-4 lg:p-5 space-y-3 text-sm">
+        <WorkstationPageTitle
+          kicker="Paper trading companion"
+          title="模擬交易室"
+          description="把待買清單、辯論結果、成交、滑價、停利停損與資產變化放在同一張交易桌；資料來源與交易邏輯維持原 API。"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <WorkstationPill tone="warn">模擬交易</WorkstationPill>
+              <WorkstationPill tone={isTWMarketOpen() ? 'ok' : 'neutral'}>{isTWMarketOpen() ? '台股盤中' : '台股休息'}</WorkstationPill>
+            </div>
+          }
+        />
 
-        {/* ═══ Row 1: Portfolio Summary (full-width sticky) ═══ */}
-        <Card className="border-border bg-card sticky top-0 z-20">
-          <CardContent className="pt-3 pb-2 px-4">
-            <PortfolioSummary />
-          </CardContent>
-        </Card>
+        <WorkstationTickerStrip
+          items={[
+            { label: 'Desk mode', value: 'Admin only', tone: 'warn', detail: 'Bot 是你的交易桌，不是朋友版首頁。' },
+            { label: 'Exit owner', value: 'TP / Stop', tone: 'ok', detail: 'ML rescore 只留 WARN/EXIT_SIGNAL，不直接賣出。' },
+            { label: 'Pending source', value: 'T2 / debate', tone: 'info', detail: '候選清單不等於可下單。' },
+            { label: 'Quote sanity', value: 'Hard gate', tone: 'ok', detail: '盤中報價不可用就 fail closed。' },
+          ]}
+        />
 
-        {/* ═══ Row 2: Equity Curve | Positions ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Equity Curve</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-1 pb-2 px-3">
-              <PerformanceChart />
-            </CardContent>
-          </Card>
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Positions</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0"><PositionsTable /></CardContent>
-          </Card>
-        </div>
+        <WorkstationPanel title="交易生命週期" kicker="candidate → debate → quote sanity → execution → audit">
+          <div className="p-3">
+            <WorkstationFlow
+              steps={[
+                { label: '每日候選', detail: '收盤後 pipeline 產出上市櫃交易候選；興櫃只進研究流。', tone: 'info' },
+                { label: '晨間設定', detail: '下一交易日才把交易候選轉成 base ready，不用凌晨重跑寫錯日期。', tone: 'neutral' },
+                { label: '辯論風控', detail: 'T2 / debate 通過才進 pending buys；未通過只留 reason。', tone: 'warn' },
+                { label: '報價檢查', detail: '下單前檢查即時價、處置股、流動性、追高接刀與 impossible fill。', tone: 'ok' },
+              ]}
+            />
+          </div>
+        </WorkstationPanel>
 
-        {/* ═══ Row 3: AI Top Picks | Trade History ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
-                <TrendingUp className="w-3.5 h-3.5" /> AI Top Picks
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-2">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[360px_minmax(0,1fr)_380px]">
+          <div className="space-y-3">
+            <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl" className="xl:sticky xl:top-3">
+              <div className="px-4 pb-2 pt-3">
+                <PortfolioSummary />
+              </div>
+            </WorkstationPanel>
+            <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
+              <PositionsTable />
+            </WorkstationPanel>
+          </div>
+
+          <WorkstationPanel
+            title="AI 候選清單"
+            kicker="post-debate execution candidates"
+            action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
+          >
+            <div className="border-b border-[#263247] px-4 pb-2 pt-3">
+              <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                <TrendingUp className="w-3.5 h-3.5" /> AI 候選清單
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
+                {AI_TOP_PICK_EXPLANATION}
+              </p>
+            </div>
+            <div className="p-2">
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
-            </CardContent>
-          </Card>
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-0 pt-2 px-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground font-mono uppercase tracking-wider">Trade History</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0"><TradeHistory /></CardContent>
-          </Card>
+            </div>
+          </WorkstationPanel>
+
+          <div className="space-y-3">
+            <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+              <TradeHistory />
+            </WorkstationPanel>
+            <WorkstationCatCard
+              src="/stockvision-cats/02_red_market_royal_cat.png"
+              title="紅盤也要端著"
+              caption="帳面變漂亮時先查交割、滑價與未實現損益，不讓紙上富貴偷灌資產。"
+              tone="warn"
+            />
+            <WorkstationCatCard
+              src="/stockvision-cats/03_ai_signal_skewer_stall.png"
+              title="AI 串燒別亂買"
+              caption="推薦只是候選，進場前仍要過 debate、T2、quote sanity 與 execution guard。"
+              tone="info"
+            />
+          </div>
         </div>
 
         {/* K-Line Dialog (popup on stock click) */}
@@ -1117,31 +1428,31 @@ export default function BotDashboard() {
           </DialogContent>
         </Dialog>
 
-        {/* ═══ Row 4: Trade Journal + RRG ═══ */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <TradeJournalAnalytics />
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.15fr_0.85fr]">
+          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
+            <div className="px-3 pb-2 pt-1">
+              <PerformanceChart />
+            </div>
+          </WorkstationPanel>
           <BotThemeFlowPanel />
         </div>
 
-        {/* ═══ Row 5: Backtest | Adaptive Params | Position Sizer ═══ */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <BacktestCard />
           <AdaptiveParamsCard />
-          <PositionSizer />
         </div>
 
-        {/* ═══ Row 6: Bot Status (collapsible) ═══ */}
         <details className="group">
-          <summary className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border bg-card cursor-pointer hover:border-primary/20 transition-colors text-xs font-medium text-muted-foreground select-none">
+          <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
             <Bot className="w-3.5 h-3.5" />
-            <span className="font-mono uppercase tracking-wider">Bot Status & Cron Logs</span>
+            <span className="font-mono uppercase tracking-wider">Bot 狀態與排程紀錄</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
           </summary>
-          <Card className="border-border bg-card mt-2">
-            <CardContent className="p-3">
+          <WorkstationPanel title="Bot 狀態" kicker="scheduler runs and market risk" className="mt-2">
+            <div className="p-3">
               <BotStatusPanel />
-            </CardContent>
-          </Card>
+            </div>
+          </WorkstationPanel>
         </details>
 
       </div>

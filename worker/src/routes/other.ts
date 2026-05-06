@@ -14,13 +14,21 @@ import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
-import { fetchAndStoreStockData, computeAndStoreIndicators } from './stocks'
+import { fetchAndStoreStockData } from './stocks'
+import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 import {
   generateTechnicalAnalysis,
   generateTradingAdvice,
   generateAnalystSummary,
   answerStockQuestion,
 } from '../lib/llm'
+import {
+  buildMlVoteSummary,
+  parsePredictionForecastData,
+} from '../lib/recommendationContext'
+import { getTradingConfig } from '../lib/tradingConfig'
+import { classifyBoard } from '../lib/boardTradability'
+import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -963,44 +971,199 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 
 recommendations.use('/*', authMiddleware)
 
+const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
+
+function compactRecommendationForCard(rec: Record<string, any>) {
+  const {
+    prediction_forecast_data: _predictionForecastData,
+    screener_funnel_timeline: _screenerFunnelTimeline,
+    latest_open: _latestOpen,
+    latest_avg_price: _latestAvgPrice,
+    ...cardRec
+  } = rec
+  return cardRec
+}
+
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
+  const view = c.req.query('view') === 'card' ? 'card' : 'full'
   let date = c.req.query('date')
+  const requestedDate = date
+  let resolvedFrom: 'requested' | 'today' | 'fallback_prev' = date ? 'requested' : 'today'
   if (!date) {
     const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     // 先看今天有沒有
     const todayCount = await c.env.DB.prepare(
-      'SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ?'
+      `SELECT COUNT(*) as cnt FROM daily_recommendations WHERE date = ? AND ${FINAL_RECOMMENDATION_WHERE}`
     ).bind(twToday).first<{ cnt: number }>()
     if ((todayCount?.cnt ?? 0) > 0) {
       date = twToday
     } else {
       // 沒有 → 查上一個交易日（最新有推薦資料的日期）
       const prev = await c.env.DB.prepare(
-        'SELECT date FROM daily_recommendations WHERE date < ? ORDER BY date DESC LIMIT 1'
+        `SELECT date FROM daily_recommendations WHERE date < ? AND ${FINAL_RECOMMENDATION_WHERE} ORDER BY date DESC LIMIT 1`
       ).bind(twToday).first<{ date: string }>()
       date = prev?.date ?? twToday
+      if (date !== twToday) resolvedFrom = 'fallback_prev'
     }
   }
+  const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.*, s.market
+    SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
+           ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
+           ROUND(COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_trust_5d,
+           0 AS dealer_net_5d,
+           (
+             SELECT sp.open
+               FROM stock_prices sp
+              WHERE sp.stock_id = r.stock_id
+                AND sp.date <= r.date
+              ORDER BY sp.date DESC
+              LIMIT 1
+           ) AS latest_open,
+           (
+             SELECT sp.avg_price
+               FROM stock_prices sp
+              WHERE sp.stock_id = r.stock_id
+                AND sp.date <= r.date
+              ORDER BY sp.date DESC
+              LIMIT 1
+           ) AS latest_avg_price
     FROM daily_recommendations r
     LEFT JOIN stocks s ON s.id = r.stock_id
+    LEFT JOIN predictions p ON p.id = (
+      SELECT p2.id
+        FROM predictions p2
+       WHERE p2.stock_id = r.stock_id
+         AND p2.model_name = 'ensemble'
+         AND p2.prediction_date = r.date
+       ORDER BY p2.generated_at DESC, p2.id DESC
+       LIMIT 1
+    )
     WHERE r.date = ?
     ORDER BY r.rank ASC
-    LIMIT 20
+    LIMIT 80
   `).bind(date).all<any>()
 
+  const screenerFunnelBySymbol = new Map<string, any>()
+  const resultSymbols = [...new Set((results ?? [])
+    .map((r: any) => String(r.symbol ?? '').trim())
+    .filter(Boolean))]
+  if (resultSymbols.length > 0) {
+    try {
+      const placeholders = resultSymbols.map(() => '?').join(',')
+      const { results: funnelRows } = await c.env.DB.prepare(`
+        WITH latest_screener_run AS (
+          SELECT run_id
+            FROM screener_funnel_runs
+           WHERE date = ?
+           ORDER BY created_at DESC
+           LIMIT 1
+        )
+        SELECT symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
+          FROM screener_funnel_items
+         WHERE run_id = (SELECT run_id FROM latest_screener_run)
+           AND symbol IN (${placeholders})
+           AND stage IN ('scoring', 'rrg_overlay', 'buzz_evidence', 'diversity_cooldown', 'final_selection')
+         ORDER BY symbol ASC, created_at ASC
+      `).bind(date, ...resultSymbols).all<any>()
+      for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
+        screenerFunnelBySymbol.set(symbol, summary)
+      }
+    } catch (e) {
+      console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
+    }
+  }
+
+  const stockIds = [...new Set((results ?? []).map((r: any) => Number(r.stock_id)).filter((id: number) => Number.isFinite(id)))]
+  const perModelByStock = new Map<number, any[]>()
+  if (stockIds.length > 0) {
+    const placeholders = stockIds.map(() => '?').join(',')
+    const { results: perModelRows } = await c.env.DB.prepare(`
+      SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
+        FROM predictions
+       WHERE stock_id IN (${placeholders})
+         AND model_name != 'ensemble'
+         AND model_name NOT LIKE '%::challenger'
+         AND prediction_date = ?
+       ORDER BY stock_id, model_name
+    `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
+    for (const row of perModelRows ?? []) {
+      const id = Number(row.stock_id)
+      const list = perModelByStock.get(id) ?? []
+      list.push(row)
+      perModelByStock.set(id, list)
+    }
+  }
+
   // 解析 watch_points JSON
-  const recs = (results ?? []).map((r: any) => ({
-    ...r,
-    watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
-  }))
+  const tradingConfig = await getTradingConfig(c.env.KV)
+  const recs = (results ?? []).map((r: any) => {
+    const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
+    const persistedAlphaContext = parsePredictionForecastData(r.alpha_context)
+    const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
+    const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
+    const persistedScoreComponents = parsePredictionForecastData(r.score_components)
+    const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
+    const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
+    const board = classifyBoard({
+      market: r.market,
+      open: r.latest_open,
+      avg_price: r.latest_avg_price,
+      symbol: r.symbol,
+    })
+    const persistedLane = String(r.recommendation_lane || '').trim()
+    const recommendationLane = persistedLane || board.recommendationLane
+    const eligibleForMl = r.eligible_for_ml == null ? board.eligibleForMl : Number(r.eligible_for_ml) === 1
+    const eligibleForPendingBuy = r.eligible_for_pending_buy == null
+      ? board.eligibleForPendingBuy
+      : Number(r.eligible_for_pending_buy) === 1
+    return {
+      ...r,
+      market_segment: r.market_segment || board.boardType,
+      board_type: board.boardType,
+      tradability_tier: board.tradabilityTier,
+      recommendation_lane: recommendationLane,
+      eligible_for_ml: eligibleForMl,
+      eligible_for_pending_buy: eligibleForPendingBuy,
+      board_reason: board.reason,
+      alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
+      alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
+      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
+      score_components: persistedScoreComponents ?? null,
+      screener_funnel_rank: screenerFunnel?.rank ?? null,
+      screener_funnel_reason: screenerFunnel?.reason_code ?? null,
+      screener_funnel_evidence: screenerFunnel?.evidence ?? null,
+      screener_funnel_timeline: screenerFunnel?.timeline ?? [],
+      watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
+    }
+  })
+  const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
+  const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
+  const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')
+  const shape = view === 'card' ? compactRecommendationForCard : (r: Record<string, any>) => r
+  const tradablePayload = tradableRecs.map(shape)
+  const emergingPayload = emergingRecs.map(shape)
+  const researchOnlyPayload = researchOnlyRecs.map(shape)
+  const allPayload = recs.map(shape)
 
   return c.json({
+    requested_date: requestedOrToday,
     date,
-    recommendations: recs,
+    is_stale: date !== requestedOrToday,
+    resolved_from: resolvedFrom,
+    view,
+    recommendations: tradablePayload,
+    tradable_recommendations: tradablePayload,
+    emerging_recommendations: emergingPayload,
+    research_only_recommendations: researchOnlyPayload,
+    all_recommendations: allPayload,
+    lanes: {
+      tradable: { count: tradableRecs.length },
+      emerging_watchlist: { count: emergingRecs.length },
+      research_only: { count: researchOnlyRecs.length },
+    },
     generated_at: recs[0]?.created_at ?? null,
   })
 })
@@ -1018,8 +1181,8 @@ recommendations.get('/history', async (c) => {
     FROM daily_recommendations r
     LEFT JOIN predictions p
       ON p.stock_id = r.stock_id
-      AND p.generated_at >= r.date
-      AND p.generated_at < date(r.date, '+1 day')
+      AND p.model_name = 'ensemble'
+      AND p.prediction_date = r.date
     WHERE r.date >= date('now', '-' || ? || ' days')
     ORDER BY r.date DESC, r.rank ASC
   `).bind(days).all<any>()
@@ -1044,7 +1207,6 @@ recommendations.get('/sector-flow', async (c) => {
 
   // 若今天沒資料，取最近一筆
   if (!results?.length) {
-    const fallbackBinds = type ? [type] : []
     const { results: latest } = await c.env.DB.prepare(`
       SELECT *
       FROM sector_flow
@@ -1052,10 +1214,17 @@ recommendations.get('/sector-flow', async (c) => {
       ${typeFilter}
       ORDER BY total_net DESC
     `).bind(...(type ? [type, type] : [])).all<any>()
-    return c.json({ date: 'latest', flows: latest ?? [] })
+    const staleDate = latest?.[0]?.date ?? null
+    return c.json({
+      date,
+      requested_date: date,
+      stale: Boolean(staleDate),
+      stale_date: staleDate,
+      flows: latest ?? [],
+    })
   }
 
-  return c.json({ date, flows: results })
+  return c.json({ date, requested_date: date, stale: false, stale_date: null, flows: results })
 })
 
 // GET /api/recommendations/sector-trend?sector=半導體&days=14&type=industry|theme
@@ -1102,10 +1271,17 @@ recommendations.get('/sector-flow-stocks', async (c) => {
     if (cls)   { fbSql += ' AND classification = ?'; fbBinds.push(cls) }
     fbSql += ' ORDER BY theme, classification, net_amount DESC'
     const { results: fb } = await c.env.DB.prepare(fbSql).bind(...fbBinds).all<any>()
-    return c.json({ date: 'latest', stocks: fb ?? [] })
+    const staleDate = fb?.[0]?.date ?? null
+    return c.json({
+      date,
+      requested_date: date,
+      stale: Boolean(staleDate),
+      stale_date: staleDate,
+      stocks: fb ?? [],
+    })
   }
 
-  return c.json({ date, stocks: results })
+  return c.json({ date, requested_date: date, stale: false, stale_date: null, stocks: results })
 })
 
 // GET /api/recommendations/daily-report?date=YYYY-MM-DD

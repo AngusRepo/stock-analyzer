@@ -36,9 +36,22 @@ from app.features import compute_triple_barrier_labels
 
 def load_prices_from_csv(csv_path: str) -> pl.DataFrame:
     """Load OHLCV from local CSV (for testing)."""
-    df = pl.read_csv(csv_path, try_parse_dates=True)
-    df = df.sort("date")
-    return df
+    return (
+        pl.scan_csv(csv_path, try_parse_dates=True)
+        .select("symbol", "date", "open", "high", "low", "close", "volume")
+        .with_columns(
+            pl.col("symbol").cast(pl.Utf8),
+            pl.col("date").cast(pl.Date),
+            pl.col("open").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+            pl.col("volume").cast(pl.Float64),
+        )
+        .drop_nulls(["date", "high", "low", "close"])
+        .sort("date")
+        .collect()
+    )
 
 
 def load_prices_from_d1(db_url: str, token: str, min_rows: int = 200) -> pl.DataFrame:

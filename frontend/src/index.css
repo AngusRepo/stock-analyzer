@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -52,7 +52,7 @@
   --sv-bg-2: #17202b;
   --sv-bg-3: #202b37;
   --sv-bg-4: #2b3a49;
-  --sv-accent: #7aa2c7;
+  --sv-accent: #f0b90b;
 
   /* ── Semantic tokens ── */
   --background: #0b0f14;
@@ -61,7 +61,7 @@
   --card-foreground: #e6edf3;
   --popover: #17202b;
   --popover-foreground: #e6edf3;
-  --primary: #7aa2c7;
+  --primary: #f0b90b;
   --primary-foreground: #071018;
   --secondary: #202b37;
   --secondary-foreground: #c8d3df;
@@ -73,20 +73,20 @@
   --destructive-foreground: #fafafa;
   --border: #2b3a49;
   --input: #202b37;
-  --ring: #7aa2c7;
-  --chart-1: #7aa2c7;
-  --chart-2: #8fc8a9;
-  --chart-3: #d4a44f;
+  --ring: #f0b90b;
+  --chart-1: #f0b90b;
+  --chart-2: #00d2ff;
+  --chart-3: #00c076;
   --chart-4: #ef4444;
   --chart-5: #8b5cf6;
   --sidebar: #111821;
   --sidebar-foreground: #c8d3df;
-  --sidebar-primary: #7aa2c7;
+  --sidebar-primary: #f0b90b;
   --sidebar-primary-foreground: #071018;
   --sidebar-accent: #202b37;
   --sidebar-accent-foreground: #e6edf3;
   --sidebar-border: #2b3a49;
-  --sidebar-ring: #7aa2c7;
+  --sidebar-ring: #f0b90b;
 }
 
 /* .dark-unused removed — single dark theme only */

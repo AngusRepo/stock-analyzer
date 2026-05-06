@@ -414,19 +414,39 @@ export default function ObservabilityPage() {
           </WorkstationPanel>
         </section>
 
-        <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="只保留 Scheduler Runs 與 Data Quality">
-          <div className="grid gap-3 p-3 xl:grid-cols-3">
+        <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="不跳回舊頁：在 OBS 內直接看排程與資料品質">
+          <div className="border-b border-[#263247] p-3">
+            <div className="flex flex-wrap gap-2">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`cursor-pointer border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
+                    activeTab === tab.id ? 'border-[#f0b90b]/55 bg-[#f0b90b]/10 text-[#ffd87f]' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-[#f0b90b]/35 hover:text-[#ffd87f]'
+                  }`}
+                >
+                  {tab.label}
+                  <span className="ml-2"><WorkstationPill tone={tab.tone}>{tab.tone}</WorkstationPill></span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-500">
+              這裡不再只是導去 Scheduler / Data Quality 舊頁，而是把最常用的 root-cause 線索直接留在 OBS。
+            </p>
+          </div>
+          <div className="grid gap-3 p-3 xl:grid-cols-[1fr_1fr_320px]">
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
-                <a href="/scheduler" className="text-[10px] text-sky-300 hover:text-sky-100">Open</a>
+                <WorkstationPill tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'}>{scheduler.data?.stats?.failed24h ?? 0} failed</WorkstationPill>
               </div>
               <SchedulerRunsTab jobs={jobs.slice(0, 6)} />
             </div>
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
-                <a href="/data-quality" className="text-[10px] text-sky-300 hover:text-sky-100">Open</a>
+                <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>{dataQualityScore}% trust</WorkstationPill>
               </div>
               <DataQualityTab checks={dqChecks.slice(0, 6)} />
             </div>
@@ -443,31 +463,6 @@ export default function ObservabilityPage() {
                 <p className="mt-2 text-[11px] leading-5 text-slate-500">事件數只做線索入口；真正 root cause 仍以 run_id 與 owner contract 追。</p>
               </div>
             </div>
-          </div>
-          <div className="hidden">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`min-h-11 cursor-pointer border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
-                  activeTab === tab.id ? 'border-sky-300/50 bg-sky-300/10 text-sky-200' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-sky-400/40 hover:text-sky-200'
-                }`}
-              >
-                {tab.label}
-                <span className="ml-2"><WorkstationPill tone={tab.tone}>{tab.tone}</WorkstationPill></span>
-              </button>
-            ))}
-            <a href="/scheduler" className="min-h-11 border border-[#263247] bg-[#05070c] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400 hover:border-sky-400/40 hover:text-sky-200">
-              Open scheduler / 開啟排程頁
-            </a>
-            <a href="/data-quality" className="min-h-11 border border-[#263247] bg-[#05070c] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400 hover:border-sky-400/40 hover:text-sky-200">
-              Open data quality / 開啟資料品質
-            </a>
-          </div>
-          <div className="hidden">
-            {activeTab === 'scheduler' && <SchedulerRunsTab jobs={jobs} />}
-            {activeTab === 'dataQuality' && <DataQualityTab checks={dqChecks} />}
           </div>
         </WorkstationPanel>
       </div>

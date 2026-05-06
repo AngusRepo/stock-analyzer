@@ -1,8 +1,9 @@
 import { evaluateResearchInternGate } from './researchInternGate'
 import type { ResearchExperimentRecord } from './researchExperimentRegistry'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
+import { listModelUpgradeCandidates, type ModelUpgradeCandidateId } from './modelUpgradeResearchTrack'
 
-export type ResearchEvaluationStepKind = 'backtest' | 'walk_forward' | 'verify'
+export type ResearchEvaluationStepKind = 'backtest' | 'walk_forward' | 'verify' | 'model_benchmark'
 
 export interface ResearchEvaluationStep {
   id: string
@@ -58,6 +59,46 @@ function baseBody(record: ResearchExperimentRecord): Record<string, unknown> {
   }
 }
 
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => cleanText(item))
+    .filter(Boolean)
+    .slice(0, 12)
+}
+
+function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
+  const haystack = [
+    record.hypothesis,
+    ...record.metrics,
+    ...record.strategy_spec_ids,
+    ...record.source_refs,
+  ].join(' ').toLowerCase()
+  return [
+    'model_benchmark',
+    'model-family',
+    'model family',
+    'benchmark',
+    'tabm',
+    'itransformer',
+    'timesfm',
+    'moirai',
+  ].some((needle) => haystack.includes(needle))
+}
+
+function benchmarkCandidateIds(record: ResearchExperimentRecord): ModelUpgradeCandidateId[] {
+  const requested = new Set(cleanStringArray(cleanObject(record.data_slice).benchmark_candidates))
+  const benchmarkOnly = listModelUpgradeCandidates('benchmark_only')
+  if (!requested.size) {
+    return wantsModelBenchmark(record)
+      ? benchmarkOnly.map((candidate) => candidate.id)
+      : []
+  }
+  return benchmarkOnly
+    .map((candidate) => candidate.id)
+    .filter((id) => requested.has(id))
+}
+
 export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): ResearchEvaluationPlan {
   assertOwnerCanOwn('research', 'experiment_registry')
   assertOwnerCanOwn('research', 'review_packet')
@@ -70,9 +111,29 @@ export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): R
   const backtestGate = evaluateResearchInternGate({ action: 'request_backtest_dry_run', dryRun: true, experimentId: record.id })
   const walkForwardGate = evaluateResearchInternGate({ action: 'request_walk_forward_dry_run', dryRun: true, experimentId: record.id })
   const verifyGate = evaluateResearchInternGate({ action: 'request_verify_dry_run', dryRun: true, experimentId: record.id })
+  const benchmarkGate = evaluateResearchInternGate({ action: 'request_model_benchmark_dry_run', dryRun: true, experimentId: record.id })
 
   const common = baseBody(record)
   const { startDate, endDate } = dateRange(record)
+  const modelBenchmarkSteps: ResearchEvaluationStep[] = benchmarkCandidateIds(record).map((candidateId) => ({
+    id: `${record.id}:model-benchmark:${candidateId}`,
+    kind: 'model_benchmark',
+    controller_endpoint: '/research/model-benchmark/dry-run',
+    method: 'POST',
+    body: {
+      ...common,
+      candidate_id: candidateId,
+      start_date: startDate,
+      end_date: endDate,
+      source: 'research_experiment',
+      research_mode: 'model_family_benchmark',
+      persist_results: false,
+      persist_confirm: false,
+    },
+    mutation_allowed: false,
+    gate_decision: benchmarkGate.decision,
+    execution_ready: true,
+  }))
   return {
     experiment_id: record.id,
     mode: 'dry_run_only',
@@ -138,6 +199,7 @@ export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): R
         gate_decision: verifyGate.decision,
         execution_ready: true,
       },
+      ...modelBenchmarkSteps,
     ],
   }
 }

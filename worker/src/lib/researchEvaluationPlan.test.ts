@@ -48,6 +48,49 @@ function assert(condition: unknown, message: string): void {
 
 {
   const plan = buildResearchEvaluationPlan({
+    id: 'exp-model-upgrade',
+    version: 'research-registry-v1',
+    status: 'draft',
+    hypothesis: '評估 TabM iTransformer TimesFM 是否值得進 challenger pool',
+    source_refs: ['model-upgrade-track'],
+    strategy_spec_ids: ['model_family_benchmark_v1'],
+    data_slice: {
+      start_date: '2025-01-01',
+      end_date: '2026-04-30',
+      benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+    },
+    metrics: ['model_benchmark', 'oos_ic', 'pbo', 'cost_sensitivity'],
+    follow_up: ['produce benchmark review packet'],
+    approval_gate: {
+      can_research: true,
+      can_generate_patch_or_report: true,
+      can_retrain_prod: false,
+      can_promote: false,
+      can_deploy: false,
+      can_trade: false,
+    },
+    created_at: '2026-04-30T01:00:00.000Z',
+    updated_at: '2026-04-30T01:00:00.000Z',
+  })
+
+  const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
+  assert(benchmarkSteps.length === 3, 'model upgrade research should create one benchmark step per supported requested candidate')
+  assert(
+    benchmarkSteps.every((step) => step.controller_endpoint === '/research/model-benchmark/dry-run'),
+    'model benchmark steps should call the research benchmark endpoint',
+  )
+  assert(
+    benchmarkSteps.every((step) => step.mutation_allowed === false && step.body.persist_results === false),
+    'model benchmark steps must stay non-mutating',
+  )
+  assert(
+    benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TabM,iTransformer,TimesFM',
+    'model benchmark steps should preserve supported benchmark candidates',
+  )
+}
+
+{
+  const plan = buildResearchEvaluationPlan({
     id: 'exp-short',
     version: 'research-registry-v1',
     status: 'draft',

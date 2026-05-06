@@ -382,12 +382,13 @@ export interface TradingConfig {
     dd_spike_threshold: number           // 單日 drawdown > this → T1.4 trigger (預設 0.08 = 8%)
   }
   // ── Sprint 5.2+: Intraday Re-score 安控 ───────────────────────────────────
-  // 盤中 10:00/12:00 call ml-controller /intraday/rescore，對持倉 confidence 衰減
-  // 隔夜持倉可自動出場；當日持倉只能 WARN（當沖白名單限制）
+  // 盤中 call ml-controller /intraday/rescore，對持倉 confidence 衰減。
+  // 這層只產生 WARN / EXIT_SIGNAL evidence；實際賣出 owner 固定為
+  // paperExitPolicy 的 TP1 / TP2 / Stop / Trailing / EOD cascade。
   // See memory/project_instance_scaling_brainstorm.md Part A
   intraday: {
     rescoreEnabled: boolean              // feature flag（預設 true）
-    rescoreExitThreshold: number         // confidence 低於此值 → EXIT（預設 0.40）
+    rescoreExitThreshold: number         // confidence 低於此值 → EXIT_SIGNAL（預設 0.40，不直接賣出）
     rescoreWarnThreshold: number         // confidence 低於此值 → WARN（預設 0.55）
     rescoreDecaySensitivity: number      // 每 1% 反向價格變動的 confidence 衰減倍數（預設 5.0）
     rescoreCooldownMin: number           // 同一檔 re-score 觸發後 N 分鐘內不再觸發（預設 60）

@@ -15,7 +15,6 @@ export type ModelUpgradeCandidateId =
   | 'TabM'
   | 'iTransformer'
   | 'TimesFM'
-  | 'Moirai'
   | 'GAOptimizer'
   | 'KalmanFilter'
   | 'MarkovSwitching'
@@ -120,19 +119,6 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
   },
   {
     id: 'TimesFM',
-    stage: 'benchmark_only',
-    family: 'foundation_time_series',
-    role: 'research benchmark candidate against the Chronos family',
-    vote_weight: 0,
-    can_predict: false,
-    can_vote: false,
-    can_promote_directly: false,
-    requires_review_packet: true,
-    evidence_required: ['experiment_registry', 'forecast_validation', 'walk_forward', 'cost_profile'],
-    notes: 'Useful for evidence comparison; not a production replacement without a review packet.',
-  },
-  {
-    id: 'Moirai',
     stage: 'benchmark_only',
     family: 'foundation_time_series',
     role: 'research benchmark candidate against the Chronos family',

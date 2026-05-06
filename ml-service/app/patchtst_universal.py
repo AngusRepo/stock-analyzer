@@ -35,6 +35,17 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+def _sequence_input_series_count(series_close: list[list[float]], sequence_report: dict | None) -> int:
+    if isinstance(sequence_report, dict):
+        try:
+            reported = int(sequence_report.get("input_series") or 0)
+        except (TypeError, ValueError):
+            reported = 0
+        if reported > 0:
+            return reported
+    return len(series_close)
+
 # Paper-aligned defaults; same seq_len/pred_len as DLinear for v2 pipeline parity
 DEFAULT_SEQ_LEN = 60
 DEFAULT_PRED_LEN = 5
@@ -332,6 +343,8 @@ def train_patchtst(
         },
     )
 
+    input_series_count = _sequence_input_series_count(series_close, sequence_report)
+
     return {
         "_state_dict_torch": best_state,
         "metadata": {
@@ -347,7 +360,7 @@ def train_patchtst(
             "dropout": dropout,
             "n_train_windows": int(len(train_idx)),
             "n_val_windows": int(len(val_idx)),
-            "n_input_series": len(series_close),
+            "n_input_series": input_series_count,
             "best_val_loss": round(best_val_loss, 6),
             "val_dir_accuracy": round(dir_acc, 3),
             "n_epochs": n_epochs,

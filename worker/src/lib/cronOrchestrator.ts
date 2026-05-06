@@ -5,7 +5,6 @@ import { runMorningWarmup } from './localMaintenance'
 import { handleWorkerDomainCron } from './cronWorkerDomainTasks'
 import { handleGcpDomainCron } from './cronGcpDomainTasks'
 import { batchGetIntradayOHLC } from './paperIntradayData'
-import { executeRescoreSell } from './paperWorkerTasks'
 import { runIntradayCheck } from './paperEntryTasks'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
@@ -167,12 +166,6 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
   const controllerUrl = env.ML_CONTROLLER_URL
   if (!controllerUrl) return 'SKIP: no ML_CONTROLLER_URL'
 
-  const exitCountKey = `intraday:rescore-exits:${twTodayStr}`
-  const exitCount = parseInt(await env.KV.get(exitCountKey) ?? '0', 10)
-  if (exitCount >= cfg.intraday.maxRescoreExitsPerDay) {
-    return `SKIP: daily exit limit reached (${exitCount}/${cfg.intraday.maxRescoreExitsPerDay})`
-  }
-
   const { results: positions } = await env.DB.prepare(`
     SELECT symbol, name, shares, avg_cost, entry_price, entry_date,
            initial_stop, trailing_stop, tp1_price, tp1_hit
@@ -224,73 +217,50 @@ export async function runIntradayRescore(env: Bindings, cron: string, twTodayStr
   if (!res.ok) throw new Error(`ml-controller /intraday/rescore HTTP ${res.status}`)
 
   const result = await res.json() as any
-  const exits: string[] = []
-  let newExitCount = exitCount
+  const exitSignals: any[] = []
+  const warnSignals: any[] = []
 
   for (const row of result.results ?? []) {
-    if (row.action !== 'EXIT' || row.is_same_day || newExitCount >= cfg.intraday.maxRescoreExitsPerDay) continue
+    if (row.action !== 'EXIT') continue
 
     const cooldownKey = `intraday:rescore-cooldown:${row.symbol}:${twTodayStr}`
     if (await env.KV.get(cooldownKey)) continue
 
-    const pos = positions.find((p: any) => p.symbol === row.symbol)
-    const quote = quoteMap.get(row.symbol)
-    const currentPrice = quote?.last
-    if (!pos || !quote || !currentPrice) continue
-
-    try {
-      const sellResult = await executeRescoreSell(env, {
-        symbol: row.symbol,
-        shares: pos.shares,
-        price: currentPrice,
-        quote,
-        reason: `ML Re-score EXIT: conf ${row.original_confidence.toFixed(3)} -> ${row.adjusted_confidence.toFixed(3)} | ${row.reason}`,
-        source: 'intraday_rescore',
-      })
-      if (!sellResult.filled) {
-        console.warn(`[Intraday-Rescore] Skip sell ${row.symbol}: ${sellResult.reason}`)
-        continue
-      }
-      exits.push(`${row.symbol} sold@${sellResult.price ?? currentPrice}(conf ${row.adjusted_confidence.toFixed(2)})`)
-      newExitCount += 1
-      await env.KV.put(cooldownKey, new Date().toISOString(), { expirationTtl: cfg.intraday.rescoreCooldownMin * 60 })
-    } catch (e: any) {
-      console.error(`[Intraday-Rescore] Failed to sell ${row.symbol}:`, e)
-    }
+    exitSignals.push(row)
+    await env.KV.put(cooldownKey, new Date().toISOString(), { expirationTtl: cfg.intraday.rescoreCooldownMin * 60 })
   }
 
-  if (newExitCount > exitCount) {
-    await env.KV.put(exitCountKey, String(newExitCount), { expirationTtl: 86400 })
-  }
-
-  const warns = (result.results ?? []).filter((row: any) => row.action === 'WARN')
-  for (const warn of warns) {
-    const warnKey = `intraday:warn:${warn.symbol}:${twTodayStr}`
+  warnSignals.push(...(result.results ?? []).filter((row: any) => row.action === 'WARN'))
+  const cautionSignals = [...exitSignals, ...warnSignals]
+  for (const signal of cautionSignals) {
+    const warnKey = `intraday:warn:${signal.symbol}:${twTodayStr}`
     const existing = await env.KV.get(warnKey, 'json') as { count: number; first_conf: number } | null
     await env.KV.put(
       warnKey,
       JSON.stringify({
         count: (existing?.count ?? 0) + 1,
-        first_conf: existing?.first_conf ?? warn.adjusted_confidence,
-        last_conf: warn.adjusted_confidence,
+        first_conf: existing?.first_conf ?? signal.adjusted_confidence,
+        last_conf: signal.adjusted_confidence,
         last_at: new Date().toISOString(),
+        last_action: signal.action,
+        execution_policy: 'observe_only',
       }),
       { expirationTtl: 172800 },
     )
   }
 
-  if ((exits.length > 0 || warns.length > 0) && (env as any).DISCORD_WEBHOOK_URL) {
+  if ((exitSignals.length > 0 || warnSignals.length > 0) && (env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./notify')
     const slot = ({ '0 2 * * 1-5': '10:00', '0 3 * * 1-5': '11:00', '0 4 * * 1-5': '12:00', '30 4 * * 1-5': '12:30' } as Record<string, string>)[cron]
     const lines = [
       `ML Re-score (${slot ?? cron})`,
-      ...exits.map((line) => `EXIT: ${line}`),
-      ...warns.map((warn: any) => `WARN: ${warn.symbol} conf ${warn.original_confidence.toFixed(3)} -> ${warn.adjusted_confidence.toFixed(3)} (${warn.is_same_day ? 'same-day' : 'overnight'})`),
+      ...exitSignals.map((signal: any) => `EXIT_SIGNAL only: ${signal.symbol} conf ${signal.original_confidence.toFixed(3)} -> ${signal.adjusted_confidence.toFixed(3)}; no auto-sell, exit owner remains TP/Stop policy`),
+      ...warnSignals.map((warn: any) => `WARN: ${warn.symbol} conf ${warn.original_confidence.toFixed(3)} -> ${warn.adjusted_confidence.toFixed(3)} (${warn.is_same_day ? 'same-day' : 'overnight'})`),
     ]
     await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, lines.join('\n'))
   }
 
-  return `${result.summary?.total ?? 0} positions: ${exits.length} EXIT, ${warns.length} WARN, ${(result.summary?.hold ?? 0)} HOLD`
+  return `${result.summary?.total ?? 0} positions: 0 auto EXIT, ${exitSignals.length} EXIT_SIGNAL, ${warnSignals.length} WARN, ${(result.summary?.hold ?? 0)} HOLD`
 }
 
 export async function handleScheduledCron(

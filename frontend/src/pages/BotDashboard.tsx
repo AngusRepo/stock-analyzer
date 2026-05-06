@@ -24,8 +24,14 @@ import AppShell from '@/components/AppShell'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
-import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
-import { DecisionTraceRail } from '@/components/workstation/DecisionArchitecture'
+import {
+  WorkstationCatCard,
+  WorkstationFlow,
+  WorkstationPageTitle,
+  WorkstationPanel,
+  WorkstationPill,
+  WorkstationTickerStrip,
+} from '@/components/workstation/WorkstationChrome'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -514,6 +520,32 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
 
 // ─── Open Positions（完整庫存）──────────────────────────────────────────────
 
+function parseOrderNote(note: unknown): Record<string, any> {
+  if (!note) return {}
+  if (typeof note === 'object') return note as Record<string, any>
+  if (typeof note !== 'string') return {}
+  try {
+    const parsed = JSON.parse(note)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return { reason: note }
+  }
+}
+
+function formatTwOrderTime(createdAt?: string | null): string {
+  if (!createdAt) return '-'
+  const ts = new Date(createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}Z`).getTime()
+  if (!Number.isFinite(ts)) return createdAt
+  return new Date(ts + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ')
+}
+
+function summarizeOrderReason(order: any): string {
+  const note = parseOrderNote(order?.note)
+  if (note.reason) return String(note.reason)
+  if (note.ml_entry) return `entry ${note.ml_entry} / stop ${note.ml_stop ?? '-'} / T1 ${note.ml_t1 ?? '-'} / T2 ${note.ml_t2 ?? '-'}`
+  return typeof order?.note === 'string' ? order.note : '-'
+}
+
 function PositionsTable() {
   const { data, isLoading } = useQuery({
     queryKey: ['paper', 'positions'],
@@ -542,14 +574,92 @@ function PositionsTable() {
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
   if (!Array.isArray(positions) || positions.length === 0) {
+    const latestOrder = orders[0]
+    const latestIsSell = latestOrder?.side === 'sell'
+    const latestIsBuy = latestOrder?.side === 'buy'
+    const latestReason = summarizeOrderReason(latestOrder)
+
     return (
-      <div className="text-center py-12 text-muted-foreground">
-        <Wallet className="w-12 h-12 mx-auto mb-3 opacity-30" />
-        <p>目前無持倉</p>
-        <p className="text-xs mt-1">Bot 會在 ML 訊號觸發時自動建倉</p>
-        {summary && (
-          <div className="mt-4 text-xs text-muted-foreground/60">
-            現金 ${fmt(summary.cash)} | 總資產 ${fmt(summary.total_value)}
+      <div className="p-4">
+        <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
+          <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4">
+            <Wallet className="mb-3 h-8 w-8 text-[#d6a85f]/70" />
+            <WorkstationPill tone={latestIsBuy ? 'error' : latestIsSell ? 'warn' : 'neutral'}>
+              {latestIsSell ? '無持倉：最新紀錄為賣出' : latestIsBuy ? '資料需檢查' : '目前無持倉'}
+            </WorkstationPill>
+            <p className="mt-3 text-sm font-semibold text-[#e6edf3]">
+              {latestIsSell
+                ? `${latestOrder.symbol} 已於 ${formatTwOrderTime(latestOrder.created_at)} 出場`
+                : latestIsBuy
+                  ? `${latestOrder.symbol} 有買進紀錄但 position 為空`
+                  : '目前沒有 open position'}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-[#8b9bab]">
+              {latestIsSell
+                ? '持倉 API 仍正常；畫面為空是因為 D1 的 paper_positions 已無 shares > 0。'
+                : latestIsBuy
+                  ? '這代表 order 與 position 可能不同步，應檢查 paper_positions upsert / exit audit。'
+                  : 'Bot 會在 pending buy 通過 quote sanity 與 execution guard 後建立持倉。'}
+            </p>
+            {summary && (
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
+                  <p className="text-[#8b9bab]">現金</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(summary.cash)}</p>
+                </div>
+                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
+                  <p className="text-[#8b9bab]">總資產</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(summary.total_value)}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {latestOrder && (
+            <div className="rounded-xl border border-[#3a3125] bg-[linear-gradient(135deg,#15130d,#0b1118)] p-4">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]/80">
+                    latest order evidence
+                  </p>
+                  <h3 className="mt-1 text-sm font-semibold text-[#f2ead8]">最近交易證據</h3>
+                </div>
+                <WorkstationPill tone={latestIsSell ? 'warn' : 'info'}>{latestOrder.side}</WorkstationPill>
+              </div>
+              <div className="grid gap-2 text-xs sm:grid-cols-4">
+                <div>
+                  <p className="text-[#8b9bab]">標的</p>
+                  <p className="font-mono text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">股數</p>
+                  <p className="font-mono text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">價格</p>
+                  <p className="font-mono text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
+                </div>
+                <div>
+                  <p className="text-[#8b9bab]">時間</p>
+                  <p className="font-mono text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
+                </div>
+              </div>
+              <div className="mt-3 rounded-lg border border-[#2b3a49] bg-[#070a10] p-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">原因 / note</p>
+                <p className="mt-1 text-xs leading-5 text-[#c8d3df]">{latestReason}</p>
+              </div>
+            </div>
+          )}
+
+          {!latestOrder && (
+            <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4 text-sm text-muted-foreground">
+              交易紀錄也為空，代表目前 paper trading 尚未建立任何 open/closed order。
+            </div>
+          )}
+        </div>
+        {realizedPnl !== 0 && (
+          <div className="mt-3 text-right text-xs text-muted-foreground">
+            已實現損益粗估 <span className={pctClass(realizedPnl)}>{realizedPnl >= 0 ? '+' : ''}${fmt(Math.round(realizedPnl))}</span>
           </div>
         )}
       </div>
@@ -1237,52 +1347,40 @@ export default function BotDashboard() {
           }
         />
 
-        <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl" className="sticky top-0 z-20">
-          <div className="px-4 pb-2 pt-3">
-            <PortfolioSummary />
-          </div>
-        </WorkstationPanel>
-
-        <DecisionTraceRail
-          title="從晨間候選到盤中執行"
-          steps={[
-            { label: '每日候選', detail: '收盤後 pipeline 產出上市上櫃交易候選與興櫃研究池。', tone: 'info' },
-            { label: '晨間設定', detail: '下一個交易日早上才把交易候選轉成 base ready。', tone: 'neutral' },
-            { label: '辯論風控', detail: '辯論與風控確認後才允許進 pending buys。', tone: 'warn' },
-            { label: '報價檢查', detail: '下單前檢查即時價、漲跌幅、處置/興櫃硬 gate 與追高接刀風險。', tone: 'ok' },
-            { label: '模擬執行', detail: '只允許合理限價；不再用昨日收盤價製造 impossible fill。', tone: 'ok' },
-            { label: '留痕', detail: 'fills、skips、slippage、T1/T2/Stop 與資產變化都留 trace。', tone: 'info' },
+        <WorkstationTickerStrip
+          items={[
+            { label: 'Desk mode', value: 'Admin only', tone: 'warn', detail: 'Bot 是你的交易桌，不是朋友版首頁。' },
+            { label: 'Exit owner', value: 'TP / Stop', tone: 'ok', detail: 'ML rescore 只留 WARN/EXIT_SIGNAL，不直接賣出。' },
+            { label: 'Pending source', value: 'T2 / debate', tone: 'info', detail: '候選清單不等於可下單。' },
+            { label: 'Quote sanity', value: 'Hard gate', tone: 'ok', detail: '盤中報價不可用就 fail closed。' },
           ]}
         />
 
+        <WorkstationPanel title="交易生命週期" kicker="candidate → debate → quote sanity → execution → audit">
+          <div className="p-3">
+            <WorkstationFlow
+              steps={[
+                { label: '每日候選', detail: '收盤後 pipeline 產出上市櫃交易候選；興櫃只進研究流。', tone: 'info' },
+                { label: '晨間設定', detail: '下一交易日才把交易候選轉成 base ready，不用凌晨重跑寫錯日期。', tone: 'neutral' },
+                { label: '辯論風控', detail: 'T2 / debate 通過才進 pending buys；未通過只留 reason。', tone: 'warn' },
+                { label: '報價檢查', detail: '下單前檢查即時價、處置股、流動性、追高接刀與 impossible fill。', tone: 'ok' },
+              ]}
+            />
+          </div>
+        </WorkstationPanel>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <WorkstationCatCard
-            src="/stockvision-cats/02_red_market_royal_cat.png"
-            title="紅盤也要端著"
-            caption="帳面變漂亮時先查交割、滑價與未實現損益，不讓紙上富貴偷灌資產。"
-            tone="warn"
-          />
-          <WorkstationCatCard
-            src="/stockvision-cats/03_ai_signal_skewer_stall.png"
-            title="AI 串燒別亂買"
-            caption="推薦只是候選，進場前仍要過 debate、T2、quote sanity 與 execution guard。"
-            tone="info"
-          />
-        </div>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[360px_minmax(0,1fr)_380px]">
+          <div className="space-y-3">
+            <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl" className="xl:sticky xl:top-3">
+              <div className="px-4 pb-2 pt-3">
+                <PortfolioSummary />
+              </div>
+            </WorkstationPanel>
+            <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
+              <PositionsTable />
+            </WorkstationPanel>
+          </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
-            <div className="px-3 pb-2 pt-1">
-              <PerformanceChart />
-            </div>
-          </WorkstationPanel>
-          <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
-            <PositionsTable />
-          </WorkstationPanel>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           <WorkstationPanel
             title="AI 候選清單"
             kicker="post-debate execution candidates"
@@ -1300,9 +1398,24 @@ export default function BotDashboard() {
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
             </div>
           </WorkstationPanel>
-          <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
-            <TradeHistory />
-          </WorkstationPanel>
+
+          <div className="space-y-3">
+            <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+              <TradeHistory />
+            </WorkstationPanel>
+            <WorkstationCatCard
+              src="/stockvision-cats/02_red_market_royal_cat.png"
+              title="紅盤也要端著"
+              caption="帳面變漂亮時先查交割、滑價與未實現損益，不讓紙上富貴偷灌資產。"
+              tone="warn"
+            />
+            <WorkstationCatCard
+              src="/stockvision-cats/03_ai_signal_skewer_stall.png"
+              title="AI 串燒別亂買"
+              caption="推薦只是候選，進場前仍要過 debate、T2、quote sanity 與 execution guard。"
+              tone="info"
+            />
+          </div>
         </div>
 
         {/* K-Line Dialog (popup on stock click) */}
@@ -1315,7 +1428,12 @@ export default function BotDashboard() {
           </DialogContent>
         </Dialog>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.15fr_0.85fr]">
+          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
+            <div className="px-3 pb-2 pt-1">
+              <PerformanceChart />
+            </div>
+          </WorkstationPanel>
           <BotThemeFlowPanel />
         </div>
 

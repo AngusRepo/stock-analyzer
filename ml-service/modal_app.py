@@ -668,6 +668,27 @@ def retrain_orchestrator(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=2,
+    memory=8192,
+    gpu="L4",
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def research_model_benchmark(payload: dict) -> dict:
+    """Run research-only model-family benchmark executor.
+
+    This function may use GPU for benchmark adapters, but it must never promote
+    models or mutate production artifacts. Results are returned to the
+    controller as fold metrics / PBO / cost / data-slice evidence.
+    """
+    _setup_env()
+    from app.research_model_benchmark_runtime import run_research_model_benchmark
+
+    return run_research_model_benchmark(payload)
+
+
+@app.function(
     cpu=1,                       # 1 CPU per prediction container.
     memory=2048,                 # 2GB is sufficient for CPU prediction runtime.
     timeout=300,                 # 5 min buffer for tail inference and cold start.

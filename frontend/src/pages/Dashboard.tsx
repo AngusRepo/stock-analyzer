@@ -46,7 +46,13 @@ import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
-import { WorkstationCatCard, WorkstationPageTitle, WorkstationPanel, WorkstationPill } from '@/components/workstation/WorkstationChrome'
+import {
+  WorkstationCatCard,
+  WorkstationPageTitle,
+  WorkstationPanel,
+  WorkstationPill,
+  WorkstationTickerStrip,
+} from '@/components/workstation/WorkstationChrome'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
 function WatchlistItem({
@@ -441,33 +447,54 @@ function MorningBriefingCard() {
   ]
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-[#2b3a49] bg-[linear-gradient(135deg,#17202b,#111821_55%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.22)]">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <section className="overflow-hidden rounded-xl border border-[#2b3a49] bg-[linear-gradient(135deg,#171714,#111821_55%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.22)]">
+      <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
         <div>
-          <p className="text-[11px] font-semibold tracking-[0.18em] text-[#7aa2c7]">MORNING BRIEF</p>
-          <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#e6edf3]">今天先看這三件事</h2>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-[#d6a85f]">MORNING BRIEF</p>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">先看市場，再看推薦，不急著按鈕</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#a8b6c5]">
-            先確認市場情緒、Observability 與待處理事項，再決定要不要進研究室或模擬交易室。
+            Dashboard 是給一般朋友也看得懂的版本：先把市場風險、資料可信度、AI 候選與興櫃研究分流放在第一屏。
           </p>
         </div>
-        <a
-          href="/obs"
-          className="inline-flex w-fit items-center gap-2 rounded-full border border-[#7aa2c7]/35 bg-[#7aa2c7]/10 px-3 py-2 text-xs font-medium text-[#9cc7ef] transition hover:bg-[#7aa2c7]/16"
-        >
-          打開 OBS
-          <ChevronRight className="h-3.5 w-3.5" />
-        </a>
-      </div>
-
-      <div className="mt-4 grid gap-2 md:grid-cols-3">
-        {items.map((item) => (
-          <a key={item.label} href={item.href} className="rounded-xl border border-white/8 bg-[#0b0f14]/45 p-3 transition hover:border-[#7aa2c7]/25 hover:bg-[#111821]/80">
-            <p className="text-[11px] text-[#8b9bab]">{item.label}</p>
-            <p className={`mt-1 text-sm font-semibold ${item.tone}`}>{item.value}</p>
-          </a>
-        ))}
+        <div className="grid gap-2 sm:grid-cols-3">
+          {items.map((item) => (
+            <a key={item.label} href={item.href} className="rounded-xl border border-[#2b3a49] bg-[#070a10]/55 p-3 transition hover:border-[#f0b90b]/35 hover:bg-[#111821]/80">
+              <p className="text-[11px] text-[#8b9bab]">{item.label}</p>
+              <p className={`mt-1 text-sm font-semibold ${item.tone}`}>{item.value}</p>
+            </a>
+          ))}
+        </div>
       </div>
     </section>
+  )
+}
+
+function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => void }) {
+  return (
+    <WorkstationPanel title="標的入口" kicker="search, quick tickers, personal watch">
+      <div className="space-y-3 p-3">
+        <div>
+          <h2 className="font-['Space_Grotesk'] text-lg font-semibold text-[#f2ead8]">想看哪檔？</h2>
+          <p className="mt-1 text-xs leading-5 text-[#8b9bab]">搜尋標的進研究筆記；每日推薦與自選股則留在首頁工作台。</p>
+        </div>
+        <StockSearchCombobox onSelect={onSelect} />
+        <div>
+          <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8ba0]">quick launch</p>
+          <div className="grid grid-cols-5 gap-1.5">
+            {QUICK_STOCKS.map(s => (
+              <button
+                key={s.symbol}
+                onClick={() => onSelect({ id: 0, ...s })}
+                className="rounded-lg border border-[#2b3a49] bg-[#070a10] px-2 py-2 text-center transition-all hover:border-[#f0b90b]/45 hover:bg-[#171714]"
+              >
+                <p className="text-xs font-bold text-[#f2ead8]">{s.symbol}</p>
+                <p className="truncate text-[10px] text-[#8b9bab]">{s.name}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </WorkstationPanel>
   )
 }
 
@@ -475,85 +502,63 @@ function MorningBriefingCard() {
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="w-full px-4 py-4 space-y-4">
+      <div className="w-full space-y-4 px-4 py-4">
 
         <MorningBriefingCard />
 
-        {/* 搜尋區塊 */}
-        <div className="text-center">
-          <h2 className="text-lg font-bold mb-1">晨間概覽</h2>
-          <p className="text-muted-foreground text-xs max-w-sm mx-auto mb-3">
-            搜尋台股或美股，從一個標的開始今天的研究節奏。
-          </p>
-          <div className="max-w-sm mx-auto mb-3">
-            <StockSearchCombobox onSelect={onSelect} />
-          </div>
-          <div className="max-w-lg mx-auto">
-            <p className="text-xs text-muted-foreground mb-2">熱門股票</p>
-            <div className="grid grid-cols-5 gap-1.5">
-              {QUICK_STOCKS.map(s => (
-                <button
-                  key={s.symbol}
-                  onClick={() => onSelect({ id: 0, ...s })}
-                  className="rounded-lg border border-border bg-card hover:bg-white/[0.07] hover:border-white/[0.15] transition-all px-2 py-1.5 text-center"
-                >
-                  <p className="text-xs font-bold">{s.symbol}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{s.name}</p>
-                </button>
-              ))}
+        <WorkstationTickerStrip
+          items={[
+            { label: 'Dashboard audience', value: '朋友也看得懂', tone: 'info', detail: '保留市場判讀與候選，不塞 admin 細節。' },
+            { label: 'Trading lane', value: '上市櫃交易流', tone: 'ok', detail: '才會進 morning setup / debate。' },
+            { label: 'Research lane', value: '興櫃研究流', tone: 'warn', detail: '只觀察，不自動交易。' },
+            { label: 'Quality first', value: '資料先決', tone: 'neutral', detail: 'DQ / OBS 失敗時推薦視為降級。' },
+          ]}
+        />
+
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[390px_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <StockSearchWorkbench onSelect={onSelect} />
+            <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
+              <div className="space-y-3 p-3">
+                <MarketRiskPanel />
+                <MarketPulsePanel />
+              </div>
+            </WorkstationPanel>
+            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-1">
+              <WorkstationCatCard
+                src="/stockvision-cats/01_bull_market_train.png"
+                title="牛市列車"
+                caption="行情很熱也先看號誌，別看到列車就直接跳上去。"
+                tone="ok"
+              />
+              <WorkstationCatCard
+                src="/stockvision-cats/04_small_green_observe_first.png"
+                title="小綠先觀察"
+                caption="AI 候選清單有訊號，但還是要等資料品質、T2 與市場結構一起點頭。"
+                tone="info"
+              />
             </div>
+            <WorkstationPanel title="自選雷達" kicker="watchlist">
+              <div className="p-3">
+                <WatchlistCards onSelect={onSelect} />
+              </div>
+            </WorkstationPanel>
           </div>
-        </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <WorkstationCatCard
-            src="/stockvision-cats/01_bull_market_train.png"
-            title="牛市列車"
-            caption="行情很熱也先看號誌，別看到列車就直接跳上去。"
-            tone="ok"
-          />
-          <WorkstationCatCard
-            src="/stockvision-cats/04_small_green_observe_first.png"
-            title="小綠先觀察"
-            caption="AI 候選清單有訊號，但還是要等資料品質、T2 與市場結構一起點頭。"
-            tone="info"
-          />
-        </div>
-
-        {/* 大盤行情 */}
-        <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
-          <div className="space-y-3 p-3">
-            <MarketRiskPanel />
-            <div className="grid gap-3 xl:grid-cols-2">
+          <div className="space-y-3">
+            <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
+              <div className="p-3">
+                <DailyRecommendationPanelV2 />
+              </div>
+            </WorkstationPanel>
+            <div className="grid gap-3 xl:grid-cols-[1.2fr_0.8fr]">
               <ThemeFlowPanel />
-              <AttentionStocksCard />
+              <div className="space-y-3">
+                <AttentionStocksCard />
+                <ExDividendCard />
+              </div>
             </div>
           </div>
-        </WorkstationPanel>
-
-        {/* ═══ 多欄佈局：一般 3 欄 / admin 4 欄 ═══ */}
-
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.72fr_1.58fr]">
-
-          {/* 左欄：自選股 + 大盤風險 + Bot */}
-          <WorkstationPanel title="自選雷達" kicker="觀察清單與可交易狀態">
-          <div className="space-y-4 p-3">
-            <WatchlistCards onSelect={onSelect} />
-
-          </div>
-          </WorkstationPanel>
-
-          {/* 中左欄：每日選股推薦 */}
-          <WorkstationPanel title="AI 候選清單" kicker="推薦與待執行訊號">
-          <div className="space-y-4 p-3">
-            <DailyRecommendationPanelV2 />
-            <ExDividendCard />
-          </div>
-          </WorkstationPanel>
-
-          {/* 中右欄：主題輪動 */}
-
-
         </div>
       </div>
     </div>

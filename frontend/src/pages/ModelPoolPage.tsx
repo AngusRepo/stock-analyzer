@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, type ModelPoolLineageModel } from '@/lib/api'
+import { modelPoolApi, strategyLabApi, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 
 function fmt(value: unknown): string {
@@ -62,9 +62,23 @@ function sequenceReportNumber(metadata: Record<string, unknown> | null | undefin
   return Number.isFinite(n) ? n : null
 }
 
+function sequenceAwareMetric(metadata: Record<string, unknown> | null | undefined, topKey: string, reportKey: string): number | null {
+  const top = metadataNumber(metadata, topKey)
+  const report = sequenceReportNumber(metadata, reportKey)
+  if ((top == null || top === 0) && report != null && report > 0) return report
+  return top ?? report
+}
+
 function compactMetric(value: number | null, digits = 0): string {
   if (value == null) return 'N/A'
   return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
+}
+
+function deltaMetric(active: number | null, challenger: number | null, digits = 4): string {
+  if (active == null || challenger == null) return 'delta N/A'
+  const delta = challenger - active
+  const sign = delta > 0 ? '+' : ''
+  return `${sign}${delta.toFixed(digits)}`
 }
 
 function artifactAnomalies(metadata: Record<string, unknown> | null | undefined): string[] {
@@ -120,7 +134,17 @@ function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineage
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={metadataTone}>{model.metadata_exists === false ? 'missing' : 'present'}</WorkstationPill></td>
       <td className="border border-[#263247] px-2 py-2 text-slate-300">{diagnosis?.coverage == null ? 'N/A' : `${Math.round(diagnosis.coverage * 100)}%`}</td>
       <td className="border border-[#263247] px-2 py-2 text-slate-300">
-        {challenger ? `${challenger.version ?? 'challenger'} / IC ${fmt(challenger.ic_4w_avg ?? challenger.rolling_ic)}` : '-'}
+        {challenger ? (
+          <div className="space-y-1">
+            <div className="font-mono text-[10px] text-[#70809b]">{challenger.version ?? 'challenger'}</div>
+            <WorkstationPill tone={Number(challenger.ic_4w_avg ?? challenger.rolling_ic ?? 0) > 0 ? 'ok' : 'warn'}>
+              lifecycle IC {fmt(challenger.ic_4w_avg ?? challenger.rolling_ic)}
+            </WorkstationPill>
+            <div className="text-[10px] leading-4 text-[#8a92a6]">
+              samples {challenger.last_ic_sample_count ?? 0}; not artifact OOS IC
+            </div>
+          </div>
+        ) : '-'}
       </td>
       <td className="border border-[#263247] px-2 py-2 text-[#8a92a6]">
         <div>{shortRootCause(model)}</div>
@@ -130,7 +154,23 @@ function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineage
   )
 }
 
-function UpgradeTrackPanel() {
+function candidateExperiments(candidateId: string, experiments: ResearchExperiment[]) {
+  const needle = candidateId.toLowerCase()
+  return experiments
+    .filter((experiment) => {
+      const haystack = [
+        experiment.id,
+        experiment.hypothesis,
+        ...(experiment.source_refs ?? []),
+        ...(experiment.metrics ?? []),
+        ...(experiment.follow_up ?? []),
+      ].join(' ').toLowerCase()
+      return haystack.includes(needle)
+    })
+    .slice(0, 3)
+}
+
+function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperiment[] }) {
   const byStage = MODEL_UPGRADE_CANDIDATES.reduce<Record<string, typeof MODEL_UPGRADE_CANDIDATES>>((acc, candidate) => {
     acc[candidate.stage] = [...(acc[candidate.stage] ?? []), candidate]
     return acc
@@ -165,6 +205,24 @@ function UpgradeTrackPanel() {
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
                   <p className="mt-1 text-[11px] leading-5 text-slate-500">{candidate.roleEn}</p>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {candidate.requiredEvidence.map((item) => (
+                      <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
+                    ))}
+                  </div>
+                  {candidateExperiments(candidate.id, experiments).length > 0 ? (
+                    <div className="mt-2 border border-emerald-400/20 bg-emerald-400/[0.04] p-2 text-[11px] leading-5 text-emerald-100">
+                      {candidateExperiments(candidate.id, experiments).map((experiment) => (
+                        <p key={experiment.id}>
+                          registry: {experiment.id} · {experiment.status} · metrics {experiment.metrics?.join(', ') || 'N/A'}
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 border border-rose-400/25 bg-rose-400/[0.04] p-2 text-[11px] leading-5 text-rose-100">
+                      registry evidence missing：目前沒有可讀的 experiment registry 結果；OOS IC、CPCV/PBO、成本敏感度與資料切片報告都不能假裝已存在。
+                    </div>
+                  )}
                   {candidate.stage === 'benchmark_only' && (
                     <p className="mt-2 text-[11px] leading-5 text-amber-200">
                       benchmark report required：必須先進 experiment registry，產出 OOS IC、CPCV/PBO、成本敏感度與資料切片報告，通過後才可升級成 shadow challenger。
@@ -241,23 +299,33 @@ function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineage
       const challenger = model.challenger ?? {}
       const activeMeta = model.metadata ?? null
       const challengerMeta = challenger.metadata ?? null
+      const activeDirAccuracy = metadataNumber(activeMeta, 'val_dir_accuracy')
+      const challengerDirAccuracy = metadataNumber(challengerMeta, 'val_dir_accuracy')
+      const challengerOosIc = metadataNumber(challengerMeta, 'oos_ic')
+      const holdoutNotes = [
+        challengerOosIc != null && challengerOosIc <= 0 ? 'artifact OOS IC <= 0：訓練時 holdout evidence 不可 promote' : null,
+        activeDirAccuracy != null && challengerDirAccuracy != null && challengerDirAccuracy < activeDirAccuracy
+          ? `dir accuracy 下降 ${deltaMetric(activeDirAccuracy, challengerDirAccuracy, 3)}`
+          : null,
+      ].filter(Boolean) as string[]
       return {
         name,
         activeVersion: model.version ?? 'active',
         challengerVersion: challenger.version ?? 'challenger',
         shadowSince: challenger.shadow_since ?? 'N/A',
-        activeInputSeries: metadataNumber(activeMeta, 'n_input_series') ?? sequenceReportNumber(activeMeta, 'input_series'),
-        challengerInputSeries: metadataNumber(challengerMeta, 'n_input_series') ?? sequenceReportNumber(challengerMeta, 'input_series'),
+        activeInputSeries: sequenceAwareMetric(activeMeta, 'n_input_series', 'input_series'),
+        challengerInputSeries: sequenceAwareMetric(challengerMeta, 'n_input_series', 'input_series'),
         challengerSequenceReportInputSeries: sequenceReportNumber(challengerMeta, 'input_series'),
-        activeTrainWindows: metadataNumber(activeMeta, 'n_train_windows'),
-        challengerTrainWindows: metadataNumber(challengerMeta, 'n_train_windows') ?? sequenceReportNumber(challengerMeta, 'train_windows'),
-        activeValWindows: metadataNumber(activeMeta, 'n_val_windows'),
-        challengerValWindows: metadataNumber(challengerMeta, 'n_val_windows') ?? sequenceReportNumber(challengerMeta, 'oos_windows'),
-        activeDirAccuracy: metadataNumber(activeMeta, 'val_dir_accuracy'),
-        challengerDirAccuracy: metadataNumber(challengerMeta, 'val_dir_accuracy'),
-        challengerOosIc: metadataNumber(challengerMeta, 'oos_ic'),
+        activeTrainWindows: sequenceAwareMetric(activeMeta, 'n_train_windows', 'train_windows'),
+        challengerTrainWindows: sequenceAwareMetric(challengerMeta, 'n_train_windows', 'train_windows'),
+        activeValWindows: sequenceAwareMetric(activeMeta, 'n_val_windows', 'oos_windows'),
+        challengerValWindows: sequenceAwareMetric(challengerMeta, 'n_val_windows', 'oos_windows'),
+        activeDirAccuracy,
+        challengerDirAccuracy,
+        challengerOosIc,
         challengerDailyIcCount: metadataNumber(challengerMeta, 'daily_ic_count'),
         anomalies: [...artifactAnomalies(activeMeta), ...artifactAnomalies(challengerMeta)],
+        holdoutNotes,
       }
     })
 
@@ -280,7 +348,7 @@ function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineage
                     </p>
                   </div>
                   <WorkstationPill tone={row.anomalies.length ? 'warn' : 'info'}>
-                    {row.anomalies.length ? 'metadata anomaly' : 'metadata comparable'}
+                    {row.anomalies.length ? 'metadata anomaly' : row.holdoutNotes.length ? 'holdout caution' : 'metadata comparable'}
                   </WorkstationPill>
                 </div>
 
@@ -313,6 +381,11 @@ function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineage
                     {row.anomalies.map((anomaly) => <p key={anomaly}>{anomaly}</p>)}
                   </div>
                 )}
+                {row.holdoutNotes.length > 0 && (
+                  <div className="mt-3 space-y-1 border border-rose-400/25 bg-rose-400/[0.05] p-2 text-[11px] text-rose-100">
+                    {row.holdoutNotes.map((note) => <p key={note}>{note}</p>)}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -340,7 +413,7 @@ function FamilyBalancePanel({ counts, total }: { counts: Record<string, number>;
         <div className="border border-[#263247] bg-[#05070c] p-3">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">How to read / 怎麼看</p>
           <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-            Alpha models 是會投票的 8 個 production slots；Kalman/Markov 是 state-space overlay，不算 alpha vote；MLP/GNN 是 shadow challenger；TabM、iTransformer、TimesFM、Moirai 是 benchmark research。
+            Alpha models 是會投票的 8 個 production slots；Kalman/Markov 是 state-space overlay，不算 alpha vote；MLP/GNN 是 shadow challenger；TabM、iTransformer、TimesFM 是 benchmark research。
           </p>
         </div>
       </div>
@@ -353,6 +426,12 @@ export default function ModelPoolPage() {
     queryKey: ['model-pool', 'lineage'],
     queryFn: modelPoolApi.lineage,
     refetchInterval: 60_000,
+  })
+  const { data: researchData } = useQuery({
+    queryKey: ['research', 'experiments', 'model-upgrade'],
+    queryFn: strategyLabApi.experiments,
+    retry: false,
+    staleTime: 60_000,
   })
 
   const models = data?.models ?? {}
@@ -386,7 +465,7 @@ export default function ModelPoolPage() {
   const traceSteps = useMemo(() => [
     { label: 'Alpha Vote', detail: '8 個 production slots 才會進 user-facing ML 投票。', tone: 'ok' as WorkstationTone },
     { label: 'Shadow', detail: 'MLP / GNN 只產生 evidence；promotion 前不投票。', tone: plannedShadowCount || shadowLineageCount ? 'info' as WorkstationTone : 'warn' as WorkstationTone },
-    { label: 'Benchmark', detail: 'TabM / iTransformer / TimesFM / Moirai 只做研究比較，避免成本暴增。', tone: 'warn' as WorkstationTone },
+    { label: 'Benchmark', detail: 'TabM / iTransformer / TimesFM 只做研究比較，避免成本暴增。', tone: 'warn' as WorkstationTone },
     { label: 'Overlay', detail: 'Kalman / Markov 提供 regime、noise、risk context，不算 alpha model。', tone: 'neutral' as WorkstationTone },
   ], [plannedShadowCount, shadowLineageCount])
 
@@ -424,14 +503,14 @@ export default function ModelPoolPage() {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <SignalInsightCard title="Alpha Models / 投票模型" value={String(modelList.length)} detail={`active ${activeModels}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone="info" />
               <SignalInsightCard title="影子挑戰者" value={`${shadowLineageCount}+${plannedShadowCount}`} detail="左邊是 lineage 已掛載；右邊是 P7 upgrade track 計畫中的 MLP/GNN。" tone={shadowLineageCount || plannedShadowCount ? 'ok' : 'warn'} />
-              <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM、Moirai 不投票，只做 benchmark evidence。" tone="warn" />
+              <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM 不投票，只做 benchmark evidence。" tone="warn" />
               <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
             <LiveShadowEvidencePanel models={modelList} />
             <ArtifactDiffPanel models={modelList} />
-            <UpgradeTrackPanel />
+            <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />
 
             <WorkstationPanel title="模型健康矩陣" kicker="IC, samples, coverage, metadata, challenger">
               <div className="overflow-x-auto">

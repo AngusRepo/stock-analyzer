@@ -43,6 +43,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "dlinear_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "chronos_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "feature_selection_per_window": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
@@ -384,6 +385,26 @@ async def train_patchtst_universal(series_close: list[list[float]], **hyperparam
     """One-shot universal PatchTST training."""
     payload = {"series_close": series_close, **hyperparams}
     return await _modal_train_patchtst_universal(payload)
+
+
+async def _modal_research_model_benchmark(payload: dict) -> dict:
+    return await _modal_remote_call("research_model_benchmark", payload, source="modal_research_benchmark")
+
+
+async def research_model_benchmark(payload: dict) -> dict:
+    """Run a research-only model-family benchmark on Modal.
+
+    This is intentionally not part of production retrain/promote. Callers must
+    treat the output as review evidence only.
+    """
+    if _USE_MODAL:
+        return await _modal_research_model_benchmark(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/research/model-benchmark/run"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7200.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}", "text": resp.text[:500]}
+    raise RuntimeError("research_model_benchmark requires Modal or ML_SERVICE_URL")
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict helpers

@@ -27,6 +27,14 @@ assert(
   'intraday rescore must fetch broker OHLC quotes for executable sell decisions',
 )
 assert(
+  !cronOrchestrator.includes('executeRescoreSell('),
+  'intraday rescore must not be a second exit owner; it may only emit WARN/EXIT_SIGNAL evidence',
+)
+assert(
+  cronOrchestrator.includes('EXIT_SIGNAL') && cronOrchestrator.includes("execution_policy: 'observe_only'"),
+  'intraday rescore EXIT decisions must be persisted as observe-only evidence',
+)
+assert(
   workerTasks.includes('resolveMarketSellFill'),
   'rescore sell execution must use the shared bid-aware fill policy',
 )

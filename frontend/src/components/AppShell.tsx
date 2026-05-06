@@ -121,14 +121,14 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2.5 border-b border-[#2b3a49] px-4 py-3.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#7aa2c7]/45 bg-[linear-gradient(135deg,#17202b,#0f2835)] font-mono text-xs font-black text-[#d8e7f5] shadow-[0_0_22px_rgba(122,162,199,0.14)]">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#f0b90b]/45 bg-[linear-gradient(135deg,#221b08,#0f2835)] font-mono text-xs font-black text-[#ffd87f] shadow-[0_0_22px_rgba(240,185,11,0.14)]">
           SV
         </div>
         <div>
           <span className="block font-mono text-[12px] font-bold uppercase tracking-[0.18em] text-[#e6edf3]">StockVision</span>
           <span className="block text-[10px] text-[#8b9bab]">我的量化投資伴侶</span>
         </div>
-        <span className="ml-auto rounded-full border border-[#2b3a49] bg-[#111821] px-1.5 py-0.5 font-mono text-[9px] text-[#7aa2c7]">v12</span>
+        <span className="ml-auto rounded-full border border-[#3a3125] bg-[#171714] px-1.5 py-0.5 font-mono text-[9px] text-[#ffd87f]">v12</span>
       </div>
 
       <nav className="flex-1 space-y-4 overflow-y-auto px-2.5 py-3">
@@ -153,13 +153,13 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
                       onClick={() => onNavigate(item.href)}
                       className={`group grid w-full grid-cols-[24px_1fr_14px] items-center gap-2 border px-3 py-2.5 text-left font-mono text-[12px] transition-all ${
                         active
-                          ? 'rounded-xl border-[#7aa2c7]/50 bg-[linear-gradient(90deg,#122334,#101821)] text-[#e6edf3] shadow-[inset_3px_0_0_#7aa2c7]'
+                          ? 'rounded-xl border-[#f0b90b]/50 bg-[linear-gradient(90deg,#241b08,#101821)] text-[#f2ead8] shadow-[inset_3px_0_0_#f0b90b]'
                           : 'rounded-xl border-transparent text-[#8b9bab] hover:border-[#2b3a49] hover:bg-[#111821] hover:text-[#e6edf3]'
                       }`}
                     >
-                      <Icon className={`h-4 w-4 ${active ? 'text-[#9cc7ef] opacity-100' : 'opacity-60'}`} />
+                      <Icon className={`h-4 w-4 ${active ? 'text-[#ffd87f] opacity-100' : 'opacity-60'}`} />
                       <span>{item.label}</span>
-                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-[#9cc7ef]' : 'text-[#566574] group-hover:text-[#e6edf3]'}`} />
+                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-[#ffd87f]' : 'text-[#566574] group-hover:text-[#e6edf3]'}`} />
                     </button>
                   )
                 })}
@@ -170,7 +170,7 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
       </nav>
 
       <div className="border-y border-[#2b3a49] bg-[#0f151d] p-3 text-[11px] text-[#8b9bab]">
-        <div className="mb-2 flex items-center gap-2 text-[#7aa2c7]">
+        <div className="mb-2 flex items-center gap-2 text-[#ffd87f]">
           <Command className="h-3.5 w-3.5" />
           今天的路徑
         </div>
@@ -249,7 +249,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </Sheet>
 
       <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
-        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#111821_58%,#0d1722)] px-3">
+        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#171714_42%,#0d1722)] px-3">
           <Button size="icon" variant="ghost" className="h-8 w-8 lg:hidden" onClick={() => setSidebarOpen(true)}>
             <Menu className="h-4 w-4" />
           </Button>
@@ -259,8 +259,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="ml-auto flex min-w-0 items-center gap-2.5">
             <FocusBar currentPath={location} unreadCount={unreadCount} />
             <div className="hidden min-w-[250px] items-center gap-2 rounded-full border border-[#2b3a49] bg-[#0b0f14] px-3 py-1.5 font-mono text-[11px] text-[#8b9bab] md:flex">
-              <Command className="h-3.5 w-3.5 text-[#7aa2c7]" />
-              <span className="text-[#7aa2c7]">/</span>
+              <Command className="h-3.5 w-3.5 text-[#ffd87f]" />
+              <span className="text-[#ffd87f]">/</span>
               <span className="truncate">標的 / 任務 / 監控狀態</span>
               <kbd className="ml-auto rounded border border-[#2b3a49] bg-[#111821] px-1 font-mono text-[9px] text-[#9badbf]">GO</kbd>
             </div>

@@ -179,8 +179,13 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
         captured["seed_query"] = (sql, params)
         return [{"stock_id": 2}]
 
+    def fake_execute(sql, params, timeout=None):
+        captured["delete_stale"] = (sql, params, timeout)
+        return {"meta": {"changes": 0}}
+
     monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
     monkeypatch.setattr("services.recommendation_service.d1_client.query", fake_query)
+    monkeypatch.setattr("services.recommendation_service.d1_client.execute", fake_execute)
 
     update_recommendations_in_d1(
         [

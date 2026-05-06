@@ -15,11 +15,11 @@ function assert(condition: unknown, message: string): void {
 
 {
   const benchmark = listModelUpgradeCandidates('benchmark_only')
-  const ids = benchmark.map((candidate) => candidate.id)
+  const ids = benchmark.map((candidate) => String(candidate.id))
   assert(ids.includes('TabM'), 'TabM should be tracked as benchmark-only')
   assert(ids.includes('iTransformer'), 'iTransformer should be tracked as benchmark-only')
   assert(ids.includes('TimesFM'), 'TimesFM should be tracked as benchmark-only')
-  assert(ids.includes('Moirai'), 'Moirai should be tracked as benchmark-only')
+  assert(!ids.includes('Moirai'), 'Moirai should be removed because HF weights are non-commercial')
   assert(benchmark.every((candidate) => !candidate.can_predict), 'benchmark candidates must not run production prediction')
   assert(benchmark.every((candidate) => !candidate.can_vote), 'benchmark candidates must not vote')
   assert(benchmark.every((candidate) => candidate.vote_weight === 0), 'benchmark candidates must have zero vote weight')

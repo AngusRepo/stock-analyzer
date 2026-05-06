@@ -6,6 +6,7 @@ const SAFE_RESEARCH_ENDPOINTS = new Set([
   '/backtest/replay',
   '/walk_forward/dry-run',
   '/verify/dry-run',
+  '/research/model-benchmark/dry-run',
 ])
 
 export interface ResearchEvaluationRunResult {
@@ -54,10 +55,32 @@ function buildResearchEvaluationReviewPacket(report: Omit<ResearchEvaluationRunR
   const ok = report.results.filter((result) => result.status === 'ok').length
   const skipped = report.results.filter((result) => result.status === 'skipped').length
   const errors = report.results.filter((result) => result.status === 'error').length
+  const benchmarkLines = report.results
+    .filter((result) => result.kind === 'model_benchmark')
+    .map((result) => {
+      const response = result.response && typeof result.response === 'object'
+        ? result.response as Record<string, unknown>
+        : {}
+      const candidate = String(response.candidate_id ?? response.candidate ?? result.step_id.split(':').pop() ?? 'unknown')
+      const status = String(response.status ?? result.status)
+      const evidence = response.benchmark_report && typeof response.benchmark_report === 'object'
+        ? response.benchmark_report as Record<string, unknown>
+        : response
+      const oosIc = evidence.oos_ic_mean ?? evidence.oos_ic ?? null
+      const pbo = evidence.pbo ?? evidence.cpcv_pbo ?? null
+      const cost = evidence.cost_sensitivity && typeof evidence.cost_sensitivity === 'object'
+        ? (evidence.cost_sensitivity as Record<string, unknown>).status ?? 'available'
+        : 'missing'
+      const blockers = Array.isArray(response.blockers)
+        ? ` blockers=${response.blockers.join(',')}`
+        : ''
+      return `benchmark ${candidate}: status=${status}, oos_ic=${oosIc ?? 'missing'}, pbo=${pbo ?? 'missing'}, cost=${cost}${blockers}`
+    })
   const lines = [
     `Research evaluation review: ${report.experiment_id}`,
     `verdict=${report.verdict}`,
     `steps=${report.results.length}, ok=${ok}, skipped=${skipped}, error=${errors}`,
+    ...benchmarkLines,
     `next=${report.verdict === 'ready_for_review' ? 'manual review packet can be inspected; no production action is allowed by this runner' : 'fix skipped/error steps before any strategy review'}`,
   ]
   return lines.join('\n')

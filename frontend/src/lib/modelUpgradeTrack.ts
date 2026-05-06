@@ -12,6 +12,7 @@ export type ModelUpgradeCandidate = {
   titleZh: string
   roleZh: string
   roleEn: string
+  requiredEvidence: string[]
   canVote: boolean
 }
 
@@ -23,6 +24,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     titleZh: '殘差 MLP',
     roleZh: '補 tree/FT 沒抓到的表格殘差信號，先 shadow predict，不直接投票。',
     roleEn: 'Shadow tabular residual learner; evidence only before promotion.',
+    requiredEvidence: ['shadow rows', 'OOS IC', 'CPCV/PBO', 'cost profile'],
     canVote: false,
   },
   {
@@ -32,6 +34,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     titleZh: '跨股票圖模型',
     roleZh: '用產業、題材、資金流關係驗證 cross-stock graph alpha，先不進 production vote。',
     roleEn: 'Graph relation challenger; requires graph spec and leakage controls.',
+    requiredEvidence: ['graph spec', 'shadow rows', 'OOS IC', 'CPCV/PBO', 'leakage controls'],
     canVote: false,
   },
   {
@@ -41,6 +44,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     titleZh: '表格深度學習基準',
     roleZh: '研究 TabM 是否比現有 tabular family 有更穩定 OOS evidence。',
     roleEn: 'Benchmark-only tabular deep learning candidate.',
+    requiredEvidence: ['experiment registry', 'OOS IC', 'CPCV/PBO', 'cost sensitivity', 'data slice report'],
     canVote: false,
   },
   {
@@ -50,6 +54,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     titleZh: '反轉式時間序列 Transformer',
     roleZh: '研究 sequence family 是否能改善 DLinear/PatchTST 的時序表現。',
     roleEn: 'Benchmark-only inverted time-series transformer candidate.',
+    requiredEvidence: ['experiment registry', 'OOS IC', 'CPCV/PBO', 'sequence slice report', 'cost sensitivity'],
     canVote: false,
   },
   {
@@ -59,15 +64,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     titleZh: '時間序列 foundation benchmark',
     roleZh: '拿來和 Chronos family 做 foundation model 對照，不直接替換 production。',
     roleEn: 'Foundation time-series benchmark against Chronos.',
-    canVote: false,
-  },
-  {
-    id: 'Moirai',
-    stage: 'benchmark_only',
-    family: 'foundation_time_series',
-    titleZh: 'Moirai foundation benchmark',
-    roleZh: '評估另一組 foundation forecasting family 的穩定性與成本。',
-    roleEn: 'Foundation forecasting benchmark candidate.',
+    requiredEvidence: ['experiment registry', 'forecast OOS IC', 'walk-forward', 'latency/cost report'],
     canVote: false,
   },
 ]

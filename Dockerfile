@@ -14,7 +14,7 @@
 #   MODAL_TOKEN_ID/SECRET env vars.
 #
 # Image still Python 3.11 slim with only ml-controller/requirements.txt (FastAPI
-# + modal client). ml-service itself never runs in this image — it lives on
+# + modal client). ml-service itself never runs in this image - it lives on
 # Modal's cloud; we only need its source so modal CLI can parse + upload it.
 #
 # Size impact: ~few MB (ml-service/app/*.py source only, no ml-service deps).
@@ -23,21 +23,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# ── System deps for subprocess modal CLI + git (audit, future needs) ─────────
+# System deps for subprocess modal CLI + git (audit, future needs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Python deps (ml-controller only — ml-service deps live on Modal cloud) ──
+# Python deps (ml-controller only; ml-service deps live on Modal cloud).
 COPY ml-controller/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Application source ──────────────────────────────────────────────────────
-# ml-controller = FastAPI app + workers.
+# Application source.
 COPY ml-controller/ /app/
-
-# ml-service = Modal app source (modal_app.py + app/*.py). Not pip-installed
-# locally; only read by `modal deploy`.
 COPY ml-service/ /app/ml-service/
 
 ENV PORT=8080

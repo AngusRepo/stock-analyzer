@@ -304,6 +304,8 @@ export type ObservabilityIncident = {
   title: string
   root_cause: string
   impact: string
+  first_seen?: string
+  last_seen?: string
   affected_symbols: string[]
   run_ids: string[]
   next_action: string

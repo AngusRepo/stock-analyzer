@@ -61,6 +61,41 @@ function computeDataQualityScore(report?: DataQualityReport) {
   return Math.round((score / checks.length) * 100)
 }
 
+function formatObsTime(value?: string | null) {
+  if (!value) return '-'
+  const ts = new Date(value).getTime()
+  if (!Number.isFinite(ts)) return String(value)
+  return new Date(ts).toLocaleString('zh-TW', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatDuration(start?: string | null, end?: string | null) {
+  const from = start ? new Date(start).getTime() : NaN
+  const to = end ? new Date(end).getTime() : Date.now()
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return '-'
+  const minutes = Math.round((to - from) / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
+function incidentTiming(incident: ObservabilityIncident, events: ObservabilityEvent[] = []) {
+  const sourceEvents = events.filter((event) => incident.source_event_ids?.includes(event.id))
+  const eventTimes = sourceEvents.map((event) => event.ts).filter(Boolean).sort()
+  const firstSeen = incident.first_seen ?? eventTimes[0] ?? ''
+  const lastSeen = incident.last_seen ?? eventTimes[eventTimes.length - 1] ?? firstSeen
+  return {
+    firstSeen,
+    lastSeen,
+    duration: formatDuration(firstSeen, lastSeen),
+  }
+}
+
 function MetricCell({
   label,
   value,
@@ -149,10 +184,12 @@ function HealthMap({
 function IncidentInbox({
   incidents,
   selectedId,
+  events,
   onOpen,
 }: {
   incidents: ObservabilityIncident[]
   selectedId?: string
+  events: ObservabilityEvent[]
   onOpen: (id: string) => void
 }) {
   if (!incidents.length) {
@@ -166,25 +203,33 @@ function IncidentInbox({
 
   return (
     <div className="max-h-[420px] overflow-y-auto">
-      {incidents.map((incident) => (
-        <button
-          key={incident.id}
-          type="button"
-          onClick={() => onOpen(incident.id)}
-          className={`w-full border-b border-[#263247] p-3 text-left transition-colors hover:bg-[#152033] ${
-            selectedId === incident.id ? 'bg-amber-300/10' : 'bg-[#05070c]'
-          }`}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{incident.domain} / {incident.owner}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-100">{incident.title}</p>
+      {incidents.map((incident) => {
+        const timing = incidentTiming(incident, events)
+        return (
+          <button
+            key={incident.id}
+            type="button"
+            onClick={() => onOpen(incident.id)}
+            aria-pressed={selectedId === incident.id}
+            className={`w-full border-b border-[#263247] p-3 text-left transition-colors hover:bg-[#152033] ${
+              selectedId === incident.id ? 'bg-amber-300/10' : 'bg-[#05070c]'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{incident.domain} / {incident.owner}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-100">{incident.title}</p>
+                <p className="mt-1 font-mono text-[10px] text-slate-500">last {formatObsTime(timing.lastSeen)} · age {timing.duration}</p>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <WorkstationPill tone={severityTone(incident.severity)}>{incident.status}</WorkstationPill>
+                <span className="font-mono text-[10px] text-amber-200">查看 / Open</span>
+              </div>
             </div>
-            <WorkstationPill tone={severityTone(incident.severity)}>{incident.status}</WorkstationPill>
-          </div>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.impact || incident.next_action}</p>
-        </button>
-      ))}
+            <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.impact || incident.next_action}</p>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -217,6 +262,8 @@ function SelectedIncidentDetail({
     )
   }
 
+  const timing = incidentTiming(incident, fallbackEvents)
+
   return (
     <div className="space-y-4 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -226,6 +273,11 @@ function SelectedIncidentDetail({
           <p className="mt-1 text-xs text-slate-500">{incident.domain} / {incident.owner}</p>
         </div>
         <WorkstationPill tone={severityTone(incident.severity)}>{incident.severity}</WorkstationPill>
+      </div>
+      <div className="grid gap-2 md:grid-cols-3">
+        <MetricCell label="first seen / 首次發生" value={formatObsTime(timing.firstSeen)} tone="info" detail="事件第一次被 OBS 收進同一 root-cause group" />
+        <MetricCell label="last seen / 最後更新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="判斷是不是舊 log 的主要欄位" />
+        <MetricCell label="age / 持續時間" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="從 first seen 到 last seen" />
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="border border-[#263247] bg-[#05070c] p-3">
@@ -248,23 +300,30 @@ function SelectedIncidentDetail({
 
 function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
+  const sortedJobs = [...jobs].sort((a, b) => {
+    const statusRank = (status: string) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'skip' ? 2 : 3
+    return statusRank(a.lastStatus) - statusRank(b.lastStatus) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name)
+  })
   return (
-    <div className="grid gap-3">
-      {jobs.map((job) => (
-        <div key={job.id} className="border border-[#263247] bg-[#05070c] p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{job.group} / {job.schedule}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-100">{job.name}</p>
-            </div>
+    <div className="overflow-hidden border border-[#263247] bg-[#05070c]">
+      {sortedJobs.map((job) => (
+        <div key={job.id} className="grid gap-2 border-b border-[#263247] p-2 text-xs last:border-0 lg:grid-cols-[1.15fr_0.8fr_0.8fr_0.65fr]">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
+          </div>
+          <div className="font-mono text-slate-400">
+            <p>last {job.lastRun || '-'}</p>
+            <p className="text-slate-600">next {job.nextRun || '-'}</p>
+          </div>
+          <div className="font-mono text-slate-400">
+            <p>duration {job.lastDuration || '-'}</p>
+            <p className="text-slate-600">7d {job.rate7d || '-'}</p>
+          </div>
+          <div className="flex items-start justify-end">
             <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus}</WorkstationPill>
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-400">
-            <span>last {job.lastRun || '-'}</span>
-            <span>duration {job.lastDuration || '-'}</span>
-            <span>next {job.nextRun || '-'}</span>
-          </div>
-          {job.lastError && <p className="mt-2 text-xs leading-5 text-rose-300">{job.lastError}</p>}
+          {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
         </div>
       ))}
     </div>
@@ -273,20 +332,24 @@ function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
 
 function DataQualityTab({ checks }: { checks: DataQualityCheck[] }) {
   if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
+  const sortedChecks = [...checks].sort((a, b) => {
+    const rank = (status: string) => status === 'fail' ? 0 : status === 'warn' ? 1 : 2
+    return rank(a.status) - rank(b.status) || a.id.localeCompare(b.id)
+  })
   return (
-    <div className="grid gap-3">
-      {checks.map((check) => (
-        <div key={check.id} className={`border p-3 ${check.status === 'fail' ? 'border-rose-500/40 bg-rose-950/20' : check.status === 'warn' ? 'border-amber-500/40 bg-amber-950/20' : 'border-emerald-500/30 bg-emerald-950/10'}`}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{check.id}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-100">{check.label}</p>
-            </div>
+    <div className="overflow-hidden border border-[#263247] bg-[#05070c]">
+      {sortedChecks.map((check) => (
+        <div key={check.id} className={`grid gap-2 border-b p-2 text-xs last:border-0 lg:grid-cols-[0.85fr_1fr_auto] ${check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15' : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10' : 'border-[#263247]'}`}>
+          <div>
+            <p className="text-sm font-semibold text-slate-100">{check.label}</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{check.id}</p>
+          </div>
+          <p className="leading-5 text-slate-400">{check.summary}</p>
+          <div className="flex justify-start lg:justify-end">
             <WorkstationPill tone={statusTone(check.status)}>{check.status}</WorkstationPill>
           </div>
-          <p className="mt-2 text-xs leading-5 text-slate-400">{check.summary}</p>
           {check.metrics && (
-            <pre className="mt-2 max-h-28 overflow-auto rounded border border-[#263247] bg-[#03060a] p-2 text-[10px] leading-4 text-slate-500">
+            <pre className="max-h-20 overflow-auto rounded border border-[#263247] bg-[#03060a] p-2 text-[10px] leading-4 text-slate-500 lg:col-span-3">
               {JSON.stringify(check.metrics, null, 2)}
             </pre>
           )}
@@ -335,7 +398,6 @@ function ExecutionRealityStrip() {
 }
 
 export default function ObservabilityPage() {
-  const [activeTab, setActiveTab] = useState<'scheduler' | 'dataQuality'>('scheduler')
   const [selectedIncidentId, setSelectedIncidentId] = useState<string>()
   const detailRef = useRef<HTMLDivElement>(null)
 
@@ -354,10 +416,6 @@ export default function ObservabilityPage() {
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
-  const tabs: Array<{ id: 'scheduler' | 'dataQuality'; tone: WorkstationTone; label: string }> = [
-    { id: 'scheduler', tone: (scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok', label: 'Scheduler Runs / 排程執行' },
-    { id: 'dataQuality', tone: statusTone(dataQuality.data?.overall), label: 'Data Quality / 資料品質' },
-  ]
 
   function openIncident(id: string) {
     setSelectedIncidentId(id)
@@ -399,7 +457,7 @@ export default function ObservabilityPage() {
 
         <section className="grid gap-4 xl:grid-cols-[360px_1fr_320px]">
           <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="grouped problems, not duplicated dashboards">
-            <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} onOpen={openIncident} />
+            <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} events={events} onOpen={openIncident} />
           </WorkstationPanel>
 
           <WorkstationPanel title="Selected Incident Detail / 事件根因" kicker="impact, root cause, next action">
@@ -414,41 +472,40 @@ export default function ObservabilityPage() {
           </WorkstationPanel>
         </section>
 
-        <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="不跳回舊頁：在 OBS 內直接看排程與資料品質">
+        <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="scheduler + data quality + next action">
           <div className="border-b border-[#263247] p-3">
-            <div className="flex flex-wrap gap-2">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`cursor-pointer border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
-                    activeTab === tab.id ? 'border-[#f0b90b]/55 bg-[#f0b90b]/10 text-[#ffd87f]' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-[#f0b90b]/35 hover:text-[#ffd87f]'
-                  }`}
-                >
-                  {tab.label}
-                  <span className="ml-2"><WorkstationPill tone={tab.tone}>{tab.tone}</WorkstationPill></span>
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Grafana-style panel links / 保留上下文導頁</p>
+                <p className="mt-1 text-xs text-slate-400">下方直接顯示完整排程與資料品質；需要細節再點 specialist page，不做假 tab。</p>
+              </div>
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <a href="/scheduler" className="rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 font-mono text-sky-200 hover:border-sky-300/50">Open Scheduler</a>
+                <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 font-mono text-emerald-200 hover:border-emerald-300/50">Open Data Quality</a>
+                <a href={`/data-quality?focus=price_data${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">Price Data</a>
+              </div>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">
-              這裡不再只是導去 Scheduler / Data Quality 舊頁，而是把最常用的 root-cause 線索直接留在 OBS。
-            </p>
           </div>
-          <div className="grid gap-3 p-3 xl:grid-cols-[1fr_1fr_320px]">
+          <div className="grid gap-3 p-3 xl:grid-cols-[1fr_1fr_300px]">
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
-                <WorkstationPill tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'}>{scheduler.data?.stats?.failed24h ?? 0} failed</WorkstationPill>
+                <div className="flex gap-2">
+                  <WorkstationPill tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'}>{scheduler.data?.stats?.failed24h ?? 0} failed</WorkstationPill>
+                  <WorkstationPill tone="info">{jobs.length} jobs</WorkstationPill>
+                </div>
               </div>
-              <SchedulerRunsTab jobs={jobs.slice(0, 6)} />
+              <SchedulerRunsTab jobs={jobs} />
             </div>
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
-                <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>{dataQualityScore}% trust</WorkstationPill>
+                <div className="flex gap-2">
+                  <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>{dataQualityScore}% trust</WorkstationPill>
+                  <WorkstationPill tone="info">{dqChecks.length} checks</WorkstationPill>
+                </div>
               </div>
-              <DataQualityTab checks={dqChecks.slice(0, 6)} />
+              <DataQualityTab checks={dqChecks} />
             </div>
             <div className="space-y-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Next Action / 下一步</p>

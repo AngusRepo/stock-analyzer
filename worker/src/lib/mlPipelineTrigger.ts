@@ -112,7 +112,10 @@ export async function assertEveningPipelineReady(
   } | null
 
   if (queueLog && queueLog.status !== 'success') {
-    throw new Error(`indicator queue not ready for ${twDate}: ${queueLog.status} ${queueLog.summary ?? ''}`.trim())
+    console.warn(
+      `[ML V2] indicator queue log is ${queueLog.status} for ${twDate}, ` +
+      `but D1 market-data readiness passed; continuing. summary=${queueLog.summary ?? ''}`,
+    )
   }
 
   return ready

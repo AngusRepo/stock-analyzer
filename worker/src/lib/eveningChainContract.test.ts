@@ -44,3 +44,7 @@ assert(
   mlPipelineTrigger.includes('assertEveningPipelineReady'),
   'pipeline trigger must require evening-chain readiness before calling ml-controller',
 )
+assert(
+  mlPipelineTrigger.includes('D1 market-data readiness passed; continuing'),
+  'pipeline readiness must not let stale indicator-queue logs override complete D1 market data',
+)

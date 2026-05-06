@@ -32,54 +32,21 @@ const LEVEL_CONFIG = {
   black:  { label: '停手機制', color: 'text-zinc-300',  bg: 'bg-zinc-800/80',    border: 'border-zinc-500/50',    bar: 'bg-zinc-400' },
 }
 
-const VIX_LABEL: Record<string, string> = {
-  low: '偏低',
-  normal: '正常',
-  elevated: '升溫',
-  high: '高檔',
-  extreme: '極端',
-}
-
-function MetricTile({ label, value, detail, tone = 'text-[#d6e2ef]' }: {
-  label: string
-  value: string
-  detail?: string
-  tone?: string
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-xl font-bold tabular-nums ${tone}`}>{value}</div>
-      {detail && <div className="mt-1 text-xs text-muted-foreground">{detail}</div>}
-    </div>
-  )
-}
-
-function formatIndexValue(value: unknown) {
-  const n = Number(value)
-  return Number.isFinite(n) ? n.toLocaleString('zh-TW', { maximumFractionDigits: 2 }) : '--'
-}
-
 export default function MarketRiskPanel() {
   const [risk, setRisk] = useState<MarketRisk | null>(null)
   const [history, setHistory] = useState<HistoryRow[]>([])
-  const [indices, setIndices] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [riskData, histData, indexData] = await Promise.all([
+        const [riskData, histData] = await Promise.all([
           marketApi.risk(),
           marketApi.riskHistory(30),
-          marketApi.indices(),
         ])
         setRisk(riskData)
         setHistory(histData)
-        setIndices(Array.isArray(indexData)
-          ? indexData
-          : [indexData?.twii, indexData?.twoii, indexData?.nasdaq, indexData?.sp500].filter(Boolean))
       } catch (e: any) {
         setError(e.message ?? 'load_failed')
       } finally {
@@ -111,24 +78,6 @@ export default function MarketRiskPanel() {
   if (!risk) return null
 
   const cfg = LEVEL_CONFIG[risk.riskLevel] ?? LEVEL_CONFIG.green
-  const twii = indices.find((idx) => String(idx.symbol ?? idx.name ?? '').toUpperCase().includes('TWII')) ?? indices[0]
-  const otc = indices.find((idx) => {
-    const key = String(idx.symbol ?? idx.name ?? '').toUpperCase()
-    return key.includes('OTC') || key.includes('TWOII') || key.includes('櫃')
-  }) ?? indices[1]
-
-  const indexTile = (idx: any, fallbackLabel: string) => {
-    const change = Number(idx?.change ?? idx?.change_value ?? 0)
-    const changePct = Number(idx?.changePct ?? idx?.change_pct ?? 0)
-    const current = idx?.current ?? idx?.close ?? idx?.price
-    const up = change >= 0
-    return {
-      label: idx?.name ?? idx?.symbol ?? fallbackLabel,
-      value: formatIndexValue(current),
-      detail: `${up ? '+' : ''}${change.toFixed(2)} (${up ? '+' : ''}${changePct.toFixed(2)}%)`,
-      tone: up ? 'text-red-400' : 'text-emerald-400',
-    }
-  }
 
   return (
     <div className="space-y-3">
@@ -154,53 +103,6 @@ export default function MarketRiskPanel() {
         </div>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-3">
-        <MetricTile
-          label="VIX 恐慌指數"
-          value={risk.vix?.toFixed(1) ?? '--'}
-          detail={`${VIX_LABEL[risk.vixLevel] ?? risk.vixLevel}，一般正常值約 < 20`}
-          tone={
-            risk.vixLevel === 'extreme' ? 'text-red-400'
-              : risk.vixLevel === 'high' ? 'text-orange-400'
-                : risk.vixLevel === 'elevated' ? 'text-yellow-400'
-                  : 'text-emerald-400'
-          }
-        />
-        <MetricTile {...indexTile(twii, '加權指數')} />
-        <MetricTile {...indexTile(otc, '櫃買指數')} />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-3">
-        <MetricTile
-          label="台股 20 日波動率"
-          value={risk.twiiVol20 != null ? `${risk.twiiVol20}%` : '--'}
-          detail="年化波動率，正常參考約 < 18%"
-        />
-        <MetricTile
-          label="大盤乖離率（20MA）"
-          value={risk.twiiBias != null ? `${risk.twiiBias > 0 ? '+' : ''}${risk.twiiBias.toFixed(1)}%` : '--'}
-          detail={`MA20：${risk.twiiMa20?.toLocaleString('zh-TW') ?? '--'}`}
-          tone={
-            risk.twiiBias == null ? 'text-[#d6e2ef]'
-              : Math.abs(risk.twiiBias) >= 6 ? 'text-orange-400'
-                : Math.abs(risk.twiiBias) >= 3 ? 'text-yellow-400'
-                  : 'text-emerald-400'
-          }
-        />
-        <MetricTile
-          label="外資動向"
-          value={
-            risk.foreignConsecutiveSell < 0
-              ? `連賣 ${Math.abs(risk.foreignConsecutiveSell)} 日`
-              : risk.foreignConsecutiveSell > 0
-                ? `連買 ${risk.foreignConsecutiveSell} 日`
-                : '中性'
-          }
-          detail={risk.foreignNet5d != null ? `近 5 日：${risk.foreignNet5d > 0 ? '+' : ''}${risk.foreignNet5d.toFixed(0)} 億元` : '近 5 日：--'}
-          tone={risk.foreignConsecutiveSell <= -3 ? 'text-red-400' : risk.foreignConsecutiveSell <= -1 ? 'text-orange-400' : 'text-emerald-400'}
-        />
-      </div>
-
       {history.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -222,15 +124,6 @@ export default function MarketRiskPanel() {
             <span>今天</span>
           </div>
         </div>
-      )}
-
-      {risk.marginRatio != null && (
-        <MetricTile
-          label="融資使用率"
-          value={`${risk.marginRatio.toFixed(1)}%`}
-          detail="高於 80% 視為槓桿偏熱"
-          tone={risk.marginRatio >= 80 ? 'text-red-400' : risk.marginRatio >= 65 ? 'text-yellow-400' : 'text-emerald-400'}
-        />
       )}
     </div>
   )

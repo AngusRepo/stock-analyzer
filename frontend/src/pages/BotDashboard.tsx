@@ -488,7 +488,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
               {recs.length} 檔
             </Badge>
           </div>
-          {recs.slice(0, 10).map((r: any, idx: number) => (
+          {recs.slice(0, 16).map((r: any, idx: number) => (
             <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
               <RecommendationCard rec={r} rank={idx + 1} />
               <button
@@ -513,7 +513,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
               {emergingRecs.length} 檔
             </Badge>
           </div>
-          {emergingRecs.slice(0, 8).map((r: any, idx: number) => (
+          {emergingRecs.slice(0, 12).map((r: any, idx: number) => (
             <div key={`emerging-${r.symbol}`} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-amber-500/40 rounded-xl' : ''}`}>
               <RecommendationCard rec={r} rank={idx + 1} />
               <button

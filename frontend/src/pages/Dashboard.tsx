@@ -283,72 +283,60 @@ function MarketPulsePanel() {
   const indexItems = Array.isArray(indices)
     ? indices
     : [indices?.twii, indices?.twoii, indices?.nasdaq, indices?.sp500].filter(Boolean)
-  const riskScore = Number(risk?.risk_score ?? risk?.riskScore ?? risk?.score ?? NaN)
-  const riskLabel = risk?.risk_level ?? risk?.riskLevel ?? risk?.level ?? '待資料回補'
-  const riskTone = Number.isFinite(riskScore)
-    ? riskScore >= 70
-      ? 'text-rose-300'
-      : riskScore >= 40
-        ? 'text-amber-300'
-        : 'text-emerald-300'
-    : 'text-[#9badbf]'
+  const twii = indexItems.find((idx: any) => String(idx.symbol ?? idx.name ?? '').toUpperCase().includes('TWII')) ?? indexItems[0]
+  const otc = indexItems.find((idx: any) => {
+    const key = String(idx.symbol ?? idx.name ?? '').toUpperCase()
+    return key.includes('OTC') || key.includes('TWOII') || key.includes('櫃')
+  }) ?? indexItems[1]
+  const indexCards = [twii, otc].filter(Boolean)
 
-  const decisionCards = [
+  const vixLevel = risk?.vixLevel ?? risk?.vix_level ?? risk?.vix_level_label ?? 'normal'
+  const riskTiles = [
     {
-      label: '市場風險',
-      value: Number.isFinite(riskScore) ? `${riskScore.toFixed(0)}/100` : '--',
-      detail: riskLabel,
-      helper: '是否適合放大部位？',
-      tone: riskTone,
+      label: 'VIX 恐慌指數',
+      value: risk?.vix != null ? Number(risk.vix).toFixed(1) : '--',
+      detail: `${vixLevel === 'normal' ? '正常' : vixLevel}，一般正常值約 < 20`,
+      tone: ['high', 'extreme'].includes(String(vixLevel)) ? 'text-orange-300' : 'text-emerald-300',
     },
     {
-      label: '指數狀態',
-      value: indexItems.length ? `${indexItems.length} 組可讀` : '待行情',
-      detail: indexItems.length ? 'TWII / OTC 已進概覽' : '行情 API 尚未回補，先看推薦與風險',
-      helper: '大盤是否支持候選清單？',
-      tone: indexItems.length ? 'text-[#9cc7ef]' : 'text-amber-300',
+      label: '台股 20 日波動率',
+      value: risk?.twiiVol20 != null ? `${risk.twiiVol20}%` : '--',
+      detail: '年化波動率；越高代表進出場要更保守',
+      tone: Number(risk?.twiiVol20 ?? 0) > 24 ? 'text-orange-300' : 'text-slate-200',
     },
     {
-      label: '推薦可信度',
-      value: '資料先決',
-      detail: '資料品質、模型分數與 T2/debate 對齊後才進行動',
-      helper: 'AI 候選是否可進下一步？',
-      tone: 'text-[#8fc8a9]',
+      label: '大盤乖離率（20MA）',
+      value: risk?.twiiBias != null ? `${risk.twiiBias > 0 ? '+' : ''}${Number(risk.twiiBias).toFixed(1)}%` : '--',
+      detail: `MA20：${risk?.twiiMa20?.toLocaleString('zh-TW') ?? '--'}`,
+      tone: Math.abs(Number(risk?.twiiBias ?? 0)) >= 6 ? 'text-orange-300' : 'text-amber-300',
+    },
+    {
+      label: '外資動向',
+      value: risk?.foreignConsecutiveSell < 0
+        ? `連賣 ${Math.abs(risk.foreignConsecutiveSell)} 日`
+        : risk?.foreignConsecutiveSell > 0
+          ? `連買 ${risk.foreignConsecutiveSell} 日`
+          : '中性',
+      detail: risk?.foreignNet5d != null ? `近 5 日：${risk.foreignNet5d > 0 ? '+' : ''}${Number(risk.foreignNet5d).toFixed(0)} 億元` : '近 5 日：--',
+      tone: risk?.foreignConsecutiveSell <= -3 ? 'text-rose-300' : 'text-emerald-300',
     },
   ]
 
   return (
     <div className="space-y-3">
-      <div>
-        <p className="text-[11px] leading-5 text-[#a8b6c5]">
-          這一區先回答三件事：今天風險高不高、指數資料是否可用、AI 推薦是否值得進下一步。
-        </p>
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-3">
-        {decisionCards.map((card) => (
-          <div key={card.label} className="rounded-xl border border-[#2b3a49] bg-[#0f151d]/70 p-3">
-            <p className="text-[10px] tracking-[0.14em] text-[#75879a]">{card.label}</p>
-            <p className={`mt-1 font-mono text-lg font-semibold ${card.tone}`}>{card.value}</p>
-            <p className="mt-1 text-xs text-[#d4dde7]">{card.detail}</p>
-            <p className="mt-2 text-[11px] text-[#8b9bab]">{card.helper}</p>
-          </div>
-        ))}
-      </div>
-
-      {indexItems.length > 0 && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {indexItems.slice(0, 4).map((idx: any) => {
+      {indexCards.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {indexCards.map((idx: any, index) => {
             const change = idx.change ?? idx.change_value ?? 0
             const changePct = idx.changePct ?? idx.change_pct ?? 0
             const current = idx.current ?? idx.close ?? idx.price ?? 0
             const up = change >= 0
             return (
-              <div key={idx.symbol ?? idx.name} className="rounded-lg border border-[#2b3a49] bg-[#111821]/70 p-2.5">
+              <div key={idx.symbol ?? idx.name ?? index} className="rounded-xl border border-[#2b3a49] bg-[#111821]/70 p-3">
                 <p className="truncate text-[10px] text-[#8b9bab]">{idx.name ?? idx.symbol}</p>
-                <p className="font-mono text-sm font-bold text-[#e6edf3]">{Number(current).toLocaleString()}</p>
+                <p className="font-mono text-xl font-bold text-[#e6edf3]">{Number(current).toLocaleString()}</p>
                 <p className={`font-mono text-xs ${up ? 'text-red-400' : 'text-emerald-400'}`}>
-                  {up ? '+' : ''}{Number(change).toFixed(0)} ({up ? '+' : ''}{Number(changePct).toFixed(2)}%)
+                  {up ? '+' : ''}{Number(change).toFixed(2)} ({up ? '+' : ''}{Number(changePct).toFixed(2)}%)
                 </p>
               </div>
             )
@@ -356,9 +344,14 @@ function MarketPulsePanel() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 text-[11px]">
-        <a href="/obs" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">查 Observability</a>
-        <a href="/bot" className="rounded-full border border-[#2b3a49] px-3 py-1 text-[#9cc7ef] hover:border-[#7aa2c7]/60">檢查模擬交易</a>
+      <div className="grid grid-cols-2 gap-2">
+        {riskTiles.map((tile) => (
+          <div key={tile.label} className="rounded-xl border border-[#2b3a49] bg-[#0f151d]/70 p-3">
+            <p className="text-[10px] tracking-[0.14em] text-[#75879a]">{tile.label}</p>
+            <p className={`mt-1 font-mono text-lg font-semibold ${tile.tone}`}>{tile.value}</p>
+            <p className="mt-1 text-[11px] leading-4 text-[#8b9bab]">{tile.detail}</p>
+          </div>
+        ))}
       </div>
     </div>
   )

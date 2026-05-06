@@ -11,6 +11,8 @@ export interface ObservabilityIncident {
   title: string
   root_cause: string
   impact: string
+  first_seen: string
+  last_seen: string
   affected_symbols: string[]
   run_ids: string[]
   next_action: string
@@ -132,6 +134,10 @@ function incidentStatus(severity: ObservabilitySeverity): IncidentStatus {
 function mergeEvents(domain: ObservabilityDomain, events: ObservabilityEvent[]): ObservabilityIncident {
   const severity = worstSeverity(events)
   const primary = events.find((event) => event.severity === severity) ?? events[0]
+  const eventTimes = events
+    .map((event) => event.ts)
+    .filter(Boolean)
+    .sort()
   const runIds = [...new Set(events.flatMap(collectRunIds))]
   const affectedSymbols = [...new Set(events.flatMap(collectAffectedSymbols))]
   return {
@@ -143,6 +149,8 @@ function mergeEvents(domain: ObservabilityDomain, events: ObservabilityEvent[]):
     title: primary.title,
     root_cause: inferRootCause(primary),
     impact: primary.impact,
+    first_seen: eventTimes[0] ?? primary.ts,
+    last_seen: eventTimes[eventTimes.length - 1] ?? primary.ts,
     affected_symbols: affectedSymbols,
     run_ids: runIds,
     next_action: primary.next_action,

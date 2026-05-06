@@ -8,6 +8,8 @@ import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogg
 
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
+const FINALIZE_RECHECK_DELAY_MS = 30_000
+const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -181,6 +183,14 @@ async function markShardComplete(
       summary: `indicator queue shards ${doneCount}/${shardCount} complete for ${triggerTime}; run_id=${runId}`,
       duration_ms: 0,
       run_date: triggerTime,
+    })
+    await env.UPDATE_QUEUE.send({
+      type: 'finalize_update',
+      cursor: 0,
+      triggerTime,
+      runId,
+      shardCount,
+      attempt: 1,
     })
     return
   }
@@ -403,6 +413,43 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'finalize_update') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `${triggerTime}-single`
+    const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    const donePrefix = `cron:indicator-queue:${triggerTime}:${runId}:done:`
+    await new Promise((resolve) => setTimeout(resolve, FINALIZE_RECHECK_DELAY_MS))
+    const done = await env.KV.list({ prefix: donePrefix })
+    const doneCount = new Set(done.keys.map((k) => k.name)).size
+
+    if (doneCount >= shardCount) {
+      await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
+      return
+    }
+
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'running',
+      summary: `indicator queue finalize wait ${doneCount}/${shardCount} for ${triggerTime}; run_id=${runId}; attempt=${attempt}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+
+    if (attempt < FINALIZE_RECHECK_MAX_ATTEMPTS) {
+      await env.UPDATE_QUEUE.send({
+        type: 'finalize_update',
+        cursor: 0,
+        triggerTime,
+        runId,
+        shardCount,
+        attempt: attempt + 1,
+      })
+      return
+    }
+
+    throw new Error(`indicator queue finalize timed out for ${triggerTime}; run_id=${runId}; done=${doneCount}/${shardCount}`)
+  }
+
   const { cursor, triggerTime } = msg
   const shardIndex = Number.isFinite(msg.shardIndex) ? Number(msg.shardIndex) : 0
   const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1

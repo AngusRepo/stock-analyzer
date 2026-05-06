@@ -47,11 +47,9 @@ import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import {
-  WorkstationCatCard,
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
-  WorkstationTickerStrip,
 } from '@/components/workstation/WorkstationChrome'
 
 // ── 側邊欄股票列表項目 ─────────────────────────────────────────────────────────
@@ -240,25 +238,30 @@ function AttentionStocksCard() {
   const { data } = useQuery({ queryKey: ['attention-stocks'], queryFn: marketApi.attentionStocks, staleTime: 3600_000 })
   if (!data?.length) return null
   return (
-    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-3">
-      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-400/80">
-        <ShieldAlert className="h-3.5 w-3.5" />
-        注意股
-        <span className="ml-auto font-mono text-[10px] text-amber-300/60">{data.length} 檔</span>
-      </h3>
-      <div className="flex flex-wrap gap-1">
+    <div className="rounded-xl border border-amber-500/15 bg-[linear-gradient(90deg,rgba(245,158,11,0.10),rgba(245,158,11,0.025)_45%,rgba(7,10,16,0.35))] p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-300">
+          <ShieldAlert className="h-3.5 w-3.5" />
+          注意 / 處置股
+        </h3>
+        <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-200/75">
+          {data.length} 檔需先避開自動交易
+        </span>
+        <p className="ml-auto text-[11px] text-amber-100/55">先看交易限制，再看 AI 候選，避免清單漂亮但不能下單。</p>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
         {data.slice(0, 12).map((item: any, i: number) => {
           const sym = typeof item === 'string' ? item : (item.symbol || item.code)
           const name = typeof item === 'string' ? '' : (item.name || '')
           return (
-            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-amber-500/15 bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300">
+            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-amber-500/15 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
               <span className="font-mono">{sym}</span>
               {name && <span className="text-amber-400/60">{name}</span>}
             </span>
           )
         })}
       </div>
-      {data.length > 12 && <p className="mt-2 text-[10px] text-amber-300/50">另有 {data.length - 12} 檔，完整清單請到資料品質/風控 drilldown。</p>}
+      {data.length > 12 && <p className="mt-2 text-[10px] text-amber-300/55">另有 {data.length - 12} 檔未展開，詳情看資料品質 / 市場限制 drilldown。</p>}
     </div>
   )
 }
@@ -506,58 +509,35 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
 
         <MorningBriefingCard />
 
-        <WorkstationTickerStrip
-          items={[
-            { label: 'Dashboard audience', value: '朋友也看得懂', tone: 'info', detail: '保留市場判讀與候選，不塞 admin 細節。' },
-            { label: 'Trading lane', value: '上市櫃交易流', tone: 'ok', detail: '才會進 morning setup / debate。' },
-            { label: 'Research lane', value: '興櫃研究流', tone: 'warn', detail: '只觀察，不自動交易。' },
-            { label: 'Quality first', value: '資料先決', tone: 'neutral', detail: 'DQ / OBS 失敗時推薦視為降級。' },
-          ]}
-        />
+        <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
+          <div className="grid gap-3 p-3 xl:grid-cols-[minmax(360px,0.85fr)_minmax(0,1.15fr)]">
+            <MarketRiskPanel />
+            <MarketPulsePanel />
+          </div>
+        </WorkstationPanel>
+
+        <AttentionStocksCard />
+
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.28fr)_minmax(360px,0.72fr)]">
+          <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
+            <div className="p-3">
+              <DailyRecommendationPanelV2 />
+            </div>
+          </WorkstationPanel>
+
+          <ThemeFlowPanel />
+        </div>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[390px_minmax(0,1fr)]">
-          <div className="space-y-3">
-            <StockSearchWorkbench onSelect={onSelect} />
-            <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
-              <div className="space-y-3 p-3">
-                <MarketRiskPanel />
-                <MarketPulsePanel />
-              </div>
-            </WorkstationPanel>
-            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-1">
-              <WorkstationCatCard
-                src="/stockvision-cats/01_bull_market_train.png"
-                title="牛市列車"
-                caption="行情很熱也先看號誌，別看到列車就直接跳上去。"
-                tone="ok"
-              />
-              <WorkstationCatCard
-                src="/stockvision-cats/04_small_green_observe_first.png"
-                title="小綠先觀察"
-                caption="AI 候選清單有訊號，但還是要等資料品質、T2 與市場結構一起點頭。"
-                tone="info"
-              />
-            </div>
+          <StockSearchWorkbench onSelect={onSelect} />
+
+          <div className="grid gap-3 lg:grid-cols-2">
             <WorkstationPanel title="自選雷達" kicker="watchlist">
               <div className="p-3">
                 <WatchlistCards onSelect={onSelect} />
               </div>
             </WorkstationPanel>
-          </div>
-
-          <div className="space-y-3">
-            <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
-              <div className="p-3">
-                <DailyRecommendationPanelV2 />
-              </div>
-            </WorkstationPanel>
-            <div className="grid gap-3 xl:grid-cols-[1.2fr_0.8fr]">
-              <ThemeFlowPanel />
-              <div className="space-y-3">
-                <AttentionStocksCard />
-                <ExDividendCard />
-              </div>
-            </div>
+            <ExDividendCard />
           </div>
         </div>
       </div>

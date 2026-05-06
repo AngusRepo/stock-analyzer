@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
 import {
   Filter, Brain, Star, Scale, ChevronDown, ChevronUp,
-  TrendingUp, TrendingDown, Minus, Zap, ArrowRight,
+  TrendingUp, TrendingDown, Minus,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -178,11 +178,17 @@ export default function PipelinePage() {
   const qfList = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
 
   // Stage breakdown
-  const screenerPassed = allRecs // All 25 from screener
+  const screenerPassed = allRecs
   const mlBuy = allRecs.filter((r: any) => ['BUY', 'STRONG_BUY'].includes(r.signal))
   const mlHold = allRecs.filter((r: any) => r.signal === 'HOLD')
   const mlSell = allRecs.filter((r: any) => ['SELL', 'STRONG_SELL'].includes(r.signal))
   const mlNoSignal = allRecs.filter((r: any) => !r.signal || r.signal === 'NO_SIGNAL')
+  const screenerPreview = [...screenerPassed]
+    .sort((a: any, b: any) => (b.chip_score ?? 0) + (b.tech_score ?? 0) - ((a.chip_score ?? 0) + (a.tech_score ?? 0)))
+    .slice(0, 10)
+  const recommendationPreview = [...mlBuy, ...mlHold]
+    .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 10)
 
   const isLoading = recLoading || pbLoading
 
@@ -219,7 +225,7 @@ export default function PipelinePage() {
         </div>
 
         {/* Pipeline flow indicator */}
-        <div className="flex items-center gap-2 overflow-x-auto rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3">
+        <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">
           {[
             { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
             { label: '模型判斷', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-[#d7b98c]' },
@@ -227,7 +233,6 @@ export default function PipelinePage() {
             { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
           ].map((step, i) => (
             <div key={step.label} className="flex items-center gap-2 shrink-0">
-              {i > 0 && <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40" />}
               <div className="flex items-center gap-1.5">
                 <span className={`text-lg font-bold font-mono ${step.color}`}>{step.count}</span>
                 <span className="text-xs text-muted-foreground">{step.label}</span>
@@ -241,7 +246,7 @@ export default function PipelinePage() {
             {[1, 2, 3, 4].map(i => <div key={i} className="h-24 rounded-xl bg-muted/40 animate-pulse" />)}
           </div>
         ) : (
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-4">
 
             {/* ═══ Step 1: Screener ═══ */}
             <Card className="border-border bg-card">
@@ -253,13 +258,15 @@ export default function PipelinePage() {
                   count={screenerPassed.length}
                   color="bg-blue-500/20 text-blue-400"
                 />
-                <div className="space-y-0.5 max-h-[400px] overflow-y-auto">
-                  {screenerPassed
-                    .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
+                <div className="space-y-0.5">
+                  {screenerPreview
                     .map((rec: any, i: number) => (
                       <StockRow key={rec.symbol ?? i} rec={rec} rank={i + 1} />
                     ))
                   }
+                  {screenerPassed.length > screenerPreview.length && (
+                    <p className="px-3 pt-2 text-[11px] text-muted-foreground">另有 {screenerPassed.length - screenerPreview.length} 檔已過初篩；這格只看 funnel/top candidates。</p>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -274,7 +281,7 @@ export default function PipelinePage() {
                   count={allRecs.filter((r: any) => r.ml_score != null).length}
                   color="bg-purple-500/20 text-purple-400"
                 />
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   <div>
                     <div className="flex items-center gap-1.5 mb-2">
                       <TrendingUp className="w-3.5 h-3.5 text-red-400" />
@@ -334,13 +341,15 @@ export default function PipelinePage() {
                   count={mlBuy.length + mlHold.length}
                   color="bg-amber-500/20 text-amber-400"
                 />
-                <div className="space-y-0.5 max-h-[350px] overflow-y-auto">
-                  {[...mlBuy, ...mlHold]
-                    .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
+                <div className="space-y-0.5">
+                  {recommendationPreview
                     .map((rec: any, i: number) => (
                       <StockRow key={rec.symbol ?? i} rec={rec} rank={i + 1} />
                     ))
                   }
+                  {(mlBuy.length + mlHold.length) > recommendationPreview.length && (
+                    <p className="px-3 pt-2 text-[11px] text-muted-foreground">另有 {(mlBuy.length + mlHold.length) - recommendationPreview.length} 檔保留觀察；這格只看 ML/Alpha 後排序。</p>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -357,7 +366,7 @@ export default function PipelinePage() {
                 />
                 {pendingBuys.length === 0 ? (
                   <div className="text-xs text-muted-foreground text-center py-6">
-                    尚無 T2 掛單（每日 07:15 產生）
+                    尚無 T2 pending buys。排程語意：07:15 morning setup 產生候選掛單；08:50 pre-market warmup 只做健康檢查與 reconcile。若 07:15 後仍為 0，請追 morning-setup run log。
                   </div>
                 ) : (
                   <div className="space-y-0.5">

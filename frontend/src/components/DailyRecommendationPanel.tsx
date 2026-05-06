@@ -361,11 +361,12 @@ export function ThemeFlowPanel() {
 
   return (
     <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2 text-[#fff7e8]">
-        <BarChart3 className="w-4 h-4 text-[#d6a85f]" />
-        主題輪動（三大法人近5日買賣超）
-      </h3>
       <SectorFlowStaleNotice data={themeData} label="主題資金流" />
+      <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-[#fff7e8]">
+        <BarChart3 className="h-4 w-4 text-[#d6a85f]" />
+        主題輪動（三大法人近 5 日買賣超金額，單位：億元）
+      </h3>
+      <p className="mb-3 text-[11px] text-muted-foreground">資料口徑：原始 chip_data 是股數；sector_flow 已由後端用收盤價換算成億元。若與每日總買賣超不同，優先查 source date、分類覆蓋率與 sector_flow_stocks 是否 stale。</p>
       {themeLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}

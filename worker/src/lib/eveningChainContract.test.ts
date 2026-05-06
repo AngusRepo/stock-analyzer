@@ -26,6 +26,9 @@ assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose e
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(updateOrchestrator.includes('indicator-queue'), 'indicator queue must have scheduler-visible run state')
+assert(updateOrchestrator.includes('UPDATE_SHARD_COUNT'), 'indicator queue must fan out into shards instead of one serial cursor')
+assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger must enqueue shard messages as a real batch')
+assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
 assert(
   updateOrchestrator.includes('runQueueUpdate(env, runDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',

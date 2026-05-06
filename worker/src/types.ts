@@ -237,6 +237,9 @@ export interface UpdateQueueMsg {
   type: 'update_batch'
   cursor: number      // 從哪個 stock_id 繼續
   triggerTime: string // 原始觸發時間，防止跨天的 cursor 汙染
+  runId?: string      // 同一次 queue fan-out 的識別碼
+  shardIndex?: number // 多 shard 平行更新時的 shard index
+  shardCount?: number // 多 shard 平行更新時的總 shard 數
 }
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

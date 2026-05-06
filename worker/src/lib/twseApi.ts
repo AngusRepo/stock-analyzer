@@ -88,6 +88,40 @@ export interface BulkChipRow {
   dealer_net: number
 }
 
+export function parseTwseChipRows(rows: string[][]): BulkChipRow[] {
+  return rows
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      foreign_buy:  parseTwNum(r[2]),
+      foreign_sell: parseTwNum(r[3]),
+      foreign_net:  parseTwNum(r[4]),
+      trust_buy:    parseTwNum(r[8]),
+      trust_sell:   parseTwNum(r[9]),
+      trust_net:    parseTwNum(r[10]),
+      dealer_buy:   parseTwNum(r[12]) + parseTwNum(r[15]),
+      dealer_sell:  parseTwNum(r[13]) + parseTwNum(r[16]),
+      dealer_net:   parseTwNum(r[11]),
+    }))
+}
+
+export function parseTpexChipRows(rows: string[][]): BulkChipRow[] {
+  return rows
+    .filter((r: string[]) => isStockCode(r[0]))
+    .map((r: string[]) => ({
+      symbol: r[0].trim(),
+      foreign_buy:  parseTwNum(r[2]),
+      foreign_sell: parseTwNum(r[3]),
+      foreign_net:  parseTwNum(r[4]),
+      trust_buy:    parseTwNum(r[11]),
+      trust_sell:   parseTwNum(r[12]),
+      trust_net:    parseTwNum(r[13]),
+      dealer_buy:   parseTwNum(r[20]),
+      dealer_sell:  parseTwNum(r[21]),
+      dealer_net:   parseTwNum(r[22]),
+    }))
+}
+
 export interface BulkMarginRow {
   symbol: string
   margin_balance: number    // 融資今日餘額（張）
@@ -635,21 +669,7 @@ export async function fetchTwseChips(date: string): Promise<BulkChipRow[]> {
   if (!res.ok) throw new Error(`TWSE T86 HTTP ${res.status}`)
   const body = await res.json() as any
   if (body.stat !== 'OK' || !body.data) return []
-
-  return body.data
-    .filter((r: string[]) => isStockCode(r[0]))
-    .map((r: string[]) => ({
-      symbol: r[0].trim(),
-      foreign_buy:  parseTwNum(r[2]),
-      foreign_sell: parseTwNum(r[3]),
-      foreign_net:  parseTwNum(r[4]),
-      trust_buy:    parseTwNum(r[8]),
-      trust_sell:   parseTwNum(r[9]),
-      trust_net:    parseTwNum(r[10]),
-      dealer_buy:   parseTwNum(r[12]),  // 自行買賣
-      dealer_sell:  parseTwNum(r[13]),
-      dealer_net:   parseTwNum(r[11]),  // 合計淨額
-    }))
+  return parseTwseChipRows(body.data)
 }
 
 // ─── TPEX 3itrade: 上櫃三大法人 ─────────────────────────────────────────────
@@ -667,21 +687,7 @@ export async function fetchTpexChips(date: string): Promise<BulkChipRow[]> {
   }
   const body = JSON.parse(text) as any
   if (body.stat !== 'ok' || !body.tables?.[0]?.data) return []
-
-  return body.tables[0].data
-    .filter((r: string[]) => isStockCode(r[0]))
-    .map((r: string[]) => ({
-      symbol: r[0].trim(),
-      foreign_buy:  parseTwNum(r[2]),
-      foreign_sell: parseTwNum(r[3]),
-      foreign_net:  parseTwNum(r[4]),
-      trust_buy:    parseTwNum(r[8]),
-      trust_sell:   parseTwNum(r[9]),
-      trust_net:    parseTwNum(r[10]),
-      dealer_buy:   parseTwNum(r[12]),
-      dealer_sell:  parseTwNum(r[13]),
-      dealer_net:   parseTwNum(r[11]),
-    }))
+  return parseTpexChipRows(body.tables[0].data)
 }
 
 // ─── TWSE MI_MARGN: 上市融資融券 ────────────────────────────────────────────

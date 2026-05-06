@@ -6,7 +6,8 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
-const UPDATE_BATCH_SIZE = 25
+const UPDATE_BATCH_SIZE = 40
+const UPDATE_SHARD_COUNT = 4
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -64,10 +65,22 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
 
   console.log('[Cron] Kicking off queue update for full TW market indicator universe...')
   try {
-    await env.UPDATE_QUEUE.send({ type: 'update_batch', cursor: 0, triggerTime })
+    const runId = `${triggerTime}-${Date.now().toString(36)}`
+    await env.UPDATE_QUEUE.sendBatch(
+      Array.from({ length: UPDATE_SHARD_COUNT }, (_, shardIndex) => ({
+        body: {
+          type: 'update_batch' as const,
+          cursor: 0,
+          triggerTime,
+          runId,
+          shardIndex,
+          shardCount: UPDATE_SHARD_COUNT,
+        },
+      })),
+    )
     await logSchedulerResult(env.KV, 'indicator-queue', {
       status: 'running',
-      summary: `indicator queue started for ${triggerTime}`,
+      summary: `indicator queue started for ${triggerTime}; run_id=${runId}; shards=${UPDATE_SHARD_COUNT}`,
       duration_ms: 0,
       run_date: triggerTime,
     })
@@ -76,6 +89,103 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
     console.warn('[Cron] Queue update send failed, NOT writing lock:', e)
     throw e
   }
+}
+
+async function finalizeUpdateChain(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId: string,
+  shardCount: number,
+): Promise<void> {
+  const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
+  if (await env.KV.get(finalKey)) {
+    console.log(`[Queue] Finalize already completed for ${triggerTime} ${runId}`)
+    return
+  }
+  await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+
+  console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
+  await logSchedulerResult(env.KV, 'indicator-queue', {
+    status: 'success',
+    summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await checkAlerts(env)
+
+  try {
+    const screenerResult = await deps.runMarketScreener(env, triggerTime)
+    const screenerSummary = typeof screenerResult === 'string'
+      ? screenerResult
+      : JSON.stringify(screenerResult)?.slice(0, 500) ?? ''
+    await logSchedulerResult(env.KV, 'screener', {
+      status: classifySchedulerSummary(screenerSummary),
+      summary: screenerSummary,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    console.log(`[Queue] Event-driven: screener completed for ${triggerTime}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'screener', {
+      status: 'error',
+      summary: e instanceof Error ? e.message : String(e),
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven screener failed:', e)
+    return
+  }
+
+  try {
+    const summary = await deps.runMLAndRiskV2(env, triggerTime)
+    await logSchedulerResult(env.KV, 'pipeline', {
+      status: classifySchedulerSummary(summary),
+      summary,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'pipeline', {
+      status: 'error',
+      summary: e instanceof Error ? e.message : String(e),
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven ML trigger failed:', e)
+  }
+}
+
+async function markShardComplete(
+  msg: UpdateQueueMsg,
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+): Promise<void> {
+  const triggerTime = msg.triggerTime
+  const shardIndex = Number.isFinite(msg.shardIndex) ? Number(msg.shardIndex) : 0
+  const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
+  const runId = msg.runId || `${triggerTime}-single`
+  const donePrefix = `cron:indicator-queue:${triggerTime}:${runId}:done:`
+  const doneKey = `${donePrefix}${shardIndex}`
+
+  await env.KV.put(doneKey, '1', { expirationTtl: 7 * 86400 })
+  const done = await env.KV.list({ prefix: donePrefix })
+  const doneCount = new Set(done.keys.map((k) => k.name)).size
+
+  if (doneCount < shardCount) {
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'running',
+      summary: `indicator queue shards ${doneCount}/${shardCount} complete for ${triggerTime}; run_id=${runId}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    return
+  }
+
+  await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
 }
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -294,6 +404,8 @@ export async function processUpdateBatch(
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
   const { cursor, triggerTime } = msg
+  const shardIndex = Number.isFinite(msg.shardIndex) ? Number(msg.shardIndex) : 0
+  const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
     console.log(`[Queue] Invalid update trigger date ${triggerTime}, skipping.`)
@@ -305,32 +417,22 @@ export async function processUpdateBatch(
        FROM stocks
       WHERE ${UPDATE_UNIVERSE_WHERE}
         AND id > ?
+        AND (id % ?) = ?
       ORDER BY id ASC
       LIMIT ?`,
-  ).bind(cursor, UPDATE_BATCH_SIZE).all<any>()
+  ).bind(cursor, shardCount, shardIndex, UPDATE_BATCH_SIZE + 1).all<any>()
+  const currentBatch = batch.slice(0, UPDATE_BATCH_SIZE)
+  const hasMore = batch.length > UPDATE_BATCH_SIZE
 
-  const remainingCount = await env.DB.prepare(
-    `SELECT COUNT(*) as cnt
-       FROM stocks
-      WHERE ${UPDATE_UNIVERSE_WHERE}
-        AND id > ?`,
-  ).bind(cursor).first<{ cnt: number }>().then((row) => row?.cnt ?? 0)
-
-  if (batch.length === 0) {
-    console.log('[Queue] All stocks updated.')
-    await logSchedulerResult(env.KV, 'indicator-queue', {
-      status: 'success',
-      summary: `indicator queue complete for ${triggerTime}; no remaining stocks`,
-      duration_ms: 0,
-      run_date: triggerTime,
-    })
-    await checkAlerts(env)
+  if (currentBatch.length === 0) {
+    console.log(`[Queue] Shard ${shardIndex + 1}/${shardCount} complete with no remaining stocks.`)
+    await markShardComplete(msg, env, deps)
     return
   }
 
-  console.log(`[Queue] Update batch: ${batch.length} stocks (cursor=${cursor}, remaining=${remainingCount})`)
+  console.log(`[Queue] Update batch: ${currentBatch.length} stocks (cursor=${cursor}, shard=${shardIndex + 1}/${shardCount}, hasMore=${hasMore})`)
 
-  for (const stock of batch) {
+  for (const stock of currentBatch) {
     try {
       const priceCount = await env.DB.prepare(
         'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?',
@@ -352,57 +454,20 @@ export async function processUpdateBatch(
     }
   }
 
-  const lastId = batch[batch.length - 1].id
+  const lastId = currentBatch[currentBatch.length - 1].id
 
-  if (remainingCount > UPDATE_BATCH_SIZE) {
+  if (hasMore) {
     await env.UPDATE_QUEUE.send({
       type: 'update_batch',
       cursor: lastId,
       triggerTime,
+      runId: msg.runId,
+      shardIndex,
+      shardCount,
     })
-    console.log(
-      `[Queue] Next batch queued (cursor=${lastId}, ${remainingCount - UPDATE_BATCH_SIZE} remaining)`,
-    )
+    console.log(`[Queue] Next shard batch queued (cursor=${lastId}, shard=${shardIndex + 1}/${shardCount})`)
     return
   }
 
-  console.log('[Queue] All stocks done. Running alert check...')
-  await logSchedulerResult(env.KV, 'indicator-queue', {
-    status: 'success',
-    summary: `indicator queue complete for ${triggerTime}`,
-    duration_ms: 0,
-    run_date: triggerTime,
-  })
-  await checkAlerts(env)
-
-  try {
-    const screenerResult = await deps.runMarketScreener(env, triggerTime)
-    const screenerSummary = typeof screenerResult === 'string'
-      ? screenerResult
-      : JSON.stringify(screenerResult)?.slice(0, 500) ?? ''
-    await logSchedulerResult(env.KV, 'screener', {
-      status: classifySchedulerSummary(screenerSummary),
-      summary: screenerSummary,
-      duration_ms: 0,
-      run_date: triggerTime,
-    })
-    console.log(`[Queue] Event-driven: screener completed for ${triggerTime}`)
-  } catch (e) {
-    await logSchedulerResult(env.KV, 'screener', {
-      status: 'error',
-      summary: e instanceof Error ? e.message : String(e),
-      duration_ms: 0,
-      error: String(e),
-      run_date: triggerTime,
-    })
-    console.warn('[Queue] Event-driven screener failed:', e)
-    return
-  }
-
-  try {
-    await deps.runMLAndRiskV2(env, triggerTime)
-    console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
-  } catch (e) {
-    console.warn('[Queue] Event-driven ML trigger failed:', e)
-  }
+  await markShardComplete(msg, env, deps)
 }

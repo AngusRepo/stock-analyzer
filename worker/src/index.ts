@@ -151,7 +151,7 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     void ctx
-    for (const msg of batch.messages) {
+    await Promise.all(batch.messages.map(async (msg) => {
       try {
         await processUpdateBatch(msg.body, env, {
           runMarketScreener,
@@ -162,6 +162,6 @@ export default {
         console.error(`[Queue] Message failed, will retry:`, e)
         msg.retry()
       }
-    }
+    }))
   },
 }

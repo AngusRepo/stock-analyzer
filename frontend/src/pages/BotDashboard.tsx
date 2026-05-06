@@ -1019,13 +1019,13 @@ function BacktestCard() {
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
+      <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Scale className="w-4 h-4" /> Backtest
           <span className="text-muted-foreground/60 text-xs ml-auto">{data.run_date} · {data.strategy}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-3">
         <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
             <div key={m.label} className="text-center" title={m.hint}>
@@ -1126,27 +1126,27 @@ function AdaptiveParamsCard() {
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
-      <CardHeader className="pb-2">
+      <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Cpu className="w-4 h-4" /> Adaptive Params
           <span className="text-muted-foreground/60 text-xs ml-auto">v{version} · {computedAt}</span>
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-          <div className="text-center">
+      <CardContent className="pb-3">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">信心門檻</div>
             <div className={`text-sm font-mono mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Risk Score</div>
             <div className={`text-sm font-mono mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">30d 準確率</div>
             <div className={`text-sm font-mono mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
           </div>
-          <div className="text-center">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Bandit</div>
             <div className={`text-sm font-mono mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
               {forceExplore ? '強制探索' : `×${banditMult.toFixed(1)}`}

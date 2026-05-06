@@ -19,8 +19,8 @@ queue = "stockvision-update-queue"
 
 [[queues.consumers]]
 queue = "stockvision-update-queue"
-max_batch_size = 1
-max_batch_timeout = 5
+max_batch_size = 4
+max_batch_timeout = 10
 max_retries = 2
 dead_letter_queue = "stockvision-update-queue-dlq"
 

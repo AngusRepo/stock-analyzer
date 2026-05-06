@@ -21,7 +21,7 @@ import { toast } from 'sonner'
 import { Toaster } from '@/components/ui/sonner'
 import {
   Trash2, RefreshCw, BarChart2, Home,
-  PieChart, Brain, LogIn, Activity, Sparkles,
+  PieChart, Brain, LogIn, Sparkles,
   Newspaper, LogOut, ChevronRight, Search, Layers, ShieldAlert, Bell,
   Star, ShieldCheck, Users } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -234,23 +234,25 @@ function AttentionStocksCard() {
   const { data } = useQuery({ queryKey: ['attention-stocks'], queryFn: marketApi.attentionStocks, staleTime: 3600_000 })
   if (!data?.length) return null
   return (
-    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-4">
-      <h3 className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-        <ShieldAlert className="w-3.5 h-3.5" />
+    <div className="rounded-xl border border-amber-500/10 bg-amber-500/[0.02] p-3">
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-400/80">
+        <ShieldAlert className="h-3.5 w-3.5" />
         注意股
+        <span className="ml-auto font-mono text-[10px] text-amber-300/60">{data.length} 檔</span>
       </h3>
-      <div className="flex flex-wrap gap-1.5">
-        {data.slice(0, 20).map((item: any, i: number) => {
+      <div className="flex flex-wrap gap-1">
+        {data.slice(0, 12).map((item: any, i: number) => {
           const sym = typeof item === 'string' ? item : (item.symbol || item.code)
           const name = typeof item === 'string' ? '' : (item.name || '')
           return (
-            <span key={i} className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 border border-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-300">
+            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-amber-500/15 bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300">
               <span className="font-mono">{sym}</span>
               {name && <span className="text-amber-400/60">{name}</span>}
             </span>
           )
         })}
       </div>
+      {data.length > 12 && <p className="mt-2 text-[10px] text-amber-300/50">另有 {data.length - 12} 檔，完整清單請到資料品質/風控 drilldown。</p>}
     </div>
   )
 }
@@ -471,8 +473,6 @@ function MorningBriefingCard() {
 
 // ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
-  const isAdmin = user?.role === 'admin'
-
   return (
     <div className="h-full overflow-y-auto">
       <div className="w-full px-4 py-4 space-y-4">
@@ -524,7 +524,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
           <div className="space-y-3 p-3">
             <MarketRiskPanel />
-            <MarketPulsePanel />
             <div className="grid gap-3 xl:grid-cols-2">
               <ThemeFlowPanel />
               <AttentionStocksCard />
@@ -541,22 +540,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
           <div className="space-y-4 p-3">
             <WatchlistCards onSelect={onSelect} />
 
-            <div className="space-y-3">
-              {isAdmin && (
-                <a href="/bot" className="block rounded-xl border border-border bg-card hover:bg-white/[0.07] hover:border-teal-500/30 transition-all p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
-                      <Activity className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold">Auto Trade Bot</p>
-                      <p className="text-xs text-muted-foreground">持倉 · 交易紀錄 · Bot 狀態</p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 ml-auto text-muted-foreground shrink-0" />
-                  </div>
-                </a>
-              )}
-            </div>
           </div>
           </WorkstationPanel>
 

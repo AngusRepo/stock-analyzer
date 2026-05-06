@@ -73,17 +73,19 @@ async function fetchMarketForeignChip(db: D1Database): Promise<{
 }> {
   try {
     const { results } = await db.prepare(`
-      SELECT date, SUM(foreign_net) as daily_net
-      FROM chip_data
-      WHERE date >= date('now', '-25 days')
-      GROUP BY date
-      ORDER BY date
+      SELECT c.date, SUM(COALESCE(c.foreign_net, 0) * COALESCE(sp.close, 0)) / 1e8 AS daily_net
+      FROM chip_data c
+      JOIN stocks s ON s.symbol = c.symbol
+      JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date = c.date
+      WHERE c.date >= date('now', '-25 days')
+      GROUP BY c.date
+      ORDER BY c.date
     `).all<{ date: string; daily_net: number }>()
 
     if (!results?.length) return { net5d: null, consecutiveSell: 0 }
 
     const last5 = results.slice(-5)
-    const net5d = last5.reduce((s, r) => s + (r.daily_net ?? 0), 0) / 1e8  // 億股
+    const net5d = last5.reduce((s, r) => s + (r.daily_net ?? 0), 0)
 
     let consecutive = 0
     for (let i = results.length - 1; i >= 0; i--) {

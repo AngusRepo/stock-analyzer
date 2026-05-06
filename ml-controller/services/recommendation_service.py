@@ -1317,6 +1317,27 @@ def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date
         )
 
 
+def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
+    """Keep the run-date recommendation set owned by the current pipeline output."""
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return 0
+    placeholders = ",".join("?" for _ in stock_ids)
+    result = d1_client.execute(
+        f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id NOT IN ({placeholders})",
+        [run_date, *stock_ids],
+        timeout=60,
+    )
+    changes = int(((result or {}).get("meta") or {}).get("changes") or 0)
+    if changes:
+        logger.warning(
+            "[recommendation_service] Deleted %s stale daily_recommendations rows for run_date=%s",
+            changes,
+            run_date,
+        )
+    return changes
+
+
 def update_recommendations_in_d1(
     recommendations: list[dict],
     run_date: str,
@@ -1332,6 +1353,7 @@ def update_recommendations_in_d1(
         return 0
 
     _assert_recommendation_seed_rows_exist(recommendations, run_date)
+    _delete_stale_recommendation_rows(recommendations, run_date)
 
     statements: list[tuple[str, list[Any]]] = []
     for idx, r in enumerate(recommendations, start=1):

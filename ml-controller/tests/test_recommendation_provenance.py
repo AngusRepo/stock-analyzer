@@ -205,7 +205,14 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         captured["statements"] = statements
         return {"success_count": len(statements), "changes_total": len(statements)}
 
+    def _fake_execute(sql, params, timeout=60):
+        captured["cleanup_sql"] = sql
+        captured["cleanup_params"] = params
+        captured["cleanup_timeout"] = timeout
+        return {"meta": {"changes": 2}}
+
     monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     monkeypatch.setattr(
         recommendation_service.d1_client,
         "query",
@@ -230,6 +237,10 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         "watch_points": ["watch"],
         "current_price": 100.0,
     }], "2026-04-27")
+
+    assert "DELETE FROM daily_recommendations" in captured["cleanup_sql"]
+    assert "stock_id NOT IN" in captured["cleanup_sql"]
+    assert captured["cleanup_params"] == ["2026-04-27", 1]
 
     sql, params = captured["statements"][0]
     assert "UPDATE daily_recommendations SET" in sql

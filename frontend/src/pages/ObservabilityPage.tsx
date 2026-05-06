@@ -31,13 +31,6 @@ import {
   type SchedulerJob,
 } from '@/lib/api'
 
-type ObsTab = 'scheduler' | 'dataQuality'
-
-const TAB_LABELS: Record<ObsTab, string> = {
-  scheduler: 'Scheduler Runs / 排程執行',
-  dataQuality: 'Data Quality / 資料品質',
-}
-
 function statusTone(status?: string | null): WorkstationTone {
   const value = String(status ?? '').toLowerCase()
   if (['ok', 'pass', 'success', 'resolved'].includes(value)) return 'ok'
@@ -256,7 +249,7 @@ function SelectedIncidentDetail({
 function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   return (
-    <div className="grid gap-3 xl:grid-cols-2">
+    <div className="grid gap-3">
       {jobs.map((job) => (
         <div key={job.id} className="border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-start justify-between gap-3">
@@ -281,7 +274,7 @@ function SchedulerRunsTab({ jobs }: { jobs: SchedulerJob[] }) {
 function DataQualityTab({ checks }: { checks: DataQualityCheck[] }) {
   if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
   return (
-    <div className="grid gap-3 xl:grid-cols-2">
+    <div className="grid gap-3">
       {checks.map((check) => (
         <div key={check.id} className={`border p-3 ${check.status === 'fail' ? 'border-rose-500/40 bg-rose-950/20' : check.status === 'warn' ? 'border-amber-500/40 bg-amber-950/20' : 'border-emerald-500/30 bg-emerald-950/10'}`}>
           <div className="flex items-start justify-between gap-3">
@@ -342,7 +335,7 @@ function ExecutionRealityStrip() {
 }
 
 export default function ObservabilityPage() {
-  const [activeTab, setActiveTab] = useState<ObsTab>('scheduler')
+  const [activeTab, setActiveTab] = useState<'scheduler' | 'dataQuality'>('scheduler')
   const [selectedIncidentId, setSelectedIncidentId] = useState<string>()
   const detailRef = useRef<HTMLDivElement>(null)
 
@@ -361,16 +354,15 @@ export default function ObservabilityPage() {
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
+  const tabs: Array<{ id: 'scheduler' | 'dataQuality'; tone: WorkstationTone; label: string }> = [
+    { id: 'scheduler', tone: (scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok', label: 'Scheduler Runs / 排程執行' },
+    { id: 'dataQuality', tone: statusTone(dataQuality.data?.overall), label: 'Data Quality / 資料品質' },
+  ]
 
   function openIncident(id: string) {
     setSelectedIncidentId(id)
     window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 0)
   }
-
-  const tabs: Array<{ id: ObsTab; tone: WorkstationTone }> = [
-    { id: 'scheduler', tone: (scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok' },
-    { id: 'dataQuality', tone: statusTone(dataQuality.data?.overall) },
-  ]
 
   return (
     <AppShell>
@@ -423,7 +415,36 @@ export default function ObservabilityPage() {
         </section>
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="只保留 Scheduler Runs 與 Data Quality">
-          <div className="flex flex-wrap gap-2 border-b border-[#263247] p-3">
+          <div className="grid gap-3 p-3 xl:grid-cols-3">
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
+                <a href="/scheduler" className="text-[10px] text-sky-300 hover:text-sky-100">Open</a>
+              </div>
+              <SchedulerRunsTab jobs={jobs.slice(0, 6)} />
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
+                <a href="/data-quality" className="text-[10px] text-sky-300 hover:text-sky-100">Open</a>
+              </div>
+              <DataQualityTab checks={dqChecks.slice(0, 6)} />
+            </div>
+            <div className="space-y-3">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Next Action / 下一步</p>
+              <div className="border border-[#263247] bg-[#05070c] p-3">
+                <p className="text-xs font-semibold text-slate-200">Deploy Gate</p>
+                <p className="mt-1 text-sm text-slate-400">{formatStatus(deployGate.data?.decision)}</p>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">Gate 不是 PASS 時，先處理資料品質與 callback round-trip，不要直接重跑 pipeline。</p>
+              </div>
+              <div className="border border-[#263247] bg-[#05070c] p-3">
+                <p className="text-xs font-semibold text-slate-200">Recent Trace</p>
+                <p className="mt-1 font-mono text-lg text-sky-200">{events.length}</p>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">事件數只做線索入口；真正 root cause 仍以 run_id 與 owner contract 追。</p>
+              </div>
+            </div>
+          </div>
+          <div className="hidden">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -433,7 +454,7 @@ export default function ObservabilityPage() {
                   activeTab === tab.id ? 'border-sky-300/50 bg-sky-300/10 text-sky-200' : 'border-[#263247] bg-[#05070c] text-[#8a92a6] hover:border-sky-400/40 hover:text-sky-200'
                 }`}
               >
-                {TAB_LABELS[tab.id]}
+                {tab.label}
                 <span className="ml-2"><WorkstationPill tone={tab.tone}>{tab.tone}</WorkstationPill></span>
               </button>
             ))}
@@ -444,7 +465,7 @@ export default function ObservabilityPage() {
               Open data quality / 開啟資料品質
             </a>
           </div>
-          <div className="p-3">
+          <div className="hidden">
             {activeTab === 'scheduler' && <SchedulerRunsTab jobs={jobs} />}
             {activeTab === 'dataQuality' && <DataQualityTab checks={dqChecks} />}
           </div>

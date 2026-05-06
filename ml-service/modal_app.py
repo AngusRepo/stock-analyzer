@@ -734,14 +734,16 @@ def predict_batch_v2(payload: dict) -> dict:
     MODAL_PREDICT_BATCH_V2=0 only as an emergency fallback to single-stock map.
     """
     _setup_env()
-    from app.batch_prediction import predict_stock_v2_batch
+    from app.batch_prediction import predict_stock_v2_batch_with_metrics
 
     payloads = payload.get("payloads") or []
-    results = predict_stock_v2_batch(payloads)
+    batch = predict_stock_v2_batch_with_metrics(payloads)
+    results = batch["results"]
     return {
         "results": results,
         "n_input": len(payloads),
         "n_error": sum(1 for r in results if r.get("error")),
+        "metrics": batch.get("metrics", {}),
     }
 
 

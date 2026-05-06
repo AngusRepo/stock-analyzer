@@ -133,6 +133,12 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', sans-serif;
@@ -175,6 +181,11 @@
   .flex {
     min-height: 0;
     min-width: 0;
+  }
+
+  .bot-fallback-recommendations > div:first-child,
+  .bot-fallback-recommendations > div:nth-child(2) > span {
+    display: none;
   }
 
   @media (min-width: 640px) {

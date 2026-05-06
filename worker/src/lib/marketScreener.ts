@@ -115,26 +115,27 @@ export async function loadSelectionHistoryFlags(
   const placeholders = uniqueSymbols.map(() => '?').join(',')
   const highFreqThreshold = Math.max(1, Math.floor(options.highFreqThreshold ?? 12))
 
-  const { results: freqRows } = await db.prepare(
-    `SELECT symbol, COUNT(*) as freq20d FROM screener_selection_history
-     WHERE date >= date(?, '-20 days') AND date < ? AND symbol IN (${placeholders})
-     GROUP BY symbol`,
-  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string; freq20d: number }>()
-
-  const { results: recentRows } = await db.prepare(
-    `SELECT symbol FROM screener_selection_history
+  const { results: historyRows } = await db.prepare(
+    `SELECT
+       symbol,
+       SUM(CASE WHEN date >= date(?, '-20 days') THEN 1 ELSE 0 END) as freq20d,
+       COUNT(*) as freq30d
+     FROM screener_selection_history
      WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
      GROUP BY symbol`,
-  ).bind(endDate, endDate, ...uniqueSymbols).all<{ symbol: string }>()
+  ).bind(endDate, endDate, endDate, ...uniqueSymbols).all<{ symbol: string; freq20d: number; freq30d: number }>()
 
-  const freqMap = new Map((freqRows ?? []).map(r => [r.symbol, Number(r.freq20d ?? 0)]))
-  const seenIn30d = new Set((recentRows ?? []).map(r => r.symbol))
+  const historyMap = new Map((historyRows ?? []).map(r => [r.symbol, {
+    freq20d: Number(r.freq20d ?? 0),
+    freq30d: Number(r.freq30d ?? 0),
+  }]))
   for (const sym of uniqueSymbols) {
-    const freq = freqMap.get(sym) ?? 0
+    const history = historyMap.get(sym)
+    const freq = history?.freq20d ?? 0
     selectionFlagMap.set(sym, {
       freq20d: freq,
       highFreq: freq >= highFreqThreshold,
-      newMoney: !seenIn30d.has(sym),
+      newMoney: (history?.freq30d ?? 0) === 0,
     })
   }
   return selectionFlagMap
@@ -1649,22 +1650,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // Fire-and-forget: table 缺或運算失敗皆 0 bonus 不擋主流程。
   const sectorBonusMap = new Map<string, { bonus: number; avgCorr: number | null }>()
   try {
-    const { sectorLeaderBonus } = await import('./sectorCorrelation')
+    const { sectorLeaderBonusBatch } = await import('./sectorCorrelation')
     const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
     const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
-    const concurrency = 5
-    for (let i = 0; i < finalCandidates.length; i += concurrency) {
-      const chunk = finalCandidates.slice(i, i + concurrency)
-      const results = await Promise.all(chunk.map(c =>
-        sectorLeaderBonus(env.DB, c.symbol, c.sector ?? null, corrThreshold, bonusPoints)
-          .catch(() => ({ bonus: 0, avgCorr: null, leaderCount: 0 }))
-      ))
-      for (let j = 0; j < chunk.length; j++) {
-        sectorBonusMap.set(chunk[j].symbol, { bonus: results[j].bonus, avgCorr: results[j].avgCorr })
-      }
+    const bulkBonus = await sectorLeaderBonusBatch(
+      env.DB,
+      finalCandidates.map(c => ({ symbol: c.symbol, sector: c.sector ?? null })),
+      corrThreshold,
+      bonusPoints,
+    )
+    for (const [symbol, value] of bulkBonus) {
+      sectorBonusMap.set(symbol, { bonus: value.bonus, avgCorr: value.avgCorr })
     }
     const matched = [...sectorBonusMap.values()].filter(b => b.bonus > 0).length
-    debugLog.push(`[Step 4d] sector leader bonus: ${matched}/${finalCandidates.length} corr>${corrThreshold} (+${bonusPoints})`)
+    debugLog.push(`[Step 4d] sector leader bonus batch: ${matched}/${finalCandidates.length} corr>${corrThreshold} (+${bonusPoints})`)
   } catch (e) {
     console.warn('[Screener v2] #16 sector bonus failed (table missing or cold start):', e)
   }

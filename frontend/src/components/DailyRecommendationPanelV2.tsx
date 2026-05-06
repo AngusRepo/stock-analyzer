@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { RefreshCw, Star } from 'lucide-react'
+import { Activity, BarChart3, RefreshCw, ShieldCheck, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
@@ -7,6 +7,25 @@ import { RecommendationLaneExplainer } from '@/components/workstation/DecisionAr
 import { recommendationsApi } from '@/lib/api'
 import { queryTtl, recommendationDailyKey, selectRecommendationLanes, twToday } from '@/lib/queryPolicy'
 import { cn } from '@/lib/utils'
+
+function ObservabilityChip({ icon: Icon, label, value, tone = 'info' }: {
+  icon: typeof Activity
+  label: string
+  value: string
+  tone?: 'ok' | 'warn' | 'info'
+}) {
+  return (
+    <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${
+      tone === 'ok' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+        : tone === 'warn' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+          : 'border-sky-500/25 bg-sky-500/10 text-sky-300'
+    }`}>
+      <Icon className="h-3.5 w-3.5" />
+      <span>{label}</span>
+      <span className="text-foreground">{value}</span>
+    </div>
+  )
+}
 
 export function DailyRecommendationPanelV2() {
   const today = twToday()
@@ -19,27 +38,35 @@ export function DailyRecommendationPanelV2() {
   const payload = data?.payload
   const tradable = data?.tradable ?? []
   const emerging = data?.emerging ?? []
+  const explanation = AI_TOP_PICK_EXPLANATION.replace(/^名詞解釋：/, '')
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Star className="h-4 w-4 text-amber-400" />
-            每日選股推薦
-          </h2>
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Star className="h-4 w-4 text-amber-400" />
+              每日選股推薦
+            </h2>
+            <ObservabilityChip icon={BarChart3} label="tradable" value={`${tradable.length}`} tone="ok" />
+            <ObservabilityChip icon={ShieldCheck} label="research" value={`${emerging.length}`} tone="warn" />
+          </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {payload?.date ?? today} · ML + 籌碼 + 技術 + Alpha / Risk 綜合評分
           </p>
-          <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground/80">
-            {AI_TOP_PICK_EXPLANATION}
-          </p>
+          <div className="mt-2 flex w-full flex-wrap items-center gap-2 rounded-xl border border-[#263247] bg-[#070a10]/70 px-3 py-2 text-[11px] leading-5 text-muted-foreground/85">
+            <Badge variant="outline" className="shrink-0 border-sky-500/30 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-300">
+              名詞解釋
+            </Badge>
+            <span className="min-w-0 flex-1">{explanation}</span>
+          </div>
         </div>
         <Button
           variant="ghost"
           size="sm"
           onClick={() => refetch()}
-          className="gap-1.5 text-xs"
+          className="gap-1.5 text-xs xl:mt-1"
           disabled={isLoading}
         >
           <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
@@ -59,16 +86,16 @@ export function DailyRecommendationPanelV2() {
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
           <p className="text-sm">尚未產出今日推薦</p>
-          <p className="mt-1 text-xs">請確認 evening-chain / pipeline / recommendation 已完成，或查看 OBS 根因。</p>
+          <p className="mt-1 text-xs">請檢查 evening-chain / pipeline / recommendation，或到 OBS 看 root cause。</p>
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
-          <section className="space-y-3">
+          <section className="space-y-3 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.025] p-3">
             <div className="flex items-center justify-between px-1">
               <div>
-                <p className="text-xs font-semibold text-emerald-300">上市上櫃交易流</p>
+                <p className="text-xs font-semibold text-emerald-300">上市櫃交易流</p>
                 <p className="text-[11px] text-muted-foreground">
-                  會進入 morning setup / debate / pending buys，這一區才可能影響自動交易。
+                  會進 morning setup / debate / pending buys，自動交易只看這一區。
                 </p>
               </div>
               <Badge variant="outline" className="border-emerald-500/30 text-[10px] text-emerald-300">
@@ -81,7 +108,7 @@ export function DailyRecommendationPanelV2() {
               ))
             ) : (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-4 text-xs text-muted-foreground">
-                今天沒有上市櫃交易候選；興櫃不會回填到此區，避免研究股擠掉交易股。
+                今日沒有通過上市櫃交易流的候選。
               </div>
             )}
           </section>
@@ -89,9 +116,9 @@ export function DailyRecommendationPanelV2() {
           <section className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
             <div className="flex items-center justify-between px-1">
               <div>
-                <p className="text-xs font-semibold text-amber-300">興櫃觀察 · 研究流</p>
+                <p className="text-xs font-semibold text-amber-300">興櫃研究流</p>
                 <p className="text-[11px] text-muted-foreground">
-                  可跑 ML / IC / calibration evidence，但硬 gate 不進 morning setup、不產生 pending buys。
+                  可做研究追蹤，但硬 gate 不進 morning setup / pending buys。
                 </p>
               </div>
               <Badge variant="outline" className="border-amber-500/30 text-[10px] text-amber-300">
@@ -104,7 +131,7 @@ export function DailyRecommendationPanelV2() {
               ))
             ) : (
               <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4 text-xs text-muted-foreground">
-                今天沒有興櫃研究候選；此區只做研究觀察，不會擠掉上市櫃交易流。
+                今日沒有興櫃研究候選。
               </div>
             )}
           </section>

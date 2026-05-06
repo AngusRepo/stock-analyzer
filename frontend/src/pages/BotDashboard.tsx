@@ -468,9 +468,15 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
   if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
-    <div className="space-y-3">
+    <div className="bot-fallback-recommendations space-y-3">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+          tradable {recs.length}
+        </Badge>
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-300">
+          research {emergingRecs.length}
+        </Badge>
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
         </Badge>

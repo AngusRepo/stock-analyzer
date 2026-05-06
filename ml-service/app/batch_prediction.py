@@ -40,3 +40,30 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
                 "confidence": 0.0,
             })
     return results
+
+
+def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
+    """Run batch prediction and expose container cache telemetry."""
+    try:
+        from .model_store import get_model_cache_stats
+
+        before = get_model_cache_stats()
+    except Exception:
+        before = {}
+    results = predict_stock_v2_batch(payloads)
+    try:
+        from .model_store import get_model_cache_stats
+
+        after = get_model_cache_stats()
+    except Exception:
+        after = {}
+    cache_delta = {
+        key: int(after.get(key, 0)) - int(before.get(key, 0))
+        for key in {"hits", "misses", "gcs_downloads"}
+    }
+    return {
+        "results": results,
+        "metrics": {
+            "model_cache": cache_delta,
+        },
+    }

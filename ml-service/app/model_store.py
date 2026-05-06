@@ -41,11 +41,23 @@ logger = logging.getLogger(__name__)
 # ── GCS 初始化（lazy，避免本機測試時也要裝 google-cloud）──────────────────────
 _bucket = None
 _MODEL_LOAD_CACHE: dict[tuple[str, str | None], tuple[Any, dict]] = {}
+_MODEL_CACHE_STATS = {
+    "hits": 0,
+    "misses": 0,
+    "gcs_downloads": 0,
+}
 
 
 def clear_model_cache() -> None:
     """Clear container-local model cache."""
     _MODEL_LOAD_CACHE.clear()
+    for key in _MODEL_CACHE_STATS:
+        _MODEL_CACHE_STATS[key] = 0
+
+
+def get_model_cache_stats() -> dict[str, int]:
+    """Return container-local model cache counters for batch telemetry."""
+    return dict(_MODEL_CACHE_STATS)
 
 def _get_bucket():
     global _bucket
@@ -249,6 +261,7 @@ def load_model(
         cacheable = stock_id == 0 or explicit_path is not None or gcs_prefix is not None
         if cacheable and cache_key in _MODEL_LOAD_CACHE:
             cached_model, cached_meta = _MODEL_LOAD_CACHE[cache_key]
+            _MODEL_CACHE_STATS["hits"] += 1
             logger.info(f"[ModelStore] Cache hit {model_name} from {blob_path}")
             return cached_model, dict(cached_meta)
 
@@ -256,9 +269,12 @@ def load_model(
         if not blob.exists():
             return None, None
 
+        if cacheable:
+            _MODEL_CACHE_STATS["misses"] += 1
         # 下載到記憶體
         buf = io.BytesIO()
         blob.download_to_file(buf)
+        _MODEL_CACHE_STATS["gcs_downloads"] += 1
         buf.seek(0)
         model = joblib.load(buf)
 

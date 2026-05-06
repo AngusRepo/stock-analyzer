@@ -30,7 +30,6 @@ import {
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
-  WorkstationTickerStrip,
 } from '@/components/workstation/WorkstationChrome'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
@@ -469,29 +468,43 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
   if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
-      <div className="space-y-2">
-        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
+    <div className="space-y-3">
+      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
         </Badge>
         <span className="text-muted-foreground/70">這是 pipeline 產出的推薦候選；下一個交易日 morning setup / debate 後才會產生 pending buys。</span>
       </div>
-      {recs.slice(0, 12).map((r: any, idx: number) => (
-        <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-          <RecommendationCard rec={r} rank={idx + 1} />
-          <button
-            onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-            className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-            title="查看 K 線"
-          >
-            <Activity className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      ))}
-      {emergingRecs.length > 0 && (
-        <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+
+      <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,0.95fr)]">
+        <div className="space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
           <div className="flex items-center justify-between px-1">
+            <div>
+              <p className="text-[11px] font-semibold text-emerald-300">上市櫃交易流</p>
+              <p className="text-[10px] text-muted-foreground/70">會進 morning setup / debate / pending buys。</p>
+            </div>
+            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
+              {recs.length} 檔
+            </Badge>
+          </div>
+          {recs.slice(0, 10).map((r: any, idx: number) => (
+            <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
+              <RecommendationCard rec={r} rank={idx + 1} />
+              <button
+                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                title="查看 K 線"
+              >
+                <Activity className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-2">
+          <div className="flex items-center justify-between gap-3 px-1">
             <div>
               <p className="text-[11px] font-semibold text-amber-300">興櫃觀察名單</p>
               <p className="text-[10px] text-muted-foreground/70">研究用，不進 morning setup / pending buys。</p>
@@ -512,8 +525,9 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
               </button>
             </div>
           ))}
+          {!emergingRecs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有興櫃研究候選。</div>}
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -1347,14 +1361,15 @@ export default function BotDashboard() {
           }
         />
 
-        <WorkstationTickerStrip
-          items={[
-            { label: 'Desk mode', value: 'Admin only', tone: 'warn', detail: 'Bot 是你的交易桌，不是朋友版首頁。' },
-            { label: 'Exit owner', value: 'TP / Stop', tone: 'ok', detail: 'ML rescore 只留 WARN/EXIT_SIGNAL，不直接賣出。' },
-            { label: 'Pending source', value: 'T2 / debate', tone: 'info', detail: '候選清單不等於可下單。' },
-            { label: 'Quote sanity', value: 'Hard gate', tone: 'ok', detail: '盤中報價不可用就 fail closed。' },
-          ]}
-        />
+        <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl">
+          <div className="px-4 pb-2 pt-3">
+            <PortfolioSummary />
+          </div>
+        </WorkstationPanel>
+
+        <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
+          <PositionsTable />
+        </WorkstationPanel>
 
         <WorkstationPanel title="交易生命週期" kicker="candidate → debate → quote sanity → execution → audit">
           <div className="p-3">
@@ -1369,18 +1384,16 @@ export default function BotDashboard() {
           </div>
         </WorkstationPanel>
 
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[360px_minmax(0,1fr)_380px]">
-          <div className="space-y-3">
-            <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl" className="xl:sticky xl:top-3">
-              <div className="px-4 pb-2 pt-3">
-                <PortfolioSummary />
-              </div>
-            </WorkstationPanel>
-            <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
-              <PositionsTable />
-            </WorkstationPanel>
-          </div>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,0.85fr)_minmax(420px,1.15fr)]">
+          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
+            <div className="px-3 pb-2 pt-1">
+              <PerformanceChart />
+            </div>
+          </WorkstationPanel>
+          <BotThemeFlowPanel />
+        </div>
 
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
           <WorkstationPanel
             title="AI 候選清單"
             kicker="post-debate execution candidates"
@@ -1399,23 +1412,9 @@ export default function BotDashboard() {
             </div>
           </WorkstationPanel>
 
-          <div className="space-y-3">
-            <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
-              <TradeHistory />
-            </WorkstationPanel>
-            <WorkstationCatCard
-              src="/stockvision-cats/02_red_market_royal_cat.png"
-              title="紅盤也要端著"
-              caption="帳面變漂亮時先查交割、滑價與未實現損益，不讓紙上富貴偷灌資產。"
-              tone="warn"
-            />
-            <WorkstationCatCard
-              src="/stockvision-cats/03_ai_signal_skewer_stall.png"
-              title="AI 串燒別亂買"
-              caption="推薦只是候選，進場前仍要過 debate、T2、quote sanity 與 execution guard。"
-              tone="info"
-            />
-          </div>
+          <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+            <TradeHistory />
+          </WorkstationPanel>
         </div>
 
         {/* K-Line Dialog (popup on stock click) */}
@@ -1427,15 +1426,6 @@ export default function BotDashboard() {
             {selectedStockId && <CandlestickChart stockId={selectedStockId} />}
           </DialogContent>
         </Dialog>
-
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.15fr_0.85fr]">
-          <WorkstationPanel title="資產曲線" kicker="paper trading performance">
-            <div className="px-3 pb-2 pt-1">
-              <PerformanceChart />
-            </div>
-          </WorkstationPanel>
-          <BotThemeFlowPanel />
-        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <BacktestCard />

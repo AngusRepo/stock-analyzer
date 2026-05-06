@@ -463,7 +463,7 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
   return (
     <div>
       <p className="text-xs text-muted-foreground mb-2">RRG 四象限圖</p>
-      <div className="h-64 w-full">
+      <div className="h-80 min-h-[20rem] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />

@@ -32,6 +32,34 @@ def test_optuna_sandbox_price_loaders_are_chunked_not_per_stock_n_plus_one():
     assert "snapshot_reader_not_implemented" not in source
 
 
+def test_weekly_monthly_optuna_heavy_routes_require_compute_snapshot():
+    router_source = (ROOT / "routers" / "optuna.py").read_text(encoding="utf-8")
+    sltp_source = (ROOT / "optuna_scripts" / "optuna_sltp.py").read_text(encoding="utf-8")
+    screener_source = (ROOT / "optuna_scripts" / "optuna_screener.py").read_text(encoding="utf-8")
+    per_regime_source = (ROOT / "optuna_scripts" / "optuna_per_regime_robust.py").read_text(encoding="utf-8")
+
+    assert "research_data_source" in router_source
+    assert "_research_data_mode_for_request" in router_source
+    assert "cadence in {\"weekly\", \"monthly\"}" in router_source
+    assert "data_mode=_research_data_mode_for_request(req)" in router_source
+    assert "mode=data_mode" in sltp_source
+    assert "mode=data_mode" in screener_source
+    assert "mode=data_mode" in per_regime_source
+    assert "BacktestDataset.load_from_d1(" not in sltp_source
+    assert "BacktestDataset.load_from_d1(" not in screener_source
+    assert "BacktestDataset.load_from_d1(" not in per_regime_source
+
+
+def test_weekly_monthly_optuna_sweep_uses_controller_owned_bounded_parallelism():
+    router_source = (ROOT / "routers" / "optuna.py").read_text(encoding="utf-8")
+
+    assert "ThreadPoolExecutor" in router_source
+    assert "max_workers = min(" in router_source
+    assert "executor.submit(_run_optuna_sweep_source" in router_source
+    assert "as_completed(" in router_source
+    assert "for source, runner in sweep_plan:" not in router_source
+
+
 def test_research_data_policy_prevents_silent_fallback():
     source = (ROOT / "services" / "research_data_access.py").read_text(encoding="utf-8")
 

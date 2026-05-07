@@ -514,6 +514,30 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
   return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
 }
 
+function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | null {
+  if (!summary) return null
+  const total = Number(summary.total ?? 0)
+  if (!Number.isFinite(total) || total <= 0) return null
+  const bullish = Number(summary.bullish ?? 0)
+  const bearish = Number(summary.bearish ?? 0)
+  const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish))
+  const reported = Number(summary.reported ?? bullish + bearish + flat)
+  const missing = Number(summary.missing ?? Math.max(0, total - reported))
+  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
+  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
+    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
+    : null
+  const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
+    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    : ''
+  const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
+  const missingText = missing > 0 ? `、${missing}/${total}缺資料` : ''
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `；${summary.zeroWeightModels.length}模型權重=0`
+    : ''
+  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
+}
+
 function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
   const bullish = summary?.thresholds?.bullish
   const bearish = summary?.thresholds?.bearish
@@ -879,7 +903,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
-  const mlSummary = formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const mlThresholdText = formatMlThresholdText(mlVoteSummary)
   const screenerFunnel = screenerFunnelFromRec(rec)
@@ -935,7 +959,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               </span>
             )}
             {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="max-w-full truncate border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
                 ML {mlSummary ?? `分數 ${fmtNumber(rec.ml_score, 1)}，投票明細待同步`}
               </Badge>
             )}

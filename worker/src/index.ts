@@ -144,6 +144,10 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    if ((env as any).ENABLE_CLOUDFLARE_CRON !== '1') {
+      console.warn(`[Cron] Cloudflare scheduled trigger ignored (${event.cron}); GCP Scheduler is the production owner.`)
+      return
+    }
     await handleScheduledCron(event, env, ctx)
   },
 

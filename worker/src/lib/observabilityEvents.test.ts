@@ -110,7 +110,13 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   const events = buildEventsFromDataQuality({
     generatedAt,
     checks: [
-      { id: 'price_freshness', label: 'Price data', status: 'fail', summary: 'latest=2026-04-29 lag=1d' },
+      {
+        id: 'price_freshness',
+        label: 'Price data',
+        status: 'fail',
+        summary: 'latest=2026-04-29 lag=1d',
+        metrics: { latest_date: '2026-04-29', target_date: '2026-04-30' },
+      },
       { id: 'schema', label: 'Schema', status: 'ok', summary: 'ok' },
     ],
   })
@@ -118,6 +124,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events.length === 1, 'data quality should emit actionable non-ok checks only')
   assert(events[0].severity === 'error', 'failed data quality check should be error severity')
   assert(events[0].title === 'Price data', 'data quality event should preserve check label')
+  assert(events[0].ts === '2026-04-29T00:00:00.000Z', 'data quality event should use evidence time instead of page refresh time')
 }
 
 {

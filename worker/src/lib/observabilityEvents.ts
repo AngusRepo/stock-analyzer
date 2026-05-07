@@ -163,6 +163,36 @@ function schedulerEventTimestamp(job: SchedulerJobSnapshot, generatedAt: string)
   return job.lastRunAt || job.lastAttemptAt || job.lastEffectiveRunAt || generatedAt
 }
 
+function normalizeEvidenceTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const text = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return text
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(text)) return `${text.replace(' ', 'T')}Z`
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T00:00:00.000Z`
+  return null
+}
+
+function collectEvidenceTimestamps(value: unknown, parentKey = ''): string[] {
+  if (value == null) return []
+  if (Array.isArray(value)) return value.flatMap((item) => collectEvidenceTimestamps(item, parentKey))
+  if (typeof value !== 'object') {
+    return /(latest|created|updated|seen|run|verified|manifest|date|at)$/i.test(parentKey)
+      && !/^target_date$/i.test(parentKey)
+      ? [normalizeEvidenceTimestamp(value)].filter((item): item is string => Boolean(item))
+      : []
+  }
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, nested]) => (
+    collectEvidenceTimestamps(nested, key)
+  ))
+}
+
+function dataQualityEventTimestamp(check: DataQualityCheck, generatedAt: string): string {
+  const evidenceTimes = collectEvidenceTimestamps(check.metrics)
+    .filter((value) => Number.isFinite(new Date(value).getTime()))
+    .sort()
+  return evidenceTimes.at(-1) ?? generatedAt
+}
+
 function dataQualitySeverity(status: string): ObservabilitySeverity {
   if (status === 'fail') return 'error'
   if (status === 'warn') return 'warn'
@@ -292,7 +322,7 @@ export function buildEventsFromDataQuality(input: {
 
   return actionable.map((check) => ({
     id: eventId('data_quality', 'data_quality_report', check.id),
-    ts: input.generatedAt,
+    ts: dataQualityEventTimestamp(check, input.generatedAt),
     severity: dataQualitySeverity(check.status),
     domain: 'data_quality',
     source: 'data_quality_report',

@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string): void {
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
+const twseApi = fs.readFileSync('src/lib/twseApi.ts', 'utf8')
 const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
 
 assert(
@@ -33,6 +34,20 @@ assert(
 assert(
   updateOrchestrator.includes('assertMarketDataReady(env.DB, twDate, { requireIndicators: false })'),
   'bulk fetch readiness must not require indicators before the indicator queue has run',
+)
+
+assert(
+  twseApi.includes('assertBulkPriceSourceReady') &&
+    twseApi.includes('MIN_TWSE_BULK_PRICE_ROWS = 900') &&
+    twseApi.includes('MIN_TPEX_BULK_PRICE_ROWS = 700') &&
+    twseApi.includes('Bulk price source incomplete'),
+  'bulk price fetch must fail before D1 writes when TWSE/TPEX source rows are incomplete',
+)
+
+assert(
+  updateOrchestrator.includes('bulk fetch failed before indicator queue') &&
+    updateOrchestrator.includes("logSchedulerResult(env.KV, 'evening-chain'"),
+  'bulk fetch failures must be visible in evening-chain scheduler logs before queue starts',
 )
 
 assert(

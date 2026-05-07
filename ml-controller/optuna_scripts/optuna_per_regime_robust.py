@@ -67,6 +67,7 @@ from services.backtest_engine import (  # noqa: E402
     BacktestMetrics,
     Trade,
 )
+from services.research_data_access import ResearchDataMode  # noqa: E402
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 from services.walk_forward_retrain import predict_regime_at_date  # noqa: E402
 from services.kv_pusher import push_optuna_result  # noqa: E402
@@ -260,6 +261,7 @@ def run_search(
     n_trials: int = 200,
     subset_size: int = 400,
     window_days: int = 365,
+    data_mode: ResearchDataMode | None = None,
     push_kv: bool = False,
 ) -> dict:
     """Execute per-regime robust search."""
@@ -268,7 +270,14 @@ def run_search(
     start_date = (today - timedelta(days=window_days)).strftime("%Y-%m-%d")
 
     symbols = select_stratified_subset(target_size=subset_size, end_date=end_date)
-    dataset = BacktestDataset.load_from_d1(start_date=start_date, end_date=end_date, symbols=symbols)
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="optuna.per_regime",
+        start_date=start_date,
+        end_date=end_date,
+        symbols=symbols,
+        business_date=end_date,
+        mode=data_mode,
+    )
 
     baseline = _default_sltp_baseline() if target == "sltp" else {}
     objective = create_robust_objective(dataset, start_date, end_date, baseline, target)
@@ -319,6 +328,7 @@ def run_search(
         "n_trials_completed": len(study.trials),
         "n_pareto": len(pareto),
         "window": {"start": start_date, "end": end_date},
+        "data_access": data_access,
     }
 
     logger.info(f"[per-regime-robust] best #{best.number}: robust_sharpe={best.values[0]:.3f} "

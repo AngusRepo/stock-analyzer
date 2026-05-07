@@ -19,6 +19,7 @@ export interface SchedulerRunLogEntry {
 type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
   date?: string
   run_date?: string
+  strict?: boolean
 }
 
 const TASK_NAMES: Record<string, string> = {
@@ -137,6 +138,7 @@ export async function logSchedulerRunResult(
     // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.
     console.warn(`[schedulerRunLogger] KV write failed for task=${task}:`, error)
+    if (result.strict) throw error
   }
 
   if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {

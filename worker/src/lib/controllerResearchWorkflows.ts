@@ -42,47 +42,58 @@ interface OptunaResearchOptions {
   }
 }
 
-function buildOptunaRequestBody(source: string, options: OptunaResearchOptions): Record<string, unknown> {
-  if (source === 'ga_optimizer') {
-    return {
-      cadence: options.cadence,
-      population_size: options.ga?.populationSize ?? 24,
-      generations: options.ga?.generations ?? 8,
-      push_kv: true,
-      dry_run: false,
-    }
-  }
-
+function buildOptunaSweepRequestBody(options: OptunaResearchOptions): Record<string, unknown> {
   return {
     cadence: options.cadence,
     n_trials: options.nTrials,
+    subset_size: options.subsetSize,
+    max_parallel_sources: 3,
+    ga_population_size: options.ga?.populationSize ?? 24,
+    ga_generations: options.ga?.generations ?? 8,
+    research_data_source: 'snapshot',
+    evidence_requirement: 'requires compute snapshots',
     push_kv: true,
     dry_run: false,
-    ...(source === 'screener' || source === 'sltp' ? { subset_size: options.subsetSize } : {}),
   }
+}
+
+function isInsufficientDataResponse(status: number, text: string): boolean {
+  return status === 400 && /insufficient|no top stocks|benchmark/i.test(text)
+}
+
+function summarizeOptunaOk(source: string, data: Record<string, any> | null): string {
+  if (source !== 'ga_optimizer') return `${source}:OK`
+
+  const push = data?.push
+  const updatedKeys = Array.isArray(push?.updatedKeys) ? push.updatedKeys : []
+  if (push?.success === true && updatedKeys.includes('optimizer:ga:latest')) {
+    return 'ga_optimizer:OK(push=optimizer:ga:latest)'
+  }
+  return `ga_optimizer:ERROR(push_missing:${JSON.stringify(push ?? null).slice(0, 120)})`
 }
 
 async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) {
   requireController(env)
 
-  const sources = ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'ga_optimizer'] as const
-  const settled = await Promise.allSettled(
-    sources.map((src) =>
-      controllerFetch(env, `/optuna/${src}`, {
-        method: 'POST',
-        jsonBody: buildOptunaRequestBody(src, options),
-        timeoutMs: 3_500_000,
-      })
-        .then(async (res) => {
-          if (res.ok) return `${src}:OK`
-          const text = await res.text().catch(() => '')
-          return `${src}:HTTP${res.status}${text ? `(${text.slice(0, 120)})` : ''}`
-        })
-        .catch((e: any) => `${src}:ERROR(${e?.message?.slice(0, 30) ?? 'unknown'})`),
-    ),
-  )
-
-  const results = settled.map((entry) => entry.status === 'fulfilled' ? entry.value : `REJECTED:${entry.reason}`)
+  const resp = await controllerFetch(env, '/optuna/research_sweep', {
+    method: 'POST',
+    jsonBody: buildOptunaSweepRequestBody(options),
+    timeoutMs: 3_500_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    if (isInsufficientDataResponse(resp.status, text)) {
+      return `cadence=${options.cadence}, SKIPPED_NOT_READY(${text.slice(0, 300)})`
+    }
+    throw new Error(`${options.cadence} research sweep HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const results = Array.isArray(data.results)
+    ? data.results.map((item: any) => String(item.summary ?? `${item.source}:${item.status ?? 'unknown'}`))
+    : [String(data.summary ?? `${options.cadence}:OK`)]
+  if (data.ga?.push) {
+    results.push(summarizeOptunaOk('ga_optimizer', { push: data.ga.push }))
+  }
   const summary = results.join(', ')
   const failures = results.filter((item) => /:HTTP\d+|:ERROR\(|^REJECTED:/i.test(item))
 

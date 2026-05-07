@@ -102,6 +102,20 @@ function collectAffectedSymbols(event: ObservabilityEvent): string[] {
 function inferRootCause(event: ObservabilityEvent): string {
   const evidence = event.evidence ?? {}
   if (event.domain === 'scheduler') {
+    const summary = cleanText(evidence.summary)
+    const error = cleanText(evidence.error)
+    const diagnostic = error || summary || cleanText(event.summary)
+    if (diagnostic) {
+      if (/market data not ready|price rows|chip rows|indicator/i.test(diagnostic)) {
+        return `market_data_readiness:${diagnostic.slice(0, 180)}`
+      }
+      if (/research failure|optuna|ga_optimizer|SKIPPED_NOT_READY|HTTP\d+/i.test(diagnostic)) {
+        return `optuna_research:${diagnostic.slice(0, 180)}`
+      }
+      if (/callback|run state|locked|timeout/i.test(diagnostic)) {
+        return `scheduler_orchestration:${diagnostic.slice(0, 180)}`
+      }
+    }
     const runId = cleanText(evidence.run_id) || cleanText(evidence.task_id)
     return runId
       ? `scheduler_callback_or_run_state:${runId}`

@@ -162,7 +162,7 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     assert ic_weights["XGBoost"] == 0.037
     assert ic_weights["CatBoost"] == 0.012
     assert degraded == 1.0
-    assert cfg == {}
+    assert cfg["buyThreshold"] == 0.7
     assert pool_snapshot["models"]["XGBoost"]["rolling_ic"] == 0.037
 
 
@@ -409,3 +409,24 @@ def test_daily_pipeline_ic_shrinkage_keeps_short_sample_model_from_hard_zero(mon
     assert bundle["weights"]["PatchTST"] == 0.0
     assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["reason"] == "shrunk_to_prior"
     assert bundle["diagnostics"]["PatchTST"]["ic_shrinkage"]["reason"] == "negative_ic_confirmed"
+
+
+def test_daily_pipeline_uses_pooled_floor_when_segment_ic_is_negative_but_global_evidence_is_positive(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = {
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "rolling_ic": 0.034,
+                "last_ic_sample_count": 132,
+                "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},
+                "model_cpcv": {"decision": "PASS", "pbo": 0.10},
+            },
+        }
+    }
+
+    bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "EMERGING")
+
+    assert bundle["weights"]["DLinear"] > 0
+    assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["reason"] == "pooled_segment_floor"
+    assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["segment_reason"] == "negative_ic_confirmed"

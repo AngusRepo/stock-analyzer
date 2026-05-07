@@ -9,7 +9,14 @@ function hasTaskHandler(source: string, task: string): boolean {
 }
 
 const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
+const workerIndex = fs.readFileSync('src/index.ts', 'utf8')
 assert(!wrangler.includes('[triggers]'), 'Cloudflare scheduled crons must stay disabled; GCP Scheduler is the only scheduler owner')
+assert(
+  workerIndex.includes("ENABLE_CLOUDFLARE_CRON") &&
+    workerIndex.includes("GCP Scheduler is the production owner") &&
+    workerIndex.includes("return"),
+  'Worker scheduled() must fail-closed/no-op unless ENABLE_CLOUDFLARE_CRON=1; stale Cloudflare cron triggers cannot own production',
+)
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 assert(manifest.owner === 'gcp-scheduler', 'scheduler manifest must declare gcp-scheduler owner')
@@ -62,7 +69,7 @@ for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'r
   )
 }
 
-for (const critical of ['evening-chain']) {
+for (const critical of ['evening-chain', 'weekly-optuna', 'monthly-optuna']) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }

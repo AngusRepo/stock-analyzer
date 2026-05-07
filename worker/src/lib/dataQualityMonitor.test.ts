@@ -58,6 +58,15 @@ function assert(condition: unknown, message: string): void {
     total: 3,
   })
   assert(check.status === 'warn', 'missing compute/report artifacts should warn without hiding D1 serving freshness')
+  assert(
+    check.summary.includes('object-store artifacts pending'),
+    'missing GCS/R2 artifacts should be described as pending when D1 serving manifests are ready',
+  )
+  assert(
+    Array.isArray(check.metrics?.pending_object_artifacts) &&
+      (check.metrics?.pending_object_artifacts as string[]).includes('backtest_dataset_compute'),
+    'snapshot check metrics should expose pending object artifact names',
+  )
 }
 
 {

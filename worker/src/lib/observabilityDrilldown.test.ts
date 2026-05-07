@@ -66,6 +66,7 @@ const report: ObservabilityEventReport = {
   assert(drilldown.incidents.length === 2, 'drilldown should focus on non-ok incidents')
   assert(drilldown.incidents[0].domain === 'scheduler', 'highest severity incident should come first')
   assert(drilldown.incidents[0].run_ids.includes('pipeline-v2-abc'), 'scheduler incident should expose run_id')
+  assert(drilldown.incidents[0].root_cause.startsWith('scheduler_orchestration:'), 'scheduler incident root cause should expose the concrete summary instead of a generic run id')
   assert(drilldown.incidents[1].affected_symbols.includes('4938'), 'data-quality incident should expose affected symbols')
   assert(drilldown.operator_questions.some((row) => row.question.includes('為什麼')), 'drilldown should answer root-cause questions')
 }
@@ -91,6 +92,20 @@ const report: ObservabilityEventReport = {
   const incident = drilldown.incidents.find((item) => item.domain === 'data_quality')
   assert(incident?.first_seen === '2026-05-04T10:15:00.000Z', 'drilldown should prefer persisted audit first_seen over page-open generated_at')
   assert(incident?.last_seen === '2026-05-05T01:00:00.000Z', 'drilldown should keep live event as last_seen when issue is still active')
+}
+
+{
+  const marketDataReport = {
+    ...report,
+    events: [{
+      ...report.events[0],
+      summary: 'Error: market data not ready: OTC price rows=15/700',
+      evidence: { task_id: 'evening-chain', summary: 'Error: market data not ready: OTC price rows=15/700' },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(marketDataReport)
+  assert(drilldown.incidents[0].root_cause.includes('market_data_readiness'), 'market-data readiness failures should be visible as the root cause')
+  assert(drilldown.incidents[0].root_cause.includes('OTC price rows=15/700'), 'root cause should include the failing market row count')
 }
 
 {

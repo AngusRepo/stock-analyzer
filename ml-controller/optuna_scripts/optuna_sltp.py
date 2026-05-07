@@ -56,6 +56,7 @@ except ImportError:
 
 # backtest_engine + stratified_subset 位於 services/，sys.path 已含 ml-controller root
 from services.backtest_engine import replay_period, BacktestDataset  # noqa: E402
+from services.research_data_access import ResearchDataMode  # noqa: E402
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,7 @@ def run_search(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     baseline_params: Optional[dict] = None,
+    data_mode: ResearchDataMode | None = None,
 ) -> dict:
     """
     Sprint 5.1 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
@@ -249,10 +251,13 @@ def run_search(
     logger.info(f"[optuna_sltp] subset picked: {len(symbols)} symbols")
 
     # ── Step 2: pre-load dataset once ───────────────────────────────────────
-    dataset = BacktestDataset.load_from_d1(
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="optuna.sltp",
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,
+        business_date=end_date,
+        mode=data_mode,
     )
 
     # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
@@ -320,6 +325,7 @@ def run_search(
         "pareto_size": len(pareto_trials),
         "mode": "A",
         "data_source": "backtest_engine.replay_period",
+        "data_access": data_access,
         "subset_size": len(symbols),
         "date_window": f"{start_date}~{end_date}",
         "realism_note": (

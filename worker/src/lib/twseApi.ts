@@ -41,6 +41,36 @@ async function fetchWithRetry(
 }
 
 const TWSE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+export const MIN_TWSE_BULK_PRICE_ROWS = 900
+export const MIN_TPEX_BULK_PRICE_ROWS = 700
+
+type TpexStockDayAllOptions = {
+  minRows?: number
+  maxReadinessAttempts?: number
+  readinessDelayMs?: number
+  fetcher?: typeof fetchWithRetry
+}
+
+export function assertBulkPriceSourceReady(input: {
+  date: string
+  twseRows: number
+  tpexRows: number
+  twseOk: boolean
+  tpexOk: boolean
+}): void {
+  const problems: string[] = []
+  if (!input.twseOk) problems.push('TWSE source failed')
+  if (!input.tpexOk) problems.push('TPEX source failed')
+  if (input.twseRows < MIN_TWSE_BULK_PRICE_ROWS) {
+    problems.push(`TWSE price rows=${input.twseRows}/${MIN_TWSE_BULK_PRICE_ROWS}`)
+  }
+  if (input.tpexRows < MIN_TPEX_BULK_PRICE_ROWS) {
+    problems.push(`TPEX price rows=${input.tpexRows}/${MIN_TPEX_BULK_PRICE_ROWS}`)
+  }
+  if (problems.length > 0) {
+    throw new Error(`Bulk price source incomplete for ${input.date}: ${problems.join('; ')}`)
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -951,16 +981,31 @@ export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
     })
 }
 
-export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
+export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {}): Promise<StockDayAllRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
-  const res = await fetchWithRetry(url, {
-    headers: TWSE_HEADERS,
-    signal: AbortSignal.timeout(30000),
-  }, { label: 'TPEX_DAILY_QUOTES' })
-  if (!res.ok) return []
-  const text = await res.text()
-  const body = parseOpenApiArray(text)
-  return parseTpexDailyQuoteRows(body)
+  const minRows = options.minRows ?? MIN_TPEX_BULK_PRICE_ROWS
+  const maxAttempts = Math.max(1, options.maxReadinessAttempts ?? 4)
+  const delayMs = Math.max(0, options.readinessDelayMs ?? 15_000)
+  const fetcher = options.fetcher ?? fetchWithRetry
+  let lastRows: StockDayAllRow[] = []
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetcher(url, {
+      headers: TWSE_HEADERS,
+      signal: AbortSignal.timeout(30000),
+    }, { label: 'TPEX_DAILY_QUOTES' })
+    if (!res.ok) return []
+    const text = await res.text()
+    const body = parseOpenApiArray(text)
+    lastRows = parseTpexDailyQuoteRows(body)
+    if (lastRows.length >= minRows) return lastRows
+    if (attempt < maxAttempts) {
+      console.warn(`[TPEX_DAILY_QUOTES] partial feed ${lastRows.length}/${minRows}, readiness retry ${attempt}/${maxAttempts}`)
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+
+  return lastRows
 }
 
 /** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
@@ -1010,6 +1055,14 @@ export async function bulkFetchAndStorePrices(
   const twseRows = twseResult.status === 'fulfilled' ? twseResult.value.rows : []
   const twseReportDate = twseResult.status === 'fulfilled' ? twseResult.value.reportDate : null
   const effectiveDate = twseReportDate ?? date
+  const tpexQuoteRows = tpexRows.status === 'fulfilled' ? tpexRows.value : []
+  assertBulkPriceSourceReady({
+    date: effectiveDate,
+    twseRows: twseRows.length,
+    tpexRows: tpexQuoteRows.length,
+    twseOk: twseResult.status === 'fulfilled',
+    tpexOk: tpexRows.status === 'fulfilled',
+  })
   if (twseReportDate && twseReportDate !== date) {
     console.warn(
       `[BulkPrice] TWSE report date ${twseReportDate} ≠ requested ${date}; ` +
@@ -1019,7 +1072,7 @@ export async function bulkFetchAndStorePrices(
 
   const allRows: StockDayAllRow[] = [
     ...twseRows,
-    ...(tpexRows.status === 'fulfilled' ? tpexRows.value : []),
+    ...tpexQuoteRows,
     ...(emergingRows.status === 'fulfilled' ? emergingRows.value : []),
   ]
   if (twseResult.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseResult.reason)

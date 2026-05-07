@@ -66,7 +66,7 @@ import polars as pl
 
 from services import d1_client
 from services.dataset_snapshots import latest_dataset_snapshot
-from services.research_data_access import resolve_research_data_access
+from services.research_data_access import ResearchDataMode, resolve_research_data_access
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +393,7 @@ class BacktestDataset:
         end_date: str,
         symbols: Optional[list[str]] = None,
         business_date: Optional[str] = None,
+        mode: ResearchDataMode | None = None,
     ) -> tuple["BacktestDataset", dict[str, Any]]:
         data_access = resolve_research_data_access(
             lane=lane,
@@ -400,6 +401,7 @@ class BacktestDataset:
             business_date=business_date or end_date,
             required_start_date=start_date,
             required_end_date=end_date,
+            mode=mode,
         )
         if data_access.source == "snapshot" and data_access.snapshot:
             dataset = cls.load_from_snapshot_manifest(

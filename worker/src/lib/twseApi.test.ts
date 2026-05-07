@@ -1,4 +1,4 @@
-import { parseTpexChipRows, parseTpexDailyQuoteRows, parseTwseChipRows } from './twseApi'
+import { fetchTpexStockDayAll, parseTpexChipRows, parseTpexDailyQuoteRows, parseTwseChipRows } from './twseApi'
 import { readFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
@@ -110,3 +110,35 @@ function assert(condition: unknown, message: string): void {
   assert(rows[0]?.symbol === '7584', 'TPEX parser should keep the common-stock symbol')
   assert(rows[0]?.close === 32.6, 'TPEX parser should parse close price')
 }
+
+void (async () => {
+  let attempts = 0
+  const partial = [{ Date: '1150507', SecuritiesCompanyCode: '1563', Open: '43', High: '44', Low: '42', Close: '43.55', TradingShares: '1,870,291' }]
+  const full = Array.from({ length: 701 }, (_, idx) => ({
+    Date: '1150507',
+    SecuritiesCompanyCode: String(3000 + idx),
+    Open: '10.0',
+    High: '10.5',
+    Low: '9.8',
+    Close: '10.2',
+    TradingShares: '1,000',
+  }))
+  const makeResponse = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  }) as Response
+
+  const rows = await fetchTpexStockDayAll({
+    minRows: 700,
+    maxReadinessAttempts: 2,
+    readinessDelayMs: 0,
+    fetcher: async () => {
+      attempts += 1
+      return makeResponse(attempts === 1 ? partial : full)
+    },
+  })
+
+  assert(attempts === 2, 'TPEX quote fetch should retry an incomplete partial feed before returning')
+  assert(rows.length === 701, 'TPEX quote fetch should return the complete feed after readiness retry')
+})()

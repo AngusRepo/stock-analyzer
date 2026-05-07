@@ -112,6 +112,21 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
+    const message = e instanceof Error ? e.message : String(e)
+    await logSchedulerResult(env.KV, 'update', {
+      status: 'error',
+      summary: message,
+      duration_ms: 0,
+      error: String(e),
+      run_date: twDate,
+    }).catch((logError) => console.warn('[Cron] Bulk fetch update log failed:', logError))
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `bulk fetch failed before indicator queue: ${message}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: twDate,
+    }).catch((logError) => console.warn('[Cron] Bulk fetch evening-chain log failed:', logError))
     throw e
   }
 }

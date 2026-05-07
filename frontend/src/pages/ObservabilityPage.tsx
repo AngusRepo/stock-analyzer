@@ -104,8 +104,8 @@ function formatDuration(start?: string | null, end?: string | null) {
 function incidentTiming(incident: ObservabilityIncident, events: ObservabilityEvent[] = []) {
   const sourceEvents = events.filter((event) => incident.source_event_ids?.includes(event.id))
   const eventTimes = sourceEvents.map((event) => event.ts).filter(Boolean).sort()
-  const firstSeen = incident.first_seen ?? eventTimes[0] ?? ''
-  const lastSeen = incident.last_seen ?? eventTimes[eventTimes.length - 1] ?? firstSeen
+  const firstSeen = eventTimes[0] ?? incident.first_seen ?? ''
+  const lastSeen = eventTimes[eventTimes.length - 1] ?? incident.last_seen ?? firstSeen
   return {
     firstSeen,
     lastSeen,
@@ -635,11 +635,9 @@ export default function ObservabilityPage() {
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                <WorkstationPill tone={(scheduler.data?.stats?.failed24h ?? 0) ? 'warn' : 'ok'}>{scheduler.data?.stats?.failed24h ?? 0} failed jobs</WorkstationPill>
-                <WorkstationPill tone={statusTone(dataQuality.data?.overall)}>{dataQualityScore}% data trust</WorkstationPill>
-                <WorkstationPill tone={events.length ? 'info' : 'warn'}>{events.length} traces</WorkstationPill>
-              </div>
+              <p className="text-xs leading-5 text-slate-400">
+                保留完整 row 與 drilldown 入口；狀態用下方 sparkline / 分數條呈現，避免重複膠囊噪音。
+              </p>
               <div className="flex flex-wrap gap-2 text-[11px]">
                 <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 font-mono text-sky-200 hover:border-sky-300/50">
                   Scheduler <ExternalLink className="h-3 w-3" />

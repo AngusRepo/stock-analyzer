@@ -17,6 +17,7 @@ optuna.py — Optuna 自動化 endpoint (Cloud Run 版)
 GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑（不再 call Modal）
 """
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer a
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
-from services.research_data_access import resolve_research_data_access
+from services.research_data_access import ResearchDataMode, resolve_research_data_access
 from services.snapshot_parquet import read_snapshot_component
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
@@ -50,6 +51,8 @@ class OptunaReq(BaseModel):
     n_trials: int = 200
     push_kv: bool = True
     dry_run: bool = False
+    cadence: str | None = None
+    research_data_source: ResearchDataMode | None = None
     # Sprint 5.1: sltp-specific (ignored by other sources)
     subset_size: int = 250
     start_date: str | None = None  # defaults to end_date - 90 days
@@ -75,8 +78,29 @@ class GAOptimizerReq(BaseModel):
     dry_run: bool = False
 
 
+class OptunaResearchSweepReq(BaseModel):
+    cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
+    n_trials: int = Field(default=200, ge=1, le=1000)
+    subset_size: int = Field(default=1000, ge=50, le=5000)
+    max_parallel_sources: int = Field(default=3, ge=1, le=6)
+    ga_population_size: int = Field(default=24, ge=6, le=200)
+    ga_generations: int = Field(default=8, ge=1, le=50)
+    research_data_source: ResearchDataMode | None = "snapshot"
+    push_kv: bool = True
+    dry_run: bool = False
+
+
 def _push_live(req) -> bool:
     return bool(req.push_kv and not req.dry_run)
+
+
+def _research_data_mode_for_request(req) -> ResearchDataMode | None:
+    if getattr(req, "research_data_source", None):
+        return req.research_data_source
+    cadence = str(getattr(req, "cadence", "") or "").strip().lower()
+    if cadence in {"weekly", "monthly"}:
+        return "snapshot"
+    return None
 
 
 def _contract_meta(
@@ -107,9 +131,14 @@ def _contract_meta(
 # ─── Helpers: D1 loaders ─────────────────────────────────────────────────────
 
 
-def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
+def _load_top_active_stocks_with_prices(
+    min_rows: int = 200,
+    top_n: int = 10,
+    *,
+    mode: ResearchDataMode | None = None,
+) -> list[dict]:
     """For barrier search — D10 fix: use tradable universe, not just watchlist."""
-    data_access = resolve_research_data_access(lane="optuna.barrier", kind="price_history")
+    data_access = resolve_research_data_access(lane="optuna.barrier", kind="price_history", mode=mode)
     if data_access.source == "snapshot":
         if not data_access.snapshot:
             raise RuntimeError(f"price_snapshot_missing:{data_access.to_dict()}")
@@ -230,8 +259,13 @@ def _load_price_rows_by_stock_ids(stock_ids: list[int], limit_per_stock: int | N
     return grouped
 
 
-def _optuna_data_access_meta(lane: str, kind: str) -> dict[str, Any]:
-    return resolve_research_data_access(lane=lane, kind=kind).to_dict()
+def _optuna_data_access_meta(
+    lane: str,
+    kind: str,
+    *,
+    mode: ResearchDataMode | None = None,
+) -> dict[str, Any]:
+    return resolve_research_data_access(lane=lane, kind=kind, mode=mode).to_dict()
 
 
 def _load_rrg_inputs_from_snapshot(
@@ -328,9 +362,11 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_barrier import failed: {e}")
 
     policy = OptunaRoutePolicy.from_env()
+    data_mode = _research_data_mode_for_request(req)
     stocks_data = _load_top_active_stocks_with_prices(
         min_rows=policy.barrier_min_price_rows,
         top_n=policy.barrier_top_n,
+        mode=data_mode,
     )
     if not stocks_data:
         raise HTTPException(400, f"No active stocks with >= {policy.barrier_min_price_rows} price rows")
@@ -356,7 +392,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
                 "best_score": result.get("best_score"),
                 "stock_count": len(all_data),
                 "policy": policy.to_dict(),
-                "data_access": _optuna_data_access_meta("optuna.barrier", "price_history"),
+                "data_access": _optuna_data_access_meta("optuna.barrier", "price_history", mode=data_mode),
             },
         )
 
@@ -380,7 +416,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         "best_score": result.get("best_score"),
         "n_trials": req.n_trials,
         "push": push_response,
-        "data_access": _optuna_data_access_meta("optuna.barrier", "price_history"),
+        "data_access": _optuna_data_access_meta("optuna.barrier", "price_history", mode=data_mode),
         "contract": contract,
     }
 
@@ -458,6 +494,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         f"[Optuna/sltp] Sprint 5.1 run: n_trials={req.n_trials} "
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
+    data_mode = _research_data_mode_for_request(req)
     try:
         result = run_search(
             n_trials=req.n_trials,
@@ -465,6 +502,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
             start_date=req.start_date,
             end_date=req.end_date,
             baseline_params=baseline_params,
+            data_mode=data_mode,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"Optuna sltp failed: {e}")
@@ -479,6 +517,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
                 "subset_size": result.get("subset_size"),
                 "date_window": result.get("date_window"),
                 "data_source": result.get("data_source"),
+                "data_access": result.get("data_access"),
                 "mode": result.get("mode"),
                 "best_sharpe": result.get("best_sharpe"),
                 "best_max_dd": result.get("best_max_dd"),
@@ -514,6 +553,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
+        "data_access": result.get("data_access"),
         "realism_note": result.get("realism_note"),
         "contract": contract,
     }
@@ -547,6 +587,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         f"[Optuna/screener] Sprint 5.2 run: n_trials={req.n_trials} "
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
+    data_mode = _research_data_mode_for_request(req)
     try:
         result = run_search(
             n_trials=req.n_trials,
@@ -554,6 +595,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
             start_date=req.start_date,
             end_date=req.end_date,
             baseline_params=baseline_params,
+            data_mode=data_mode,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"Optuna screener failed: {e}")
@@ -574,6 +616,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
                 "subset_size": result.get("subset_size"),
                 "date_window": result.get("date_window"),
                 "data_source": result.get("data_source"),
+                "data_access": result.get("data_access"),
                 "mode": result.get("mode"),
                 "best_sharpe": result.get("best_sharpe"),
                 "best_max_dd": result.get("best_max_dd"),
@@ -617,6 +660,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
+        "data_access": result.get("data_access"),
         "realism_note": result.get("realism_note"),
         "contract": contract,
     }
@@ -711,7 +755,11 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 
     # Benchmark from market_risk.twii_close
     policy = OptunaRoutePolicy.from_env()
-    data_access_decision = resolve_research_data_access(lane="optuna.rrg", kind="price_history")
+    data_access_decision = resolve_research_data_access(
+        lane="optuna.rrg",
+        kind="price_history",
+        mode=_research_data_mode_for_request(req),
+    )
     data_access = data_access_decision.to_dict()
     if data_access_decision.source == "snapshot" and data_access_decision.snapshot:
         benchmark_returns, prices_by_stock = _load_rrg_inputs_from_snapshot(
@@ -910,6 +958,106 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
         "learning_state": learning_state,
         "push": push_response,
         "contract": contract,
+    }
+
+
+def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
+    try:
+        result = runner()
+        if isinstance(result, dict) and result.get("status") in {"skipped", "insufficient_data"}:
+            summary = f"{source}:SKIPPED_NOT_READY({str(result.get('reason') or result.get('status'))[:140]})"
+            return {"source": source, "status": "skipped", "summary": summary}
+        return {
+            "source": source,
+            "status": "success",
+            "summary": f"{source}:OK",
+            "contract": result.get("contract") if isinstance(result, dict) else None,
+            "push": result.get("push") if isinstance(result, dict) else None,
+        }
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if exc.status_code == 400 and any(token in detail.lower() for token in ("insufficient", "no top stocks", "benchmark")):
+            return {
+                "source": source,
+                "status": "skipped",
+                "summary": f"{source}:SKIPPED_NOT_READY({detail[:140]})",
+            }
+        return {
+            "source": source,
+            "status": "error",
+            "summary": f"{source}:HTTP{exc.status_code}({detail[:180]})",
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Optuna/research_sweep] %s failed", source)
+        return {
+            "source": source,
+            "status": "error",
+            "summary": f"{source}:ERROR({type(exc).__name__}: {str(exc)[:180]})",
+        }
+
+
+@router.post("/research_sweep")
+def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
+    """Controller-owned weekly/monthly Optuna sweep with per-route evidence."""
+    common = {
+        "cadence": req.cadence,
+        "n_trials": req.n_trials,
+        "push_kv": req.push_kv,
+        "dry_run": req.dry_run,
+        "research_data_source": req.research_data_source,
+    }
+    sweep_plan: list[tuple[str, Any]] = [
+        ("barrier", lambda: run_barrier(OptunaReq(**common))),
+        ("signal", lambda: run_signal(OptunaReq(**common))),
+        ("sltp", lambda: run_sltp(OptunaReq(**common, subset_size=req.subset_size))),
+        ("screener", lambda: run_screener(OptunaReq(**common, subset_size=req.subset_size))),
+        ("conformal", lambda: run_conformal(OptunaReq(**common))),
+        ("risk_params", lambda: run_risk_params(OptunaReq(**common))),
+        ("rrg", lambda: run_rrg(OptunaReq(**common))),
+        (
+            "alpha_framework",
+            lambda: run_alpha_framework(
+                AlphaFrameworkOptunaReq(
+                    n_trials=req.n_trials,
+                    push_kv=req.push_kv,
+                    dry_run=req.dry_run,
+                    subset_size=req.subset_size,
+                )
+            ),
+        ),
+        (
+            "ga_optimizer",
+            lambda: run_ga_optimizer(
+                GAOptimizerReq(
+                    population_size=req.ga_population_size,
+                    generations=req.ga_generations,
+                    push_kv=req.push_kv,
+                    dry_run=req.dry_run,
+                )
+            ),
+        ),
+    ]
+
+    max_workers = min(req.max_parallel_sources, len(sweep_plan))
+    ordered_results: list[dict[str, Any] | None] = [None] * len(sweep_plan)
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"optuna-{req.cadence}") as executor:
+        futures = {
+            executor.submit(_run_optuna_sweep_source, source, runner): idx
+            for idx, (source, runner) in enumerate(sweep_plan)
+        }
+        for future in as_completed(futures):
+            ordered_results[futures[future]] = future.result()
+
+    results = [item for item in ordered_results if item is not None]
+    failures = [item["summary"] for item in results if item.get("status") == "error"]
+    return {
+        "status": "error" if failures else "completed",
+        "cadence": req.cadence,
+        "max_parallel_sources": max_workers,
+        "summary": ", ".join(item["summary"] for item in results),
+        "results": results,
+        "failures": failures,
+        "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
     }
 
 
@@ -1140,6 +1288,8 @@ class PerRegimeReq(BaseModel):
     n_trials: int = Field(default=50, ge=5, le=500)
     subset_size: int = Field(default=400, ge=50, le=2000)
     window_days: int = Field(default=365, ge=90, le=730)
+    cadence: str | None = None
+    research_data_source: ResearchDataMode | None = None
     push_kv: bool = Field(default=False,
                           description="If true, push winning params to KV via "
                                       "writeSandbox (secure-by-default through T3.3).")
@@ -1184,6 +1334,7 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
             n_trials=req.n_trials,
             subset_size=req.subset_size,
             window_days=req.window_days,
+            data_mode=_research_data_mode_for_request(req),
             push_kv=req.push_kv and not req.dry_run,
         )
     except RuntimeError as e:

@@ -497,7 +497,7 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
 // ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="min-h-full">
       <div className="w-full space-y-4 px-4 py-4">
 
         <MorningBriefingCard />

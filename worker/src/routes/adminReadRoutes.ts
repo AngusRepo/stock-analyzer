@@ -162,18 +162,17 @@ adminReadRoutes.get('/api/admin/observability/drilldown', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { buildLiveObservabilityEventReport, listObservabilityAuditEventsByIds } = await import('../lib/observabilityEvents')
+  const { buildLiveObservabilityEventReport, listObservabilityAuditEvents } = await import('../lib/observabilityEvents')
   const { buildObservabilityDrilldown } = await import('../lib/observabilityDrilldown')
   const date = c.req.query('date')
   const report = await buildLiveObservabilityEventReport(c.env, {
     date,
     live: c.req.query('live') === '1',
   })
-  const auditRows = await listObservabilityAuditEventsByIds(
-    c.env,
-    report.events.map((event) => event.id),
-    { limit: 300 },
-  ).catch(() => [])
+  const auditRows = await listObservabilityAuditEvents(c.env, {
+    date: date ?? report.date,
+    limit: 300,
+  }).catch(() => [])
   return c.json(buildObservabilityDrilldown(report, { auditRows }))
 })
 

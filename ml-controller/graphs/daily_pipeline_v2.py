@@ -740,6 +740,10 @@ def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
         "prior_ic": float(raw.get("priorIc", raw.get("priorIC", 0.015)) or 0.015),
         "prior_strength": float(raw.get("priorStrength", 20.0) or 20.0),
         "min_samples_for_hard_zero": int(raw.get("minSamplesForHardZero", 40) or 40),
+        "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", True)),
+        "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
+        "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
+        "pooled_segment_cap": float(raw.get("pooledSegmentCap", 0.015) or 0.015),
     }
 
 
@@ -829,6 +833,42 @@ def _build_serving_ic_bundle(
         multiplier, validation_status, validation_reason = _validation_multiplier(entry)
         sample_count = _entry_ic_sample_count(entry, source)
         effective_weight, shrinkage = _shrink_ic_weight(ic_value, sample_count, multiplier, ev2_cfg)
+        policy = _ic_weighting_policy(ev2_cfg)
+        if (
+            scope != "GLOBAL"
+            and policy.get("pooled_segment_fallback_enabled")
+            and float(effective_weight or 0.0) == 0.0
+            and shrinkage.get("reason") == "negative_ic_confirmed"
+            and multiplier > 0
+        ):
+            pooled_ic, pooled_source = _entry_serving_ic(entry, None)
+            pooled_sample_count = _entry_ic_sample_count(entry, pooled_source)
+            pooled_weight, pooled_shrinkage = _shrink_ic_weight(
+                pooled_ic,
+                pooled_sample_count,
+                multiplier,
+                ev2_cfg,
+            )
+            if pooled_weight is not None and pooled_weight > 0:
+                fallback_weight = min(
+                    float(policy["pooled_segment_cap"]),
+                    max(
+                        float(policy["pooled_segment_floor"]),
+                        float(pooled_weight) * float(policy["pooled_segment_fallback_multiplier"]),
+                    ),
+                )
+                effective_weight = fallback_weight
+                shrinkage = {
+                    **shrinkage,
+                    "reason": "pooled_segment_floor",
+                    "segment_reason": "negative_ic_confirmed",
+                    "pooled_ic": pooled_ic,
+                    "pooled_ic_source": pooled_source,
+                    "pooled_ic_sample_count": pooled_sample_count,
+                    "pooled_effective_weight": round(float(pooled_weight), 8),
+                    "pooled_floor_weight": round(float(fallback_weight), 8),
+                    "pooled_shrinkage_reason": pooled_shrinkage.get("reason"),
+                }
         if effective_weight is not None:
             weights[name] = float(effective_weight)
         diagnostics[name] = {

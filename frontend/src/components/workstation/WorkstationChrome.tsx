@@ -17,10 +17,10 @@ function cx(...classes: Array<string | false | null | undefined>) {
 export function WorkstationBackdrop() {
   return (
     <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.028)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:18px_18px]" />
-      <div className="absolute left-[17%] top-[10%] hidden h-48 w-[20rem] rounded-[42%_58%_63%_37%/45%_38%_62%_55%] bg-[#f0b90b]/8 opacity-45 blur-2xl md:block" />
-      <div className="absolute right-[10%] top-[22%] hidden h-40 w-[22rem] rotate-12 rounded-[68%_32%_48%_52%/37%_58%_42%_63%] bg-[#00d2ff]/8 opacity-40 blur-2xl md:block" />
-      <div className="absolute left-[44%] bottom-[12%] hidden h-44 w-28 -rotate-12 rounded-[36%_64%_35%_65%/62%_34%_66%_38%] bg-[#00c076]/8 opacity-35 blur-2xl lg:block" />
+      <div className="absolute inset-0 opacity-60 bg-[linear-gradient(rgba(255,255,255,0.022)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.016)_1px,transparent_1px)] bg-[size:22px_22px]" />
+      <div className="absolute left-[17%] top-[10%] hidden h-48 w-[20rem] rounded-[42%_58%_63%_37%/45%_38%_62%_55%] bg-[radial-gradient(circle_at_42%_44%,rgba(240,185,11,0.18),rgba(240,185,11,0.06)_48%,transparent_72%)] opacity-35 md:block" />
+      <div className="absolute right-[10%] top-[22%] hidden h-40 w-[22rem] rotate-12 rounded-[68%_32%_48%_52%/37%_58%_42%_63%] bg-[radial-gradient(circle_at_50%_45%,rgba(0,210,255,0.16),rgba(0,210,255,0.05)_50%,transparent_74%)] opacity-32 md:block" />
+      <div className="absolute left-[44%] bottom-[12%] hidden h-44 w-28 -rotate-12 rounded-[36%_64%_35%_65%/62%_34%_66%_38%] bg-[radial-gradient(circle_at_50%_45%,rgba(0,192,118,0.14),rgba(0,192,118,0.05)_50%,transparent_74%)] opacity-30 lg:block" />
     </div>
   )
 }
@@ -47,7 +47,7 @@ export function WorkstationPanel({
   action?: ReactNode
 }) {
   return (
-    <section className={cx('overflow-hidden rounded-xl border border-[#2b3a49] bg-[#0f151d]/92 shadow-[0_14px_50px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-sm', className)}>
+    <section className={cx('overflow-hidden rounded-xl border border-[#2b3a49] bg-[#0f151d]/96 shadow-[0_8px_26px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.04)]', className)}>
       <header className="flex min-h-10 items-center justify-between border-b border-[#2b3a49] bg-[linear-gradient(90deg,#171714,#111821_58%,#0b1118)] px-3">
         <div className="min-w-0">
           {kicker && <p className="text-[10px] tracking-[0.2em] text-[#8b9bab]">{kicker}</p>}
@@ -75,11 +75,11 @@ export function WorkstationCatCard({
 }) {
   return (
     <div className={cx(
-      'group relative overflow-hidden rounded-xl border border-[#2b3a49] bg-[#0f151d]/90 p-3 shadow-[0_14px_50px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]',
+      'group relative overflow-hidden rounded-xl border border-[#2b3a49] bg-[#0f151d]/94 p-3 shadow-[0_8px_26px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.04)]',
       className,
     )}>
       <div className={cx(
-        'absolute inset-0 opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100',
+        'absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100',
         tone === 'ok' && 'bg-emerald-400/10',
         tone === 'warn' && 'bg-amber-400/10',
         tone === 'error' && 'bg-rose-400/10',
@@ -116,7 +116,7 @@ export function WorkstationPageTitle({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-[#2b3a49] bg-[linear-gradient(120deg,#171714,#111821_54%,#0b1118)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(240,185,11,0.08)] lg:flex-row lg:items-end lg:justify-between">
+    <div className="flex flex-col gap-3 rounded-xl border border-[#2b3a49] bg-[linear-gradient(120deg,#171714,#111821_54%,#0b1118)] p-4 shadow-[0_8px_28px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(240,185,11,0.08)] lg:flex-row lg:items-end lg:justify-between">
       <div>
         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">{kicker}</p>
         <h1 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">{title}</h1>

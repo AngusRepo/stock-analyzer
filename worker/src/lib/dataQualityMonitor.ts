@@ -75,6 +75,9 @@ interface CountRow {
   price_history_compute_snapshot_manifest?: number
   pipeline_report_manifest?: number
   screener_report_manifest?: number
+  latest_d1_serving_manifest_at?: string | null
+  latest_gcs_compute_manifest_at?: string | null
+  latest_r2_report_manifest_at?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -766,6 +769,9 @@ export function buildDatasetSnapshotManifestCheck(input: {
   pipelineReport: number
   screenerReport: number
   total: number
+  latestD1ServingManifestAt?: string | null
+  latestGcsComputeManifestAt?: string | null
+  latestR2ReportManifestAt?: string | null
 }): DataQualityCheck {
   const missingServing = [
     input.priceHotWindow > 0 ? null : 'price_hot_window',
@@ -779,17 +785,32 @@ export function buildDatasetSnapshotManifestCheck(input: {
     input.screenerReport > 0 ? null : 'screener_run_report_r2',
   ].filter(Boolean)
   const status: DataQualityStatus = missingServing.length ? 'fail' : missingArtifacts.length ? 'warn' : 'ok'
+  const summary = status === 'ok'
+    ? `D1 serving manifests and object-store artifacts ready for ${input.targetDate}`
+    : missingServing.length
+      ? `source-of-truth D1 serving manifests missing: ${missingServing.join(', ')}`
+      : `D1 serving manifests ready; object-store artifacts pending: ${missingArtifacts.join(', ')}`
 
   return {
     id: 'dataset_snapshot_manifest',
     label: 'Dataset snapshot manifest',
     status,
-    summary: status === 'ok'
-      ? `D1 serving manifests and object-store artifacts ready for ${input.targetDate}`
-      : `missing ${[...missingServing, ...missingArtifacts].join(', ')}`,
+    summary,
     metrics: {
       target_date: input.targetDate,
       manifest_total: input.total,
+      missing_serving_manifests: missingServing,
+      pending_object_artifacts: missingArtifacts,
+      source_snapshot_frequency: {
+        d1_serving: 'after indicator queue finalize',
+        r2_report: 'after screener/pipeline callback',
+        gcs_compute: 'after daily_pipeline_v2 write_d1',
+      },
+      latest_manifest_at: {
+        d1_serving: input.latestD1ServingManifestAt ?? null,
+        gcs_compute: input.latestGcsComputeManifestAt ?? null,
+        r2_report: input.latestR2ReportManifestAt ?? null,
+      },
       price_hot_window_manifest: input.priceHotWindow,
       technical_indicator_hot_window_manifest: input.technicalHotWindow,
       chip_hot_window_manifest: input.chipHotWindow,
@@ -1030,7 +1051,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
               SUM(CASE WHEN kind = 'backtest_dataset' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS backtest_compute_snapshot_manifest,
               SUM(CASE WHEN kind = 'price_history' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS price_history_compute_snapshot_manifest,
               SUM(CASE WHEN kind = 'pipeline_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS pipeline_report_manifest,
-              SUM(CASE WHEN kind = 'screener_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS screener_report_manifest
+              SUM(CASE WHEN kind = 'screener_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS screener_report_manifest,
+              MAX(CASE WHEN access_tier = 'serving' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_d1_serving_manifest_at,
+              MAX(CASE WHEN access_tier = 'compute' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_gcs_compute_manifest_at,
+              MAX(CASE WHEN access_tier = 'report' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_r2_report_manifest_at
          FROM dataset_snapshots
         WHERE business_date = ?`,
       targetDate,
@@ -1154,6 +1178,9 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       priceHistoryComputeSnapshot: Number(datasetManifestStats.price_history_compute_snapshot_manifest ?? 0),
       pipelineReport: Number(datasetManifestStats.pipeline_report_manifest ?? 0),
       screenerReport: Number(datasetManifestStats.screener_report_manifest ?? 0),
+      latestD1ServingManifestAt: datasetManifestStats.latest_d1_serving_manifest_at ?? null,
+      latestGcsComputeManifestAt: datasetManifestStats.latest_gcs_compute_manifest_at ?? null,
+      latestR2ReportManifestAt: datasetManifestStats.latest_r2_report_manifest_at ?? null,
     }),
   ]
 

@@ -53,6 +53,10 @@ assert(
   mlPipelineTrigger.includes('indicator queue not complete'),
   'pipeline readiness must block direct triggers until indicator queue completes',
 )
+assert(
+  mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),
+  'ml-controller 409 active execution must be treated as LOCKED/triggered, not a false evening-chain error',
+)
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 assert(

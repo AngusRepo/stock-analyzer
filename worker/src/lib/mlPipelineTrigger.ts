@@ -82,6 +82,10 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
 
     if (res.status !== 202 && !res.ok) {
       const text = await res.text().catch(() => '')
+      if (res.status === 409 && text.toLowerCase().includes('active execution')) {
+        console.log(`[ML V2] Controller reports active execution for ${twDate}; preserving active-run contract`)
+        return `LOCKED active execution for ${twDate}: ${text.slice(0, 220)}`
+      }
       throw new Error(`Pipeline V2 trigger HTTP ${res.status}: ${text.slice(0, 300)}`)
     }
 

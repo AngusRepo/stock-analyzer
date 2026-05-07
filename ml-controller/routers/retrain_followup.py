@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,8 @@ from services.modal_client import _modal_resource_spec
 
 logger = logging.getLogger("retrain_followup")
 router = APIRouter()
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 
 class RetrainFollowupPayload(BaseModel):
@@ -60,6 +63,75 @@ def _check_token(request: Request) -> None:
     provided = request.headers.get("X-Service-Token", "")
     if provided != INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="invalid service token")
+
+
+def _scheduler_status(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"completed", "complete", "success", "succeeded", "ok"}:
+        return "success"
+    if normalized in {"skipped", "skip", "locked"}:
+        return "skipped"
+    if normalized in {"running", "triggered"}:
+        return normalized
+    return "error"
+
+
+def _build_scheduler_callback_payload(payload: RetrainFollowupPayload) -> dict[str, Any]:
+    scheduler_status = _scheduler_status(payload.status)
+    task = "monthly-retrain" if payload.is_monthly else "retrain"
+    summary_bits = [
+        f"run_id={payload.run_id or payload.trained_at or '-'}",
+        f"monthly={bool(payload.is_monthly)}",
+        f"batches={payload.batch_count if payload.batch_count is not None else '-'}",
+        f"samples={payload.total_samples}",
+        f"features={payload.feature_count}",
+    ]
+    if payload.candidate_version:
+        summary_bits.append(f"candidate={payload.candidate_version}")
+    if payload.error:
+        summary_bits.append(f"error={payload.error}")
+
+    callback: dict[str, Any] = {
+        "task": task,
+        "status": scheduler_status,
+        "summary": "retrain followup " + " ".join(summary_bits),
+        "duration_ms": int(max(float(payload.elapsed_s or 0.0), 0.0) * 1000),
+        "run_id": payload.run_id or payload.trained_at,
+        "run_date": payload.run_date,
+    }
+    if payload.error or scheduler_status == "error":
+        callback["error"] = payload.error or f"retrain status={payload.status}"
+    return {k: v for k, v in callback.items() if v is not None}
+
+
+async def _callback_worker_scheduler(payload: RetrainFollowupPayload) -> dict[str, Any]:
+    if not WORKER_URL:
+        return {"attempted": False, "ok": False, "reason": "STOCKVISION_WORKER_URL missing"}
+
+    callback_payload = _build_scheduler_callback_payload(payload)
+    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
+    headers = {"Content-Type": "application/json"}
+    if WORKER_AUTH:
+        headers["Authorization"] = f"Bearer {WORKER_AUTH}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=callback_payload)
+        return {
+            "attempted": True,
+            "ok": resp.status_code == 200,
+            "status_code": resp.status_code,
+            "task": callback_payload.get("task"),
+            "response": resp.text[:300],
+        }
+    except Exception as exc:  # noqa: BLE001 - followup persistence remains authoritative.
+        logger.warning("[RetrainFollowup] Worker scheduler callback failed: %s", exc)
+        return {
+            "attempted": True,
+            "ok": False,
+            "task": callback_payload.get("task"),
+            "error": str(exc),
+        }
 
 
 async def _record_modal_telemetry(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -193,10 +265,12 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
 
     write_status = "upserted" if changes > 0 else "unchanged"
     telemetry_status = await _record_modal_telemetry(payload.modal_telemetry)
+    scheduler_callback = await _callback_worker_scheduler(payload)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
         f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key} "
-        f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])}"
+        f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])} "
+        f"scheduler_callback={scheduler_callback}"
     )
 
     return {
@@ -207,6 +281,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "action": "retrain_followup",
         "lock_release": lock_release,
         "modal_telemetry": telemetry_status,
+        "scheduler_callback": scheduler_callback,
         "summary": {
             "run_id": payload.run_id,
             "trained_at": payload.trained_at,

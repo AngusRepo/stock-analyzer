@@ -14,6 +14,8 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'alpha-quality',
   'weekly-audit',
   'lifecycle',
+  'monthly-optuna',
+  'monthly-retrain',
 ])
 
 function requireServiceToken(c: any) {

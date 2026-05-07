@@ -54,7 +54,9 @@ const TASK_NAMES: Record<string, string> = {
   'weekly-backtest': 'Weekly Backtest/MC',
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',
+  'monthly-optuna': 'Monthly Optuna',
   'optuna-queue': 'Optuna Queue Processor',
+  'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
 }
 

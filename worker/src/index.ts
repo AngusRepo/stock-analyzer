@@ -22,6 +22,7 @@ import {
   runWeeklyMonteCarlo as runWeeklyMonteCarloWorkflow,
   runWeeklyPBO as runWeeklyPboWorkflow,
   runWeeklyAlphaQuality as runWeeklyAlphaQualityWorkflow,
+  runMonthlyOptunaResearch as runMonthlyOptunaResearchWorkflow,
   runOptunaQueueProcessor as runOptunaQueueProcessorWorkflow,
 } from './lib/controllerWorkflows'
 import { auth } from './routes/auth'
@@ -65,6 +66,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
     runWeeklyLifecycleCheck: () => runWeeklyLifecycleCheckWorkflow(c.env),
     runWeeklyOptunaResearch: () => runWeeklyOptunaResearchWorkflow(c.env),
+    runMonthlyOptunaResearch: () => runMonthlyOptunaResearchWorkflow(c.env),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
   }),
 })

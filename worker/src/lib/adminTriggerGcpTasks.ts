@@ -4,6 +4,7 @@ import {
   runObsidianDaily,
   runRegimeCompute,
   runVerifyV2,
+  summarizeWeeklyValidationChain,
   triggerRetrain,
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
@@ -21,20 +22,21 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     backtest: () => deps.runWeeklyBacktest(),
     'weekly-backtest': async () => {
       const bt = await deps.runWeeklyBacktest()
-      const mc = await deps.runWeeklyMonteCarlo().catch((e) => { console.warn('[MC]', e); return 'failed' })
-      const pbo = await deps.runWeeklyPBO().catch((e) => { console.warn('[PBO]', e); return 'failed' })
-      return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
+      const mc = await deps.runWeeklyMonteCarlo()
+      const pbo = await deps.runWeeklyPBO()
+      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
     },
     'monte-carlo': () => deps.runWeeklyMonteCarlo(),
     pbo: () => deps.runWeeklyPBO(),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
     lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(),
-    'monthly-optuna': () => deps.runWeeklyOptunaResearch(),
+    'monthly-optuna': () => deps.runMonthlyOptunaResearch(),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
+    'monthly-retrain': async () => triggerRetrain(c.env, true, 'monthly-retrain'),
     retrain: async () => {
       const force = c.req.query('monthly') === '1'
-      return triggerRetrain(c.env, force)
+      return triggerRetrain(c.env, force, force ? 'monthly-retrain' : 'retrain')
     },
   }
 }

@@ -59,3 +59,40 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     assert calls[1]["gpu"] == "L4"
     assert calls[1]["memory_mb"] == 4096
     assert calls[1]["meta"]["group"] == "ftt"
+
+
+def test_monthly_retrain_followup_builds_scheduler_callback_payload():
+    payload = followup_router.RetrainFollowupPayload(
+        run_id="monthly-run-1",
+        run_date="2026-05-03",
+        is_monthly=True,
+        batch_count=12,
+        total_samples=12345,
+        feature_count=106,
+        elapsed_s=42.7,
+        status="completed",
+    )
+
+    callback = followup_router._build_scheduler_callback_payload(payload)
+
+    assert callback["task"] == "monthly-retrain"
+    assert callback["status"] == "success"
+    assert callback["run_id"] == "monthly-run-1"
+    assert callback["run_date"] == "2026-05-03"
+    assert callback["duration_ms"] == 42700
+    assert "samples=12345" in callback["summary"]
+
+
+def test_non_monthly_retrain_followup_keeps_compat_task():
+    payload = followup_router.RetrainFollowupPayload(
+        run_id="weekly-run-1",
+        is_monthly=False,
+        status="failed",
+        error="artifact mismatch",
+    )
+
+    callback = followup_router._build_scheduler_callback_payload(payload)
+
+    assert callback["task"] == "retrain"
+    assert callback["status"] == "error"
+    assert callback["error"] == "artifact mismatch"

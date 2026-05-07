@@ -11,6 +11,7 @@ import {
   runWeeklyPBO,
   runWeeklyOptunaResearch,
   runOptunaQueueProcessor,
+  summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 
@@ -57,9 +58,9 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   if (cron === '0 22 * * 6') {
     runWithLog('weekly-backtest', async () => {
       const bt = await runWeeklyBacktest(env)
-      const mc = await runWeeklyMonteCarlo(env).catch((e) => { console.warn('[MC]', e); return 'failed' })
-      const pbo = await runWeeklyPBO(env).catch((e) => { console.warn('[PBO]', e); return 'failed' })
-      return `bt(${bt}) | mc(${mc}) | pbo(${pbo})`
+      const mc = await runWeeklyMonteCarlo(env)
+      const pbo = await runWeeklyPBO(env)
+      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
     })
     runWithLog('alpha-quality', async () => runWeeklyAlphaQuality(env))
     return true

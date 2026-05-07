@@ -52,7 +52,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00 UTC', cron: 'first saturday of month 16:00', group: 'monthly' },
-  { id: 'retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
+  { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]

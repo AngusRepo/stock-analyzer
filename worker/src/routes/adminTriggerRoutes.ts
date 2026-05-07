@@ -99,6 +99,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'weekly-cleanup',
       'optuna-queue',
       'retrain',
+      'monthly-retrain',
     ])
 
     if (longRunning.has(task) && !syncMode) {

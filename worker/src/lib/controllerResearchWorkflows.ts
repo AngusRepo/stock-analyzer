@@ -30,35 +30,119 @@ export async function runWeeklyAudit(env: Bindings) {
   return `report generated, return=${result.l1?.weekly_return ?? 'N/A'}`
 }
 
-export async function runWeeklyOptunaResearch(env: Bindings) {
+type OptunaCadence = 'weekly' | 'monthly'
+
+interface OptunaResearchOptions {
+  cadence: OptunaCadence
+  nTrials: number
+  subsetSize: number
+  ga?: {
+    populationSize: number
+    generations: number
+  }
+}
+
+function buildOptunaRequestBody(source: string, options: OptunaResearchOptions): Record<string, unknown> {
+  if (source === 'ga_optimizer') {
+    return {
+      cadence: options.cadence,
+      population_size: options.ga?.populationSize ?? 24,
+      generations: options.ga?.generations ?? 8,
+      push_kv: true,
+      dry_run: false,
+    }
+  }
+
+  return {
+    cadence: options.cadence,
+    n_trials: options.nTrials,
+    push_kv: true,
+    dry_run: false,
+    ...(source === 'screener' || source === 'sltp' ? { subset_size: options.subsetSize } : {}),
+  }
+}
+
+async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) {
   requireController(env)
 
-  const sources = ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework'] as const
+  const sources = ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'ga_optimizer'] as const
   const settled = await Promise.allSettled(
     sources.map((src) =>
       controllerFetch(env, `/optuna/${src}`, {
         method: 'POST',
-        jsonBody: {
-          n_trials: 200,
-          push_kv: true,
-          dry_run: false,
-          ...(src === 'screener' || src === 'sltp' ? { subset_size: 1000 } : {}),
-        },
+        jsonBody: buildOptunaRequestBody(src, options),
         timeoutMs: 3_500_000,
       })
-        .then((res) => `${src}:${res.ok ? 'OK' : `HTTP${res.status}`}`)
+        .then(async (res) => {
+          if (res.ok) return `${src}:OK`
+          const text = await res.text().catch(() => '')
+          return `${src}:HTTP${res.status}${text ? `(${text.slice(0, 120)})` : ''}`
+        })
         .catch((e: any) => `${src}:ERROR(${e?.message?.slice(0, 30) ?? 'unknown'})`),
     ),
   )
 
   const results = settled.map((entry) => entry.status === 'fulfilled' ? entry.value : `REJECTED:${entry.reason}`)
   const summary = results.join(', ')
+  const failures = results.filter((item) => /:HTTP\d+|:ERROR\(|^REJECTED:/i.test(item))
 
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./notify')
-    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, `Weekly Optuna re-search complete\n${summary}`)
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, `${options.cadence} Optuna research complete\n${summary}`)
   }
 
+  if (failures.length > 0) {
+    throw new Error(`${options.cadence} research failure: ${failures.join(', ')}`)
+  }
+
+  return `cadence=${options.cadence}, ${summary}`
+}
+
+export async function runWeeklyOptunaResearch(env: Bindings) {
+  return runOptunaResearch(env, {
+    cadence: 'weekly',
+    nTrials: 200,
+    subsetSize: 1000,
+    ga: {
+      populationSize: 24,
+      generations: 8,
+    },
+  })
+}
+
+export async function runMonthlyOptunaResearch(env: Bindings) {
+  return runOptunaResearch(env, {
+    cadence: 'monthly',
+    nTrials: 300,
+    subsetSize: 1500,
+    ga: {
+      populationSize: 36,
+      generations: 12,
+    },
+  })
+}
+
+function isFailureSummary(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return normalized.startsWith('failed') ||
+    normalized.startsWith('error') ||
+    normalized.includes(':failed') ||
+    normalized.includes(':error') ||
+    normalized.includes('http')
+}
+
+export function summarizeWeeklyValidationChain(results: {
+  backtest: string
+  monteCarlo: string
+  pbo: string
+}): string {
+  const summary = `bt(${results.backtest}) | mc(${results.monteCarlo}) | pbo(${results.pbo})`
+  const failed = Object.entries(results)
+    .filter(([, value]) => isFailureSummary(value))
+    .map(([key, value]) => `${key}:${value}`)
+  if (failed.length > 0) {
+    throw new Error(`weekly validation chain failed: ${failed.join(' | ')}`)
+  }
   return summary
 }
 
@@ -229,7 +313,7 @@ export async function runWeeklyRetrain(env: Bindings) {
   )
 }
 
-export async function triggerRetrain(env: Bindings, forceMonthly: boolean) {
+export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskId = forceMonthly ? 'monthly-retrain' : 'retrain') {
   requireController(env)
 
   controllerFetch(env, '/retrain/universal', {
@@ -238,5 +322,5 @@ export async function triggerRetrain(env: Bindings, forceMonthly: boolean) {
     timeoutMs: 0,
   }).catch((e) => console.error('[retrain] fire-and-forget error:', e))
 
-  return `retrain triggered (force_monthly=${forceMonthly}); check Modal dashboard for progress`
+  return `${taskId} triggered (force_monthly=${forceMonthly}); callback expected from Modal retrain followup`
 }

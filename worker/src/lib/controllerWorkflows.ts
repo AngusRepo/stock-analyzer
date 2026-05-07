@@ -6,6 +6,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'verify-v2',
   'weekly-audit',
   'weekly-optuna',
+  'monthly-optuna',
   'alpha-quality',
   'optuna-queue',
   'lifecycle',
@@ -13,6 +14,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'monte-carlo',
   'pbo',
   'retrain',
+  'monthly-retrain',
 ] as const
 
 export {
@@ -29,9 +31,11 @@ export {
   runWeeklyAlphaQuality,
   runWeeklyBacktest,
   runWeeklyLifecycleCheck,
+  runMonthlyOptunaResearch,
   runWeeklyMonteCarlo,
   runWeeklyOptunaResearch,
   runWeeklyPBO,
   runWeeklyRetrain,
+  summarizeWeeklyValidationChain,
   triggerRetrain,
 } from './controllerResearchWorkflows'

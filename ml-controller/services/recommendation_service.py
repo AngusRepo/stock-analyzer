@@ -345,8 +345,8 @@ def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | No
 def _is_use_ensemble_v2() -> bool:
     """Read trading:config.mlPool.useEnsembleV2 (default True). KV override."""
     try:
-        from services import kv_client
-        tcfg = kv_client.get_json("trading:config", default={}) or {}
+        from services.trading_config_loader import load_merged_trading_config
+        tcfg = load_merged_trading_config()
         ml_pool_cfg = tcfg.get("mlPool", {}) or {}
         v = ml_pool_cfg.get("useEnsembleV2")
         return True if v is None else bool(v)

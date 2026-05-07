@@ -75,6 +75,65 @@ export async function sendDiscordNotification(
   }
 }
 
+export async function sendLinePush(
+  channelAccessToken: string | undefined,
+  userId: string | undefined,
+  message: string,
+): Promise<boolean> {
+  if (!channelAccessToken || !userId) return false
+  try {
+    const res = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${channelAccessToken}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: 'text', text: message.slice(0, 4500) }],
+      }),
+    })
+    if (!res.ok) {
+      console.warn(`[LINE] push failed: HTTP ${res.status}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.warn(`[LINE] push failed: ${e}`)
+    return false
+  }
+}
+
+export async function sendOperatorNotification(
+  env: {
+    LINE_CHANNEL_ACCESS_TOKEN?: string
+    LINE_USER_ID?: string
+    DISCORD_WEBHOOK_URL?: string
+    RESEND_API_KEY?: string
+    ADMIN_EMAIL?: string
+  },
+  message: string,
+): Promise<'line' | 'discord' | 'email' | 'not_sent:no_channel_configured'> {
+  const channel = resolveReportDeliveryChannel(env)
+  if (channel === 'line') {
+    const sent = await sendLinePush(env.LINE_CHANNEL_ACCESS_TOKEN, env.LINE_USER_ID, message)
+    return sent ? 'line' : 'not_sent:no_channel_configured'
+  }
+  if (channel === 'discord') {
+    await sendDiscordNotification(env.DISCORD_WEBHOOK_URL, message)
+    return 'discord'
+  }
+  if (channel === 'email' && env.RESEND_API_KEY && env.ADMIN_EMAIL) {
+    await sendEmailReport(env.RESEND_API_KEY, env.ADMIN_EMAIL, 'StockVision notification', [{
+      title: 'StockVision notification',
+      description: message,
+      timestamp: new Date().toISOString(),
+    }])
+    return 'email'
+  }
+  return 'not_sent:no_channel_configured'
+}
+
 /** Paper Trading 交易事件推送 */
 export function formatTradeNotification(
   action: 'buy' | 'sell',
@@ -190,12 +249,27 @@ export async function sendEmailReport(
  * 報告推送：Discord 優先，無 webhook 則 fallback 到 email。
  */
 export async function sendReportToChannels(
-  env: { KV: KVNamespace; RESEND_API_KEY?: string; ADMIN_EMAIL?: string; DISCORD_WEBHOOK_URL?: string },
+  env: {
+    KV: KVNamespace
+    RESEND_API_KEY?: string
+    ADMIN_EMAIL?: string
+    DISCORD_WEBHOOK_URL?: string
+    LINE_CHANNEL_ACCESS_TOKEN?: string
+    LINE_USER_ID?: string
+  },
   embeds: DiscordEmbed[],
   emailSubject: string,
 ): Promise<string> {
   // P0 資安：webhook URL 只從 Worker secret 讀取，不存 KV（防洩漏後被推送假消息）
   const channel = resolveReportDeliveryChannel(env)
+  if (channel === 'line' && env.LINE_CHANNEL_ACCESS_TOKEN && env.LINE_USER_ID) {
+    const text = embeds.map((embed) => {
+      const fields = embed.fields?.map((field) => `${field.name}: ${field.value}`).join('\n') ?? ''
+      return [embed.title, embed.description, fields].filter(Boolean).join('\n')
+    }).join('\n\n')
+    await sendLinePush(env.LINE_CHANNEL_ACCESS_TOKEN, env.LINE_USER_ID, text || emailSubject)
+    return 'line'
+  }
   const webhookUrl = env.DISCORD_WEBHOOK_URL
   if (channel === 'discord' && webhookUrl) {
     await sendDiscordEmbeds(webhookUrl, embeds)

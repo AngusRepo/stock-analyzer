@@ -29,6 +29,7 @@ export interface AdaptiveRegimeOverride {
   screener?: AdaptiveScreenerDelta
   bandit_max_mult?: number
   bandit_force_explore?: boolean
+  bandit_context?: Record<string, unknown>
 }
 
 export interface AdaptiveMetaLayerGovernance {
@@ -58,6 +59,10 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     Conformal: 'prediction uncertainty calibration and coverage guard',
     Stacking: 'meta learner for ensemble blending after base-model predictions',
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
+    NeuralUCB: 'shadow meta-router for nonlinear model-weight and threshold policy comparison',
+    NeuralTS: 'shadow Thompson sampler to audit NeuralUCB optimism before production consideration',
+    OnlinePortfolioBandit: 'research-layer allocation policy; waits for execution/slippage parity',
+    NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
   immutable_risk_boundaries: [
     'circuit',
@@ -91,6 +96,7 @@ export interface AdaptiveParams {
   screener?: AdaptiveScreenerDelta
   bandit_max_mult: number
   bandit_force_explore: boolean
+  bandit_context?: Record<string, unknown>
   computed_at: string
   market_risk_score: number
   recent_accuracy_30d: number
@@ -119,6 +125,7 @@ export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
   screener: {},
   bandit_max_mult: 2.5,
   bandit_force_explore: false,
+  bandit_context: undefined,
   computed_at: '',
   market_risk_score: 50,
   recent_accuracy_30d: 0.6,
@@ -197,6 +204,7 @@ function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   if (raw.screener && typeof raw.screener === 'object') out.screener = normalizeScreenerDelta(raw.screener)
   if (banditMax != null) out.bandit_max_mult = banditMax
   if (typeof raw.bandit_force_explore === 'boolean') out.bandit_force_explore = raw.bandit_force_explore
+  if (raw.bandit_context && typeof raw.bandit_context === 'object') out.bandit_context = raw.bandit_context as Record<string, unknown>
   return out
 }
 
@@ -255,6 +263,7 @@ export function normalizeAdaptiveParams(
     screener: normalizeScreenerDelta(raw.screener),
     bandit_max_mult: finiteNumber(raw.bandit_max_mult, DEFAULT_ADAPTIVE_PARAMS.bandit_max_mult),
     bandit_force_explore: finiteBoolean(raw.bandit_force_explore, DEFAULT_ADAPTIVE_PARAMS.bandit_force_explore),
+    bandit_context: raw.bandit_context && typeof raw.bandit_context === 'object' ? raw.bandit_context as Record<string, unknown> : undefined,
     computed_at: computedAt,
     market_risk_score: finiteNumber(raw.market_risk_score, DEFAULT_ADAPTIVE_PARAMS.market_risk_score),
     recent_accuracy_30d: finiteNumber(raw.recent_accuracy_30d, DEFAULT_ADAPTIVE_PARAMS.recent_accuracy_30d),

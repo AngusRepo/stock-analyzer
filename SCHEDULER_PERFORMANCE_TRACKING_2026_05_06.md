@@ -214,3 +214,119 @@ Delta:
 - `verify-v2` duplicate execution at 19:00 needs root-cause tracing before calling the schedule fully clean.
 - `state_space_universal_predict` is still the second largest compute consumer after `predict_batch_v2`; it is the next Modal efficiency target.
 - The 2026-05-06 cost and output counts look coherent: current-date rows exist across price, chip, indicators, recommendations, and predictions.
+
+## Forced 2026-05-06 Rerun After Performance Optimizations
+
+Snapshot time: 2026-05-07 12:25 Asia/Taipei
+
+Purpose:
+
+- Rerun the full 2026-05-06 evening path after the latest queue/batch and hot-path optimizations.
+- Confirm that the chain produces clean serving data for the same business date.
+- Compare the latest forced rerun against the previous two measured runs.
+
+### Trigger And Chain Result
+
+Triggered through the existing GCP Scheduler `evening-chain` service authorization header. The bearer token was reused but not printed.
+
+| Stage | Evidence | Result |
+|---|---|---|
+| evening-chain trigger | `triggered_at=2026-05-07T04:04:33Z` | accepted |
+| market data readiness | `price=2296`, `TWSE=1085`, `OTC=1211`, `chip=16606`, `indicators=2296` | ready |
+| update fetch summary | `fetched price=1083 chip=16606 margin=1051` | ok |
+| indicator queue | callback response said `indicator queue accepted` | accepted |
+| screener / pipeline trigger | scheduler API later reported `event-driven chain reached pipeline trigger for 2026-05-06; LOCKED` | pipeline still started; lock message likely came from duplicate finalize/poll path |
+| pipeline-v2 | `pipeline-v2-db8sk` | success, 8m50.67s |
+| daily recommendation | D1 `daily_recommendations` for `2026-05-06` | 64 rows / 64 symbols / max_rank 64 |
+| ML prediction matrix | D1 `predictions` for `2026-05-06` | 704 rows / 64 symbols / 11 models |
+| verify-v2 | `verify-v2-dzhcg` | success, 14.71s |
+| data quality | Worker DQ API for `2026-05-06` | price/chip/indicator/prediction coverage ok; predeploy status warn, not block |
+
+Recommendation note:
+
+- `recommendation` is not a separate GCP Scheduler job in this contract.
+- It is the logical output stage after `pipeline/ML predict`, materialized as `daily_recommendations`.
+- For this rerun it is verified by D1 row count: 64 recommendations for 64 distinct symbols on business date `2026-05-06`.
+
+### Three-Run Comparison
+
+| Run | Business date | Execution date | Pipeline execution | Pipeline wall time | Verify execution | Verify wall time | Cost events | Compute sec | Estimated USD |
+|---|---|---|---|---:|---|---:|---:|---:|---:|
+| A baseline | 2026-05-05 | 2026-05-05 | `pipeline-v2-f4qvv` | 8m38.52s | duplicate verify observed next cycle | about 16-17s each | 37 | 2,659.422 | 0.104253 |
+| B first optimized | 2026-05-06 | 2026-05-06 | `pipeline-v2-w66bt` | 7m16.78s | `verify-v2-vvxkm`, `verify-v2-gsl45` | 18.83s / 15.00s | 18 | 1,958.026 | 0.076127 |
+| C forced optimized rerun | 2026-05-06 | 2026-05-07 | `pipeline-v2-db8sk` | 8m50.67s | `verify-v2-dzhcg` | 14.71s | 9 | 934.201 | 0.036988 |
+
+Important attribution detail:
+
+- `cost_events.date` stores execution date, not business date.
+- The forced rerun for business date `2026-05-06` appears under `cost_events.date = '2026-05-07'`.
+- This is acceptable for cost accounting, but the table should eventually add explicit `business_date` or run-id lineage to avoid future ambiguity.
+
+### Cost Delta
+
+Raw daily total comparison:
+
+| Comparison | Event delta | Compute delta | Estimated USD delta |
+|---|---:|---:|---:|
+| C vs A | 37 -> 9, down 75.7% | 2,659.422 -> 934.201, down 64.9% | 0.104253 -> 0.036988, down 64.5% |
+| C vs B | 18 -> 9, down 50.0% | 1,958.026 -> 934.201, down 52.3% | 0.076127 -> 0.036988, down 51.4% |
+
+Normalized interpretation:
+
+- The raw daily reduction is large because earlier days included duplicate or multiple prediction-related runs.
+- Normalized to one effective pipeline, C is slightly better than B on compute/cost but not faster on wall time.
+- Compared with B normalized single-run cost, C is roughly 4.6% lower compute seconds and 2.8% lower estimated USD.
+- Compared with A normalized single-run cost, C is roughly 5.4% higher compute seconds and 6.4% higher estimated USD, so the optimization is not yet a pure per-run compute win against the 5/5 normalized baseline.
+
+### Cost Breakdown By Source
+
+| Execution cost date | Source / model | Events | Compute sec | Estimated USD | Share of USD |
+|---|---|---:|---:|---:|---:|
+| 2026-05-07 | `predict_batch_v2` | 1 | 476.647 | 0.020953 | 56.6% |
+| 2026-05-07 | `state_space_universal_predict` | 2 | 369.226 | 0.011313 | 30.6% |
+| 2026-05-07 | `gemini-3.1-flash-lite-preview / llm_reason` | 1 | 0.000 | 0.001632 | 4.4% |
+| 2026-05-07 | `patchtst_universal_predict` | 2 | 42.985 | 0.001507 | 4.1% |
+| 2026-05-07 | `dlinear_universal_predict` | 2 | 30.826 | 0.000945 | 2.6% |
+| 2026-05-07 | `chronos_universal_predict` | 1 | 14.517 | 0.000638 | 1.7% |
+
+Conclusion:
+
+- The biggest remaining cost source is still `predict_batch_v2`.
+- The second biggest is still `state_space_universal_predict`; it deserves the next targeted optimization pass.
+- DLinear/PatchTST/Chronos are no longer the primary cost drivers for this rerun.
+
+### D1 Query Cost During Verification
+
+| Evidence query | SQL duration | Rows read |
+|---|---:|---:|
+| `cost_events` total by date | 0.6769 ms | 69 |
+| `cost_events` grouped by source/provider/model | 0.7053 ms | 154 |
+| output row counts across recommendations, predictions, prices, indicators | 8.1643 ms | 10,705 |
+
+These evidence reads are not the performance bottleneck. The current bottleneck remains Cloud Run/Modal runtime plus orchestration wait time.
+
+### Output Consistency After Rerun
+
+| Table | 2026-05-05 | 2026-05-06 after forced rerun |
+|---|---:|---:|
+| `stock_prices` | 2,287 | 2,296 |
+| `technical_indicators` | 2,287 | 2,296 |
+| `daily_recommendations` | 64 rows / 64 symbols | 64 rows / 64 symbols |
+| `predictions` | 695 rows / 64 symbols / 11 models | 704 rows / 64 symbols / 11 models |
+
+The recommendation stage is therefore present and current for the rerun. It was missing from the earlier written stage list, not missing from production output.
+
+### Findings
+
+- Cost efficiency improved materially at the daily-run level because duplicate/multiple prediction events were reduced.
+- Pipeline wall-clock did not consistently improve. The forced rerun took 8m50.67s, slower than the 2026-05-06 first optimized evening run but faster than one earlier same-day manual pipeline run.
+- `scheduler/status` still does not clearly represent event-driven historical reruns; some stages can appear as waiting or locked even after Cloud Run completed.
+- `evening-chain` produced a `LOCKED` summary after it had already reached pipeline trigger. This looks like duplicate finalization or stale polling telemetry, not a failed run, because `pipeline-v2-db8sk`, `daily_recommendations`, and `verify-v2-dzhcg` all completed.
+- The forced historical rerun correctly does not imply that every daily/weekly/monthly scheduler should run. Date-dependent tasks that are current-day only should remain skipped by contract.
+
+### Next Optimization Targets
+
+1. Add `business_date` or explicit run lineage into `cost_events` so forced historical reruns do not get mixed with execution-date accounting.
+2. Clean `evening-chain` lock/finalizer telemetry so a successful triggered pipeline is not summarized as `LOCKED`.
+3. Optimize `state_space_universal_predict` batching/caching; it is still about 30.6% of this rerun's estimated cost.
+4. Keep `recommendation` as a first-class logical stage in future reports, even though it is materialized inside the pipeline contract rather than as a standalone Scheduler job.

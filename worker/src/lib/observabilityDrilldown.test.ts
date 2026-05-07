@@ -71,6 +71,29 @@ const report: ObservabilityEventReport = {
 }
 
 {
+  const drilldown = buildObservabilityDrilldown(report, {
+    auditRows: [{
+      event_id: 'data_quality:price',
+      date: '2026-05-04',
+      severity: 'warn',
+      domain: 'data_quality',
+      source: 'data_quality_report',
+      status: 'warn',
+      title: 'Price freshness',
+      summary: 'one symbol stale',
+      owner: 'Worker',
+      impact: 'Cards may show stale close.',
+      next_action: 'Trace data update writer.',
+      evidence: {},
+      created_at: '2026-05-04T10:15:00.000Z',
+    }],
+  })
+  const incident = drilldown.incidents.find((item) => item.domain === 'data_quality')
+  assert(incident?.first_seen === '2026-05-04T10:15:00.000Z', 'drilldown should prefer persisted audit first_seen over page-open generated_at')
+  assert(incident?.last_seen === '2026-05-05T01:00:00.000Z', 'drilldown should keep live event as last_seen when issue is still active')
+}
+
+{
   const healthy = buildObservabilityDrilldown({ ...report, overall: 'ok', events: [report.events[2]], counts: { ok: 1, info: 0, warn: 0, error: 0 } })
   assert(healthy.incidents.length === 1, 'healthy report should keep one baseline incident')
   assert(healthy.incidents[0].status === 'resolved', 'healthy baseline should be resolved')

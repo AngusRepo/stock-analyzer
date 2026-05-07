@@ -38,6 +38,11 @@ assert(
   updateOrchestrator.indexOf('runMarketScreener') < updateOrchestrator.indexOf('runMLAndRiskV2'),
   'evening chain must run screener before pipeline/ML',
 )
+assert(
+  updateOrchestrator.includes('pipeline already running for') &&
+    updateOrchestrator.includes("status: 'triggered'"),
+  'evening chain must not overwrite a successful in-flight pipeline trigger with success/LOCKED telemetry',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 assert(

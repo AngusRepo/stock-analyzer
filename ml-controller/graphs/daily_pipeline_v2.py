@@ -223,15 +223,19 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
     )
-    kalman_task = (
-        modal_client.kalman_batch_predict(chronos_series, horizon=5, version=active_versions.get("KalmanFilter", "v1"))
-        if model_status.get("KalmanFilter", "active") in ("active", "degraded")
-        else _skip_batch("KalmanFilter retired by model_pool")
-    )
-    markov_task = (
-        modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version=active_versions.get("MarkovSwitching", "v1"))
-        if model_status.get("MarkovSwitching", "active") in ("active", "degraded")
-        else _skip_batch("MarkovSwitching retired by model_pool")
+    state_space_models = {
+        model_name: active_versions.get(model_name, "v1")
+        for model_name in ("KalmanFilter", "MarkovSwitching")
+        if model_status.get(model_name, "active") in ("active", "degraded")
+    }
+    state_space_task = (
+        modal_client.state_space_overlays_batch_predict(
+            chronos_series,
+            horizon=5,
+            version_by_model=state_space_models,
+        )
+        if state_space_models
+        else _skip_batch("state-space overlays retired by model_pool")
     )
     dlinear_ch_task = (
         modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
@@ -248,8 +252,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         chronos_raw,
         dlinear_raw,
         patchtst_raw,
-        kalman_raw,
-        markov_raw,
+        state_space_raw,
         dlinear_ch_raw,
         patchtst_ch_raw,
     ) = await asyncio.gather(
@@ -257,8 +260,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         chronos_task,
         dlinear_task,
         patchtst_task,
-        kalman_task,
-        markov_task,
+        state_space_task,
         dlinear_ch_task,
         patchtst_ch_task,
         return_exceptions=True,
@@ -338,7 +340,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
 
-    # Stage 6.2: KalmanFilter + MarkovSwitching state-space (per-stock loop, shared hyperparams)
+    # Stage 6.2: KalmanFilter + MarkovSwitching state-space overlays.
+    # They share one Modal call to avoid duplicate cold-start/import paths.
     def _drain_state_space(raw, name: str) -> dict[str, dict]:
         out: dict[str, dict] = {}
         if isinstance(raw, BaseException):
@@ -355,6 +358,18 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         else:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
+    state_space_overlays = {}
+    if isinstance(state_space_raw, dict) and isinstance(state_space_raw.get("overlays"), dict):
+        state_space_overlays = state_space_raw["overlays"]
+        logger.info(f"[Pipeline V2] State-space overlays metrics: {state_space_raw.get('metrics')}")
+    elif isinstance(state_space_raw, dict) and state_space_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] State-space overlays skipped: {state_space_raw.get('error')}")
+    elif isinstance(state_space_raw, BaseException):
+        logger.warning(f"[Pipeline V2] State-space overlays failed entirely: {state_space_raw}")
+    else:
+        logger.warning(f"[Pipeline V2] State-space overlays returned invalid payload: {state_space_raw}")
+    kalman_raw = state_space_overlays.get("KalmanFilter", {})
+    markov_raw = state_space_overlays.get("MarkovSwitching", {})
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
 
@@ -906,8 +921,11 @@ def _load_pool_and_ic():
         degraded_dampening = 1.0
         ev2_cfg: dict = {}
         try:
-            from services import kv_client
-            tcfg = kv_client.get_json("trading:config", default={}) or {}
+            from services.trading_config_loader import load_merged_trading_config_with_contract
+            cfg_result = load_merged_trading_config_with_contract()
+            tcfg = cfg_result.config
+            if cfg_result.contract.degraded:
+                logger.warning("[Pipeline V2] trading:config degraded: %s", cfg_result.contract.to_dict())
             ml_pool_cfg = tcfg.get("mlPool", {}) or {}
             degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
             ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
@@ -916,7 +934,7 @@ def _load_pool_and_ic():
                 if calibration:
                     ev2_cfg["expectedReturnCalibration"] = calibration
         except Exception as _e:
-            logger.debug(f"[Pipeline V2] trading:config KV lookup failed (using defaults): {_e}")
+            logger.debug(f"[Pipeline V2] trading:config merged lookup failed (using defaults): {_e}")
         return model_status, ic_weights, degraded_dampening, ev2_cfg, True, pool
     except Exception as e:
         logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
@@ -1241,7 +1259,11 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     except Exception:
         regime_surface = {}
 
-    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    trading_cfg = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Pipeline V2] trading:config degraded in recommend: %s", cfg_result.contract.to_dict())
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
     screener_recs = state["screener_recs"]
     if not screener_recs:

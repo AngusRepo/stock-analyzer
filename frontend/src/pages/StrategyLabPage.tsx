@@ -2,83 +2,97 @@ import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import {
   strategyLabApi,
-  type StrategyDryRunResponse,
-  type StrategySpecsResponse,
-  type StrategySpec,
-  type ResearchExperimentsResponse,
-  type ResearchGateResponse,
   type ResearchEvaluationRunResponse,
   type ResearchEvaluationRunsResponse,
+  type ResearchExperimentsResponse,
+  type ResearchGateResponse,
+  type StrategyDryRunResponse,
+  type StrategySpec,
+  type StrategySpecsResponse,
 } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { FlaskConical, GitBranch, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
 
 function statusClass(status?: string) {
-  if (status === 'active' || status === 'candidate') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20'
-  if (status === 'shadow' || status === 'research') return 'bg-sky-500/15 text-sky-300 border-sky-500/20'
-  if (status === 'retired') return 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40'
-  return 'bg-amber-500/15 text-amber-300 border-amber-500/20'
+  if (status === 'active' || status === 'candidate') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (status === 'shadow' || status === 'research') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (status === 'retired') return 'border-zinc-600/50 bg-zinc-700/30 text-zinc-300'
+  return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
 }
 
-function percent(value: number) {
-  return `${Math.round(value * 1000) / 10}%`
+function gateClass(decision?: string) {
+  if (decision === 'ALLOW') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (decision === 'REQUIRE_APPROVAL') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+  return 'border-red-500/30 bg-red-500/15 text-red-200'
+}
+
+function pct(value?: number | null) {
+  if (value == null || !Number.isFinite(Number(value))) return '-'
+  return `${(Number(value) * 100).toFixed(1)}%`
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
-function SpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: StrategyDryRunResponse['results'][number] }) {
-  const thresholdText = Object.entries(spec.thresholds ?? {})
-    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : String(value)}`)
-    .join(' / ')
+function splitCsv(value: string) {
+  return value.split(',').map((part) => part.trim()).filter(Boolean)
+}
 
+function StrategySpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: StrategyDryRunResponse['results'][number] }) {
+  const thresholds = Object.entries(spec.thresholds ?? {}).slice(0, 5)
   return (
-    <Card className="border-border/80 bg-card/95">
-      <CardContent className="space-y-3 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">{spec.name}</span>
-              <Badge variant="outline" className={statusClass(spec.status)}>{spec.status}</Badge>
-              <Badge variant="outline" className="border-cyan-500/20 bg-cyan-500/10 text-cyan-200">{spec.alphaBucket}</Badge>
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">{spec.id} · {spec.version}</div>
+    <div className="rounded-2xl border border-slate-700/70 bg-slate-950/55 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-slate-100">{spec.name}</span>
+            <Badge variant="outline" className={statusClass(spec.status)}>{spec.status}</Badge>
+            <Badge variant="outline" className="border-cyan-500/20 bg-cyan-500/10 text-cyan-200">{spec.alphaBucket}</Badge>
           </div>
-          <Badge variant="outline" className={spec.validation.ok ? 'border-emerald-500/20 text-emerald-300' : 'border-red-500/30 text-red-300'}>
-            {spec.validation.ok ? 'contract ok' : 'contract fail'}
-          </Badge>
+          <div className="mt-1 text-[11px] text-slate-500">{spec.id} · {spec.version}</div>
         </div>
+        <Badge variant="outline" className={spec.validation.ok ? 'border-emerald-500/25 text-emerald-300' : 'border-red-500/30 text-red-300'}>
+          {spec.validation.ok ? 'contract ok' : 'contract fail'}
+        </Badge>
+      </div>
 
-        <p className="text-sm leading-relaxed text-muted-foreground">{spec.thesis}</p>
-        <div className="rounded-lg border border-border bg-background/60 p-3 text-xs text-muted-foreground">
-          <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground/70">Thresholds</div>
-          <div className="mt-1 break-words">{thresholdText || '未設定'}</div>
-        </div>
+      <p className="mt-3 text-sm leading-relaxed text-slate-300">{spec.thesis}</p>
 
-        <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">Regimes</div>
-            <div className="mt-1 font-medium">{spec.supportedRegimes.join(' / ')}</div>
-          </div>
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">Dry-run 命中</div>
-            <div className="mt-1 font-medium">{dryRun ? `${dryRun.matched}/${dryRun.sampleSize}` : '-'}</div>
-          </div>
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">命中率</div>
-            <div className="mt-1 font-medium">{dryRun ? percent(dryRun.matchRate) : '-'}</div>
-          </div>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">Dry-run 命中</div>
+          <div className="mt-1 text-lg font-semibold text-slate-100">{dryRun ? `${dryRun.matched}/${dryRun.sampleSize}` : '-'}</div>
         </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">命中率</div>
+          <div className="mt-1 text-lg font-semibold text-cyan-200">{pct(dryRun?.matchRate)}</div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">Regime</div>
+          <div className="mt-1 text-sm font-semibold text-slate-100">{spec.supportedRegimes.join(' / ')}</div>
+        </div>
+      </div>
 
-        <div className="space-y-1 text-xs text-muted-foreground">
-          {spec.riskNotes.map((note) => <div key={note}>風險註記：{note}</div>)}
-          {!spec.validation.ok && <div className="text-red-300">Contract errors: {spec.validation.errors.join(', ')}</div>}
+      <div className="mt-4 space-y-2">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Why it matters</div>
+        <div className="flex flex-wrap gap-2">
+          {thresholds.map(([key, value]) => (
+            <Badge key={key} variant="outline" className="border-slate-700 text-slate-300">
+              {key}: {Array.isArray(value) ? value.join(',') : String(value)}
+            </Badge>
+          ))}
+          {thresholds.length === 0 && <span className="text-xs text-slate-500">No explicit threshold.</span>}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      <div className="mt-3 space-y-1 text-xs text-slate-400">
+        {spec.riskNotes.slice(0, 3).map((note) => <div key={note}>Risk note: {note}</div>)}
+        {!spec.validation.ok && <div className="text-red-300">Contract errors: {spec.validation.errors.join(', ')}</div>}
+      </div>
+    </div>
   )
 }
 
@@ -120,7 +134,7 @@ export default function StrategyLabPage() {
       setExperiments(experimentResponse)
       setResearchGates(gateResponses)
     } catch (e: unknown) {
-      setError(getErrorMessage(e, '策略實驗室載入失敗'))
+      setError(getErrorMessage(e, 'Strategy Lab API 載入失敗'))
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -135,9 +149,13 @@ export default function StrategyLabPage() {
     return new Map((dryRun?.results ?? []).map((result) => [result.specId, result]))
   }, [dryRun])
 
-  function splitCsv(value: string) {
-    return value.split(',').map((part) => part.trim()).filter(Boolean)
-  }
+  const stats = useMemo(() => {
+    const strategyCount = specs?.specs.length ?? 0
+    const safeGateCount = researchGates.filter((gate) => gate.gate.decision === 'ALLOW').length
+    const blockedGateCount = researchGates.filter((gate) => gate.gate.decision === 'BLOCK').length
+    const dryRunMatches = dryRun?.results.reduce((sum, item) => sum + item.matched, 0) ?? 0
+    return { strategyCount, safeGateCount, blockedGateCount, dryRunMatches }
+  }, [dryRun, researchGates, specs])
 
   async function previewExperiment() {
     try {
@@ -153,7 +171,7 @@ export default function StrategyLabPage() {
       })
       setDraftResult(res.review_packet)
     } catch (e: unknown) {
-      setDraftError(getErrorMessage(e, 'preview failed'))
+      setDraftError(getErrorMessage(e, 'review packet preview failed'))
     } finally {
       setDraftSaving(false)
     }
@@ -177,8 +195,8 @@ export default function StrategyLabPage() {
   if (loading) {
     return (
       <AppShell>
-        <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> 載入策略實驗室...
+        <div className="flex items-center gap-2 p-6 text-sm text-slate-400">
+          <Loader2 className="h-4 w-4 animate-spin" /> Strategy Lab 載入中...
         </div>
       </AppShell>
     )
@@ -186,263 +204,174 @@ export default function StrategyLabPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6 p-4 lg:p-6">
-        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)]">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Research room</p>
-            <h1 className="mt-1 flex items-center gap-2 text-xl font-bold text-[#fff7e8]">
-              <FlaskConical className="h-5 w-5 text-[#d6a85f]" /> 策略實驗室
-            </h1>
-            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-[#b9b1a1]">
-              在這裡先把策略假設、門檻與風險寫清楚；它只能產生研究證據，不會直接觸發 pending buy、成交或模型 promote。
-            </p>
-          </div>
-          <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { setRefreshing(true); load() }}>
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
-          </Button>
+      <div className="space-y-5 p-4 lg:p-6">
+        <div className="rounded-3xl border border-amber-500/20 bg-[radial-gradient(circle_at_18%_20%,rgba(245,158,11,0.18),transparent_28%),linear-gradient(135deg,#151714,#0b0f14_62%,#17110a)] p-5 shadow-[0_24px_90px_rgba(0,0,0,0.28)]">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-amber-300">Research Mission Control</p>
+              <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-amber-50">
+                <FlaskConical className="h-5 w-5 text-amber-300" /> 策略實驗室
+              </h1>
+              <p className="mt-2 max-w-4xl text-sm leading-relaxed text-slate-300">
+                這裡不是 production 控制台，而是把假說、策略規格、乾跑證據、review packet 與安全 gate 串成一條研究流水線。
+                研究可以產出 evidence，但不能直接 retrain、promote、deploy 或下單。
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="rounded-full border-amber-400/30 text-amber-200" onClick={() => { setRefreshing(true); load() }}>
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
+            </Button>
           </div>
         </div>
 
         {error && (
           <Card className="border-red-500/30">
-            <CardContent className="p-4 text-sm text-red-300">策略實驗室 API 載入失敗：{error}</CardContent>
+            <CardContent className="p-4 text-sm text-red-300">{error}</CardContent>
           </Card>
         )}
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Mode</div>
-              <div className="mt-2"><Badge variant="outline" className="border-sky-500/20 text-sky-300">{specs?.mode ?? 'read_only'}</Badge></div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Specs</div>
-              <div className="mt-2 text-lg font-bold">{specs?.specs.length ?? 0}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Dry-run Sample</div>
-              <div className="mt-2 text-lg font-bold">{dryRun?.candidate_count ?? 0}</div>
-              <div className="text-xs text-muted-foreground">{dryRun?.source ?? '-'}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Owner Freeze</div>
-              <div className="mt-2 flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-emerald-300" />
-                <span className="text-lg font-bold">{specs?.owner_boundaries.length ?? 0}</span>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Research Registry</div>
-              <div className="mt-2 text-lg font-bold">{experiments?.experiments.length ?? 0}</div>
-              <div className="text-xs text-muted-foreground">{experiments?.mode ?? 'read_only'}</div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <GitBranch className="h-4 w-4 text-emerald-300" /> Owner Freeze 邊界
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {(specs?.owner_boundaries ?? []).map((boundary) => (
-              <div key={boundary.owner} className="rounded-lg border border-border bg-background/50 p-3 text-xs">
-                <div className="font-semibold">{boundary.owner}</div>
-                <div className="mt-2 text-emerald-300">Owns: {boundary.owns.join(' / ')}</div>
-                <div className="mt-1 text-red-300/80">Forbidden: {boundary.forbidden.join(' / ')}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <ShieldCheck className="h-4 w-4 text-emerald-300" /> Research Intern Gate
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {researchGates.map(({ gate }) => (
-              <div key={gate.action} className="rounded-lg border border-border bg-background/50 p-3 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{gate.action}</span>
-                  <Badge
-                    variant="outline"
-                    className={
-                      gate.decision === 'ALLOW'
-                        ? 'border-emerald-500/20 text-emerald-300'
-                        : gate.decision === 'REQUIRE_APPROVAL'
-                          ? 'border-amber-500/20 text-amber-300'
-                          : 'border-red-500/30 text-red-300'
-                    }
-                  >
-                    {gate.decision}
-                  </Badge>
-                </div>
-                <div className="mt-2 text-muted-foreground">{gate.reason}</div>
-                <div className="mt-2 text-emerald-300/80">Next: {gate.allowed_next_steps.join(' / ')}</div>
-                <div className="mt-1 text-red-300/70">Blocked: {gate.blocked_capabilities.join(' / ')}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {(specs?.specs ?? []).map((spec) => (
-            <SpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {[
+            ['策略規格', stats.strategyCount, specs?.version ?? 'strategy-spec-v1'],
+            ['乾跑命中', stats.dryRunMatches, dryRun?.source ?? '-'],
+            ['研究案例', experiments?.experiments.length ?? 0, experiments?.mode ?? 'read_only'],
+            ['允許動作', stats.safeGateCount, 'hypothesis / dry-run'],
+            ['禁止動作', stats.blockedGateCount, 'deploy / trade'],
+          ].map(([label, value, hint]) => (
+            <Card key={label as string} className="border-slate-800 bg-slate-950/70">
+              <CardContent className="p-4">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
+                <div className="mt-2 text-2xl font-bold text-slate-100">{value}</div>
+                <div className="mt-1 truncate text-xs text-slate-500">{hint}</div>
+              </CardContent>
+            </Card>
           ))}
         </div>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <FlaskConical className="h-4 w-4 text-cyan-300" /> Research Experiments
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-4">
-              <div className="text-sm font-semibold">Create Research Experiment</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                這裡只建立 dry-run review packet，不會 retrain、promote、deploy 或交易；正式登錄仍需後端 confirm header。
-              </div>
-              <div className="mt-3 grid grid-cols-1 gap-3">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+          <Card className="border-slate-800 bg-slate-950/70">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <GitBranch className="h-4 w-4 text-cyan-300" /> 策略規格與乾跑證據
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 gap-3 2xl:grid-cols-2">
+              {(specs?.specs ?? []).map((spec) => (
+                <StrategySpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
+              ))}
+            </CardContent>
+          </Card>
+
+          <div className="space-y-4">
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <ShieldCheck className="h-4 w-4 text-emerald-300" /> Research Intern Gate
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {researchGates.map(({ gate }) => (
+                  <div key={gate.action} className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-100">{gate.action}</span>
+                      <Badge variant="outline" className={gateClass(gate.decision)}>{gate.decision}</Badge>
+                    </div>
+                    <div className="mt-2 text-xs leading-relaxed text-slate-400">{gate.reason}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <TestTube2 className="h-4 w-4 text-amber-300" /> 新增研究假說
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
                 <textarea
                   value={draftHypothesis}
                   onChange={(event) => setDraftHypothesis(event.target.value)}
-                  placeholder="例如：突破/波動擴張 bucket 在多頭 regime 是否能提高 walk-forward Sharpe 並降低 PBO?"
-                  className="min-h-20 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
+                  placeholder="例：突破 / 波動擴張 bucket 在 bull + liquidity normal regime 是否能提高 T+5 hit rate，同時不提高 MDD?"
+                  className="min-h-24 w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50"
                 />
-                <input
-                  value={draftSpecIds}
-                  onChange={(event) => setDraftSpecIds(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="strategy spec ids, comma-separated"
-                />
-                <input
-                  value={draftMetrics}
-                  onChange={(event) => setDraftMetrics(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="metrics, comma-separated"
-                />
-                <input
-                  value={draftFollowUp}
-                  onChange={(event) => setDraftFollowUp(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="follow-up, comma-separated"
-                />
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <input value={draftSpecIds} onChange={(event) => setDraftSpecIds(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="strategy spec ids" />
+                <input value={draftMetrics} onChange={(event) => setDraftMetrics(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="metrics" />
+                <input value={draftFollowUp} onChange={(event) => setDraftFollowUp(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="follow-up" />
                 <Button size="sm" variant="outline" disabled={draftSaving || draftHypothesis.trim().length < 12} onClick={previewExperiment}>
-                  {draftSaving ? 'Previewing...' : 'Dry-run Review Packet'}
+                  {draftSaving ? 'Previewing...' : '產生 Dry-run Review Packet'}
                 </Button>
-                {draftError && <span className="text-xs text-red-300">{draftError}</span>}
-              </div>
-              {draftResult && (
-                <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-border bg-black/20 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                  {draftResult}
-                </pre>
-              )}
-            </div>
+                {draftError && <div className="text-xs text-red-300">{draftError}</div>}
+                {draftResult && (
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
+                    {draftResult}
+                  </pre>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
 
-            {(experiments?.experiments ?? []).length > 0 ? (
-              experiments!.experiments.map((experiment) => (
-                <div key={experiment.id} className="rounded-lg border border-border bg-background/50 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-semibold">{experiment.id}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">{experiment.updated_at}</div>
-                    </div>
-                    <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
-                  </div>
-                  <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{experiment.hypothesis}</p>
-                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-                    <div className="rounded-md border border-border/80 p-2">Specs: {experiment.strategy_spec_ids.join(' / ') || 'none'}</div>
-                    <div className="rounded-md border border-border/80 p-2">Metrics: {experiment.metrics.join(' / ') || 'none'}</div>
-                    <div className="rounded-md border border-border/80 p-2">Can deploy: {String(experiment.approval_gate.can_deploy)}</div>
-                  </div>
-                  {experiment.review_packet && (
-                    <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-border bg-black/20 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                      {experiment.review_packet}
-                    </pre>
-                  )}
-                  {experiment.evaluation_plan && (
-                    <div className="mt-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs font-semibold text-cyan-200">Evaluation Plan: {experiment.evaluation_plan.mode}</div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={runningExperimentId === experiment.id}
-                          onClick={() => runEvaluationPlan(experiment.id)}
-                        >
-                          {runningExperimentId === experiment.id ? 'Running...' : 'Run Dry-run Plan'}
-                        </Button>
-                      </div>
-                      {experiment.evaluation_plan.warnings.length > 0 && (
-                        <div className="mt-1 text-xs text-amber-300">Warnings: {experiment.evaluation_plan.warnings.join(' / ')}</div>
-                      )}
-                      <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                        {experiment.evaluation_plan.steps.map((step) => (
-                          <div key={step.id} className="rounded-md border border-border/80 bg-background/50 p-2 text-[11px]">
-                            <div className="font-semibold">{step.kind}</div>
-                            <div className="mt-1 text-muted-foreground">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
-                            <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
-                              {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
-                            </div>
-                            <div className="mt-1 text-red-300/80">mutation_allowed={String(step.mutation_allowed)}</div>
-                            {step.block_reason && <div className="mt-1 text-amber-300/80">{step.block_reason}</div>}
-                          </div>
-                        ))}
-                      </div>
-                      {runErrors[experiment.id] && (
-                        <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
-                          {runErrors[experiment.id]}
-                        </div>
-                      )}
-                      {runResults[experiment.id] && (
-                        <div className="mt-3 rounded-md border border-border/80 bg-background/50 p-2 text-xs">
-                          <div className="font-semibold text-emerald-300">
-                            Dry-run result: {runResults[experiment.id].report.verdict}
-                          </div>
-                          <pre className="mt-2 whitespace-pre-wrap rounded border border-border/70 bg-black/20 p-2 text-[11px] leading-relaxed text-muted-foreground">
-                            {runResults[experiment.id].report.review_packet}
-                          </pre>
-                          <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                            {runResults[experiment.id].report.results.map((result) => (
-                              <div key={result.step_id} className="rounded border border-border/70 p-2">
-                                <div className="font-medium">{result.kind}: {result.status}</div>
-                                <div className="mt-1 text-muted-foreground">{result.endpoint ?? '-'}</div>
-                                {result.reason && <div className="mt-1 text-amber-300">{result.reason}</div>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {runHistory[experiment.id]?.runs?.[0] && (
-                        <div className="mt-3 rounded-md border border-border/80 bg-background/40 p-2 text-xs text-muted-foreground">
-                          最近一次 dry-run history：{runHistory[experiment.id].runs[0].created_at} ·
-                          {runHistory[experiment.id].runs[0].results.map((result) => `${result.kind}:${result.status}`).join(' / ')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                目前沒有登錄的 research experiment。P5 的設計是先沉澱 hypothesis / metrics / review packet，再決定是否產生 patch 或 backtest，不直接碰 production。
+        <Card className="border-slate-800 bg-slate-950/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <PlayCircle className="h-4 w-4 text-emerald-300" /> Experiment Registry
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(experiments?.experiments ?? []).length === 0 && (
+              <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
+                目前沒有研究實驗紀錄。先用上方假說產生 dry-run review packet，通過 gate 後才進 backtest / walk-forward / PBO。
               </div>
             )}
+            {(experiments?.experiments ?? []).map((experiment) => (
+              <div key={experiment.id} className="rounded-2xl border border-slate-800 bg-black/20 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-slate-100">{experiment.id}</div>
+                    <div className="mt-1 text-xs text-slate-500">updated {experiment.updated_at}</div>
+                  </div>
+                  <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
+                </div>
+                <p className="mt-3 text-sm leading-relaxed text-slate-300">{experiment.hypothesis}</p>
+                <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+                  <div className="rounded-xl border border-slate-800 p-3">Specs: {experiment.strategy_spec_ids.join(' / ') || 'none'}</div>
+                  <div className="rounded-xl border border-slate-800 p-3">Metrics: {experiment.metrics.join(' / ') || 'none'}</div>
+                  <div className="rounded-xl border border-slate-800 p-3">Can deploy: {String(experiment.approval_gate.can_deploy)}</div>
+                </div>
+                {experiment.evaluation_plan && (
+                  <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-cyan-200">Evaluation plan: {experiment.evaluation_plan.mode}</div>
+                      <Button size="sm" variant="outline" disabled={runningExperimentId === experiment.id} onClick={() => runEvaluationPlan(experiment.id)}>
+                        {runningExperimentId === experiment.id ? 'Running...' : 'Run dry-run plan'}
+                      </Button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
+                      {experiment.evaluation_plan.steps.map((step: any) => (
+                        <div key={step.id} className="rounded-lg border border-slate-800 bg-black/20 p-2 text-[11px]">
+                          <div className="font-semibold text-slate-200">{step.kind}</div>
+                          <div className="mt-1 text-slate-500">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
+                          <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
+                            {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {runErrors[experiment.id] && <div className="mt-2 text-xs text-red-300">{runErrors[experiment.id]}</div>}
+                    {runResults[experiment.id] && (
+                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
+                        {runResults[experiment.id].report.review_packet}
+                      </pre>
+                    )}
+                    {runHistory[experiment.id]?.runs?.[0] && (
+                      <div className="mt-2 text-xs text-slate-500">
+                        latest dry-run: {runHistory[experiment.id].runs[0].created_at} · {runHistory[experiment.id].runs[0].verdict}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
           </CardContent>
         </Card>
       </div>

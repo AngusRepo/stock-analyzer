@@ -22,6 +22,7 @@ Output schema (matches Chronos/DLinear/PatchTST batch predictors):
 """
 from __future__ import annotations
 import logging
+import time
 from functools import lru_cache
 from typing import Optional
 
@@ -135,6 +136,53 @@ def state_space_batch_predict(
     n_ok = sum(1 for r in results if not r.get("error"))
     logger.info(f"[StateSpaceUniversal] {model_name}/{version}: {n_ok}/{len(series_list)} succeeded")
     return results
+
+
+def state_space_overlays_batch_predict(
+    model_names: list[str],
+    series_list: list[dict],
+    horizon: int = 5,
+    version_by_model: dict[str, str] | None = None,
+) -> dict:
+    """Run multiple state-space overlays in one Modal container.
+
+    This keeps Kalman/Markov as risk/regime overlays, but avoids two separate
+    Modal remote calls, imports, and cold-start paths for the same series batch.
+    """
+    overlays: dict[str, dict] = {}
+    metrics: dict[str, dict] = {}
+    versions = version_by_model or {}
+    models = [name for name in model_names if name in _MIN_CONTEXT]
+
+    for model_name in models:
+        t0 = time.time()
+        version = versions.get(model_name, "v1")
+        results = state_space_batch_predict(
+            model_name=model_name,
+            series_list=series_list,
+            horizon=horizon,
+            version=version,
+        )
+        elapsed_s = round(time.time() - t0, 3)
+        n_success = sum(1 for row in results if not row.get("error"))
+        overlays[model_name] = {
+            "results": results,
+            "n_input": len(series_list),
+            "n_success": n_success,
+            "version": version,
+        }
+        metrics[model_name] = {
+            "elapsed_s": elapsed_s,
+            "n_input": len(series_list),
+            "n_success": n_success,
+        }
+
+    return {
+        "overlays": overlays,
+        "metrics": metrics,
+        "models": models,
+        "n_input": len(series_list),
+    }
 
 
 CURRENT_CONFIG = {

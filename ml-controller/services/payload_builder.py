@@ -391,7 +391,11 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     adaptive_params = load_effective_adaptive_params()
 
     # ── 7. Trading config → barrier_params ──────────────────────────────────
-    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    trading_cfg = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[payload_builder] trading:config degraded: %s", cfg_result.contract.to_dict())
     barrier_cfg = trading_cfg.get("barrier", {})
     barrier_params = {
         "upper_mult": barrier_cfg.get("upperMult"),

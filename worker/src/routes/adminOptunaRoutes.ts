@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
+import { evaluateGaPromotion, formatGaPromotionNotification } from '../lib/gaPromotion'
+import { sendOperatorNotification } from '../lib/notify'
 import type { Bindings, Variables } from '../types'
 
 export const adminOptunaRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -220,36 +222,68 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       }, 501)
     case 'ga_optimizer': {
       const now = new Date().toISOString()
+      const previousRaw = await c.env.KV.get('optimizer:ga:latest', 'json').catch(() => null) as any
       const learningState = {
         ...(params && typeof params === 'object' ? params : {}),
         source: 'ga_optimizer',
         optimizer: params?.optimizer ?? 'GAOptimizer',
         status: params?.status ?? 'learning',
+        production_learning_loop: true,
+        mutates_trading_config: false,
         updated_at: now,
         meta: meta ?? null,
+      }
+      const promotion = evaluateGaPromotion(learningState, previousRaw)
+      learningState.status = promotion.status
+      learningState.promotion = {
+        ...((learningState as any).promotion ?? {}),
+        ...promotion,
+        evaluated_at: now,
+        previous_level: previousRaw?.promotion?.level ?? null,
+        trading_config_unchanged: true,
       }
       const latestKey = 'optimizer:ga:latest'
       const historyKey = `optimizer:ga:history:${twToday()}:${Date.now()}`
       const auditKey = `audit:optuna-push:ga_optimizer:${twToday()}`
+      const promotionKey = `optimizer:ga:promotion:${twToday()}:${Date.now()}`
 
       await c.env.KV.put(latestKey, JSON.stringify(learningState))
       await c.env.KV.put(historyKey, JSON.stringify(learningState), { expirationTtl: 90 * 86400 })
+      await c.env.KV.put(promotionKey, JSON.stringify({
+        source: 'ga_optimizer',
+        latest_key: latestKey,
+        history_key: historyKey,
+        decision: promotion,
+        best_score: learningState.best?.score ?? meta?.best_score ?? null,
+        pushed_at: now,
+      }), { expirationTtl: 180 * 86400 })
       await c.env.KV.put(auditKey, JSON.stringify({
-        target: 'meta_optimizer_learning_state',
+        target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
         meta: meta ?? null,
         latest_key: latestKey,
         history_key: historyKey,
+        promotion_key: promotionKey,
+        promotion,
         pushed_at: now,
       }), { expirationTtl: 30 * 86400 })
 
+      const shouldNotify = promotion.autoPromoted ||
+        promotion.approvalRequiredForNextLevel ||
+        previousRaw?.promotion?.level !== promotion.level
+      const notificationChannel = shouldNotify
+        ? await sendOperatorNotification(c.env, formatGaPromotionNotification(learningState, promotion))
+        : 'not_sent:no_channel_configured'
+
       return c.json({
         success: true,
-        target: 'meta_optimizer_learning_state',
+        target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
-        updatedKeys: [latestKey, historyKey],
+        updatedKeys: [latestKey, historyKey, promotionKey],
         audit_key: auditKey,
-        message: 'GAOptimizer learning state updated; trading:config unchanged.',
+        promotion,
+        notification_channel: notificationChannel,
+        message: 'GAOptimizer production learning state updated; trading:config unchanged until gated promotion approval.',
       })
     }
     case 'l2_sensitivity': {

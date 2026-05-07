@@ -511,6 +511,25 @@ async def markov_switching_batch_predict(series_list: list[dict], horizon: int =
     })
 
 
+async def state_space_overlays_batch_predict(
+    series_list: list[dict],
+    *,
+    horizon: int = 5,
+    version_by_model: dict[str, str] | None = None,
+) -> dict:
+    """Run Kalman + Markov overlays through one Modal call.
+
+    The individual kalman/markov helpers stay available as fallback-compatible
+    paths, but daily serving should prefer this coalesced overlay contract.
+    """
+    return await _modal_state_space_predict({
+        "model_names": ["KalmanFilter", "MarkovSwitching"],
+        "series_list": series_list,
+        "horizon": horizon,
+        "version_by_model": version_by_model or {},
+    })
+
+
 def _spawn_wf_ftt_window(payload: dict):
     """Spawn FT-T training (returns handle)."""
     fn = _lookup("train_wf_ftt_window")

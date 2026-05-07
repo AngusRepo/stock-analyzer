@@ -36,6 +36,15 @@ void (async () => {
       params: {
         optimizer: 'GAOptimizer',
         status: 'learning',
+        history: [
+          { generation: 0, best_score: 1.0 },
+          { generation: 1, best_score: 1.2 },
+        ],
+        best: {
+          score: 1.2,
+          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+          gate: { decision: 'PASS', passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
+        },
         best_alphaFramework: {
           riskOverlay: { highVolThreshold: 0.045 },
           allocation: { weights: { bull: { trend_following: 0.5 } } },
@@ -47,10 +56,15 @@ void (async () => {
 
   assert(res.status === 200, 'ga_optimizer push should be accepted')
   const body = await res.json() as any
-  assert(body.target === 'meta_optimizer_learning_state', 'ga_optimizer should write learning state, not sandbox')
+  assert(body.target === 'production_meta_optimizer_learning_state', 'ga_optimizer should write production learning state, not sandbox')
   assert(body.updatedKeys.includes('optimizer:ga:latest'), 'ga_optimizer should update latest learning key')
+  assert(body.promotion.level === 'L2', 'gate-passing stable GA state should auto-promote only through L2 shadow config')
+  assert(body.promotion.approvalRequiredForNextLevel === true, 'L3/L4 promotion must require Wei approval')
 
   const latest = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
-  assert(latest.status === 'learning', 'latest GA state should stay in learning mode')
+  assert(latest.status === 'shadow_config', 'latest GA state should expose promotion status')
+  assert(latest.production_learning_loop === true, 'GA must be a production learning loop')
+  assert(latest.mutates_trading_config === false, 'GA learning push must not mutate trading:config')
   assert(latest.best_alphaFramework.riskOverlay.highVolThreshold === 0.045, 'latest GA state should preserve learned policy')
+  assert(!(env.KV as any).store.has('trading:config'), 'ga_optimizer push must not write trading:config')
 })()

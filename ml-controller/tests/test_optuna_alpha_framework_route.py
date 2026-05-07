@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from routers import optuna  # noqa: E402
+from services import trading_config_loader  # noqa: E402
+
+
+def _cfg_result(config: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        config=config,
+        contract=SimpleNamespace(degraded=False, to_dict=lambda: {"degraded": False}),
+    )
 
 
 def test_alpha_framework_route_returns_and_pushes_risk_overlay_evidence(monkeypatch):
@@ -18,9 +27,9 @@ def test_alpha_framework_route_returns_and_pushes_risk_overlay_evidence(monkeypa
     }
 
     monkeypatch.setattr(
-        optuna,
-        "load_active_trading_config",
-        lambda: {"alphaFramework": {"quality": {
+        trading_config_loader,
+        "load_merged_trading_config_with_contract",
+        lambda: _cfg_result({"alphaFramework": {"quality": {
             "outcomeLimit": 900,
             "minSamples": 40,
             "minRegimeSamples": 7,
@@ -30,7 +39,7 @@ def test_alpha_framework_route_returns_and_pushes_risk_overlay_evidence(monkeypa
             "minBucketWeightBps": 250,
             "returnPctPerRBps": 300,
             "directionCorrectFallbackRBps": 1250,
-        }}},
+        }}}),
     )
     monkeypatch.setattr(optuna, "load_alpha_outcome_rows", lambda limit: [{"id": 1}] * 42)
     def fake_build(rows, **kwargs):
@@ -80,9 +89,9 @@ def test_alpha_framework_route_uses_quality_outcome_limit_when_subset_omitted(mo
     captured: dict = {}
 
     monkeypatch.setattr(
-        optuna,
-        "load_active_trading_config",
-        lambda: {"alphaFramework": {"quality": {"outcomeLimit": 777, "minSamples": 3, "minBucketSamples": 2}}},
+        trading_config_loader,
+        "load_merged_trading_config_with_contract",
+        lambda: _cfg_result({"alphaFramework": {"quality": {"outcomeLimit": 777, "minSamples": 3, "minBucketSamples": 2}}}),
     )
     def fake_load(limit):
         captured["limit"] = limit
@@ -153,7 +162,8 @@ def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
 
     assert out["status"] == "completed"
     assert out["source"] == "ga_optimizer"
-    assert out["contract"]["applies_to_production"] is False
+    assert out["contract"]["scope"] == "production_meta_optimizer_learning"
+    assert out["contract"]["applies_to_production"] == "learning_state_only_until_gated_promotion"
     assert out["contract"]["push_target"] == "worker_kv_ga_optimizer_state"
     assert captured["source"] == "ga_optimizer"
     assert captured["params"]["status"] == "learning"

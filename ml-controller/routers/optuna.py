@@ -35,7 +35,6 @@ from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
 from services.research_data_access import resolve_research_data_access
 from services.snapshot_parquet import read_snapshot_component
-from services.worker_config_client import load_active_trading_config
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
 _SCRIPTS_DIR = Path(__file__).parent.parent / "optuna_scripts"
@@ -449,10 +448,11 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_sltp import failed: {e}")
 
     # Sprint 5.1: 讀當前 trading:config 當 baseline (其他 section 鎖定，只搜 sltp/exit)
-    from services.kv_client import get_json as kv_get_json
-    baseline_params = kv_get_json("trading:config", default=None)
-    if baseline_params is None:
-        logger.warning("[Optuna/sltp] trading:config KV missing, using script defaults")
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_params = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/sltp] trading:config degraded: %s", cfg_result.contract.to_dict())
 
     logger.info(
         f"[Optuna/sltp] Sprint 5.1 run: n_trials={req.n_trials} "
@@ -537,10 +537,11 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
     except ImportError as e:
         raise HTTPException(500, f"optuna_screener import failed: {e}")
 
-    from services.kv_client import get_json as kv_get_json
-    baseline_params = kv_get_json("trading:config", default=None)
-    if baseline_params is None:
-        logger.warning("[Optuna/screener] trading:config KV missing, using script defaults")
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_params = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/screener] trading:config degraded: %s", cfg_result.contract.to_dict())
 
     logger.info(
         f"[Optuna/screener] Sprint 5.2 run: n_trials={req.n_trials} "
@@ -769,7 +770,11 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 @router.post("/alpha_framework")
 def run_alpha_framework(req: AlphaFrameworkOptunaReq = Body(default=AlphaFrameworkOptunaReq())):
     """Alpha framework posterior search from verified alpha_context outcomes."""
-    policy = alpha_quality_policy(load_active_trading_config())
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/alpha_framework] trading:config degraded: %s", cfg_result.contract.to_dict())
+    policy = alpha_quality_policy(cfg_result.config)
     quality_policy = policy.to_dict()
     limit = max(100, min(int(req.subset_size or policy.outcome_limit), 5000))
     rows = load_alpha_outcome_rows(limit=limit)
@@ -843,9 +848,9 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
     """GA meta optimizer direct learning endpoint."""
     contract = _contract_meta(
         source="ga_optimizer",
-        scope="meta_optimizer_learning",
+        scope="production_meta_optimizer_learning",
         sample_scope="generated_policy_population_plus_gate_metrics",
-        applies_to_production=False,
+        applies_to_production="learning_state_only_until_gated_promotion",
         push_target="worker_kv_ga_optimizer_state",
         effective_fields=[
             "alphaFramework.allocation.weights",
@@ -854,7 +859,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
         ],
         notes=[
             "GAOptimizer evolves meta policy parameters; it is not a stock prediction model.",
-            "This endpoint persists learning state directly; applying learned params to trading config is a separate gated action.",
+            "This endpoint persists production learning state directly; trading:config changes require promotion gates and Wei approval at L3/L4.",
         ],
     )
     result = run_ga_optimizer_service(
@@ -887,14 +892,14 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             params=learning_state,
             meta={
                 "status": "completed",
-                "target": "meta_optimizer_learning_state",
+                "target": "production_meta_optimizer_learning_state",
                 "optimizer": "GAOptimizer",
                 "population_size": result.get("population_size"),
                 "generations": result.get("generations"),
                 "best_score": (result.get("best") or {}).get("score"),
                 "gate": (result.get("best") or {}).get("gate"),
                 "plateau": (result.get("best") or {}).get("plateau"),
-                "note": "GA meta optimizer learning state; does not mutate trading:config",
+                "note": "GA production meta optimizer learning state; does not mutate trading:config without gated promotion",
             },
         )
 
@@ -998,7 +1003,11 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     from datetime import datetime, timezone, timedelta
     TW = timezone(timedelta(hours=8))
 
-    baseline_config = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_config = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/l2_sensitivity] trading:config degraded: %s", cfg_result.contract.to_dict())
     kv_space = (baseline_config.get("optuna_l2") or {}).get("search_space")
     search_space = (kv_space or {}).get("dims") if isinstance(kv_space, dict) else None
     used_source = "KV" if search_space else "DEFAULT_SEARCH_SPACE"

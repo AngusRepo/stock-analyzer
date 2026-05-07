@@ -1556,8 +1556,16 @@ def state_space_universal_predict(payload: dict) -> dict:
     Returns: {"results": [...], "n_input": int, "n_success": int}
     """
     _setup_env()
-    from app.state_space_universal import state_space_batch_predict
+    from app.state_space_universal import state_space_batch_predict, state_space_overlays_batch_predict
     try:
+        model_names = payload.get("model_names")
+        if isinstance(model_names, list) and model_names:
+            return state_space_overlays_batch_predict(
+                model_names=[str(name) for name in model_names],
+                series_list=payload.get("series_list") or [],
+                horizon=payload.get("horizon", 5),
+                version_by_model=payload.get("version_by_model") or {},
+            )
         results = state_space_batch_predict(
             model_name=payload.get("model_name", "KalmanFilter"),
             series_list=payload.get("series_list") or [],

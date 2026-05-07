@@ -569,7 +569,9 @@ export function buildEventsFromAdaptiveMeta(input: {
     evidence: {
       provenance,
       confidence_delta: params.confidence_delta,
+      threshold_components: params.threshold_components,
       bandit_max_mult: params.bandit_max_mult,
+      bandit_context: params.bandit_context,
       screener: params.screener,
       regime_overrides: params.regime_overrides,
       meta_layer: {
@@ -579,6 +581,86 @@ export function buildEventsFromAdaptiveMeta(input: {
         adaptive_components: metaLayer?.adaptive_components,
         immutable_risk_boundaries: metaLayer?.immutable_risk_boundaries,
       },
+    },
+  }]
+}
+
+export function buildEventsFromGaOptimizer(input: {
+  generatedAt: string
+  state?: Record<string, unknown> | null
+  sourceError?: string
+}): ObservabilityEvent[] {
+  if (input.sourceError) {
+    return [{
+      id: eventId('adaptive_meta', 'ga_optimizer', 'unavailable'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'adaptive_meta',
+      source: 'ga_optimizer',
+      status: 'unavailable',
+      title: 'GA optimizer unavailable',
+      summary: 'OBS could not read optimizer:ga:latest.',
+      owner: 'Adaptive Meta Layer',
+      impact: 'GA production learning evidence is not visible; promotion should remain blocked.',
+      next_action: 'Inspect Worker KV optimizer:ga:latest and the /optuna/ga_optimizer push path.',
+      runbook: 'P8 GA production learning ladder',
+      evidence: { error: input.sourceError },
+    }]
+  }
+
+  const state = input.state
+  if (!state) {
+    return [{
+      id: eventId('adaptive_meta', 'ga_optimizer', 'not_initialized'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'adaptive_meta',
+      source: 'ga_optimizer',
+      status: 'not_initialized',
+      title: 'GA optimizer not initialized',
+      summary: 'optimizer:ga:latest is missing; GA is not yet learning in production.',
+      owner: 'Adaptive Meta Layer',
+      impact: 'GA learned policy candidates cannot influence promotion review until the learning loop writes evidence.',
+      next_action: 'Run /optuna/ga_optimizer with push_kv after validation inputs are ready.',
+      runbook: 'P8 GA production learning ladder',
+      evidence: { latest_key: 'optimizer:ga:latest' },
+    }]
+  }
+
+  const promotion = state.promotion as Record<string, unknown> | undefined
+  const level = String(promotion?.level ?? 'L0')
+  const status = String(promotion?.status ?? state.status ?? 'learning')
+  const approvalRequired = promotion?.approvalRequiredForNextLevel === true
+  const best = state.best as Record<string, unknown> | undefined
+  const gate = best?.gate as Record<string, unknown> | undefined
+  const failed = Array.isArray(gate?.failed_gates) ? gate.failed_gates.map(String) : []
+  const severity: ObservabilitySeverity = failed.length ? 'warn' : level === 'L0' ? 'info' : approvalRequired ? 'warn' : 'ok'
+
+  return [{
+    id: eventId('adaptive_meta', 'ga_optimizer', level.toLowerCase()),
+    ts: String(state.updated_at ?? input.generatedAt),
+    severity,
+    domain: 'adaptive_meta',
+    source: 'ga_optimizer',
+    status,
+    title: `GA optimizer ${level}`,
+    summary: `GA production learning is ${status}; next=${promotion?.nextLevel ?? 'none'}, approval=${approvalRequired ? 'required' : 'not required'}.`,
+    owner: 'Adaptive Meta Layer',
+    impact: approvalRequired
+      ? 'Learned candidate is ready for the next production ladder step, but trading:config remains unchanged until Wei approval.'
+      : 'GA learning evidence is visible without mutating trading:config.',
+    next_action: approvalRequired
+      ? 'Review GA fitness, PBO/MC gates, and candidate diff before approving L3/L4.'
+      : 'Keep GA history and promotion evidence fresh after validation runs.',
+    runbook: 'P8 GA production learning ladder',
+    evidence: {
+      promotion,
+      production_learning_loop: state.production_learning_loop,
+      mutates_trading_config: state.mutates_trading_config,
+      best_score: best?.score,
+      gate,
+      failed_gates: failed,
+      history_tail: Array.isArray(state.history) ? state.history.slice(-3) : [],
     },
   }]
 }
@@ -596,6 +678,8 @@ export function buildObservabilityEventReport(input: {
   validationError?: string
   adaptiveParams?: Record<string, unknown>
   adaptiveError?: string
+  gaOptimizerState?: Record<string, unknown> | null
+  gaOptimizerError?: string
 }): ObservabilityEventReport {
   const events = [
     ...buildEventsFromScheduler({ generatedAt: input.generatedAt, jobs: input.schedulerJobs }),
@@ -619,6 +703,11 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       params: input.adaptiveParams,
       sourceError: input.adaptiveError,
+    }),
+    ...buildEventsFromGaOptimizer({
+      generatedAt: input.generatedAt,
+      state: input.gaOptimizerState,
+      sourceError: input.gaOptimizerError,
     }),
   ]
 
@@ -675,7 +764,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -703,6 +792,9 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
       .then(({ getAdaptiveParamsForRegime }) => getAdaptiveParamsForRegime(env.KV))
       .then((params) => ({ params: params as unknown as Record<string, unknown> }))
       .catch((error: unknown) => ({ error: String(error) })),
+    env.KV.get('optimizer:ga:latest', 'json')
+      .then((state) => ({ state: state as Record<string, unknown> | null }))
+      .catch((error: unknown) => ({ error: String(error) })),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -721,6 +813,8 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     validationError: validationResult.error,
     adaptiveParams: 'params' in adaptiveResult ? adaptiveResult.params : undefined,
     adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
+    gaOptimizerState: 'state' in gaOptimizerResult ? gaOptimizerResult.state : undefined,
+    gaOptimizerError: 'error' in gaOptimizerResult ? gaOptimizerResult.error : undefined,
   })
 }
 
@@ -767,7 +861,32 @@ export async function listObservabilityAuditEvents(env: Bindings, options: {
      LIMIT ?
   `).bind(...binds, limit).all<Record<string, unknown>>()
 
-  return (results ?? []).map((row) => ({
+  return mapObservabilityAuditRows(results ?? [])
+}
+
+export async function listObservabilityAuditEventsByIds(
+  env: Bindings,
+  eventIds: string[],
+  options: { limit?: number } = {},
+): Promise<ObservabilityAuditRow[]> {
+  const ids = [...new Set(eventIds.map((id) => id.trim()).filter(Boolean))].slice(0, 40)
+  if (ids.length === 0) return []
+  const limit = Math.max(1, Math.min(Number(options.limit ?? 200), 500))
+  const placeholders = ids.map(() => '?').join(', ')
+  const { results } = await env.DB.prepare(`
+    SELECT event_id, date, severity, domain, source, status, title, summary,
+           owner, impact, next_action, evidence, created_at
+      FROM observability_events
+     WHERE event_id IN (${placeholders})
+     ORDER BY created_at ASC
+     LIMIT ?
+  `).bind(...ids, limit).all<Record<string, unknown>>()
+
+  return mapObservabilityAuditRows(results ?? [])
+}
+
+function mapObservabilityAuditRows(rows: Record<string, unknown>[]): ObservabilityAuditRow[] {
+  return rows.map((row) => ({
     event_id: String(row.event_id ?? ''),
     date: String(row.date ?? ''),
     severity: String(row.severity ?? 'info') as ObservabilitySeverity,

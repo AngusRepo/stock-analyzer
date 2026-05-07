@@ -402,8 +402,10 @@ def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = N
         "contract": {
             "source": "ga_optimizer",
             "layer": "meta_optimizer",
-            "target": "meta_optimizer_learning_state",
-            "applies_to_production": False,
+            "target": "production_meta_optimizer_learning_state",
+            "production_learning_loop": True,
+            "mutates_trading_config": False,
+            "applies_to_production": "learning_state_only_until_gated_promotion",
             "push_target": "worker_kv_ga_optimizer_state",
             "effective_fields": [
                 "alphaFramework.allocation.weights",
@@ -411,6 +413,6 @@ def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = N
                 "alphaFramework.scoring",
             ],
             "learning_mode": "direct",
-            "apply_gate": "walk_forward+pbo+transaction_cost_sensitivity",
+            "apply_gate": "walk_forward+pbo+monte_carlo+transaction_cost_sensitivity+wei_approval_for_L3_L4",
         },
     }

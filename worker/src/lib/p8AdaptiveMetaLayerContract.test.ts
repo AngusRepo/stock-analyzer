@@ -15,6 +15,7 @@ function assert(condition: unknown, message: string): void {
 const normalized = normalizeAdaptiveParams({
   confidence_delta: 0.03,
   position_pct_delta: 0.01,
+  bandit_context: { reward_ledger: 'paper_orders.sell_5d', decision: 'reward_ledger_ok' },
   computed_at: '2026-05-05T01:00:00.000Z',
   version: 12,
   circuit: { drawdownHalt: 0.10 },
@@ -26,6 +27,7 @@ assert(normalized.provenance.owner === 'ml-controller', 'adaptive params owner m
 assert(normalized.provenance.source === 'ml-controller', 'adaptive params must record source')
 assert(normalized.provenance.update_frequency === 'daily_after_verify', 'adaptive params must expose update frequency')
 assert(normalized.provenance.fallback === false, 'controller adaptive params must not be marked fallback')
+assert(normalized.bandit_context?.reward_ledger === 'paper_orders.sell_5d', 'LinUCB protection must expose reward ledger provenance')
 assert(!Object.prototype.hasOwnProperty.call(normalized, 'circuit'), 'adaptive params must not override circuit breaker hard boundaries')
 assert(!Object.prototype.hasOwnProperty.call(normalized, 'alphaFramework'), 'adaptive params must not own alpha framework production config')
 
@@ -79,7 +81,7 @@ assert(
   ADAPTIVE_META_LAYER_GOVERNANCE.meta_optimizers.includes('GAOptimizer'),
   'GAOptimizer must be declared as meta optimizer governance, not a predictor',
 )
-for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer']) {
+for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer', 'NeuralUCB', 'NeuralTS', 'OnlinePortfolioBandit', 'NeuCB']) {
   assert(
     typeof ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components[component] === 'string',
     `${component} must have an explicit P8 meta-layer role`,

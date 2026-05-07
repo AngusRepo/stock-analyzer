@@ -1,6 +1,7 @@
 import {
   buildEventsFromAdaptiveMeta,
   buildEventsFromDataQuality,
+  buildEventsFromGaOptimizer,
   buildEventsFromScheduler,
   buildEventsFromValidation,
   normalizeObservabilityAuditFilters,
@@ -38,6 +39,36 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events[0].domain === 'adaptive_meta', 'adaptive meta should have a dedicated OBS domain')
   assert(events[0].summary.includes('regime=volatile'), 'adaptive meta event should expose effective regime')
   assert((events[0].evidence.meta_layer as any).alpha_vote_count === 8, 'adaptive meta evidence should expose 8 alpha voters')
+}
+
+{
+  const events = buildEventsFromGaOptimizer({
+    generatedAt,
+    state: {
+      production_learning_loop: true,
+      mutates_trading_config: false,
+      updated_at: generatedAt,
+      status: 'shadow_config',
+      promotion: {
+        level: 'L2',
+        status: 'shadow_config',
+        nextLevel: 'L3',
+        approvalRequiredForNextLevel: true,
+      },
+      best: {
+        score: 1.2,
+        gate: { passed: true, failed_gates: [] },
+      },
+      history: [{ generation: 0, best_score: 1.0 }, { generation: 1, best_score: 1.2 }],
+    },
+  })
+
+  assert(events.length === 1, 'GA optimizer should emit one adaptive meta event')
+  assert(events[0].domain === 'adaptive_meta', 'GA optimizer belongs to adaptive meta owner')
+  assert(events[0].source === 'ga_optimizer', 'GA optimizer event source should be explicit')
+  assert(events[0].summary.includes('next=L3'), 'GA optimizer event should expose promotion ladder next step')
+  assert((events[0].evidence.promotion as any).level === 'L2', 'GA optimizer evidence should include promotion level')
+  assert((events[0].evidence as any).mutates_trading_config === false, 'GA learning must not mutate trading config')
 }
 
 {

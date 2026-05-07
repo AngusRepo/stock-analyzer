@@ -6,6 +6,7 @@ the single-stock runtime owner. It preserves the same error envelope as
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 PredictRequest: Any = None
@@ -135,9 +136,13 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
     """Run batch prediction and expose container cache telemetry."""
     before = _get_model_cache_stats()
     ft_before = _get_ft_runtime_cache_stats()
+    preload_t0 = time.time()
     preload = preload_batch_artifacts(payloads or [])
+    preload_elapsed_s = round(time.time() - preload_t0, 3)
     after_preload = _get_model_cache_stats()
+    predict_t0 = time.time()
     results = predict_stock_v2_batch(payloads)
+    predict_elapsed_s = round(time.time() - predict_t0, 3)
     after = _get_model_cache_stats()
     ft_after = _get_ft_runtime_cache_stats()
     total_delta = _stats_delta(after, before)
@@ -150,6 +155,11 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
                 "contract": "modal_predict_batch_v2_true_batch",
             },
             "preload": preload,
+            "timing": {
+                "preload_elapsed_s": preload_elapsed_s,
+                "predict_loop_elapsed_s": predict_elapsed_s,
+                "total_elapsed_s": round(preload_elapsed_s + predict_elapsed_s, 3),
+            },
             "model_cache": {
                 **total_delta,
                 "preload_delta": _stats_delta(after_preload, before),

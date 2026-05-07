@@ -237,6 +237,23 @@ async function finalizeUpdateChain(
 
   try {
     const summary = await deps.runMLAndRiskV2(env, triggerTime)
+    if (summary.trim().toUpperCase().startsWith('LOCKED')) {
+      const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
+      await logSchedulerResult(env.KV, 'pipeline', {
+        status: 'triggered',
+        summary: lockedSummary,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'triggered',
+        summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${lockedSummary}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      console.log(`[Queue] Event-driven: ${lockedSummary}`)
+      return
+    }
     await logSchedulerResult(env.KV, 'pipeline', {
       status: classifySchedulerSummary(summary),
       summary,

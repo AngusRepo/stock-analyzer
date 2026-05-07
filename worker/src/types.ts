@@ -30,6 +30,8 @@ export type Bindings = {
   STOCKVISION_AUTH_TOKEN?: string
   // Discord Webhook URL（Paper Trading 事件推送）
   DISCORD_WEBHOOK_URL?: string
+  LINE_CHANNEL_ACCESS_TOKEN?: string
+  LINE_USER_ID?: string
   // 本地 Cloudflare Tunnel URL（Claude Opus proxy，Max Plan 免費呼叫）
   LOCAL_TUNNEL_URL?: string
   // Shioaji 即時報價 Proxy（Cloud Run）

@@ -1,8 +1,7 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowRight, Clock3, Database, ExternalLink, GitBranch, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
-import { VirtualizedList } from '@/components/performance/VirtualizedList'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -140,22 +139,6 @@ function Sparkline({ values, tone = 'info' }: { values: number[]; tone?: Worksta
   )
 }
 
-function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip'> }) {
-  const items = history.length ? history : ['skip', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip']
-  return (
-    <div className="flex gap-1" aria-label="7 day status strip">
-      {items.map((status, index) => (
-        <span
-          key={`${status}-${index}`}
-          className={`h-2 flex-1 rounded-full ${
-            status === 'success' ? 'bg-emerald-400' : status === 'failed' ? 'bg-rose-400' : 'bg-slate-700'
-          }`}
-        />
-      ))}
-    </div>
-  )
-}
-
 function MetricCell({
   label,
   value,
@@ -179,7 +162,7 @@ function MetricCell({
         {value}
       </p>
       <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 64 : tone === 'ok' ? 92 : 48} tone={tone} />
-      {detail && <p className="mt-2 truncate text-xs text-slate-500">{detail}</p>}
+      {detail && <p className="mt-2 text-xs leading-4 text-slate-500">{detail}</p>}
     </div>
   )
 }
@@ -263,13 +246,8 @@ function IncidentInbox({
   }
 
   return (
-    <div className="max-h-[420px] overflow-hidden">
-      <VirtualizedList
-        items={incidents}
-        itemHeight={112}
-        height={Math.min(420, incidents.length * 112)}
-        getKey={(incident) => incident.id}
-        renderItem={(incident) => {
+    <div className="divide-y divide-[#263247]">
+      {incidents.map((incident) => {
         const timing = incidentTiming(incident, events)
         const tone = severityTone(incident.severity)
         return (
@@ -302,8 +280,7 @@ function IncidentInbox({
             </div>
           </button>
         )
-      }}
-      />
+      })}
     </div>
   )
 }
@@ -369,28 +346,20 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   })
   return (
     <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
-      <VirtualizedList
-        items={sortedJobs}
-        itemHeight={88}
-        height={Math.min(420, sortedJobs.length * 88)}
-        getKey={(job) => job.id}
-        renderItem={(job) => (
-        <div className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 lg:grid-cols-[1fr_0.75fr_0.7fr_120px]">
+      {sortedJobs.map((job) => (
+        <div key={job.id} className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
               <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
             </div>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
-            <div className="mt-2 max-w-[220px]">
-              <HistoryStrip history={job.history7d ?? []} />
-            </div>
           </div>
-          <div className="font-mono text-slate-400">
+          <div className="min-w-0 font-mono text-slate-400">
             <p>last {job.lastRun || '-'}</p>
             <p className="text-slate-600">next {job.nextRun || '-'}</p>
           </div>
-          <div className="font-mono text-slate-400">
+          <div className="min-w-0 font-mono text-slate-400">
             <p>{job.lastDuration || '-'}</p>
             <p className="text-slate-600">7d {job.rate7d || '-'}</p>
           </div>
@@ -399,8 +368,28 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
           </a>
           {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
         </div>
-      )}
-      />
+      ))}
+    </div>
+  )
+}
+
+function checkScore(status: string) {
+  if (status === 'ok') return 100
+  if (status === 'warn') return 55
+  return 0
+}
+
+function DataQualityScoreBar({ score, tone }: { score: number; tone: WorkstationTone }) {
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
+  return (
+    <div className="min-w-[120px]">
+      <div className="flex items-center justify-between font-mono text-[10px] text-slate-500">
+        <span>score</span>
+        <span className={tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : 'text-rose-300'}>{clamped}%</span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
+        <div className="h-full rounded-full" style={{ width: `${clamped}%`, backgroundColor: toneColor(tone) }} />
+      </div>
     </div>
   )
 }
@@ -416,16 +405,16 @@ function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
       {sortedChecks.map((check) => {
         const tone = statusTone(check.status)
         return (
-          <div key={check.id} className={`grid gap-2 border-b p-2 text-xs last:border-0 lg:grid-cols-[0.85fr_1fr_110px] ${check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15' : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10' : 'border-[#263247]'}`}>
-            <div>
+          <div key={check.id} className={`grid gap-3 border-b p-2 text-xs last:border-0 xl:grid-cols-[0.75fr_minmax(0,1fr)_120px_90px] ${check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15' : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10' : 'border-[#263247]'}`}>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
-                <p className="text-sm font-semibold text-slate-100">{check.label}</p>
+                <p className="min-w-0 break-words text-sm font-semibold text-slate-100">{check.label}</p>
               </div>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{check.id}</p>
-              <MiniBar value={check.status === 'ok' ? 96 : check.status === 'warn' ? 62 : 100} tone={tone} />
+              <p className="mt-1 break-all font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{check.id}</p>
             </div>
-            <p className="line-clamp-2 leading-5 text-slate-400">{check.summary}</p>
+            <p className="min-w-0 whitespace-normal break-words leading-5 text-slate-400 [overflow-wrap:anywhere]">{check.summary}</p>
+            <DataQualityScoreBar score={checkScore(check.status)} tone={tone} />
             <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-200 hover:text-emerald-100">
               Inspect <ExternalLink className="h-3 w-3" />
             </a>
@@ -433,6 +422,103 @@ function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
         )
       })}
     </div>
+  )
+}
+
+function fmtNumber(value: unknown, digits = 4) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(digits) : '-'
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
+  const adaptive = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'adaptive_params')
+  const ga = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'ga_optimizer')
+  const evidence = asRecord(adaptive?.evidence)
+  const threshold = asRecord(evidence.threshold_components)
+  const thresholdInputs = asRecord(threshold.inputs)
+  const bandit = asRecord(evidence.bandit_context)
+  const gaEvidence = asRecord(ga?.evidence)
+  const promotion = asRecord(gaEvidence.promotion)
+  const tone = severityTone(adaptive?.severity ?? ga?.severity)
+
+  return (
+    <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
+      <div className="grid gap-3 p-3 xl:grid-cols-3">
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Threshold Policy</p>
+            <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <p className="text-slate-500">effective delta</p>
+              <p className="font-mono text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">regime</p>
+              <p className="font-mono text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+            <span>risk {fmtNumber(threshold.risk_penalty)}</span>
+            <span>model {fmtNumber(threshold.model_quality_penalty)}</span>
+            <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
+            <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">LinUCB Guard</p>
+            <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <p className="text-slate-500">max mult</p>
+              <p className="font-mono text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">loss rate</p>
+              <p className="font-mono text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">samples</p>
+              <p className="font-mono text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
+            </div>
+          </div>
+          <p className="mt-3 truncate font-mono text-[10px] text-[#70809b]">ledger: {String(bandit.reward_ledger ?? '-')}</p>
+        </div>
+
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">GA Promotion</p>
+            <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <p className="text-slate-500">status</p>
+              <p className="font-mono text-lg text-slate-100">{String(promotion.status ?? ga?.status ?? '-')}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">next</p>
+              <p className="font-mono text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <WorkstationPill tone={gaEvidence.mutates_trading_config === false ? 'ok' : 'error'}>
+              config mutate {gaEvidence.mutates_trading_config === false ? 'blocked' : 'unknown'}
+            </WorkstationPill>
+            <WorkstationPill tone={promotion.approvalRequiredForNextLevel ? 'warn' : 'ok'}>
+              approval {promotion.approvalRequiredForNextLevel ? 'required' : 'not yet'}
+            </WorkstationPill>
+          </div>
+        </div>
+      </div>
+    </WorkstationPanel>
   )
 }
 
@@ -474,7 +560,6 @@ function DependencyMap() {
 
 export default function ObservabilityPage() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string>()
-  const detailRef = useRef<HTMLDivElement>(null)
 
   const scheduler = useQuery({ queryKey: ['obs', 'scheduler'], queryFn: schedulerApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), refetchInterval: 60_000, staleTime: 30_000 })
@@ -496,7 +581,6 @@ export default function ObservabilityPage() {
 
   function openIncident(id: string) {
     setSelectedIncidentId(id)
-    window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 0)
   }
 
   return (
@@ -532,15 +616,15 @@ export default function ObservabilityPage() {
           traceOk={events.length}
         />
 
+        <AdaptiveMetaPanel events={events} />
+
         <section className="grid gap-4 xl:grid-cols-[360px_1fr_300px]">
           <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="time, count, owner">
             <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} events={events} onOpen={openIncident} />
           </WorkstationPanel>
 
           <WorkstationPanel title="Selected Incident Detail / 事件根因" kicker="impact + next action">
-            <div ref={detailRef}>
-              <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />
-            </div>
+            <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />
           </WorkstationPanel>
 
           <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">
@@ -571,16 +655,23 @@ export default function ObservabilityPage() {
           </div>
           <div className="grid gap-3 p-3 xl:grid-cols-2">
             <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
-                <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
+                <div className="hidden w-32 shrink-0 sm:block">
+                  <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
+                </div>
               </div>
               <SchedulerRunsPanel jobs={jobs} />
             </div>
             <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
-                <Sparkline values={(dqChecks.length ? dqChecks : []).slice(0, 12).map((check) => check.status === 'ok' ? 100 : check.status === 'warn' ? 55 : 5)} tone={failedChecks ? 'error' : 'ok'} />
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
+                <div className="hidden items-center gap-3 sm:flex">
+                  <span className={`font-mono text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
+                  <div className="w-32 shrink-0">
+                    <Sparkline values={(dqChecks.length ? dqChecks : []).slice(0, 12).map((check) => check.status === 'ok' ? 100 : check.status === 'warn' ? 55 : 5)} tone={failedChecks ? 'error' : 'ok'} />
+                  </div>
+                </div>
               </div>
               <DataQualityPanel checks={dqChecks} />
             </div>

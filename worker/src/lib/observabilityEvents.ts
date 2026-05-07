@@ -199,6 +199,26 @@ function dataQualitySeverity(status: string): ObservabilitySeverity {
   return 'ok'
 }
 
+function dataQualityImpact(check: DataQualityCheck): string {
+  if (check.id === 'classification_coverage') {
+    return 'Classification coverage affects sector/theme grouping and recommendation lane explanations; tradable lane should be evaluated separately from emerging research lane.'
+  }
+  if (check.id.includes('price')) return 'Cards, quote sanity, fills, and recommendations may use stale or incomplete price data.'
+  if (check.id.includes('prediction') || check.id.includes('model')) return 'ML votes, IC weighting, and recommendation confidence may be degraded.'
+  return check.status === 'fail'
+    ? 'Serving data may be stale or structurally unsafe; downstream recommendations should be treated as degraded.'
+    : 'Serving data is usable but needs review before trusting score/ranking explanations.'
+}
+
+function dataQualityNextAction(check: DataQualityCheck): string {
+  if (check.id === 'classification_coverage') {
+    return 'Inspect tradable_missing_industry_tags first; if zero, treat emerging research mapping as taxonomy backlog, not a trading blocker.'
+  }
+  if (check.id.includes('price')) return 'Open price freshness drilldown, compare latest stock_prices date with the data update run, then rerun evening chain only after update completes.'
+  if (check.id.includes('prediction')) return 'Open model/prediction coverage and compare expected model rows vs actual prediction rows for the target date.'
+  return 'Inspect evidence metrics, then trace the owner pipeline that writes this dataset.'
+}
+
 function deployGateSeverity(decision: string | undefined): ObservabilitySeverity {
   const value = String(decision ?? '').toLowerCase()
   if (value === 'block' || value === 'fail' || value === 'failed') return 'error'
@@ -330,10 +350,8 @@ export function buildEventsFromDataQuality(input: {
     title: check.label,
     summary: check.summary,
     owner: 'Worker',
-    impact: check.status === 'fail'
-      ? 'Serving data may be stale or structurally unsafe; downstream recommendations should be treated as degraded.'
-      : 'Serving data is usable but needs review before trusting score/ranking explanations.',
-    next_action: 'Inspect evidence metrics, then trace the owner pipeline that writes this dataset.',
+    impact: dataQualityImpact(check),
+    next_action: dataQualityNextAction(check),
     runbook: 'P6/P9 data quality gate',
     evidence: check.metrics ?? {},
   }))
@@ -664,6 +682,17 @@ export function buildEventsFromGaOptimizer(input: {
   const best = state.best as Record<string, unknown> | undefined
   const gate = best?.gate as Record<string, unknown> | undefined
   const failed = Array.isArray(gate?.failed_gates) ? gate.failed_gates.map(String) : []
+  const history = Array.isArray(state.history) ? state.history as Array<Record<string, unknown>> : []
+  const bestCandidate = best?.candidate as Record<string, unknown> | undefined
+  const candidateParams = bestCandidate?.params as Record<string, unknown> | undefined
+  const learnedAlphaFramework =
+    state.best_alphaFramework ??
+    state.bestAlphaFramework ??
+    candidateParams?.alphaFramework ??
+    null
+  const metrics = best?.metrics as Record<string, unknown> | undefined
+  const contract = state.contract as Record<string, unknown> | undefined
+  const meta = state.meta as Record<string, unknown> | undefined
   const severity: ObservabilitySeverity = failed.length ? 'warn' : level === 'L0' ? 'info' : approvalRequired ? 'warn' : 'ok'
 
   return [{
@@ -688,9 +717,17 @@ export function buildEventsFromGaOptimizer(input: {
       production_learning_loop: state.production_learning_loop,
       mutates_trading_config: state.mutates_trading_config,
       best_score: best?.score,
+      best_candidate_id: bestCandidate?.id,
+      best_metrics: metrics,
+      learned_alpha_framework: learnedAlphaFramework,
+      population_size: state.population_size ?? meta?.population_size,
+      generations: state.generations ?? meta?.generations,
+      ranked_count: Array.isArray(state.ranked) ? state.ranked.length : undefined,
+      history_count: history.length,
+      contract,
       gate,
       failed_gates: failed,
-      history_tail: Array.isArray(state.history) ? state.history.slice(-3) : [],
+      history_tail: history.slice(-3),
     },
   }]
 }

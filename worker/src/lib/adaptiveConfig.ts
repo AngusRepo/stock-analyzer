@@ -18,8 +18,11 @@ export interface AdaptiveScreenerDelta {
   emerging_research_delta?: number
 }
 
+export type AdaptiveThresholdComponents = Record<string, unknown>
+
 export interface AdaptiveRegimeOverride {
   confidence_delta?: number
+  threshold_components?: AdaptiveThresholdComponents
   position_pct_delta?: number
   sltp_add?: {
     sl_add: number
@@ -87,6 +90,7 @@ export interface AdaptiveParams {
   hold_signal_score?: number
 
   confidence_delta: number
+  threshold_components?: AdaptiveThresholdComponents
   position_pct_delta: number
   sltp_add: {
     sl_add: number
@@ -110,7 +114,8 @@ export interface AdaptiveParams {
   sl_tp_override?: { sl_add: number; tp_add: number } | null
 }
 
-const KV_KEY = 'ml:adaptive_params'
+export const ADAPTIVE_PARAMS_KV_KEY = 'ml:adaptive_params'
+const KV_KEY = ADAPTIVE_PARAMS_KV_KEY
 const CACHE_TTL_MS = 300_000
 
 function nowIso(): string {
@@ -190,6 +195,11 @@ function normalizeScreenerDelta(value: unknown): AdaptiveScreenerDelta {
   return out
 }
 
+function normalizeThresholdComponents(value: unknown): AdaptiveThresholdComponents | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as AdaptiveThresholdComponents
+}
+
 function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   if (!value || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
@@ -198,6 +208,8 @@ function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   const position = optionalNumber(raw.position_pct_delta)
   const banditMax = optionalNumber(raw.bandit_max_mult)
   if (confidence != null) out.confidence_delta = confidence
+  const thresholdComponents = normalizeThresholdComponents(raw.threshold_components)
+  if (thresholdComponents) out.threshold_components = thresholdComponents
   if (position != null) out.position_pct_delta = position
   if (Object.prototype.hasOwnProperty.call(raw, 'sltp_add')) out.sltp_add = normalizeSltpAdd(raw.sltp_add)
   if (raw.pf_quality_mult && typeof raw.pf_quality_mult === 'object') out.pf_quality_mult = normalizeNumberRecord(raw.pf_quality_mult)
@@ -257,6 +269,7 @@ export function normalizeAdaptiveParams(
   const computedAt = String(raw.computed_at ?? DEFAULT_ADAPTIVE_PARAMS.computed_at)
   const normalized: AdaptiveParams = {
     confidence_delta: finiteNumber(raw.confidence_delta, DEFAULT_ADAPTIVE_PARAMS.confidence_delta),
+    threshold_components: normalizeThresholdComponents(raw.threshold_components),
     position_pct_delta: finiteNumber(raw.position_pct_delta, DEFAULT_ADAPTIVE_PARAMS.position_pct_delta),
     sltp_add: normalizeSltpAdd(raw.sltp_add),
     pf_quality_mult: normalizeNumberRecord(raw.pf_quality_mult),
@@ -368,6 +381,10 @@ export async function setAdaptiveParams(
 ): Promise<void> {
   const normalized = normalizeAdaptiveParams(params, options)
   await kv.put(KV_KEY, JSON.stringify(normalized))
+  const persisted = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
+  if (!persisted || typeof persisted !== 'object') {
+    throw new Error(`adaptive params KV write verification failed: ${KV_KEY} missing after put`)
+  }
   _cached = normalized
   _cachedAt = Date.now()
 }

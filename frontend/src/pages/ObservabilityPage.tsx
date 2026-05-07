@@ -104,13 +104,19 @@ function formatDuration(start?: string | null, end?: string | null) {
 function incidentTiming(incident: ObservabilityIncident, events: ObservabilityEvent[] = []) {
   const sourceEvents = events.filter((event) => incident.source_event_ids?.includes(event.id))
   const eventTimes = sourceEvents.map((event) => event.ts).filter(Boolean).sort()
-  const firstSeen = eventTimes[0] ?? incident.first_seen ?? ''
-  const lastSeen = eventTimes[eventTimes.length - 1] ?? incident.last_seen ?? firstSeen
+  const firstSeen = incident.first_seen ?? eventTimes[0] ?? ''
+  const lastSeen = incident.last_seen ?? eventTimes[eventTimes.length - 1] ?? firstSeen
   return {
     firstSeen,
     lastSeen,
     duration: formatDuration(firstSeen, lastSeen),
   }
+}
+
+function formatEvidenceValue(value: unknown) {
+  if (Array.isArray(value)) return value.length ? value.slice(0, 4).join(', ') : '-'
+  if (value == null || value === '') return '-'
+  return String(value)
 }
 
 function MiniBar({ value, tone }: { value: number; tone: WorkstationTone }) {
@@ -268,10 +274,12 @@ function IncidentInbox({
                 </div>
                 <p className="mt-2 truncate text-sm font-semibold text-slate-100">{incident.title}</p>
                 <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] text-slate-500">
+                  <span>first {formatObsTime(timing.firstSeen)}</span>
                   <span>last {formatObsTime(timing.lastSeen)}</span>
                   <span>age {timing.duration}</span>
                   <span>{incident.source_event_ids?.length ?? 0} events</span>
                 </div>
+                <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.root_cause || incident.impact || '-'}</p>
                 <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 65 : 35} tone={tone} />
               </div>
               <span className="inline-flex items-center gap-1 font-mono text-[10px] text-amber-200">
@@ -302,6 +310,10 @@ function SelectedIncidentDetail({
 
   const timing = incidentTiming(incident, fallbackEvents)
   const tone = severityTone(incident.severity)
+  const evidence = asRecord(incident.evidence)
+  const statuses = formatEvidenceValue(evidence.statuses)
+  const sources = formatEvidenceValue(evidence.sources)
+  const eventCount = formatEvidenceValue(evidence.event_count ?? incident.source_event_ids?.length)
   return (
     <div className="space-y-3 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -313,26 +325,30 @@ function SelectedIncidentDetail({
       </div>
 
       <div className="grid gap-2 md:grid-cols-3">
-        <MetricCell label="First seen / 首次" value={formatObsTime(timing.firstSeen)} tone="info" detail="事件第一次被歸入此群組" />
-        <MetricCell label="Last seen / 最新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="判斷是不是新問題" />
-        <MetricCell label="Age / 年齡" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="first seen 到 last seen" />
+        <MetricCell label="First seen / 首次發生" value={formatObsTime(timing.firstSeen)} tone="info" detail="來自 OBS audit / event ts，不是頁面開啟時間" />
+        <MetricCell label="Last seen / 最後更新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="判斷是不是新問題" />
+        <MetricCell label="Age / 持續時間" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="first seen 到 last seen" />
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-3">
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root Cause</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root Cause / 為什麼壞</p>
           <p className="mt-2 text-sm leading-6 text-slate-300">{incident.root_cause || '-'}</p>
         </div>
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact / 影響</p>
           <p className="mt-2 text-sm leading-6 text-slate-300">{incident.impact || '-'}</p>
+        </div>
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-200">Next Action / 要怎麼處理</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.next_action || '-'}</p>
         </div>
       </div>
 
       <div className="grid gap-2 md:grid-cols-3">
         <MetricCell label="Runs" value={String(incident.run_ids?.length ?? 0)} tone="info" detail={(incident.run_ids ?? []).slice(0, 2).join(', ') || '-'} />
         <MetricCell label="Symbols" value={String(incident.affected_symbols?.length ?? 0)} tone={(incident.affected_symbols?.length ?? 0) ? 'warn' : 'ok'} detail={(incident.affected_symbols ?? []).slice(0, 4).join(', ') || '-'} />
-        <MetricCell label="Next action" value={incident.status} tone={statusTone(incident.status)} detail={incident.next_action} />
+        <MetricCell label="Evidence / 證據" value={`${eventCount} events`} tone={statusTone(incident.status)} detail={`${sources}; ${statuses}`} />
       </div>
     </div>
   )
@@ -434,6 +450,29 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {}
 }
 
+function scoreDelta(historyTail: unknown) {
+  if (!Array.isArray(historyTail) || historyTail.length < 2) return '-'
+  const prev = Number(asRecord(historyTail[historyTail.length - 2]).best_score)
+  const last = Number(asRecord(historyTail[historyTail.length - 1]).best_score)
+  if (!Number.isFinite(prev) || !Number.isFinite(last)) return '-'
+  const delta = last - prev
+  return `${delta >= 0 ? '+' : ''}${delta.toFixed(4)}`
+}
+
+function summarizeLearnedPolicy(policy: Record<string, unknown>) {
+  const allocation = asRecord(asRecord(policy.allocation).weights)
+  const bull = asRecord(allocation.bull)
+  const risk = asRecord(policy.riskOverlay)
+  const scoring = asRecord(policy.scoring)
+  const parts = [
+    bull.trend_following != null ? `bull trend=${fmtNumber(bull.trend_following, 2)}` : null,
+    bull.breakout_volatility_expansion != null ? `breakout=${fmtNumber(bull.breakout_volatility_expansion, 2)}` : null,
+    risk.highVolThreshold != null ? `highVol=${fmtNumber(risk.highVolThreshold, 3)}` : null,
+    scoring.buyThreshold != null ? `buy=${fmtNumber(scoring.buyThreshold, 2)}` : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' / ') : 'learned params not exposed'
+}
+
 function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const adaptive = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'adaptive_params')
   const ga = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'ga_optimizer')
@@ -443,6 +482,9 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const bandit = asRecord(evidence.bandit_context)
   const gaEvidence = asRecord(ga?.evidence)
   const promotion = asRecord(gaEvidence.promotion)
+  const bestMetrics = asRecord(gaEvidence.best_metrics)
+  const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
+  const historyTail = gaEvidence.history_tail
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
 
   return (
@@ -507,7 +549,26 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
               <p className="text-slate-500">next</p>
               <p className="font-mono text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
             </div>
+            <div>
+              <p className="text-slate-500">best score</p>
+              <p className="font-mono text-lg text-emerald-300">{fmtNumber(gaEvidence.best_score, 4)}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">score delta</p>
+              <p className="font-mono text-lg text-sky-200">{scoreDelta(historyTail)}</p>
+            </div>
           </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+            <span>population {String(gaEvidence.population_size ?? '-')}</span>
+            <span>generations {String(gaEvidence.generations ?? '-')}</span>
+            <span>history {String(gaEvidence.history_count ?? '-')}</span>
+            <span>PBO {fmtNumber(bestMetrics.pbo, 3)}</span>
+            <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
+            <span>Sharpe {fmtNumber(bestMetrics.sharpe, 2)}</span>
+          </div>
+          <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+            learned policy: {summarizeLearnedPolicy(learnedPolicy)}
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <WorkstationPill tone={gaEvidence.mutates_trading_config === false ? 'ok' : 'error'}>
               config mutate {gaEvidence.mutates_trading_config === false ? 'blocked' : 'unknown'}

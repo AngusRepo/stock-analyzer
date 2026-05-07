@@ -201,6 +201,71 @@ def _aggregate_tag_cash_flows(
     return tag_flows
 
 
+def _load_stock_names() -> dict[str, str]:
+    rows = d1_client.query("SELECT symbol, name FROM stocks")
+    return {
+        str(r.get("symbol")): str(r.get("name") or r.get("symbol"))
+        for r in rows
+        if r.get("symbol")
+    }
+
+
+def write_sector_flow_stock_details(
+    *,
+    as_of_date: str,
+    tag_members: dict[str, list[str]],
+    symbol_flows: dict[str, CashFlow],
+    top_per_theme: int = 10,
+) -> int:
+    """Refresh sector_flow_stocks so UI detail rows do not fall back to stale dates."""
+    if not tag_members:
+        return 0
+
+    stock_names = _load_stock_names()
+    statements: list[tuple[str, list]] = [
+        ("DELETE FROM sector_flow_stocks WHERE date = ?", [as_of_date])
+    ]
+    for tag, members in tag_members.items():
+        ranked = sorted(
+            (
+                (symbol, symbol_flows.get(symbol))
+                for symbol in members
+                if symbol_flows.get(symbol) and float(symbol_flows[symbol].get("total_net") or 0.0) > 0
+            ),
+            key=lambda item: float((item[1] or {}).get("total_net") or 0.0),
+            reverse=True,
+        )[: max(1, int(top_per_theme))]
+        for symbol, flow in ranked:
+            if not flow:
+                continue
+            statements.append((
+                """
+                INSERT INTO sector_flow_stocks
+                  (date, theme, symbol, name, net_amount, foreign_net, trust_net, volume_ratio, classification)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.strip(),
+                [
+                    as_of_date,
+                    tag,
+                    symbol,
+                    stock_names.get(symbol, symbol),
+                    round(float(flow.get("total_net") or 0.0), 4),
+                    round(float(flow.get("foreign_net") or 0.0), 4),
+                    round(float(flow.get("trust_net") or 0.0), 4),
+                    None,
+                    "top",
+                ],
+            ))
+
+    if len(statements) == 1:
+        d1_client.execute(statements[0][0], statements[0][1])
+        return 0
+    result = d1_client.batch_execute(statements, chunk_size=100)
+    written = max(0, int(result.get("success_count") or result.get("total") or 0) - 1)
+    logger.info(f"[sector_flow] Wrote {written} sector_flow_stocks rows for {as_of_date}")
+    return written
+
+
 def _load_prev_rs_ratios(
     classification: Classification,
     as_of_date: str,
@@ -365,6 +430,12 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
                 "written": written,
                 "quadrants": counts,
             }
+            if tag_type == "concept":
+                summary[tag_type]["stock_details_written"] = write_sector_flow_stock_details(
+                    as_of_date=as_of_date,
+                    tag_members=tag_members,
+                    symbol_flows=symbol_flows,
+                )
         except Exception as e:
             logger.error(f"[sector_flow] {tag_type} path failed: {e}")
             summary[tag_type] = {"error": str(e)}

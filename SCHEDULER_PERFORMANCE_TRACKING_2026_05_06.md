@@ -330,3 +330,123 @@ The recommendation stage is therefore present and current for the rerun. It was 
 2. Clean `evening-chain` lock/finalizer telemetry so a successful triggered pipeline is not summarized as `LOCKED`.
 3. Optimize `state_space_universal_predict` batching/caching; it is still about 30.6% of this rerun's estimated cost.
 4. Keep `recommendation` as a first-class logical stage in future reports, even though it is materialized inside the pipeline contract rather than as a standalone Scheduler job.
+
+## Fourth Run: 2026-05-07 Rerun After Scheduler/Optuna Controller Changes
+
+Snapshot time: 2026-05-07 21:15 Asia/Taipei
+
+Purpose:
+
+- Rerun the 2026-05-07 market-data/evening path after the latest scheduler ownership and Optuna controller changes.
+- Confirm TPEX/OTC data is no longer returning the pathological `15/700` readiness failure.
+- Capture a fourth performance sample against the earlier A/B/C runs.
+
+### Trigger And Chain Result
+
+Triggered with the existing production scheduler authorization path. The bearer token was reused but not printed.
+
+| Stage | Evidence | Result |
+|---|---|---|
+| manual market-data update | `2026-05-07`, `price=2291`, `TWSE=1085`, `OTC=1206`, `chip=16196`, `indicators=2296` | ready; TPEX/OTC fixed for this run |
+| GCP `evening-chain` trigger | Scheduler job accepted | accepted |
+| indicator queue | `run_id=2026-05-07-movh24hn`, `shards=4` | success |
+| screener | Worker scheduler log | success |
+| pipeline-v2 | `pipeline-v2-x5llm` | success, 599.44s |
+| ML predict | `predictions_written=704` | success |
+| daily recommendation | `recommendations_updated=64` | success |
+| verify-v2 | `verify-1778158632-7681a89e` | success, 3.188s |
+| post-verify chain | `model-ic-tracker:success adapt:success daily-report:success obsidian-sync:success` | success, 15.733s |
+
+Important closure note:
+
+- The pipeline Cloud Run job did POST four successful callbacks to the Worker callback endpoint.
+- The pipeline/recommendation/screener logs were written, but the post-pipeline callback chain did not automatically trigger `verify-v2`.
+- `verify-v2` was manually triggered to complete this rerun.
+- This means the data path is clean for this forced run, but the pipeline callback -> post-pipeline-chain contract still has a root-cause tail.
+
+### Four-Run Comparison
+
+| Run | Business date | Execution date | Pipeline execution | Pipeline wall time | Verify execution | Verify wall time | Cost events | Compute sec | Estimated USD |
+|---|---|---|---|---:|---|---:|---:|---:|---:|
+| A baseline | 2026-05-05 | 2026-05-05 | `pipeline-v2-f4qvv` | 8m38.52s | duplicate verify observed next cycle | about 16-17s each | 37 | 2,659.422 | 0.104253 |
+| B first optimized | 2026-05-06 | 2026-05-06 | `pipeline-v2-w66bt` | 7m16.78s | `verify-v2-vvxkm`, `verify-v2-gsl45` | 18.83s / 15.00s | 18 | 1,958.026 | 0.076127 |
+| C forced optimized rerun | 2026-05-06 | 2026-05-07 | `pipeline-v2-db8sk` | 8m50.67s | `verify-v2-dzhcg` | 14.71s | 9 | 934.201 | 0.036988 |
+| D scheduler/controller rerun | 2026-05-07 | 2026-05-07 | `pipeline-v2-x5llm` | 9m59.44s | `verify-1778158632-7681a89e` | 3.188s | 8 | 974.753 | 0.037959 |
+
+Cost attribution detail:
+
+- `cost_events.date = '2026-05-07'` includes both an earlier run and this evening rerun.
+- The D row isolates this rerun using `ts >= '2026-05-07T12:30:00Z'`.
+- The full day total was `17 events / 1,908.954 compute_sec / $0.074947`, so using the whole date would double-count unrelated work.
+
+### Cost Delta
+
+| Comparison | Event delta | Compute delta | Estimated USD delta | Pipeline wall-time delta |
+|---|---:|---:|---:|---:|
+| D vs A | 37 -> 8, down 78.4% | 2,659.422 -> 974.753, down 63.4% | 0.104253 -> 0.037959, down 63.6% | 8m38.52s -> 9m59.44s, slower 15.7% |
+| D vs B | 18 -> 8, down 55.6% | 1,958.026 -> 974.753, down 50.2% | 0.076127 -> 0.037959, down 50.1% | 7m16.78s -> 9m59.44s, slower 37.2% |
+| D vs C | 9 -> 8, down 11.1% | 934.201 -> 974.753, up 4.3% | 0.036988 -> 0.037959, up 2.6% | 8m50.67s -> 9m59.44s, slower 13.0% |
+
+Interpretation:
+
+- The latest run is not a wall-clock improvement. It is cleaner on event count, but pipeline elapsed time regressed versus B and C.
+- The per-run Modal cost is roughly flat versus C, slightly higher by about 2.6% USD.
+- Verify improved materially because the forced verify run completed in 3.188s, but this does not offset the unresolved callback-chain issue.
+- The most important correctness win is TPEX/OTC readiness: `OTC=1206`, so the prior `OTC price rows=15/700` failure was not reproduced after the rerun.
+
+### D Cost Breakdown By Source
+
+| Source / model | Events | Compute sec | Estimated USD | Share of USD |
+|---|---:|---:|---:|---:|
+| `predict_batch_v2` | 1 | 450.226 | 0.019792 | 52.1% |
+| `state_space_universal_predict` | 1 | 434.963 | 0.013327 | 35.1% |
+| `gemini-3.1-flash-lite-preview / llm_reason` | 1 | 0.000 | 0.001632 | 4.3% |
+| `patchtst_universal_predict` | 2 | 40.420 | 0.001418 | 3.7% |
+| `chronos_universal_predict` | 1 | 21.283 | 0.000936 | 2.5% |
+| `dlinear_universal_predict` | 2 | 27.861 | 0.000854 | 2.2% |
+
+### Output Consistency After D Rerun
+
+| Table / artifact | 2026-05-07 result |
+|---|---:|
+| `stock_prices` | 2,291 rows |
+| `technical_indicators` | 2,291 rows |
+| `daily_recommendations` | 64 rows / 64 symbols |
+| `predictions` | 704 rows / 64 symbols |
+| verify-v2 | verified 600/600, correct 22, pnl 18.3%, arf 0 |
+| model IC tracker | success; rolling IC updated |
+| adaptive params | success; `v51`, confidence 0.56, risk green 19 |
+
+### Findings From D
+
+- TPEX/OTC data quality recovered for this rerun. The critical `OTC price rows=15/700` condition did not recur after manual update plus evening-chain rerun.
+- Pipeline cost remains dominated by `predict_batch_v2` and `state_space_universal_predict`; together they account for about 87.2% of this run's estimated USD.
+- The controller/scheduler ownership cleanup reduced event count, but did not reduce wall-clock time.
+- The post-pipeline callback chain is still not deterministic: pipeline callback delivery succeeded, but `verify-v2` did not auto-start. This is the main remaining production closure issue before calling the chain fully fixed.
+- The recommendation stage is present and must stay in future reports even though it is not a standalone GCP Scheduler job.
+
+### Why D Was Slower Than The 7-Minute Run
+
+The 2026-05-07 D run was slower mostly because heavier work moved into the pipeline hot path, not because Cloud Run cold start regressed.
+
+| Component | 2026-05-06 B run | 2026-05-07 D run | Delta | Interpretation |
+|---|---:|---:|---:|---|
+| Cloud Run start latency | 8.76s | 12.36s | +3.60s | minor; not the root cause |
+| Pipeline app elapsed | 422.026s | 599.440s | +177.414s | main wall-clock regression |
+| ML predict section | about 367s | about 437s | about +70s | state-space/Modal runtime slower |
+| MarkovSwitching overlay | not emitted in B log | 427.375s | n/a | D explicitly shows Markov as the dominant ML wait |
+| Dataset snapshot export | not in B metrics | 100.819s for `backtest_dataset` | about +101s | new heavy snapshot work now blocks pipeline completion |
+| Price-history snapshot | not in B metrics | 0.135s | negligible | shared snapshot path is fine |
+
+Evidence:
+
+- B run `pipeline-v2-w66bt` completed in `422.026s`.
+- D run `pipeline-v2-x5llm` completed in `599.440s`.
+- D run emitted `State-space overlays metrics: KalmanFilter=2.813s, MarkovSwitching=427.375s`.
+- D run emitted `dataset_snapshot_export.backtest_dataset.elapsed_s=100.819`, `row_count=1,304,313`, D1 query counts `prices=43`, `indicators=43`, `chips=43`, `signals=43`.
+
+Root-cause conclusion:
+
+- The 9m59s runtime is mostly explained by `MarkovSwitching` plus synchronous `backtest_dataset` snapshot export.
+- `predict_batch_v2` cost is still the largest USD source, but wall-clock latency is being dominated by state-space wait and snapshot export.
+- The next low-risk optimization is not lowering hardware. It is moving heavy research/backtest snapshot export out of the serving-critical pipeline completion path, or making it callback/queue driven after recommendations are already materialized.

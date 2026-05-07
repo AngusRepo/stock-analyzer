@@ -158,29 +158,27 @@ async function handleSchedulerCallback(c: any) {
   }
 
   if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {
-    c.executionCtx.waitUntil((async () => {
-      try {
-        if (callbackRunDate) {
-          await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
-        }
-        if (body.status !== 'success') return
-
+    try {
+      if (callbackRunDate) {
+        await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
+      }
+      if (body.status === 'success') {
         const { runPostPipelineCallbackChain } = await import('../lib/postMarketChain')
         await runPostPipelineCallbackChain(c.env, {
           runDate: callbackRunDate,
           upstreamRunId: callbackRunId,
         })
-      } catch (e: any) {
-        await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
-          status: 'error',
-          summary: e?.message ?? 'post-pipeline callback chain failed',
-          duration_ms: 0,
-          error: String(e),
-          run_id: callbackRunId,
-          run_date: callbackRunDate,
-        }, c.env as any)
       }
-    })())
+    } catch (e: any) {
+      await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+        status: 'error',
+        summary: e?.message ?? 'post-pipeline callback chain failed',
+        duration_ms: 0,
+        error: String(e),
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    }
   }
 
   if (body.task === 'verify-v2' && body.status === 'success' && c.env.ML_CONTROLLER_URL) {

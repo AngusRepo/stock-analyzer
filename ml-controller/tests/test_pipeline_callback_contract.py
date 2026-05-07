@@ -36,3 +36,10 @@ async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     assert {payload["task"] for payload in payloads} == {"screener", "ml-predict", "recommendation"}
     assert all(payload["run_date"] == "2026-05-04" for payload in payloads)
+
+
+def test_pipeline_terminal_callback_has_longer_timeout():
+    source = Path(pipeline.__file__).read_text(encoding="utf-8")
+
+    assert 'timeout_s = 60.0 if payload.get("task") == "pipeline" else 15.0' in source
+    assert "httpx.AsyncClient(timeout=timeout_s)" in source

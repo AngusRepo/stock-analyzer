@@ -16,6 +16,11 @@ interface JobDef {
 }
 
 type SchedulerLastStatus = 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
+type SchedulerResolvedStatus = {
+  status: SchedulerLastStatus | null
+  staleRunning: boolean
+  staleReason?: string
+}
 
 const JOB_DEFS: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
@@ -235,13 +240,55 @@ function isWeekdayTw(date: string): boolean {
   return day >= 1 && day <= 5
 }
 
-function statusFromTodayLog(log?: CronLogEntry): SchedulerLastStatus | null {
-  if (!log) return null
-  if (log.status === 'success') return 'success'
-  if (log.status === 'error') return 'failed'
-  if (log.status === 'triggered' || log.status === 'running') return 'running'
-  if (log.status === 'skipped') return 'skip'
-  return null
+function runningSlaMs(def?: Pick<JobDef, 'id' | 'group'>): number {
+  if (!def) return 60 * 60_000
+  if (def.id === 'monthly-retrain') return 8 * 60 * 60_000
+  if (def.id === 'monthly-optuna') return 4 * 60 * 60_000
+  if (def.id === 'weekly-optuna') return 3 * 60 * 60_000
+  if (def.group === 'weekly' || def.group === 'monthly') return 2 * 60 * 60_000
+  if (def.group === 'pipeline_chain') return 90 * 60_000
+  if (def.group === 'intraday') return 20 * 60_000
+  return 45 * 60_000
+}
+
+function formatAgeForSummary(ageMs: number): string {
+  if (ageMs >= 60 * 60_000) {
+    const hours = Math.floor(ageMs / 60 / 60_000)
+    const minutes = Math.floor((ageMs % (60 * 60_000)) / 60_000)
+    return `${hours}h${minutes}m`
+  }
+  return `${Math.max(1, Math.floor(ageMs / 60_000))}m`
+}
+
+function logAgeMs(log?: CronLogEntry, nowMs = Date.now()): number | null {
+  if (!log?.timestamp) return null
+  const ts = Date.parse(log.timestamp)
+  if (!Number.isFinite(ts)) return null
+  return Math.max(0, nowMs - ts)
+}
+
+export function resolveSchedulerLogStatus(
+  log?: CronLogEntry,
+  def?: Pick<JobDef, 'id' | 'group'>,
+  nowMs = Date.now(),
+): SchedulerResolvedStatus {
+  if (!log) return { status: null, staleRunning: false }
+  if (log.status === 'success') return { status: 'success', staleRunning: false }
+  if (log.status === 'error') return { status: 'failed', staleRunning: false }
+  if (log.status === 'skipped') return { status: 'skip', staleRunning: false }
+  if (log.status === 'triggered' || log.status === 'running') {
+    const ageMs = logAgeMs(log, nowMs)
+    const slaMs = runningSlaMs(def)
+    if (ageMs != null && ageMs > slaMs) {
+      return {
+        status: 'failed',
+        staleRunning: true,
+        staleReason: `stale ${log.status}: no final callback after ${formatAgeForSummary(ageMs)}; SLA ${formatAgeForSummary(slaMs)}`,
+      }
+    }
+    return { status: 'running', staleRunning: false }
+  }
+  return { status: null, staleRunning: false }
 }
 
 function inferIdleStatus(def: JobDef, nextRun: string, today: string): SchedulerLastStatus {
@@ -278,7 +325,8 @@ export async function getSchedulerStatus(env: Bindings) {
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
 
-    const lastStatus = statusFromTodayLog(todayLog) ?? inferIdleStatus(def, nextRun, today)
+    const resolvedToday = resolveSchedulerLogStatus(todayLog, def)
+    const lastStatus = resolvedToday.status ?? inferIdleStatus(def, nextRun, today)
 
     const lastDuration = formatDuration(lastLog?.duration_ms)
 
@@ -302,7 +350,7 @@ export async function getSchedulerStatus(env: Bindings) {
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
       lastDuration,
-      lastError: todayLog?.error ?? lastLog?.error,
+      lastError: resolvedToday.staleReason ?? todayLog?.error ?? lastLog?.error,
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',

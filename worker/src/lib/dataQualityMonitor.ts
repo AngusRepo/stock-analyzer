@@ -37,6 +37,10 @@ interface CountRow {
   missing_components?: number
   missing_reasons?: number
   missing_industry_tags?: number
+  tradable_total?: number
+  tradable_missing_industry_tags?: number
+  research_total?: number
+  research_missing_industry_tags?: number
   current_price_valid?: number
   tradable_count?: number
   emerging_watchlist_count?: number
@@ -537,9 +541,17 @@ export function buildScreenerSourceOfTruthCheck(input: {
 export function buildClassificationCoverageCheck(input: {
   total: number
   missingIndustryTags: number
+  tradableTotal?: number
+  tradableMissingIndustryTags?: number
+  researchTotal?: number
+  researchMissingIndustryTags?: number
 }): DataQualityCheck {
   const total = Number(input.total ?? 0)
   const missing = Number(input.missingIndustryTags ?? 0)
+  const tradableTotal = Number(input.tradableTotal ?? total)
+  const tradableMissing = Number(input.tradableMissingIndustryTags ?? missing)
+  const researchTotal = Number(input.researchTotal ?? Math.max(0, total - tradableTotal))
+  const researchMissing = Number(input.researchMissingIndustryTags ?? Math.max(0, missing - tradableMissing))
   if (total <= 0) {
     return {
       id: 'classification_coverage',
@@ -550,7 +562,9 @@ export function buildClassificationCoverageCheck(input: {
     }
   }
 
-  const ratio = missing / total
+  const statusTotal = tradableTotal > 0 ? tradableTotal : total
+  const statusMissing = tradableTotal > 0 ? tradableMissing : missing
+  const ratio = statusMissing / Math.max(1, statusTotal)
   const status: DataQualityStatus = ratio > 0.5
     ? 'fail'
     : ratio > 0.25
@@ -561,11 +575,16 @@ export function buildClassificationCoverageCheck(input: {
     id: 'classification_coverage',
     label: 'Classification coverage',
     status,
-    summary: `industry_tags=${total - missing}/${total} missing=${missing}`,
+    summary: `tradable_industry_tags=${tradableTotal - tradableMissing}/${tradableTotal} missing=${tradableMissing}; research_missing=${researchMissing}/${researchTotal}`,
     metrics: {
       total,
       missing_industry_tags: missing,
       missing_ratio: ratio,
+      tradable_total: tradableTotal,
+      tradable_missing_industry_tags: tradableMissing,
+      research_total: researchTotal,
+      research_missing_industry_tags: researchMissing,
+      status_scope: tradableTotal > 0 ? 'tradable_lane' : 'all_recommendations',
     },
   }
 }
@@ -877,7 +896,11 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     firstCount(
       env.DB,
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN st.symbol IS NULL THEN 1 ELSE 0 END) AS missing_industry_tags
+              SUM(CASE WHEN st.symbol IS NULL THEN 1 ELSE 0 END) AS missing_industry_tags,
+              SUM(CASE WHEN dr.recommendation_lane = 'tradable' THEN 1 ELSE 0 END) AS tradable_total,
+              SUM(CASE WHEN dr.recommendation_lane = 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS tradable_missing_industry_tags,
+              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' THEN 1 ELSE 0 END) AS research_total,
+              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS research_missing_industry_tags
        FROM daily_recommendations dr
        LEFT JOIN stock_tags st
          ON st.symbol = dr.symbol AND st.tag_type = 'industry'
@@ -1142,6 +1165,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     buildClassificationCoverageCheck({
       total: Number(classificationStats.total ?? 0),
       missingIndustryTags: Number(classificationStats.missing_industry_tags ?? 0),
+      tradableTotal: Number(classificationStats.tradable_total ?? 0),
+      tradableMissingIndustryTags: Number(classificationStats.tradable_missing_industry_tags ?? 0),
+      researchTotal: Number(classificationStats.research_total ?? 0),
+      researchMissingIndustryTags: Number(classificationStats.research_missing_industry_tags ?? 0),
     }),
     buildRrgTaxonomyCoverageCheck({
       latestThemeDate: rrgTaxonomyStats.latest_theme_date,

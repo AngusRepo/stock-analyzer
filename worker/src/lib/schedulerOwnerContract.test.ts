@@ -10,7 +10,14 @@ function hasTaskHandler(source: string, task: string): boolean {
 
 const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
 const workerIndex = fs.readFileSync('src/index.ts', 'utf8')
-assert(!wrangler.includes('[triggers]'), 'Cloudflare scheduled crons must stay disabled; GCP Scheduler is the only scheduler owner')
+assert(
+  /\[triggers\]\s*crons\s*=\s*\[\]/s.test(wrangler),
+  'Cloudflare scheduled crons must be explicitly deployed as crons=[] so stale Worker cron triggers are cleared',
+)
+assert(
+  !/crons\s*=\s*\[\s*["']/.test(wrangler),
+  'Cloudflare Worker cron list must stay empty; GCP Scheduler is the only scheduler owner',
+)
 assert(
   workerIndex.includes("ENABLE_CLOUDFLARE_CRON") &&
     workerIndex.includes("GCP Scheduler is the production owner") &&

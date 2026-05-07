@@ -9,6 +9,7 @@ function assert(condition: unknown, message: string): void {
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
 const twseApi = fs.readFileSync('src/lib/twseApi.ts', 'utf8')
+const otherRoutes = fs.readFileSync('src/routes/other.ts', 'utf8')
 const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
 
 assert(
@@ -96,4 +97,11 @@ assert(
   marketScreener.includes('selection history flags reused from candidate-pool superset') &&
     !marketScreener.includes('const refreshedFlags = await loadSelectionHistoryFlags'),
   'screener should reuse the selection-flag superset instead of re-querying final candidates',
+)
+
+assert(
+  otherRoutes.includes('refusing stale fallback') &&
+    otherRoutes.includes('stale_preview_count') &&
+    otherRoutes.includes('stocks: []'),
+  'sector-flow stock details must not silently fallback to stale MAX(date) rows',
 )

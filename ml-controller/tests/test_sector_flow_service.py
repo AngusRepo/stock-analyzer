@@ -52,3 +52,34 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     assert written == 1
     params = captured["statements"][0][1]
     assert params[-3:] == [-0.0142, -0.3681, -0.4322]
+
+
+def test_write_sector_flow_stock_details_refreshes_current_date(monkeypatch):
+    captured = {}
+
+    def fake_query(sql, params=None):
+        assert "FROM stocks" in sql
+        return [{"symbol": "4938", "name": "Pegatron"}, {"symbol": "5871", "name": "Chailease"}]
+
+    def fake_batch_execute(statements, **kwargs):
+        captured["statements"] = statements
+        captured["kwargs"] = kwargs
+        return {"total": len(statements), "success_count": len(statements)}
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch_execute)
+
+    written = sector_flow_service.write_sector_flow_stock_details(
+        as_of_date="2026-05-07",
+        tag_members={"AI": ["4938", "5871"]},
+        symbol_flows={
+            "4938": {"foreign_net": 0.56, "trust_net": -0.10, "dealer_net": 0.02, "total_net": 0.48},
+            "5871": {"foreign_net": -0.20, "trust_net": 0.01, "dealer_net": 0.01, "total_net": -0.18},
+        },
+    )
+
+    assert written == 1
+    assert captured["statements"][0][0] == "DELETE FROM sector_flow_stocks WHERE date = ?"
+    insert_params = captured["statements"][1][1]
+    assert insert_params[:5] == ["2026-05-07", "AI", "4938", "Pegatron", 0.48]
+    assert insert_params[-1] == "top"

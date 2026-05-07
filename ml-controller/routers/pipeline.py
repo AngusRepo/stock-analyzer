@@ -80,7 +80,8 @@ async def _callback_worker(
     if client is not None:
         await _post(client)
     else:
-        async with httpx.AsyncClient(timeout=15.0) as c:
+        timeout_s = 60.0 if payload.get("task") == "pipeline" else 15.0
+        async with httpx.AsyncClient(timeout=timeout_s) as c:
             await _post(c)
 
 

@@ -112,6 +112,9 @@ function inferRootCause(event: ObservabilityEvent): string {
       if (/research failure|optuna|ga_optimizer|SKIPPED_NOT_READY|HTTP\d+/i.test(diagnostic)) {
         return `optuna_research:${diagnostic.slice(0, 180)}`
       }
+      if (/stale (running|triggered)|final callback|SLA/i.test(diagnostic)) {
+        return `scheduler_callback_missing:${diagnostic.slice(0, 180)}`
+      }
       if (/callback|run state|locked|timeout/i.test(diagnostic)) {
         return `scheduler_orchestration:${diagnostic.slice(0, 180)}`
       }
@@ -122,6 +125,14 @@ function inferRootCause(event: ObservabilityEvent): string {
       : `scheduler_status:${event.status}`
   }
   if (event.domain === 'data_quality') {
+    if (event.title === 'Classification coverage' || event.source === 'data_quality_report' && /classification/i.test(event.title)) {
+      const tradableMissing = evidence.tradable_missing_industry_tags
+      const researchMissing = evidence.research_missing_industry_tags
+      return `classification_taxonomy_gap:tradable_missing=${tradableMissing ?? 'n/a'}, research_missing=${researchMissing ?? 'n/a'}`
+    }
+    if (/price/i.test(event.title) || evidence.latest_date || evidence.target_date) {
+      return `data_freshness:${event.summary}`
+    }
     return `data_quality_gate:${event.status}:${event.source}`
   }
   if (event.domain === 'model_pool') {

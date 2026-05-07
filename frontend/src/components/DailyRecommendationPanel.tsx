@@ -68,11 +68,23 @@ function SectorFlowBar({ flow, maxAbs }: { flow: any; maxAbs: number }) {
 
 // ─── Main panel ────────────────────────────────────────────────────────────
 function SectorFlowStaleNotice({ data, label = 'theme flow' }: { data: any; label?: string }) {
-  if (!data?.stale) return null
+  if (!data) return null
+  const actualDate = data.stale ? data.stale_date : data.date
+  const requestedDate = data.requested_date ?? data.date
+  const updatedAt = data.flows?.[0]?.created_at ?? data.stocks?.[0]?.created_at
   return (
-    <div className="mb-3 rounded-2xl border border-[#d6a85f]/30 bg-[#d6a85f]/10 px-3 py-2 text-[11px] leading-relaxed text-[#f1c16f]">
-      {label} 資料尚未更新到 {data.requested_date ?? data.date ?? 'requested date'}；
-      目前顯示最近可用資料 {data.stale_date ?? 'unknown'}。這代表今晚 pipeline 尚未完成或 sector flow 寫入失敗。
+    <div className={cn(
+      'mb-3 rounded-2xl border px-3 py-2 text-[11px] leading-relaxed',
+      data.stale
+        ? 'border-[#d6a85f]/30 bg-[#d6a85f]/10 text-[#f1c16f]'
+        : 'border-emerald-500/20 bg-emerald-500/5 text-emerald-200',
+    )}>
+      <span className="font-medium">{label}</span>
+      <span className="ml-2">
+        資料日 {actualDate ?? '-'}；請求日 {requestedDate ?? '-'}
+        {updatedAt ? `；更新 ${updatedAt}` : ''}
+        {data.stale ? '，目前使用最近可用資料，請檢查 sector_flow 是否完成更新。' : '，已對齊目前查詢日期。'}
+      </span>
     </div>
   )
 }

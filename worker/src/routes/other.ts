@@ -1269,7 +1269,11 @@ recommendations.get('/sector-flow-stocks', async (c) => {
       requested_date: date,
       stale: Boolean(staleDate),
       stale_date: staleDate,
-      stocks: fb ?? [],
+      stale_reason: staleDate
+        ? `sector_flow_stocks has no rows for ${date}; latest detail snapshot is ${staleDate}, refusing stale fallback`
+        : `sector_flow_stocks has no rows for ${date}`,
+      stocks: [],
+      stale_preview_count: fb?.length ?? 0,
     })
   }
 

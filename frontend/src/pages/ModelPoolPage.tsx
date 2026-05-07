@@ -89,6 +89,44 @@ function compactMetric(value: number | null, digits = 0): string {
   return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
 }
 
+function compactUnknown(value: unknown, digits = 4): string {
+  if (value === null || value === undefined || value === '') return 'N/A'
+  const n = Number(value)
+  if (Number.isFinite(n)) return digits > 0 ? n.toFixed(digits) : Math.round(n).toLocaleString()
+  return String(value)
+}
+
+function formatCalibrationMethod(method: string): string {
+  if (method === 'empirical_rank_bins_monotonic') return '單調分箱校準'
+  if (method === 'rank_to_return_curve') return '排名轉報酬曲線'
+  if (method === 'bounded_pseudo_return') return '保守預期報酬校準'
+  if (method === 'unknown') return '未知校準'
+  return method.replace(/_/g, ' ')
+}
+
+function experimentEvidence(candidateId: string, experiments: ResearchExperiment[]) {
+  const matched = candidateExperiments(candidateId, experiments)
+  const latest = matched[0]
+  const dataSlice = latest?.data_slice ?? {}
+  const metricText = latest?.metrics?.length ? latest.metrics.join(', ') : 'missing'
+  const approval = latest?.approval_gate ?? {}
+  const hasEvaluationPlan = Boolean(latest?.evaluation_plan)
+  const isEvidenceReady = Boolean(
+    latest &&
+    (latest.status === 'ready_for_review' || latest.status === 'completed' || latest.status === 'reviewed') &&
+    latest.metrics?.some((metric) => /oos|ic|pbo|cpcv|cost|slice/i.test(metric)),
+  )
+  return {
+    matched,
+    latest,
+    dataSlice,
+    metricText,
+    hasEvaluationPlan,
+    isEvidenceReady,
+    approval,
+  }
+}
+
 function deltaMetric(active: number | null, challenger: number | null, digits = 4): string {
   if (active == null || challenger == null) return 'delta N/A'
   const delta = challenger - active
@@ -221,14 +259,18 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
               <WorkstationPill tone={stageTone(stage)}>{byStage[stage]?.length ?? 0}</WorkstationPill>
             </div>
             <div className="grid gap-2">
-              {(byStage[stage] ?? []).map((candidate) => (
+              {(byStage[stage] ?? []).map((candidate) => {
+                const evidence = experimentEvidence(candidate.id, experiments)
+                return (
                 <div key={candidate.id} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{candidate.id}</p>
                       <p className="mt-0.5 text-[10px] text-[#70809b]">{candidate.titleZh} / {candidate.family}</p>
                     </div>
-                    <WorkstationPill tone={candidate.canVote ? 'ok' : 'warn'}>{candidate.canVote ? 'votes' : 'no vote'}</WorkstationPill>
+                    <WorkstationPill tone={evidence.isEvidenceReady ? 'ok' : evidence.latest ? 'warn' : 'error'}>
+                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'registry incomplete' : 'not trained'}
+                    </WorkstationPill>
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
                   <p className="mt-1 text-[11px] leading-5 text-slate-500">{candidate.roleEn}</p>
@@ -237,17 +279,16 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
                     ))}
                   </div>
-                  {candidateExperiments(candidate.id, experiments).length > 0 ? (
+                  {evidence.latest ? (
                     <div className="mt-2 border border-emerald-400/20 bg-emerald-400/[0.04] p-2 text-[11px] leading-5 text-emerald-100">
-                      {candidateExperiments(candidate.id, experiments).map((experiment) => (
-                        <p key={experiment.id}>
-                          registry: {experiment.id} · {experiment.status} · metrics {experiment.metrics?.join(', ') || 'N/A'}
-                        </p>
-                      ))}
+                      <p>registry: {evidence.latest.id} · status {evidence.latest.status}</p>
+                      <p>metrics: {evidence.metricText}</p>
+                      <p>slice: {Object.entries(evidence.dataSlice).slice(0, 4).map(([key, value]) => `${key}=${compactUnknown(value, 0)}`).join(' / ') || 'missing'}</p>
+                      <p>evaluation plan: {evidence.hasEvaluationPlan ? 'ready' : 'missing'} · approval gate: {Object.keys(evidence.approval).length ? 'defined' : 'missing'}</p>
                     </div>
                   ) : (
                     <div className="mt-2 border border-rose-400/25 bg-rose-400/[0.04] p-2 text-[11px] leading-5 text-rose-100">
-                      registry evidence missing：目前沒有可讀的 experiment registry 結果；OOS IC、CPCV/PBO、成本敏感度與資料切片報告都不能假裝已存在。
+                      尚未訓練或尚未產出 registry evidence：目前沒有 OOS IC、CPCV/PBO、成本敏感度、資料切片報告，所以不能假裝它已經比 production 模型更好。
                     </div>
                   )}
                   {candidate.stage === 'benchmark_only' && (
@@ -256,7 +297,8 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                     </p>
                   )}
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         ))}
@@ -477,12 +519,13 @@ function ServingDiagnosticsPanel({ payload }: { payload: any }) {
     acc[key] = (acc[key] ?? 0) + 1
     return acc
   }, {})
+  const calibrationSamples = diagnostics.reduce((sum, diag) => sum + Number(diag.forecastCalibration?.sampleCount ?? 0), 0)
+  const primaryCalibration = Object.entries(calibrationCounts).sort((a, b) => b[1] - a[1])[0]
   const topZero = Object.entries(zeroCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
   const topBlocked = Object.entries(blockedCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
-  const calibrationText = Object.entries(calibrationCounts)
-    .sort((a, b) => b[1] - a[1])
-    .map(([name, count]) => `${name}:${count}`)
-    .join(' / ') || 'N/A'
+  const calibrationText = primaryCalibration
+    ? `${formatCalibrationMethod(primaryCalibration[0])} · ${primaryCalibration[1]}/${total}`
+    : 'N/A'
 
   return (
     <WorkstationPanel title="Serving Ensemble Diagnostics / 服務中投票診斷" kicker="latest daily recommendations · card contract">
@@ -508,7 +551,7 @@ function ServingDiagnosticsPanel({ payload }: { payload: any }) {
         <SignalInsightCard
           title="Forecast calibration / 預期值校準"
           value={calibrationText}
-          detail={`date ${payload?.date ?? payload?.requested_date ?? 'N/A'}`}
+          detail={`樣本 ${calibrationSamples || 'N/A'}；date ${payload?.date ?? payload?.requested_date ?? 'N/A'}；用歷史排名分箱校準預期報酬，不是天文代碼。`}
           tone={calibrationText === 'N/A' || calibrationText.includes('unknown') ? 'warn' : 'ok'}
         />
       </div>

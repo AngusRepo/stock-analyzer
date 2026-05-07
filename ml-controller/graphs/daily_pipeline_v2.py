@@ -887,12 +887,36 @@ def _build_serving_ic_bundle(
     return {"scope": scope, "weights": weights, "diagnostics": diagnostics}
 
 
-def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
-    cfg = ev2_cfg or {}
+def _adaptive_threshold_delta(adaptive_params: dict | None = None) -> tuple[float, dict[str, Any]]:
+    params = adaptive_params or {}
+    components = params.get("threshold_components") if isinstance(params.get("threshold_components"), dict) else None
+    if components and components.get("effective_delta") is not None:
+        try:
+            delta = float(components.get("effective_delta") or 0.0)
+        except (TypeError, ValueError):
+            delta = 0.0
+        return delta, {
+            "source": "threshold_components.effective_delta",
+            "effective_delta": round(delta, 4),
+            "components": components,
+            "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
+        }
+
     try:
-        delta = float((adaptive_params or {}).get("confidence_delta") or 0.0)
+        delta = float(params.get("confidence_delta") or 0.0)
     except (TypeError, ValueError):
         delta = 0.0
+    return delta, {
+        "source": "confidence_delta_legacy",
+        "effective_delta": round(delta, 4),
+        "components": None,
+        "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
+    }
+
+
+def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
+    cfg = ev2_cfg or {}
+    delta, _meta = _adaptive_threshold_delta(adaptive_params)
 
     def clipped(value: float) -> float:
         return max(0.01, min(0.99, value))
@@ -1120,6 +1144,7 @@ def _attach_ensemble_v2(
     bundle = ic_weights if isinstance(ic_weights, dict) and "weights" in ic_weights else None
     serving_weights = bundle.get("weights", {}) if bundle else ic_weights
     thresholds = _rank_signal_thresholds(ev2_cfg, adaptive_params)
+    adaptive_threshold_delta, adaptive_threshold_meta = _adaptive_threshold_delta(adaptive_params)
     effective_cfg = {**(ev2_cfg or {}), **thresholds}
     if bundle:
         effective_cfg["observedIcModels"] = [
@@ -1131,6 +1156,10 @@ def _attach_ensemble_v2(
     if isinstance(ev2, dict):
         ev2["ic_weight_scope"] = (bundle or {}).get("scope") or _prediction_market_segment(pred) or "GLOBAL"
         ev2["rank_signal_thresholds"] = {k: round(float(v), 4) for k, v in thresholds.items()}
+        ev2["adaptive_threshold"] = {
+            **adaptive_threshold_meta,
+            "applied_delta": round(float(adaptive_threshold_delta), 4),
+        }
         if bundle:
             ev2["ic_weight_diagnostics"] = bundle.get("diagnostics") or {}
 
@@ -1464,6 +1493,16 @@ async def node_export_dataset_snapshot(state: PipelineStateV2) -> dict:
         metrics["dataset_snapshot_export"] = {
             "status": "skipped",
             "reason": "STOCKVISION_EXPORT_RESEARCH_SNAPSHOT disabled",
+        }
+        return {"metrics": metrics}
+
+    mode = os.getenv("STOCKVISION_RESEARCH_SNAPSHOT_MODE", "deferred").strip().lower()
+    if mode not in {"blocking", "sync", "synchronous"}:
+        metrics["dataset_snapshot_export"] = {
+            "status": "deferred",
+            "mode": mode or "deferred",
+            "reason": "daily serving pipeline must not block on research/backtest snapshot export",
+            "producer_run_id": producer_run_id,
         }
         return {"metrics": metrics}
 

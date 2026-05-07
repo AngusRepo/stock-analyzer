@@ -109,6 +109,38 @@ const report: ObservabilityEventReport = {
 }
 
 {
+  const staleRunningReport = {
+    ...report,
+    events: [{
+      ...report.events[0],
+      status: 'failed' as const,
+      summary: 'stale running: no final callback after 4h0m; SLA 1h30m',
+      evidence: { task_id: 'evening-chain', error: 'stale running: no final callback after 4h0m; SLA 1h30m' },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(staleRunningReport)
+  assert(drilldown.incidents[0].root_cause.includes('scheduler_callback_missing'), 'stale running incidents should point to missing final callback')
+}
+
+{
+  const classificationReport = {
+    ...report,
+    events: [{
+      ...report.events[1],
+      title: 'Classification coverage',
+      summary: 'tradable_industry_tags=40/40 missing=0; research_missing=24/24',
+      evidence: {
+        tradable_missing_industry_tags: 0,
+        research_missing_industry_tags: 24,
+      },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(classificationReport)
+  assert(drilldown.incidents[0].root_cause.includes('classification_taxonomy_gap'), 'classification incident should identify taxonomy coverage gap')
+  assert(drilldown.incidents[0].root_cause.includes('tradable_missing=0'), 'classification root cause should separate tradable lane from research lane')
+}
+
+{
   const healthy = buildObservabilityDrilldown({ ...report, overall: 'ok', events: [report.events[2]], counts: { ok: 1, info: 0, warn: 0, error: 0 } })
   assert(healthy.incidents.length === 1, 'healthy report should keep one baseline incident')
   assert(healthy.incidents[0].status === 'resolved', 'healthy baseline should be resolved')

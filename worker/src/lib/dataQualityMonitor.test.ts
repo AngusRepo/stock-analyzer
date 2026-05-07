@@ -192,6 +192,21 @@ void (async () => {
 }
 
 {
+  const check = buildClassificationCoverageCheck({
+    total: 64,
+    missingIndustryTags: 24,
+    tradableTotal: 40,
+    tradableMissingIndustryTags: 0,
+    researchTotal: 24,
+    researchMissingIndustryTags: 24,
+  })
+  assert(check.status === 'ok', 'research-only emerging taxonomy gaps should not block the tradable lane')
+  assert(check.summary.includes('tradable_industry_tags=40/40'), 'classification summary should expose tradable coverage')
+  assert(check.summary.includes('research_missing=24/24'), 'classification summary should expose research lane backlog')
+  assert(check.metrics?.status_scope === 'tradable_lane', 'classification severity should be scoped to tradable lane when available')
+}
+
+{
   const check = buildRrgTaxonomyCoverageCheck({
     latestThemeDate: '2026-04-30',
     targetDate: '2026-04-30',

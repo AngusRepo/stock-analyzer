@@ -48,15 +48,19 @@ async def _run() -> int:
     result: dict | None = None
 
     try:
-        result = await run_pipeline_v2(run_date=run_date)
+        result = await run_pipeline_v2(run_date=run_date, producer_run_id=run_id)
         if isinstance(result, dict) and result.get("status") == "completed":
             status = "success"
             metrics = result.get("metrics") or {}
+            snapshot_status = (metrics.get("dataset_snapshot_export") or {}).get("status", "n/a")
+            error_count = len(result.get("errors") or [])
             summary = (
                 f"run_id={run_id} "
                 f"preds={metrics.get('predictions_written', 0)} "
                 f"recos={metrics.get('recommendations_updated', 0)} "
-                f"llm_reasons={metrics.get('llm_reasons_count', 0)}"
+                f"llm_reasons={metrics.get('llm_reasons_count', 0)} "
+                f"snapshot={snapshot_status} "
+                f"errors={error_count}"
             )
         else:
             err_detail = result.get("error") if isinstance(result, dict) else str(result)

@@ -19,7 +19,9 @@ scripts/data/
 scripts/backfill_output*
 frontend/dev-dist/
 ml-service/.test_tmp/
+ml-controller/.tmp/
 _external/
+screen_*.png
 
 # Local debug scratch files (underscore-prefix convention)
 _tmp_*

@@ -395,7 +395,7 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
       - dropped_samples: up to N symbol names per drop bucket
       - passed_samples: first N symbols that made it to `scored`
 
-    Expensive: loads BacktestDataset from D1 (same cost as /backtest/replay).
+    Expensive: loads BacktestDataset through the research data contract.
     """
     from datetime import date as _date, timedelta as _td
     try:
@@ -411,7 +411,8 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
     )
 
     try:
-        dataset = BacktestDataset.load_from_d1(
+        dataset, data_access = BacktestDataset.load_for_research(
+            lane="backtest.diagnose",
             start_date=start_s,
             end_date=req.date,
             symbols=req.symbols,
@@ -426,7 +427,7 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
             lookback_days=22,
             max_dropped_samples=req.max_dropped_samples,
         )
-        return {"status": "ok", **result}
+        return {"status": "ok", "data_access": data_access, **result}
     except Exception as e:
         logger.exception("[Diagnose] Failed")
         return {"status": "error", "error": str(e)}

@@ -26,6 +26,7 @@ class PredictRequest(BaseModel):
     barrier_params: dict = {}
     lifecycle_weights: dict[str, float] = {}
     weak_features: list[str] = []
+    stock_meta: dict = {}
     use_optuna: bool = False
     night_session: NightSessionData | None = None
     context: str = "scheduled_daily"

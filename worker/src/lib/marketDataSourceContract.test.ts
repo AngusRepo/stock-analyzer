@@ -7,6 +7,8 @@ function assert(condition: unknown, message: string): void {
 }
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
+const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
 
 assert(
   updateOrchestrator.includes('UPDATE_UNIVERSE_WHERE'),
@@ -35,8 +37,34 @@ assert(
 
 assert(
   updateOrchestrator.includes('Number(stock.in_current_watchlist ?? 0) === 1') &&
+    updateOrchestrator.includes("type: 'news_batch'") &&
     updateOrchestrator.includes('crawlAndStoreNews(env.DB, stock)'),
-  'per-symbol news crawling should stay limited to selected candidates/watchlist to control cost',
+  'news crawling should stay limited to selected watchlist stocks and run outside the price/indicator hot path',
+)
+
+assert(
+  updateOrchestrator.includes('env.NEWS_QUEUE.send') &&
+    !updateOrchestrator.includes('NEWS_QUEUE ?? env.UPDATE_QUEUE'),
+  'news crawl must use the dedicated NEWS_QUEUE instead of falling back to update queue',
+)
+
+assert(
+  wranglerToml.includes('binding = "NEWS_QUEUE"') &&
+    wranglerToml.includes('queue = "stockvision-news-queue"') &&
+    wranglerToml.includes('dead_letter_queue = "stockvision-news-queue-dlq"'),
+  'wrangler must provision a dedicated news queue producer/consumer and DLQ',
+)
+
+assert(
+  updateOrchestrator.includes('loadPriceMetadataForBatch') &&
+    updateOrchestrator.includes('GROUP BY stock_id'),
+  'queue update must batch price-count metadata instead of counting per stock',
+)
+
+assert(
+  updateOrchestrator.includes('INDICATOR_BATCH_CONCURRENCY') &&
+    updateOrchestrator.includes('runBounded(currentBatch, INDICATOR_BATCH_CONCURRENCY'),
+  'indicator compute must use bounded concurrency to avoid D1 write bursts',
 )
 
 assert(
@@ -47,4 +75,10 @@ assert(
 assert(
   !updateOrchestrator.includes('triggerTime !== today'),
   'queue update must allow historical backfill dates instead of skipping non-today triggerTime',
+)
+
+assert(
+  marketScreener.includes('selection history flags reused from candidate-pool superset') &&
+    !marketScreener.includes('const refreshedFlags = await loadSelectionHistoryFlags'),
+  'screener should reuse the selection-flag superset instead of re-querying final candidates',
 )

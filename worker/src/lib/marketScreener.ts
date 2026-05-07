@@ -1632,17 +1632,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   //   high_freq: 20d count ≥ 12
   //   new_money: 30d count = 0 (今天首次出現)
   // Forward-only: deploy 日起累積，20d 後 high_freq 才成熟、30d 後 new_money 有信度
-  try {
-    const symbolsList = finalCandidates.map(c => c.symbol)
-    if (symbolsList.length > 0) {
-      const refreshedFlags = await loadSelectionHistoryFlags(env.DB, symbolsList, endDate, {
-        highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
-      })
-      for (const [sym, flag] of refreshedFlags) selectionFlagMap.set(sym, flag)
-    }
-  } catch (e) {
-    console.warn('[Screener v2] #15 selection flag query failed (likely table missing, skip):', e)
-  }
+  debugLog.push('[Step 4e] selection history flags reused from candidate-pool superset; no final refresh query')
 
   // ── #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發) ──
   // sectorLeaderBonus(symbol, sector) → bonus points if avg 60d corr > threshold.

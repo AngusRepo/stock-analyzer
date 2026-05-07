@@ -120,6 +120,46 @@ def test_ft_bundle_rebuild_respects_bundle_contract(model_type, head_type, expec
         assert output.shape == (3, 2)
 
 
+def test_ft_bundle_rebuild_reuses_runtime_model_for_same_cached_bundle(monkeypatch):
+    from app import ft_transformer
+
+    class FakeModel:
+        def __init__(self):
+            self.loaded = 0
+            self.evaluated = 0
+
+        def load_state_dict(self, _state):
+            self.loaded += 1
+
+        def eval(self):
+            self.evaluated += 1
+
+    built_models = []
+
+    def fake_build_ft_transformer(n_features, model_type, bundle=None):
+        model = FakeModel()
+        built_models.append(model)
+        return model, {"head_type": model_type, "n_features": n_features}
+
+    monkeypatch.setattr(ft_transformer, "build_ft_transformer", fake_build_ft_transformer)
+
+    bundle = {
+        "state_dict": {"weight": "fake"},
+        "n_features": 7,
+        "model_type": "regression",
+        "arch": {"head_type": "regression"},
+    }
+    ft_transformer.clear_ft_runtime_cache()
+
+    first, _, _ = ft_transformer.rebuild_ft_transformer_from_bundle(bundle)
+    second, _, _ = ft_transformer.rebuild_ft_transformer_from_bundle(bundle)
+
+    assert first is second
+    assert len(built_models) == 1
+    assert ft_transformer.get_ft_runtime_cache_stats()["misses"] == 1
+    assert ft_transformer.get_ft_runtime_cache_stats()["hits"] == 1
+
+
 def test_ft_regression_raw_output_maps_to_bounded_rank_without_zero_clipping():
     from app.ft_transformer import rank_from_ft_regression_output
 

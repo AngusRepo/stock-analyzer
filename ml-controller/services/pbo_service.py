@@ -43,7 +43,7 @@ D1_API = (
 
 # ── PBO Parameters ────────────────────────────────────────────────────────────
 DEFAULT_N_PARTITIONS = 10       # S: number of time partitions
-PURGE_DAYS = 5                  # days to purge at partition boundaries
+DEFAULT_EMBARGO_DAYS = 5        # fallback when trade/label horizon is missing
 
 
 @dataclass
@@ -61,6 +61,8 @@ class PBOResult:
     go_live_verdict: str = ""   # "PASS" / "FAIL"
     verdict_reason: str = ""
     sampled: bool = False       # True if combinations were randomly sampled
+    embargo_days: int = DEFAULT_EMBARGO_DAYS
+    embargo_source: str = "default"
     partition_details: list = field(default_factory=list)
     logit_values: list[float] = field(default_factory=list)
     oos_rank_percentiles: list[float] = field(default_factory=list)
@@ -125,6 +127,45 @@ def _date_diff_days(date1: str, date2: str) -> int:
         return (d1 - d2).days
     except (ValueError, TypeError):
         return 999  # treat parse errors as far apart (no purge)
+
+
+def _resolve_dynamic_embargo_days(
+    trades: list[dict],
+    *,
+    requested_days: int | None = None,
+) -> tuple[int, str]:
+    if requested_days is not None and requested_days >= 0:
+        return int(requested_days), "request"
+
+    raw_env = os.environ.get("PBO_EMBARGO_DAYS", "").strip()
+    if raw_env:
+        try:
+            parsed = int(raw_env)
+            if parsed >= 0:
+                return parsed, "env:PBO_EMBARGO_DAYS"
+        except ValueError:
+            logger.warning("[PBO] invalid PBO_EMBARGO_DAYS=%s; using dynamic fallback", raw_env)
+
+    horizons: list[int] = []
+    for trade in trades or []:
+        for key in (
+            "label_horizon_days",
+            "barrier_horizon_days",
+            "horizon_days",
+            "holding_period_days",
+        ):
+            try:
+                value = int(trade.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                horizons.append(value)
+                break
+    if horizons:
+        # Embargo should cover the longest observed label/holding horizon but
+        # stay bounded so CPCV does not degenerate on small samples.
+        return min(max(horizons), 30), "trade_horizon"
+    return DEFAULT_EMBARGO_DAYS, "default"
 
 
 def _partition_trades(trades: list[dict], n_partitions: int) -> list[list[dict]]:
@@ -278,6 +319,7 @@ def _extract_strategy_partition_returns(raw: dict) -> dict[str, list[float]]:
 def _run_cpcv(
     trades: list[dict],
     n_partitions: int = DEFAULT_N_PARTITIONS,
+    embargo_days: int | None = None,
 ) -> PBOResult:
     """
     Combinatorial Purged Cross-Validation.
@@ -287,7 +329,16 @@ def _run_cpcv(
       - OOS return = return on remaining test partitions
       - PBO = fraction where OOS < 0
     """
-    result = PBOResult(n_partitions=n_partitions, n_trades=len(trades))
+    resolved_embargo_days, embargo_source = _resolve_dynamic_embargo_days(
+        trades,
+        requested_days=embargo_days,
+    )
+    result = PBOResult(
+        n_partitions=n_partitions,
+        n_trades=len(trades),
+        embargo_days=resolved_embargo_days,
+        embargo_source=embargo_source,
+    )
 
     # Check time spread: if all trades share same date, partitioning is meaningless
     unique_dates = len(set(t.get("exit_date", "")[:10] for t in trades))
@@ -343,7 +394,7 @@ def _run_cpcv(
             boundary_dates.append(last_date)
 
     def _purge_boundary_trades(trades_list: list[dict], adjacent_indices: set[int]) -> list[dict]:
-        """Remove trades within PURGE_DAYS of partition boundaries adjacent to the other set."""
+        """Remove trades within dynamic embargo days near train/test boundaries."""
         if not boundary_dates:
             return trades_list
         purge_boundaries = set()
@@ -359,7 +410,7 @@ def _run_cpcv(
             t_date = t.get("exit_date", t.get("entry_date", ""))[:10]
             too_close = False
             for bd in purge_boundaries:
-                if abs(_date_diff_days(t_date, bd)) <= PURGE_DAYS:
+                if abs(_date_diff_days(t_date, bd)) <= resolved_embargo_days:
                     too_close = True
                     break
             if not too_close:
@@ -526,6 +577,8 @@ async def run_pbo_analysis(
             "n_combinations": pbo.n_combinations,
             "oos_mean_return": pbo.oos_mean_return,
             "is_mean_return": pbo.is_mean_return,
+            "embargo_days": pbo.embargo_days,
+            "embargo_source": pbo.embargo_source,
             "logit_values": pbo.logit_values,
             "oos_rank_percentiles": pbo.oos_rank_percentiles,
             "selected_strategy_counts": pbo.selected_strategy_counts,
@@ -564,6 +617,8 @@ async def run_pbo_analysis(
             "verdict_reason": pbo.verdict_reason,
             "trades_truncated": trades_truncated,
             "sampled": pbo.sampled,
+            "embargo_days": pbo.embargo_days,
+            "embargo_source": pbo.embargo_source,
         }
         logger.info(f"[PBO] Done: {pbo.go_live_verdict} — PBO = {pbo.pbo:.1%}")
         return summary

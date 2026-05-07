@@ -13,6 +13,7 @@ import os
 import asyncio
 import logging
 import time
+import hashlib
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -71,17 +72,82 @@ def _modal_predict_batch_v2_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
-def batch_predict_contract() -> dict:
+def _parse_chunk_candidates(raw: str | None) -> list[int]:
+    values: list[int] = []
+    for part in (raw or "20,40,80").split(","):
+        try:
+            value = int(part.strip())
+        except ValueError:
+            continue
+        if value > 0 and value not in values:
+            values.append(value)
+    return values or [20, 40, 80]
+
+
+def _stable_chunk_size(candidates: list[int], ab_key: str | None) -> int:
+    if not candidates:
+        return 40
+    if not ab_key:
+        # Health/readiness calls do not have a production universe. Keep the
+        # midpoint stable, while real runs pass a universe/run key below.
+        return candidates[len(candidates) // 2]
+    digest = hashlib.sha256(ab_key.encode("utf-8")).hexdigest()
+    return candidates[int(digest[:8], 16) % len(candidates)]
+
+
+def _batch_ab_key(payloads: list[dict]) -> str:
+    symbols = [
+        str(p.get("symbol") or p.get("stock_id") or "")
+        for p in payloads or []
+        if isinstance(p, dict)
+    ]
+    return "|".join(sorted(s for s in symbols if s))
+
+
+def batch_predict_contract(*, ab_key: str | None = None) -> dict:
     # Larger chunks amortize universal model GCS loads across more symbols while
-    # staying below the 900s Modal predict_batch_v2 timeout.
-    raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE", "40") or "40"
+    # staying below the 900s Modal predict_batch_v2 timeout. When no explicit
+    # size is configured, production runs rotate over 20/40/80 using a stable
+    # key so we can compare real compute/runtime without random jitter.
+    candidates = _parse_chunk_candidates(os.environ.get("MODAL_PREDICT_BATCH_SIZE_CANDIDATES"))
+    raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE")
+    chunk_size_source = "ab"
     try:
-        chunk_size = max(1, int(raw_chunk_size))
-    except ValueError:
-        chunk_size = 40
+        chunk_size = max(1, int(raw_chunk_size)) if raw_chunk_size else _stable_chunk_size(candidates, ab_key)
+        if raw_chunk_size:
+            chunk_size_source = "explicit"
+    except (TypeError, ValueError):
+        chunk_size = _stable_chunk_size(candidates, ab_key)
     return {
         "modal_predict_batch_v2": _modal_predict_batch_v2_enabled(),
         "chunk_size": chunk_size,
+        "chunk_size_source": chunk_size_source,
+        "chunk_candidates": candidates,
+        "ab_key": ab_key,
+    }
+
+
+def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
+    cache = {"hits": 0, "misses": 0, "gcs_downloads": 0}
+    chunks_reported = 0
+    for response in batch_responses or []:
+        if not isinstance(response, dict):
+            continue
+        metrics = response.get("metrics") if isinstance(response.get("metrics"), dict) else {}
+        model_cache = metrics.get("model_cache") if isinstance(metrics.get("model_cache"), dict) else {}
+        if not model_cache:
+            continue
+        chunks_reported += 1
+        for key in cache:
+            try:
+                cache[key] += int(model_cache.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+    denom = cache["hits"] + cache["misses"]
+    return {
+        "chunks_reported": chunks_reported,
+        "model_cache": cache,
+        "model_cache_hit_ratio": round(cache["hits"] / denom, 4) if denom else None,
     }
 
 
@@ -185,8 +251,11 @@ async def _modal_batch_predict(payloads: list[dict]) -> list[dict]:
 
 async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
     function_name = "predict_batch_v2"
-    chunk_size = batch_predict_contract()["chunk_size"]
+    ab_key = _batch_ab_key(payloads)
+    contract = batch_predict_contract(ab_key=ab_key)
+    chunk_size = contract["chunk_size"]
     chunks = _chunk_payloads(payloads, chunk_size)
+    batch_responses: list[dict] = []
     t0 = time.time()
     try:
         fn = _lookup(function_name)
@@ -220,6 +289,8 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
                     "confidence": 0.0,
                 } for p in chunk)
                 continue
+            if isinstance(r, dict):
+                batch_responses.append(r)
             results.extend(chunk_results)
         return results
     finally:
@@ -228,7 +299,15 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
             function_name,
             wall_sec=wall_sec,
             compute_sec=_aggregate_map_compute_sec(wall_sec=wall_sec, item_count=len(chunks)),
-            meta={"call_type": "map_batch", "input_count": len(payloads), "chunk_count": len(chunks), "chunk_size": chunk_size},
+            meta={
+                "call_type": "map_batch",
+                "input_count": len(payloads),
+                "chunk_count": len(chunks),
+                "chunk_size": chunk_size,
+                "chunk_sizes": [len(chunk) for chunk in chunks],
+                "batch_contract": contract,
+                "batch_metrics": _aggregate_predict_batch_metrics(batch_responses),
+            },
         )
 
 

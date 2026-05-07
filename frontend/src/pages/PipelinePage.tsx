@@ -30,6 +30,67 @@ function fmt(n: number | null | undefined, decimals = 0): string {
   return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
+function parseMaybeJson(raw: unknown): Record<string, any> {
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw as Record<string, any>
+  if (typeof raw !== 'string') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function buildScreenerSectorSummary(recs: any[]) {
+  const bySector = new Map<string, {
+    sector: string
+    count: number
+    scoreSum: number
+    chipSum: number
+    techSum: number
+    symbols: string[]
+    reasons: Set<string>
+  }>()
+
+  for (const rec of recs) {
+    const sector = String(rec.industry || rec.sector || rec.market_segment || '未分類')
+    const row = bySector.get(sector) ?? {
+      sector,
+      count: 0,
+      scoreSum: 0,
+      chipSum: 0,
+      techSum: 0,
+      symbols: [],
+      reasons: new Set<string>(),
+    }
+    row.count += 1
+    row.scoreSum += Number(rec.score ?? 0)
+    row.chipSum += Number(rec.chip_score ?? 0)
+    row.techSum += Number(rec.tech_score ?? 0)
+    if (rec.symbol && row.symbols.length < 4) row.symbols.push(String(rec.symbol))
+    if (rec.screener_funnel_reason) row.reasons.add(String(rec.screener_funnel_reason))
+    const evidence = parseMaybeJson(rec.screener_funnel_evidence)
+    const rrg = parseMaybeJson(evidence.rrg_overlay ?? evidence.rrg)
+    if (rrg.quadrant) row.reasons.add(`RRG ${rrg.quadrant}`)
+    if (evidence.buzz_score != null || evidence.buzz_z != null) row.reasons.add('題材熱度')
+    if (evidence.cooldown_penalty != null) row.reasons.add('冷卻檢查')
+    if (evidence.diversity_slot != null || evidence.diversity_reason) row.reasons.add('分散控管')
+    bySector.set(sector, row)
+  }
+
+  return [...bySector.values()]
+    .map((row) => ({
+      ...row,
+      avgScore: row.count ? row.scoreSum / row.count : 0,
+      avgChip: row.count ? row.chipSum / row.count : 0,
+      avgTech: row.count ? row.techSum / row.count : 0,
+      reasonText: [...row.reasons].slice(0, 3).join(' / ') || '多因子通過',
+    }))
+    .sort((a, b) => b.count - a.count || b.avgScore - a.avgScore)
+    .slice(0, 8)
+}
+
 // ─── Step indicator ────────────────────────────────────────────────────────
 function StepHeader({ step, icon: Icon, title, subtitle, count, color }: {
   step: number; icon: any; title: string; subtitle: string; count?: number; color: string
@@ -186,6 +247,7 @@ export default function PipelinePage() {
   const screenerPreview = [...screenerPassed]
     .sort((a: any, b: any) => (b.chip_score ?? 0) + (b.tech_score ?? 0) - ((a.chip_score ?? 0) + (a.tech_score ?? 0)))
     .slice(0, 10)
+  const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
   const recommendationPreview = [...mlBuy, ...mlHold]
     .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
     .slice(0, 10)
@@ -258,14 +320,27 @@ export default function PipelinePage() {
                   count={screenerPassed.length}
                   color="bg-blue-500/20 text-blue-400"
                 />
-                <div className="space-y-0.5">
-                  {screenerPreview
-                    .map((rec: any, i: number) => (
-                      <StockRow key={rec.symbol ?? i} rec={rec} rank={i + 1} />
-                    ))
-                  }
+                <div className="space-y-2">
+                  {screenerSectorSummary.map((row, i) => (
+                    <div key={row.sector} className="rounded-lg border border-border bg-background/35 px-3 py-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{i + 1}. {row.sector}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {row.reasonText}；代表股 {row.symbols.join('、') || '-'}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="font-mono text-[10px]">{row.count} 檔</Badge>
+                      </div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
+                        <span>均分 <b className="font-mono text-foreground">{fmt(row.avgScore, 1)}</b></span>
+                        <span>籌碼 <b className="font-mono text-foreground">{fmt(row.avgChip, 1)}</b></span>
+                        <span>技術 <b className="font-mono text-foreground">{fmt(row.avgTech, 1)}</b></span>
+                      </div>
+                    </div>
+                  ))}
                   {screenerPassed.length > screenerPreview.length && (
-                    <p className="px-3 pt-2 text-[11px] text-muted-foreground">另有 {screenerPassed.length - screenerPreview.length} 檔已過初篩；這格只看 funnel/top candidates。</p>
+                    <p className="px-3 pt-1 text-[11px] text-muted-foreground">初篩摘要以產業/題材聚合呈現；完整股票清單往後看 ML 與推薦整理。</p>
                   )}
                 </div>
               </CardContent>

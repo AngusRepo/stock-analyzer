@@ -1,6 +1,4 @@
-const fs = require('fs')
-
-export {}
+import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -26,12 +24,8 @@ const tradingDayTasks = [
   'daily-snapshot',
   'evening-chain',
   'indicator-queue',
-  'ml-warmup',
-  'adapt',
-  'daily-report',
-  'obsidian-sync',
-  'regime-compute',
-  'verify-v2',
+  'post-pipeline-chain',
+  'post-verify-chain',
   'us-leading',
   'news-analyst',
   'morning-setup',
@@ -57,8 +51,15 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['evening-chain', 'ml-warmup', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
+}
+
+for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
+  assert(
+    !manifest.jobs.some((job: any) => job.task === chained || job.id === chained),
+    `${chained} must be callback-driven, not a fixed-time Scheduler job`,
+  )
 }
 
 for (const critical of ['evening-chain']) {
@@ -83,3 +84,11 @@ assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler 
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
 assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')
+assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
+assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')
+
+const cloudflareScheduleSync = fs.readFileSync('../scripts/sync_cloudflare_worker_schedules.ps1', 'utf8')
+assert(cloudflareScheduleSync.includes('/workers/scripts/$ScriptName/schedules'), 'Cloudflare Worker schedule sync must use the script schedules API')
+assert(cloudflareScheduleSync.includes('[switch]$Clear'), 'Cloudflare Worker schedule sync must require an explicit clear switch')
+assert(cloudflareScheduleSync.includes('$DryRun'), 'Cloudflare Worker schedule sync must support dry-run before mutating production schedules')
+assert(cloudflareScheduleSync.includes("-Body '[]'"), 'Cloudflare Worker schedule sync must clear stale Worker cron triggers with an empty schedule list')

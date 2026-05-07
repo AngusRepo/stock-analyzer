@@ -111,10 +111,12 @@ export async function assertEveningPipelineReady(
     summary?: string
   } | null
 
-  if (queueLog && queueLog.status !== 'success') {
-    console.warn(
-      `[ML V2] indicator queue log is ${queueLog.status} for ${twDate}, ` +
-      `but D1 market-data readiness passed; continuing. summary=${queueLog.summary ?? ''}`,
+  // Waiting belongs to the evening-chain queue finalizer. This guard only blocks
+  // direct pipeline triggers from bypassing the event-driven dependency chain.
+  if (!queueLog || queueLog.status !== 'success') {
+    throw new Error(
+      `indicator queue not complete for ${twDate}: status=${queueLog?.status ?? 'missing'}; ` +
+      `summary=${queueLog?.summary ?? ''}`,
     )
   }
 

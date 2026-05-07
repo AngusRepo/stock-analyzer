@@ -14,7 +14,7 @@ assert(
   'GCP Scheduler must trigger one evening-chain root job for the post-market DAG',
 )
 
-for (const removed of ['update', 'screener', 'pipeline']) {
+for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
   assert(
     !jobs.some((job) => job.id === removed),
     `${removed} must not remain as an independent fixed-time Scheduler job`,
@@ -45,6 +45,27 @@ assert(
   'pipeline trigger must require evening-chain readiness before calling ml-controller',
 )
 assert(
-  mlPipelineTrigger.includes('D1 market-data readiness passed; continuing'),
-  'pipeline readiness must not let stale indicator-queue logs override complete D1 market data',
+  mlPipelineTrigger.includes('indicator queue not complete'),
+  'pipeline readiness must block direct triggers until indicator queue completes',
+)
+
+const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
+assert(
+  callbackRoutes.includes('runPostPipelineCallbackChain'),
+  'pipeline callback must advance post-market dependent tasks instead of fixed-time Scheduler jobs',
+)
+assert(
+  callbackRoutes.includes('runPostVerifyCallbackChain'),
+  'verify callback must advance IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
+)
+
+const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+assert(
+  postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
+  'post-pipeline chain must trigger verify-v2 with the callback business date',
+)
+assert(
+  postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+    postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
+  'post-verify chain must refresh rolling IC before adaptive params',
 )

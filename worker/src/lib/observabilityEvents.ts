@@ -118,6 +118,9 @@ type SchedulerJobSnapshot = {
   lastStatus: string
   lastDuration?: string
   lastRun?: string
+  lastRunAt?: string | null
+  lastAttemptAt?: string | null
+  lastEffectiveRunAt?: string | null
   summary?: string
   lastError?: string
 }
@@ -154,6 +157,10 @@ function schedulerSeverity(status: string): ObservabilitySeverity {
   if (status === 'running') return 'warn'
   if (status === 'skip' || status === 'skipped') return 'info'
   return 'ok'
+}
+
+function schedulerEventTimestamp(job: SchedulerJobSnapshot, generatedAt: string): string {
+  return job.lastRunAt || job.lastAttemptAt || job.lastEffectiveRunAt || generatedAt
 }
 
 function dataQualitySeverity(status: string): ObservabilitySeverity {
@@ -226,31 +233,37 @@ export function buildEventsFromScheduler(input: {
     }]
   }
 
-  return actionable.map((job) => ({
-    id: eventId('scheduler', 'scheduler_status', job.id),
-    ts: input.generatedAt,
-    severity: schedulerSeverity(job.lastStatus),
-    domain: 'scheduler',
-    source: 'scheduler_status',
-    status: job.lastStatus,
-    title: job.name,
-    summary: job.lastError || job.summary || `${job.name} is ${job.lastStatus}`,
-    owner: job.group === 'intraday' ? 'Worker' : 'GCP Scheduler',
-    impact: job.lastStatus === 'failed'
-      ? 'Downstream recommendations, ML freshness, or execution state may be stale.'
-      : 'A background run is still in-flight; UI should not mark this domain as healthy yet.',
-    next_action: job.lastStatus === 'failed'
-      ? 'Open scheduler trace, inspect callback payload, then compare with Cloud Run/Worker logs.'
-      : 'Wait for final callback; alert if the run exceeds its SLA.',
-    runbook: 'P8 scheduler callback contract',
-    evidence: {
-      task_id: job.id,
-      group: job.group,
-      last_run: job.lastRun,
-      duration: job.lastDuration,
-      summary: job.summary,
-    },
-  }))
+  return actionable.map((job) => {
+    const eventTs = schedulerEventTimestamp(job, input.generatedAt)
+    return {
+      id: eventId('scheduler', 'scheduler_status', job.id),
+      ts: eventTs,
+      severity: schedulerSeverity(job.lastStatus),
+      domain: 'scheduler' as const,
+      source: 'scheduler_status',
+      status: job.lastStatus,
+      title: job.name,
+      summary: job.lastError || job.summary || `${job.name} is ${job.lastStatus}`,
+      owner: job.group === 'intraday' ? 'Worker' : 'GCP Scheduler',
+      impact: job.lastStatus === 'failed'
+        ? 'Downstream recommendations, ML freshness, or execution state may be stale.'
+        : 'A background run is still in-flight; UI should not mark this domain as healthy yet.',
+      next_action: job.lastStatus === 'failed'
+        ? 'Open scheduler trace, inspect callback payload, then compare with Cloud Run/Worker logs.'
+        : 'Wait for final callback; alert if the run exceeds its SLA.',
+      runbook: 'P8 scheduler callback contract',
+      evidence: {
+        task_id: job.id,
+        group: job.group,
+        last_run: job.lastRun,
+        last_run_at: job.lastRunAt,
+        last_attempt_at: job.lastAttemptAt,
+        last_effective_run_at: job.lastEffectiveRunAt,
+        duration: job.lastDuration,
+        summary: job.summary,
+      },
+    }
+  })
 }
 
 export function buildEventsFromDataQuality(input: {

@@ -1,4 +1,4 @@
-import { buildMarketStructureWatchPoint, buildMlVoteSummary } from './recommendationContext'
+import { buildMarketStructureWatchPoint, buildMlDiagnostics, buildMlVoteSummary, compactRecommendationForCard } from './recommendationContext'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -30,6 +30,20 @@ function assert(condition: unknown, message: string): void {
 const forecastData = {
   ensemble_v2: {
     forecast_pct: 0.012,
+    forecast_pct_source: 'empirical_rank_bins',
+    forecast_calibration_method: 'empirical_rank_bins_monotonic',
+    forecast_calibration_sample_count: 1880,
+    forecast_calibration_bin_samples: 91,
+    ic_weight_scope: 'tpex',
+    rank_signal_thresholds: {
+      buyThreshold: 0.58,
+      sellThreshold: 0.42,
+    },
+    contributing_models: ['XGBoost', 'CatBoost', 'LightGBM'],
+    ic_weight_diagnostics: {
+      DLinear: { validation_status: 'FAIL' },
+      PatchTST: { validation_status: 'PASS' },
+    },
     weights: {
       XGBoost: 0.2,
       CatBoost: 0.1,
@@ -44,6 +58,13 @@ const forecastData = {
       ResidualMLP: 0.5,
       GNN: 0.5,
     },
+  },
+  dispersion_diagnostics: {
+    raw_model_count: 8,
+    raw_rank_std: 0.073,
+    merge_compression: 0.62,
+    weight_hhi: 0.18,
+    zero_weight_models: ['DLinear'],
   },
 }
 
@@ -60,4 +81,34 @@ const forecastData = {
   assert(summary?.reported === 2, 'state-space overlays and challengers must not count as reported alpha votes')
   assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays and shadow models')
   assert(summary?.zeroWeightModels?.length === 0, 'all eight alpha models have positive lifecycle weights in this fixture')
+}
+
+{
+  const diagnostics = buildMlDiagnostics(forecastData)
+
+  assert(diagnostics?.totalAlphaModels === 8, 'diagnostics must use the eight production alpha voters')
+  assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays and challenger models')
+  assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
+  assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
+  assert(diagnostics?.forecastCalibration.sampleCount === 1880, 'forecast calibration sample count should be visible to UI')
+  assert(diagnostics?.dispersion.rawRankStd === 0.073, 'rank dispersion should be visible to UI')
+  assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
+  assert(diagnostics?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
+  assert(diagnostics?.validationBlockedModels?.[0] === 'DLinear', 'CPCV/PBO blocked models should be visible to UI')
+}
+
+{
+  const card = compactRecommendationForCard({
+    symbol: '2330',
+    prediction_forecast_data: forecastData,
+    screener_funnel_timeline: [{ stage: 'seed' }],
+    latest_open: 900,
+    latest_avg_price: 905,
+    ml_diagnostics: buildMlDiagnostics(forecastData),
+  })
+
+  assert(!('prediction_forecast_data' in card), 'card view should drop bulky forecast payload')
+  assert(!('screener_funnel_timeline' in card), 'card view should drop bulky screener timeline')
+  assert(card.ml_diagnostics?.dispersion?.rawRankStd === 0.073, 'card view must keep compact ML diagnostics')
+  assert(card.ml_diagnostics?.forecastCalibration?.method === 'empirical_rank_bins_monotonic', 'card view must keep forecast calibration evidence')
 }

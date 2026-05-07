@@ -118,7 +118,10 @@ def test_evaluate_latest_promotion_gate_joins_latest_mode_b_risk_checks(monkeypa
             "raw_results": json.dumps({
             "mode": "B",
             "summary": {"total_trades": 120},
-            "per_regime": {"bull": {"trades": 40, "return": 0.08}},
+            "per_regime": {
+                "bull": {"trades": 40, "return": 0.08},
+                "sideways": {"trades": 30, "return": 0.03},
+            },
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
             "sanity_flags": [],
             "absolute_confidence": "moderate",
@@ -175,9 +178,14 @@ def test_evaluate_latest_promotion_gate_can_use_separate_pbo_source(monkeypatch)
             "raw_results": json.dumps({
             "mode": "B",
             "summary": {"total_trades": 120},
+            "per_regime": {
+                "bull": {"trades": 40, "return": 0.08},
+                "sideways": {"trades": 30, "return": 0.03},
+            },
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
             "sanity_flags": [],
             "absolute_confidence": "moderate",
+            "walk_forward": {"passed": True, "windows": 6},
         }),
         }],
         "monte_carlo_results": [{
@@ -248,6 +256,58 @@ def test_evaluate_latest_promotion_gate_fails_closed_when_risk_rows_missing(monk
     assert out["validation_packet"]["decision"] == "FAIL"
 
 
+def test_evaluate_latest_promotion_gate_fails_when_validation_packet_fails(monkeypatch):
+    rows = {
+        "backtest_results": [{
+            "run_date": "2026-04-25",
+            "strategy": "mode-b",
+            "total_trades": 120,
+            "sharpe": 1.1,
+            "profit_factor": 1.4,
+            "max_drawdown": 0.11,
+            "raw_results": json.dumps({
+                "mode": "B",
+                "summary": {"total_trades": 120},
+                "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
+                "sanity_flags": [],
+                "absolute_confidence": "moderate",
+            }),
+        }],
+        "monte_carlo_results": [{
+            "source": "backtest",
+            "n_trades": 120,
+            "mdd_95th": 0.16,
+            "go_live_verdict": "PASS",
+            "raw_distribution": json.dumps({"simulation_method": "block_bootstrap", "block_size": 10}),
+        }],
+        "pbo_results": [{
+            "source": "backtest",
+            "n_trades": 120,
+            "raw_details": json.dumps({"method": "cscv_rank_logit"}),
+            "pbo": 0.31,
+            "oos_mean_return": 0.03,
+            "go_live_verdict": "PASS",
+        }],
+    }
+
+    def fake_query(sql, params=None, timeout=60.0):
+        for table, result in rows.items():
+            if table in sql:
+                return result
+        return []
+
+    import services.promotion_service as promotion_service
+
+    monkeypatch.setattr(promotion_service, "query", fake_query)
+
+    out = evaluate_latest_promotion_gate(source="backtest")
+
+    assert out["decision"] == "FAIL"
+    assert out["validation_packet"]["decision"] == "FAIL"
+    assert "validation_packet:walk_forward" in out["failed_gates"]
+    assert "validation_packet:regime_split_validation" in out["failed_gates"]
+
+
 def test_evaluate_latest_alpha_policy_gate_combines_candidate_and_latest_risk_gates(monkeypatch):
     rows = {
         "backtest_results": [{
@@ -260,9 +320,14 @@ def test_evaluate_latest_alpha_policy_gate_combines_candidate_and_latest_risk_ga
             "raw_results": json.dumps({
                 "mode": "B",
                 "summary": {"total_trades": 120},
+                "per_regime": {
+                    "bull": {"trades": 40, "return": 0.08},
+                    "sideways": {"trades": 30, "return": 0.03},
+                },
                 "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
                 "sanity_flags": [],
                 "absolute_confidence": "moderate",
+                "walk_forward": {"passed": True, "windows": 6},
             }),
         }],
         "monte_carlo_results": [{
@@ -331,6 +396,10 @@ def _evidence_bundle(candidate_id: str | None = "trading:config:sandbox:alpha_fr
             "sharpe": 1.2,
             "profit_factor": 1.5,
             "max_drawdown": 0.1,
+            "per_regime": {
+                "bull": {"trades": 40, "return": 0.08},
+                "sideways": {"trades": 30, "return": 0.03},
+            },
             "absolute_confidence": "moderate",
             "sanity_flags": [],
             "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
@@ -378,6 +447,10 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
             "raw_results": json.dumps({
                 "mode": "B",
                 "summary": {"total_trades": 120, "sharpe": 1.2, "profit_factor": 1.5, "max_drawdown": 0.1},
+                "per_regime": {
+                    "bull": {"trades": 40, "return": 0.08},
+                    "sideways": {"trades": 30, "return": 0.03},
+                },
                 "parity_audit": {"worker_parity": {"decision": "PASS"}},
                 "sanity_flags": [],
                 "absolute_confidence": "moderate",

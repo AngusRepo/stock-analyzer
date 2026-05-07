@@ -463,9 +463,9 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
   return (
     <div>
       <p className="text-xs text-muted-foreground mb-2">RRG 四象限圖</p>
-      <div className="h-80 min-h-[20rem] w-full">
+      <div className="h-96 min-h-[24rem] w-full overflow-visible pb-2">
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: 10 }}>
+          <ScatterChart margin={{ top: 28, right: 28, bottom: 48, left: 28 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis type="number" dataKey="x" name="RS-Ratio" domain={['auto', 'auto']}
               tick={{ fontSize: 12, fill: '#999' }} label={{ value: 'RS-Ratio', position: 'bottom', fontSize: 12, fill: '#888' }} />

@@ -53,6 +53,30 @@ type MlVoteSummary = {
     regime?: string
     adjustment?: number
   }
+  icWeightScope?: string
+  validationBlockedModels?: string[]
+}
+
+type MlDiagnosticsSummary = {
+  totalAlphaModels?: number
+  activeWeightCount?: number
+  zeroWeightModels?: string[]
+  contributingModels?: string[]
+  validationBlockedModels?: string[]
+  icWeightScope?: string | null
+  forecastCalibration?: {
+    method?: string | null
+    source?: string | null
+    sampleCount?: number | null
+    binSamples?: number | null
+    bin?: string | number | null
+  }
+  dispersion?: {
+    rawModelCount?: number | null
+    rawRankStd?: number | null
+    mergeCompression?: number | null
+    weightHhi?: number | null
+  }
 }
 
 type ScoreComponents = {
@@ -345,6 +369,12 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const weights = forecast?.ensemble_v2?.weights && typeof forecast.ensemble_v2.weights === 'object'
     ? forecast.ensemble_v2.weights
     : {}
+  const diagnostics = forecast?.ensemble_v2?.ic_weight_diagnostics && typeof forecast.ensemble_v2.ic_weight_diagnostics === 'object'
+    ? forecast.ensemble_v2.ic_weight_diagnostics
+    : {}
+  const thresholds = forecast?.ensemble_v2?.rank_signal_thresholds && typeof forecast.ensemble_v2.rank_signal_thresholds === 'object'
+    ? forecast.ensemble_v2.rank_signal_thresholds
+    : null
   const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
   const total = Math.max(ALPHA_PREDICTION_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
   if (!forecast || total <= 0) return null
@@ -358,6 +388,69 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     missing: Math.max(0, total - models.length),
     total,
     forecastPct: forecast.ensemble_v2?.forecast_pct ?? null,
+    icWeightScope: forecast.ensemble_v2?.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
+    thresholds: thresholds
+      ? {
+          bullish: Number(thresholds.buyThreshold ?? thresholds.strongBuyThreshold),
+          bearish: Number(thresholds.sellThreshold ?? thresholds.strongSellThreshold),
+          adjustment: Number(thresholds.confidence_delta ?? 0),
+        }
+      : undefined,
+    zeroWeightModels: Object.entries(weights)
+      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .map(([name]) => name),
+    validationBlockedModels: Object.entries(diagnostics)
+      .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
+      .map(([name]) => name),
+  }
+}
+
+function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
+  const persisted = parseObject(rec.ml_diagnostics)
+  if (persisted) return persisted
+  const forecast = parseForecastData(rec.prediction_forecast_data)
+  if (!forecast) return null
+  const ev2 = forecast?.ensemble_v2 && typeof forecast.ensemble_v2 === 'object'
+    ? forecast.ensemble_v2
+    : {}
+  const weights = ev2?.weights && typeof ev2.weights === 'object'
+    ? ev2.weights
+    : {}
+  const diagnostics = ev2?.ic_weight_diagnostics && typeof ev2.ic_weight_diagnostics === 'object'
+    ? ev2.ic_weight_diagnostics
+    : {}
+  const dispersion = forecast?.dispersion_diagnostics && typeof forecast.dispersion_diagnostics === 'object'
+    ? forecast.dispersion_diagnostics
+    : {}
+  const zeroWeightModels = Array.isArray(dispersion.zero_weight_models)
+    ? dispersion.zero_weight_models.filter(isAlphaPredictionModelName)
+    : Object.entries(weights)
+      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .map(([name]) => name)
+
+  return {
+    totalAlphaModels: ALPHA_PREDICTION_MODEL_NAMES.length,
+    activeWeightCount: Object.entries(weights).filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) > 0).length,
+    zeroWeightModels,
+    contributingModels: Array.isArray(ev2.contributing_models) ? ev2.contributing_models.filter(isAlphaPredictionModelName) : [],
+    validationBlockedModels: Object.entries(diagnostics)
+      .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
+      .map(([name]) => name)
+      .filter(isAlphaPredictionModelName),
+    icWeightScope: ev2.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
+    forecastCalibration: {
+      method: ev2.forecast_calibration_method ?? null,
+      source: ev2.forecast_pct_source ?? null,
+      sampleCount: Number.isFinite(Number(ev2.forecast_calibration_sample_count)) ? Number(ev2.forecast_calibration_sample_count) : null,
+      binSamples: Number.isFinite(Number(ev2.forecast_calibration_bin_samples)) ? Number(ev2.forecast_calibration_bin_samples) : null,
+      bin: ev2.forecast_calibration_bin ?? null,
+    },
+    dispersion: {
+      rawModelCount: Number.isFinite(Number(dispersion.raw_model_count)) ? Number(dispersion.raw_model_count) : null,
+      rawRankStd: Number.isFinite(Number(dispersion.raw_rank_std)) ? Number(dispersion.raw_rank_std) : null,
+      mergeCompression: Number.isFinite(Number(dispersion.merge_compression)) ? Number(dispersion.merge_compression) : null,
+      weightHhi: Number.isFinite(Number(dispersion.weight_hhi)) ? Number(dispersion.weight_hhi) : null,
+    },
   }
 }
 
@@ -428,7 +521,53 @@ function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
   const regime = summary?.thresholds?.regime && summary.thresholds.regime !== 'unknown'
     ? `，regime=${summary.thresholds.regime}`
     : ''
-  return `投票門檻：rank score >= ${bullish.toFixed(3)} 算看漲，<= ${bearish.toFixed(3)} 算看跌，中間為觀望${regime}。`
+  const scope = summary?.icWeightScope ? `，IC scope=${summary.icWeightScope}` : ''
+  const blocked = Array.isArray(summary?.validationBlockedModels) && summary.validationBlockedModels.length > 0
+    ? `；CPCV/PBO gate 擋下 ${summary.validationBlockedModels.join('/')}`
+    : ''
+  return `投票門檻：rank score >= ${bullish.toFixed(3)} 算看漲，<= ${bearish.toFixed(3)} 算看跌，中間為觀望${regime}${scope}${blocked}。`
+}
+
+function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary | null }) {
+  if (!diagnostics) return null
+  const total = Number(diagnostics.totalAlphaModels ?? ALPHA_PREDICTION_MODEL_NAMES.length)
+  const active = Number(diagnostics.activeWeightCount ?? 0)
+  const zeroWeightModels = diagnostics.zeroWeightModels ?? []
+  const blockedModels = diagnostics.validationBlockedModels ?? []
+  const calibration = diagnostics.forecastCalibration
+  const dispersion = diagnostics.dispersion
+  const chips: string[] = []
+
+  chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) ? total : ALPHA_PREDICTION_MODEL_NAMES.length}`)
+  if (diagnostics.icWeightScope) chips.push(`IC scope ${diagnostics.icWeightScope}`)
+  if (dispersion?.rawRankStd != null) chips.push(`模型分歧 σ ${fmtNumber(dispersion.rawRankStd, 3)}`)
+  if (dispersion?.mergeCompression != null) chips.push(`合併壓縮 ${fmtNumber(dispersion.mergeCompression, 2)}`)
+  if (calibration?.method || calibration?.source) {
+    const samples = calibration.sampleCount != null ? ` / 樣本 ${fmtNumber(calibration.sampleCount, 0)}` : ''
+    chips.push(`預期值校準 ${calibration.method ?? calibration.source}${samples}`)
+  }
+
+  const warnings = [
+    zeroWeightModels.length > 0 ? `0 權重：${zeroWeightModels.join('、')}` : null,
+    blockedModels.length > 0 ? `驗證擋下：${blockedModels.join('、')}` : null,
+  ].filter(Boolean)
+
+  return (
+    <div className="mt-2 rounded-md border border-emerald-500/15 bg-background/45 p-2">
+      <div className="mb-1.5 flex flex-wrap gap-1.5">
+        {chips.map((chip) => (
+          <Badge key={chip} variant="outline" className="border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+            {chip}
+          </Badge>
+        ))}
+      </div>
+      {warnings.length > 0 && (
+        <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+          {warnings.join('；')}。這代表該模型有跑或有 artifact，但目前不被 ensemble 採信，原因通常是 IC / lifecycle / validation gate 不足。
+        </p>
+      )}
+    </div>
+  )
 }
 
 function translateRecommendationReason(reason: unknown): string {
@@ -739,6 +878,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const alphaContext = alphaContextFromRec(rec, watchPoints)
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
+  const mlDiagnostics = mlDiagnosticsFromRec(rec)
   const mlSummary = formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const mlThresholdText = formatMlThresholdText(mlVoteSummary)
@@ -861,11 +1001,12 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
           </div>
 
-          {(mlSummary || mlMetadataGap) && (
+          {(mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
               <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
               <p>{mlSummary ? `${mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。` : mlMetadataGap}</p>
               {mlThresholdText && <p className="mt-1 text-muted-foreground/80">{mlThresholdText}</p>}
+              <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>
           )}
 

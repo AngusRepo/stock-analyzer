@@ -543,6 +543,54 @@ _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 
 
+def _normalize_market_segment_for_serving(req: PredictRequest) -> str | None:
+    stock_meta = getattr(req, "stock_meta", {}) or {}
+    for value in (
+        stock_meta.get("market_segment") if isinstance(stock_meta, dict) else None,
+        getattr(req, "market", None),
+    ):
+        normalized = str(value or "").strip().upper()
+        if normalized in {"TWSE", "TSE", "LISTED"}:
+            return "LISTED"
+        if normalized in {"TPEX", "OTC"}:
+            return "OTC"
+        if normalized in {"ESB", "EMERGING"}:
+            return "EMERGING"
+    return None
+
+
+def _rank_signal_thresholds(trading_config: dict | None, adaptive_params: dict | None) -> dict[str, float]:
+    cfg = (trading_config or {}).get("ensemble_v2") if isinstance(trading_config, dict) else {}
+    cfg = cfg if isinstance(cfg, dict) else {}
+    adaptive = adaptive_params or {}
+
+    def _num(key: str, default: float) -> float:
+        try:
+            return float(cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        delta = float(adaptive.get("confidence_delta", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        delta = 0.0
+    # Positive delta means more conservative: widen the neutral band.
+    delta = float(np.clip(delta, -0.08, 0.08))
+
+    strong_buy = float(np.clip(_num("strongBuyThreshold", 0.85) + delta, 0.55, 0.97))
+    buy = float(np.clip(_num("buyThreshold", 0.70) + delta, 0.52, min(0.95, strong_buy)))
+    sell = float(np.clip(_num("sellThreshold", 0.30) - delta, max(0.05, 1.0 - buy), 0.48))
+    strong_sell = float(np.clip(_num("strongSellThreshold", 0.15) - delta, 0.03, min(0.45, sell)))
+
+    return {
+        "strong_buy_threshold": strong_buy,
+        "buy_threshold": buy,
+        "sell_threshold": sell,
+        "strong_sell_threshold": strong_sell,
+        "adaptive_confidence_delta": delta,
+    }
+
+
 def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
     import torch
@@ -573,7 +621,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     if len(x) == 0:
         raise ValueError(f"Feature matrix empty for {req.symbol}")
     x_latest = x[-1].reshape(1, -1)
-    ic_weights = load_ic_weights()
+    market_segment = _normalize_market_segment_for_serving(req)
+    ic_weights = load_ic_weights(market_segment=market_segment)
     try:
         pool_snapshot = _load_pool()
     except Exception:
@@ -787,11 +836,16 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     except Exception as e:
         rank_stacker_info = {"applied": False, "reason": f"load_or_apply_failed: {e}"}
 
+    rank_thresholds = _rank_signal_thresholds(req.trading_config, req.adaptive_params)
     result = rank_to_signal(
         rank_scores=rank_scores,
         current_price=current_price,
         atr=atr,
         ic_weights=effective_ic_weights if effective_ic_weights else None,
+        strong_buy_threshold=rank_thresholds["strong_buy_threshold"],
+        buy_threshold=rank_thresholds["buy_threshold"],
+        sell_threshold=rank_thresholds["sell_threshold"],
+        strong_sell_threshold=rank_thresholds["strong_sell_threshold"],
     )
 
     return {
@@ -815,6 +869,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "feature_version": "v2_universal_regression",
         "model_errors": model_errors if model_errors else None,
         "ic_weights": {k: round(v, 4) for k, v in effective_ic_weights.items()} if effective_ic_weights else None,
+        "ic_weight_scope": market_segment or "GLOBAL",
+        "rank_signal_thresholds": {k: round(float(v), 4) for k, v in rank_thresholds.items()},
         "model_pool_status": model_pool_status if pool_snapshot else None,
         "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
         "time_series_signals": time_series_signals if time_series_signals else None,

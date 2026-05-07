@@ -28,6 +28,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   update: { kind: 'trading_day', holidayGated: true, description: 'post-market TWSE/TPEX market data update' },
   'indicator-queue': { kind: 'trading_day', holidayGated: true, description: 'post-market full-market technical indicator queue' },
   'ml-warmup': { kind: 'trading_day', holidayGated: true, description: 'post-market ML control-plane warmup' },
+  'post-pipeline-chain': { kind: 'trading_day', holidayGated: true, description: 'callback-driven verify/regime chain after pipeline' },
+  'post-verify-chain': { kind: 'trading_day', holidayGated: true, description: 'callback-driven IC/adapt/report chain after verify' },
   pipeline: { kind: 'trading_day', holidayGated: true, description: 'post-market prediction/recommendation pipeline' },
   ml: { kind: 'trading_day', holidayGated: true, description: 'manual ML prediction alias' },
   recommendation: { kind: 'trading_day', holidayGated: true, description: 'daily recommendation after ML predict' },

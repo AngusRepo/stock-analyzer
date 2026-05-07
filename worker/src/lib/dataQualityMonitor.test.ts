@@ -9,6 +9,7 @@ import {
   buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
   buildBoardLaneContractCheck,
+  buildDatasetSnapshotManifestCheck,
   buildScreenerCandidateVolumeCheck,
   buildScreenerScoreDistributionCheck,
   buildSurfaceRoleConsistencyCheck,
@@ -27,6 +28,51 @@ function assert(condition: unknown, message: string): void {
 {
   assert(daysBetweenDates('2026-04-28', '2026-04-29') === 1, 'date lag should be calendar-day based')
   assert(daysBetweenDates(null, '2026-04-29') === null, 'missing latest date should return null')
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 1,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 1,
+    priceHistoryComputeSnapshot: 1,
+    pipelineReport: 1,
+    screenerReport: 1,
+    total: 5,
+  })
+  assert(check.status === 'ok', 'dataset manifest check should pass when D1/GCS/R2 ownership records are present')
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 1,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 0,
+    priceHistoryComputeSnapshot: 0,
+    pipelineReport: 0,
+    screenerReport: 0,
+    total: 3,
+  })
+  assert(check.status === 'warn', 'missing compute/report artifacts should warn without hiding D1 serving freshness')
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 0,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 1,
+    priceHistoryComputeSnapshot: 1,
+    pipelineReport: 1,
+    screenerReport: 1,
+    total: 4,
+  })
+  assert(check.status === 'fail', 'missing D1 hot-window manifests must fail Data Quality')
 }
 
 void (async () => {

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Database, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -57,10 +57,12 @@ function DataQualityMetric({ label, value, tone, detail }: { label: string; valu
   )
 }
 
-function CheckRow({ check }: { check: DataQualityCheck }) {
+function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boolean }) {
   const tone = statusTone(check.status)
   return (
-    <div className={`grid gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto] ${
+    <div id={`dq-${check.id}`} className={`scroll-mt-24 grid gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto] ${
+      focused ? 'ring-1 ring-amber-300/60 ' : ''
+    }${
       check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15'
         : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10'
           : 'border-[#263247] bg-[#05070c]'
@@ -91,11 +93,23 @@ export default function DataQualityPage() {
 
   const report = quality.data
   const checks = report?.checks ?? []
+  const focusId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get('focus')
+    if (raw === 'price_data') return 'price_freshness'
+    return raw ?? ''
+  }, [])
   const gaps = useMemo(() => checks.filter((check) => check.status !== 'ok'), [checks])
   const okCount = checks.filter((check) => check.status === 'ok').length
   const warnCount = checks.filter((check) => check.status === 'warn').length
   const failCount = checks.filter((check) => check.status === 'fail').length
   const trustScore = scoreFromChecks(checks)
+
+  useEffect(() => {
+    if (!focusId || !checks.length) return
+    window.setTimeout(() => {
+      document.getElementById(`dq-${focusId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 0)
+  }, [checks.length, focusId])
 
   return (
     <AppShell>
@@ -137,7 +151,7 @@ export default function DataQualityPage() {
         <WorkstationPanel title="Actionable Data Gaps / 可處理缺口" kicker="fail and warn first">
           <div className="overflow-hidden">
             {gaps.length > 0 ? (
-              gaps.map((check) => <CheckRow key={check.id} check={check} />)
+              gaps.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)
             ) : (
               <div className="flex items-center gap-2 p-4 text-sm text-emerald-300">
                 <CheckCircle2 className="h-4 w-4" /> 沒有 fail/warn data quality 缺口。
@@ -148,7 +162,7 @@ export default function DataQualityPage() {
 
         <WorkstationPanel title="All Checks / 全部檢查" kicker="freshness, schema, parity">
           <div className="overflow-hidden">
-            {checks.map((check) => <CheckRow key={check.id} check={check} />)}
+            {checks.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)}
             {!checks.length && (
               <div className="flex items-center gap-2 p-4 text-sm text-amber-200">
                 <AlertTriangle className="h-4 w-4" /> 尚未取得 Data Quality checks。

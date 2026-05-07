@@ -15,12 +15,21 @@ function statusTone(status?: string): WorkstationTone {
   if (status === 'success') return 'ok'
   if (status === 'failed') return 'error'
   if (status === 'running') return 'warn'
-  if (status === 'skip' || status === 'skipped') return 'neutral'
+  if (status === 'waiting') return 'info'
+  if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
   return 'neutral'
 }
 
 function suspiciousDuration(job: SchedulerJob) {
+  if (job.lastStatus === 'waiting' || job.lastStatus === 'sleep' || job.lastStatus === 'skip') return false
   return job.lastDuration === '<1s' || job.lastDuration === '--' || job.lastDuration === 'N/A'
+}
+
+function statusLabel(status?: string) {
+  if (status === 'waiting') return 'WAITING'
+  if (status === 'sleep') return 'NOT TODAY'
+  if (status === 'skip') return 'SKIPPED'
+  return status || 'unknown'
 }
 
 function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip'> }) {
@@ -68,7 +77,7 @@ function JobRow({ job }: { job: SchedulerJob }) {
     <div className="grid h-[76px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 font-mono text-[11px]">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus || 'unknown'}</WorkstationPill>
+          <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
           <p className="truncate text-slate-100">{job.name}</p>
           {suspicious && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
         </div>
@@ -85,28 +94,58 @@ function JobRow({ job }: { job: SchedulerJob }) {
 }
 
 function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
-  const pipelineJobs = jobs.filter((job) => job.group === 'pipeline_chain').slice(0, 8)
-  if (!pipelineJobs.length) {
+  const byId = new Map(jobs.filter((job) => job.group === 'pipeline_chain').map((job) => [job.id, job]))
+  const root = byId.get('evening-chain')
+  const chainIds = ['update', 'indicator-queue', 'screener', 'pipeline', 'ml-predict', 'recommendation']
+  const pipelineJobs = chainIds.map((id) => byId.get(id)).filter((job): job is SchedulerJob => Boolean(job))
+  if (!root && !pipelineJobs.length) {
     return <div className="p-4 text-sm text-slate-500">目前沒有 pipeline chain job payload。</div>
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 p-4">
+    <div className="space-y-3 p-4">
+      {root && (
+        <div className={`rounded-xl border px-3 py-2 ${
+          root.lastStatus === 'success' ? 'border-emerald-400/35 bg-emerald-400/[0.06]' :
+          root.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
+          root.lastStatus === 'running' ? 'border-amber-400/35 bg-amber-400/[0.06]' :
+          root.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
+            'border-[#263247] bg-[#05070c]'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">Evening Chain Root</p>
+              <p className="mt-1 text-[11px] text-[#8a92a6]">Data update → Indicator Queue → Screener → Pipeline → ML Predict → Recommendation</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <WorkstationPill tone={statusTone(root.lastStatus)}>{statusLabel(root.lastStatus)}</WorkstationPill>
+              <span className="font-mono text-[11px] text-[#8a92a6]">{root.lastDuration || '-'}</span>
+            </div>
+          </div>
+          <div className="mt-2 max-w-[360px]">
+            <HistoryStrip history={root.history7d ?? []} />
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
       {pipelineJobs.map((job, index) => (
         <div key={job.id} className="flex items-center gap-2">
           <div className={`min-w-[116px] rounded-xl border px-3 py-2 ${
             job.lastStatus === 'success' ? 'border-emerald-400/35 bg-emerald-400/[0.06]' :
             job.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
+            job.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
               'border-[#263247] bg-[#05070c]'
           }`}
           >
             <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
             <p className="mt-1 text-[10px] text-[#8a92a6]">{job.lastDuration || '-'}</p>
+            <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
             <HistoryStrip history={job.history7d ?? []} />
           </div>
           {index < pipelineJobs.length - 1 && <ArrowRight className="h-3.5 w-3.5 text-amber-300" />}
         </div>
       ))}
+      </div>
     </div>
   )
 }
@@ -198,7 +237,7 @@ export default function SchedulerPage() {
                       <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
                       <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
                     </div>
-                    <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus}</WorkstationPill>
+                    <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>
                   <p className="mt-2 font-mono text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>

@@ -49,6 +49,18 @@ def _mode_b_backtest_with_returns() -> dict:
     return {**_mode_b_backtest(), "return_series": returns}
 
 
+def _promotion_grade_backtest() -> dict:
+    return {
+        **_mode_b_backtest(),
+        "per_regime": {
+            "bull": {"trades": 40, "return": 0.08},
+            "bear": {"trades": 20, "return": 0.01},
+            "volatile": {"trades": 25, "return": 0.02},
+            "sideways": {"trades": 35, "return": 0.03},
+        },
+    }
+
+
 def _monte_carlo() -> dict:
     return {
         "source": "backtest",
@@ -187,7 +199,7 @@ def test_hansen_spa_reality_check_fails_when_candidate_does_not_beat_benchmark()
 def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
     packet = build_validation_packet(
         source="promotion_gate",
-        backtest=_mode_b_backtest(),
+        backtest=_promotion_grade_backtest(),
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
         data_snooping={
@@ -196,6 +208,7 @@ def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
             "go_live_verdict": "PASS",
             "candidate_count": 3,
         },
+        walk_forward={"passed": True, "windows": 6},
     )
     gate = next(g for g in packet["gates"] if g["name"] == "data_snooping_overfit_guard")
 
@@ -218,9 +231,9 @@ def test_validation_packet_uses_exact_dsr_when_return_series_exists():
     assert dsr_gate["evidence"]["kurtosis"] is not None
 
 
-def test_validation_packet_passes_complete_promotion_evidence_with_wf_warning():
+def test_replay_packet_keeps_missing_walk_forward_advisory_only():
     packet = build_validation_packet(
-        source="promotion_gate",
+        source="backtest_replay",
         backtest=_mode_b_backtest(),
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
@@ -232,6 +245,48 @@ def test_validation_packet_passes_complete_promotion_evidence_with_wf_warning():
     assert "walk_forward" in packet["warnings"]
     assert "deflated_sharpe" not in packet["failed_gates"]
     assert "data_snooping_overfit_guard" not in packet["failed_gates"]
+
+
+def test_promotion_validation_packet_fails_closed_without_walk_forward():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest=_mode_b_backtest(),
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+    )
+
+    assert packet["decision"] == "FAIL"
+    assert "walk_forward" in packet["failed_gates"]
+
+
+def test_promotion_validation_packet_fails_closed_without_regime_split():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest=_mode_b_backtest(),
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+        walk_forward={"passed": True, "windows": 6},
+    )
+
+    assert packet["decision"] == "FAIL"
+    assert "regime_split_validation" in packet["failed_gates"]
+
+
+def test_promotion_validation_packet_passes_with_walk_forward_and_regime_split():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest=_promotion_grade_backtest(),
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+        walk_forward={"passed": True, "windows": 6},
+    )
+
+    assert packet["decision"] == "PASS"
+    assert "walk_forward" not in packet["failed_gates"]
+    assert "regime_split_validation" not in packet["failed_gates"]
 
 
 def test_validation_packet_fails_mode_a_for_promotion_context():

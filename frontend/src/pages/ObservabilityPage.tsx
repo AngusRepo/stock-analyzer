@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowRight, Clock3, Database, ExternalLink, GitBranch, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { VirtualizedList } from '@/components/performance/VirtualizedList'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -25,10 +26,28 @@ import {
 function statusTone(status?: string | null): WorkstationTone {
   const value = String(status ?? '').toLowerCase()
   if (['ok', 'pass', 'success', 'resolved'].includes(value)) return 'ok'
-  if (['warn', 'warning', 'watch', 'running', 'skip', 'skipped'].includes(value)) return 'warn'
+  if (['warn', 'warning', 'watch', 'running'].includes(value)) return 'warn'
+  if (value === 'waiting') return 'info'
+  if (['sleep', 'skip', 'skipped'].includes(value)) return 'neutral'
   if (['fail', 'failed', 'error', 'block', 'blocked'].includes(value)) return 'error'
   return 'info'
 }
+
+function schedulerStatusLabel(status?: string | null) {
+  const value = String(status ?? '').toLowerCase()
+  if (value === 'waiting') return 'WAITING'
+  if (value === 'sleep') return 'NOT TODAY'
+  if (value === 'skip' || value === 'skipped') return 'SKIPPED'
+  return status || 'unknown'
+}
+
+const EXECUTION_REALISM_STATES = [
+  'quote_unavailable',
+  'stale_quote',
+  'requoted',
+  'partially_filled',
+  'expired',
+] as const
 
 function severityTone(severity?: ObservabilitySeverity | null): WorkstationTone {
   if (severity === 'error') return 'error'
@@ -244,8 +263,13 @@ function IncidentInbox({
   }
 
   return (
-    <div className="max-h-[420px] overflow-y-auto">
-      {incidents.map((incident) => {
+    <div className="max-h-[420px] overflow-hidden">
+      <VirtualizedList
+        items={incidents}
+        itemHeight={112}
+        height={Math.min(420, incidents.length * 112)}
+        getKey={(incident) => incident.id}
+        renderItem={(incident) => {
         const timing = incidentTiming(incident, events)
         const tone = severityTone(incident.severity)
         return (
@@ -278,7 +302,8 @@ function IncidentInbox({
             </div>
           </button>
         )
-      })}
+      }}
+      />
     </div>
   )
 }
@@ -339,16 +364,21 @@ function SelectedIncidentDetail({
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
-    const statusRank = (status: string) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'skip' ? 2 : 3
+    const statusRank = (status: string) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'waiting' ? 2 : status === 'success' ? 3 : status === 'sleep' ? 4 : status === 'skip' ? 5 : 6
     return statusRank(a.lastStatus) - statusRank(b.lastStatus) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name)
   })
   return (
     <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
-      {sortedJobs.map((job) => (
-        <div key={job.id} className="grid gap-2 border-b border-[#263247] p-2 text-xs last:border-0 lg:grid-cols-[1fr_0.75fr_0.7fr_120px]">
+      <VirtualizedList
+        items={sortedJobs}
+        itemHeight={88}
+        height={Math.min(420, sortedJobs.length * 88)}
+        getKey={(job) => job.id}
+        renderItem={(job) => (
+        <div className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 lg:grid-cols-[1fr_0.75fr_0.7fr_120px]">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus}</WorkstationPill>
+              <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
               <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
             </div>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
@@ -369,7 +399,8 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
           </a>
           {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
         </div>
-      ))}
+      )}
+      />
     </div>
   )
 }
@@ -426,6 +457,16 @@ function DependencyMap() {
             <p className="mt-1 text-xs text-slate-500">{role}</p>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-[#263247] pt-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution realism watch</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {EXECUTION_REALISM_STATES.map((item) => (
+            <WorkstationPill key={item} tone={item.includes('unavailable') || item.includes('stale') ? 'warn' : 'info'}>
+              {item.replace(/_/g, ' ')}
+            </WorkstationPill>
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -522,7 +563,7 @@ export default function ObservabilityPage() {
                 <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 font-mono text-emerald-200 hover:border-emerald-300/50">
                   Data Quality <ExternalLink className="h-3 w-3" />
                 </a>
-                <a href={`/data-quality?focus=price_data${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
+                <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
                   Price Data <ExternalLink className="h-3 w-3" />
                 </a>
               </div>
@@ -532,7 +573,7 @@ export default function ObservabilityPage() {
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
-                <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
+                <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
               </div>
               <SchedulerRunsPanel jobs={jobs} />
             </div>

@@ -11,6 +11,8 @@ export interface SchedulerRunLogEntry {
   details?: string[]
   duration_ms: number
   timestamp: string
+  run_id?: string
+  run_date?: string
   error?: string
 }
 
@@ -25,6 +27,8 @@ const TASK_NAMES: Record<string, string> = {
   update: 'Market Data Update',
   'indicator-queue': 'Indicator Queue',
   'ml-warmup': 'ML Warmup',
+  'post-pipeline-chain': 'Post Pipeline Chain',
+  'post-verify-chain': 'Post Verify Chain',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',
@@ -115,6 +119,8 @@ export async function logSchedulerRunResult(
     summary: result.summary,
     details: result.details,
     duration_ms: result.duration_ms,
+    run_id: result.run_id,
+    run_date: today,
     error: result.error,
     timestamp: new Date().toISOString(),
   }

@@ -54,16 +54,112 @@ from __future__ import annotations
 
 import logging
 import math
+import json
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 import polars as pl
 
 from services import d1_client
+from services.dataset_snapshots import latest_dataset_snapshot
+from services.research_data_access import resolve_research_data_access
 
 logger = logging.getLogger(__name__)
+
+BACKTEST_SNAPSHOT_COMPONENTS = ("stocks", "prices", "indicators", "chips", "market_risk")
+
+
+def _snapshot_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
+    raw = manifest.get("metadata_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"backtest_snapshot_metadata_invalid_json:{exc}") from exc
+    return {}
+
+
+def _snapshot_component_uris(manifest: dict[str, Any]) -> dict[str, str]:
+    metadata = _snapshot_metadata(manifest)
+    components = metadata.get("components")
+    if isinstance(components, dict):
+        out = {str(k): str(v) for k, v in components.items() if v}
+    else:
+        out = {}
+
+    base_uri = str(manifest.get("gcs_uri") or "").rstrip("/")
+    if base_uri and len(out) < len(BACKTEST_SNAPSHOT_COMPONENTS):
+        for name in BACKTEST_SNAPSHOT_COMPONENTS:
+            out.setdefault(name, f"{base_uri}/{name}.parquet")
+
+    missing = [name for name in BACKTEST_SNAPSHOT_COMPONENTS if not out.get(name)]
+    if missing:
+        raise RuntimeError(f"backtest_snapshot_components_missing:{','.join(missing)}")
+    return out
+
+
+def _download_gcs_uri(uri: str) -> Path:
+    if not uri.startswith("gs://"):
+        raise RuntimeError(f"unsupported_snapshot_uri:{uri}")
+    try:
+        from google.cloud import storage
+    except Exception as exc:
+        raise RuntimeError("google_cloud_storage_not_available_for_snapshot_read") from exc
+
+    bucket_name, blob_name = uri[5:].split("/", 1)
+    target = Path(tempfile.mkdtemp(prefix="stockvision-snapshot-")) / Path(blob_name).name
+    client = storage.Client()
+    client.bucket(bucket_name).blob(blob_name).download_to_filename(str(target))
+    return target
+
+
+def _read_snapshot_parquet(uri: str) -> pl.DataFrame:
+    if uri.startswith("file://"):
+        path = Path(uri[7:])
+    elif uri.startswith("gs://"):
+        path = _download_gcs_uri(uri)
+    else:
+        path = Path(uri)
+
+    if not path.exists():
+        raise RuntimeError(f"snapshot_component_not_found:{uri}")
+    return pl.scan_parquet(str(path)).collect()
+
+
+def _date_filter(df: pl.DataFrame, start_date: str, end_date: str) -> pl.DataFrame:
+    if df.is_empty() or "date" not in df.columns:
+        return df
+    return (
+        df.with_columns(pl.col("date").cast(pl.Utf8))
+        .filter((pl.col("date") >= start_date) & (pl.col("date") <= end_date))
+    )
+
+
+def _sort_snapshot_frame(df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+    present = [key for key in keys if key in df.columns]
+    return df.sort(present) if present and not df.is_empty() else df
+
+
+def _with_symbol_from_stocks(df: pl.DataFrame, stocks_df: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty() or "symbol" in df.columns:
+        return df
+    if "stock_id" not in df.columns or not {"id", "symbol"}.issubset(set(stocks_df.columns)):
+        return df
+    symbol_map = stocks_df.select([pl.col("id").alias("stock_id"), "symbol"])
+    return df.join(symbol_map, on="stock_id", how="inner").drop("stock_id", strict=False)
+
+
+def _filter_snapshot_symbols(df: pl.DataFrame, symbols: Optional[list[str]]) -> pl.DataFrame:
+    if not symbols or df.is_empty() or "symbol" not in df.columns:
+        return df
+    return df.filter(pl.col("symbol").is_in(set(symbols)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -190,6 +286,132 @@ class BacktestDataset:
         # replay screener can skip MultiIndex .xs() on every stock-day.
         ds._build_hot_caches()
         return ds
+
+    @classmethod
+    def load_from_snapshot_manifest(
+        cls,
+        manifest: dict[str, Any],
+        start_date: str,
+        end_date: str,
+        symbols: Optional[list[str]] = None,
+    ) -> "BacktestDataset":
+        """Load replay inputs from a compute snapshot manifest."""
+        snapshot_id = manifest.get("snapshot_id") or "unknown"
+        logger.info(
+            "[BacktestEngine] Loading snapshot %s data %s~%s...",
+            snapshot_id,
+            start_date,
+            end_date,
+        )
+        component_uris = _snapshot_component_uris(manifest)
+        frames = {
+            name: _read_snapshot_parquet(uri)
+            for name, uri in component_uris.items()
+        }
+
+        stocks_df = frames["stocks"]
+        if stocks_df.is_empty() or "symbol" not in stocks_df.columns:
+            raise RuntimeError(f"backtest_snapshot_stocks_invalid:{snapshot_id}")
+        stocks_df = stocks_df.with_columns([
+            pl.col("listed_date").cast(pl.Utf8) if "listed_date" in stocks_df.columns else pl.lit(None).alias("listed_date"),
+            pl.col("delisted_date").cast(pl.Utf8) if "delisted_date" in stocks_df.columns else pl.lit(None).alias("delisted_date"),
+        ])
+        stocks_df = stocks_df.filter(
+            ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") >= start_date))
+            & ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= start_date))
+        )
+        stocks_df = _filter_snapshot_symbols(stocks_df, symbols)
+        if stocks_df.is_empty():
+            raise RuntimeError(f"backtest_snapshot_no_stocks:{snapshot_id}")
+
+        prices_df = _with_symbol_from_stocks(frames["prices"], stocks_df)
+        indicators_df = _with_symbol_from_stocks(frames["indicators"], stocks_df)
+        chips_df = _with_symbol_from_stocks(frames["chips"], stocks_df)
+
+        prices_df = _sort_snapshot_frame(
+            _filter_snapshot_symbols(_date_filter(prices_df, start_date, end_date), symbols),
+            ["symbol", "date"],
+        )
+        if prices_df.is_empty():
+            raise RuntimeError(f"backtest_snapshot_no_prices:{snapshot_id}:{start_date}~{end_date}")
+
+        indicators_df = _sort_snapshot_frame(
+            _filter_snapshot_symbols(_date_filter(indicators_df, start_date, end_date), symbols),
+            ["symbol", "date"],
+        )
+        chips_df = _sort_snapshot_frame(
+            _filter_snapshot_symbols(_date_filter(chips_df, start_date, end_date), symbols),
+            ["symbol", "date"],
+        )
+        risk_df = _sort_snapshot_frame(
+            _date_filter(frames["market_risk"], start_date, end_date),
+            ["date"],
+        )
+
+        trading_days = sorted(prices_df.get_column("date").cast(pl.Utf8).unique().to_list())
+        ds = cls(
+            prices=prices_df,
+            indicators=indicators_df,
+            chips=chips_df,
+            market_risk=risk_df,
+            stocks=stocks_df,
+            trading_days=trading_days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        ds._build_hot_caches()
+        return ds
+
+    @classmethod
+    def load_from_snapshot(
+        cls,
+        start_date: str,
+        end_date: str,
+        symbols: Optional[list[str]] = None,
+        business_date: Optional[str] = None,
+    ) -> "BacktestDataset":
+        manifest = latest_dataset_snapshot(
+            kind="backtest_dataset",
+            business_date=business_date,
+            access_tier="compute",
+        )
+        if not manifest:
+            raise RuntimeError(f"backtest_snapshot_manifest_missing:{business_date or 'latest'}")
+        return cls.load_from_snapshot_manifest(
+            manifest=manifest,
+            start_date=start_date,
+            end_date=end_date,
+            symbols=symbols,
+        )
+
+    @classmethod
+    def load_for_research(
+        cls,
+        *,
+        lane: str,
+        start_date: str,
+        end_date: str,
+        symbols: Optional[list[str]] = None,
+        business_date: Optional[str] = None,
+    ) -> tuple["BacktestDataset", dict[str, Any]]:
+        data_access = resolve_research_data_access(
+            lane=lane,
+            kind="backtest_dataset",
+            business_date=business_date or end_date,
+            required_start_date=start_date,
+            required_end_date=end_date,
+        )
+        if data_access.source == "snapshot" and data_access.snapshot:
+            dataset = cls.load_from_snapshot_manifest(
+                manifest=data_access.snapshot,
+                start_date=start_date,
+                end_date=end_date,
+                symbols=symbols,
+            )
+        else:
+            logger.info("[BacktestEngine] Explicit D1 fallback for %s: %s", lane, data_access.reason)
+            dataset = cls.load_from_d1(start_date=start_date, end_date=end_date, symbols=symbols)
+        return dataset, data_access.to_dict()
 
     # ─────────────────────────────────────────────────────────────────────────
     # A1 hot-path cache builder (Sprint 6a.8)
@@ -4294,14 +4516,16 @@ def replay_period_loading(
     regime_label: Optional[str] = None,
 ) -> BacktestMetrics:
     """
-    Convenience wrapper: loads dataset from D1 then runs replay.
+    Convenience wrapper: resolves the research data source then runs replay.
 
     Use this for one-shot runs (router endpoint, smoke test). For Optuna
     objective functions that run many trials on the same data, preload
-    dataset once with BacktestDataset.load_from_d1() and call replay_period
+    dataset once with BacktestDataset.load_from_snapshot_manifest() or
+    BacktestDataset.load_from_d1() and call replay_period
     directly to avoid re-fetching D1 for every trial.
     """
-    dataset = BacktestDataset.load_from_d1(
+    dataset, _data_access = BacktestDataset.load_for_research(
+        lane="backtest_engine.replay_period_loading",
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,

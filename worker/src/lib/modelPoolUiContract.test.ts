@@ -27,9 +27,10 @@ assert(page.includes('Artifact Diff / 新舊 Artifact 差異'), 'Model Pool must
 assert(page.includes('sequence_report.input_series'), 'Artifact diff must surface sequence_report input coverage')
 assert(page.includes('metadata anomaly'), 'Artifact diff must highlight metadata anomalies such as n_input_series mismatch')
 
-for (const id of ['ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'Moirai']) {
+for (const id of ['ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM']) {
   assert(track.includes(id), `Model upgrade track must include ${id}`)
 }
+assert(!track.includes("id: 'Moirai'"), 'Moirai must stay excluded from active benchmark candidates until weight/license risk is cleared')
 
 assert(track.includes("stage: 'shadow_challenger'"), 'Upgrade track must include shadow challenger stage')
 assert(track.includes("stage: 'benchmark_only'"), 'Upgrade track must include benchmark-only stage')

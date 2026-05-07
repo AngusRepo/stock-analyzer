@@ -77,6 +77,18 @@ class FakeStatement {
     if (sql.includes('feature_version')) {
       return { total: 250, missing_feature_version: 0, distinct_feature_versions: 1 } as T
     }
+    if (sql.includes('FROM dataset_snapshots')) {
+      return {
+        manifest_total: 7,
+        price_hot_window_manifest: 1,
+        technical_indicator_hot_window_manifest: 1,
+        chip_hot_window_manifest: 1,
+        backtest_compute_snapshot_manifest: 1,
+        price_history_compute_snapshot_manifest: 1,
+        pipeline_report_manifest: 1,
+        screener_report_manifest: 1,
+      } as T
+    }
     return {} as T
   }
 

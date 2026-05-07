@@ -615,6 +615,7 @@ class ComputeWeeklyICRequest(BaseModel):
     min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
     update_pool: bool = True            # write back to model_pool.json
     append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
+    run_date: str | None = None         # optional upper bound for verify callback/backfill parity
 
 
 @router.post("/compute_weekly_ic")
@@ -654,13 +655,23 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     # missing verification/outcome/rank-signal root causes instead of letting SQL
     # hide them behind a generic insufficient_samples result.
     placeholders = ",".join(["?"] * len(all_tracked))
-    sql = f"""
-        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
-        FROM predictions
-        WHERE model_name IN ({placeholders})
-          AND date(prediction_date) >= date('now', ?)
-    """
-    rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+    if req.run_date:
+        sql = f"""
+            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+            FROM predictions
+            WHERE model_name IN ({placeholders})
+              AND date(prediction_date) <= date(?)
+              AND date(prediction_date) >= date(?, ?)
+        """
+        rows = d1_query(sql, [*all_tracked, req.run_date, req.run_date, f"-{req.lookback_days} days"])
+    else:
+        sql = f"""
+            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+            FROM predictions
+            WHERE model_name IN ({placeholders})
+              AND date(prediction_date) >= date('now', ?)
+        """
+        rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
     per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
 
     # 3. Update model_pool.json.
@@ -706,6 +717,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     return {
         "status": "ok",
+        "run_date": req.run_date,
         "lookback_days": req.lookback_days,
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
@@ -1079,6 +1091,24 @@ async def promote_check(req: PromoteCheckRequest):
 
     promotion_gate = None
     has_promote_action = any(a.get("transition") == "promote" for a in actions)
+    if req.apply and has_promote_action:
+        disabled_governance = []
+        if not req.require_promotion_gate:
+            disabled_governance.append("promotion_gate")
+        if not req.require_shadow_ab:
+            disabled_governance.append("shadow_ab")
+        if not req.require_paper_order_ab:
+            disabled_governance.append("paper_order_ab")
+        if not req.require_model_cpcv:
+            disabled_governance.append("model_cpcv")
+        if disabled_governance:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "apply=true with promote actions cannot disable production promotion "
+                    f"governance: {', '.join(disabled_governance)}"
+                ),
+            )
     shadow_ab_by_model = None
     paper_order_ab_by_model = None
     model_cpcv_by_model = {}

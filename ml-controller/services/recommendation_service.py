@@ -419,6 +419,12 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         name for name in tracked
         if name in weights and _sanitize_non_finite(weights.get(name))[0] in (0, 0.0, None)
     ]
+    thresholds = ev2.get("rank_signal_thresholds") if isinstance(ev2.get("rank_signal_thresholds"), dict) else {}
+    diagnostics = ev2.get("ic_weight_diagnostics") if isinstance(ev2.get("ic_weight_diagnostics"), dict) else {}
+    validation_blocked_models = [
+        name for name, detail in diagnostics.items()
+        if isinstance(detail, dict) and str(detail.get("validation_status") or "").upper() == "FAIL"
+    ]
 
     model_scores: dict[str, float] = {}
     rank_scores = (ml or {}).get("rank_scores") or {}
@@ -452,6 +458,14 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
             "forecastPctSource": ev2.get("forecast_pct_source"),
             "activeWeightCount": active_weight_count,
             "zeroWeightModels": zero_weight_models,
+            "thresholds": {
+                "bullish": thresholds.get("buyThreshold"),
+                "bearish": thresholds.get("sellThreshold"),
+                "strongBullish": thresholds.get("strongBuyThreshold"),
+                "strongBearish": thresholds.get("strongSellThreshold"),
+            } if thresholds else None,
+            "icWeightScope": ev2.get("ic_weight_scope"),
+            "validationBlockedModels": validation_blocked_models,
             "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
             "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
             "contributingModels": ev2.get("contributing_models") or [],
@@ -496,6 +510,14 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "forecastPctSource": ev2.get("forecast_pct_source"),
         "activeWeightCount": active_weight_count,
         "zeroWeightModels": zero_weight_models,
+        "thresholds": {
+            "bullish": thresholds.get("buyThreshold"),
+            "bearish": thresholds.get("sellThreshold"),
+            "strongBullish": thresholds.get("strongBuyThreshold"),
+            "strongBearish": thresholds.get("strongSellThreshold"),
+        } if thresholds else None,
+        "icWeightScope": ev2.get("ic_weight_scope"),
+        "validationBlockedModels": validation_blocked_models,
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],
@@ -1121,6 +1143,7 @@ def write_predictions_to_d1(
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
+            "dispersion_diagnostics": data.get("dispersion_diagnostics"),
             "stock_meta": _enrich_stock_meta_with_segment_policy(data.get("stock_meta")),
         })
         sanitized_count += replaced

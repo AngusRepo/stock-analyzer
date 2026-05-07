@@ -23,7 +23,9 @@ import {
   answerStockQuestion,
 } from '../lib/llm'
 import {
+  buildMlDiagnostics,
   buildMlVoteSummary,
+  compactRecommendationForCard,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
@@ -973,17 +975,6 @@ recommendations.use('/*', authMiddleware)
 
 const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
 
-function compactRecommendationForCard(rec: Record<string, any>) {
-  const {
-    prediction_forecast_data: _predictionForecastData,
-    screener_funnel_timeline: _screenerFunnelTimeline,
-    latest_open: _latestOpen,
-    latest_avg_price: _latestAvgPrice,
-    ...cardRec
-  } = rec
-  return cardRec
-}
-
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
@@ -1131,6 +1122,7 @@ recommendations.get('/daily', async (c) => {
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
+      ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: persistedScoreComponents ?? null,
       screener_funnel_rank: screenerFunnel?.rank ?? null,
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,

@@ -281,7 +281,7 @@ async def weekly_eval(
     if lookback_query is not None:
         req.lookback_days = lookback_query
 
-    from services.backtest_engine import replay_period_loading, BacktestDataset, replay_period
+    from services.backtest_engine import BacktestDataset, replay_period
 
     # ── 1. Fetch both configs via worker ────────────────────────────────────
     # /api/admin/config returns bare config JSON (legacy endpoint). Hash
@@ -315,7 +315,11 @@ async def weekly_eval(
     )
 
     # ── 3. Run paired replays (load dataset once, both configs) ────────────
-    dataset = BacktestDataset.load_from_d1(start_date=start_date, end_date=end_date)
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="config_pool.weekly_eval",
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     champion_metrics = replay_period(
         dataset=dataset, start_date=start_date, end_date=end_date,
@@ -371,6 +375,7 @@ async def weekly_eval(
         "lookback_days": req.lookback_days,
         "start_date": start_date,
         "end_date": end_date,
+        "data_access": data_access,
         "champion_hash": champion_hash,
         "challenger_hash": challenger_hash,
         "shadow_since": shadow_since,

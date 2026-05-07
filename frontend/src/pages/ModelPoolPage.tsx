@@ -5,8 +5,9 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, strategyLabApi, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
+import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
 function fmt(value: unknown): string {
   if (value === null || value === undefined || value === '') return 'N/A'
@@ -46,6 +47,20 @@ function familyCounts(models: Array<[string, ModelPoolLineageModel]>) {
 
 function shortRootCause(model: ModelPoolLineageModel): string {
   return model.lifecycle_diagnosis?.status ?? model.last_ic_root_cause ?? model.last_ic_status ?? 'unknown'
+}
+
+function segmentIcEntries(model: ModelPoolLineageModel) {
+  return Object.entries(model.last_ic_by_segment ?? {})
+    .map(([segment, detail]) => {
+      const ic = Number(detail?.ic ?? detail?.rolling_ic ?? detail?.ic_4w_avg)
+      const samples = Number(detail?.n_samples ?? detail?.samples ?? 0)
+      return {
+        segment,
+        ic: Number.isFinite(ic) ? ic : null,
+        samples: Number.isFinite(samples) ? samples : 0,
+      }
+    })
+    .filter((row) => row.ic != null || row.samples > 0)
 }
 
 function metadataNumber(metadata: Record<string, unknown> | null | undefined, key: string): number | null {
@@ -121,6 +136,7 @@ function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineage
   const metadataTone = model.metadata_exists === false ? 'warn' : 'ok'
   const diagnosis = model.lifecycle_diagnosis
   const icTone: WorkstationTone = ic == null || Math.abs(ic) < 0.0001 ? 'warn' : ic > 0 ? 'ok' : 'error'
+  const segmentRows = segmentIcEntries(model)
 
   return (
     <tr className="hover:bg-[#101927]">
@@ -129,7 +145,18 @@ function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineage
         <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {model.balance_family ?? 'unknown'}</div>
       </td>
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={toneFromStatus(model.status)}>{model.status ?? '-'}</WorkstationPill></td>
-      <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill></td>
+      <td className="border border-[#263247] px-2 py-2">
+        <WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill>
+        {segmentRows.length > 0 && (
+          <div className="mt-1 flex max-w-[240px] flex-wrap gap-1">
+            {segmentRows.map((row) => (
+              <span key={row.segment} className="rounded border border-[#263247] bg-[#05070c] px-1.5 py-0.5 font-mono text-[10px] text-[#8a92a6]">
+                {row.segment} {row.ic == null ? 'N/A' : row.ic.toFixed(3)} / n={row.samples}
+              </span>
+            ))}
+          </div>
+        )}
+      </td>
       <td className="border border-[#263247] px-2 py-2 text-slate-300">{sampleCount}</td>
       <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={metadataTone}>{model.metadata_exists === false ? 'missing' : 'present'}</WorkstationPill></td>
       <td className="border border-[#263247] px-2 py-2 text-slate-300">{diagnosis?.coverage == null ? 'N/A' : `${Math.round(diagnosis.coverage * 100)}%`}</td>
@@ -421,7 +448,94 @@ function FamilyBalancePanel({ counts, total }: { counts: Record<string, number>;
   )
 }
 
+function ServingDiagnosticsPanel({ payload }: { payload: any }) {
+  const recs = (payload?.all_recommendations ?? payload?.recommendations ?? []) as any[]
+  const diagnostics = recs
+    .map((rec) => rec?.ml_diagnostics)
+    .filter((diag) => diag && typeof diag === 'object')
+  const total = diagnostics.length
+  const alphaTotal = Number(diagnostics[0]?.totalAlphaModels ?? 8)
+  const avgActive = total
+    ? diagnostics.reduce((sum, diag) => sum + Number(diag.activeWeightCount ?? 0), 0) / total
+    : 0
+  const avgCompression = total
+    ? diagnostics.reduce((sum, diag) => sum + Number(diag.dispersion?.mergeCompression ?? 0), 0) / total
+    : 0
+  const avgStd = total
+    ? diagnostics.reduce((sum, diag) => sum + Number(diag.dispersion?.rawRankStd ?? 0), 0) / total
+    : 0
+  const zeroCounts = diagnostics.reduce<Record<string, number>>((acc, diag) => {
+    for (const name of diag.zeroWeightModels ?? []) acc[name] = (acc[name] ?? 0) + 1
+    return acc
+  }, {})
+  const blockedCounts = diagnostics.reduce<Record<string, number>>((acc, diag) => {
+    for (const name of diag.validationBlockedModels ?? []) acc[name] = (acc[name] ?? 0) + 1
+    return acc
+  }, {})
+  const calibrationCounts = diagnostics.reduce<Record<string, number>>((acc, diag) => {
+    const key = diag.forecastCalibration?.method ?? diag.forecastCalibration?.source ?? 'unknown'
+    acc[key] = (acc[key] ?? 0) + 1
+    return acc
+  }, {})
+  const topZero = Object.entries(zeroCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
+  const topBlocked = Object.entries(blockedCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
+  const calibrationText = Object.entries(calibrationCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${name}:${count}`)
+    .join(' / ') || 'N/A'
+
+  return (
+    <WorkstationPanel title="Serving Ensemble Diagnostics / 服務中投票診斷" kicker="latest daily recommendations · card contract">
+      <div className="grid gap-3 p-3 lg:grid-cols-4">
+        <SignalInsightCard
+          title="Active weights / 有效權重"
+          value={total ? `${avgActive.toFixed(1)}/${alphaTotal}` : 'N/A'}
+          detail={`${total} recommendations with ml_diagnostics`}
+          tone={!total ? 'warn' : avgActive >= alphaTotal * 0.75 ? 'ok' : 'warn'}
+        />
+        <SignalInsightCard
+          title="Rank dispersion / 模型分歧"
+          value={total ? avgStd.toFixed(3) : 'N/A'}
+          detail="raw rank std; too low means views may be over-compressed"
+          tone={!total ? 'warn' : avgStd > 0.02 ? 'ok' : 'warn'}
+        />
+        <SignalInsightCard
+          title="Merge compression / 合併壓縮"
+          value={total ? avgCompression.toFixed(2) : 'N/A'}
+          detail="ensemble vs raw model spread"
+          tone={!total ? 'warn' : avgCompression > 0.15 ? 'ok' : 'warn'}
+        />
+        <SignalInsightCard
+          title="Forecast calibration / 預期值校準"
+          value={calibrationText}
+          detail={`date ${payload?.date ?? payload?.requested_date ?? 'N/A'}`}
+          tone={calibrationText === 'N/A' || calibrationText.includes('unknown') ? 'warn' : 'ok'}
+        />
+      </div>
+      <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Zero-weight models / 0 權重模型</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {topZero.length ? topZero.map(([name, count]) => (
+              <WorkstationPill key={name} tone="warn">{name} {count}/{total}</WorkstationPill>
+            )) : <WorkstationPill tone="ok">none</WorkstationPill>}
+          </div>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Validation blocked / 驗證擋下</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {topBlocked.length ? topBlocked.map(([name, count]) => (
+              <WorkstationPill key={name} tone="error">{name} {count}/{total}</WorkstationPill>
+            )) : <WorkstationPill tone="ok">none</WorkstationPill>}
+          </div>
+        </div>
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 export default function ModelPoolPage() {
+  const today = twToday()
   const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['model-pool', 'lineage'],
     queryFn: modelPoolApi.lineage,
@@ -432,6 +546,13 @@ export default function ModelPoolPage() {
     queryFn: strategyLabApi.experiments,
     retry: false,
     staleTime: 60_000,
+  })
+  const servingDiagnostics = useQuery({
+    queryKey: recommendationDailyKey(today),
+    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
+    retry: false,
+    staleTime: queryTtl.dailyDecision,
+    refetchInterval: queryTtl.dailyDecision,
   })
 
   const models = data?.models ?? {}
@@ -479,7 +600,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => refetch()}>
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -508,6 +629,7 @@ export default function ModelPoolPage() {
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
+            <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
             <LiveShadowEvidencePanel models={modelList} />
             <ArtifactDiffPanel models={modelList} />
             <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />

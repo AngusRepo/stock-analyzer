@@ -104,12 +104,19 @@ export async function runModelIcTrackerChain(env: Bindings) {
   return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4} || ConfigEval ${configEval}`
 }
 
-export async function runModelIcRollingRefresh(env: Bindings) {
+export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) {
   requireController(env)
 
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
-    jsonBody: { lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true, append_history: false },
+    jsonBody: {
+      lookback_days: 7,
+      history_max: 26,
+      min_samples: 50,
+      update_pool: true,
+      append_history: false,
+      run_date: runDate || undefined,
+    },
     timeoutMs: 120_000,
   })
 
@@ -118,7 +125,7 @@ export async function runModelIcRollingRefresh(env: Bindings) {
     .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}(${v.n_samples})`)
     .join(' ') || 'none'
 
-  return `rolling_ic n_rows=${icData.n_rows_total} | ${computed}`
+  return `rolling_ic run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
 }
 
 export async function runVerifyV2(env: Bindings, runDate?: string) {

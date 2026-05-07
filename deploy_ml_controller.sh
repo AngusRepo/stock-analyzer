@@ -160,6 +160,58 @@ PY
 )
 }
 
+load_live_runtime_settings() {
+  local service_json
+  service_json=$(gcloud run services describe "$SERVICE" \
+    --region="$REGION" \
+    --format=json 2>/dev/null || true)
+  LIVE_SERVICE_CPU_THROTTLING=""
+  LIVE_SERVICE_CPU=""
+  LIVE_SERVICE_MEMORY=""
+  LIVE_SERVICE_CONCURRENCY=""
+  LIVE_SERVICE_MIN_SCALE=""
+  LIVE_SERVICE_MAX_SCALE=""
+  if [ -z "$service_json" ]; then
+    return 0
+  fi
+
+  while IFS='=' read -r key value; do
+    value="${value%$'\r'}"
+    case "$key" in
+      CPU_THROTTLING) LIVE_SERVICE_CPU_THROTTLING="$value" ;;
+      CPU) LIVE_SERVICE_CPU="$value" ;;
+      MEMORY) LIVE_SERVICE_MEMORY="$value" ;;
+      CONCURRENCY) LIVE_SERVICE_CONCURRENCY="$value" ;;
+      MIN_SCALE) LIVE_SERVICE_MIN_SCALE="$value" ;;
+      MAX_SCALE) LIVE_SERVICE_MAX_SCALE="$value" ;;
+    esac
+  done < <(SERVICE_JSON="$service_json" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+raw = os.environ.get("SERVICE_JSON", "")
+if not raw.strip():
+    raise SystemExit(0)
+
+doc = json.loads(raw)
+template = doc.get("spec", {}).get("template", {}) or {}
+metadata = template.get("metadata", {}) or {}
+annotations = metadata.get("annotations", {}) or {}
+spec = template.get("spec", {}) or {}
+containers = spec.get("containers", []) or []
+container = containers[0] if containers else {}
+limits = (container.get("resources", {}) or {}).get("limits", {}) or {}
+
+print(f'CPU_THROTTLING={annotations.get("run.googleapis.com/cpu-throttling", "default")}')
+print(f'CPU={limits.get("cpu", "")}')
+print(f'MEMORY={limits.get("memory", "")}')
+print(f'CONCURRENCY={spec.get("containerConcurrency", "")}')
+print(f'MIN_SCALE={annotations.get("autoscaling.knative.dev/minScale", "")}')
+print(f'MAX_SCALE={annotations.get("autoscaling.knative.dev/maxScale", "")}')
+PY
+)
+}
+
 load_live_image_state() {
   LIVE_SERVICE_REV=$(gcloud run services describe "$SERVICE" \
     --region="$REGION" \
@@ -315,6 +367,15 @@ run_preflight() {
     echo "  Live service missing required env keys: $LIVE_MISSING_ENV_NAMES"
     echo "  Deploy is expected to repair this via --update-env-vars."
   fi
+  echo ""
+
+  echo "=== Preflight: Cloud Run runtime cost settings ==="
+  load_live_runtime_settings
+  echo "  cpu-throttling     : ${LIVE_SERVICE_CPU_THROTTLING:-unknown}"
+  echo "  cpu / memory       : ${LIVE_SERVICE_CPU:-unknown} / ${LIVE_SERVICE_MEMORY:-unknown}"
+  echo "  concurrency        : ${LIVE_SERVICE_CONCURRENCY:-unknown}"
+  echo "  min / max scale    : ${LIVE_SERVICE_MIN_SCALE:-default} / ${LIVE_SERVICE_MAX_SCALE:-default}"
+  echo "  Note: this script only reports runtime settings; keep quality first and change CPU policy only after P2/P4 batch metrics prove idle cost."
   echo ""
 
   echo "=== Preflight: Service / Job image sync ==="

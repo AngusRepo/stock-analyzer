@@ -55,3 +55,27 @@ def test_modal_predict_batch_v2_can_be_disabled(monkeypatch):
 
     assert contract["modal_predict_batch_v2"] is False
     assert contract["chunk_size"] == 12
+
+
+def test_modal_predict_batch_contract_supports_20_40_80_ab(monkeypatch):
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE", raising=False)
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE_CANDIDATES", "20,40,80")
+
+    contract = modal_client.batch_predict_contract(ab_key="run:2026-05-06")
+
+    assert contract["chunk_candidates"] == [20, 40, 80]
+    assert contract["chunk_size"] in {20, 40, 80}
+    assert contract["chunk_size_source"] == "ab"
+    assert contract["ab_key"] == "run:2026-05-06"
+
+
+def test_modal_predict_batch_metrics_aggregate_chunk_cache_stats():
+    metrics = modal_client._aggregate_predict_batch_metrics([
+        {"metrics": {"model_cache": {"hits": 5, "misses": 3, "gcs_downloads": 3}}},
+        {"metrics": {"model_cache": {"hits": 7, "misses": 0, "gcs_downloads": 0}}},
+        {"results": []},
+    ])
+
+    assert metrics["chunks_reported"] == 2
+    assert metrics["model_cache"] == {"hits": 12, "misses": 3, "gcs_downloads": 3}
+    assert metrics["model_cache_hit_ratio"] == 0.8

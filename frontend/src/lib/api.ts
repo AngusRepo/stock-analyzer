@@ -183,7 +183,10 @@ export type SchedulerJob = {
   group: 'pipeline_chain' | 'intraday' | 'weekly' | 'daily' | 'monthly'
   chainIndex?: number
   lastRun: string
-  lastStatus: 'success' | 'failed' | 'running' | 'skip'
+  lastRunAt?: string | null
+  lastAttemptAt?: string | null
+  lastEffectiveRunAt?: string | null
+  lastStatus: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
   lastDuration: string
   lastError?: string
   nextRun: string
@@ -202,6 +205,11 @@ export type SchedulerStatus = {
     nextIn: string
   }
   jobs: SchedulerJob[]
+  dag?: {
+    lastRun: string
+    totalDuration: number
+    steps: Array<{ id?: string; name: string; duration: string; status: string; lastRun?: string; summary?: string }>
+  }
   dagSteps?: Array<{ name: string; duration: string; status: string }>
 }
 

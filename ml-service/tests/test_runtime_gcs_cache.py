@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app import ensemble, model_pool
+from app import gcs_batch_io
 
 
 class _FakeBlob:
@@ -63,7 +64,7 @@ def test_ic_weights_reuse_model_pool_cache(monkeypatch):
     first = ensemble.load_ic_weights()
     second = ensemble.load_ic_weights()
 
-    assert first == {"XGBoost": 0.2}
+    assert first == {"XGBoost": 0.015}
     assert second == first
     assert calls["download_as_text"] == 1
 
@@ -91,3 +92,40 @@ def test_model_pool_cache_respects_ttl(monkeypatch):
     model_pool.load_pool()
 
     assert calls["download_as_text"] == 2
+
+
+class _FakeBytesBlob:
+    def __init__(self, data: bytes | None, calls: dict[str, int]):
+        self._data = data
+        self._calls = calls
+
+    def exists(self):
+        return self._data is not None
+
+    def download_as_bytes(self):
+        self._calls["download_as_bytes"] = self._calls.get("download_as_bytes", 0) + 1
+        return self._data
+
+
+class _FakeBytesBucket:
+    def __init__(self, data_by_name: dict[str, bytes | None], calls: dict[str, int]):
+        self._data_by_name = data_by_name
+        self._calls = calls
+
+    def blob(self, name: str):
+        return _FakeBytesBlob(self._data_by_name.get(name), self._calls)
+
+
+def test_gcs_batch_download_uses_container_local_staging_cache():
+    calls: dict[str, int] = {}
+    bucket = _FakeBytesBucket({"a": b"alpha", "b": b"beta"}, calls)
+    gcs_batch_io.clear_gcs_batch_cache()
+
+    first = gcs_batch_io.download_existing_blobs(bucket, ["a", "b"], max_workers=2)
+    second = gcs_batch_io.download_existing_blobs(bucket, ["b", "a"], max_workers=2)
+
+    assert first == [("a", b"alpha"), ("b", b"beta")]
+    assert second == [("b", b"beta"), ("a", b"alpha")]
+    assert calls["download_as_bytes"] == 2
+    assert gcs_batch_io.get_gcs_batch_cache_stats()["hits"] == 2
+    assert gcs_batch_io.get_gcs_batch_cache_stats()["misses"] == 2

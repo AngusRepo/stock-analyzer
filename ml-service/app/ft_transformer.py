@@ -25,6 +25,25 @@ DEFAULT_LEGACY_CLASSIFIER_ARCH = {
     "head_type": "classification",
 }
 
+_FT_RUNTIME_CACHE: dict[int, tuple[Any, str, dict[str, Any]]] = {}
+_FT_RUNTIME_CACHE_ORDER: list[int] = []
+_FT_RUNTIME_CACHE_STATS = {"hits": 0, "misses": 0}
+_FT_RUNTIME_CACHE_MAX = 16
+
+
+def clear_ft_runtime_cache() -> None:
+    _FT_RUNTIME_CACHE.clear()
+    _FT_RUNTIME_CACHE_ORDER.clear()
+    for key in _FT_RUNTIME_CACHE_STATS:
+        _FT_RUNTIME_CACHE_STATS[key] = 0
+
+
+def get_ft_runtime_cache_stats() -> dict[str, int]:
+    return {
+        **_FT_RUNTIME_CACHE_STATS,
+        "size": len(_FT_RUNTIME_CACHE),
+    }
+
 
 def rank_from_ft_regression_output(raw: float) -> float:
     """Map FT rank-regression utility to a bounded 0..1 rank.
@@ -143,6 +162,12 @@ def rebuild_ft_transformer_from_bundle(bundle: dict[str, Any]):
     if not isinstance(bundle, dict) or "state_dict" not in bundle:
         raise ValueError("invalid FT bundle: missing state_dict")
 
+    cache_key = id(bundle)
+    cached = _FT_RUNTIME_CACHE.get(cache_key)
+    if cached is not None:
+        _FT_RUNTIME_CACHE_STATS["hits"] += 1
+        return cached
+
     n_features = int(bundle.get("n_features", 0) or 0)
     if n_features <= 0:
         raise ValueError("invalid FT bundle: missing n_features")
@@ -151,4 +176,11 @@ def rebuild_ft_transformer_from_bundle(bundle: dict[str, Any]):
     model, arch = build_ft_transformer(n_features, model_type, bundle=bundle)
     model.load_state_dict(bundle["state_dict"])
     model.eval()
-    return model, model_type, arch
+    result = (model, model_type, arch)
+    _FT_RUNTIME_CACHE_STATS["misses"] += 1
+    _FT_RUNTIME_CACHE[cache_key] = result
+    _FT_RUNTIME_CACHE_ORDER.append(cache_key)
+    while len(_FT_RUNTIME_CACHE_ORDER) > _FT_RUNTIME_CACHE_MAX:
+        stale_key = _FT_RUNTIME_CACHE_ORDER.pop(0)
+        _FT_RUNTIME_CACHE.pop(stale_key, None)
+    return result

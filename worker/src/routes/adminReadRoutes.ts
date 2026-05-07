@@ -51,6 +51,63 @@ adminReadRoutes.get('/api/admin/data-quality/status', async (c) => {
   return c.json(await buildDataQualityReport(c.env, { date: c.req.query('date') }))
 })
 
+async function handleDatasetSnapshotList(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { listDatasetSnapshots } = await import('../lib/datasetSnapshots')
+  return c.json({
+    success: true,
+    snapshots: await listDatasetSnapshots(c.env, {
+      kind: c.req.query('kind'),
+      businessDate: c.req.query('date'),
+      accessTier: c.req.query('access_tier') as any,
+      limit: Number.parseInt(c.req.query('limit') ?? '50', 10),
+    }),
+  })
+}
+
+async function handleDatasetSnapshotManifest(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { getDatasetSnapshotManifest } = await import('../lib/datasetSnapshots')
+  const manifest = await getDatasetSnapshotManifest(c.env, c.req.param('id'))
+  if (!manifest) return c.json({ error: 'dataset snapshot not found' }, 404)
+  return c.json({ success: true, manifest })
+}
+
+async function handleDatasetSnapshotPreview(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { readDatasetSnapshotPreview } = await import('../lib/datasetSnapshots')
+  const bytes = Number.parseInt(c.req.query('bytes') ?? `${128 * 1024}`, 10)
+  const preview = await readDatasetSnapshotPreview(c.env, c.req.param('id'), bytes)
+  const status = preview.found === false ? 404 : 200
+  return c.json({ success: status === 200, ...preview }, status as any)
+}
+
+adminReadRoutes.get('/api/admin/datasets/snapshots', handleDatasetSnapshotList)
+adminReadRoutes.get('/api/admin/datasets/snapshots/:id/manifest', handleDatasetSnapshotManifest)
+adminReadRoutes.get('/api/admin/datasets/snapshots/:id/preview', handleDatasetSnapshotPreview)
+adminReadRoutes.get('/api/datasets/snapshots', handleDatasetSnapshotList)
+adminReadRoutes.get('/api/datasets/snapshots/:id/manifest', handleDatasetSnapshotManifest)
+adminReadRoutes.get('/api/datasets/snapshots/:id/preview', handleDatasetSnapshotPreview)
+
+adminReadRoutes.get('/api/admin/datasets/retention-plan', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildDatasetRetentionPlan } = await import('../lib/datasetSnapshots')
+  const businessDate = c.req.query('date') || twToday()
+  const hotWindowDays = Number.parseInt(c.req.query('hot_window_days') ?? '252', 10)
+  return c.json({
+    success: true,
+    plan: await buildDatasetRetentionPlan(c.env, { businessDate, hotWindowDays }),
+  })
+})
+
 adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

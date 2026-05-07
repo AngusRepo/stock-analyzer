@@ -67,6 +67,14 @@ interface CountRow {
   funnel_candidate_count?: number
   funnel_universe_count?: number
   funnel_created_at?: string | null
+  manifest_total?: number
+  price_hot_window_manifest?: number
+  technical_indicator_hot_window_manifest?: number
+  chip_hot_window_manifest?: number
+  backtest_compute_snapshot_manifest?: number
+  price_history_compute_snapshot_manifest?: number
+  pipeline_report_manifest?: number
+  screener_report_manifest?: number
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -748,6 +756,51 @@ function buildSchemaCheck(columns: string[]): DataQualityCheck {
   }
 }
 
+export function buildDatasetSnapshotManifestCheck(input: {
+  targetDate: string
+  priceHotWindow: number
+  technicalHotWindow: number
+  chipHotWindow: number
+  backtestComputeSnapshot: number
+  priceHistoryComputeSnapshot: number
+  pipelineReport: number
+  screenerReport: number
+  total: number
+}): DataQualityCheck {
+  const missingServing = [
+    input.priceHotWindow > 0 ? null : 'price_hot_window',
+    input.technicalHotWindow > 0 ? null : 'technical_indicator_hot_window',
+    input.chipHotWindow > 0 ? null : 'chip_hot_window',
+  ].filter(Boolean)
+  const missingArtifacts = [
+    input.backtestComputeSnapshot > 0 ? null : 'backtest_dataset_compute',
+    input.priceHistoryComputeSnapshot > 0 ? null : 'price_history_compute',
+    input.pipelineReport > 0 ? null : 'pipeline_run_report_r2',
+    input.screenerReport > 0 ? null : 'screener_run_report_r2',
+  ].filter(Boolean)
+  const status: DataQualityStatus = missingServing.length ? 'fail' : missingArtifacts.length ? 'warn' : 'ok'
+
+  return {
+    id: 'dataset_snapshot_manifest',
+    label: 'Dataset snapshot manifest',
+    status,
+    summary: status === 'ok'
+      ? `D1 serving manifests and object-store artifacts ready for ${input.targetDate}`
+      : `missing ${[...missingServing, ...missingArtifacts].join(', ')}`,
+    metrics: {
+      target_date: input.targetDate,
+      manifest_total: input.total,
+      price_hot_window_manifest: input.priceHotWindow,
+      technical_indicator_hot_window_manifest: input.technicalHotWindow,
+      chip_hot_window_manifest: input.chipHotWindow,
+      backtest_compute_snapshot_manifest: input.backtestComputeSnapshot,
+      price_history_compute_snapshot_manifest: input.priceHistoryComputeSnapshot,
+      pipeline_report_manifest: input.pipelineReport,
+      screener_report_manifest: input.screenerReport,
+    },
+  }
+}
+
 async function firstCount(db: D1Database, sql: string, ...binds: unknown[]): Promise<CountRow> {
   return await db.prepare(sql).bind(...binds).first<CountRow>() ?? {}
 }
@@ -763,7 +816,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -968,6 +1021,20 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        ORDER BY model_name`,
     ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
     env.DB.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS manifest_total,
+              SUM(CASE WHEN kind = 'price_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS price_hot_window_manifest,
+              SUM(CASE WHEN kind = 'technical_indicator_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS technical_indicator_hot_window_manifest,
+              SUM(CASE WHEN kind = 'chip_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS chip_hot_window_manifest,
+              SUM(CASE WHEN kind = 'backtest_dataset' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS backtest_compute_snapshot_manifest,
+              SUM(CASE WHEN kind = 'price_history' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS price_history_compute_snapshot_manifest,
+              SUM(CASE WHEN kind = 'pipeline_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS pipeline_report_manifest,
+              SUM(CASE WHEN kind = 'screener_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS screener_report_manifest
+         FROM dataset_snapshots
+        WHERE business_date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
   ])
 
   const predictionRows = (predictionGroups.results ?? []).reduce((sum, row) => sum + Number(row.count ?? 0), 0)
@@ -1077,6 +1144,17 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     }),
     buildModelIcEvidenceCheck(modelIcEvidence.results ?? []),
     buildSchemaCheck((schemaRows.results ?? []).map((row) => row.name)),
+    buildDatasetSnapshotManifestCheck({
+      targetDate,
+      total: Number(datasetManifestStats.manifest_total ?? 0),
+      priceHotWindow: Number(datasetManifestStats.price_hot_window_manifest ?? 0),
+      technicalHotWindow: Number(datasetManifestStats.technical_indicator_hot_window_manifest ?? 0),
+      chipHotWindow: Number(datasetManifestStats.chip_hot_window_manifest ?? 0),
+      backtestComputeSnapshot: Number(datasetManifestStats.backtest_compute_snapshot_manifest ?? 0),
+      priceHistoryComputeSnapshot: Number(datasetManifestStats.price_history_compute_snapshot_manifest ?? 0),
+      pipelineReport: Number(datasetManifestStats.pipeline_report_manifest ?? 0),
+      screenerReport: Number(datasetManifestStats.screener_report_manifest ?? 0),
+    }),
   ]
 
   return {

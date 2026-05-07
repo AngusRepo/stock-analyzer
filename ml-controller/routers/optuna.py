@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,8 @@ from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer a
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
+from services.research_data_access import resolve_research_data_access
+from services.snapshot_parquet import read_snapshot_component
 from services.worker_config_client import load_active_trading_config
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
@@ -41,6 +44,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/optuna", tags=["optuna"])
+OPTUNA_D1_READ_CHUNK_SIZE = 80
 
 
 class OptunaReq(BaseModel):
@@ -106,6 +110,15 @@ def _contract_meta(
 
 def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
     """For barrier search — D10 fix: use tradable universe, not just watchlist."""
+    data_access = resolve_research_data_access(lane="optuna.barrier", kind="price_history")
+    if data_access.source == "snapshot":
+        if not data_access.snapshot:
+            raise RuntimeError(f"price_snapshot_missing:{data_access.to_dict()}")
+        return _load_top_active_stocks_with_prices_from_snapshot(
+            data_access.snapshot,
+            min_rows=min_rows,
+            top_n=top_n,
+        )
     stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
@@ -115,15 +128,155 @@ def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) ->
     """, [min_rows, top_n])
     if not stocks:
         return []
+    price_rows = _load_price_rows_by_stock_ids([int(s["id"]) for s in stocks])
     out = []
     for s in stocks:
-        rows = d1_query(
-            "SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = ? ORDER BY date ASC",
-            [s["id"]],
-        )
+        rows = price_rows.get(int(s["id"]), [])
         if len(rows) >= min_rows:
             out.append({"symbol": s["symbol"], "rows": rows})
     return out
+
+
+def _prices_with_symbol_from_snapshot(manifest: dict[str, Any]) -> pl.DataFrame:
+    prices = read_snapshot_component(manifest, "prices")
+    if prices is None or prices.is_empty():
+        return pl.DataFrame()
+
+    stocks = read_snapshot_component(manifest, "stocks", required=False)
+    if "symbol" not in prices.columns and stocks is not None and not stocks.is_empty():
+        if {"id", "symbol"}.issubset(set(stocks.columns)) and "stock_id" in prices.columns:
+            prices = prices.join(
+                stocks.select([pl.col("id").alias("stock_id"), "symbol"]),
+                on="stock_id",
+                how="inner",
+            )
+    if "symbol" not in prices.columns:
+        raise RuntimeError("price_snapshot_symbol_missing")
+    if stocks is not None and not stocks.is_empty() and {"symbol", "delisted_date"}.issubset(set(stocks.columns)):
+        active_symbols = (
+            stocks
+            .filter(pl.col("delisted_date").is_null())
+            .get_column("symbol")
+            .to_list()
+        )
+        prices = prices.filter(pl.col("symbol").is_in(set(active_symbols)))
+    return prices.with_columns(pl.col("date").cast(pl.Utf8)).sort(["symbol", "date"])
+
+
+def _load_top_active_stocks_with_prices_from_snapshot(
+    manifest: dict[str, Any],
+    *,
+    min_rows: int,
+    top_n: int,
+) -> list[dict]:
+    prices = _prices_with_symbol_from_snapshot(manifest)
+    if prices.is_empty():
+        return []
+    counts = (
+        prices
+        .group_by("symbol")
+        .len()
+        .rename({"len": "cnt"})
+        .filter(pl.col("cnt") >= min_rows)
+        .sort("cnt", descending=True)
+        .head(top_n)
+    )
+    out: list[dict] = []
+    for symbol in counts.get_column("symbol").to_list():
+        rows = (
+            prices
+            .filter(pl.col("symbol") == symbol)
+            .select([col for col in ["date", "open", "high", "low", "close", "volume"] if col in prices.columns])
+            .to_dicts()
+        )
+        if len(rows) >= min_rows:
+            out.append({"symbol": symbol, "rows": rows})
+    return out
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _load_price_rows_by_stock_ids(stock_ids: list[int], limit_per_stock: int | None = None) -> dict[int, list[dict]]:
+    """Load stock price rows in D1 chunks for Optuna sandbox loaders."""
+    grouped: dict[int, list[dict]] = {int(stock_id): [] for stock_id in stock_ids}
+    if not stock_ids:
+        return grouped
+    for ids in _chunks(stock_ids, OPTUNA_D1_READ_CHUNK_SIZE):
+        placeholders = ",".join(["?"] * len(ids))
+        limit_clause = ""
+        params: list[Any] = list(ids)
+        if limit_per_stock is not None:
+            # SQLite window function keeps one query per chunk while preserving per-stock caps.
+            limit_clause = "WHERE rn <= ?"
+            params.append(int(limit_per_stock))
+        rows = d1_query(
+            f"""
+            SELECT stock_id, date, open, high, low, close, volume
+            FROM (
+              SELECT stock_id, date, open, high, low, close, volume,
+                     ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date ASC) AS rn
+              FROM stock_prices
+              WHERE stock_id IN ({placeholders})
+            )
+            {limit_clause}
+            ORDER BY stock_id, date ASC
+            """,
+            params,
+        )
+        for row in rows:
+            grouped.setdefault(int(row["stock_id"]), []).append(row)
+    return grouped
+
+
+def _optuna_data_access_meta(lane: str, kind: str) -> dict[str, Any]:
+    return resolve_research_data_access(lane=lane, kind=kind).to_dict()
+
+
+def _load_rrg_inputs_from_snapshot(
+    manifest: dict[str, Any],
+    *,
+    twii_limit: int,
+    min_twii_rows: int,
+    min_stock_rows: int,
+    top_stock_count: int,
+    stock_price_limit: int,
+) -> tuple[list[float], dict[str, list[float]]]:
+    market_risk = read_snapshot_component(manifest, "market_risk", required=False)
+    if market_risk is None or market_risk.is_empty() or "twii_close" not in market_risk.columns:
+        raise HTTPException(400, "Snapshot missing market_risk.twii_close for RRG benchmark")
+    twii_rows = market_risk.sort("date").tail(twii_limit).to_dicts()
+    if len(twii_rows) < min_twii_rows:
+        raise HTTPException(400, f"Insufficient TWII benchmark in snapshot: {len(twii_rows)}")
+    closes = [float(r["twii_close"]) for r in twii_rows]
+    benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+    prices = _prices_with_symbol_from_snapshot(manifest)
+    counts = (
+        prices
+        .group_by("symbol")
+        .len()
+        .rename({"len": "cnt"})
+        .filter(pl.col("cnt") >= min_stock_rows)
+        .sort("cnt", descending=True)
+        .head(top_stock_count)
+    )
+    prices_by_stock: dict[str, list[float]] = {}
+    for symbol in counts.get_column("symbol").to_list():
+        closes = (
+            prices
+            .filter(pl.col("symbol") == symbol)
+            .sort("date")
+            .tail(stock_price_limit)
+            .get_column("close")
+            .cast(pl.Float64)
+            .to_list()
+        )
+        if len(closes) >= min_stock_rows:
+            prices_by_stock[symbol] = closes
+    return benchmark_returns, prices_by_stock
 
 
 def _load_paper_orders(limit: int = 500) -> list[dict]:
@@ -204,6 +357,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
                 "best_score": result.get("best_score"),
                 "stock_count": len(all_data),
                 "policy": policy.to_dict(),
+                "data_access": _optuna_data_access_meta("optuna.barrier", "price_history"),
             },
         )
 
@@ -227,6 +381,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         "best_score": result.get("best_score"),
         "n_trials": req.n_trials,
         "push": push_response,
+        "data_access": _optuna_data_access_meta("optuna.barrier", "price_history"),
         "contract": contract,
     }
 
@@ -555,29 +710,41 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 
     # Benchmark from market_risk.twii_close
     policy = OptunaRoutePolicy.from_env()
-    twii_rows = _load_twii_history(limit=policy.rrg_twii_limit)
-    if len(twii_rows) < policy.rrg_min_twii_rows:
-        raise HTTPException(400, f"Insufficient TWII benchmark: {len(twii_rows)}")
-
-    closes = [float(r["twii_close"]) for r in twii_rows]
-    benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
-
-    # Top 10 stocks by price count
-    top_stocks = d1_query("""
-        SELECT s.id, s.symbol, COUNT(*) as cnt
-        FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= ?
-        ORDER BY cnt DESC LIMIT ?
-    """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
-    prices_by_stock: dict[str, list[float]] = {}
-    for s in top_stocks:
-        rows = d1_query(
-            "SELECT close FROM stock_prices WHERE stock_id = ? ORDER BY date ASC LIMIT ?",
-            [s["id"], policy.rrg_stock_price_limit],
+    data_access_decision = resolve_research_data_access(lane="optuna.rrg", kind="price_history")
+    data_access = data_access_decision.to_dict()
+    if data_access_decision.source == "snapshot" and data_access_decision.snapshot:
+        benchmark_returns, prices_by_stock = _load_rrg_inputs_from_snapshot(
+            data_access_decision.snapshot,
+            twii_limit=policy.rrg_twii_limit,
+            min_twii_rows=policy.rrg_min_twii_rows,
+            min_stock_rows=policy.rrg_top_stock_min_rows,
+            top_stock_count=policy.rrg_top_stock_count,
+            stock_price_limit=policy.rrg_stock_price_limit,
         )
-        if len(rows) >= policy.rrg_top_stock_min_rows:
-            prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
+    else:
+        twii_rows = _load_twii_history(limit=policy.rrg_twii_limit)
+        if len(twii_rows) < policy.rrg_min_twii_rows:
+            raise HTTPException(400, f"Insufficient TWII benchmark: {len(twii_rows)}")
+
+        closes = [float(r["twii_close"]) for r in twii_rows]
+        benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+        top_stocks = d1_query("""
+            SELECT s.id, s.symbol, COUNT(*) as cnt
+            FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
+            WHERE s.delisted_date IS NULL
+            GROUP BY s.id HAVING cnt >= ?
+            ORDER BY cnt DESC LIMIT ?
+        """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
+        prices_by_stock = {}
+        stock_price_rows = _load_price_rows_by_stock_ids(
+            [int(s["id"]) for s in top_stocks],
+            limit_per_stock=policy.rrg_stock_price_limit,
+        )
+        for s in top_stocks:
+            rows = stock_price_rows.get(int(s["id"]), [])
+            if len(rows) >= policy.rrg_top_stock_min_rows:
+                prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
 
     if not prices_by_stock:
         raise HTTPException(400, "No top stocks with sufficient prices")
@@ -590,11 +757,11 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="rrg", params=best,
-            meta={"n_stocks": len(prices_by_stock), "policy": policy.to_dict()},
+            meta={"n_stocks": len(prices_by_stock), "policy": policy.to_dict(), "data_access": data_access},
         )
 
     return {"status": "completed", "source": "rrg", "best_params": best,
-            "push": push_response}
+            "push": push_response, "data_access": data_access}
 
 
 # ─── /optuna/feature_window ──────────────────────────────────────────────────

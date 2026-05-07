@@ -450,3 +450,94 @@ Root-cause conclusion:
 - The 9m59s runtime is mostly explained by `MarkovSwitching` plus synchronous `backtest_dataset` snapshot export.
 - `predict_batch_v2` cost is still the largest USD source, but wall-clock latency is being dominated by state-space wait and snapshot export.
 - The next low-risk optimization is not lowering hardware. It is moving heavy research/backtest snapshot export out of the serving-critical pipeline completion path, or making it callback/queue driven after recommendations are already materialized.
+
+## Fifth Run: 2026-05-07 Rerun After Deferred Snapshot + GA/OBS UI Deploy
+
+Snapshot time: 2026-05-08 02:10 Asia/Taipei
+
+Purpose:
+
+- Validate the deployed GA evidence UI / model-pool readability changes.
+- Rerun `sector-leaders`, `adapt`, `evening-chain`, and `verify-v2` on the latest available market date.
+- Measure whether deferring research/backtest snapshots improved the serving-critical pipeline wall-clock.
+
+### Trigger And Chain Result
+
+The latest `stock_prices` business date in D1 was `2026-05-07`, with 2,291 price rows. The rerun was therefore forced against `date=2026-05-07` instead of using the incomplete `2026-05-08` calendar date.
+
+| Stage | Evidence | Result |
+|---|---|---|
+| sector flow / sector leaders | Worker trigger | success; `sectors=89`, `leaders=235` |
+| direct adapt before chain | Worker trigger | success; `v52`, confidence `0.56`, risk `green(19)` |
+| evening-chain | Worker trigger with `date=2026-05-07&force=1&sync=1` | accepted; price `2291`, TWSE `1085`, OTC `1206`, chip `16196`, indicators `2291` |
+| indicator queue | scheduler status | success; `run_id=2026-05-07-movsc8d0`, shards `4` |
+| screener | scheduler status | success |
+| pipeline-v2 | `pipeline-v2-nfrvq` | success; Cloud Run envelope `6m48.28s`, Worker app elapsed `6m26s` |
+| ML predict | scheduler status | success; `predictions=704` |
+| daily recommendation | scheduler status | success; `recos=62` |
+| post-pipeline-chain | scheduler status | success; `regime-compute:skipped verify-v2:triggered` |
+| verify-v2 | `verify-v2-rc76v` | success; Cloud Run envelope `16.55s`; scheduler summary `verified 104/104 written 104 correct 0 pnl 0.0% arf 0` |
+| post-verify-chain | scheduler status | success; `model-ic-tracker:success adapt:skipped daily-report:skipped obsidian-sync:skipped` |
+| direct adapt after verify | Worker trigger | success; `v53`, confidence `0.56`, risk `green(19)` |
+
+Closure note:
+
+- This run proved the post-pipeline callback can automatically trigger `verify-v2`.
+- Because the forced business date was `2026-05-07` while the wall-clock date was already `2026-05-08`, the post-verify chain correctly skipped current-date-only tasks (`adapt`, `daily-report`, `obsidian-sync`). A direct `adapt` rerun was then executed after rolling IC so adaptive params used the newest evidence.
+- `snapshot=deferred` appeared in the pipeline summary, confirming the heavy research/backtest snapshot is no longer blocking the serving-critical recommendation completion path.
+
+### Five-Run Comparison
+
+| Run | Business date | Execution date | Pipeline execution | Pipeline wall time | Verify execution | Verify wall time | Cost events | Compute sec | Estimated USD |
+|---|---|---|---|---:|---|---:|---:|---:|---:|
+| A baseline | 2026-05-05 | 2026-05-05 | `pipeline-v2-f4qvv` | 8m38.52s | duplicate verify observed next cycle | about 16-17s each | 37 | 2,659.422 | 0.104253 |
+| B first optimized | 2026-05-06 | 2026-05-06 | `pipeline-v2-w66bt` | 7m16.78s | `verify-v2-vvxkm`, `verify-v2-gsl45` | 18.83s / 15.00s | 18 | 1,958.026 | 0.076127 |
+| C forced optimized rerun | 2026-05-06 | 2026-05-07 | `pipeline-v2-db8sk` | 8m50.67s | `verify-v2-dzhcg` | 14.71s | 9 | 934.201 | 0.036988 |
+| D scheduler/controller rerun | 2026-05-07 | 2026-05-07 | `pipeline-v2-x5llm` | 9m59.44s | `verify-1778158632-7681a89e` | 3.188s scheduler / about 22.40s Cloud Run | 8 | 974.753 | 0.037959 |
+| E deferred snapshot rerun | 2026-05-07 | 2026-05-08 | `pipeline-v2-nfrvq` | 6m48.28s | `verify-v2-rc76v` | 16.55s Cloud Run | 8 | 933.531 | 0.037661 |
+
+### Fifth-Run Cost Breakdown
+
+| Source / model | Events | Compute sec | Estimated USD | Share of USD |
+|---|---:|---:|---:|---:|
+| `predict_batch_v2` | 1 | 536.614 | 0.023590 | 62.6% |
+| `state_space_universal_predict` | 1 | 335.255 | 0.010272 | 27.3% |
+| `gemini-3.1-flash-lite-preview / llm_reason` | 1 | 0.000 | 0.001619 | 4.3% |
+| `patchtst_universal_predict` | 2 | 23.967 | 0.000841 | 2.2% |
+| `dlinear_universal_predict` | 2 | 23.914 | 0.000733 | 1.9% |
+| `chronos_universal_predict` | 1 | 13.781 | 0.000606 | 1.6% |
+
+### Output Consistency After E Rerun
+
+| Table / artifact | 2026-05-07 result |
+|---|---:|
+| `stock_prices` | 2,291 rows |
+| `technical_indicators` | 2,291 rows |
+| `daily_recommendations` | 62 rows / 62 symbols |
+| `predictions` | 704 rows / 64 symbols |
+| rolling IC | success; `n_rows=3082`; all 8 alpha models plus DLinear/PatchTST challengers reported IC |
+| adaptive params | success; `v53`, confidence `0.56`, risk `green(19)` |
+
+### Delta Analysis
+
+| Comparison | Event delta | Compute delta | Estimated USD delta | Pipeline wall-time delta |
+|---|---:|---:|---:|---:|
+| E vs A | 37 -> 8, down 78.4% | 2,659.422 -> 933.531, down 64.9% | 0.104253 -> 0.037661, down 63.9% | 8m38.52s -> 6m48.28s, faster 21.3% |
+| E vs B | 18 -> 8, down 55.6% | 1,958.026 -> 933.531, down 52.3% | 0.076127 -> 0.037661, down 50.5% | 7m16.78s -> 6m48.28s, faster 6.5% |
+| E vs C | 9 -> 8, down 11.1% | 934.201 -> 933.531, down 0.1% | 0.036988 -> 0.037661, up 1.8% | 8m50.67s -> 6m48.28s, faster 23.1% |
+| E vs D | 8 -> 8, flat | 974.753 -> 933.531, down 4.2% | 0.037959 -> 0.037661, down 0.8% | 9m59.44s -> 6m48.28s, faster 31.9% |
+
+### Findings From E
+
+- The fifth run is the first clear wall-clock improvement after the D regression: pipeline envelope dropped from `9m59.44s` to `6m48.28s`.
+- The main win is architectural, not hardware downgrade: `snapshot=deferred` removed the heavy research/backtest snapshot from the serving-critical path.
+- `state_space_universal_predict` improved from D's `434.963s / $0.013327` to `335.255s / $0.010272`, down about 23.0% compute time.
+- `predict_batch_v2` remains the largest cost source and actually increased versus D (`450.226s` -> `536.614s`). This is now the next bottleneck, but it is a focused Modal runtime optimization problem rather than a scheduler-chain problem.
+- Verify callback closure improved: the pipeline completed and automatically triggered `verify-v2` without manual verify intervention.
+- The scheduler UI still records historical/current-date semantics awkwardly: post-verify skipped `adapt` for historical run date by contract, so direct adapt was required to update `ml:adaptive_params` after the latest rolling IC. This is correct by the current contract but should be made explicit in OBS wording.
+
+### Fifth-Run Conclusion
+
+The low-risk performance tuning worked. Compared with the prior D run, total estimated cost was roughly flat, but serving-critical wall-clock improved by about 31.9%. Compared with the original A baseline, cost is down about 63.9% and pipeline wall-clock is down about 21.3%.
+
+The remaining high-value optimization target is now `predict_batch_v2`: it accounts for about 62.6% of fifth-run estimated USD. The next pass should focus on artifact cache hit/miss telemetry, chunk-size AB (20/40/80), and avoiding redundant per-model/per-symbol payload work inside Modal. Do not change model quality or lower hardware just to chase seconds.

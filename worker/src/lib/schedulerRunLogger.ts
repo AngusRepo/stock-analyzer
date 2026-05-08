@@ -30,6 +30,8 @@ const TASK_NAMES: Record<string, string> = {
   'ml-warmup': 'ML Warmup',
   'post-pipeline-chain': 'Post Pipeline Chain',
   'post-verify-chain': 'Post Verify Chain',
+  'dataset-snapshot-export': 'Dataset Snapshot Export',
+  'linucb-reward-ledger': 'LinUCB Reward Ledger',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',

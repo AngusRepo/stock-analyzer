@@ -50,6 +50,18 @@ def test_weekly_monthly_optuna_heavy_routes_require_compute_snapshot():
     assert "BacktestDataset.load_from_d1(" not in per_regime_source
 
 
+def test_snapshot_optuna_defaults_window_to_latest_ready_snapshot_not_wall_clock_today():
+    sltp_source = (ROOT / "optuna_scripts" / "optuna_sltp.py").read_text(encoding="utf-8")
+    screener_source = (ROOT / "optuna_scripts" / "optuna_screener.py").read_text(encoding="utf-8")
+    access_source = (ROOT / "services" / "research_data_access.py").read_text(encoding="utf-8")
+
+    assert "latest_snapshot_business_end_date" in access_source
+    assert "snapshot_end_date = latest_snapshot_business_end_date" in sltp_source
+    assert "snapshot_end_date = latest_snapshot_business_end_date" in screener_source
+    assert "end_date = snapshot_end_date or tw_today" in sltp_source
+    assert "end_date = snapshot_end_date or tw_today" in screener_source
+
+
 def test_weekly_monthly_optuna_sweep_uses_controller_owned_bounded_parallelism():
     router_source = (ROOT / "routers" / "optuna.py").read_text(encoding="utf-8")
 
@@ -67,6 +79,7 @@ def test_research_data_policy_prevents_silent_fallback():
     assert "research_snapshot_required_but_unavailable" in source
     assert "explicit D1 chunked fallback" in source
     assert "latest_dataset_snapshot" in source
+    assert "as_of_business_date=business_date" in source
     assert "required_start_date" in source
     assert "snapshot_start_after_required" in source
     assert "snapshot_end_before_required" in source
@@ -133,3 +146,6 @@ def test_pipeline_exports_research_snapshot_after_recommendation_write():
     assert graph_source.index('g.add_edge("write_d1"') < graph_source.index('g.add_edge("export_dataset_snapshot"')
     assert "producer_run_id=run_id" in job_source
     assert "snapshot=" in job_source
+    assert "_run_deferred_snapshot_followup" in job_source
+    assert '"task": "dataset-snapshot-export"' in job_source
+    assert "STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP" in job_source

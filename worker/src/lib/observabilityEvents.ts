@@ -827,11 +827,73 @@ async function readLatestValidationPackets(env: Bindings): Promise<{
   }
 }
 
+async function readLinUcbLedgerSummary(env: Bindings): Promise<Record<string, unknown>> {
+  try {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS ledger_rows,
+             COUNT(DISTINCT arm_id) AS arm_count,
+             COALESCE(SUM(samples), 0) AS total_samples,
+             MAX(updated_at) AS updated_at
+        FROM meta_reward_ledger
+       WHERE policy_id = 'LinUCB'
+    `).first<Record<string, unknown>>()
+    return {
+      reward_ledger: 'meta_reward_ledger',
+      reward_ledger_status: Number(row?.total_samples ?? 0) > 0 ? 'updated' : 'missing',
+      ledger_rows: Number(row?.ledger_rows ?? 0),
+      total_samples: Number(row?.total_samples ?? 0),
+      arm_count: Number(row?.arm_count ?? 0),
+      updated_at: row?.updated_at ?? null,
+      context_version: 'meta-context-v2',
+      source: 'd1_meta_reward_ledger',
+    }
+  } catch (error) {
+    return {
+      reward_ledger: 'meta_reward_ledger',
+      reward_ledger_status: 'degraded',
+      error: String(error),
+      context_version: 'meta-context-v2',
+      source: 'd1_meta_reward_ledger',
+    }
+  }
+}
+
+function mergeLinUcbLedgerEvidence(
+  params: Record<string, unknown> | undefined,
+  ledgerSummary: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!params) return params
+  const banditContext = params.bandit_context && typeof params.bandit_context === 'object' && !Array.isArray(params.bandit_context)
+    ? params.bandit_context as Record<string, unknown>
+    : {}
+  const existingLedger = banditContext.linucb_reward_ledger && typeof banditContext.linucb_reward_ledger === 'object'
+    ? banditContext.linucb_reward_ledger as Record<string, unknown>
+    : {}
+  const existingSamples = Number(existingLedger.total_samples ?? existingLedger.source_rows ?? 0)
+  const d1Samples = Number(ledgerSummary.total_samples ?? 0)
+  if (existingSamples > 0 || d1Samples <= 0) {
+    return {
+      ...params,
+      bandit_context: {
+        ...banditContext,
+        linucb_reward_ledger: existingSamples > 0 ? existingLedger : ledgerSummary,
+      },
+    }
+  }
+  return {
+    ...params,
+    bandit_context: {
+      ...banditContext,
+      linucb_reward_ledger: ledgerSummary,
+    },
+  }
+}
+
 export async function buildLiveObservabilityEventReport(env: Bindings, options: { date?: string; live?: boolean } = {}) {
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -862,6 +924,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     env.KV.get('optimizer:ga:latest', 'json')
       .then((state) => ({ state: state as Record<string, unknown> | null }))
       .catch((error: unknown) => ({ error: String(error) })),
+    readLinUcbLedgerSummary(env),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -878,7 +941,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     modelPoolError,
     validationPackets: validationResult.packets,
     validationError: validationResult.error,
-    adaptiveParams: 'params' in adaptiveResult ? adaptiveResult.params : undefined,
+    adaptiveParams: 'params' in adaptiveResult ? mergeLinUcbLedgerEvidence(adaptiveResult.params, linucbLedgerSummary) : undefined,
     adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
     gaOptimizerState: 'state' in gaOptimizerResult ? gaOptimizerResult.state : undefined,
     gaOptimizerError: 'error' in gaOptimizerResult ? gaOptimizerResult.error : undefined,

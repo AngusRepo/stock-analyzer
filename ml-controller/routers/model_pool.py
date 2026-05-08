@@ -108,6 +108,38 @@ def _metadata_summary(raw: dict) -> dict:
     return summary
 
 
+def _artifact_evidence(metadata: dict | None) -> dict:
+    """Summarize training-time artifact evidence separately from live IC."""
+    if not isinstance(metadata, dict):
+        return {
+            "status": "metadata_missing",
+            "oos_ic": None,
+            "daily_ic_count": 0,
+            "reason": "Artifact metadata is missing; training-time evidence cannot be shown.",
+        }
+    metrics = metadata.get("metrics") if isinstance(metadata.get("metrics"), dict) else {}
+    oos_ic = metadata.get("oos_ic", metrics.get("oos_ic"))
+    daily_ic_count = metadata.get("daily_ic_count", metrics.get("daily_ic_count", 0))
+    try:
+        daily_ic_count_int = int(daily_ic_count or 0)
+    except (TypeError, ValueError):
+        daily_ic_count_int = 0
+    status = "ready" if oos_ic is not None or daily_ic_count_int > 0 else "metadata_present"
+    return {
+        "status": status,
+        "oos_ic": oos_ic,
+        "daily_ic_count": daily_ic_count_int,
+        "val_dir_accuracy": metadata.get("val_dir_accuracy", metrics.get("val_dir_accuracy")),
+        "feature_policy": metadata.get("feature_policy"),
+        "dataset_snapshot": metadata.get("dataset_snapshot"),
+        "reason": (
+            "Training-time artifact evidence is present; live shadow IC still needs verified production outcomes."
+            if status == "ready"
+            else "Metadata exists but no explicit OOS IC/daily IC fields were recorded."
+        ),
+    }
+
+
 def _ic_coverage(diagnostics: dict) -> float | None:
     raw_rows = diagnostics.get("raw_rows")
     production_rows = diagnostics.get("production_rows")
@@ -127,6 +159,7 @@ def _lifecycle_diagnosis(
     entry: dict,
     metadata_exists: bool,
     metadata: dict | None,
+    is_challenger: bool = False,
 ) -> dict:
     diagnostics = entry.get("last_ic_diagnostics") or {}
     root_cause = entry.get("last_ic_root_cause")
@@ -148,7 +181,10 @@ def _lifecycle_diagnosis(
     if model_name == "FT-Transformer" and metadata_exists and not metadata_feature_count:
         blockers.append("ft_feature_metadata_missing")
 
-    if not blockers:
+    if is_challenger and sample_count <= 0 and metadata_exists:
+        status = "awaiting_live_shadow"
+        reason = "Challenger artifact exists, but live shadow predictions have not accumulated verified outcomes yet."
+    elif not blockers:
         status = "ok"
         reason = "IC, samples, metadata are present."
     elif "metadata_missing" in blockers or "ft_feature_metadata_missing" in blockers:
@@ -1438,6 +1474,7 @@ async def lineage():
                     "metadata_path": ch_metadata_path,
                     "metadata_exists": ch_metadata_exists,
                     "metadata": ch_metadata,
+                    "artifact_evidence": _artifact_evidence(ch_metadata),
                     "shadow_since": challenger.get("shadow_since"),
                     "rolling_ic": challenger.get("rolling_ic"),
                     "weekly_ic": challenger.get("weekly_ic") or [],
@@ -1454,6 +1491,7 @@ async def lineage():
                         entry=challenger,
                         metadata_exists=ch_metadata_exists,
                         metadata=ch_metadata,
+                        is_challenger=True,
                     ),
                 }
 

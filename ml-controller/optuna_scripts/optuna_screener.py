@@ -56,7 +56,7 @@ except ImportError:
     sys.exit(1)
 
 from services.backtest_engine import replay_period, BacktestDataset  # noqa: E402
-from services.research_data_access import ResearchDataMode  # noqa: E402
+from services.research_data_access import ResearchDataMode, latest_snapshot_business_end_date  # noqa: E402
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -330,8 +330,12 @@ def run_search(
     """
     # ── Date defaults: 90 day window ending today (TW) ──────────────────────
     if end_date is None:
-        tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-        end_date = tw_now.date().isoformat()
+        tw_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+        snapshot_end_date = latest_snapshot_business_end_date(
+            kind="backtest_dataset",
+            as_of_business_date=tw_today,
+        ) if data_mode == "snapshot" else None
+        end_date = snapshot_end_date or tw_today
     if start_date is None:
         start_date = (
             datetime.fromisoformat(end_date) - timedelta(days=90)

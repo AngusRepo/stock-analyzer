@@ -64,7 +64,7 @@ function dateDaysAgo(days: number): string {
   return new Date(Date.now() + 8 * 3600_000 - days * 86_400_000).toISOString().slice(0, 10)
 }
 
-async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: string): Promise<Record<string, unknown>> {
+export async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: string): Promise<Record<string, unknown>> {
   try {
     const report = await refreshLinUcbRewardLedger(env.DB, {
       startDate: dateDaysAgo(90),
@@ -93,7 +93,23 @@ async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: s
   }
 }
 
-export async function runAdaptiveUpdate(env: AdaptiveEngineEnv): Promise<string> {
+export async function runLinUcbRewardLedgerRefresh(env: AdaptiveEngineEnv, endDate?: string): Promise<string> {
+  const targetDate = endDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const ledger = await refreshLinUcbLedgerForAdaptive(env, targetDate)
+  const status = String(ledger.reward_ledger_status ?? 'unknown')
+  const sourceRows = Number(ledger.source_rows ?? 0)
+  const ledgerRows = Number(ledger.ledger_rows ?? 0)
+  const totalSamples = Number(ledger.total_samples ?? 0)
+  if (status === 'degraded') {
+    throw new Error(`LinUCB reward ledger degraded: ${String(ledger.error ?? 'unknown')}`)
+  }
+  if (sourceRows > 0 && ledgerRows <= 0) {
+    throw new Error(`LinUCB reward ledger empty despite source_rows=${sourceRows}`)
+  }
+  return `linucb reward ledger ${status}: source_rows=${sourceRows} ledger_rows=${ledgerRows} total_samples=${totalSamples}`
+}
+
+export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refreshLedger?: boolean } = {}): Promise<string> {
   if (!env.ML_CONTROLLER_URL) {
     throw new Error('ML_CONTROLLER_URL is required for adaptive update; Worker local adaptive computation is disabled')
   }
@@ -124,7 +140,9 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv): Promise<string>
     throw new Error('Controller /risk-assess returned invalid adaptive_params')
   }
 
-  const ledgerContext = await refreshLinUcbLedgerForAdaptive(env, today)
+  const ledgerContext = options.refreshLedger === false
+    ? { reward_ledger: 'meta_reward_ledger', reward_ledger_status: 'handled_by_post_verify_chain', context_version: 'meta-context-v2' }
+    : await refreshLinUcbLedgerForAdaptive(env, today)
   const currentBanditContext = params.bandit_context && typeof params.bandit_context === 'object' && !Array.isArray(params.bandit_context)
     ? params.bandit_context
     : {}

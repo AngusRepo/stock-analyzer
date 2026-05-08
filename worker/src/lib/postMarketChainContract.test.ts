@@ -39,8 +39,14 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+    postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh"),
+  'LinUCB reward ledger must run after rolling IC evidence refresh',
+)
+assert(
+  postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh") <
     postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
-  'adaptive params must run after rolling IC evidence refresh',
+  'adaptive params must run after reward ledger evidence is persisted',
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
+assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')

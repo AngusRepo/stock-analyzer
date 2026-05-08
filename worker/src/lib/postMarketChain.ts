@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { runAdaptiveUpdate } from './adaptiveEngine'
+import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
 import { runModelIcRollingRefresh, runObsidianDaily, runRegimeCompute, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
@@ -120,10 +120,12 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
 
   if (isCurrentBusinessDate(ctx.runDate)) {
-    results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env)))
+    results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
+    results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
   } else {
+    results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))

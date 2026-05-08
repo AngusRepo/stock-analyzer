@@ -312,25 +312,30 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
     .filter(([, model]) => !!model.challenger)
     .map(([name, model]) => {
       const challenger = model.challenger ?? {}
+      const artifact = (challenger.artifact_evidence ?? {}) as NonNullable<NonNullable<ModelPoolLineageModel['challenger']>['artifact_evidence']>
       const ic = challenger.ic_4w_avg ?? challenger.rolling_ic
       const diagnosis = challenger.lifecycle_diagnosis
+      const samples = challenger.last_ic_sample_count ?? 0
       return {
         name,
         version: challenger.version ?? 'challenger',
         ic: ic == null ? 'N/A' : Number(ic).toFixed(4),
-        samples: challenger.last_ic_sample_count ?? 0,
-        rootCause: challenger.last_ic_root_cause ?? diagnosis?.root_cause ?? challenger.last_ic_status ?? 'unknown',
-        status: challenger.last_ic_status ?? diagnosis?.status ?? 'unknown',
+        samples,
+        artifactOosIc: artifact.oos_ic == null ? 'N/A' : Number(artifact.oos_ic).toFixed(4),
+        artifactDailyIcCount: artifact.daily_ic_count ?? 0,
+        rootCause: samples > 0
+          ? challenger.last_ic_root_cause ?? diagnosis?.root_cause ?? challenger.last_ic_status ?? 'unknown'
+          : diagnosis?.status ?? artifact.status ?? 'awaiting_live_shadow',
+        status: samples > 0 ? challenger.last_ic_status ?? diagnosis?.status ?? 'unknown' : diagnosis?.status ?? artifact.status ?? 'awaiting_live_shadow',
+        reason: diagnosis?.reason ?? artifact.reason ?? 'Artifact exists; waiting for verify-v2 outcomes.',
       }
     })
 
   return (
-    <WorkstationPanel title="Version Challenger / 版本挑戰者" kicker="Live Shadow Evidence / 即時影子證據 · same-family artifact shadow evidence">
+    <WorkstationPanel title="Version Challenger / 版本挑戰者" kicker="Live shadow IC + artifact evidence">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
-          這裡只顯示既有 alpha slot 的新版 artifact，例如 DLinear / PatchTST v1 對 v2026...。
-          這不是 ResidualMLP/GNN 這種新模型家族 challenger，而是同模型家族的新舊版本 shadow 比較。
-          IC 的前提是 verify-v2 必須寫入 predictions.verified_at / actual_return_pct，且 verified_rows_written 必須大於 0。
+          這裡分成兩種證據：artifact OOS 是 monthly retrain 產生時的訓練/驗證證據；live shadow IC 要等新版 artifact 實際跑 prediction，且 verify-v2 寫入 outcome 後才會累積。
         </p>
         {rows.length ? (
           <div className="grid gap-2 md:grid-cols-2">
@@ -343,17 +348,20 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
                   </div>
                   <WorkstationPill tone={row.rootCause === 'ok' ? 'ok' : 'warn'}>{row.status}</WorkstationPill>
                 </div>
-                <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[11px]">
-                  <div><p className="text-[#70809b]">IC 4W</p><p className="text-slate-100">{row.ic}</p></div>
+                <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[11px]">
+                  <div><p className="text-[#70809b]">Live IC</p><p className="text-slate-100">{row.ic}</p></div>
                   <div><p className="text-[#70809b]">Samples</p><p className="text-slate-100">{row.samples}</p></div>
-                  <div><p className="text-[#70809b]">Root</p><p className="text-amber-200">{row.rootCause}</p></div>
+                  <div><p className="text-[#70809b]">Artifact OOS</p><p className="text-slate-100">{row.artifactOosIc}</p></div>
+                  <div><p className="text-[#70809b]">Daily IC</p><p className="text-slate-100">{row.artifactDailyIcCount}</p></div>
                 </div>
+                <p className="mt-2 text-[11px] leading-4 text-amber-200">root: {row.rootCause}</p>
+                <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">{row.reason}</p>
               </div>
             ))}
           </div>
         ) : (
           <div className="border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200">
-            目前沒有 live challenger slot。ResidualMLP/GNN 若尚未產生 shadow rows，不應被當成可評估 challenger。
+            目前沒有 version challenger；若剛完成 retrain，請確認 model_pool.json 是否已註冊 challenger version。
           </div>
         )}
       </div>

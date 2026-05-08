@@ -17,6 +17,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timedelta
 
 # Reuse the callback + sub-task emission helpers from the router module so
 # Worker's dashboard tiles behave identically to the old implementation.
@@ -27,6 +28,71 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("pipeline_job")
+
+
+def _snapshot_export_start_date(run_date: str) -> str:
+    try:
+        lookback_days = int(os.environ.get("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "420") or "420")
+    except ValueError:
+        lookback_days = 420
+    lookback_days = max(30, min(lookback_days, 1600))
+    return (datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+
+async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None:
+    """Close the deferred research-snapshot loop without blocking pipeline callback.
+
+    The graph intentionally reports `snapshot=deferred` so serving callbacks can
+    continue quickly. This follow-up keeps the same Cloud Run job alive long
+    enough to write GCS/D1 manifests, then emits a separate scheduler callback.
+    """
+    if os.environ.get("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    if not run_date:
+        return
+
+    started = time.time()
+    status = "error"
+    summary = ""
+    error: str | None = None
+    try:
+        from services.dataset_snapshot_exporter import (
+            DatasetSnapshotExportRequest,
+            export_daily_research_snapshots,
+        )
+
+        export_run_id = f"{run_id}:snapshot"
+        request = DatasetSnapshotExportRequest(
+            business_date=run_date,
+            start_date=_snapshot_export_start_date(run_date),
+            end_date=run_date,
+            producer_run_id=export_run_id,
+            include_signals=True,
+        )
+        combined = await asyncio.to_thread(export_daily_research_snapshots, request)
+        snapshots = combined.get("snapshots") or {}
+        backtest = ((snapshots.get("backtest_dataset") or {}).get("snapshot") or {})
+        price = ((snapshots.get("price_history") or {}).get("snapshot") or {})
+        status = "success"
+        summary = (
+            f"run_id={export_run_id} "
+            f"backtest={backtest.get('snapshot_id')} rows={backtest.get('row_count')} "
+            f"price={price.get('snapshot_id')} rows={price.get('row_count')}"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[JobEntry] Deferred dataset snapshot follow-up failed")
+        error = f"{type(e).__name__}: {e}"
+        summary = f"run_id={run_id}:snapshot {error[:180]}"
+
+    await _callback_worker({
+        "task": "dataset-snapshot-export",
+        "status": status,
+        "summary": summary,
+        "duration_ms": int((time.time() - started) * 1000),
+        "run_id": f"{run_id}:snapshot",
+        "run_date": run_date,
+        **({"error": error} if error else {}),
+    })
 
 
 async def _run() -> int:
@@ -86,6 +152,10 @@ async def _run() -> int:
 
     await _callback_worker(overall_payload)
     await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+
+    snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
+    if status == "success" and snapshot_state.get("status") == "deferred":
+        await _run_deferred_snapshot_followup(run_date=run_date, run_id=run_id)
 
     logger.info(
         "[JobEntry] Pipeline finished: status=%s elapsed=%dms", status, elapsed_ms

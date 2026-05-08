@@ -160,6 +160,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { runAdaptiveUpdate } = await import('./adaptiveEngine')
       return runAdaptiveUpdate(c.env)
     },
+    'linucb-reward-ledger': async () => {
+      const { runLinUcbRewardLedgerRefresh } = await import('./adaptiveEngine')
+      return runLinUcbRewardLedgerRefresh(c.env, requestedRunDate())
+    },
     verify: async () => {
       return runVerifyV2(c.env)
     },

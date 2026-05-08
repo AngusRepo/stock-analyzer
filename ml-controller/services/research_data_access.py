@@ -61,6 +61,32 @@ def _snapshot_date_range(snapshot: dict[str, Any] | None) -> tuple[str | None, s
     return snapshot.get("start_date"), snapshot.get("end_date")
 
 
+def latest_snapshot_business_end_date(
+    *,
+    kind: str,
+    as_of_business_date: str | None = None,
+    market_segment: str | None = None,
+) -> str | None:
+    """Return the latest usable business end date for snapshot-backed research.
+
+    Weekly/monthly research jobs run by wall-clock schedules, including
+    weekends. Their default replay window must end at the latest ready compute
+    snapshot, not at today's calendar date, otherwise the job asks for a
+    non-existent future/non-trading snapshot and never reaches the GA/adaptive
+    push path.
+    """
+    snapshot = latest_dataset_snapshot(
+        kind=kind,
+        as_of_business_date=as_of_business_date,
+        access_tier="compute",
+        market_segment=market_segment,
+    )
+    if not snapshot or validate_dataset_snapshot_manifest(snapshot):
+        return None
+    _start_date, end_date = _snapshot_date_range(snapshot)
+    return end_date or snapshot.get("business_date")
+
+
 def _snapshot_range_errors(
     snapshot: dict[str, Any] | None,
     required_start_date: str | None,
@@ -106,9 +132,13 @@ def resolve_research_data_access(
     - auto mode: use snapshot when present, otherwise explicit d1 fallback.
     """
     selected = mode or research_data_mode()
+    # Research jobs run on wall-clock schedules, while compute snapshots are
+    # produced by the latest completed pipeline business date. Resolve as-of
+    # the requested run date so weekly/monthly Optuna can use the freshest
+    # ready snapshot without silently reaching into future data.
     snapshot = latest_dataset_snapshot(
         kind=kind,
-        business_date=business_date,
+        as_of_business_date=business_date,
         access_tier="compute",
         market_segment=market_segment,
     )

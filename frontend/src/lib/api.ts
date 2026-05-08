@@ -640,6 +640,15 @@ export type ModelPoolLineageModel = {
     metadata_path?: string
     metadata_exists?: boolean
     metadata?: Record<string, unknown> | null
+    artifact_evidence?: {
+      status?: string
+      oos_ic?: number | null
+      daily_ic_count?: number
+      val_dir_accuracy?: number | null
+      feature_policy?: unknown
+      dataset_snapshot?: unknown
+      reason?: string
+    } | null
     shadow_since?: string
     rolling_ic?: number | null
     weekly_ic?: number[]

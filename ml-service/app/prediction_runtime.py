@@ -782,7 +782,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     challenger_errors: list[str] = []
 
     if pool_snapshot:
-        for model_name in _MODEL_NAMES_V2:
+        for model_name in _FEATURE_MODEL_NAMES_V2:
             try:
                 ch_path = get_challenger_path(model_name, pool=pool_snapshot)
                 if not ch_path:

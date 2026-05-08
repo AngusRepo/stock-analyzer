@@ -740,6 +740,7 @@ def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
         "prior_ic": float(raw.get("priorIc", raw.get("priorIC", 0.015)) or 0.015),
         "prior_strength": float(raw.get("priorStrength", 20.0) or 20.0),
         "min_samples_for_hard_zero": int(raw.get("minSamplesForHardZero", 40) or 40),
+        "uncertain_negative_floor": float(raw.get("uncertainNegativeFloor", raw.get("pooledSegmentFloor", 0.0025)) or 0.0025),
         "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", True)),
         "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
         "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
@@ -774,6 +775,11 @@ def _shrink_ic_weight(
     if n >= int(policy["min_samples_for_hard_zero"]) and raw_ic < 0 and posterior <= 0:
         effective = 0.0
         reason = "negative_ic_confirmed"
+    elif raw_ic < 0 and posterior <= 0:
+        # Low-sample segment IC is noisy; keep a tiny exploration floor instead of
+        # freezing the model out before pooled/global evidence can recover it.
+        effective = max(0.0, float(policy["uncertain_negative_floor"]))
+        reason = "uncertain_negative_floor"
     else:
         effective = max(0.0, posterior)
         reason = "shrunk_to_prior"

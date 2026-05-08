@@ -208,7 +208,7 @@ function PortfolioSummary() {
       {[
         { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrderCount}筆`, cls: pctClass(totalRealizedPnl) },
         { label: '年化', val: `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
-        { label: 'MDD', val: `-${(maxDrawdown * 100).toFixed(1)}%`, sub: '', cls: maxDrawdown > 0.1 ? 'text-red-400' : maxDrawdown > 0.05 ? 'text-amber-400' : 'text-emerald-400' },
+        { label: 'MDD', val: `-${(maxDrawdown * 100).toFixed(1)}%`, sub: '', cls: maxDrawdown > 0 ? pctClass(-maxDrawdown) : 'text-muted-foreground' },
         { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
       ].map(m => (
         <div key={m.label}>

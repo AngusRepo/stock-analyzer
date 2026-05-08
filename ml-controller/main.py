@@ -75,8 +75,10 @@ async def verify_token(request: Request) -> None:
 app.include_router(predict.router,  dependencies=[Depends(verify_token)])
 app.include_router(retrain.router,  dependencies=[Depends(verify_token)])
 app.include_router(retrain_trigger.router, dependencies=[Depends(verify_token)])
-# 2026-04-20 #10 Phase 1: Webhook receiver for long-task completion (Pattern 1)
-app.include_router(retrain_followup.router, dependencies=[Depends(verify_token)])
+# Modal long-task callbacks use the service-token contract inside the router.
+# Do not also require the Worker controller header here; that rejects Modal
+# followups before they can release locks and close scheduler status.
+app.include_router(retrain_followup.router)
 app.include_router(verify.router,   dependencies=[Depends(verify_token)])
 app.include_router(recommend.router, dependencies=[Depends(verify_token)])
 app.include_router(risk.router,     dependencies=[Depends(verify_token)])

@@ -35,6 +35,43 @@ async function runMlControllerWarmup(env: any): Promise<string> {
   ].join(' ')
 }
 
+function parseBoundedPositiveInt(raw: string | null | undefined, fallback: number, max: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.min(parsed, max)
+}
+
+async function runNeuralShadowTask(
+  c: any,
+  policyId: 'NeuralUCB' | 'NeuralTS',
+  endDate?: string,
+): Promise<string> {
+  const persist = c.req.query('persist') === '1' || c.req.query('dry_run') === 'false'
+  if (persist && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    throw new Error(`${policyId} shadow persistence requires X-Confirm-Meta-Learning:true`)
+  }
+
+  const { runNeuralMetaShadow } = await import('./metaLearningShadowRunner')
+  const result = await runNeuralMetaShadow(c.env, {
+    policyId,
+    startDate: c.req.query('start_date') || undefined,
+    endDate,
+    limit: parseBoundedPositiveInt(c.req.query('limit'), 5000, 20000),
+    dryRun: !persist,
+  })
+
+  const summary = [
+    `policy=${policyId}`,
+    `mode=${result.mode}`,
+    `success=${result.success}`,
+    `source_rows=${(result as any).source_rows ?? 0}`,
+    `training_samples=${(result as any).training_samples ?? 0}`,
+    `persisted_rows=${(result as any).persisted_rows ?? 0}`,
+  ]
+  if ((result as any).reason) summary.push(`reason=${(result as any).reason}`)
+  return summary.join(' ')
+}
+
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
@@ -155,5 +192,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const r = await computeSectorLeaders(c.env.DB)
       return `sectors=${r.sectorCount} leaders=${r.leaderCount}`
     },
+    'neural-ucb-shadow': () => runNeuralShadowTask(c, 'NeuralUCB', requestedRunDate()),
+    'neural-ts-shadow': () => runNeuralShadowTask(c, 'NeuralTS', requestedRunDate()),
   }
 }

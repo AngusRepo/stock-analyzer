@@ -521,6 +521,44 @@ export type ResearchExperimentsResponse = {
   success: boolean
   mode: 'read_only'
   experiments: ResearchExperiment[]
+  meta_learning_tracks?: Array<{
+    id: 'LinUCB' | 'NeuralUCB' | 'NeuralTS' | 'OnlinePortfolioBandit' | 'NeuCB'
+    stage: 'production_baseline' | 'shadow_challenger' | 'strategy_research' | 'research_only'
+    role: string
+    learning_targets: string[]
+    required_evidence: string[]
+    decision_queue_status:
+      | 'production_baseline_needs_evidence'
+      | 'run_shadow'
+      | 'needs_experiment_registry'
+      | 'research_only'
+    can_influence_production: boolean
+    can_vote_alpha: false
+    next_action: string
+    registered_experiment_ids: string[]
+    experiment_template: {
+      hypothesis: string
+      sourceRefs: string[]
+      strategySpecIds: string[]
+      dataSlice: Record<string, unknown>
+      metrics: string[]
+      followUp: string[]
+    }
+  }>
+  meta_learning_evidence_matrix?: Array<{
+    id: 'LinUCB' | 'NeuralUCB' | 'NeuralTS' | 'OnlinePortfolioBandit' | 'NeuCB'
+    stage: 'production_baseline' | 'shadow_challenger' | 'strategy_research' | 'research_only'
+    decision_queue_status: string
+    evidence_status: 'ready' | 'partial' | 'missing'
+    reward_ledger_status: 'ready' | 'missing' | 'not_applicable'
+    shadow_status: 'ready' | 'partial' | 'missing' | 'not_applicable'
+    registered_experiment_count: number
+    samples: number
+    latest_evidence_at: string | null
+    next_action: string
+    missing_evidence: string[]
+  }>
+  meta_learning_decision_packet?: string
 }
 
 export type ResearchGateResult = {

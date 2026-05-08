@@ -173,24 +173,6 @@ function MetricCell({
   )
 }
 
-function ScoreTile({ label, value, tone, icon }: { label: string; value: string; tone: WorkstationTone; icon: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-slate-400">
-          {icon}
-          <span className="font-mono text-[10px] uppercase tracking-[0.16em]">{label}</span>
-        </div>
-        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
-      </div>
-      <p className={`mt-3 font-mono text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-sky-300'}`}>
-        {value}
-      </p>
-      <MiniBar value={Number.parseFloat(value) || 0} tone={tone} />
-    </div>
-  )
-}
-
 function ReliabilityMap({
   incidents,
   schedulerOk,
@@ -204,28 +186,45 @@ function ReliabilityMap({
   deployOk: number
   traceOk: number
 }) {
-  const incidentHealth = Math.max(0, 100 - incidents * 20)
-  const traceHealth = Math.min(100, traceOk * 8)
+  const schedulerTone = schedulerOk >= 95 ? 'ok' : schedulerOk >= 85 ? 'warn' : 'error'
+  const dataTone = dataQualityOk >= 90 ? 'ok' : dataQualityOk >= 70 ? 'warn' : 'error'
+  const deployTone = deployOk >= 90 ? 'ok' : deployOk >= 60 ? 'warn' : 'error'
+  const incidentTone = incidents ? 'warn' : 'ok'
+  const traceTone = traceOk ? 'ok' : 'warn'
+  const steps: Array<{ label: string; value: string; tone: WorkstationTone; icon: React.ReactNode; note: string }> = [
+    { label: 'Incident', value: `${incidents}`, tone: incidentTone, icon: <Activity className="h-4 w-4" />, note: 'root-cause group count' },
+    { label: 'Scheduler', value: `${schedulerOk}%`, tone: schedulerTone, icon: <Clock3 className="h-4 w-4" />, note: 'job SLO' },
+    { label: 'Data', value: `${dataQualityOk}%`, tone: dataTone, icon: <Database className="h-4 w-4" />, note: 'freshness/schema/parity' },
+    { label: 'Gate', value: `${deployOk}%`, tone: deployTone, icon: <ShieldCheck className="h-4 w-4" />, note: 'predeploy safety' },
+    { label: 'Trace', value: `${traceOk}`, tone: traceTone, icon: <GitBranch className="h-4 w-4" />, note: 'event evidence' },
+  ]
   return (
-    <WorkstationPanel title="Reliability Map / 可靠度地圖" kicker="grafana style overview">
-      <div className="grid gap-3 p-3 lg:grid-cols-[1fr_360px]">
-        <div className="grid gap-3 md:grid-cols-4">
-          <ScoreTile label="Incident Load" value={`${incidentHealth}%`} tone={incidents ? 'warn' : 'ok'} icon={<Activity className="h-4 w-4" />} />
-          <ScoreTile label="Scheduler SLO" value={`${schedulerOk}%`} tone={schedulerOk >= 95 ? 'ok' : schedulerOk >= 85 ? 'warn' : 'error'} icon={<Clock3 className="h-4 w-4" />} />
-          <ScoreTile label="Data Trust" value={`${dataQualityOk}%`} tone={dataQualityOk >= 90 ? 'ok' : dataQualityOk >= 70 ? 'warn' : 'error'} icon={<Database className="h-4 w-4" />} />
-          <ScoreTile label="Deploy Gate" value={`${deployOk}%`} tone={deployOk >= 90 ? 'ok' : deployOk >= 60 ? 'warn' : 'error'} icon={<ShieldCheck className="h-4 w-4" />} />
+    <WorkstationPanel title="Reliability Map / 可靠度地圖" kicker="dependency order, not duplicate KPI">
+      <div className="grid gap-3 p-3 lg:grid-cols-[1fr_340px]">
+        <div className="grid gap-2 md:grid-cols-5">
+          {steps.map((step, index) => (
+            <div key={step.label} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-slate-400">
+                  {step.icon}
+                  <span className="font-mono text-[10px] uppercase tracking-[0.14em]">{step.label}</span>
+                </div>
+                {index < steps.length - 1 && <ArrowRight className="h-3 w-3 text-amber-300" />}
+              </div>
+              <div className="mt-3 flex items-end justify-between gap-2">
+                <p className={`font-mono text-xl font-semibold ${step.tone === 'ok' ? 'text-emerald-300' : step.tone === 'warn' ? 'text-amber-300' : step.tone === 'error' ? 'text-rose-300' : 'text-sky-300'}`}>{step.value}</p>
+                <WorkstationPill tone={step.tone}>{step.tone}</WorkstationPill>
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-slate-500">{step.note}</p>
+            </div>
+          ))}
         </div>
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <div className="flex items-center justify-between">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Trace Throughput</p>
-            <WorkstationPill tone={traceOk ? 'ok' : 'warn'}>{traceOk} events</WorkstationPill>
-          </div>
-          <Sparkline values={[incidentHealth, schedulerOk, dataQualityOk, deployOk, traceHealth]} tone={incidents ? 'warn' : 'ok'} />
-          <div className="mt-2 grid grid-cols-5 gap-1">
-            {['Inc', 'Sch', 'DQ', 'Gate', 'Trace'].map((item) => (
-              <span key={item} className="text-center font-mono text-[10px] text-slate-500">{item}</span>
-            ))}
-          </div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">How to read / 怎麼看</p>
+          <p className="mt-2 text-xs leading-5 text-slate-400">
+            上方 KPI 只回答健康分數；這裡固定用事件流順序看 blast radius：先看 root-cause inbox，再看 scheduler 是否完成、資料是否可信、deploy gate 是否阻擋，最後用 trace event 找證據。
+          </p>
+          <Sparkline values={[incidents ? 40 : 100, schedulerOk, dataQualityOk, deployOk, Math.min(100, traceOk * 8)]} tone={incidents || deployOk < 90 ? 'warn' : 'ok'} />
         </div>
       </div>
     </WorkstationPanel>
@@ -314,6 +313,10 @@ function SelectedIncidentDetail({
   const statuses = formatEvidenceValue(evidence.statuses)
   const sources = formatEvidenceValue(evidence.sources)
   const eventCount = formatEvidenceValue(evidence.event_count ?? incident.source_event_ids?.length)
+  const isGaPromotionGate =
+    incident.title.toLowerCase().includes('ga optimizer') ||
+    String(incident.root_cause ?? '').toLowerCase().includes('adaptive_meta:shadow_config') ||
+    String(evidence.sources ?? '').toLowerCase().includes('ga_optimizer')
   return (
     <div className="space-y-3 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -344,6 +347,29 @@ function SelectedIncidentDetail({
           <p className="mt-2 text-sm leading-6 text-slate-300">{incident.next_action || '-'}</p>
         </div>
       </div>
+
+      {isGaPromotionGate && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">GA Promotion Gate / GA 進級門檻</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            這不是個股錯誤，也不是 scheduler 沒跑。它代表 GA optimizer 已產生一組學到的候選策略參數，但目前停在 L2 審核階段；production 的 trading:config 還沒被改動。要進下一階，需要看 fitness、PBO/MC、candidate diff 與風險門檻，通過後才會自動往 L3/L4 推進並通知。
+          </p>
+          <div className="mt-3 grid gap-2 md:grid-cols-3">
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="text-[11px] text-slate-500">Runs 為 0</p>
+              <p className="text-xs leading-5 text-slate-300">GA 是 config/meta 層事件，不是單一股票 run。</p>
+            </div>
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="text-[11px] text-slate-500">Symbols 為 0</p>
+              <p className="text-xs leading-5 text-slate-300">它調整門檻/權重，不直接掛在某檔股票。</p>
+            </div>
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="text-[11px] text-slate-500">Evidence</p>
+              <p className="text-xs leading-5 text-slate-300">用來追 GA 候選、gate 與 promotion ladder。</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-2 md:grid-cols-3">
         <MetricCell label="Runs" value={String(incident.run_ids?.length ?? 0)} tone="info" detail={(incident.run_ids ?? []).slice(0, 2).join(', ') || '-'} />
@@ -480,11 +506,22 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const threshold = asRecord(evidence.threshold_components)
   const thresholdInputs = asRecord(threshold.inputs)
   const bandit = asRecord(evidence.bandit_context)
+  const linucbLedger = asRecord(bandit.linucb_reward_ledger)
+  const expandedContext = asRecord(bandit.expanded_context)
   const gaEvidence = asRecord(ga?.evidence)
   const promotion = asRecord(gaEvidence.promotion)
   const bestMetrics = asRecord(gaEvidence.best_metrics)
   const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
   const historyTail = gaEvidence.history_tail
+  const metaLayer = asRecord(evidence.meta_layer)
+  const adaptiveComponents = asRecord(metaLayer.adaptive_components)
+  const metaLearners = [
+    ['LinUCB', adaptiveComponents.LinUCB, 'production baseline', 'reward ledger / per-arm samples / context coverage'],
+    ['NeuralUCB', adaptiveComponents.NeuralUCB, 'shadow challenger', 'counterfactual reward / replay / PBO'],
+    ['NeuralTS', adaptiveComponents.NeuralTS, 'shadow challenger', 'posterior uncertainty / disagreement audit'],
+    ['OnlinePortfolioBandit', adaptiveComponents.OnlinePortfolioBandit, 'strategy research', 'paper-live parity / slippage / allocation replay'],
+    ['NeuCB', adaptiveComponents.NeuCB, 'research only', 'benchmark report / OOS reward / cost profile'],
+  ].filter(([, description]) => description)
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
 
   return (
@@ -532,7 +569,19 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
               <p className="font-mono text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
             </div>
           </div>
-          <p className="mt-3 truncate font-mono text-[10px] text-[#70809b]">ledger: {String(bandit.reward_ledger ?? '-')}</p>
+          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+            <div className="flex flex-wrap items-center gap-2">
+              <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
+                ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
+              </WorkstationPill>
+              <span>arms {String(linucbLedger.arm_count ?? '-')}</span>
+              <span>samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
+              <span>ctx {String(expandedContext.version ?? linucbLedger.context_version ?? '-')}</span>
+            </div>
+            <p className="mt-2 text-[#70809b]">
+              LinUCB baseline 會用 reward ledger 追蹤每個 arm 的樣本與報酬；NeuralUCB / NeuralTS 只能拿這些 evidence 做 shadow 訓練，不會直接改 production。
+            </p>
+          </div>
         </div>
 
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
@@ -577,6 +626,27 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
               approval {promotion.approvalRequiredForNextLevel ? 'required' : 'not yet'}
             </WorkstationPill>
           </div>
+        </div>
+      </div>
+      <div className="border-t border-[#263247] p-3">
+        <div className="grid gap-2 xl:grid-cols-5">
+          {metaLearners.map(([name, description, stage, evidenceNeed]) => (
+            <div key={String(name)} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{String(name)}</p>
+                <WorkstationPill tone={stage === 'production baseline' ? 'ok' : stage === 'research only' ? 'warn' : 'info'}>
+                  {String(stage)}
+                </WorkstationPill>
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-300">{String(description)}</p>
+              <p className="mt-2 text-[11px] leading-5 text-slate-500">needs: {String(evidenceNeed)}</p>
+            </div>
+          ))}
+          {!metaLearners.length && (
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200 xl:col-span-5">
+              Meta learner contract missing: OBS 無法看到 LinUCB / NeuralUCB / NeuralTS / Portfolio Bandit / NeuCB 的定位。
+            </div>
+          )}
         </div>
       </div>
     </WorkstationPanel>

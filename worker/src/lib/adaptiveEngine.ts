@@ -1,5 +1,6 @@
 import { getAdaptiveParams, setAdaptiveParams } from './adaptiveConfig'
 import { summarizeSellOrderLosses } from './paperOrderAccounting'
+import { refreshLinUcbRewardLedger } from './metaLearningRewardLedger'
 
 interface AdaptiveEngineEnv {
   DB: D1Database
@@ -59,6 +60,39 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
   }
 }
 
+function dateDaysAgo(days: number): string {
+  return new Date(Date.now() + 8 * 3600_000 - days * 86_400_000).toISOString().slice(0, 10)
+}
+
+async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, endDate: string): Promise<Record<string, unknown>> {
+  try {
+    const report = await refreshLinUcbRewardLedger(env.DB, {
+      startDate: dateDaysAgo(90),
+      endDate,
+      limit: 5000,
+      dryRun: false,
+    })
+    const totalSamples = report.ledger_rows.reduce((sum, row) => sum + row.samples, 0)
+    const armCount = new Set(report.ledger_rows.map((row) => row.arm_id)).size
+    return {
+      reward_ledger: 'meta_reward_ledger',
+      reward_ledger_status: 'updated',
+      source_rows: report.source_rows,
+      ledger_rows: report.persisted_rows ?? report.ledger_rows.length,
+      total_samples: totalSamples,
+      arm_count: armCount,
+      context_version: 'meta-context-v2',
+    }
+  } catch (error: any) {
+    return {
+      reward_ledger: 'meta_reward_ledger',
+      reward_ledger_status: 'degraded',
+      error: error?.message ?? String(error),
+      context_version: 'meta-context-v2',
+    }
+  }
+}
+
 export async function runAdaptiveUpdate(env: AdaptiveEngineEnv): Promise<string> {
   if (!env.ML_CONTROLLER_URL) {
     throw new Error('ML_CONTROLLER_URL is required for adaptive update; Worker local adaptive computation is disabled')
@@ -88,6 +122,32 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv): Promise<string>
   const params = data.adaptive_params
   if (!params || typeof params !== 'object') {
     throw new Error('Controller /risk-assess returned invalid adaptive_params')
+  }
+
+  const ledgerContext = await refreshLinUcbLedgerForAdaptive(env, today)
+  const currentBanditContext = params.bandit_context && typeof params.bandit_context === 'object' && !Array.isArray(params.bandit_context)
+    ? params.bandit_context
+    : {}
+  params.bandit_context = {
+    ...currentBanditContext,
+    expanded_context: {
+      version: 'meta-context-v2',
+      features: [
+        'model_ic',
+        'coverage',
+        'prediction_dispersion',
+        'data_quality',
+        'market_breadth',
+        'sector_heat',
+        'liquidity',
+        'fill_quality',
+        'regime',
+        'volatility',
+        'market_risk',
+        'bias',
+      ],
+    },
+    linucb_reward_ledger: ledgerContext,
   }
 
   const summary = data.summary ?? 'Controller OK'

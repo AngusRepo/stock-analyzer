@@ -11,7 +11,8 @@ from routers import retrain_followup as followup_router  # noqa: E402
 
 
 class _Request:
-    headers: dict[str, str] = {}
+    def __init__(self, headers: dict[str, str] | None = None):
+        self.headers = headers or {}
 
 
 @pytest.mark.asyncio
@@ -21,7 +22,7 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     async def fake_record_modal_call(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr(followup_router, "INTERNAL_TOKEN", "")
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
     monkeypatch.setattr(followup_router, "record_modal_call", fake_record_modal_call)
@@ -59,6 +60,27 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     assert calls[1]["gpu"] == "L4"
     assert calls[1]["memory_mb"] == 4096
     assert calls[1]["meta"]["group"] == "ftt"
+
+
+def test_retrain_followup_accepts_modal_service_token(monkeypatch):
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: ["service-secret"])
+
+    followup_router._check_token(_Request({"X-Service-Token": "service-secret"}))
+
+
+def test_retrain_followup_accepts_controller_token_compat(monkeypatch):
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: ["controller-secret"])
+
+    followup_router._check_token(_Request({"X-Controller-Token": "controller-secret"}))
+
+
+def test_retrain_followup_rejects_wrong_token(monkeypatch):
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: ["expected-secret"])
+
+    with pytest.raises(Exception) as exc:
+        followup_router._check_token(_Request({"X-Service-Token": "wrong"}))
+
+    assert getattr(exc.value, "status_code", None) == 401
 
 
 def test_monthly_retrain_followup_builds_scheduler_callback_payload():

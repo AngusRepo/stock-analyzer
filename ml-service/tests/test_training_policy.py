@@ -37,6 +37,8 @@ def test_feature_selection_policy_keeps_current_defaults():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -54,6 +56,8 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
         "required_power": 0.95,
         "icir_weight": 0.2,
         "permutation_mode": "within_date_sector",
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -66,6 +70,8 @@ def test_feature_selection_policy_merges_payload_overrides():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -78,6 +84,8 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -233,6 +241,17 @@ def test_universal_training_policy_keeps_current_defaults():
         "ftt_margin": 0.0,
         "output_model_version": "v-test",
         "register_challengers": False,
+        "model_cpcv_policy": {
+            "family_adapters": {
+                "FT-Transformer": {
+                    "enabled": True,
+                    "explicit_enable": True,
+                    "max_epochs": 3,
+                    "batch_size": 512,
+                    "seed": 42,
+                }
+            }
+        },
     }
 
 

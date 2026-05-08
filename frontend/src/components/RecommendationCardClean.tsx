@@ -508,10 +508,14 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
     : ''
   const flatText = flat > 0 ? `，${flat}/${total}中性` : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回報` : ''
-  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
-    ? `；${summary.zeroWeightModels.join('/')} 權重=0（IC/lifecycle gate）`
+  const activeWeight = Number(summary.activeWeightCount ?? total - (summary.zeroWeightModels?.length ?? 0))
+  const weightText = Number.isFinite(activeWeight)
+    ? `；採信權重 ${Math.max(0, activeWeight)}/${total}`
     : ''
-  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `（0 權重：${summary.zeroWeightModels.join('/')}，IC/lifecycle gate）`
+    : ''
+  return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
 }
 
 function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | null {
@@ -532,10 +536,14 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
     : ''
   const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
   const missingText = missing > 0 ? `、${missing}/${total}缺資料` : ''
-  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
-    ? `；${summary.zeroWeightModels.length}模型權重=0`
+  const activeWeight = Number(summary.activeWeightCount ?? total - (summary.zeroWeightModels?.length ?? 0))
+  const weightText = Number.isFinite(activeWeight)
+    ? `；採信權重${Math.max(0, activeWeight)}/${total}`
     : ''
-  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `（${summary.zeroWeightModels.length}模型0權重）`
+    : ''
+  return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
 }
 
 function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
@@ -587,7 +595,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
       </div>
       {warnings.length > 0 && (
         <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
-          {warnings.join('；')}。這代表該模型有跑或有 artifact，但目前不被 ensemble 採信，原因通常是 IC / lifecycle / validation gate 不足。
+          {warnings.join('；')}。這代表該模型有回報 raw rank，但目前不被 ensemble 採信或只給探索底權重，原因通常是 segment IC、lifecycle 或 validation gate 不足。
         </p>
       )}
     </div>

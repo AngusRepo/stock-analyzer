@@ -86,6 +86,42 @@ class UniversalTrainRequest(BaseModel):
     model_cpcv_policy: dict | None = None
 
 
+def _ic_summary_value(metrics: dict) -> float | None:
+    value = metrics.get("ic")
+    if value is None:
+        value = metrics.get("oos_ic")
+    if value is None:
+        value = metrics.get("ic_4w_avg")
+    return value
+
+
+def _controller_callback_token() -> str:
+    return (
+        os.environ.get("ML_CONTROLLER_TOKEN")
+        or os.environ.get("INTERNAL_TOKEN")
+        or os.environ.get("ML_CONTROLLER_SECRET")
+        or os.environ.get("STOCKVISION_AUTH_TOKEN")
+        or ""
+    )
+
+
+def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | None]:
+    """Return stable manifest date bounds without NumPy string min/max.
+
+    NumPy 2.x does not support min/max reductions on string dtypes. Monthly
+    retrain uses this path after model training; failing here incorrectly marks
+    a successful train as an orchestrator error.
+    """
+
+    if dates is None or len(dates) == 0:
+        return None, None
+    values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
+    if not values:
+        return None, None
+    values.sort()
+    return values[0], values[-1]
+
+
 def normalize_universal_lifecycle_request(
     req: UniversalTrainRequest,
     *,
@@ -1471,6 +1507,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     )
     manifest_path = f"{gcs_prefix}/manifests/{training_run_id}.json"
     req_params = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    date_min, date_max = _date_min_max_for_manifest(dates_arr)
     manifest = build_training_run_manifest(
         run_id=training_run_id,
         model_names=list(trained_models.keys()),
@@ -1480,8 +1517,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "rows": int(len(X)),
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),
-            "date_min": str(dates_arr.astype(str).min()) if len(dates_arr) else None,
-            "date_max": str(dates_arr.astype(str).max()) if len(dates_arr) else None,
+            "date_min": date_min,
+            "date_max": date_max,
             "walk_forward": bool(walk_forward_mode),
             "validation_split": validation_split_metadata,
         },
@@ -1604,14 +1641,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "feature_count": len(feature_names),
                 "elapsed_s": elapsed,
                 "circuit_breaker": circuit_breaker_triggered,
-                "ic_summary": {k: v.get("ic") for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
+                "ic_summary": {k: _ic_summary_value(v) for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
                 "candidate_version": req.output_model_version,
                 "training_run_id": training_run_id,
                 "training_manifest_path": manifest_path,
                 "challenger_registrations": challenger_registrations,
             }
             _headers = {"Content-Type": "application/json"}
-            _token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
+            _token = _controller_callback_token()
             if _token:
                 _headers["X-Service-Token"] = _token
             _resp = _httpx.post(

@@ -10,6 +10,7 @@ import {
   buildPendingBuyDateSanityCheck,
   buildBoardLaneContractCheck,
   buildDatasetSnapshotManifestCheck,
+  buildRetrainFollowupClosureCheck,
   buildScreenerCandidateVolumeCheck,
   buildScreenerScoreDistributionCheck,
   buildSurfaceRoleConsistencyCheck,
@@ -82,6 +83,27 @@ function assert(condition: unknown, message: string): void {
     total: 4,
   })
   assert(check.status === 'fail', 'missing D1 hot-window manifests must fail Data Quality')
+}
+
+{
+  const check = buildRetrainFollowupClosureCheck({
+    awaiting: 1,
+    stale: 1,
+    oldestAt: '2026-05-02T20:09:50.877697Z',
+    latestAt: '2026-05-02T20:09:50.877697Z',
+  })
+  assert(check.status === 'fail', 'stale monthly retrain followup should fail data quality')
+  assert(check.summary.includes('orphaned'), 'stale followup summary should name the orphaned callback state')
+}
+
+{
+  const check = buildRetrainFollowupClosureCheck({
+    awaiting: 1,
+    stale: 0,
+    oldestAt: '2026-05-08T02:00:00.000Z',
+    latestAt: '2026-05-08T02:00:00.000Z',
+  })
+  assert(check.status === 'warn', 'fresh in-flight monthly retrain followup should warn, not fail')
 }
 
 void (async () => {

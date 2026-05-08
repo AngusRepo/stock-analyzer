@@ -82,6 +82,8 @@ class FeatureSelectionPolicy:
     required_power: float = 0.99
     icir_weight: float = 0.1
     permutation_mode: str = "within_date_sector"
+    target_permutation_max_workers: int = 2
+    k_sweep_n_jobs: int = 2
 
     @classmethod
     def from_env(cls) -> "FeatureSelectionPolicy":
@@ -98,6 +100,14 @@ class FeatureSelectionPolicy:
                 "UNIVERSAL_FEATURE_SELECTION_PERMUTATION_MODE",
                 cls.permutation_mode,
             ).strip() or cls.permutation_mode,
+            target_permutation_max_workers=_env_int(
+                "UNIVERSAL_FEATURE_SELECTION_TARGET_PERM_WORKERS",
+                cls.target_permutation_max_workers,
+            ),
+            k_sweep_n_jobs=_env_int(
+                "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_JOBS",
+                cls.k_sweep_n_jobs,
+            ),
         )
 
     def to_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
@@ -109,6 +119,11 @@ class FeatureSelectionPolicy:
             "required_power": _coerce_float(overrides.get("required_power"), data["required_power"]),
             "icir_weight": _coerce_float(overrides.get("icir_weight"), data["icir_weight"]),
             "permutation_mode": str(overrides.get("permutation_mode") or data["permutation_mode"]),
+            "target_permutation_max_workers": _coerce_int(
+                overrides.get("target_permutation_max_workers"),
+                data["target_permutation_max_workers"],
+            ),
+            "k_sweep_n_jobs": _coerce_int(overrides.get("k_sweep_n_jobs"), data["k_sweep_n_jobs"]),
         }
 
     def to_window_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
@@ -469,6 +484,17 @@ class UniversalTrainingPolicy:
         candidate_version: str,
     ) -> dict[str, float | int | str | bool]:
         payload = payload or {}
+        model_cpcv_policy = payload.get("model_cpcv_policy") or {
+            "family_adapters": {
+                "FT-Transformer": {
+                    "enabled": True,
+                    "explicit_enable": True,
+                    "max_epochs": _coerce_int(payload.get("ftt_cpcv_max_epochs"), 3),
+                    "batch_size": _coerce_int(payload.get("ftt_cpcv_batch_size"), 512),
+                    "seed": _coerce_int(payload.get("ftt_cpcv_seed"), 42),
+                }
+            }
+        }
         return {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
             "ftt_d_model": _coerce_int(payload.get("ftt_d_model"), self.ftt_d_model),
@@ -482,4 +508,5 @@ class UniversalTrainingPolicy:
             "ftt_margin": _coerce_float(payload.get("ftt_margin"), self.ftt_margin),
             "output_model_version": candidate_version,
             "register_challengers": False,
+            "model_cpcv_policy": model_cpcv_policy,
         }

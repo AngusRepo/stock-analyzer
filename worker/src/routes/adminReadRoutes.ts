@@ -254,7 +254,19 @@ adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
   const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 100))
   const { listResearchExperiments, buildResearchReviewPacket } = await import('../lib/researchExperimentRegistry')
   const { buildResearchEvaluationPlan } = await import('../lib/researchEvaluationPlan')
+  const {
+    buildMetaLearningDecisionPacket,
+    buildMetaLearningEvidenceMatrix,
+    listMetaLearningTracks,
+    listMetaRewardLedgerRows,
+    listMetaShadowDecisionEvidence,
+  } = await import('../lib/metaLearningResearchTrack')
   const experiments = await listResearchExperiments(c.env.KV, limit)
+  const metaLearningTracks = listMetaLearningTracks(experiments)
+  const [rewardLedger, shadowDecisions] = await Promise.all([
+    listMetaRewardLedgerRows(c.env.DB),
+    listMetaShadowDecisionEvidence(c.env.DB),
+  ])
   return c.json({
     success: true,
     mode: 'read_only',
@@ -263,6 +275,9 @@ adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
       review_packet: buildResearchReviewPacket(record),
       evaluation_plan: buildResearchEvaluationPlan(record),
     })),
+    meta_learning_tracks: metaLearningTracks,
+    meta_learning_evidence_matrix: buildMetaLearningEvidenceMatrix(metaLearningTracks, { rewardLedger, shadowDecisions }),
+    meta_learning_decision_packet: buildMetaLearningDecisionPacket(experiments),
   })
 })
 

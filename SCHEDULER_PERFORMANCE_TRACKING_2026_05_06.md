@@ -541,3 +541,39 @@ Closure note:
 The low-risk performance tuning worked. Compared with the prior D run, total estimated cost was roughly flat, but serving-critical wall-clock improved by about 31.9%. Compared with the original A baseline, cost is down about 63.9% and pipeline wall-clock is down about 21.3%.
 
 The remaining high-value optimization target is now `predict_batch_v2`: it accounts for about 62.6% of fifth-run estimated USD. The next pass should focus on artifact cache hit/miss telemetry, chunk-size AB (20/40/80), and avoiding redundant per-model/per-symbol payload work inside Modal. Do not change model quality or lower hardware just to chase seconds.
+
+## Monthly Retrain Callback Closure Audit - 2026-05-08
+
+### Latest Monthly Retrain Evidence
+
+| Run | Dispatch recorded in D1 | Callback evidence | Estimated elapsed until callback | D1 final status |
+|---|---|---|---:|---|
+| `universal-20260503T040014-3c1da6fc` | `2026-05-02T20:09:50.877697Z` | Cloud Run `POST /retrain/followup` returned `401` at `2026-05-02T21:21:18.281030Z` | about 71m27s | `orchestrator_dispatched`, `await_modal_followup` |
+| `universal-20260502T040109-11c78c4b` | `2026-05-01T20:10:57.851682Z` | Cloud Run `POST /retrain/followup` returned `401` at `2026-05-01T21:34:18.630296Z` | about 83m21s | `orchestrator_dispatched`, `await_modal_followup` |
+
+### Root Cause
+
+The monthly retrain compute appears to reach the callback stage, but the callback is rejected before it can close the run. The controller mounted `/retrain/followup` behind the Worker `X-Controller-Token` dependency, while Modal sends a service callback token via `X-Service-Token`. This split auth contract prevents:
+
+- retrain lock release
+- final scheduler success/error status
+- per-stage Modal cost telemetry
+- model lifecycle summary visibility
+- accurate monthly retrain runtime reporting
+
+### Local Fix Applied
+
+- `/retrain/followup` now owns its service-token validation directly instead of also requiring the Worker controller header.
+- The followup endpoint accepts canonical service callback headers and backward-compatible deployed Modal secret names.
+- Modal callback token selection now falls back through `ML_CONTROLLER_TOKEN`, `INTERNAL_TOKEN`, `ML_CONTROLLER_SECRET`, and `STOCKVISION_AUTH_TOKEN`.
+- Retrain IC callback summaries now read `ic`, `oos_ic`, or `ic_4w_avg` instead of dropping models that only report OOS IC.
+- Universal retrain prep batches now use bounded parallelism via `UNIVERSAL_PREP_CONCURRENCY` (default `3`, clamp `1..5`) instead of strictly serial prep.
+- Universal retrain now attempts to load `prices`, `indicators`, and `chips` from the GCS-backed `backtest_dataset` compute snapshot manifest before falling back to D1.
+- Snapshot selection is now `as_of_business_date=run_date`, so weekend/monthly runs choose the latest ready snapshot not newer than the retrain run date instead of blindly using the global latest object.
+- `backtest_dataset` snapshot schema is upgraded to `backtest-dataset-parquet-v2` with `sentiment`, `monthly_revenue`, `margin_data`, and `shareholding` components.
+- Universal retrain now consumes those v2 components when present. Older v1 snapshots remain safe: missing optional components fall back to D1 instead of breaking monthly retrain.
+- Data Quality now includes a `retrain_followup_closure` check: `await_modal_followup` older than 4 hours is treated as an orphaned monthly retrain callback instead of remaining invisible in `webhook_log`.
+
+### Remaining Measurement Caveat
+
+Remote `cost_events` currently only contains `modal_spawn` rows for the last monthly retrains with `compute_sec=0`, because the rejected followup never recorded child-stage telemetry. After this fix is deployed and the next monthly retrain runs, `cost_events` should include `feature_selection_pipeline`, `train_tree_models`, `train_ftt_model`, `train_dlinear_universal`, `train_patchtst_universal`, and `shap_feature_audit` stage costs.

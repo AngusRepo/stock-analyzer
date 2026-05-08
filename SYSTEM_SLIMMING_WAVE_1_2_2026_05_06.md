@@ -438,3 +438,249 @@
 - 不把 FinLab 當 production schema replacement。
 - 不用 OFFSET pagination 取代現有 keyset cursor。
 - 不先拆大檔再談效能；先找 SQL/Modal/GCS 成本熱點。
+
+---
+
+## 效能優化 V2：State-space overlay 與 verify rollup
+
+本節記錄 2026-05-08 針對 Cloud Run 成本上升的第二輪效能優化結論。原則是不降規、不降模型品質、不做大重構，而是把高成本流程接到正確決策位置，並移出不必要的同步等待。
+
+### V2-1. Kalman / Markov 的正確角色
+
+結論：
+
+- `KalmanFilter` / `MarkovSwitching` 不應預設納入 alpha ensemble vote。
+- 它們應作為 state-space overlay，接到：
+  - `regime gate`
+  - `risk confidence modifier`
+  - `position cap / slate size`
+  - `rank_signal_thresholds`
+  - audit/explanation payload
+- 若未接到上述任一決策點，就不應同步卡在 evening critical path。
+
+目前 production code truth：
+
+- `daily_pipeline_v2.node_ml_predict` 會呼叫 state-space batch：
+  - `modal_client.state_space_overlays_batch_predict(...)`
+- pipeline 會把結果掛到 in-memory prediction row：
+  - `row["kalman_filter"]`
+  - `row["markov_switching"]`
+- `ensemble_v2` 先讀 5 個 feature model rank scores，再合併 3 個 time-series alpha predictors，形成 8 alpha voters。
+- `KalmanFilter` / `MarkovSwitching` 已被排除於：
+  - alpha ensemble vote
+  - per-model IC tracking
+  - challenger promotion / demotion
+  - alternate alpha fallback
+
+核心判斷：
+
+- 目前設計定位正確：state-space overlay，不是 alpha peer。
+- 目前 production wiring 未完成：有產出 overlay，但沒有真正接到 gate/modifier，也沒有寫入 `forecast_data.state_space_overlays`。
+- 因此 Markov 目前屬於高成本、低消費價值路徑。
+
+### V2-2. State-space overlay 應接入的決策點
+
+建議把 state-space output 接到以下決策位置，而不是直接加入 ensemble vote。
+
+#### MarkovSwitching：regime gate
+
+用途：
+
+- 估計市場或個股近期 regime probability。
+- 在 bear / volatile regime probability 偏高時收緊交易條件。
+
+可接入：
+
+- `regime_aware_allocate`
+- `alpha_allocation`
+- `rank_signal_thresholds`
+- `slate_size`
+- `position_cap`
+- `ranking_promotion` aggressive level
+
+範例規則：
+
+- `volatile_probability >= 0.65`
+  - BUY threshold 上調。
+  - ranking promotion 降低或暫停。
+  - position cap 下修。
+- `bear_probability >= 0.65`
+  - 只允許 high confidence / high liquidity candidate。
+  - 降低 slate size。
+
+#### KalmanFilter：risk confidence modifier
+
+用途：
+
+- 估計 filtered trend、state uncertainty、price deviation。
+- 不負責產生 BUY/SELL，而是修正 confidence 與風險暴露。
+
+可接入：
+
+- `confidence` haircut / boost
+- `effective_confidence_threshold`
+- `stop_loss / target` 的保守程度
+- `alpha_context` explanation
+
+範例規則：
+
+- ensemble 看多，但 Kalman filtered trend 不支持：
+  - confidence haircut。
+- Kalman uncertainty 高：
+  - 提高 confidence threshold。
+  - 降低 position cap。
+- Kalman trend 穩定且與 alpha 方向一致：
+  - 小幅 confidence boost，但需設上限。
+
+### V2-3. Markov 不應同步阻塞 evening chain
+
+已觀測數據：
+
+- `SCHEDULER_PERFORMANCE_TRACKING_2026_05_06.md` 記錄 2026-05-07 D run：
+  - `KalmanFilter=2.813s`
+  - `MarkovSwitching=427.375s`
+  - pipeline app elapsed `599.440s`
+- Markov 是主要 ML wait 來源之一。
+
+優化方向：
+
+1. Kalman 可保留同步，因為成本低且可作 confidence modifier。
+2. Markov 改成以下任一模式：
+   - cache-first：同一 stock / same price window 不重跑。
+   - async overlay：推薦先 materialize，Markov 後補 overlay。
+   - regime refresh only：只有價格結構或市場 regime 明顯變動才重算。
+   - off-hot-path：寫入 overlay table，由 dashboard / report / next-run gate 使用。
+3. 若 Markov 要保留在 critical path，必須先完成 gate 接線，否則沒有決策消費價值。
+
+### V2-4. Ensemble V2 模型邊界
+
+容易誤解的地方：
+
+- `ensemble_v2` 不是只讀 `Chronos / DLinear / PatchTST`。
+- 它先讀 `rank_scores` 裡的 5 個 feature models，再合併 3 個 time-series alpha predictors。
+
+實際 alpha voters：
+
+| 類型 | 模型 | 來源 |
+|---|---|---|
+| Feature alpha | XGBoost | `pred["rank_scores"]` |
+| Feature alpha | CatBoost | `pred["rank_scores"]` |
+| Feature alpha | ExtraTrees | `pred["rank_scores"]` |
+| Feature alpha | LightGBM | `pred["rank_scores"]` |
+| Feature alpha | FT-Transformer | `pred["rank_scores"]` |
+| Time-series alpha | Chronos | `pred["chronos"].forecast_pct` |
+| Time-series alpha | DLinear | `pred["dlinear"].forecast_pct` |
+| Time-series alpha | PatchTST | `pred["patchtst"].forecast_pct` |
+
+排除在 alpha vote 之外：
+
+- KalmanFilter：state-space overlay。
+- MarkovSwitching：state-space overlay。
+- ResidualMLP：experimental challenger / shadow。
+- GNN：experimental challenger / shadow。
+- GAOptimizer：meta optimizer，不是 base alpha predictor。
+
+### V2-5. Verify aggregate：incremental rollup + off-hot-path full calibration
+
+目前 verify-v2 nightly path 已預設 skip 兩個全量刷新：
+
+- `update_model_accuracy`
+- `update_trade_performance`
+
+原因：
+
+- 這兩個 function 會掃所有 verified `(stock_id, model_name)` groups。
+- 每個 group 重算 `all / 30d / 90d`。
+- 每個 period 內再跑多個 aggregate query。
+- 每晚全量重掃會增加 Cloud Run wall time 與 D1 SQL cost。
+
+production D1 觀測數據：
+
+| 指標 | 數值 |
+|---|---:|
+| predictions total rows | 6,715 |
+| verified predictions | 536 |
+| verified groups | 317 |
+| latest prediction_date groups | 33 |
+| recent 7d verified groups | 157 |
+| model_accuracy rows | 480 |
+| model_accuracy groups | 160 |
+| model_accuracy max last_updated | 2026-05-03 16:20:02 |
+| trade_performance rows | 441 |
+| trade_performance groups | 147 |
+| trade_performance max last_updated | 2026-05-03 16:18:19 |
+
+成本比例估算：
+
+- Full rollup：
+  - `317 groups * 3 periods * 2 tables = 1,902 group-period recomputes`
+- Latest trading day incremental：
+  - `33 groups * 3 periods * 2 tables = 198 group-period recomputes`
+  - 約 full rollup 的 `10.4%`
+- Recent 7d catch-up：
+  - `157 groups * 3 periods * 2 tables = 942 group-period recomputes`
+  - 約 full rollup 的 `49.5%`
+
+結論：
+
+- 跳過 nightly 全量重掃是正確方向。
+- 但不能只 skip，否則 `model_accuracy` / `trade_performance` 會 stale。
+- 正確做法是：
+  - nightly verify 後做 incremental rollup。
+  - off-hot-path 做低頻 full calibration。
+  - dashboard / adaptive 讀取時加 freshness guard。
+
+### V2-6. Verify rollup 實作策略
+
+第一階段：incremental group refresh。
+
+- 在 `write_verified` 後保留本次 verified rows 影響到的 `(stock_id, model_name)`。
+- 只對這些 groups 重算：
+  - `all`
+  - `30d`
+  - `90d`
+- 寫回：
+  - `model_accuracy`
+  - `trade_performance`
+- 不重掃未變動 groups。
+
+第二階段：off-hot-path full calibration。
+
+- 每週或手動觸發 full rollup。
+- 用於處理：
+  - late verification correction
+  - historical backfill
+  - null `prediction_date` legacy rows
+  - schema / logic 修正後的全域校準
+- full calibration 不應阻塞 nightly recommendation materialization。
+
+第三階段：freshness guard。
+
+- 在 consuming path 加 freshness check：
+  - `adaptiveEngine`
+  - `payload_builder.load_real_accuracies`
+  - dashboard/report read routes
+- 若 `last_updated` 超過門檻：
+  - 降低該 metric 權重。
+  - 標示 stale。
+  - 不讓 stale accuracy 直接放大 confidence。
+
+### V2-7. 優先順序
+
+P0：
+
+1. 把 Kalman output 接到 confidence modifier，並寫入 audit payload。
+2. 把 Markov 從 evening critical path 改成 cache-first 或 async overlay。
+3. verify-v2 補 incremental rollup，避免 aggregate table stale。
+
+P1：
+
+1. Markov output 接 `regime_aware_allocate` / `rank_signal_thresholds`。
+2. 新增 `forecast_data.state_space_overlays`。
+3. 新增 rollup freshness observability。
+
+P2：
+
+1. 低頻 full calibration job。
+2. state-space overlay dashboard。
+3. 用 walk-forward IC / regime-conditioned IC 驗證 Markov gate 是否真的改善 risk-adjusted outcome。

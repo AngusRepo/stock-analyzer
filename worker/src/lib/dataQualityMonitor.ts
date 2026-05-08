@@ -82,6 +82,10 @@ interface CountRow {
   latest_d1_serving_manifest_at?: string | null
   latest_gcs_compute_manifest_at?: string | null
   latest_r2_report_manifest_at?: string | null
+  awaiting_retrain_followup?: number
+  stale_retrain_followup?: number
+  oldest_retrain_followup_at?: string | null
+  latest_retrain_followup_at?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -841,6 +845,34 @@ export function buildDatasetSnapshotManifestCheck(input: {
   }
 }
 
+export function buildRetrainFollowupClosureCheck(input: {
+  awaiting: number
+  stale: number
+  oldestAt?: string | null
+  latestAt?: string | null
+}): DataQualityCheck {
+  const awaiting = Number(input.awaiting ?? 0)
+  const stale = Number(input.stale ?? 0)
+  const status: DataQualityStatus = stale > 0 ? 'fail' : awaiting > 0 ? 'warn' : 'ok'
+  return {
+    id: 'retrain_followup_closure',
+    label: 'Monthly retrain followup closure',
+    status,
+    summary: status === 'ok'
+      ? 'No monthly retrain run is waiting for Modal followup.'
+      : stale > 0
+        ? `monthly retrain followup appears orphaned stale=${stale}/${awaiting}`
+        : `monthly retrain followup still in flight awaiting=${awaiting}`,
+    metrics: {
+      awaiting_modal_followup: awaiting,
+      stale_4h: stale,
+      oldest_awaiting_at: input.oldestAt ?? null,
+      latest_awaiting_at: input.latestAt ?? null,
+      stale_rule: 'status=orchestrator_dispatched + downstream_notes=await_modal_followup + age>4h',
+    },
+  }
+}
+
 async function firstCount(db: D1Database, sql: string, ...binds: unknown[]): Promise<CountRow> {
   return await db.prepare(sql).bind(...binds).first<CountRow>() ?? {}
 }
@@ -856,7 +888,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, retrainFollowupStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -1082,6 +1114,17 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
         WHERE business_date = ?`,
       targetDate,
     ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS awaiting_retrain_followup,
+              SUM(CASE WHEN julianday(received_at) < julianday('now') - (4.0 / 24.0) THEN 1 ELSE 0 END) AS stale_retrain_followup,
+              MIN(received_at) AS oldest_retrain_followup_at,
+              MAX(received_at) AS latest_retrain_followup_at
+         FROM webhook_log
+        WHERE action = 'retrain_followup'
+          AND status = 'orchestrator_dispatched'
+          AND downstream_notes = 'await_modal_followup'`,
+    ).catch((): CountRow => ({})),
   ])
 
   const predictionRows = (predictionGroups.results ?? []).reduce((sum, row) => sum + Number(row.count ?? 0), 0)
@@ -1208,6 +1251,12 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       latestD1ServingManifestAt: datasetManifestStats.latest_d1_serving_manifest_at ?? null,
       latestGcsComputeManifestAt: datasetManifestStats.latest_gcs_compute_manifest_at ?? null,
       latestR2ReportManifestAt: datasetManifestStats.latest_r2_report_manifest_at ?? null,
+    }),
+    buildRetrainFollowupClosureCheck({
+      awaiting: Number(retrainFollowupStats.awaiting_retrain_followup ?? 0),
+      stale: Number(retrainFollowupStats.stale_retrain_followup ?? 0),
+      oldestAt: retrainFollowupStats.oldest_retrain_followup_at ?? null,
+      latestAt: retrainFollowupStats.latest_retrain_followup_at ?? null,
     }),
   ]
 

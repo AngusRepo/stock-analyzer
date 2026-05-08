@@ -20,6 +20,25 @@ _LOCAL_APP_DIR     = Path(__file__).parent / "app"
 _LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 
+
+def _ic_summary_value(metrics: dict) -> float | None:
+    value = metrics.get("ic")
+    if value is None:
+        value = metrics.get("oos_ic")
+    if value is None:
+        value = metrics.get("ic_4w_avg")
+    return value
+
+
+def _controller_callback_token() -> str:
+    return (
+        os.environ.get("ML_CONTROLLER_TOKEN")
+        or os.environ.get("INTERNAL_TOKEN")
+        or os.environ.get("ML_CONTROLLER_SECRET")
+        or os.environ.get("STOCKVISION_AUTH_TOKEN")
+        or ""
+    )
+
 # Modal image built with the v1.x API.
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -579,16 +598,31 @@ def retrain_orchestrator(payload: dict) -> dict:
         except Exception as e:
             print(f"[Orchestrator] IC tracking GCS save failed: {e}")
 
-        # SHAP (runs after both containers done)
+        # SHAP audit is governance evidence, not a blocker for model artifacts.
+        # Default to deferred spawn so monthly retrain callback is not held by
+        # a dashboard audit that can be inspected separately.
         try:
-            print("[Orchestrator] Auto-triggering SHAP audit...")
+            shap_mode = str(
+                payload.get("shap_audit_mode")
+                or os.environ.get("UNIVERSAL_SHAP_AUDIT_MODE", "deferred")
+            ).strip().lower()
+            print(f"[Orchestrator] Auto-triggering SHAP audit mode={shap_mode}...")
             shap_t0 = time.time()
-            shap_result = shap_feature_audit.remote({"shap_samples": 10000})
-            result["stages"]["shap"] = {
-                "status": "ok",
-                "elapsed_s": round(time.time() - shap_t0, 1),
-                "keep_count": shap_result.get("keep_count"),
-            }
+            if shap_mode == "inline":
+                shap_result = shap_feature_audit.remote({"shap_samples": 10000})
+                result["stages"]["shap"] = {
+                    "status": "ok",
+                    "mode": "inline",
+                    "elapsed_s": round(time.time() - shap_t0, 1),
+                    "keep_count": shap_result.get("keep_count"),
+                }
+            else:
+                shap_feature_audit.spawn({"shap_samples": 10000})
+                result["stages"]["shap"] = {
+                    "status": "deferred",
+                    "mode": "spawn",
+                    "elapsed_s": round(time.time() - shap_t0, 1),
+                }
         except Exception as e:
             print(f"[Orchestrator] SHAP failed (non-blocking): {e}")
             result["stages"]["shap"] = {"status": "error", "error": str(e)}
@@ -627,7 +661,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "elapsed_s": elapsed,
                 "circuit_breaker": bool(train_stage.get("circuit_breaker", False)),
                 "ic_summary": {
-                    name: metrics.get("ic")
+                    name: _ic_summary_value(metrics)
                     for name, metrics in (train_stage.get("ic_tracking", {}) or {}).items()
                     if isinstance(metrics, dict)
                 },
@@ -642,7 +676,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 ),
             }
             headers = {"Content-Type": "application/json"}
-            token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
+            token = _controller_callback_token()
             if token:
                 headers["X-Service-Token"] = token
             resp = httpx.post(
@@ -811,10 +845,18 @@ def train_universal_from_gcs(payload: dict) -> dict:
     auto_audit = payload.get("auto_audit", True)
     if auto_audit and "error" not in train_result:
         try:
-            print("[TrainUniversal] Auto-triggering SHAP dashboard audit...")
-            shap_result = shap_feature_audit.remote({"shap_samples": 10000})
-            train_result["shap_result"] = shap_result
-            print(f"[TrainUniversal] SHAP done: {shap_result.get('keep_count', '?')} features kept")
+            shap_mode = str(
+                payload.get("shap_audit_mode")
+                or os.environ.get("UNIVERSAL_SHAP_AUDIT_MODE", "deferred")
+            ).strip().lower()
+            print(f"[TrainUniversal] Auto-triggering SHAP dashboard audit mode={shap_mode}...")
+            if shap_mode == "inline":
+                shap_result = shap_feature_audit.remote({"shap_samples": 10000})
+                train_result["shap_result"] = shap_result
+                print(f"[TrainUniversal] SHAP done: {shap_result.get('keep_count', '?')} features kept")
+            else:
+                shap_feature_audit.spawn({"shap_samples": 10000})
+                train_result["shap_result"] = {"status": "deferred", "mode": "spawn"}
         except Exception as e:
             print(f"[TrainUniversal] SHAP auto-trigger failed (non-blocking): {e}")
             train_result["shap_error"] = str(e)
@@ -1360,6 +1402,11 @@ def feature_selection_pipeline(payload: dict) -> dict:
             alpha=selection_params["alpha"],
             dry_run=payload.get("dry_run", False),
             icir_weight=selection_params["icir_weight"],
+            permutation_mode=selection_params["permutation_mode"],
+            target_permutation_max_workers=selection_params["target_permutation_max_workers"],
+            k_sweep_n_jobs=selection_params["k_sweep_n_jobs"],
+            train_end_date=payload.get("train_end_date"),
+            gcs_prefix=payload.get("gcs_prefix"),
         )
     except Exception as e:
         import traceback

@@ -98,6 +98,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'optuna-queue',
       'retrain',
       'monthly-retrain',
+      'neural-ucb-shadow',
+      'neural-ts-shadow',
     ])
 
     if (longRunning.has(task) && !syncMode) {

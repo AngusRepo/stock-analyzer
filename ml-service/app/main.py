@@ -121,6 +121,21 @@ class FactorAuditRequest(BaseModel):
     market_env: dict | None = None
 
 
+class NeuralMetaBanditRequest(BaseModel):
+    policy_id: str = Field(..., pattern="^(NeuralUCB|NeuralTS)$")
+    contexts: list[list[float]]
+    arms: list[int]
+    rewards: list[float]
+    arm_names: list[str]
+    business_date: str
+    symbols: list[str]
+    baseline_actions: list[str]
+    epochs: int = Field(default=120, ge=1, le=2000)
+    hidden_dim: int = Field(default=32, ge=4, le=256)
+    learning_rate: float = Field(default=0.01, gt=0, le=1)
+    seed: int = Field(default=42, ge=0)
+
+
 @app.post("/factor-ic-audit")
 async def factor_ic_audit(req: FactorAuditRequest, request: Request):
     """
@@ -160,6 +175,51 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
         "weak_count": len(weak),
         "weak_features": weak,
         "details": results,
+    }
+
+
+@app.post("/meta-learning/neural-shadow/train")
+async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, request: Request):
+    """Train NeuralUCB/NeuralTS shadow challenger and return evidence only."""
+    await verify_service_token(request)
+    from .neural_meta_bandit import (
+        NeuralMetaBanditConfig,
+        build_shadow_decisions,
+        train_neural_meta_bandit,
+    )
+
+    contexts = np.asarray(req.contexts, dtype="float32")
+    arms = np.asarray(req.arms, dtype=np.int64)
+    rewards = np.asarray(req.rewards, dtype="float32")
+    mode = "ts" if req.policy_id == "NeuralTS" else "ucb"
+    policy = train_neural_meta_bandit(
+        contexts,
+        arms,
+        rewards,
+        arm_names=req.arm_names,
+        config=NeuralMetaBanditConfig(
+            policy_id=req.policy_id,  # type: ignore[arg-type]
+            epochs=req.epochs,
+            hidden_dim=req.hidden_dim,
+            learning_rate=req.learning_rate,
+            seed=req.seed,
+        ),
+    )
+    decisions = build_shadow_decisions(
+        policy,
+        business_date=req.business_date,
+        symbols=req.symbols,
+        contexts=contexts[:len(req.symbols)],
+        baseline_actions=req.baseline_actions,
+        mode=mode,
+    )
+    return {
+        "success": True,
+        "mode": "shadow_evidence_only",
+        "policy_id": req.policy_id,
+        "training_report": policy.training_report.__dict__,
+        "shadow_decisions": decisions,
+        "production_effect": "none",
     }
 
 

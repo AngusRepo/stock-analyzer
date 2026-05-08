@@ -114,14 +114,13 @@ function formatDuration(durationMs?: number | null): string {
   return `${Math.floor(durationMs / 1000)}s`
 }
 
-function getLast7Dates(): string[] {
+export function getSchedulerScanDates(): string[] {
   const dates: string[] = []
   const now = new Date(Date.now() + 8 * 3600_000)
-  for (let i = 0; i < 10 && dates.length < 7; i += 1) {
+  for (let i = 0; i < 14; i += 1) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
-    const dow = d.getDay()
-    if (dow >= 1 && dow <= 5) dates.push(d.toISOString().slice(0, 10))
+    dates.push(d.toISOString().slice(0, 10))
   }
   return dates
 }
@@ -298,7 +297,8 @@ function inferIdleStatus(def: JobDef, nextRun: string, today: string): Scheduler
 }
 
 export async function getSchedulerStatus(env: Bindings) {
-  const dates = getLast7Dates()
+  const dates = getSchedulerScanDates()
+  const displayDates = dates.slice(0, 7)
   const today = dates[0]
 
   const allLogs: Record<string, CronLogEntry[]> = {}
@@ -319,7 +319,7 @@ export async function getSchedulerStatus(env: Bindings) {
     const { lastAttempt, lastEffective } = selectSchedulerDisplayLogs(displayLogs)
     const lastLog = lastAttempt ?? lastEffective
 
-    const history7d = dates.map((date) => {
+    const history7d = displayDates.map((date) => {
       const log = getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id)
       if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
       return log.status === 'success' ? 'success' : 'failed'
@@ -389,7 +389,7 @@ export async function getSchedulerStatus(env: Bindings) {
     const job = jobs.find((row) => row.id === jobId)
     return {
       name: job?.name || jobId,
-      cells: dates.map((date) => {
+      cells: displayDates.map((date) => {
         const log = getDisplayLog(allLogs[date], jobId) ?? inferPipelineChildLog(allLogs[date], jobId)
         if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
         return log.status === 'success' ? 'success' : 'failed'
@@ -413,6 +413,6 @@ export async function getSchedulerStatus(env: Bindings) {
       steps: dagSteps,
     },
     heatmap,
-    dates: dates.reverse(),
+    dates: displayDates.reverse(),
   }
 }

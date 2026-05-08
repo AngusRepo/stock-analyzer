@@ -355,6 +355,8 @@ export function ThemeFlowPanel() {
 
   const allFlows = themeData?.flows ?? []
   const allStocks = stocksData?.stocks ?? []
+  const dataDate = themeData?.stale ? themeData?.stale_date : themeData?.date
+  const updatedAt = allFlows[0]?.created_at
   const MIN_NET = 0.1  // 最小成交額 0.1 億（過濾雜訊）
   const topBuy  = allFlows.filter((f: any) => (f.total_net ?? 0) > MIN_NET).slice(0, 10)
   const topSell = allFlows.filter((f: any) => (f.total_net ?? 0) < -MIN_NET).sort((a: any, b: any) => (a.total_net ?? 0) - (b.total_net ?? 0)).slice(0, 10)
@@ -376,9 +378,16 @@ export function ThemeFlowPanel() {
       <SectorFlowStaleNotice data={themeData} label="主題資金流" />
       <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-[#fff7e8]">
         <BarChart3 className="h-4 w-4 text-[#d6a85f]" />
-        主題輪動（三大法人近 5 日買賣超金額，單位：億元）
+        主題資金流（近 5 個交易日累計，單位：億元）
       </h3>
-      <p className="mb-3 text-[11px] text-muted-foreground">資料口徑：原始 chip_data 是股數；sector_flow 已由後端用收盤價換算成億元。若與每日總買賣超不同，優先查 source date、分類覆蓋率與 sector_flow_stocks 是否 stale。</p>
+      <div className="mb-3 rounded-xl border border-[#3a3125] bg-[#0b0d11]/70 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+        <p>
+          資料日 {dataDate ?? '-'}{updatedAt ? `；更新 ${updatedAt}` : ''}。這裡不是單日全市場三大法人總買賣超，而是每個主題成分股近 5 個交易日的外資、投信、自營商股數，乘以收盤價後加總成億元。
+        </p>
+        <p className="mt-1 text-[#d6a85f]">
+          注意：同一檔股票可同時屬於 AI PC、5G、車用電子等多個主題，所以不同主題金額不可相加成全市場總額；若要看單日全市場三大法人，應看 market-wide chip flow。
+        </p>
+      </div>
       {themeLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
@@ -431,7 +440,7 @@ export function ThemeFlowPanel() {
           )}
           {/* Bar chart — 買超 */}
           <div>
-            <p className="text-xs text-red-400 font-medium mb-2">買超前 10 大</p>
+            <p className="text-xs text-red-400 font-medium mb-2">近 5 日買超主題 Top 10</p>
             <div className="space-y-1.5">
               {topBuy.length ? topBuy.map((f: any) => (
                 <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />
@@ -440,7 +449,7 @@ export function ThemeFlowPanel() {
           </div>
           {/* Bar chart — 賣超 */}
           <div>
-            <p className="text-xs text-emerald-400 font-medium mb-2">賣超前 10 大</p>
+            <p className="text-xs text-emerald-400 font-medium mb-2">近 5 日賣超主題 Top 10</p>
             <div className="space-y-1.5">
               {topSell.length ? topSell.map((f: any) => (
                 <SectorFlowBar key={f.sector} flow={f} maxAbs={maxAbs} />

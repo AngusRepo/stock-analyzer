@@ -130,14 +130,21 @@ def latest_dataset_snapshot(
     *,
     kind: str,
     business_date: str | None = None,
+    as_of_business_date: str | None = None,
     access_tier: SnapshotAccessTier = "compute",
     market_segment: str | None = None,
 ) -> dict[str, Any] | None:
+    if business_date and as_of_business_date:
+        raise ValueError("dataset_snapshot_date_filter_conflict")
+
     where = ["kind = ?", "access_tier = ?", "status = 'ready'"]
     params: list[Any] = [kind, access_tier]
     if business_date:
         where.append("business_date = ?")
         params.append(business_date)
+    if as_of_business_date:
+        where.append("business_date <= ?")
+        params.append(as_of_business_date)
     if market_segment:
         where.append("(market_segment = ? OR market_segment IS NULL)")
         params.append(market_segment)

@@ -139,3 +139,118 @@ adminWriteRoutes.post('/api/admin/research/experiments/:id/evaluation-plan/run',
     stored,
   })
 })
+
+adminWriteRoutes.post('/api/admin/meta-learning/linucb/reward-ledger/refresh', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type RefreshBody = {
+    start_date?: string
+    end_date?: string
+    limit?: number
+    dry_run?: boolean
+  }
+  const body = await c.req.json<RefreshBody>().catch(() => ({} as RefreshBody))
+  const { refreshLinUcbRewardLedger } = await import('../lib/metaLearningRewardLedger')
+  const dryRun = body.dry_run !== false
+  if (!dryRun && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    return c.json({
+      error: 'LinUCB reward ledger write requires header X-Confirm-Meta-Learning: true',
+      hint: 'Run dry_run first. This route only persists meta-learning evidence rows; it never deploys, promotes, retrains or trades.',
+    }, 400)
+  }
+
+  const report = await refreshLinUcbRewardLedger(c.env.DB, {
+    startDate: body.start_date,
+    endDate: body.end_date,
+    limit: body.limit,
+    dryRun,
+  })
+  return c.json({
+    ...report,
+    note: dryRun
+      ? 'dry_run only; POST dry_run=false with X-Confirm-Meta-Learning:true to persist reward ledger evidence'
+      : 'LinUCB reward ledger evidence persisted; Strategy Lab / OBS can now show per-arm samples and reward history',
+  })
+})
+
+adminWriteRoutes.post('/api/admin/meta-learning/shadow-decisions', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400)
+
+  const {
+    normalizeMetaShadowDecisionInput,
+    persistMetaShadowDecisionRows,
+    summarizeMetaShadowDecisionRows,
+  } = await import('../lib/metaLearningShadowDecisions')
+  const normalized = normalizeMetaShadowDecisionInput(body)
+  if (!normalized.ok) {
+    return c.json({ error: 'invalid_meta_shadow_decisions', errors: normalized.errors }, 400)
+  }
+
+  const dryRun = body.dry_run !== false
+  if (dryRun) {
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      policy_id: normalized.rows[0]?.policy_id,
+      summary: summarizeMetaShadowDecisionRows(normalized.rows),
+      rows: normalized.rows.slice(0, 20),
+      hint: 'Re-POST with dry_run=false and X-Confirm-Meta-Learning: true to persist shadow evidence.',
+    })
+  }
+
+  if (c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    return c.json({
+      error: 'Meta shadow decision write requires header X-Confirm-Meta-Learning: true',
+      hint: 'Run dry_run first. This route only persists shadow evidence rows; it never deploys, promotes, retrains or trades.',
+    }, 400)
+  }
+
+  const persisted = await persistMetaShadowDecisionRows(c.env.DB, normalized.rows)
+  return c.json({
+    success: true,
+    mode: 'persisted',
+    policy_id: normalized.rows[0]?.policy_id,
+    persisted_rows: persisted,
+    summary: summarizeMetaShadowDecisionRows(normalized.rows),
+  })
+})
+
+adminWriteRoutes.post('/api/admin/meta-learning/neural-shadow/run', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    policy_id?: 'NeuralUCB' | 'NeuralTS'
+    start_date?: string
+    end_date?: string
+    limit?: number
+    dry_run?: boolean
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const policyId = body.policy_id === 'NeuralTS' ? 'NeuralTS' : 'NeuralUCB'
+  const dryRun = body.dry_run !== false
+  if (!dryRun && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    return c.json({
+      error: 'Neural shadow run persistence requires header X-Confirm-Meta-Learning: true',
+      hint: 'Run dry_run first. This route only persists shadow evidence rows; it never deploys, promotes, retrains production models or trades.',
+    }, 400)
+  }
+
+  const { runNeuralMetaShadow } = await import('../lib/metaLearningShadowRunner')
+  const report = await runNeuralMetaShadow(c.env, {
+    policyId,
+    startDate: body.start_date,
+    endDate: body.end_date,
+    limit: body.limit,
+    dryRun,
+  })
+  return c.json({
+    ...report,
+    note: 'Neural meta shadow challenger evidence only; production LinUCB / trading config remain unchanged.',
+  })
+})

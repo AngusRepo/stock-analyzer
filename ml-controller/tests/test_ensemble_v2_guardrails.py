@@ -411,6 +411,25 @@ def test_daily_pipeline_ic_shrinkage_keeps_short_sample_model_from_hard_zero(mon
     assert bundle["diagnostics"]["PatchTST"]["ic_shrinkage"]["reason"] == "negative_ic_confirmed"
 
 
+def test_daily_pipeline_uncertain_negative_segment_gets_exploration_floor(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = {
+        "models": {
+            "XGBoost": {
+                "status": "active",
+                "last_ic_by_segment": {"OTC": {"ic": -0.278226, "n_samples": 32}},
+                "model_cpcv": {"decision": "PASS", "pbo": 0.10},
+            },
+        }
+    }
+
+    bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "OTC")
+
+    assert bundle["weights"]["XGBoost"] == 0.0025
+    assert bundle["diagnostics"]["XGBoost"]["ic_shrinkage"]["reason"] == "uncertain_negative_floor"
+    assert bundle["diagnostics"]["XGBoost"]["ic_shrinkage"]["sample_count"] < 40
+
+
 def test_daily_pipeline_uses_pooled_floor_when_segment_ic_is_negative_but_global_evidence_is_positive(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
     pool = {

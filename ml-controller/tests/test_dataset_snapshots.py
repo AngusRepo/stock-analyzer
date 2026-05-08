@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.dataset_snapshots import (  # noqa: E402
+    latest_dataset_snapshot,
     resolve_snapshot_store_role,
     validate_dataset_snapshot_manifest,
 )
@@ -70,3 +71,50 @@ def test_manifest_validation_accepts_compute_gcs_and_report_r2():
 
     assert compute_errors == []
     assert report_errors == []
+
+
+def test_latest_dataset_snapshot_supports_as_of_business_date(monkeypatch):
+    captured = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [{
+            "snapshot_id": "snap-2026-05-06",
+            "kind": "backtest_dataset",
+            "business_date": "2026-05-06",
+            "schema_version": "v1",
+            "row_count": 10,
+            "checksum": "sha256:x",
+            "primary_store": "gcs",
+            "access_tier": "compute",
+            "producer_run_id": "evening-chain",
+            "gcs_uri": "gs://stockvision-models/datasets/backtest/2026-05-06",
+            "status": "ready",
+        }]
+
+    monkeypatch.setattr("services.dataset_snapshots.d1_client.query", fake_query)
+
+    row = latest_dataset_snapshot(
+        kind="backtest_dataset",
+        access_tier="compute",
+        as_of_business_date="2026-05-07",
+    )
+
+    assert row["snapshot_id"] == "snap-2026-05-06"
+    assert "business_date <= ?" in captured["sql"]
+    assert captured["params"] == ["backtest_dataset", "compute", "2026-05-07"]
+
+
+def test_latest_dataset_snapshot_rejects_conflicting_date_filters():
+    try:
+        latest_dataset_snapshot(
+            kind="backtest_dataset",
+            access_tier="compute",
+            business_date="2026-05-06",
+            as_of_business_date="2026-05-07",
+        )
+    except ValueError as exc:
+        assert str(exc) == "dataset_snapshot_date_filter_conflict"
+    else:
+        raise AssertionError("expected conflict error")

@@ -128,6 +128,65 @@ def _query_market_risk(start_date: str, end_date: str) -> pl.DataFrame:
     ))
 
 
+def _query_sentiment_scores(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
+    return _query_date_range(
+        """
+        SELECT stock_id, date(published_at) as date,
+               AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score
+        FROM news
+        WHERE date(published_at) >= ? AND date(published_at) <= ?
+        GROUP BY stock_id, date(published_at)
+        ORDER BY stock_id, date
+        """,
+        start_date,
+        end_date,
+        chunk_days,
+    )
+
+
+def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
+    return _frame(d1_client.query(
+        """
+        SELECT stock_id, date, revenue, revenue_yoy, revenue_mom
+        FROM monthly_revenue
+        WHERE date <= ?
+        ORDER BY stock_id, date
+        """,
+        [end_date],
+        timeout=120.0,
+    ))
+
+
+def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
+    return _query_date_range(
+        """
+        SELECT stock_id, date, margin_buy, margin_sell, margin_balance,
+               short_buy, short_sell, short_balance, short_ratio
+        FROM margin_data
+        WHERE date >= ? AND date <= ?
+        ORDER BY stock_id, date
+        """,
+        start_date,
+        end_date,
+        chunk_days,
+    )
+
+
+def _query_shareholding(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
+    return _query_date_range(
+        """
+        SELECT stock_id, date, total_shares, holder_count, retail_shares,
+               retail_pct, large_holder_shares, large_holder_pct
+        FROM shareholding
+        WHERE date >= ? AND date <= ?
+        ORDER BY stock_id, date
+        """,
+        start_date,
+        end_date,
+        chunk_days,
+    )
+
+
 def _write_compute_snapshot(
     *,
     req: DatasetSnapshotExportRequest,
@@ -258,6 +317,10 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         chunk_days,
     )
     market_risk = _query_market_risk(req.start_date, req.end_date)
+    sentiment, sentiment_queries = _query_sentiment_scores(req.start_date, req.end_date, chunk_days)
+    monthly_revenue = _query_monthly_revenue(req.start_date, req.end_date)
+    margin_data, margin_queries = _query_margin_data(req.start_date, req.end_date, chunk_days)
+    shareholding, shareholding_queries = _query_shareholding(req.start_date, req.end_date, chunk_days)
 
     if stocks.is_empty():
         raise RuntimeError("dataset_export_no_stocks")
@@ -269,6 +332,14 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         chips = _empty_frame(["symbol", "date"])
     if market_risk.is_empty():
         market_risk = _empty_frame(["date"])
+    if sentiment.is_empty():
+        sentiment = _empty_frame(["stock_id", "date", "score"])
+    if monthly_revenue.is_empty():
+        monthly_revenue = _empty_frame(["stock_id", "date", "revenue_yoy"])
+    if margin_data.is_empty():
+        margin_data = _empty_frame(["stock_id", "date", "margin_balance", "short_ratio"])
+    if shareholding.is_empty():
+        shareholding = _empty_frame(["stock_id", "date", "retail_pct"])
 
     components: dict[str, pl.DataFrame] = {
         "stocks": stocks,
@@ -276,6 +347,10 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         "indicators": indicators,
         "chips": chips,
         "market_risk": market_risk,
+        "sentiment": sentiment,
+        "monthly_revenue": monthly_revenue,
+        "margin_data": margin_data,
+        "shareholding": shareholding,
     }
     signal_queries = 0
     if req.include_signals:
@@ -300,7 +375,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
 
     return _write_compute_snapshot(
         req=req,
-        schema_version="backtest-dataset-parquet-v1",
+        schema_version="backtest-dataset-parquet-v2",
         components=components,
         d1_query_counts={
             "stocks": 1,
@@ -308,6 +383,10 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "indicators": indicator_queries,
             "chips": chip_queries,
             "market_risk": 1,
+            "sentiment": sentiment_queries,
+            "monthly_revenue": 1,
+            "margin_data": margin_queries,
+            "shareholding": shareholding_queries,
             "signals": signal_queries,
         },
         started=started,

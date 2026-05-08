@@ -1,4 +1,5 @@
 import {
+  getSchedulerScanDates,
   resolveSchedulerLogStatus,
   selectSchedulerDisplayLogs,
   type SchedulerDisplayLogCandidate,
@@ -30,6 +31,17 @@ const logs: SchedulerDisplayLogCandidate[] = [
     },
   },
 ]
+
+{
+  const originalNow = Date.now
+  Date.now = () => Date.parse('2026-05-08T04:00:00.000Z')
+  try {
+    const dates = getSchedulerScanDates()
+    assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
+  } finally {
+    Date.now = originalNow
+  }
+}
 
 {
   const display = selectSchedulerDisplayLogs(logs)

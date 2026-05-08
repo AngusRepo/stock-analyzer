@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hmac
 from datetime import datetime, timezone
 from typing import Any
 
@@ -54,14 +55,32 @@ class RetrainFollowupPayload(BaseModel):
     stages: dict[str, Any] = Field(default_factory=dict)
 
 
-INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "") or os.environ.get("ML_CONTROLLER_TOKEN", "")
+_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
+
+
+def _valid_service_tokens() -> list[str]:
+    tokens = [
+        os.environ.get("INTERNAL_TOKEN", ""),
+        os.environ.get("ML_CONTROLLER_TOKEN", ""),
+        os.environ.get("ML_CONTROLLER_SECRET", ""),
+        # Backward compatibility for currently deployed Modal secrets.
+        os.environ.get("STOCKVISION_AUTH_TOKEN", ""),
+    ]
+    return list(dict.fromkeys(token.strip() for token in tokens if token and token.strip()))
 
 
 def _check_token(request: Request) -> None:
-    if not INTERNAL_TOKEN:
+    tokens = _valid_service_tokens()
+    if not tokens:
+        if _ENVIRONMENT == "production":
+            raise HTTPException(status_code=500, detail="retrain followup token not configured")
         return
-    provided = request.headers.get("X-Service-Token", "")
-    if provided != INTERNAL_TOKEN:
+    provided = (
+        request.headers.get("X-Service-Token", "")
+        or request.headers.get("X-Controller-Token", "")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
+    if not any(hmac.compare_digest(provided, token) for token in tokens):
         raise HTTPException(status_code=401, detail="invalid service token")
 
 

@@ -108,6 +108,11 @@ def test_dataset_snapshot_exporter_produces_gcs_manifest():
     assert "upsert_dataset_snapshot_manifest" in source
     assert "build_dataset_snapshot_manifest" in source
     assert "access_tier=\"compute\"" in source
+    assert "backtest-dataset-parquet-v2" in source
+    assert '"sentiment": sentiment' in source
+    assert '"monthly_revenue": monthly_revenue' in source
+    assert '"margin_data": margin_data' in source
+    assert '"shareholding": shareholding' in source
     assert "dataset_export_no_prices" in source
     assert "dataset_export_no_ensemble_signals" in source
     assert "price-history-parquet-v1" in source

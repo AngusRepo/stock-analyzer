@@ -1,4 +1,5 @@
 import {
+  ensureMetaLearningResearchRegistry,
   buildMetaLearningEvidenceMatrix,
   buildMetaLearningDecisionPacket,
   listMetaLearningTracks,
@@ -101,3 +102,35 @@ const baseExperiment: ResearchExperimentRecord = {
   assert(neural?.shadow_status === 'partial', 'NeuralUCB should show partial shadow evidence when decisions exist')
   assert(portfolio?.evidence_status === 'missing', 'portfolio bandit should remain missing without experiment evidence')
 }
+
+async function assertEnsureMetaLearningResearchRegistry(): Promise<void> {
+  const storage = new Map<string, string>()
+  const kv = {
+    async list({ prefix }: { prefix: string; limit?: number }) {
+      return {
+        keys: [...storage.keys()]
+          .filter((name) => name.startsWith(prefix))
+          .map((name) => ({ name })),
+      }
+    },
+    async get(name: string) {
+      const raw = storage.get(name)
+      return raw ? JSON.parse(raw) : null
+    },
+    async put(name: string, value: string) {
+      storage.set(name, value)
+    },
+  } as unknown as KVNamespace
+
+  const first = await ensureMetaLearningResearchRegistry(kv, '2026-05-08T00:00:00.000Z')
+  const second = await ensureMetaLearningResearchRegistry(kv, '2026-05-08T00:00:00.000Z')
+  assert(first.created.length === 5, 'meta learning registry closure should seed all five track experiments')
+  assert(second.created.length === 0, 'meta learning registry closure must be idempotent')
+  const tracks = listMetaLearningTracks(await Promise.all([...storage.values()].map((raw) => JSON.parse(raw))))
+  assert(
+    tracks.every((track) => track.registered_experiment_ids.length > 0),
+    'all meta learning tracks should link to seeded experiment registry records',
+  )
+}
+
+void assertEnsureMetaLearningResearchRegistry()

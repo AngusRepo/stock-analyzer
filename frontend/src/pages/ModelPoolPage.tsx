@@ -269,7 +269,7 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       <p className="mt-0.5 text-[10px] text-[#70809b]">{candidate.titleZh} / {candidate.family}</p>
                     </div>
                     <WorkstationPill tone={evidence.isEvidenceReady ? 'ok' : evidence.latest ? 'warn' : 'error'}>
-                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'registry incomplete' : 'not trained'}
+                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'registry incomplete' : 'registry missing'}
                     </WorkstationPill>
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
@@ -429,27 +429,27 @@ function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineage
                   </WorkstationPill>
                 </div>
 
-                <div className="mt-3 grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-5">
-                  <div className="bg-[#070a10] p-2">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">input series</p>
-                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeInputSeries)} → {compactMetric(row.challengerInputSeries)}</p>
-                    <p className="mt-1 text-[10px] text-[#70809b]">sequence_report.input_series {compactMetric(row.challengerSequenceReportInputSeries)}</p>
+                <div className="mt-3 grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
+                  <div className="bg-[#070a10] p-3">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">Active artifact / 現行版本</p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
+                      <span>input series</span><span className="font-mono text-right">{compactMetric(row.activeInputSeries)}</span>
+                      <span>train windows</span><span className="font-mono text-right">{compactMetric(row.activeTrainWindows)}</span>
+                      <span>OOS / val windows</span><span className="font-mono text-right">{compactMetric(row.activeValWindows)}</span>
+                      <span>dir accuracy</span><span className="font-mono text-right">{compactMetric(row.activeDirAccuracy, 3)}</span>
+                    </div>
                   </div>
-                  <div className="bg-[#070a10] p-2">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">train windows</p>
-                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeTrainWindows)} → {compactMetric(row.challengerTrainWindows)}</p>
-                  </div>
-                  <div className="bg-[#070a10] p-2">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">OOS / val windows</p>
-                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeValWindows)} → {compactMetric(row.challengerValWindows)}</p>
-                  </div>
-                  <div className="bg-[#070a10] p-2">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">dir accuracy</p>
-                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.activeDirAccuracy, 3)} → {compactMetric(row.challengerDirAccuracy, 3)}</p>
-                  </div>
-                  <div className="bg-[#070a10] p-2">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">challenger OOS IC</p>
-                    <p className="mt-1 text-xs text-slate-100">{compactMetric(row.challengerOosIc, 4)} · daily {compactMetric(row.challengerDailyIcCount)}</p>
+                  <div className="bg-[#070a10] p-3">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">Challenger artifact / 挑戰版本</p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
+                      <span>input series</span><span className="font-mono text-right">{compactMetric(row.challengerInputSeries)}</span>
+                      <span>train windows</span><span className="font-mono text-right">{compactMetric(row.challengerTrainWindows)}</span>
+                      <span>OOS / val windows</span><span className="font-mono text-right">{compactMetric(row.challengerValWindows)}</span>
+                      <span>dir accuracy</span><span className="font-mono text-right">{compactMetric(row.challengerDirAccuracy, 3)} ({deltaMetric(row.activeDirAccuracy, row.challengerDirAccuracy, 3)})</span>
+                      <span>OOS IC</span><span className="font-mono text-right">{compactMetric(row.challengerOosIc, 4)}</span>
+                      <span>daily IC rows</span><span className="font-mono text-right">{compactMetric(row.challengerDailyIcCount)}</span>
+                    </div>
+                    <p className="mt-2 text-[10px] text-[#70809b]">sequence_report.input_series {compactMetric(row.challengerSequenceReportInputSeries)}</p>
                   </div>
                 </div>
 

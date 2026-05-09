@@ -61,24 +61,13 @@ function isInsufficientDataResponse(status: number, text: string): boolean {
   return status === 400 && /insufficient|no top stocks|benchmark/i.test(text)
 }
 
-function summarizeOptunaOk(source: string, data: Record<string, any> | null): string {
-  if (source !== 'ga_optimizer') return `${source}:OK`
-
-  const push = data?.push
-  const updatedKeys = Array.isArray(push?.updatedKeys) ? push.updatedKeys : []
-  if (push?.success === true && updatedKeys.includes('optimizer:ga:latest')) {
-    return 'ga_optimizer:OK(push=optimizer:ga:latest)'
-  }
-  return `ga_optimizer:ERROR(push_missing:${JSON.stringify(push ?? null).slice(0, 120)})`
-}
-
 async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) {
   requireController(env)
 
-  const resp = await controllerFetch(env, '/optuna/research_sweep', {
+  const resp = await controllerFetch(env, '/optuna/research_sweep/run', {
     method: 'POST',
     jsonBody: buildOptunaSweepRequestBody(options),
-    timeoutMs: 3_500_000,
+    timeoutMs: 60_000,
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
@@ -88,25 +77,15 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
     throw new Error(`${options.cadence} research sweep HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
-  const results = Array.isArray(data.results)
-    ? data.results.map((item: any) => String(item.summary ?? `${item.source}:${item.status ?? 'unknown'}`))
-    : [String(data.summary ?? `${options.cadence}:OK`)]
-  if (data.ga?.push) {
-    results.push(summarizeOptunaOk('ga_optimizer', { push: data.ga.push }))
-  }
-  const summary = results.join(', ')
-  const failures = results.filter((item) => /:HTTP\d+|:ERROR\(|^REJECTED:/i.test(item))
+  const executionId = String(data.execution_id ?? '')
+  const summary = `optuna research Job triggered cadence=${options.cadence} execution_id=${executionId || 'unknown'} callback expected`
 
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./notify')
-    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, `${options.cadence} Optuna research complete\n${summary}`)
+    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, `${options.cadence} Optuna research triggered\n${summary}`)
   }
 
-  if (failures.length > 0) {
-    throw new Error(`${options.cadence} research failure: ${failures.join(', ')}`)
-  }
-
-  return `cadence=${options.cadence}, ${summary}`
+  return `triggered ${summary}`
 }
 
 export async function runWeeklyOptunaResearch(env: Bindings) {

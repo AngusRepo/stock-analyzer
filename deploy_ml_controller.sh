@@ -58,6 +58,8 @@ GCP_PROJECT_ID="${GCP_PROJECT_ID:-gen-lang-client-0602998820}"
 GCP_REGION="${GCP_REGION:-asia-east1}"
 PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
+OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
+OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +75,7 @@ REQUIRED_ENV_VARS=(
   GCP_REGION
   PIPELINE_JOB_NAME
   VERIFY_JOB_NAME
+  OPTUNA_JOB_NAME
   STOCKVISION_WORKER_URL
 )
 
@@ -228,6 +231,12 @@ load_live_image_state() {
   LIVE_VERIFY_JOB_ENTRYPOINT=$(gcloud run jobs describe "$VERIFY_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+  LIVE_OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_OPTUNA_JOB_ENTRYPOINT=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
 }
 
 build_verify_job_env_file() {
@@ -261,6 +270,7 @@ for item in container.get("env", []):
     envs[name] = item.get("value", "")
 
 envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]
+envs["OPTUNA_JOB_NAME"] = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep")
 envs["VERIFY_CALLBACK_TASK"] = "verify-v2"
 envs["STOCKVISION_WORKER_URL"] = os.environ["STOCKVISION_WORKER_URL"]
 
@@ -345,6 +355,55 @@ sync_verify_job() {
   echo ""
 }
 
+sync_optuna_job() {
+  local env_file="$1"
+  local service_account_args=()
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$OPTUNA_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3c/4: Update Job $OPTUNA_JOB_NAME image + entrypoint ==="
+    if ! gcloud run jobs update "$OPTUNA_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=optuna_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --task-timeout="$OPTUNA_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --env-vars-file="$env_file"; then
+      echo "??Optuna job update failed" >&2
+      exit 4
+    fi
+    echo "??Optuna job update succeeded"
+  else
+    echo "=== Step 3c/4: Create Job $OPTUNA_JOB_NAME from $JOB template ==="
+    if ! gcloud run jobs create "$OPTUNA_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=optuna_job_main \
+        --cpu="$VERIFY_JOB_CPU" \
+        --memory="$VERIFY_JOB_MEMORY" \
+        --task-timeout="$OPTUNA_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --env-vars-file="$env_file"; then
+      echo "??Optuna job create failed" >&2
+      exit 4
+    fi
+    echo "??Optuna job create succeeded"
+  fi
+  echo ""
+}
+
 run_preflight() {
   echo "=== Preflight: local deploy inputs ==="
   require_nonempty "GCS_BUCKET_NAME" "Example: export GCS_BUCKET_NAME=stockvision-models"
@@ -353,10 +412,12 @@ run_preflight() {
   require_nonempty "GCP_REGION" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "PIPELINE_JOB_NAME" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
+  require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
 
   for var_name in "${REQUIRED_ENV_VARS[@]}"; do
     print_preflight_value "$var_name"
   done
+  print_preflight_value "OPTUNA_JOB_TIMEOUT"
   echo ""
 
   echo "=== Preflight: current live service env drift ==="
@@ -393,10 +454,14 @@ run_preflight() {
     echo "  Live verify image     : ${LIVE_VERIFY_JOB_IMG}"
     echo "  Live verify entrypoint: ${LIVE_VERIFY_JOB_ENTRYPOINT:-unknown}"
   fi
+  if [ -n "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
+    echo "  Live optuna image     : ${LIVE_OPTUNA_JOB_IMG}"
+    echo "  Live optuna entrypoint: ${LIVE_OPTUNA_JOB_ENTRYPOINT:-unknown}"
+  fi
 
-  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ]; then
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
     echo "  Unable to fully verify Service / Job image drift from current environment."
-  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ]; then
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ]; then
     echo "  Service / Job image sync: OK"
   else
     echo "  Service / Job image sync: DRIFT DETECTED"
@@ -441,7 +506,7 @@ if ! gcloud run deploy "$SERVICE" \
     --source . \
     --region="$REGION" \
     --timeout=3600 \
-    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}" \
+    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}" \
     --quiet; then
   echo "❌ Service deploy failed" >&2
   exit 2
@@ -471,7 +536,7 @@ echo "=== Step 3/4: Update Job $JOB image to match Service ==="
 if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
-    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}"; then
+    --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}"; then
   echo "❌ Job update failed" >&2
   exit 4
 fi
@@ -480,6 +545,7 @@ echo ""
 
 # ── Step 4/4: Verify ─────────────────────────────────────────────────────────
 sync_verify_job "$VERIFY_JOB_ENV_FILE"
+sync_optuna_job "$VERIFY_JOB_ENV_FILE"
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
 SERVICE_IMG=$(gcloud run services describe "$SERVICE" --region="$REGION" \
@@ -488,16 +554,23 @@ JOB_IMG=$(gcloud run jobs describe "$JOB" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
+OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 VERIFY_JOB_ARGS=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
+OPTUNA_JOB_COMMAND=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+OPTUNA_JOB_ARGS=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
 
-if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ]; then
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
   echo "  Service: $SERVICE_IMG" >&2
   echo "  Job    : $JOB_IMG" >&2
   echo "  Verify : $VERIFY_JOB_IMG" >&2
+  echo "  Optuna : $OPTUNA_JOB_IMG" >&2
   exit 5
 fi
 
@@ -505,6 +578,13 @@ if [ "$VERIFY_JOB_COMMAND" != "python" ] || [ "$VERIFY_JOB_ARGS" != "-m;verify_j
   echo "??VERIFICATION FAILED ??verify job entrypoint drift:" >&2
   echo "  command : $VERIFY_JOB_COMMAND" >&2
   echo "  args    : $VERIFY_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$OPTUNA_JOB_COMMAND" != "python" ] || [ "$OPTUNA_JOB_ARGS" != "-m;optuna_job_main" ]; then
+  echo "??VERIFICATION FAILED ??optuna job entrypoint drift:" >&2
+  echo "  command : $OPTUNA_JOB_COMMAND" >&2
+  echo "  args    : $OPTUNA_JOB_ARGS" >&2
   exit 5
 fi
 
@@ -567,6 +647,7 @@ echo "  Service revision : $SERVICE_REV"
 echo "  Image            : $SERVICE_IMG"
 echo "  Pipeline job     : synced"
 echo "  Verify job       : synced"
+echo "  Optuna job       : synced"
 [ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
 echo ""
 echo "Next step: trigger pipeline-v2 to verify new code path executes. Example:"

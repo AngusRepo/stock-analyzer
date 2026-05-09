@@ -380,6 +380,141 @@ function SelectedIncidentDetail({
   )
 }
 
+function IncidentInboxV2({
+  incidents,
+  selectedId,
+  events,
+  onOpen,
+}: {
+  incidents: ObservabilityIncident[]
+  selectedId?: string
+  events: ObservabilityEvent[]
+  onOpen: (id: string) => void
+}) {
+  if (!incidents.length) {
+    return (
+      <div className="p-4">
+        <WorkstationPill tone="ok">No active incidents / 目前無事件</WorkstationPill>
+      </div>
+    )
+  }
+
+  return (
+    <div className="divide-y divide-[#263247]">
+      {incidents.map((incident) => {
+        const timing = incidentTiming(incident, events)
+        const tone = severityTone(incident.severity)
+        return (
+          <button
+            key={incident.id}
+            type="button"
+            onClick={() => onOpen(incident.id)}
+            aria-pressed={selectedId === incident.id}
+            className={`w-full border-b border-[#263247] p-3 text-left transition-colors hover:bg-[#152033] ${
+              selectedId === incident.id ? 'bg-amber-300/10' : 'bg-[#05070c]'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <WorkstationPill tone={tone}>{incident.status}</WorkstationPill>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{incident.domain}</span>
+                  <span className="font-mono text-[10px] text-slate-500">{incident.source_event_ids?.length ?? 0} events</span>
+                </div>
+                <p className="mt-2 truncate text-sm font-semibold text-slate-100">{incident.title}</p>
+                <div className="mt-2 grid gap-1 font-mono text-[10px] text-slate-500">
+                  <span>first {formatObsTime(timing.firstSeen)} · last {formatObsTime(timing.lastSeen)}</span>
+                  <span>age {timing.duration}</span>
+                </div>
+                <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.root_cause || incident.impact || '-'}</p>
+                <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 65 : 35} tone={tone} />
+              </div>
+              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-amber-200">
+                Open <ArrowRight className="h-3 w-3" />
+              </span>
+            </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function SelectedIncidentDetailV2({
+  incident,
+  fallbackEvents,
+}: {
+  incident?: ObservabilityIncident
+  fallbackEvents: ObservabilityEvent[]
+}) {
+  if (!incident) {
+    return (
+      <div className="p-4">
+        <WorkstationPill tone="ok">No selected incident / 尚未選擇事件</WorkstationPill>
+      </div>
+    )
+  }
+
+  const timing = incidentTiming(incident, fallbackEvents)
+  const tone = severityTone(incident.severity)
+  const evidence = asRecord(incident.evidence)
+  const statuses = formatEvidenceValue(evidence.statuses)
+  const sources = formatEvidenceValue(evidence.sources)
+  const eventCount = formatEvidenceValue(evidence.event_count ?? incident.source_event_ids?.length)
+  const isGaPromotionGate =
+    incident.title.toLowerCase().includes('ga optimizer') ||
+    String(incident.root_cause ?? '').toLowerCase().includes('adaptive_meta:shadow_config') ||
+    String(evidence.sources ?? '').toLowerCase().includes('ga_optimizer')
+
+  return (
+    <div className="space-y-3 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Incident / 事件</p>
+          <h2 className="mt-1 text-xl font-semibold text-slate-100">{incident.title}</h2>
+        </div>
+        <WorkstationPill tone={tone}>{incident.severity}</WorkstationPill>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-3">
+        <MetricCell label="First seen / 首次發生" value={formatObsTime(timing.firstSeen)} tone="info" detail="第一次被歸入此 root-cause 群組" />
+        <MetricCell label="Last seen / 最後更新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="最後一筆相關 event / audit log" />
+        <MetricCell label="Age / 持續時間" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="first seen 到 last seen" />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root Cause / 根因</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.root_cause || '-'}</p>
+        </div>
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact / 影響</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.impact || '-'}</p>
+        </div>
+        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-200">Next Action / 下一步</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.next_action || '-'}</p>
+        </div>
+      </div>
+
+      {isGaPromotionGate && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">GA Promotion Gate / GA 晉級門檻</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            這不是排程失敗，而是 GA optimizer 已產生候選參數但尚未通過 promotion ladder。Production trading:config 會保持不變，直到 fitness、PBO/MC 與 candidate diff 都通過門檻。
+          </p>
+        </div>
+      )}
+
+      <div className="grid gap-2 md:grid-cols-3">
+        <MetricCell label="Runs / 執行" value={String(incident.run_ids?.length ?? 0)} tone="info" detail={(incident.run_ids ?? []).slice(0, 2).join(', ') || '-'} />
+        <MetricCell label="Symbols / 股票" value={String(incident.affected_symbols?.length ?? 0)} tone={(incident.affected_symbols?.length ?? 0) ? 'warn' : 'ok'} detail={(incident.affected_symbols ?? []).slice(0, 4).join(', ') || '-'} />
+        <MetricCell label="Evidence / 證據" value={`${eventCount} events`} tone={statusTone(incident.status)} detail={`${sources}; ${statuses}`} />
+      </div>
+    </div>
+  )
+}
+
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
@@ -513,15 +648,7 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const bestMetrics = asRecord(gaEvidence.best_metrics)
   const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
   const historyTail = gaEvidence.history_tail
-  const metaLayer = asRecord(evidence.meta_layer)
-  const adaptiveComponents = asRecord(metaLayer.adaptive_components)
-  const metaLearners = [
-    ['LinUCB', adaptiveComponents.LinUCB, 'production baseline', 'reward ledger / per-arm samples / context coverage'],
-    ['NeuralUCB', adaptiveComponents.NeuralUCB, 'shadow challenger', 'counterfactual reward / replay / PBO'],
-    ['NeuralTS', adaptiveComponents.NeuralTS, 'shadow challenger', 'posterior uncertainty / disagreement audit'],
-    ['OnlinePortfolioBandit', adaptiveComponents.OnlinePortfolioBandit, 'strategy research', 'paper-live parity / slippage / allocation replay'],
-    ['NeuCB', adaptiveComponents.NeuCB, 'research only', 'benchmark report / OOS reward / cost profile'],
-  ].filter(([, description]) => description)
+  const metaLearners: Array<[string, string, string, string]> = []
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
 
   return (
@@ -644,7 +771,7 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
           ))}
           {!metaLearners.length && (
             <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200 xl:col-span-5">
-              Meta learner contract missing: OBS 無法看到 LinUCB / NeuralUCB / NeuralTS / Portfolio Bandit / NeuCB 的定位。
+              Meta learner research cards are owned by Strategy Lab / Model Pool. OBS only shows operational evidence: threshold policy, LinUCB ledger, and GA promotion health.
             </div>
           )}
         </div>
@@ -731,31 +858,29 @@ export default function ObservabilityPage() {
           }
         />
 
-        <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#2b3a49] md:grid-cols-5">
+        <div className="rounded-2xl border border-[#2b3a49] bg-[#0b111b]">
+          <div className="border-b border-[#2b3a49] px-3 py-2">
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#fff1cf]">Reliability Map / 可靠度地圖</p>
+            <p className="mt-1 text-xs text-slate-500">同一列看 SLO，不用箭頭假裝它們有直接相依。</p>
+          </div>
+        <section className="grid grid-cols-1 overflow-hidden bg-[#2b3a49] md:grid-cols-5">
           <MetricCell label="Incidents / 事件" value={String(incidents.length)} tone={incidents.length ? 'warn' : 'ok'} count={`${events.length} events`} detail="grouped root-cause inbox" />
           <MetricCell label="Scheduler SLO / 排程" value={`${schedulerScore}%`} tone={failedJobs ? 'warn' : 'ok'} count={`${jobs.length} jobs`} detail={`${failedJobs} failed`} />
           <MetricCell label="Data Trust / 資料" value={`${dataQualityScore}%`} tone={statusTone(dataQuality.data?.overall)} count={`${dqChecks.length} checks`} detail={`${failedChecks} failed`} />
           <MetricCell label="Deploy Gate / 上線" value={formatStatus(deployGate.data?.decision)} tone={statusTone(deployGate.data?.decision)} count="gate" detail="predeploy safety" />
           <MetricCell label="Trace / 追蹤" value={String(events.length)} tone={observability.error ? 'warn' : 'info'} count="logs" detail={observability.data?.date ?? '-'} />
         </section>
-
-        <ReliabilityMap
-          incidents={incidents.length}
-          schedulerOk={schedulerScore}
-          dataQualityOk={dataQualityScore}
-          deployOk={deployScore}
-          traceOk={events.length}
-        />
+        </div>
 
         <AdaptiveMetaPanel events={events} />
 
         <section className="grid gap-4 xl:grid-cols-[360px_1fr_300px]">
           <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="time, count, owner">
-            <IncidentInbox incidents={incidents} selectedId={selectedIncident?.id} events={events} onOpen={openIncident} />
+            <IncidentInboxV2 incidents={incidents} selectedId={selectedIncident?.id} events={events} onOpen={openIncident} />
           </WorkstationPanel>
 
           <WorkstationPanel title="Selected Incident Detail / 事件根因" kicker="impact + next action">
-            <SelectedIncidentDetail incident={selectedIncident} fallbackEvents={events} />
+            <SelectedIncidentDetailV2 incident={selectedIncident} fallbackEvents={events} />
           </WorkstationPanel>
 
           <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">

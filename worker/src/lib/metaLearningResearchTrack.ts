@@ -1,5 +1,10 @@
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
-import type { ResearchExperimentRecord } from './researchExperimentRegistry'
+import {
+  listResearchExperiments,
+  normalizeResearchExperimentInput,
+  putResearchExperiment,
+  type ResearchExperimentRecord,
+} from './researchExperimentRegistry'
 
 export type MetaLearningTrackStage =
   | 'production_baseline'
@@ -220,6 +225,50 @@ export function buildMetaLearningDecisionPacket(experiments: ResearchExperimentR
     lines.push(`${track.id}: stage=${track.stage}, status=${track.decision_queue_status}, experiments=${track.registered_experiment_ids.join(',') || 'none'}`)
   }
   return lines.join('\n')
+}
+
+export async function ensureMetaLearningResearchRegistry(
+  kv: KVNamespace,
+  nowIso = new Date().toISOString(),
+): Promise<{ created: string[]; existing: string[]; total: number }> {
+  assertOwnerCanOwn('research', 'experiment_registry')
+
+  const existingRecords = await listResearchExperiments(kv, 100)
+  const existingByTrack = new Map<MetaLearningTrackId, string[]>()
+  for (const track of TRACKS) {
+    existingByTrack.set(
+      track.id,
+      existingRecords
+        .filter((record) => experimentMatchesTrack(record, track.id))
+        .map((record) => record.id),
+    )
+  }
+
+  const created: string[] = []
+  for (const track of TRACKS) {
+    if ((existingByTrack.get(track.id) ?? []).length > 0) continue
+    const normalized = normalizeResearchExperimentInput({
+      id: `meta-${track.id.toLowerCase()}-${META_LEARNING_TRACK_VERSION}`,
+      status: track.stage === 'production_baseline' || track.stage === 'shadow_challenger'
+        ? 'running'
+        : 'queued',
+      hypothesis: track.experiment_template.hypothesis,
+      sourceRefs: track.experiment_template.sourceRefs,
+      strategySpecIds: track.experiment_template.strategySpecIds,
+      dataSlice: track.experiment_template.dataSlice,
+      metrics: track.experiment_template.metrics,
+      followUp: track.experiment_template.followUp,
+    }, nowIso)
+    if (!normalized.ok || !normalized.record) continue
+    await putResearchExperiment(kv, normalized.record)
+    created.push(normalized.record.id)
+  }
+
+  return {
+    created,
+    existing: [...existingByTrack.values()].flat(),
+    total: existingRecords.length + created.length,
+  }
 }
 
 function totalSamples(rows: Array<{ samples: number }>): number {

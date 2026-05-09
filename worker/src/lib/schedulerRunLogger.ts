@@ -32,6 +32,7 @@ const TASK_NAMES: Record<string, string> = {
   'post-verify-chain': 'Post Verify Chain',
   'dataset-snapshot-export': 'Dataset Snapshot Export',
   'linucb-reward-ledger': 'LinUCB Reward Ledger',
+  'meta-learning-shadow': 'Meta Learning Shadow',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',

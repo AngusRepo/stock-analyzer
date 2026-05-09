@@ -72,6 +72,23 @@ def test_weekly_monthly_optuna_sweep_uses_controller_owned_bounded_parallelism()
     assert "for source, runner in sweep_plan:" not in router_source
 
 
+def test_weekly_monthly_optuna_sweep_has_job_trigger_and_callback_entrypoint():
+    router_source = (ROOT / "routers" / "optuna.py").read_text(encoding="utf-8")
+    job_source = (ROOT / "optuna_job_main.py").read_text(encoding="utf-8")
+
+    assert '@router.post("/research_sweep/run")' in router_source
+    assert "OPTUNA_JOB_NAME" in router_source
+    assert "CloudRunJobsClient" in router_source
+    assert "OPTUNA_ALLOW_SYNC_SWEEP" in router_source
+    assert "execute_research_sweep" in job_source
+    assert 'task = f"{cadence}-optuna"' in job_source
+    assert '"task": task' in job_source
+    assert "_callback_worker" in job_source
+    assert "OPTUNA_CADENCE" in job_source
+    assert "OPTUNA_N_TRIALS" in job_source
+    assert "OPTUNA_SUBSET_SIZE" in job_source
+
+
 def test_research_data_policy_prevents_silent_fallback():
     source = (ROOT / "services" / "research_data_access.py").read_text(encoding="utf-8")
 

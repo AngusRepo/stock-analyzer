@@ -44,9 +44,15 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh") <
+    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
+  'Neural meta-learning shadow evidence must run after LinUCB reward ledger is refreshed',
+)
+assert(
+  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
     postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
-  'adaptive params must run after reward ledger evidence is persisted',
+  'adaptive params must run after shadow evidence closure so OBS can show the full meta loop',
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
+assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')

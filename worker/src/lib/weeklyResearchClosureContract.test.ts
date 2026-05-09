@@ -16,17 +16,17 @@ assert(
 )
 
 assert(
-  workflows.includes("'/optuna/research_sweep'") &&
+  workflows.includes("'/optuna/research_sweep/run'") &&
     !workflows.includes("Promise.allSettled(sources.map") &&
     !workflows.includes("`/optuna/${src}`"),
-  'weekly/monthly Optuna must call one controller-owned research_sweep endpoint, not Worker fan-out across nine endpoints',
+  'weekly/monthly Optuna must trigger one controller-owned research_sweep Job endpoint, not Worker fan-out across nine endpoints',
 )
 
 assert(
-  workflows.includes('research failure') &&
-    workflows.includes('throw new Error') &&
-    workflows.includes('HTTP'),
-  'weekly Optuna research must fail-close when any source errors or returns HTTP failure',
+  workflows.includes('callback expected') &&
+    workflows.includes('execution_id') &&
+    workflows.includes('research_sweep/run'),
+  'weekly/monthly Optuna must not synchronously wait for the full heavy sweep; it should return triggered and rely on Job callback',
 )
 
 assert(
@@ -36,9 +36,9 @@ assert(
 )
 
 assert(
-  workflows.includes("ga_optimizer:OK(push=optimizer:ga:latest)") &&
-    workflows.includes('push_missing'),
-  'GA optimizer must verify optimizer:ga:latest was actually pushed before weekly Optuna is considered healthy',
+  workflows.includes('optuna research Job triggered') &&
+    workflows.includes('callback expected'),
+  'GA optimizer success must be determined by the optuna Job callback, not by a request-scoped Worker wait',
 )
 
 assert(
@@ -55,8 +55,8 @@ assert(
 )
 
 assert(
-  workflows.includes('timeoutMs: 3_500_000'),
-  'weekly/monthly Optuna should keep zombie protection while allowing long-running research routes to finish against snapshots',
+  workflows.includes('timeoutMs: 60_000'),
+  'weekly/monthly Optuna trigger should be short-lived; the long-running sweep belongs in Cloud Run Job',
 )
 
 assert(

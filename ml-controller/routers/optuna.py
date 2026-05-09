@@ -19,6 +19,7 @@ GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 
+from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 from services.d1_client import query as d1_query
 from services.alpha_quality_policy import alpha_quality_policy
 from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
@@ -45,6 +47,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/optuna", tags=["optuna"])
 OPTUNA_D1_READ_CHUNK_SIZE = 80
+OPTUNA_JOB_NAME = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep").strip() or "optuna-research-sweep"
+_optuna_jobs_client = CloudRunJobsClient(job_name=OPTUNA_JOB_NAME)
 
 
 class OptunaReq(BaseModel):
@@ -996,9 +1000,13 @@ def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
         }
 
 
-@router.post("/research_sweep")
-def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
-    """Controller-owned weekly/monthly Optuna sweep with per-route evidence."""
+def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
+    """Controller-owned weekly/monthly Optuna sweep with per-route evidence.
+
+    This is intentionally an internal execution function. Production triggers
+    must go through /research_sweep/run so Cloud Run Job owns the long lifecycle
+    and Worker only receives final callback status.
+    """
     common = {
         "cadence": req.cadence,
         "n_trials": req.n_trials,
@@ -1058,6 +1066,69 @@ def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearch
         "results": results,
         "failures": failures,
         "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
+    }
+
+
+@router.post("/research_sweep")
+def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
+    """Debug-only synchronous sweep endpoint.
+
+    Keep the route for local diagnostics, but fail closed by default so manual
+    or legacy production callers cannot accidentally recreate Cloudflare 524.
+    """
+    if os.environ.get("OPTUNA_ALLOW_SYNC_SWEEP") != "1":
+        raise HTTPException(
+            status_code=409,
+            detail="Synchronous Optuna research sweep is disabled; trigger /optuna/research_sweep/run so Cloud Run Job can callback final status.",
+        )
+    return execute_research_sweep(req)
+
+
+@router.post("/research_sweep/run")
+def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
+    """Trigger the long-running Optuna research sweep as a Cloud Run Job.
+
+    Worker and Cloud Scheduler must not wait for the full 9-source research
+    sweep over HTTP. The Job owns the long lifecycle and callbacks Worker with
+    the final weekly-optuna/monthly-optuna status.
+    """
+    env_overrides = {
+        "OPTUNA_CADENCE": req.cadence,
+        "OPTUNA_N_TRIALS": str(req.n_trials),
+        "OPTUNA_SUBSET_SIZE": str(req.subset_size),
+        "OPTUNA_MAX_PARALLEL_SOURCES": str(req.max_parallel_sources),
+        "OPTUNA_GA_POPULATION_SIZE": str(req.ga_population_size),
+        "OPTUNA_GA_GENERATIONS": str(req.ga_generations),
+        "OPTUNA_RESEARCH_DATA_SOURCE": str(req.research_data_source or "snapshot"),
+        "OPTUNA_PUSH_KV": "1" if req.push_kv else "0",
+        "OPTUNA_DRY_RUN": "1" if req.dry_run else "0",
+    }
+    try:
+        execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"{OPTUNA_JOB_NAME} already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "cadence": req.cadence,
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[Optuna/research_sweep/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run Optuna Job trigger failed: {type(e).__name__}: {e}",
+        ) from e
+
+    return {
+        "status": "triggered",
+        "job": OPTUNA_JOB_NAME,
+        "cadence": req.cadence,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "message": "optuna research Job triggered; callback expected",
     }
 
 

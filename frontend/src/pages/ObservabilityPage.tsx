@@ -522,30 +522,98 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
     return statusRank(a.lastStatus) - statusRank(b.lastStatus) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name)
   })
   return (
-    <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
-      {sortedJobs.map((job) => (
-        <div key={job.id} className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
-              <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
+    <div className="space-y-3">
+      <SchedulerExecutionMap jobs={jobs} />
+      <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
+        {sortedJobs.map((job) => (
+          <div key={job.id} className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
+                <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
+              </div>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
             </div>
-            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
+            <div className="min-w-0 font-mono text-slate-400">
+              <p>last {job.lastRun || '-'}</p>
+              <p className="text-slate-600">next {job.nextRun || '-'}</p>
+            </div>
+            <div className="min-w-0 font-mono text-slate-400">
+              <p>{job.lastDuration || '-'}</p>
+              <p className="text-slate-600">7d {job.rate7d || '-'}</p>
+            </div>
+            <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+              Drilldown <ExternalLink className="h-3 w-3" />
+            </a>
+            {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
           </div>
-          <div className="min-w-0 font-mono text-slate-400">
-            <p>last {job.lastRun || '-'}</p>
-            <p className="text-slate-600">next {job.nextRun || '-'}</p>
-          </div>
-          <div className="min-w-0 font-mono text-slate-400">
-            <p>{job.lastDuration || '-'}</p>
-            <p className="text-slate-600">7d {job.rate7d || '-'}</p>
-          </div>
-          <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
-            Drilldown <ExternalLink className="h-3 w-3" />
-          </a>
-          {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const SCHEDULER_FLOW = [
+  { id: 'evening-chain', label: 'Chain root' },
+  { id: 'indicator-queue', label: 'Indicators' },
+  { id: 'screener', label: 'Screener' },
+  { id: 'pipeline', label: 'Pipeline' },
+  { id: 'ml-predict', label: 'ML predict' },
+  { id: 'recommendation', label: 'Recommendation' },
+  { id: 'verify-v2', label: 'Verify' },
+  { id: 'model-ic-tracker', label: 'IC tracker' },
+  { id: 'linucb-reward-ledger', label: 'Reward ledger' },
+  { id: 'meta-learning-shadow', label: 'Meta shadow' },
+] as const
+
+function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
+  const jobById = new Map(jobs.map((job) => [job.id, job]))
+  const stages = SCHEDULER_FLOW.map((stage) => {
+    const job = jobById.get(stage.id)
+    const status = String(job?.lastStatus ?? 'waiting').toLowerCase()
+    return {
+      ...stage,
+      job,
+      status,
+      tone: statusTone(status),
+    }
+  })
+  const active = stages.find((stage) => ['running', 'waiting', 'failed'].includes(stage.status)) ?? stages.find((stage) => stage.status !== 'success')
+  const waiting = active ? stages.slice(stages.indexOf(active) + 1).filter((stage) => stage.status !== 'success').map((stage) => stage.label) : []
+
+  return (
+    <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution dependency map / 執行依賴地圖</p>
+          <p className="mt-1 text-xs text-slate-400">
+            目前階段：{active?.label ?? 'complete'}；等待：{waiting.slice(0, 4).join(' -> ') || 'none'}
+          </p>
         </div>
-      ))}
+        <a href="/scheduler" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+          Full scheduler <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+      <div className="flex flex-wrap items-stretch gap-2">
+        {stages.map((stage, index) => (
+          <div key={stage.id} className="flex items-center gap-2">
+            <div className={`min-w-[118px] rounded-lg border px-2 py-2 ${
+              stage.tone === 'ok' ? 'border-emerald-500/25 bg-emerald-500/10'
+                : stage.tone === 'warn' ? 'border-amber-500/25 bg-amber-500/10'
+                  : stage.tone === 'error' ? 'border-rose-500/25 bg-rose-500/10'
+                    : stage.tone === 'neutral' ? 'border-slate-600/30 bg-slate-800/20'
+                      : 'border-sky-500/25 bg-sky-500/10'
+            }`}>
+              <p className="truncate text-xs font-semibold text-slate-100">{stage.label}</p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em]" style={{ color: toneColor(stage.tone) }}>
+                {schedulerStatusLabel(stage.status)}
+              </p>
+              <p className="mt-1 truncate font-mono text-[10px] text-slate-500">{stage.job?.lastDuration || '-'}</p>
+            </div>
+            {index < stages.length - 1 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-600" />}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -752,6 +820,13 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
             <WorkstationPill tone={promotion.approvalRequiredForNextLevel ? 'warn' : 'ok'}>
               approval {promotion.approvalRequiredForNextLevel ? 'required' : 'not yet'}
             </WorkstationPill>
+          </div>
+          <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-100">
+            <p className="font-semibold text-amber-200">L3 晉級規則</p>
+            <p>GA 會自動學習並產生 candidate，但 L3/L4 會先停在 approval gate：必須看到 fitness、PBO/MC、candidate diff 都合格，且由 Wei 審核後才允許寫入 production trading:config。</p>
+            <a href="/strategy-lab" className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200 hover:text-amber-100">
+              Review GA candidate <ExternalLink className="h-3 w-3" />
+            </a>
           </div>
         </div>
       </div>

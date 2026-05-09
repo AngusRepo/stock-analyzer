@@ -20,9 +20,10 @@ export function clearToken() {
 }
 export function getToken() { return _token }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const headers: Record<string,string> = { 'Content-Type': 'application/json' }
   if (_token) headers['Authorization'] = `Bearer ${_token}`
+  Object.assign(headers, extraHeaders)
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
   if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
   if (!res.ok) { const e = await res.json().catch(() => ({ error: res.statusText })) as any; throw new Error(e.error ?? `HTTP ${res.status}`) }
@@ -586,11 +587,17 @@ export const strategyLabApi = {
     strategySpecIds?: string[]
     metrics?: string[]
     followUp?: string[]
+    dataSlice?: Record<string, unknown>
+    status?: string
+    id?: string
     dry_run?: boolean
-  }) => post<{ success: boolean; mode: 'dry_run' | 'persisted'; experiment: ResearchExperiment; review_packet: string; hint?: string }>(
-    '/admin/research/experiments',
-    body,
-  ),
+    confirm?: boolean
+    }) => req<{ success: boolean; mode: 'dry_run' | 'persisted'; experiment: ResearchExperiment; review_packet: string; hint?: string }>(
+      'POST',
+      '/admin/research/experiments',
+      body,
+      body.confirm ? { 'X-Confirm-Research': 'true' } : undefined,
+    ),
   runEvaluationPlan: (id: string) => post<ResearchEvaluationRunResponse>(
     `/admin/research/experiments/${encodeURIComponent(id)}/evaluation-plan/run`,
     { dry_run: true },

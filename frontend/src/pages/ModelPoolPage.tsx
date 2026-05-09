@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, RefreshCw } from 'lucide-react'
+import { ArrowRight, Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
@@ -235,6 +235,14 @@ function candidateExperiments(candidateId: string, experiments: ResearchExperime
     .slice(0, 3)
 }
 
+function modelUpgradeNextAction(stage: ModelUpgradeStage, hasEvidence: boolean) {
+  if (hasEvidence) return '下一步：由 Strategy Lab 檢查 evidence matrix，通過後才可進 promotion / challenger gate。'
+  if (stage === 'shadow_challenger') {
+    return '下一步不是 Scheduler job：到 Strategy Lab 建立或選擇 experiment，執行 model_benchmark dry-run / shadow evaluation，產出 OOS IC、CPCV/PBO、cost profile；若要固定自動跑，需另建 research-evaluation scheduler。'
+  }
+  return '下一步不是 Scheduler job：到 Strategy Lab 建立 model benchmark experiment，呼叫 /research/model-benchmark/dry-run 產出 benchmark report；通過後才可升級成 shadow challenger。'
+}
+
 function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperiment[] }) {
   const byStage = MODEL_UPGRADE_CANDIDATES.reduce<Record<string, typeof MODEL_UPGRADE_CANDIDATES>>((acc, candidate) => {
     acc[candidate.stage] = [...(acc[candidate.stage] ?? []), candidate]
@@ -291,6 +299,9 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       尚未訓練或尚未產出 registry evidence：目前沒有 OOS IC、CPCV/PBO、成本敏感度、資料切片報告，所以不能假裝它已經比 production 模型更好。
                     </div>
                   )}
+                  <p className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
+                    {modelUpgradeNextAction(candidate.stage, evidence.isEvidenceReady)}
+                  </p>
                   {candidate.stage === 'benchmark_only' && (
                     <p className="mt-2 text-[11px] leading-5 text-amber-200">
                       benchmark report required：必須先進 experiment registry，產出 OOS IC、CPCV/PBO、成本敏感度與資料切片報告，通過後才可升級成 shadow challenger。
@@ -304,6 +315,28 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
         ))}
       </div>
     </WorkstationPanel>
+  )
+}
+
+function versionChallengerStatusLabel(status: string) {
+  if (status === 'awaiting_live_shadow') return 'awaiting verify-v2 + IC tracker'
+  if (status === 'computed') return 'live evidence computed'
+  if (status === 'insufficient_samples') return 'need more verified samples'
+  if (status === 'ok') return 'ok'
+  return status
+}
+
+function ArtifactMetricDelta({ label, before, after, afterNote }: { label: string; before: string; after: string; afterNote?: string }) {
+  return (
+    <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-2 border-b border-[#263247]/70 py-2 text-xs last:border-0">
+      <span className="text-[#70809b]">{label}</span>
+      <span className="flex min-w-0 items-center gap-2 font-mono text-slate-100">
+        <span className="truncate">{before}</span>
+        <ArrowRight className="h-3 w-3 shrink-0 text-slate-500" />
+        <span className="truncate text-amber-100">{after}</span>
+        {afterNote && <span className="shrink-0 text-[10px] text-[#70809b]">{afterNote}</span>}
+      </span>
+    </div>
   )
 }
 
@@ -335,7 +368,7 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
     <WorkstationPanel title="Version Challenger / 版本挑戰者" kicker="Live shadow IC + artifact evidence">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
-          這裡分成兩種證據：artifact OOS 是 monthly retrain 產生時的訓練/驗證證據；live shadow IC 要等新版 artifact 實際跑 prediction，且 verify-v2 寫入 outcome 後才會累積。
+          這裡分成兩種證據：artifact OOS 是 monthly retrain 產生時的訓練/驗證證據；live shadow IC 要等新版 artifact 實際跑 prediction，且下一個可驗證交易日由 verify-v2 寫入 outcome 後才會累積。
         </p>
         {rows.length ? (
           <div className="grid gap-2 md:grid-cols-2">
@@ -346,7 +379,7 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
                     <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{row.name}</p>
                     <p className="mt-0.5 text-[10px] text-[#70809b]">{row.version}</p>
                   </div>
-                  <WorkstationPill tone={row.rootCause === 'ok' ? 'ok' : 'warn'}>{row.status}</WorkstationPill>
+                  <WorkstationPill tone={row.rootCause === 'ok' ? 'ok' : 'warn'}>{versionChallengerStatusLabel(row.status)}</WorkstationPill>
                 </div>
                 <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[11px]">
                   <div><p className="text-[#70809b]">Live IC</p><p className="text-slate-100">{row.ic}</p></div>
@@ -356,6 +389,11 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
                 </div>
                 <p className="mt-2 text-[11px] leading-4 text-amber-200">root: {row.rootCause}</p>
                 <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">{row.reason}</p>
+                {row.status === 'awaiting_live_shadow' && (
+                  <p className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
+                    需要跑：新版 artifact 先進 daily ML predict shadow；等下一個可驗證交易日收盤資料到齊後，`verify-v2` 寫入 actual_return，再由 `model-ic-tracker` / post-market chain 累積 live IC。
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -429,27 +467,17 @@ function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineage
                   </WorkstationPill>
                 </div>
 
-                <div className="mt-3 grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
-                  <div className="bg-[#070a10] p-3">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">Active artifact / 現行版本</p>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
-                      <span>input series</span><span className="font-mono text-right">{compactMetric(row.activeInputSeries)}</span>
-                      <span>train windows</span><span className="font-mono text-right">{compactMetric(row.activeTrainWindows)}</span>
-                      <span>OOS / val windows</span><span className="font-mono text-right">{compactMetric(row.activeValWindows)}</span>
-                      <span>dir accuracy</span><span className="font-mono text-right">{compactMetric(row.activeDirAccuracy, 3)}</span>
-                    </div>
-                  </div>
-                  <div className="bg-[#070a10] p-3">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">Challenger artifact / 挑戰版本</p>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
-                      <span>input series</span><span className="font-mono text-right">{compactMetric(row.challengerInputSeries)}</span>
-                      <span>train windows</span><span className="font-mono text-right">{compactMetric(row.challengerTrainWindows)}</span>
-                      <span>OOS / val windows</span><span className="font-mono text-right">{compactMetric(row.challengerValWindows)}</span>
-                      <span>dir accuracy</span><span className="font-mono text-right">{compactMetric(row.challengerDirAccuracy, 3)} ({deltaMetric(row.activeDirAccuracy, row.challengerDirAccuracy, 3)})</span>
-                      <span>OOS IC</span><span className="font-mono text-right">{compactMetric(row.challengerOosIc, 4)}</span>
-                      <span>daily IC rows</span><span className="font-mono text-right">{compactMetric(row.challengerDailyIcCount)}</span>
-                    </div>
-                    <p className="mt-2 text-[10px] text-[#70809b]">sequence_report.input_series {compactMetric(row.challengerSequenceReportInputSeries)}</p>
+                <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">
+                    One algorithm per card / 單一演算法版本差異
+                  </p>
+                  <div className="mt-2">
+                    <ArtifactMetricDelta label="input series" before={compactMetric(row.activeInputSeries)} after={compactMetric(row.challengerInputSeries)} afterNote={`report ${compactMetric(row.challengerSequenceReportInputSeries)}`} />
+                    <ArtifactMetricDelta label="train windows" before={compactMetric(row.activeTrainWindows)} after={compactMetric(row.challengerTrainWindows)} />
+                    <ArtifactMetricDelta label="OOS / val" before={compactMetric(row.activeValWindows)} after={compactMetric(row.challengerValWindows)} />
+                    <ArtifactMetricDelta label="dir accuracy" before={compactMetric(row.activeDirAccuracy, 3)} after={compactMetric(row.challengerDirAccuracy, 3)} afterNote={deltaMetric(row.activeDirAccuracy, row.challengerDirAccuracy, 3)} />
+                    <ArtifactMetricDelta label="OOS IC" before="active weekly IC" after={compactMetric(row.challengerOosIc, 4)} />
+                    <ArtifactMetricDelta label="daily IC rows" before="verified rows" after={compactMetric(row.challengerDailyIcCount)} />
                   </div>
                 </div>
 

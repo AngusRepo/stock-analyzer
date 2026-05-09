@@ -123,7 +123,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。'
+  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻：rank score >= 0.530 算看漲，<= 0.470 算看跌，中間為觀望，regime=bull。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -298,58 +298,6 @@ function parseObject(raw: unknown): any | null {
     return parsed && typeof parsed === 'object' ? parsed : null
   } catch {
     return null
-  }
-}
-
-function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]; notes: string[] } | null {
-  const evidence = parseObject(rec.screener_funnel_evidence)
-  if (!evidence && rec.screener_funnel_rank == null) return null
-
-  const chips: string[] = []
-  if (rec.screener_funnel_rank != null) chips.push(`入選排名 #${rec.screener_funnel_rank}`)
-  if (evidence?.industry) chips.push(`產業：${evidence.industry}`)
-  if (Array.isArray(evidence?.strategy_tags) && evidence.strategy_tags.length > 0) {
-    chips.push(...evidence.strategy_tags.slice(0, 3).map((tag: unknown) => String(tag)))
-  }
-
-  const notes: string[] = []
-  if (evidence?.chip_score != null) notes.push(`籌碼 ${fmtNumber(evidence.chip_score, 1)}`)
-  if (evidence?.tech_score != null) notes.push(`技術 ${fmtNumber(evidence.tech_score, 1)}`)
-  if (evidence?.momentum_score != null) notes.push(`動能 ${fmtNumber(evidence.momentum_score, 1)}`)
-  const rrg = parseObject(evidence?.rrg_overlay)
-  if (rrg?.quadrant) {
-    const adjustment = fmtOptionalNumber(rrg.adjustment, 1)
-    notes.push(`RRG：${rrg.tag ?? '題材'} / ${rrg.quadrant}${adjustment ? `，調整 ${adjustment}` : ''}`)
-  }
-  const buzz = parseObject(evidence?.buzz_evidence)
-  if (buzz?.concept) {
-    const bonus = fmtOptionalNumber(buzz.buzzBonus, 1)
-    notes.push(`熱門題材：${buzz.concept}${bonus ? `，加權 ${bonus}` : ''}`)
-  }
-  const cooldown = Array.isArray(evidence?.diversity_cooldown) ? evidence.diversity_cooldown : []
-  for (const item of cooldown.slice(0, 2)) {
-    const row = parseObject(item)
-    if (row?.reason_code === 'high_frequency_cooldown') {
-      notes.push(`重複入選降溫：20日 ${row.freq20d ?? '-'} 次`)
-    } else if (row?.reason_code === 'new_money_boost') {
-      notes.push('新進候選加權：避免清單每天長一樣')
-    }
-  }
-  if (evidence?.freq20d != null) notes.push(`20日入選 ${evidence.freq20d} 次`)
-  if (evidence?.highFreq) notes.push('重複入選已降溫')
-  if (evidence?.newMoney) notes.push('新進資金/新題材加權')
-  if (Array.isArray(evidence?.decision_path) && evidence.decision_path.length > 0) {
-    notes.push(`漏斗路徑：${evidence.decision_path.map((step: any) => step.stage).filter(Boolean).join(' → ')}`)
-  }
-
-  if (chips.length === 0 && notes.length === 0 && rec.screener_funnel_rank == null) {
-    return null
-  }
-
-  return {
-    rank: rec.screener_funnel_rank ?? null,
-    chips,
-    notes,
   }
 }
 
@@ -544,20 +492,6 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
     ? `（${summary.zeroWeightModels.length}模型0權重）`
     : ''
   return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
-}
-
-function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
-  const bullish = summary?.thresholds?.bullish
-  const bearish = summary?.thresholds?.bearish
-  if (typeof bullish !== 'number' || typeof bearish !== 'number') return null
-  const regime = summary?.thresholds?.regime && summary.thresholds.regime !== 'unknown'
-    ? `，regime=${summary.thresholds.regime}`
-    : ''
-  const scope = summary?.icWeightScope ? `，IC scope=${summary.icWeightScope}` : ''
-  const blocked = Array.isArray(summary?.validationBlockedModels) && summary.validationBlockedModels.length > 0
-    ? `；CPCV/PBO gate 擋下 ${summary.validationBlockedModels.join('/')}`
-    : ''
-  return `投票門檻：rank score >= ${bullish.toFixed(3)} 算看漲，<= ${bearish.toFixed(3)} 算看跌，中間為觀望${regime}${scope}${blocked}。`
 }
 
 function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary | null }) {
@@ -809,8 +743,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
-          Market structure：POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶；
-          {LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
+          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
         </p>
       </div>
       {context.skip && (
@@ -846,7 +779,7 @@ function normalizeWatchPoint(point: string): string {
     const optimisticHelp = optimisticExceeded
       ? '目前價格已高於順風上緣，這是偏追高提醒，不是樂觀目標價。'
       : '樂觀情境是順風時的上緣假設，不是保證目標價。'
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是正常合理價格帶；${optimisticHelp}`
+    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：這是量價結構位置與追高/低估提醒；${optimisticHelp}`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
@@ -854,12 +787,7 @@ function normalizeWatchPoint(point: string): string {
     const flat = point.match(/flat=([^,]+)/)?.[1] ?? '0'
     const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
     const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
-    const bullishThreshold = point.match(/bullish_threshold=([^,]+)/)?.[1]
-    const bearishThreshold = point.match(/bearish_threshold=([^,]+)/)?.[1]
-    const thresholdText = bullishThreshold && bearishThreshold
-      ? `目前門檻：>=${bullishThreshold} 看漲，<=${bearishThreshold} 看跌。`
-      : '目前門檻會依 regime / trading config 調整。'
-    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，預期報酬 ${forecast}%。白話：觀望不是模型沒跑，而是 rank score 落在看漲/看跌門檻中間，訊號強度不夠明確。${thresholdText}`
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，預期報酬 ${forecast}%。白話：這裡只保留該股票的投票結果，門檻定義已放在上方名詞解釋。`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
@@ -913,8 +841,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
-  const mlThresholdText = formatMlThresholdText(mlVoteSummary)
-  const screenerFunnel = screenerFunnelFromRec(rec)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
     (rec.chip_cash_foreign_5d ?? rec.foreign_net_5d ?? 0)
     + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
@@ -1003,31 +929,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <ScoreBreakdownV2 rec={rec} />
 
-          {screenerFunnel && (
-            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="font-medium text-cyan-700 dark:text-cyan-300">Screener 入選漏斗</p>
-                {screenerFunnel.rank != null && (
-                  <span className="font-mono text-cyan-700 dark:text-cyan-300">#{screenerFunnel.rank}</span>
-                )}
-              </div>
-              {screenerFunnel.chips.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {screenerFunnel.chips.map((chip) => (
-                    <Badge key={chip} variant="outline" className="border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0 text-[10px] text-cyan-700 dark:text-cyan-300">
-                      {chip}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-              {screenerFunnel.notes.length > 0 && (
-                <p className="leading-relaxed text-muted-foreground">
-                  {screenerFunnel.notes.join('；')}
-                </p>
-              )}
-            </div>
-          )}
-
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
             <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
@@ -1036,8 +937,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           {(mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
               <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
-              <p>{mlSummary ? `${mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。` : mlMetadataGap}</p>
-              {mlThresholdText && <p className="mt-1 text-muted-foreground/80">{mlThresholdText}</p>}
+              <p>{mlSummary ?? mlMetadataGap}</p>
               <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>
           )}

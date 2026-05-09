@@ -260,6 +260,7 @@ export default function StrategyLabPage() {
   const [draftResult, setDraftResult] = useState<string | null>(null)
   const [draftError, setDraftError] = useState<string | null>(null)
   const [draftSaving, setDraftSaving] = useState(false)
+  const [draftPersisting, setDraftPersisting] = useState(false)
   const [runningExperimentId, setRunningExperimentId] = useState<string | null>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
@@ -323,6 +324,60 @@ export default function StrategyLabPage() {
       setDraftError(getErrorMessage(e, 'review packet preview failed'))
     } finally {
       setDraftSaving(false)
+    }
+  }
+
+  async function persistDraftExperiment() {
+    try {
+      setDraftPersisting(true)
+      setDraftError(null)
+      const res = await strategyLabApi.createExperiment({
+        hypothesis: draftHypothesis,
+        strategySpecIds: splitCsv(draftSpecIds),
+        metrics: splitCsv(draftMetrics),
+        followUp: splitCsv(draftFollowUp),
+        sourceRefs: ['strategy-lab-ui'],
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'experiment registry write failed'))
+    } finally {
+      setDraftPersisting(false)
+    }
+  }
+
+  async function createModelBenchmarkExperiment() {
+    try {
+      setDraftPersisting(true)
+      setDraftError(null)
+      const today = new Date().toISOString().slice(0, 10)
+      const res = await strategyLabApi.createExperiment({
+        id: `model-family-benchmark-${today.replace(/-/g, '')}`,
+        hypothesis: 'model_benchmark：評估 TabM、iTransformer、TimesFM 是否值得從 benchmark-only 升級成 shadow challenger，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
+        strategySpecIds: ['model_family_benchmark_v1'],
+        metrics: ['oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report', 'latency_cost'],
+        followUp: ['run model_benchmark dry-run', 'inspect benchmark report', 'decide promote to shadow challenger or reject'],
+        sourceRefs: ['strategy-lab-ui', 'model-upgrade-track'],
+        dataSlice: {
+          benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+          start_date: '2026-04-01',
+          end_date: today,
+          market_lanes: ['listed', 'otc', 'emerging'],
+        },
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'model benchmark experiment write failed'))
+    } finally {
+      setDraftPersisting(false)
     }
   }
 
@@ -450,9 +505,20 @@ export default function StrategyLabPage() {
                 <input value={draftSpecIds} onChange={(event) => setDraftSpecIds(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="strategy spec ids" />
                 <input value={draftMetrics} onChange={(event) => setDraftMetrics(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="metrics" />
                 <input value={draftFollowUp} onChange={(event) => setDraftFollowUp(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="follow-up" />
-                <Button size="sm" variant="outline" disabled={draftSaving || draftHypothesis.trim().length < 12} onClick={previewExperiment}>
-                  {draftSaving ? 'Previewing...' : '產生 Dry-run Review Packet'}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" disabled={draftSaving || draftHypothesis.trim().length < 12} onClick={previewExperiment}>
+                    {draftSaving ? 'Previewing...' : '產生 Dry-run Review Packet'}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={draftPersisting || draftHypothesis.trim().length < 12} onClick={persistDraftExperiment}>
+                    {draftPersisting ? 'Saving...' : '寫入 Registry'}
+                  </Button>
+                  <Button size="sm" className="bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={draftPersisting} onClick={createModelBenchmarkExperiment}>
+                    建立 Model Benchmark
+                  </Button>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
+                  觸發順序：先寫入 experiment registry，下面卡片會出現 evaluation plan，再按 Run dry-run plan；model_benchmark step 會呼叫 /research/model-benchmark/dry-run，不是 Scheduler job。
+                </div>
                 {draftError && <div className="text-xs text-red-300">{draftError}</div>}
                 {draftResult && (
                   <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">

@@ -51,3 +51,18 @@ CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_candidate_type
 
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_run
   ON model_artifact_registry(training_run_id, source_run_date);
+
+CREATE TABLE IF NOT EXISTS model_champion_pointers (
+  model_name                  TEXT PRIMARY KEY,
+  champion_version            TEXT NOT NULL,
+  champion_artifact_id        TEXT,
+  rollback_version            TEXT,
+  rollback_artifact_id        TEXT,
+  promoted_at                 TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  promotion_reason            TEXT,
+  promotion_evidence_json     TEXT NOT NULL DEFAULT '{}',
+  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
+  ON model_champion_pointers(updated_at DESC);

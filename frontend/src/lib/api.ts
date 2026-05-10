@@ -745,11 +745,52 @@ export type ModelArtifactSelectionResponse = {
   }>
 }
 
+export type ModelArtifactPromotionQueueResponse = {
+  status: string
+  source_of_truth: string
+  promotion_owner: string
+  count: number
+  queue: Array<{
+    artifact_id?: string | null
+    model_name: string
+    candidate_version?: string | null
+    candidate_type: string
+    state: string
+    offline_gate_decision?: string | null
+    live_gate_status?: string | null
+    evaluation_baseline_version?: string | null
+    final_compared_to?: string | null
+    current_champion_version?: string | null
+    promotion_decision: string
+    approval_required: boolean
+    next_action: string
+  }>
+}
+
+export type ModelChampionPointersResponse = {
+  status: string
+  source_of_truth: string
+  target_source_of_truth: string
+  production_reader: string
+  migration_ready: boolean
+  ready_count: number
+  model_count: number
+  models: Record<string, {
+    serving_version?: string | null
+    d1_pointer_version?: string | null
+    readiness: string
+    next_action: string
+  }>
+}
+
 export const modelPoolApi = {
   status: () => get<any>('/model-pool/status'),
   lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),
   artifactRegistry: (limit = 100) => get<ModelArtifactRegistryResponse>(`/model-pool/artifact_registry?limit=${limit}`),
   artifactSelection: (limit = 200) => get<ModelArtifactSelectionResponse>(`/model-pool/artifact_registry/selection?limit=${limit}`),
+  artifactPromotionQueue: (limit = 200) => get<ModelArtifactPromotionQueueResponse>(`/model-pool/artifact_registry/promotion_queue?limit=${limit}`),
+  championPointers: (limit = 200) => get<ModelChampionPointersResponse>(`/model-pool/artifact_registry/champion_pointers?limit=${limit}`),
+  backfillChampionPointers: (body: { confirm: boolean; reason?: string }) => post<any>('/model-pool/artifact_registry/champion_pointers/backfill', body),
 }
 
 // 2026-04-21 #43 Cost Tracking API

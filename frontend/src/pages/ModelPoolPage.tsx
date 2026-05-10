@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
@@ -606,6 +606,94 @@ function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelecti
   )
 }
 
+function PromotionQueuePanel({ queue }: { queue?: ModelArtifactPromotionQueueResponse }) {
+  const rows = queue?.queue ?? []
+  const approvalCount = rows.filter((row) => row.approval_required).length
+  const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
+  const blockedCount = rows.filter((row) => row.promotion_decision === 'blocked_missing_champion_pointer').length
+
+  return (
+    <WorkstationPanel title="Promotion Queue / 晉級決策佇列" kicker="final comparison, approval, champion pointer">
+      <div className="grid gap-3 p-3 md:grid-cols-3">
+        <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release 且通過 live gate，仍需 final comparison" tone={autoCount ? 'ok' : 'neutral'} />
+        <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly hotfix / manual hotfix 需要 Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
+        <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="缺 champion pointer 或 final comparison 前置條件" tone={blockedCount ? 'error' : 'ok'} />
+      </div>
+      <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
+        {rows.length ? rows.map((row) => (
+          <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-mono text-[12px] font-semibold text-slate-100">{row.model_name}</p>
+                <p className="mt-1 font-mono text-[11px] text-[#70809b]">
+                  {row.current_champion_version ?? 'champion N/A'} → {row.candidate_version ?? 'candidate N/A'}
+                </p>
+              </div>
+              <WorkstationPill tone={row.promotion_decision === 'auto_promote_candidate' ? 'ok' : row.approval_required ? 'warn' : row.promotion_decision.includes('blocked') ? 'error' : 'info'}>
+                {row.promotion_decision}
+              </WorkstationPill>
+            </div>
+            <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-2">
+              <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+                <p className="font-mono text-[#70809b]">offline / live</p>
+                <p className="mt-1 text-slate-200">{row.offline_gate_decision ?? '-'} / {row.live_gate_status ?? '-'}</p>
+              </div>
+              <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+                <p className="font-mono text-[#70809b]">final compared to</p>
+                <p className="mt-1 text-slate-200">{row.final_compared_to ?? 'pending champion pointer'}</p>
+              </div>
+            </div>
+            <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
+          </div>
+        )) : (
+          <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
+            目前沒有 artifact 通過 live gate；promotion-controller 沒有待處理項目。
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
+function ChampionPointerPanel({ pointers }: { pointers?: ModelChampionPointersResponse }) {
+  const models = Object.entries(pointers?.models ?? {})
+  const missingCount = models.filter(([, row]) => row.readiness === 'missing_d1_pointer').length
+  const mismatchCount = models.filter(([, row]) => row.readiness === 'pointer_mismatch').length
+
+  return (
+    <WorkstationPanel title="Champion Pointer Contract / Production 版本指標" kicker="model_pool.json today, D1 pointer target">
+      <div className="grid gap-3 p-3 md:grid-cols-4">
+        <SignalInsightCard title="Production reader" value={pointers?.production_reader ?? 'N/A'} detail="目前 serving 實際讀取來源" tone={pointers?.production_reader === 'model_pool.json' ? 'warn' : 'ok'} />
+        <SignalInsightCard title="Pointer ready" value={`${pointers?.ready_count ?? 0}/${pointers?.model_count ?? 0}`} detail="D1 champion pointer 對齊數" tone={pointers?.migration_ready ? 'ok' : 'warn'} />
+        <SignalInsightCard title="Missing" value={String(missingCount)} detail="尚未 backfill D1 pointer" tone={missingCount ? 'warn' : 'ok'} />
+        <SignalInsightCard title="Mismatch" value={String(mismatchCount)} detail="D1 pointer 與 serving version 不一致" tone={mismatchCount ? 'error' : 'ok'} />
+      </div>
+      <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
+        {models.length ? models.map(([modelName, row]) => (
+          <div key={modelName} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-mono text-[12px] font-semibold text-slate-100">{modelName}</p>
+                <p className="mt-1 font-mono text-[11px] text-[#70809b]">
+                  serving {row.serving_version ?? 'N/A'} → D1 pointer {row.d1_pointer_version ?? 'N/A'}
+                </p>
+              </div>
+              <WorkstationPill tone={row.readiness === 'pointer_ready' ? 'ok' : row.readiness === 'pointer_mismatch' ? 'error' : 'warn'}>
+                {row.readiness}
+              </WorkstationPill>
+            </div>
+            <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
+          </div>
+        )) : (
+          <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
+            尚未取得 champion pointer projection；請先確認 ml-controller / Worker proxy 已部署。
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function ServingDiagnosticsPanel({ payload }: { payload: any }) {
   const recs = (payload?.all_recommendations ?? payload?.recommendations ?? []) as any[]
   const diagnostics = recs
@@ -720,6 +808,20 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchInterval: 60_000,
   })
+  const artifactPromotionQueue = useQuery({
+    queryKey: ['model-pool', 'artifact-promotion-queue'],
+    queryFn: () => modelPoolApi.artifactPromotionQueue(200),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
+  const championPointers = useQuery({
+    queryKey: ['model-pool', 'champion-pointers'],
+    queryFn: () => modelPoolApi.championPointers(200),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
 
   const models = data?.models ?? {}
   const modelList = Object.entries(models).filter(([name, model]) => !isStateSpaceOverlay(name, model))
@@ -766,7 +868,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch() }}>
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -795,7 +897,9 @@ export default function ModelPoolPage() {
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
+            <ChampionPointerPanel pointers={championPointers.data} />
             <ArtifactRegistryPanel selection={artifactSelection.data} />
+            <PromotionQueuePanel queue={artifactPromotionQueue.data} />
             <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
             <LiveShadowEvidencePanel models={modelList} />
             <ArtifactDiffPanel models={modelList} />

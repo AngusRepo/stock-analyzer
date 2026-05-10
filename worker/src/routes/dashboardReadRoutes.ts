@@ -149,6 +149,58 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/selection', async (c)
   }
 })
 
+dashboardReadRoutes.get('/api/model-pool/artifact_registry/promotion_queue', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const params = new URLSearchParams()
+  for (const key of ['model_name', 'limit']) {
+    const value = c.req.query(key)
+    if (value) params.set(key, value)
+  }
+  const qs = params.toString()
+
+  try {
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/promotion_queue${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e), queue: [] }, 502)
+  }
+})
+
+dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const params = new URLSearchParams()
+  for (const key of ['model_name', 'limit']) {
+    const value = c.req.query(key)
+    if (value) params.set(key, value)
+  }
+  const qs = params.toString()
+
+  try {
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/champion_pointers${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
+  }
+})
+
+dashboardReadRoutes.post('/api/model-pool/artifact_registry/champion_pointers/backfill', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    return c.json(await controllerJson<any>(c.env, '/model_pool/artifact_registry/champion_pointers/backfill', {
+      method: 'POST',
+      jsonBody: body,
+      timeoutMs: 30_000,
+    }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
+  }
+})
+
 dashboardReadRoutes.get('/api/backtest/pbo', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

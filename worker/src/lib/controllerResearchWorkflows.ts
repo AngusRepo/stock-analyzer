@@ -32,6 +32,18 @@ export async function runWeeklyAudit(env: Bindings) {
 
 type OptunaCadence = 'weekly' | 'monthly'
 
+const OPTUNA_RESEARCH_SOURCES = [
+  'barrier',
+  'signal',
+  'sltp',
+  'screener',
+  'conformal',
+  'risk_params',
+  'rrg',
+  'alpha_framework',
+  'ga_optimizer',
+]
+
 interface OptunaResearchOptions {
   cadence: OptunaCadence
   nTrials: number
@@ -50,6 +62,7 @@ function buildOptunaSweepRequestBody(options: OptunaResearchOptions): Record<str
     max_parallel_sources: 3,
     ga_population_size: options.ga?.populationSize ?? 24,
     ga_generations: options.ga?.generations ?? 8,
+    sources: OPTUNA_RESEARCH_SOURCES,
     research_data_source: 'snapshot',
     evidence_requirement: 'requires compute snapshots',
     push_kv: true,

@@ -367,11 +367,207 @@ def list_artifact_registry(
     return rows
 
 
+def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]]:
+    """Read registry-owned champion pointers when the D1 migration is present.
+
+    During rollout, production may still read ``model_pool.json``. A missing
+    table is therefore reported as an empty pointer set instead of breaking
+    Model Pool reads; the projection endpoint will make that migration gap
+    explicit.
+    """
+    where = ""
+    params: list[Any] = []
+    if model_name:
+        where = "WHERE model_name = ?"
+        params.append(model_name)
+    try:
+        rows = d1_client.query(
+            f"""
+            SELECT *
+            FROM model_champion_pointers
+            {where}
+            ORDER BY updated_at DESC
+            """,
+            params,
+        )
+    except RuntimeError as exc:
+        if "model_champion_pointers" in str(exc).lower() and "no such table" in str(exc).lower():
+            return []
+        raise
+
+    for row in rows:
+        raw = row.get("promotion_evidence_json")
+        if isinstance(raw, str):
+            try:
+                row["promotion_evidence_json"] = json.loads(raw)
+            except json.JSONDecodeError:
+                row["promotion_evidence_json"] = raw
+    return rows
+
+
+def build_champion_pointer_projection(
+    *,
+    registry_rows: list[dict[str, Any]],
+    d1_pointers: list[dict[str, Any]],
+    model_pool_versions: dict[str, str],
+) -> dict[str, Any]:
+    """Explain the champion pointer migration state without mutating serving.
+
+    Production must not silently switch from ``model_pool.json`` to D1 pointers.
+    This projection gives UI/OBS a single contract showing whether each model
+    already has a registry pointer and whether it matches the current serving
+    version.
+    """
+    models = sorted({
+        *(str(r.get("model_name")) for r in registry_rows if r.get("model_name")),
+        *model_pool_versions.keys(),
+        *(str(r.get("model_name")) for r in d1_pointers if r.get("model_name")),
+    })
+    pointer_by_model = {str(r.get("model_name")): r for r in d1_pointers if r.get("model_name")}
+    artifacts_by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in registry_rows:
+        name = str(row.get("model_name") or "")
+        if name:
+            artifacts_by_model.setdefault(name, []).append(row)
+
+    out: dict[str, dict[str, Any]] = {}
+    for model_name in models:
+        pointer = pointer_by_model.get(model_name)
+        serving_version = model_pool_versions.get(model_name)
+        pointer_version = str(pointer.get("champion_version")) if pointer and pointer.get("champion_version") else None
+        latest_production_artifact = next(
+            (
+                r for r in sorted(
+                    artifacts_by_model.get(model_name, []),
+                    key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""),
+                    reverse=True,
+                )
+                if r.get("state") == "production"
+            ),
+            None,
+        )
+        if not pointer:
+            readiness = "missing_d1_pointer"
+            next_action = "Backfill model_champion_pointers from current model_pool.json before enabling pointer-owned serving."
+        elif serving_version and pointer_version != serving_version:
+            readiness = "pointer_mismatch"
+            next_action = "Do not switch serving owner; reconcile pointer with current model_pool.json champion first."
+        elif pointer_version:
+            readiness = "pointer_ready"
+            next_action = "Safe for promotion-controller final comparison; serving owner migration still requires explicit deploy."
+        else:
+            readiness = "pointer_invalid"
+            next_action = "Pointer row exists but champion_version is empty."
+
+        out[model_name] = {
+            "serving_version": serving_version,
+            "d1_pointer_version": pointer_version,
+            "d1_pointer": pointer,
+            "latest_registry_production_artifact": latest_production_artifact,
+            "readiness": readiness,
+            "next_action": next_action,
+        }
+
+    ready = sum(1 for row in out.values() if row["readiness"] == "pointer_ready")
+    return {
+        "status": "ok",
+        "source_of_truth": "model_pool.json",
+        "target_source_of_truth": "model_champion_pointers",
+        "production_reader": "model_pool.json",
+        "migration_ready": bool(out) and ready == len(out),
+        "ready_count": ready,
+        "model_count": len(out),
+        "models": out,
+    }
+
+
+def backfill_champion_pointers_from_model_pool(
+    *,
+    model_pool_versions: dict[str, str],
+    registry_rows: list[dict[str, Any]],
+    reason: str = "model_pool_backfill",
+) -> dict[str, Any]:
+    """Populate D1 champion pointers from the current serving model_pool.json.
+
+    This is a migration bridge, not a promotion action. It copies the current
+    production truth into D1 so the promotion controller can later compare
+    candidates against an explicit champion pointer.
+    """
+    artifact_by_model_version: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in registry_rows:
+        model_name = str(row.get("model_name") or "")
+        version = str(row.get("version") or "")
+        if model_name and version:
+            artifact_by_model_version[(model_name, version)] = row
+
+    written = 0
+    errors: list[str] = []
+    now = _now_iso()
+    for model_name, champion_version in sorted(model_pool_versions.items()):
+        artifact = artifact_by_model_version.get((model_name, champion_version))
+        evidence = {
+            "schema_version": "champion-pointer-backfill-v1",
+            "reason": reason,
+            "source": "model_pool.json",
+            "backfilled_at": now,
+            "registry_artifact_found": bool(artifact),
+        }
+        try:
+            d1_client.execute(
+                """
+                INSERT INTO model_champion_pointers (
+                  model_name, champion_version, champion_artifact_id,
+                  rollback_version, rollback_artifact_id, promoted_at,
+                  promotion_reason, promotion_evidence_json, updated_at
+                ) VALUES (?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(model_name) DO UPDATE SET
+                  champion_version = excluded.champion_version,
+                  champion_artifact_id = excluded.champion_artifact_id,
+                  promotion_reason = excluded.promotion_reason,
+                  promotion_evidence_json = excluded.promotion_evidence_json,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    model_name,
+                    champion_version,
+                    artifact.get("artifact_id") if artifact else None,
+                    reason,
+                    _json_dumps(evidence),
+                ],
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - report partial migration failures.
+            errors.append(f"{model_name}:{champion_version}: {exc}")
+
+    return {
+        "status": "ok" if not errors else "partial_error",
+        "source": "model_pool.json",
+        "target": "model_champion_pointers",
+        "attempted": len(model_pool_versions),
+        "written": written,
+        "errors": errors,
+    }
+
+
 _STATE_RANK = {
+    "approved": 9,
+    "approval_required": 8,
+    "live_gate_passed": 7,
+    "shadowing": 6,
+    "candidate_selected": 5,
     "offline_strong_pass": 4,
     "offline_passed": 3,
     "offline_passed_weak": 2,
     "registered": 1,
+}
+
+_WEEKLY_SELECTED_STATES = {
+    "offline_strong_pass",
+    "candidate_selected",
+    "shadowing",
+    "live_gate_passed",
+    "approval_required",
+    "approved",
 }
 
 
@@ -408,7 +604,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         )
         selected_weekly = (
             best_weekly
-            if best_weekly and str(best_weekly.get("state") or "") == "offline_strong_pass"
+            if best_weekly and str(best_weekly.get("state") or "") in _WEEKLY_SELECTED_STATES
             else None
         )
 
@@ -437,4 +633,245 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "source_of_truth": "model_artifact_registry",
         "selection_policy": "release_train_v1",
         "models": selections,
+    }
+
+
+def _ic_number(info: dict[str, Any] | None) -> float | None:
+    if not isinstance(info, dict):
+        return None
+    return _as_float(info.get("ic"))
+
+
+def _sample_count(info: dict[str, Any] | None) -> int:
+    if not isinstance(info, dict):
+        return 0
+    try:
+        return int(info.get("n_samples") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _live_gate_decision(
+    *,
+    model_name: str,
+    per_model_ic: dict[str, dict[str, Any]],
+    min_samples: int,
+) -> dict[str, Any]:
+    shadow_name = f"{model_name}::challenger"
+    production = per_model_ic.get(model_name) or {}
+    shadow = per_model_ic.get(shadow_name) or {}
+    shadow_ic = _ic_number(shadow)
+    production_ic = _ic_number(production)
+    shadow_samples = _sample_count(shadow)
+    production_samples = _sample_count(production)
+
+    if shadow_samples < min_samples or shadow_ic is None:
+        return {
+            "state": "shadowing",
+            "live_gate_status": "shadowing_not_enough_data",
+            "promotion_decision": "not_evaluated",
+            "approval_state": "not_required",
+            "reason": "Selected candidate has not accumulated enough verified shadow rows.",
+            "metrics": {
+                "shadow_model_name": shadow_name,
+                "shadow_ic": shadow_ic,
+                "shadow_samples": shadow_samples,
+                "production_ic": production_ic,
+                "production_samples": production_samples,
+                "min_samples": min_samples,
+            },
+            "root_cause": shadow.get("root_cause") or shadow.get("status") or "shadow_prediction_missing",
+            "production_root_cause": production.get("root_cause"),
+        }
+
+    if production_samples < min_samples or production_ic is None:
+        return {
+            "state": "shadowing",
+            "live_gate_status": "production_baseline_not_enough_data",
+            "promotion_decision": "not_evaluated",
+            "approval_state": "not_required",
+            "reason": "Shadow has evidence, but production baseline IC is not stable enough for final comparison.",
+            "metrics": {
+                "shadow_model_name": shadow_name,
+                "shadow_ic": shadow_ic,
+                "shadow_samples": shadow_samples,
+                "production_ic": production_ic,
+                "production_samples": production_samples,
+                "min_samples": min_samples,
+            },
+            "root_cause": production.get("root_cause") or production.get("status") or "production_baseline_missing",
+            "production_root_cause": production.get("root_cause"),
+        }
+
+    delta = shadow_ic - production_ic
+    passed = shadow_ic > 0 and delta > 0
+    return {
+        "state": "live_gate_passed" if passed else "shadowing",
+        "live_gate_status": "passed" if passed else "failed",
+        "promotion_decision": "pending_promotion_controller" if passed else "reject_or_keep_shadowing",
+        "approval_state": "not_required",
+        "reason": (
+            "Shadow candidate beats current production baseline on verified live IC."
+            if passed
+            else "Shadow candidate does not beat current production baseline on verified live IC."
+        ),
+        "metrics": {
+            "shadow_model_name": shadow_name,
+            "shadow_ic": shadow_ic,
+            "shadow_samples": shadow_samples,
+            "production_ic": production_ic,
+            "production_samples": production_samples,
+            "ic_delta": round(delta, 6),
+            "min_samples": min_samples,
+        },
+        "root_cause": "ok" if passed else "shadow_ic_not_better_than_champion",
+        "production_root_cause": production.get("root_cause"),
+    }
+
+
+def update_live_gate_from_ic(
+    per_model_ic: dict[str, dict[str, Any]],
+    *,
+    min_samples: int,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Persist live shadow evidence for selected registry candidates.
+
+    Registry owns artifact state. IC tracker owns verified IC calculation. This
+    bridge keeps the ownership clean: it only updates artifacts selected by the
+    release-train policy, and it writes evidence; it does not promote champions.
+    """
+    rows = list_artifact_registry(limit=limit)
+    selection = build_candidate_selection(rows)
+    selected: dict[str, dict[str, Any]] = {}
+    for model_name, model_selection in (selection.get("models") or {}).items():
+        for key in ("monthly_release_candidate", "weekly_drift_candidate"):
+            candidate = model_selection.get(key)
+            if isinstance(candidate, dict) and candidate.get("artifact_id"):
+                selected[str(candidate["artifact_id"])] = candidate | {
+                    "_selection_slot": key,
+                    "_model_name": model_name,
+                }
+
+    updates: list[dict[str, Any]] = []
+    errors: list[str] = []
+    now = _now_iso()
+    for artifact_id, row in selected.items():
+        model_name = str(row.get("model_name") or row.get("_model_name") or "")
+        if not model_name:
+            continue
+        decision = _live_gate_decision(
+            model_name=model_name,
+            per_model_ic=per_model_ic,
+            min_samples=min_samples,
+        )
+        evidence = {
+            "schema_version": "artifact-live-gate-v1",
+            "evaluated_at": now,
+            "selection_slot": row.get("_selection_slot"),
+            "model_name": model_name,
+            "artifact_id": artifact_id,
+            "decision": decision,
+        }
+        try:
+            d1_client.execute(
+                """
+                UPDATE model_artifact_registry
+                SET state = ?,
+                    live_gate_status = ?,
+                    live_evidence_json = ?,
+                    promotion_decision = ?,
+                    approval_state = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE artifact_id = ?
+                """,
+                [
+                    decision["state"],
+                    decision["live_gate_status"],
+                    _json_dumps(evidence),
+                    decision["promotion_decision"],
+                    decision["approval_state"],
+                    artifact_id,
+                ],
+            )
+            updates.append({
+                "artifact_id": artifact_id,
+                "model_name": model_name,
+                "state": decision["state"],
+                "live_gate_status": decision["live_gate_status"],
+                "promotion_decision": decision["promotion_decision"],
+                "metrics": decision["metrics"],
+                "root_cause": decision["root_cause"],
+            })
+        except Exception as exc:  # noqa: BLE001 - IC tracker should report partial registry failures.
+            errors.append(f"{artifact_id}: {exc}")
+
+    return {
+        "status": "ok" if not errors else "partial_error",
+        "selected": len(selected),
+        "updated": len(updates),
+        "updates": updates,
+        "errors": errors,
+    }
+
+
+def build_promotion_queue(
+    rows: list[dict[str, Any]],
+    *,
+    champion_versions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build a read-only promotion-controller queue from registry rows.
+
+    This is intentionally not a mutator. It centralizes promotion semantics so
+    UI/OBS can stop inferring next steps from scattered artifact fields.
+    """
+    champion_versions = champion_versions or {}
+    queue: list[dict[str, Any]] = []
+    for row in rows:
+        state = str(row.get("state") or "")
+        live_status = str(row.get("live_gate_status") or "")
+        if state not in {"live_gate_passed", "approval_required", "approved"} and live_status != "passed":
+            continue
+
+        model_name = str(row.get("model_name") or "")
+        champion_version = champion_versions.get(model_name)
+        candidate_type = str(row.get("candidate_type") or "unknown")
+        offline_decision = str(row.get("offline_gate_decision") or "")
+        approval_required = (
+            candidate_type in {"weekly_drift", "manual_hotfix"}
+            or str(row.get("approval_state") or "") == "required"
+        )
+        missing_final_comparison = not champion_version
+        if missing_final_comparison:
+            decision = "blocked_missing_champion_pointer"
+            next_action = "Resolve current champion version before final comparison."
+        elif approval_required:
+            decision = "approval_required"
+            next_action = "Run final comparison against current champion, then request Wei approval before promotion."
+        else:
+            decision = "auto_promote_candidate"
+            next_action = "Run final comparison against current champion; auto-promote only if no production blocker remains."
+
+        queue.append({
+            "artifact_id": row.get("artifact_id"),
+            "model_name": model_name,
+            "candidate_version": row.get("version"),
+            "candidate_type": candidate_type,
+            "state": state,
+            "offline_gate_decision": offline_decision,
+            "live_gate_status": live_status,
+            "evaluation_baseline_version": row.get("evaluation_baseline_version"),
+            "final_compared_to": row.get("final_compared_to") or champion_version,
+            "current_champion_version": champion_version,
+            "promotion_decision": decision,
+            "approval_required": approval_required,
+            "next_action": next_action,
+        })
+
+    return {
+        "status": "ok",
+        "source_of_truth": "model_artifact_registry",
+        "promotion_owner": "promotion-controller",
+        "count": len(queue),
+        "queue": queue,
     }

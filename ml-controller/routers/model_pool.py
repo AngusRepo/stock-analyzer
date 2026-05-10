@@ -24,7 +24,14 @@ from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
-from services.model_artifact_registry import build_candidate_selection, list_artifact_registry
+from services.model_artifact_registry import (
+    backfill_champion_pointers_from_model_pool,
+    build_candidate_selection,
+    build_champion_pointer_projection,
+    build_promotion_queue,
+    list_artifact_registry,
+    list_champion_pointers,
+)
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
@@ -419,6 +426,11 @@ class TrainPatchTSTRequest(BaseModel):
     confirm: bool = False
 
 
+class BackfillChampionPointersRequest(BaseModel):
+    confirm: bool = False
+    reason: str = "model_pool_backfill"
+
+
 @router.post("/train_patchtst")
 async def train_patchtst(req: TrainPatchTSTRequest):
     """One-shot universal PatchTST training. Mirrors /train_dlinear pipeline."""
@@ -651,6 +663,7 @@ class ComputeWeeklyICRequest(BaseModel):
     history_max: int = 26               # cap weekly_ic array (~6 months rolling)
     min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
     update_pool: bool = True            # write back to model_pool.json
+    update_registry: bool = True        # write selected artifact live-gate evidence
     append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
     run_date: str | None = None         # optional upper bound for verify callback/backfill parity
 
@@ -684,6 +697,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         compute_weekly_ic_from_rows,
         tracked_model_names,
     )
+    from services.model_artifact_registry import update_live_gate_from_ic
 
     t0 = time.time()
     all_tracked = tracked_model_names()
@@ -737,6 +751,20 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
 
+    registry_updates: dict | None = None
+    if req.update_registry:
+        try:
+            registry_updates = update_live_gate_from_ic(
+                per_model_ic,
+                min_samples=req.min_samples,
+            )
+        except Exception as e:
+            logger.error(f"[ModelPool] artifact registry live gate update failed: {e}")
+            registry_updates = {
+                "status": "error",
+                "error": f"artifact_registry_live_gate_failed: {e}",
+            }
+
     # 4. Stage 5 alerts: weekly summary + decay-detection per-event
     # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status;
     # Stage 4 promote gate owns the actual transitions):
@@ -759,6 +787,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
         "pool_updates": pool_changes if req.update_pool else None,
+        "artifact_registry_updates": registry_updates,
         "elapsed_s": round(time.time() - t0, 1),
     }
 
@@ -1466,6 +1495,108 @@ async def artifact_registry_selection(model_name: str | None = None, limit: int 
         return build_candidate_selection(rows)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
+
+
+@router.get("/artifact_registry/promotion_queue")
+async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200):
+    """Read-only promotion-controller queue for registry artifacts.
+
+    This does not mutate champion pointers. It explains which live-gate-passed
+    artifacts need final comparison, approval, or auto-promotion review.
+    """
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        return build_promotion_queue(rows, champion_versions=champion_versions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
+
+
+@router.get("/artifact_registry/champion_pointers")
+async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
+    """Read-only champion pointer migration contract.
+
+    Production currently reads model_pool.json. This endpoint compares that
+    serving pointer with registry-owned D1 pointers so the next migration step
+    cannot silently create split-brain.
+    """
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        d1_pointers = list_champion_pointers(model_name=model_name)
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        return build_champion_pointer_projection(
+            registry_rows=rows,
+            d1_pointers=d1_pointers,
+            model_pool_versions=champion_versions,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
+
+
+@router.post("/artifact_registry/champion_pointers/backfill")
+async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPointersRequest):
+    """Backfill D1 champion pointers from current model_pool.json.
+
+    This does not promote any artifact. It only mirrors today's production
+    champion versions into the registry pointer table so future final
+    comparisons have a stable source of truth.
+    """
+    if not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="champion pointer backfill requires confirm=true; this writes model_champion_pointers but does not change production serving",
+        )
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            raise HTTPException(status_code=404, detail="model_pool.json not found")
+        pool = _json.loads(pool_blob.download_as_text())
+        for name, entry in (pool.get("models") or {}).items():
+            version = entry.get("version")
+            if version:
+                champion_versions[str(name)] = str(version)
+        rows = list_artifact_registry(limit=500)
+        result = backfill_champion_pointers_from_model_pool(
+            model_pool_versions=champion_versions,
+            registry_rows=rows,
+            reason=req.reason,
+        )
+        return {
+            **result,
+            "production_reader": "model_pool.json",
+            "note": "Backfill only; serving owner migration still requires explicit deploy.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointer backfill failed: {e}")
 
 
 @router.get("/lineage")

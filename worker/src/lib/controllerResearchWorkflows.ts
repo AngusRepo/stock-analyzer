@@ -91,11 +91,11 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
 export async function runWeeklyOptunaResearch(env: Bindings) {
   return runOptunaResearch(env, {
     cadence: 'weekly',
-    nTrials: 200,
-    subsetSize: 1000,
+    nTrials: 80,
+    subsetSize: 400,
     ga: {
-      populationSize: 24,
-      generations: 8,
+      populationSize: 12,
+      generations: 4,
     },
   })
 }

@@ -1,5 +1,5 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
-import { runVerifyV2, runWeeklyRetrain } from './controllerWorkflows'
+import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 
@@ -186,10 +186,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     pipeline: () => deps.runMLAndRiskV2(requestedRunDate()),
     'weekly-cleanup': async () => {
       await runWeeklyCleanup(c.env)
-      await runWeeklyRetrain(c.env)
       await deps.runWeeklyLifecycleCheck().catch((e) => { console.warn('[Lifecycle] failed:', e) })
       await runWeeklyLocalMaintenance(c.env)
-      return 'weekly cleanup bundle done'
+      return 'weekly cleanup done: local maintenance + lifecycle check; retrain is monthly/manual only'
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')

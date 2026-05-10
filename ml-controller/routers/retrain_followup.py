@@ -23,6 +23,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
+from services.model_artifact_registry import (
+    build_artifact_records_from_retrain_followup,
+    upsert_artifact_records,
+)
 from services.cost_tracker import record_modal_call
 from services.modal_client import _modal_resource_spec
 
@@ -41,6 +45,8 @@ class RetrainFollowupPayload(BaseModel):
     batch_count: int | None = None
     gcs_prefix: str = "universal"
     candidate_version: str | None = None
+    training_run_id: str | None = None
+    training_manifest_path: str | None = None
     challenger_registrations: dict[str, Any] = Field(default_factory=dict)
     window_id: int | None = None
     total_samples: int = 0
@@ -284,11 +290,22 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
 
     write_status = "upserted" if changes > 0 else "unchanged"
     telemetry_status = await _record_modal_telemetry(payload.modal_telemetry)
+    artifact_registry = {"attempted": 0, "written": 0, "errors": []}
+    try:
+        artifact_records = build_artifact_records_from_retrain_followup(payload)
+        artifact_registry = upsert_artifact_records(artifact_records)
+    except Exception as exc:  # noqa: BLE001 - followup persistence remains authoritative.
+        artifact_registry = {
+            "attempted": 0,
+            "written": 0,
+            "errors": [str(exc)],
+        }
     scheduler_callback = await _callback_worker_scheduler(payload)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
         f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key} "
         f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])} "
+        f"artifact_registry={artifact_registry['written']}/{artifact_registry['attempted']} "
         f"scheduler_callback={scheduler_callback}"
     )
 
@@ -300,6 +317,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "action": "retrain_followup",
         "lock_release": lock_release,
         "modal_telemetry": telemetry_status,
+        "artifact_registry": artifact_registry,
         "scheduler_callback": scheduler_callback,
         "summary": {
             "run_id": payload.run_id,

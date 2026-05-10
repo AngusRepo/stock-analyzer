@@ -113,6 +113,42 @@ dashboardReadRoutes.get('/api/model-pool/lineage', async (c) => {
   }
 })
 
+dashboardReadRoutes.get('/api/model-pool/artifact_registry', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const params = new URLSearchParams()
+  for (const key of ['model_name', 'state', 'candidate_type', 'limit']) {
+    const value = c.req.query(key)
+    if (value) params.set(key, value)
+  }
+  const qs = params.toString()
+
+  try {
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e), artifacts: [] }, 502)
+  }
+})
+
+dashboardReadRoutes.get('/api/model-pool/artifact_registry/selection', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const params = new URLSearchParams()
+  for (const key of ['model_name', 'limit']) {
+    const value = c.req.query(key)
+    if (value) params.set(key, value)
+  }
+  const qs = params.toString()
+
+  try {
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/selection${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
+  }
+})
+
 dashboardReadRoutes.get('/api/backtest/pbo', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

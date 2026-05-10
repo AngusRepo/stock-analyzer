@@ -214,9 +214,19 @@ def _register_challenger_safe(
         from .model_pool import register_challenger
 
         pool = register_challenger(model_name, version, save=True, model_cpcv=model_cpcv)
-        return {"status": "registered", "version": version, "pool_updated": bool(pool)}
+        return {
+            "status": "registered",
+            "version": version,
+            "pool_updated": bool(pool),
+            "model_cpcv": model_cpcv,
+        }
     except Exception as exc:
-        return {"status": "error", "version": version, "error": str(exc)}
+        return {
+            "status": "error",
+            "version": version,
+            "error": str(exc),
+            "model_cpcv": model_cpcv,
+        }
 
 
 def build_validation_split_metadata(
@@ -1584,11 +1594,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     extra_metadata=model_extra_meta or None,
                 )
                 if req.register_challengers:
-                    challenger_registrations[model_name] = _register_challenger_safe(
+                    registration = _register_challenger_safe(
                         model_name,
                         req.output_model_version,
                         model_cpcv=model_cpcv_evidence_by_model.get(model_name),
                     )
+                    registration["training_run_id"] = training_run_id
+                    registration["training_manifest_path"] = manifest_path
+                    challenger_registrations[model_name] = registration
                 print(
                     f"[TrainUniversal] Saved {model_name} challenger to {model_path} "
                     f"(version={req.output_model_version})"

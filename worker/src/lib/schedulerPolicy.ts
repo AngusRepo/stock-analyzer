@@ -51,10 +51,10 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'model-ic-tracker': { kind: 'trading_week', holidayGated: true, description: 'weekly model IC tracker' },
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },
-  'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup bundle' },
-  'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly backtest, Monte Carlo, PBO' },
+  'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup and lifecycle check; no retrain' },
+  'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },
-  'weekly-optuna': { kind: 'research', holidayGated: false, description: 'weekly Optuna search' },
+  'weekly-optuna': { kind: 'research', holidayGated: false, description: 'weekly lightweight Optuna/GA calibration' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },
   'optuna-queue': { kind: 'queue', holidayGated: false, description: 'Optuna queue processor' },

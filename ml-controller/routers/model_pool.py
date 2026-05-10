@@ -24,6 +24,7 @@ from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
+from services.model_artifact_registry import build_candidate_selection, list_artifact_registry
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
@@ -1421,6 +1422,50 @@ async def status():
         return pool
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
+
+
+@router.get("/artifact_registry")
+async def artifact_registry(
+    model_name: str | None = None,
+    state: str | None = None,
+    candidate_type: str | None = None,
+    limit: int = 100,
+):
+    """Read registered retrain artifacts and gate states.
+
+    Production serving still uses model_pool active/champion pointers. This
+    endpoint exposes the release-train registry so UI/OBS can show why a
+    retrain artifact is registered, offline-passed, shadowing, or archived.
+    """
+    try:
+        rows = list_artifact_registry(
+            model_name=model_name,
+            state=state,
+            candidate_type=candidate_type,
+            limit=limit,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry failed: {e}")
+    return {
+        "status": "ok",
+        "source_of_truth": "model_artifact_registry",
+        "count": len(rows),
+        "artifacts": rows,
+    }
+
+
+@router.get("/artifact_registry/selection")
+async def artifact_registry_selection(model_name: str | None = None, limit: int = 200):
+    """Read-only release-train candidate selection.
+
+    This does not promote or shadow anything. It explains which registered
+    monthly/weekly artifacts are eligible for the next gate.
+    """
+    try:
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        return build_candidate_selection(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
 
 
 @router.get("/lineage")

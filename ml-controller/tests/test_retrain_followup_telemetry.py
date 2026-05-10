@@ -18,6 +18,7 @@ class _Request:
 @pytest.mark.asyncio
 async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     calls: list[dict] = []
+    registry_records: list[dict] = []
 
     async def fake_record_modal_call(**kwargs):
         calls.append(kwargs)
@@ -26,6 +27,15 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
     monkeypatch.setattr(followup_router, "record_modal_call", fake_record_modal_call)
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda records: registry_records.extend(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
 
     payload = followup_router.RetrainFollowupPayload(
         run_id="run-telemetry",
@@ -55,11 +65,59 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
 
     assert result["status"] == "completed"
     assert result["modal_telemetry"]["recorded"] == 2
+    assert result["artifact_registry"]["attempted"] == 0
     assert [c["function_name"] for c in calls] == ["retrain_orchestrator", "train_ftt_model"]
     assert calls[0]["source"] == "modal_followup"
     assert calls[1]["gpu"] == "L4"
     assert calls[1]["memory_mb"] == 4096
     assert calls[1]["meta"]["group"] == "ftt"
+    assert registry_records == []
+
+
+@pytest.mark.asyncio
+async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
+    written: list[dict] = []
+
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
+    monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda records: written.extend(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
+
+    payload = followup_router.RetrainFollowupPayload(
+        run_id="monthly-registry-1",
+        run_date="2026-05-08",
+        is_monthly=True,
+        candidate_version="v20260508",
+        training_run_id="training-run-v20260508",
+        training_manifest_path="universal/manifests/training-run-v20260508.json",
+        status="completed",
+        ic_summary={"XGBoost": 0.06},
+        challenger_registrations={
+            "XGBoost": {
+                "status": "registered",
+                "version": "v20260508",
+                "model_cpcv": {"decision": "PASS", "failed_gates": []},
+            },
+        },
+    )
+
+    result = await followup_router.retrain_followup(payload, _Request())
+
+    assert result["artifact_registry"]["attempted"] == 1
+    assert result["artifact_registry"]["written"] == 1
+    assert written[0]["artifact_id"] == "XGBoost:v20260508:monthly_release"
+    assert written[0]["training_run_id"] == "training-run-v20260508"
+    assert written[0]["training_manifest_path"] == "universal/manifests/training-run-v20260508.json"
+    assert written[0]["state"] == "offline_strong_pass"
 
 
 def test_retrain_followup_accepts_modal_service_token(monkeypatch):

@@ -3,7 +3,7 @@ import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from '.
 import { runMLAndRiskV2 } from './mlPipelineTrigger'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
-import { runWeeklyLifecycleCheck, runWeeklyRetrain } from './controllerWorkflows'
+import { runWeeklyLifecycleCheck } from './controllerWorkflows'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
@@ -178,10 +178,9 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   if (cron === '0 20 * * 6') {
     runWithLog('weekly-cleanup', async () => {
       await runWeeklyCleanup(env)
-      await runWeeklyRetrain(env)
       await runWeeklyLifecycleCheck(env).catch((e) => { console.warn('[Lifecycle] failed:', e) })
       await runWeeklyLocalMaintenance(env)
-      return 'weekly cleanup bundle done'
+      return 'weekly cleanup done: local maintenance + lifecycle check; retrain is monthly/manual only'
     })
     return true
   }

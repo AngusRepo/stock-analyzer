@@ -446,12 +446,23 @@ def retrain_orchestrator(payload: dict) -> dict:
                 if partial and not partial.get("error"):
                     candidate_models.add(model_name)
             for model_name in sorted(candidate_models):
+                if model_name in (tree_result.get("challenger_registrations") or {}):
+                    continue
+                if model_name in (ftt_result.get("challenger_registrations") or {}):
+                    continue
                 try:
                     version = candidate_version
                     _register_challenger(model_name, version, save=True)
+                    group_result = {}
+                    if model_name == "DLinear":
+                        group_result = aux_train.get("dlinear") or {}
+                    elif model_name == "PatchTST":
+                        group_result = aux_train.get("patchtst") or {}
                     challenger_registrations[model_name] = {
                         "status": "registered",
                         "version": version,
+                        "training_run_id": group_result.get("training_run_id"),
+                        "training_manifest_path": group_result.get("training_manifest_path"),
                     }
                 except Exception as e:
                     challenger_registrations[model_name] = {

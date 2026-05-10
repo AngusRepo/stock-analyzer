@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
@@ -526,6 +526,86 @@ function FamilyBalancePanel({ counts, total }: { counts: Record<string, number>;
   )
 }
 
+function registryTone(state?: string): WorkstationTone {
+  if (state === 'offline_strong_pass' || state === 'offline_passed' || state === 'live_gate_passed' || state === 'production') return 'ok'
+  if (state === 'offline_failed' || state === 'registration_failed' || state === 'rejected') return 'error'
+  if (state === 'offline_passed_weak' || state === 'approval_required') return 'warn'
+  return 'neutral'
+}
+
+function ArtifactMiniCard({ title, artifact }: { title: string; artifact?: ModelArtifactRegistryRow | null }) {
+  if (!artifact) {
+    return (
+      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{title}</p>
+        <p className="mt-2 text-sm text-slate-500">No selected artifact</p>
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{title}</p>
+          <p className="mt-1 font-mono text-[12px] text-[#fff1cf]">{artifact.version}</p>
+        </div>
+        <WorkstationPill tone={registryTone(artifact.state)}>{artifact.state}</WorkstationPill>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-[#8a92a6]">
+        <span>offline</span><span className="text-right text-slate-200">{artifact.offline_gate_decision ?? 'PENDING'}</span>
+        <span>live</span><span className="text-right text-slate-200">{artifact.live_gate_status ?? 'not_started'}</span>
+        <span>approval</span><span className="text-right text-slate-200">{artifact.approval_state ?? 'not_required'}</span>
+      </div>
+      <p className="mt-2 truncate font-mono text-[10px] text-[#70809b]" title={artifact.artifact_path ?? undefined}>{artifact.artifact_path ?? '-'}</p>
+    </div>
+  )
+}
+
+function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelectionResponse }) {
+  const models = Object.entries(selection?.models ?? {})
+  const monthlyCount = models.filter(([, row]) => row.monthly_release_candidate).length
+  const weeklyCount = models.filter(([, row]) => row.weekly_drift_candidate).length
+  const archivedCount = models.reduce((sum, [, row]) => sum + (row.archive_candidates?.length ?? 0), 0)
+
+  return (
+    <WorkstationPanel title="Model Registry / 模型版本中心" kicker="champion alias, release candidates, drift candidates">
+      <div className="grid gap-3 p-3 md:grid-cols-3">
+        <SignalInsightCard title="Monthly release" value={String(monthlyCount)} detail="主版本列車；通過 offline gate 才進候選。" tone={monthlyCount ? 'ok' : 'warn'} />
+        <SignalInsightCard title="Weekly drift" value={String(weeklyCount)} detail="只有 offline strong pass 才能占用 live shadow slot。" tone={weeklyCount ? 'info' : 'neutral'} />
+        <SignalInsightCard title="Archived evidence" value={String(archivedCount)} detail="保留證據但不進 live gate，避免 weekly 疊爆。" tone="neutral" />
+      </div>
+      <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
+        {models.length ? models.map(([modelName, row]) => (
+          <div key={modelName} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="font-mono text-[12px] font-semibold text-slate-100">{modelName}</p>
+                <p className="mt-1 text-[11px] text-[#70809b]">release-train selection · not production promotion</p>
+              </div>
+              <WorkstationPill tone={row.weekly_drift_candidate ? 'info' : row.monthly_release_candidate ? 'ok' : 'neutral'}>
+                {row.weekly_drift_candidate ? 'weekly shadow eligible' : row.monthly_release_candidate ? 'monthly candidate' : 'no candidate'}
+              </WorkstationPill>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <ArtifactMiniCard title="Monthly candidate" artifact={row.monthly_release_candidate} />
+              <ArtifactMiniCard title="Weekly drift candidate" artifact={row.weekly_drift_candidate} />
+            </div>
+            {row.archive_candidates?.length > 0 && (
+              <p className="mt-2 text-[11px] text-[#8a92a6]">
+                archived: {row.archive_candidates.slice(0, 3).join(', ')}{row.archive_candidates.length > 3 ? ` +${row.archive_candidates.length - 3}` : ''}
+              </p>
+            )}
+          </div>
+        )) : (
+          <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200 lg:col-span-2">
+            尚未讀到 model_artifact_registry。下一次 retrain followup 成功後會開始出現 registered / offline gate evidence。
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function ServingDiagnosticsPanel({ payload }: { payload: any }) {
   const recs = (payload?.all_recommendations ?? payload?.recommendations ?? []) as any[]
   const diagnostics = recs
@@ -633,6 +713,13 @@ export default function ModelPoolPage() {
     staleTime: queryTtl.dailyDecision,
     refetchInterval: queryTtl.dailyDecision,
   })
+  const artifactSelection = useQuery({
+    queryKey: ['model-pool', 'artifact-selection'],
+    queryFn: () => modelPoolApi.artifactSelection(200),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
 
   const models = data?.models ?? {}
   const modelList = Object.entries(models).filter(([name, model]) => !isStateSpaceOverlay(name, model))
@@ -679,7 +766,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch() }}>
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -708,6 +795,7 @@ export default function ModelPoolPage() {
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
+            <ArtifactRegistryPanel selection={artifactSelection.data} />
             <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
             <LiveShadowEvidencePanel models={modelList} />
             <ArtifactDiffPanel models={modelList} />

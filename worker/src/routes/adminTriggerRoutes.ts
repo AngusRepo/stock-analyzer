@@ -9,7 +9,15 @@ interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
 }
 
-const SYNC_REQUIRED_TASKS = new Set(['evening-chain', 'update', 'pipeline', 'weekly-optuna', 'monthly-optuna'])
+const SYNC_REQUIRED_TASKS = new Set([
+  'evening-chain',
+  'update',
+  'pipeline',
+  'weekly-cleanup',
+  'weekly-backtest',
+  'weekly-optuna',
+  'monthly-optuna',
+])
 
 function buildRunId(task: string): string {
   const suffix = Math.random().toString(36).slice(2, 10)

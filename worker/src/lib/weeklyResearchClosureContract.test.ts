@@ -9,6 +9,9 @@ function assert(condition: unknown, message: string): void {
 const workflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const gcpCron = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
 const adminGcp = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
+const workerCron = fs.readFileSync('src/lib/cronWorkerDomainTasks.ts', 'utf8')
+const adminWorker = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 
 assert(
   workflows.includes("'ga_optimizer'"),
@@ -62,6 +65,27 @@ assert(
 assert(
   workflows.includes('max_parallel_sources: 3'),
   'weekly/monthly Optuna must request bounded controller-side parallelism, not controller serial execution or Worker fan-out',
+)
+
+assert(
+  workflows.includes('nTrials: 80') &&
+    workflows.includes('subsetSize: 400') &&
+    workflows.includes('populationSize: 12') &&
+    workflows.includes('generations: 4'),
+  'weekly Optuna must be a lightweight calibration/hotfix sweep; monthly owns heavy search',
+)
+
+assert(
+  !/runWithLog\('weekly-cleanup'[\s\S]*runWeeklyRetrain/.test(workerCron) &&
+    !/'weekly-cleanup':[\s\S]*runWeeklyRetrain/.test(adminWorker),
+  'weekly cleanup must not hide universal retrain in scheduled or manual trigger paths; retrain is monthly/manual only',
+)
+
+assert(
+  triggerRoutes.includes("'weekly-cleanup'") &&
+    triggerRoutes.includes("'weekly-backtest'") &&
+    triggerRoutes.includes('requires sync=1'),
+  'weekly cleanup/backtest must use sync trigger contract so OBS does not infer stale background runs',
 )
 
 assert(

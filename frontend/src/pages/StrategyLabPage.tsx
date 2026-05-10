@@ -131,7 +131,21 @@ function evidenceLabel(status?: string) {
   return status ?? 'missing'
 }
 
-function MetaLearningDecisionDesk({ tracks, matrix }: { tracks: MetaLearningTrack[]; matrix: MetaLearningEvidenceRow[] }) {
+function MetaLearningDecisionDesk({
+  tracks,
+  matrix,
+  actionBusy,
+  onCreateTrackExperiment,
+  onRefreshLinucb,
+  onRunNeuralShadow,
+}: {
+  tracks: MetaLearningTrack[]
+  matrix: MetaLearningEvidenceRow[]
+  actionBusy: string | null
+  onCreateTrackExperiment: (track: MetaLearningTrack) => void
+  onRefreshLinucb: () => void
+  onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS') => void
+}) {
   const visible = tracks.length ? tracks : []
   const matrixById = new Map(matrix.map((row) => [row.id, row]))
   return (
@@ -193,6 +207,21 @@ function MetaLearningDecisionDesk({ tracks, matrix }: { tracks: MetaLearningTrac
                   {track.experiment_template.metrics.slice(0, 5).map((metric) => (
                     <Badge key={metric} variant="outline" className="border-cyan-500/20 text-cyan-200">{metric}</Badge>
                   ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" disabled={actionBusy === `experiment:${track.id}`} onClick={() => onCreateTrackExperiment(track)}>
+                    {actionBusy === `experiment:${track.id}` ? '建立中...' : '建立 Experiment'}
+                  </Button>
+                  {track.id === 'LinUCB' && (
+                    <Button size="sm" variant="outline" disabled={actionBusy === 'linucb-ledger'} onClick={onRefreshLinucb}>
+                      {actionBusy === 'linucb-ledger' ? '刷新中...' : '刷新 Reward Ledger'}
+                    </Button>
+                  )}
+                  {(track.id === 'NeuralUCB' || track.id === 'NeuralTS') && (
+                    <Button size="sm" className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" disabled={actionBusy === `shadow:${track.id}`} onClick={() => onRunNeuralShadow(track.id as 'NeuralUCB' | 'NeuralTS')}>
+                      {actionBusy === `shadow:${track.id}` ? '執行中...' : 'Run Shadow'}
+                    </Button>
+                  )}
                 </div>
               </div>
                   </>
@@ -262,6 +291,7 @@ export default function StrategyLabPage() {
   const [draftSaving, setDraftSaving] = useState(false)
   const [draftPersisting, setDraftPersisting] = useState(false)
   const [runningExperimentId, setRunningExperimentId] = useState<string | null>(null)
+  const [metaActionBusy, setMetaActionBusy] = useState<string | null>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -381,6 +411,66 @@ export default function StrategyLabPage() {
     }
   }
 
+  async function createMetaLearningExperiment(track: MetaLearningTrack) {
+    try {
+      setMetaActionBusy(`experiment:${track.id}`)
+      setDraftError(null)
+      const today = new Date().toISOString().slice(0, 10)
+      const id = `${track.id.toLowerCase()}-${today.replace(/-/g, '')}`
+      const template = track.experiment_template
+      const res = await strategyLabApi.createExperiment({
+        id,
+        hypothesis: template.hypothesis,
+        strategySpecIds: template.strategySpecIds,
+        metrics: template.metrics,
+        followUp: template.followUp,
+        sourceRefs: [...template.sourceRefs, 'strategy-lab-meta-learning-desk'],
+        dataSlice: {
+          track_id: track.id,
+          stage: track.stage,
+          learning_targets: track.learning_targets,
+          start_date: '2026-04-01',
+          end_date: today,
+        },
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, `${track.id} experiment write failed`))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function refreshLinucbLedger() {
+    try {
+      setMetaActionBusy('linucb-ledger')
+      setDraftError(null)
+      await strategyLabApi.refreshLinucbRewardLedger({ limit: 5000, dry_run: false, confirm: true })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'LinUCB reward ledger refresh failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function runNeuralShadow(policyId: 'NeuralUCB' | 'NeuralTS') {
+    try {
+      setMetaActionBusy(`shadow:${policyId}`)
+      setDraftError(null)
+      await strategyLabApi.runNeuralShadow({ policy_id: policyId, limit: 5000, dry_run: false, confirm: true })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, `${policyId} shadow run failed`))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
   async function runEvaluationPlan(id: string) {
     try {
       setRunningExperimentId(id)
@@ -453,6 +543,10 @@ export default function StrategyLabPage() {
         <MetaLearningDecisionDesk
           tracks={experiments?.meta_learning_tracks ?? []}
           matrix={experiments?.meta_learning_evidence_matrix ?? []}
+          actionBusy={metaActionBusy}
+          onCreateTrackExperiment={createMetaLearningExperiment}
+          onRefreshLinucb={refreshLinucbLedger}
+          onRunNeuralShadow={runNeuralShadow}
         />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_0.65fr]">

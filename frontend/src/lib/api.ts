@@ -605,6 +605,18 @@ export const strategyLabApi = {
   evaluationRuns: (id: string) => get<ResearchEvaluationRunsResponse>(
     `/admin/research/experiments/${encodeURIComponent(id)}/evaluation-runs`,
   ),
+  refreshLinucbRewardLedger: (body?: { start_date?: string; end_date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/meta-learning/linucb/reward-ledger/refresh',
+    { ...body, dry_run: body?.dry_run ?? false },
+    body?.confirm !== false ? { 'X-Confirm-Meta-Learning': 'true' } : undefined,
+  ),
+  runNeuralShadow: (body: { policy_id: 'NeuralUCB' | 'NeuralTS'; start_date?: string; end_date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/meta-learning/neural-shadow/run',
+    { ...body, dry_run: body.dry_run ?? false },
+    body.confirm !== false ? { 'X-Confirm-Meta-Learning': 'true' } : undefined,
+  ),
 }
 
 export type ModelPoolLifecycleDiagnosis = {
@@ -692,9 +704,52 @@ export type ModelPoolLineage = {
   error?: string
 }
 
+export type ModelArtifactRegistryRow = {
+  artifact_id: string
+  model_name: string
+  version: string
+  candidate_type: 'monthly_release' | 'weekly_drift' | 'manual_hotfix' | 'unknown'
+  state: string
+  artifact_path?: string | null
+  metadata_path?: string | null
+  training_run_id?: string | null
+  training_manifest_path?: string | null
+  source_run_date?: string | null
+  offline_gate_status?: string
+  offline_gate_decision?: string
+  offline_gate_failed_gates?: string[] | string
+  offline_evidence_json?: Record<string, unknown> | string
+  live_gate_status?: string
+  promotion_decision?: string
+  approval_state?: string
+  updated_at?: string
+  created_at?: string
+}
+
+export type ModelArtifactRegistryResponse = {
+  status: string
+  source_of_truth: string
+  count: number
+  artifacts: ModelArtifactRegistryRow[]
+}
+
+export type ModelArtifactSelectionResponse = {
+  status: string
+  source_of_truth: string
+  selection_policy: string
+  models: Record<string, {
+    monthly_release_candidate?: ModelArtifactRegistryRow | null
+    weekly_drift_candidate?: ModelArtifactRegistryRow | null
+    archive_candidates: string[]
+    policy: Record<string, unknown>
+  }>
+}
+
 export const modelPoolApi = {
   status: () => get<any>('/model-pool/status'),
   lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),
+  artifactRegistry: (limit = 100) => get<ModelArtifactRegistryResponse>(`/model-pool/artifact_registry?limit=${limit}`),
+  artifactSelection: (limit = 200) => get<ModelArtifactSelectionResponse>(`/model-pool/artifact_registry/selection?limit=${limit}`),
 }
 
 // 2026-04-21 #43 Cost Tracking API

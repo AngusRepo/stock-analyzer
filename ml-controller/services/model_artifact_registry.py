@@ -137,6 +137,52 @@ def evaluate_offline_gate(
     }
 
 
+def _nested_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _model_training_evidence(payload_dict: dict[str, Any], model_name: str) -> dict[str, Any]:
+    """Extract model-specific evidence from the richer retrain followup stages.
+
+    Older followup payloads kept ``challenger_registrations`` intentionally thin
+    while storing CPCV/OOS evidence under ``stages.train.ic_tracking`` and
+    sequence metadata under ``stages.train.aux_train``. Registry backfills must
+    read those fields or valid artifacts look weaker than they really are.
+    """
+    stages = _nested_dict(payload_dict.get("stages"))
+    train = _nested_dict(stages.get("train"))
+    ic_tracking = _nested_dict(train.get("ic_tracking"))
+    model_ic = _nested_dict(ic_tracking.get(model_name))
+
+    aux_train = _nested_dict(train.get("aux_train"))
+    aux_key = {
+        "DLinear": "dlinear",
+        "PatchTST": "patchtst",
+    }.get(model_name)
+    aux = _nested_dict(aux_train.get(aux_key)) if aux_key else {}
+    aux_metadata = _nested_dict(aux.get("metadata"))
+
+    evidence: dict[str, Any] = {}
+    if model_ic.get("model_cpcv") is not None:
+        evidence["model_cpcv"] = model_ic.get("model_cpcv")
+    elif aux_metadata.get("model_cpcv") is not None:
+        evidence["model_cpcv"] = aux_metadata.get("model_cpcv")
+
+    if aux_metadata.get("feature_policy") is not None:
+        evidence["feature_policy"] = aux_metadata.get("feature_policy")
+    if aux_metadata.get("feature_policy_schema_version") is not None:
+        evidence["feature_policy_version"] = aux_metadata.get("feature_policy_schema_version")
+    if aux_metadata.get("selection_evidence") is not None:
+        evidence["selection_evidence"] = aux_metadata.get("selection_evidence")
+    if aux_metadata.get("version") is not None:
+        evidence["metadata_version"] = aux_metadata.get("version")
+    if aux_metadata:
+        evidence["metadata"] = aux_metadata
+    if model_ic:
+        evidence["ic_tracking"] = model_ic
+    return evidence
+
+
 def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str, Any]]:
     payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     version = payload_dict.get("candidate_version")
@@ -152,10 +198,14 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     for model_name, raw_registration in registrations.items():
         if not isinstance(raw_registration, dict):
             raw_registration = {"status": "unknown", "raw": raw_registration}
+        evidence = _model_training_evidence(payload_dict, str(model_name))
+        enriched_registration = {**evidence, **raw_registration}
+        if "model_cpcv" not in enriched_registration and evidence.get("model_cpcv") is not None:
+            enriched_registration["model_cpcv"] = evidence["model_cpcv"]
         record_version = str(raw_registration.get("version") or version)
         offline_gate = evaluate_offline_gate(
             model_name=str(model_name),
-            registration=raw_registration,
+            registration=enriched_registration,
             ic_summary=ic_summary,
         )
         artifact_id = f"{model_name}:{record_version}:{candidate_type}"
@@ -181,7 +231,7 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
             ),
             "evaluation_baseline_version": raw_registration.get("evaluation_baseline_version"),
             "final_compared_to": None,
-            "feature_policy_version": raw_registration.get("feature_policy_version"),
+            "feature_policy_version": raw_registration.get("feature_policy_version") or evidence.get("feature_policy_version"),
             "checksum": raw_registration.get("checksum"),
             "source_run_date": payload_dict.get("run_date"),
             "is_monthly": 1 if payload_dict.get("is_monthly") else 0,
@@ -190,7 +240,7 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
             "offline_gate_failed_gates": _json_dumps(offline_gate["failed_gates"]),
             "offline_evidence_json": _json_dumps({
                 "gate": offline_gate,
-                "registration": raw_registration,
+                "registration": enriched_registration,
                 "ic_summary": {str(model_name): ic_summary.get(str(model_name))},
                 "callback_status": payload_dict.get("status"),
                 "callback_error": payload_dict.get("error"),

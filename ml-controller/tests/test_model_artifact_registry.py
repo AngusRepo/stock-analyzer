@@ -133,3 +133,47 @@ def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     assert model["monthly_release_candidate"]["artifact_id"] == "XGBoost:vM:monthly_release"
     assert model["weekly_drift_candidate"]["artifact_id"] == "XGBoost:vW2:weekly_drift"
     assert "XGBoost:vW1:weekly_drift" in model["archive_candidates"]
+
+
+def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():
+    payload = {
+        "run_id": "weekly-20260510",
+        "run_date": "2026-05-10",
+        "is_monthly": False,
+        "candidate_version": "v20260510",
+        "status": "completed",
+        "ic_summary": {"XGBoost": 0.1361, "DLinear": 0.0465},
+        "challenger_registrations": {
+            "XGBoost": {"status": "registered", "version": "v20260510"},
+            "DLinear": {"status": "registered", "version": "v20260510"},
+        },
+        "stages": {
+            "train": {
+                "ic_tracking": {
+                    "XGBoost": {
+                        "model_cpcv": {"decision": "PASS", "failed_gates": []},
+                    },
+                    "DLinear": {
+                        "model_cpcv": {"decision": "PASS", "failed_gates": []},
+                    },
+                },
+                "aux_train": {
+                    "dlinear": {
+                        "metadata": {
+                            "feature_policy_schema_version": "model-feature-policy-v1",
+                            "feature_policy": {"model": "DLinear", "family": "sequence"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    by_model = {row["model_name"]: row for row in records}
+    assert by_model["XGBoost"]["state"] == "offline_strong_pass"
+    assert by_model["XGBoost"]["offline_gate_decision"] == "STRONG_PASS"
+    assert by_model["DLinear"]["state"] == "offline_passed"
+    assert by_model["DLinear"]["offline_gate_decision"] == "PASS"
+    assert by_model["DLinear"]["feature_policy_version"] == "model-feature-policy-v1"

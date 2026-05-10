@@ -61,6 +61,11 @@ class RetrainFollowupPayload(BaseModel):
     stages: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetrainFollowupRegistryBackfillRequest(BaseModel):
+    run_id: str
+    dry_run: bool = True
+
+
 _ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
 
 
@@ -213,6 +218,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "released": False,
         "error": None,
     }
+
     downstream_notes = "no_lock_key"
     if payload.lock_key:
         lock_release["attempted"] = True
@@ -331,4 +337,75 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "feature_count": payload.feature_count,
             "error": payload.error,
         },
+    }
+
+
+@router.post("/retrain/followup/registry-backfill")
+async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfillRequest, request: Request) -> dict[str, Any]:
+    """Backfill artifact registry from an existing followup payload only.
+
+    This intentionally does not update webhook_log.received_at, release retrain
+    locks, or callback scheduler state. It is for safe registry bootstrapping
+    after the registry table is introduced.
+    """
+    _check_token(request)
+    run_id = str(req.run_id or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+
+    rows = d1_client.query(
+        """
+        SELECT idempotency_key, payload_summary
+        FROM webhook_log
+        WHERE action='retrain_followup'
+          AND idempotency_key=?
+        ORDER BY received_at DESC
+        LIMIT 1
+        """,
+        [run_id],
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"retrain followup payload not found: {run_id}")
+
+    try:
+        payload_dict = json.loads(rows[0]["payload_summary"])
+    except Exception as exc:  # noqa: BLE001 - make operator-facing error explicit.
+        raise HTTPException(status_code=500, detail=f"payload_summary JSON parse failed: {exc}")
+
+    artifact_records = build_artifact_records_from_retrain_followup(payload_dict)
+    result = {
+        "attempted": len(artifact_records),
+        "written": 0,
+        "errors": [],
+        "dry_run": bool(req.dry_run),
+    }
+    if not req.dry_run:
+        result = {
+            **upsert_artifact_records(artifact_records),
+            "dry_run": False,
+        }
+
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "source": "webhook_log.payload_summary",
+        "side_effects": {
+            "webhook_log_updated": False,
+            "scheduler_callback": False,
+            "lock_release": False,
+            "retrain_started": False,
+        },
+        "artifact_registry": result,
+        "artifacts": [
+            {
+                "artifact_id": row.get("artifact_id"),
+                "model_name": row.get("model_name"),
+                "version": row.get("version"),
+                "candidate_type": row.get("candidate_type"),
+                "state": row.get("state"),
+                "offline_gate_decision": row.get("offline_gate_decision"),
+                "feature_policy_version": row.get("feature_policy_version"),
+            }
+            for row in artifact_records
+        ],
     }

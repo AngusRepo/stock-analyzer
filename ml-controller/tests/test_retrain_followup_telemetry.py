@@ -176,3 +176,65 @@ def test_non_monthly_retrain_followup_keeps_compat_task():
     assert callback["task"] == "retrain"
     assert callback["status"] == "error"
     assert callback["error"] == "artifact mismatch"
+
+
+@pytest.mark.asyncio
+async def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
+    written: list[dict] = []
+    executed: list[tuple] = []
+
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(
+        followup_router.d1_client,
+        "query",
+        lambda *args, **kwargs: [{
+            "idempotency_key": "run-backfill",
+            "payload_summary": """
+            {
+              "run_id": "run-backfill",
+              "run_date": "2026-05-10",
+              "is_monthly": false,
+              "candidate_version": "v20260510",
+              "status": "completed",
+              "ic_summary": {"XGBoost": 0.08},
+              "challenger_registrations": {
+                "XGBoost": {"status": "registered", "version": "v20260510"}
+              },
+              "stages": {
+                "train": {
+                  "ic_tracking": {
+                    "XGBoost": {
+                      "model_cpcv": {"decision": "PASS", "failed_gates": []}
+                    }
+                  }
+                }
+              }
+            }
+            """,
+        }],
+    )
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda records: written.extend(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: executed.append(args))
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: (_ for _ in ()).throw(AssertionError("must not release lock")))
+    monkeypatch.setattr(followup_router, "_callback_worker_scheduler", lambda payload: (_ for _ in ()).throw(AssertionError("must not callback scheduler")))
+
+    result = await followup_router.retrain_followup_registry_backfill(
+        followup_router.RetrainFollowupRegistryBackfillRequest(run_id="run-backfill", dry_run=False),
+        _Request(),
+    )
+
+    assert result["side_effects"]["webhook_log_updated"] is False
+    assert result["side_effects"]["scheduler_callback"] is False
+    assert result["side_effects"]["lock_release"] is False
+    assert result["artifact_registry"]["written"] == 1
+    assert written[0]["artifact_id"] == "XGBoost:v20260510:weekly_drift"
+    assert written[0]["state"] == "offline_strong_pass"
+    assert executed == []

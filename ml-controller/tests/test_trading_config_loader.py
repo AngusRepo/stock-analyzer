@@ -23,7 +23,7 @@ def test_partial_kv_config_is_merged_with_required_defaults(monkeypatch):
     assert result.contract.source == "direct_kv_merged_required_defaults"
 
 
-def test_worker_merged_config_is_preferred_but_raw_missing_sections_are_reported(monkeypatch):
+def test_worker_merged_config_is_preferred_and_raw_missing_sections_are_default_notes(monkeypatch):
     monkeypatch.setattr(
         loader,
         "get_raw_trading_config",
@@ -47,8 +47,9 @@ def test_worker_merged_config_is_preferred_but_raw_missing_sections_are_reported
     assert result.contract.source == "worker_admin_config"
     assert result.config["alphaFramework"]["quality"]["minSamples"] == 40
     assert result.config["signal"]["buySignalScore"] == 0.53
-    assert "ensemble_v2" in result.contract.missing_sections
-    assert result.contract.degraded is True
+    assert result.contract.missing_sections == []
+    assert "ensemble_v2" in result.contract.defaulted_sections
+    assert result.contract.degraded is False
 
 
 def test_full_worker_config_is_not_degraded(monkeypatch):

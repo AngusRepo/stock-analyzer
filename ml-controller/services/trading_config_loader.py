@@ -192,8 +192,8 @@ def load_merged_trading_config_with_contract(
                 contract=TradingConfigContract(
                     source="worker_admin_config",
                     raw_present=raw_present,
-                    degraded=bool(raw_missing or final_missing or raw_error),
-                    missing_sections=raw_missing or final_missing,
+                    degraded=bool(final_missing or raw_error),
+                    missing_sections=final_missing,
                     defaulted_sections=raw_missing,
                     error=raw_error,
                 ),

@@ -76,7 +76,21 @@ for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'r
   )
 }
 
-for (const critical of ['evening-chain', 'weekly-cleanup', 'weekly-backtest', 'weekly-optuna', 'monthly-optuna']) {
+for (const critical of [
+  'evening-chain',
+  'rescore-10',
+  'rescore-11',
+  'rescore-12',
+  'rescore-1230',
+  'alpha-quality',
+  'sector-leaders',
+  'weekly-cleanup',
+  'weekly-backtest',
+  'weekly-optuna',
+  'monthly-optuna',
+  'monthly-retrain',
+  'optuna-queue',
+]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }

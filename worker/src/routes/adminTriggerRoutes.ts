@@ -12,9 +12,11 @@ interface TriggerRouteDeps {
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'update', 'pipeline',
-  'weekly-cleanup',
-  'weekly-backtest',
+  'intraday-rescore',
+  'alpha-quality', 'sector-leaders', 'optuna-queue',
+  'weekly-cleanup', 'weekly-backtest',
   'weekly-optuna', 'monthly-optuna',
+  'monthly-retrain',
 ])
 
 function buildRunId(task: string): string {

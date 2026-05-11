@@ -10,8 +10,8 @@ adminWriteRoutes.post('/api/admin/update', async (c) => {
   const authError = await requireAdminJWT(c)
   if (authError) return authError
 
-  c.executionCtx.waitUntil(runDailyUpdate(c.env))
-  return c.json({ success: true, message: '每日更新已在背景執行' })
+  const result = await runDailyUpdate(c.env)
+  return c.json({ success: true, mode: 'sync', result })
 })
 
 adminWriteRoutes.post('/api/admin/costs/manual', async (c) => {

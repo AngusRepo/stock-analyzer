@@ -380,6 +380,7 @@ def test_champion_pointer_projection_ready_when_d1_matches_serving():
         d1_pointers=[{
             "model_name": "PatchTST",
             "champion_version": "vServing",
+            "champion_artifact_id": "PatchTST:vServing:monthly_release",
         }],
         model_pool_versions={"PatchTST": "vServing"},
     )
@@ -388,6 +389,97 @@ def test_champion_pointer_projection_ready_when_d1_matches_serving():
     assert projection["migration_ready"] is True
     assert model["readiness"] == "pointer_ready"
     assert model["latest_registry_production_artifact"]["artifact_id"] == "PatchTST:vServing:monthly_release"
+
+
+def test_champion_pointer_projection_marks_version_only_pointer():
+    projection = registry.build_champion_pointer_projection(
+        registry_rows=[],
+        d1_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vServing",
+        }],
+        model_pool_versions={"PatchTST": "vServing"},
+    )
+
+    model = projection["models"]["PatchTST"]
+    assert projection["migration_ready"] is True
+    assert model["readiness"] == "pointer_ready_version_only"
+    assert model["artifact_link_status"] == "version_only_pointer"
+
+
+def test_promotion_controller_dry_run_requires_weekly_approval():
+    result = registry.run_promotion_controller(
+        artifact_id="XGBoost:vW:weekly_drift",
+        registry_rows=[{
+            "artifact_id": "XGBoost:vW:weekly_drift",
+            "model_name": "XGBoost",
+            "version": "vW",
+            "candidate_type": "weekly_drift",
+            "state": "live_gate_passed",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": "{}",
+        }],
+        d1_pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "vOld",
+            "champion_artifact_id": "XGBoost:vOld:monthly_release",
+        }],
+        model_pool_versions={"XGBoost": "vOld"},
+        confirm=False,
+        approved=False,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "approval_required"
+    assert result["can_promote"] is False
+    assert result["final_compared_to"] == "vOld"
+
+
+def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_promotion_controller(
+        artifact_id="LightGBM:vM:monthly_release",
+        registry_rows=[{
+            "artifact_id": "LightGBM:vM:monthly_release",
+            "model_name": "LightGBM",
+            "version": "vM",
+            "candidate_type": "monthly_release",
+            "state": "live_gate_passed",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": "{}",
+        }],
+        d1_pointers=[{
+            "model_name": "LightGBM",
+            "champion_version": "vOld",
+            "champion_artifact_id": "LightGBM:vOld:monthly_release",
+        }],
+        model_pool_versions={"LightGBM": "vOld"},
+        confirm=True,
+        approved=False,
+        reason="test_promote",
+    )
+
+    assert result["status"] == "ok"
+    assert result["decision"] == "promote"
+    assert result["can_promote"] is True
+    assert len(executed) == 3
+    pointer_params = executed[2]["params"]
+    assert pointer_params[0] == "LightGBM"
+    assert pointer_params[1] == "vM"
+    assert pointer_params[2] == "LightGBM:vM:monthly_release"
+    assert pointer_params[3] == "vOld"
+    assert pointer_params[4] == "LightGBM:vOld:monthly_release"
 
 
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):

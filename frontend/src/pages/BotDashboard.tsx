@@ -24,6 +24,7 @@ import AppShell from '@/components/AppShell'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
+import { formatTwDateTimeShort } from '@/lib/twTime'
 import {
   WorkstationCatCard,
   WorkstationFlow,
@@ -553,10 +554,7 @@ function parseOrderNote(note: unknown): Record<string, any> {
 }
 
 function formatTwOrderTime(createdAt?: string | null): string {
-  if (!createdAt) return '-'
-  const ts = new Date(createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}Z`).getTime()
-  if (!Number.isFinite(ts)) return createdAt
-  return new Date(ts + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ')
+  return formatTwDateTimeShort(createdAt)
 }
 
 function summarizeOrderReason(order: any): string {
@@ -829,7 +827,7 @@ function TradeHistory() {
             return (
               <tr key={o.id ?? i} className="border-b border-border/50 hover:bg-muted/30">
                 <td className="p-2 text-xs text-muted-foreground font-mono whitespace-nowrap">
-                  {o.created_at ? new Date(new Date(o.created_at).getTime() + 8 * 3600_000).toISOString().slice(5, 16).replace('T', ' ') : '-'}
+                  {formatTwOrderTime(o.created_at)}
                 </td>
                 <td className="p-2">
                   <span className="font-mono text-foreground">{o.symbol}</span>

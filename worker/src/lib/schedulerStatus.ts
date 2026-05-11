@@ -21,17 +21,18 @@ type SchedulerResolvedStatus = {
   staleRunning: boolean
   staleReason?: string
 }
+type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
 const JOB_DEFS: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
-  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
+  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After evening-chain', cron: '', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 3 },
-  { id: 'pipeline', name: 'Pipeline', schedule: 'After screener', cron: '', group: 'pipeline_chain', chainIndex: 4 },
-  { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 5 },
-  { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 6 },
-  { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 7 },
-  { id: 'regime-compute', name: 'HMM Regime', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 8 },
+  { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 4 },
+  { id: 'pipeline', name: 'Pipeline', schedule: 'After screener + regime', cron: '', group: 'pipeline_chain', chainIndex: 5 },
+  { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 7 },
+  { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 8 },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 9 },
   { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 10 },
   { id: 'model-ic-tracker', name: 'Model IC Tracker', schedule: 'After verify callback / Friday full check', cron: '30 11 * * 5', group: 'pipeline_chain', chainIndex: 11 },
@@ -66,11 +67,11 @@ const CHAIN_STEP_IDS = [
   'update',
   'indicator-queue',
   'screener',
+  'regime-compute',
   'pipeline',
   'ml-predict',
   'recommendation',
   'post-pipeline-chain',
-  'regime-compute',
   'verify-v2',
   'post-verify-chain',
   'model-ic-tracker',
@@ -112,6 +113,45 @@ function formatDuration(durationMs?: number | null): string {
   }
   if (durationMs < 10000) return `${(durationMs / 1000).toFixed(1)}s`
   return `${Math.floor(durationMs / 1000)}s`
+}
+
+function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
+  durationConcern: SchedulerDurationConcern
+  durationConcernReason?: string
+} {
+  if (!log || log.duration_ms == null || log.duration_ms >= 2000) return { durationConcern: null }
+
+  const summary = `${log.summary ?? ''} ${log.error ?? ''}`.toLowerCase()
+  const status = log.status
+  const expectedTriggerOrDerived =
+    status === 'triggered' ||
+    status === 'running' ||
+    summary.includes('callback expected') ||
+    summary.includes('awaiting callback') ||
+    summary.includes('triggered') ||
+    summary.includes('derived from pipeline') ||
+    summary.includes('already running') ||
+    summary.includes('queue accepted') ||
+    summary.includes('shard') ||
+    summary.includes('run_id') ||
+    summary.includes('execution_id') ||
+    summary.includes('job=')
+
+  if (expectedTriggerOrDerived) {
+    return {
+      durationConcern: 'expected_short',
+      durationConcernReason: 'short trigger/callback/derived run; final work is tracked by callback or downstream job',
+    }
+  }
+
+  if (status === 'success') {
+    return {
+      durationConcern: 'suspicious_short',
+      durationConcernReason: 'success under 2s without trigger/callback evidence',
+    }
+  }
+
+  return { durationConcern: null }
 }
 
 export function getSchedulerScanDates(): string[] {
@@ -329,6 +369,7 @@ export async function getSchedulerStatus(env: Bindings) {
     const lastStatus = resolvedToday.status ?? inferIdleStatus(def, nextRun, today)
 
     const lastDuration = formatDuration(lastLog?.duration_ms)
+    const shortRun = inferShortRunConcern(def, lastLog)
 
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
@@ -350,6 +391,8 @@ export async function getSchedulerStatus(env: Bindings) {
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
       lastDuration,
+      durationConcern: shortRun.durationConcern,
+      durationConcernReason: shortRun.durationConcernReason,
       lastError: resolvedToday.staleReason ?? todayLog?.error ?? lastLog?.error,
       nextRun,
       history7d,

@@ -1,6 +1,5 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowRight, Clock3, Database, ExternalLink, GitBranch, ShieldCheck } from 'lucide-react'
+import { ArrowRight, ExternalLink } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import {
   WorkstationPageTitle,
@@ -17,7 +16,6 @@ import {
   type DataQualityCheck,
   type DataQualityReport,
   type ObservabilityEvent,
-  type ObservabilityIncident,
   type ObservabilitySeverity,
   type SchedulerJob,
 } from '@/lib/api'
@@ -78,47 +76,6 @@ function computeDataQualityScore(report?: DataQualityReport) {
   return Math.round((score / checks.length) * 100)
 }
 
-function formatObsTime(value?: string | null) {
-  if (!value) return '-'
-  const ts = new Date(value).getTime()
-  if (!Number.isFinite(ts)) return String(value)
-  return new Date(ts).toLocaleString('zh-TW', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function formatDuration(start?: string | null, end?: string | null) {
-  const from = start ? new Date(start).getTime() : NaN
-  const to = end ? new Date(end).getTime() : Date.now()
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return '-'
-  const minutes = Math.round((to - from) / 60_000)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.round(minutes / 60)
-  if (hours < 48) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
-}
-
-function incidentTiming(incident: ObservabilityIncident, events: ObservabilityEvent[] = []) {
-  const sourceEvents = events.filter((event) => incident.source_event_ids?.includes(event.id))
-  const eventTimes = sourceEvents.map((event) => event.ts).filter(Boolean).sort()
-  const firstSeen = incident.first_seen ?? eventTimes[0] ?? ''
-  const lastSeen = incident.last_seen ?? eventTimes[eventTimes.length - 1] ?? firstSeen
-  return {
-    firstSeen,
-    lastSeen,
-    duration: formatDuration(firstSeen, lastSeen),
-  }
-}
-
-function formatEvidenceValue(value: unknown) {
-  if (Array.isArray(value)) return value.length ? value.slice(0, 4).join(', ') : '-'
-  if (value == null || value === '') return '-'
-  return String(value)
-}
-
 function MiniBar({ value, tone }: { value: number; tone: WorkstationTone }) {
   const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
   return (
@@ -173,348 +130,6 @@ function MetricCell({
   )
 }
 
-function ReliabilityMap({
-  incidents,
-  schedulerOk,
-  dataQualityOk,
-  deployOk,
-  traceOk,
-}: {
-  incidents: number
-  schedulerOk: number
-  dataQualityOk: number
-  deployOk: number
-  traceOk: number
-}) {
-  const schedulerTone = schedulerOk >= 95 ? 'ok' : schedulerOk >= 85 ? 'warn' : 'error'
-  const dataTone = dataQualityOk >= 90 ? 'ok' : dataQualityOk >= 70 ? 'warn' : 'error'
-  const deployTone = deployOk >= 90 ? 'ok' : deployOk >= 60 ? 'warn' : 'error'
-  const incidentTone = incidents ? 'warn' : 'ok'
-  const traceTone = traceOk ? 'ok' : 'warn'
-  const steps: Array<{ label: string; value: string; tone: WorkstationTone; icon: React.ReactNode; note: string }> = [
-    { label: 'Incident', value: `${incidents}`, tone: incidentTone, icon: <Activity className="h-4 w-4" />, note: 'root-cause group count' },
-    { label: 'Scheduler', value: `${schedulerOk}%`, tone: schedulerTone, icon: <Clock3 className="h-4 w-4" />, note: 'job SLO' },
-    { label: 'Data', value: `${dataQualityOk}%`, tone: dataTone, icon: <Database className="h-4 w-4" />, note: 'freshness/schema/parity' },
-    { label: 'Gate', value: `${deployOk}%`, tone: deployTone, icon: <ShieldCheck className="h-4 w-4" />, note: 'predeploy safety' },
-    { label: 'Trace', value: `${traceOk}`, tone: traceTone, icon: <GitBranch className="h-4 w-4" />, note: 'event evidence' },
-  ]
-  return (
-    <WorkstationPanel title="Reliability Map / 可靠度地圖" kicker="dependency order, not duplicate KPI">
-      <div className="grid gap-3 p-3 lg:grid-cols-[1fr_340px]">
-        <div className="grid gap-2 md:grid-cols-5">
-          {steps.map((step, index) => (
-            <div key={step.label} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-slate-400">
-                  {step.icon}
-                  <span className="font-mono text-[10px] uppercase tracking-[0.14em]">{step.label}</span>
-                </div>
-                {index < steps.length - 1 && <ArrowRight className="h-3 w-3 text-amber-300" />}
-              </div>
-              <div className="mt-3 flex items-end justify-between gap-2">
-                <p className={`font-mono text-xl font-semibold ${step.tone === 'ok' ? 'text-emerald-300' : step.tone === 'warn' ? 'text-amber-300' : step.tone === 'error' ? 'text-rose-300' : 'text-sky-300'}`}>{step.value}</p>
-                <WorkstationPill tone={step.tone}>{step.tone}</WorkstationPill>
-              </div>
-              <p className="mt-2 text-[11px] leading-4 text-slate-500">{step.note}</p>
-            </div>
-          ))}
-        </div>
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">How to read / 怎麼看</p>
-          <p className="mt-2 text-xs leading-5 text-slate-400">
-            上方 KPI 只回答健康分數；這裡固定用事件流順序看 blast radius：先看 root-cause inbox，再看 scheduler 是否完成、資料是否可信、deploy gate 是否阻擋，最後用 trace event 找證據。
-          </p>
-          <Sparkline values={[incidents ? 40 : 100, schedulerOk, dataQualityOk, deployOk, Math.min(100, traceOk * 8)]} tone={incidents || deployOk < 90 ? 'warn' : 'ok'} />
-        </div>
-      </div>
-    </WorkstationPanel>
-  )
-}
-
-function IncidentInbox({
-  incidents,
-  selectedId,
-  events,
-  onOpen,
-}: {
-  incidents: ObservabilityIncident[]
-  selectedId?: string
-  events: ObservabilityEvent[]
-  onOpen: (id: string) => void
-}) {
-  if (!incidents.length) {
-    return (
-      <div className="p-4">
-        <WorkstationPill tone="ok">No active incidents / 無事件</WorkstationPill>
-      </div>
-    )
-  }
-
-  return (
-    <div className="divide-y divide-[#263247]">
-      {incidents.map((incident) => {
-        const timing = incidentTiming(incident, events)
-        const tone = severityTone(incident.severity)
-        return (
-          <button
-            key={incident.id}
-            type="button"
-            onClick={() => onOpen(incident.id)}
-            aria-pressed={selectedId === incident.id}
-            className={`w-full border-b border-[#263247] p-3 text-left transition-colors hover:bg-[#152033] ${
-              selectedId === incident.id ? 'bg-amber-300/10' : 'bg-[#05070c]'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <WorkstationPill tone={tone}>{incident.status}</WorkstationPill>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{incident.domain}</span>
-                </div>
-                <p className="mt-2 truncate text-sm font-semibold text-slate-100">{incident.title}</p>
-                <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] text-slate-500">
-                  <span>first {formatObsTime(timing.firstSeen)}</span>
-                  <span>last {formatObsTime(timing.lastSeen)}</span>
-                  <span>age {timing.duration}</span>
-                  <span>{incident.source_event_ids?.length ?? 0} events</span>
-                </div>
-                <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.root_cause || incident.impact || '-'}</p>
-                <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 65 : 35} tone={tone} />
-              </div>
-              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-amber-200">
-                查看 / Open <ArrowRight className="h-3 w-3" />
-              </span>
-            </div>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function SelectedIncidentDetail({
-  incident,
-  fallbackEvents,
-}: {
-  incident?: ObservabilityIncident
-  fallbackEvents: ObservabilityEvent[]
-}) {
-  if (!incident) {
-    return (
-      <div className="p-4">
-        <WorkstationPill tone="ok">No selected incident / 無事件</WorkstationPill>
-      </div>
-    )
-  }
-
-  const timing = incidentTiming(incident, fallbackEvents)
-  const tone = severityTone(incident.severity)
-  const evidence = asRecord(incident.evidence)
-  const statuses = formatEvidenceValue(evidence.statuses)
-  const sources = formatEvidenceValue(evidence.sources)
-  const eventCount = formatEvidenceValue(evidence.event_count ?? incident.source_event_ids?.length)
-  const isGaPromotionGate =
-    incident.title.toLowerCase().includes('ga optimizer') ||
-    String(incident.root_cause ?? '').toLowerCase().includes('adaptive_meta:shadow_config') ||
-    String(evidence.sources ?? '').toLowerCase().includes('ga_optimizer')
-  return (
-    <div className="space-y-3 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Root cause / 事件根因</p>
-          <h2 className="mt-1 text-xl font-semibold text-slate-100">{incident.title}</h2>
-        </div>
-        <WorkstationPill tone={tone}>{incident.severity}</WorkstationPill>
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-3">
-        <MetricCell label="First seen / 首次發生" value={formatObsTime(timing.firstSeen)} tone="info" detail="來自 OBS audit / event ts，不是頁面開啟時間" />
-        <MetricCell label="Last seen / 最後更新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="判斷是不是新問題" />
-        <MetricCell label="Age / 持續時間" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="first seen 到 last seen" />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root Cause / 為什麼壞</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.root_cause || '-'}</p>
-        </div>
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact / 影響</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.impact || '-'}</p>
-        </div>
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-200">Next Action / 要怎麼處理</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.next_action || '-'}</p>
-        </div>
-      </div>
-
-      {isGaPromotionGate && (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">GA Promotion Gate / GA 進級門檻</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">
-            這不是個股錯誤，也不是 scheduler 沒跑。它代表 GA optimizer 已產生一組學到的候選策略參數，但目前停在 L2 審核階段；production 的 trading:config 還沒被改動。要進下一階，需要看 fitness、PBO/MC、candidate diff 與風險門檻，通過後才會自動往 L3/L4 推進並通知。
-          </p>
-          <div className="mt-3 grid gap-2 md:grid-cols-3">
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="text-[11px] text-slate-500">Runs 為 0</p>
-              <p className="text-xs leading-5 text-slate-300">GA 是 config/meta 層事件，不是單一股票 run。</p>
-            </div>
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="text-[11px] text-slate-500">Symbols 為 0</p>
-              <p className="text-xs leading-5 text-slate-300">它調整門檻/權重，不直接掛在某檔股票。</p>
-            </div>
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="text-[11px] text-slate-500">Evidence</p>
-              <p className="text-xs leading-5 text-slate-300">用來追 GA 候選、gate 與 promotion ladder。</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="grid gap-2 md:grid-cols-3">
-        <MetricCell label="Runs" value={String(incident.run_ids?.length ?? 0)} tone="info" detail={(incident.run_ids ?? []).slice(0, 2).join(', ') || '-'} />
-        <MetricCell label="Symbols" value={String(incident.affected_symbols?.length ?? 0)} tone={(incident.affected_symbols?.length ?? 0) ? 'warn' : 'ok'} detail={(incident.affected_symbols ?? []).slice(0, 4).join(', ') || '-'} />
-        <MetricCell label="Evidence / 證據" value={`${eventCount} events`} tone={statusTone(incident.status)} detail={`${sources}; ${statuses}`} />
-      </div>
-    </div>
-  )
-}
-
-function IncidentInboxV2({
-  incidents,
-  selectedId,
-  events,
-  onOpen,
-}: {
-  incidents: ObservabilityIncident[]
-  selectedId?: string
-  events: ObservabilityEvent[]
-  onOpen: (id: string) => void
-}) {
-  if (!incidents.length) {
-    return (
-      <div className="p-4">
-        <WorkstationPill tone="ok">No active incidents / 目前無事件</WorkstationPill>
-      </div>
-    )
-  }
-
-  return (
-    <div className="divide-y divide-[#263247]">
-      {incidents.map((incident) => {
-        const timing = incidentTiming(incident, events)
-        const tone = severityTone(incident.severity)
-        return (
-          <button
-            key={incident.id}
-            type="button"
-            onClick={() => onOpen(incident.id)}
-            aria-pressed={selectedId === incident.id}
-            className={`w-full border-b border-[#263247] p-3 text-left transition-colors hover:bg-[#152033] ${
-              selectedId === incident.id ? 'bg-amber-300/10' : 'bg-[#05070c]'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <WorkstationPill tone={tone}>{incident.status}</WorkstationPill>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{incident.domain}</span>
-                  <span className="font-mono text-[10px] text-slate-500">{incident.source_event_ids?.length ?? 0} events</span>
-                </div>
-                <p className="mt-2 truncate text-sm font-semibold text-slate-100">{incident.title}</p>
-                <div className="mt-2 grid gap-1 font-mono text-[10px] text-slate-500">
-                  <span>first {formatObsTime(timing.firstSeen)} · last {formatObsTime(timing.lastSeen)}</span>
-                  <span>age {timing.duration}</span>
-                </div>
-                <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{incident.root_cause || incident.impact || '-'}</p>
-                <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 65 : 35} tone={tone} />
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-amber-200">
-                Open <ArrowRight className="h-3 w-3" />
-              </span>
-            </div>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function SelectedIncidentDetailV2({
-  incident,
-  fallbackEvents,
-}: {
-  incident?: ObservabilityIncident
-  fallbackEvents: ObservabilityEvent[]
-}) {
-  if (!incident) {
-    return (
-      <div className="p-4">
-        <WorkstationPill tone="ok">No selected incident / 尚未選擇事件</WorkstationPill>
-      </div>
-    )
-  }
-
-  const timing = incidentTiming(incident, fallbackEvents)
-  const tone = severityTone(incident.severity)
-  const evidence = asRecord(incident.evidence)
-  const statuses = formatEvidenceValue(evidence.statuses)
-  const sources = formatEvidenceValue(evidence.sources)
-  const eventCount = formatEvidenceValue(evidence.event_count ?? incident.source_event_ids?.length)
-  const isGaPromotionGate =
-    incident.title.toLowerCase().includes('ga optimizer') ||
-    String(incident.root_cause ?? '').toLowerCase().includes('adaptive_meta:shadow_config') ||
-    String(evidence.sources ?? '').toLowerCase().includes('ga_optimizer')
-
-  return (
-    <div className="space-y-3 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Incident / 事件</p>
-          <h2 className="mt-1 text-xl font-semibold text-slate-100">{incident.title}</h2>
-        </div>
-        <WorkstationPill tone={tone}>{incident.severity}</WorkstationPill>
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-3">
-        <MetricCell label="First seen / 首次發生" value={formatObsTime(timing.firstSeen)} tone="info" detail="第一次被歸入此 root-cause 群組" />
-        <MetricCell label="Last seen / 最後更新" value={formatObsTime(timing.lastSeen)} tone={incident.status === 'resolved' ? 'ok' : 'warn'} detail="最後一筆相關 event / audit log" />
-        <MetricCell label="Age / 持續時間" value={timing.duration} tone={incident.status === 'open' ? 'warn' : 'ok'} detail="first seen 到 last seen" />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">Root Cause / 根因</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.root_cause || '-'}</p>
-        </div>
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200">Impact / 影響</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.impact || '-'}</p>
-        </div>
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-200">Next Action / 下一步</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{incident.next_action || '-'}</p>
-        </div>
-      </div>
-
-      {isGaPromotionGate && (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">GA Promotion Gate / GA 晉級門檻</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">
-            這不是排程失敗，而是 GA optimizer 已產生候選參數但尚未通過 promotion ladder。Production trading:config 會保持不變，直到 fitness、PBO/MC 與 candidate diff 都通過門檻。
-          </p>
-        </div>
-      )}
-
-      <div className="grid gap-2 md:grid-cols-3">
-        <MetricCell label="Runs / 執行" value={String(incident.run_ids?.length ?? 0)} tone="info" detail={(incident.run_ids ?? []).slice(0, 2).join(', ') || '-'} />
-        <MetricCell label="Symbols / 股票" value={String(incident.affected_symbols?.length ?? 0)} tone={(incident.affected_symbols?.length ?? 0) ? 'warn' : 'ok'} detail={(incident.affected_symbols ?? []).slice(0, 4).join(', ') || '-'} />
-        <MetricCell label="Evidence / 證據" value={`${eventCount} events`} tone={statusTone(incident.status)} detail={`${sources}; ${statuses}`} />
-      </div>
-    </div>
-  )
-}
-
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
@@ -535,7 +150,7 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
               <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
             </div>
             <div className="min-w-0 font-mono text-slate-400">
-              <p>last {job.lastRun || '-'}</p>
+              <p>發生 {job.lastRun || '-'}</p>
               <p className="text-slate-600">next {job.nextRun || '-'}</p>
             </div>
             <div className="min-w-0 font-mono text-slate-400">
@@ -545,7 +160,14 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
             <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
               Drilldown <ExternalLink className="h-3 w-3" />
             </a>
-            {job.lastError && <p className="lg:col-span-4 text-xs leading-5 text-rose-300">{job.lastError}</p>}
+            <div className="xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 md:grid-cols-2">
+              <p className={job.lastStatus === 'failed' ? 'text-rose-300' : 'text-slate-400'}>
+                <span className="font-semibold text-slate-200">Root cause：</span>{schedulerRootCause(job)}
+              </p>
+              <p className="text-slate-400">
+                <span className="font-semibold text-slate-200">可能影響：</span>{schedulerImpact(job)}
+              </p>
+            </div>
           </div>
         ))}
       </div>
@@ -891,18 +513,36 @@ function DependencyMap() {
   )
 }
 
-export default function ObservabilityPage() {
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string>()
+function schedulerRootCause(job: SchedulerJob) {
+  if (job.lastError) return job.lastError
+  if (job.summary) return job.summary
+  if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
+  if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
+  if (job.lastStatus === 'skip') return '沒有今日 run log，或被交易日曆 / policy 跳過。'
+  return '-'
+}
 
+function schedulerImpact(job: SchedulerJob) {
+  if (job.lastStatus === 'success') return '下游可使用此階段產物。'
+  if (job.lastStatus === 'running') return '下游仍在等待；若超過 SLA，推薦、驗證或報表可能延遲。'
+  if (job.lastStatus === 'waiting') return '目前等待前序 callback，不應手動跳階段。'
+  if (job.lastStatus === 'failed') {
+    if (job.id === 'evening-chain' || job.id === 'indicator-queue') return '價格、籌碼或技術指標可能不完整，後續推薦不可完全信任。'
+    if (job.id === 'pipeline' || job.id === 'ml-predict' || job.id === 'recommendation') return 'AI Top Picks、ML 權重與 daily recommendation 可能仍是舊資料。'
+    if (job.id === 'verify-v2' || job.id === 'model-ic-tracker') return 'IC、lifecycle、promotion/live gate evidence 會延遲更新。'
+    return '相關下游資料可能 stale，需先修復此 scheduler。'
+  }
+  if (job.lastStatus === 'sleep') return '非今日執行項目，不影響今日 pipeline。'
+  return '若今天應執行，請檢查 Scheduler job 或 holiday policy。'
+}
+
+export default function ObservabilityPage() {
   const scheduler = useQuery({ queryKey: ['obs', 'scheduler'], queryFn: schedulerApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), refetchInterval: 60_000, staleTime: 30_000 })
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
-  const drilldown = useQuery({ queryKey: ['obs', 'drilldown'], queryFn: () => observabilityApi.drilldown(), refetchInterval: 60_000, staleTime: 30_000 })
 
-  const incidents = drilldown.data?.incidents ?? []
-  const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) ?? incidents[0]
   const events = observability.data?.events ?? []
   const jobs = scheduler.data?.jobs ?? []
   const dqChecks = dataQuality.data?.checks ?? []
@@ -911,10 +551,6 @@ export default function ObservabilityPage() {
   const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
   const failedJobs = jobs.filter((job) => job.lastStatus === 'failed').length
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
-
-  function openIncident(id: string) {
-    setSelectedIncidentId(id)
-  }
 
   return (
     <AppShell>
@@ -939,7 +575,7 @@ export default function ObservabilityPage() {
             <p className="mt-1 text-xs text-slate-500">同一列看 SLO，不用箭頭假裝它們有直接相依。</p>
           </div>
         <section className="grid grid-cols-1 overflow-hidden bg-[#2b3a49] md:grid-cols-5">
-          <MetricCell label="Incidents / 事件" value={String(incidents.length)} tone={incidents.length ? 'warn' : 'ok'} count={`${events.length} events`} detail="grouped root-cause inbox" />
+          <MetricCell label="Events / 事件證據" value={String(events.length)} tone={observability.error ? 'warn' : 'info'} count="OBS events" detail="root cause now lives in scheduler rows" />
           <MetricCell label="Scheduler SLO / 排程" value={`${schedulerScore}%`} tone={failedJobs ? 'warn' : 'ok'} count={`${jobs.length} jobs`} detail={`${failedJobs} failed`} />
           <MetricCell label="Data Trust / 資料" value={`${dataQualityScore}%`} tone={statusTone(dataQuality.data?.overall)} count={`${dqChecks.length} checks`} detail={`${failedChecks} failed`} />
           <MetricCell label="Deploy Gate / 上線" value={formatStatus(deployGate.data?.decision)} tone={statusTone(deployGate.data?.decision)} count="gate" detail="predeploy safety" />
@@ -947,17 +583,8 @@ export default function ObservabilityPage() {
         </section>
         </div>
 
-        <AdaptiveMetaPanel events={events} />
-
-        <section className="grid gap-4 xl:grid-cols-[360px_1fr_300px]">
-          <WorkstationPanel title="Incident Inbox / 事件收件匣" kicker="time, count, owner">
-            <IncidentInboxV2 incidents={incidents} selectedId={selectedIncident?.id} events={events} onOpen={openIncident} />
-          </WorkstationPanel>
-
-          <WorkstationPanel title="Selected Incident Detail / 事件根因" kicker="impact + next action">
-            <SelectedIncidentDetailV2 incident={selectedIncident} fallbackEvents={events} />
-          </WorkstationPanel>
-
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">
+          <AdaptiveMetaPanel events={events} />
           <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">
             <DependencyMap />
           </WorkstationPanel>
@@ -967,7 +594,7 @@ export default function ObservabilityPage() {
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs leading-5 text-slate-400">
-                保留完整 row 與 drilldown 入口；狀態用下方 sparkline / 分數條呈現，避免重複膠囊噪音。
+                Scheduler row 直接顯示 root cause、發生時間與可能影響；OBS 不再另外維護重複的事件收件匣。
               </p>
               <div className="flex flex-wrap gap-2 text-[11px]">
                 <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 font-mono text-sky-200 hover:border-sky-300/50">

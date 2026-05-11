@@ -31,6 +31,7 @@ from services.model_artifact_registry import (
     build_promotion_queue,
     list_artifact_registry,
     list_champion_pointers,
+    run_promotion_controller,
 )
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
@@ -429,6 +430,14 @@ class TrainPatchTSTRequest(BaseModel):
 class BackfillChampionPointersRequest(BaseModel):
     confirm: bool = False
     reason: str = "model_pool_backfill"
+
+
+class PromotionControllerRequest(BaseModel):
+    artifact_id: str
+    confirm: bool = False
+    approved: bool = False
+    approved_by: str | None = None
+    reason: str = "promotion_controller"
 
 
 @router.post("/train_patchtst")
@@ -1521,6 +1530,44 @@ async def artifact_registry_promotion_queue(model_name: str | None = None, limit
         return build_promotion_queue(rows, champion_versions=champion_versions)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
+
+
+@router.post("/artifact_registry/promotion_controller")
+async def artifact_registry_promotion_controller(req: PromotionControllerRequest):
+    """Run final comparison and optionally update the champion pointer.
+
+    ``confirm=false`` is dry-run. ``confirm=true`` may update D1
+    model_champion_pointers, but it still does not mutate model_pool.json.
+    """
+    if not req.artifact_id:
+        raise HTTPException(status_code=400, detail="artifact_id is required")
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        rows = list_artifact_registry(limit=500)
+        pointers = list_champion_pointers()
+        return run_promotion_controller(
+            artifact_id=req.artifact_id,
+            registry_rows=rows,
+            d1_pointers=pointers,
+            model_pool_versions=champion_versions,
+            confirm=req.confirm,
+            approved=req.approved,
+            approved_by=req.approved_by,
+            reason=req.reason,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
 
 
 @router.get("/artifact_registry/champion_pointers")

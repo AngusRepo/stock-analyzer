@@ -124,5 +124,16 @@ export async function assertEveningPipelineReady(
     )
   }
 
+  const regimeLog = await env.KV.get(`scheduler:run:regime-compute:${twDate}`, 'json') as {
+    status?: string
+    summary?: string
+  } | null
+  if (!regimeLog || regimeLog.status !== 'success') {
+    throw new Error(
+      `regime-compute not complete for ${twDate}: status=${regimeLog?.status ?? 'missing'}; ` +
+      `summary=${regimeLog?.summary ?? ''}`,
+    )
+  }
+
   return ready
 }

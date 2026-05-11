@@ -14,6 +14,7 @@ import { Treemap, ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxi
 import { paperApi } from '@/lib/api'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
+import { formatTwDateTimeShort } from '@/lib/twTime'
 
 /** 法人金額格式化：< 0.01億 改顯示萬元 */
 function fmtChipAmount(billion: number | null | undefined): string {
@@ -82,7 +83,7 @@ function SectorFlowStaleNotice({ data, label = 'theme flow' }: { data: any; labe
       <span className="font-medium">{label}</span>
       <span className="ml-2">
         資料日 {actualDate ?? '-'}；請求日 {requestedDate ?? '-'}
-        {updatedAt ? `；更新 ${updatedAt}` : ''}
+        {updatedAt ? `；更新 ${formatTwDateTimeShort(updatedAt)}` : ''}
         {data.stale ? '，目前使用最近可用資料，請檢查 sector_flow 是否完成更新。' : '，已對齊目前查詢日期。'}
       </span>
     </div>
@@ -382,7 +383,7 @@ export function ThemeFlowPanel() {
       </h3>
       <div className="mb-3 rounded-xl border border-[#3a3125] bg-[#0b0d11]/70 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
         <p>
-          資料日 {dataDate ?? '-'}{updatedAt ? `；更新 ${updatedAt}` : ''}。這裡不是單日全市場三大法人總買賣超，而是每個主題成分股近 5 個交易日的外資、投信、自營商股數，乘以收盤價後加總成億元。
+          資料日 {dataDate ?? '-'}{updatedAt ? `；更新 ${formatTwDateTimeShort(updatedAt)}` : ''}。這裡不是單日全市場三大法人總買賣超，而是每個主題成分股近 5 個交易日的外資、投信、自營商股數，乘以收盤價後加總成億元。
         </p>
         <p className="mt-1 text-[#d6a85f]">
           注意：同一檔股票可同時屬於 AI PC、5G、車用電子等多個主題，所以不同主題金額不可相加成全市場總額；若要看單日全市場三大法人，應看 market-wide chip flow。

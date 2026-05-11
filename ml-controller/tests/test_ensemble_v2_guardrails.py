@@ -331,6 +331,20 @@ def test_daily_pipeline_uses_lane_ic_before_global_ic(monkeypatch):
     assert source == "last_ic_by_segment.LISTED"
 
 
+def test_daily_pipeline_requires_regime_before_recommendation(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+
+    assert daily_pipeline_v2._resolve_alpha_regime_label(None, {}, {}) == "unknown"
+    assert daily_pipeline_v2._resolve_alpha_regime_label(
+        None,
+        {},
+        {"threshold_components": {"inputs": {"regime": "bull"}}},
+    ) == "bull"
+    import inspect
+    source = inspect.getsource(daily_pipeline_v2.node_recommend)
+    assert "ml:regime missing before recommendation" in source
+
+
 def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
     pred = {

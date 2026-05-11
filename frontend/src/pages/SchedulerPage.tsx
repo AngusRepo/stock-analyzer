@@ -22,7 +22,7 @@ function statusTone(status?: string): WorkstationTone {
 
 function suspiciousDuration(job: SchedulerJob) {
   if (job.lastStatus === 'waiting' || job.lastStatus === 'sleep' || job.lastStatus === 'skip') return false
-  return job.lastDuration === '<1s' || job.lastDuration === '--' || job.lastDuration === 'N/A'
+  return job.durationConcern === 'suspicious_short' || job.lastDuration === '--' || job.lastDuration === 'N/A'
 }
 
 function statusLabel(status?: string) {

@@ -33,6 +33,18 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
 
 
+def _json_loads(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -435,6 +447,7 @@ def build_champion_pointer_projection(
         pointer = pointer_by_model.get(model_name)
         serving_version = model_pool_versions.get(model_name)
         pointer_version = str(pointer.get("champion_version")) if pointer and pointer.get("champion_version") else None
+        pointer_artifact_id = str(pointer.get("champion_artifact_id")) if pointer and pointer.get("champion_artifact_id") else None
         latest_production_artifact = next(
             (
                 r for r in sorted(
@@ -446,15 +459,24 @@ def build_champion_pointer_projection(
             ),
             None,
         )
+        artifact_link_status = "not_linked"
+        if pointer_artifact_id:
+            artifact_link_status = "linked"
+        elif pointer_version:
+            artifact_link_status = "version_only_pointer"
+
         if not pointer:
             readiness = "missing_d1_pointer"
             next_action = "Backfill model_champion_pointers from current model_pool.json before enabling pointer-owned serving."
         elif serving_version and pointer_version != serving_version:
             readiness = "pointer_mismatch"
             next_action = "Do not switch serving owner; reconcile pointer with current model_pool.json champion first."
-        elif pointer_version:
+        elif pointer_version and pointer_artifact_id:
             readiness = "pointer_ready"
             next_action = "Safe for promotion-controller final comparison; serving owner migration still requires explicit deploy."
+        elif pointer_version:
+            readiness = "pointer_ready_version_only"
+            next_action = "Version pointer is aligned, but champion_artifact_id is missing; promotion final comparison can use version baseline, while Artifact Diff remains limited until champion artifact is registered."
         else:
             readiness = "pointer_invalid"
             next_action = "Pointer row exists but champion_version is empty."
@@ -462,13 +484,15 @@ def build_champion_pointer_projection(
         out[model_name] = {
             "serving_version": serving_version,
             "d1_pointer_version": pointer_version,
+            "d1_pointer_artifact_id": pointer_artifact_id,
             "d1_pointer": pointer,
             "latest_registry_production_artifact": latest_production_artifact,
+            "artifact_link_status": artifact_link_status,
             "readiness": readiness,
             "next_action": next_action,
         }
 
-    ready = sum(1 for row in out.values() if row["readiness"] == "pointer_ready")
+    ready = sum(1 for row in out.values() if row["readiness"] in {"pointer_ready", "pointer_ready_version_only"})
     return {
         "status": "ok",
         "source_of_truth": "model_pool.json",
@@ -874,4 +898,234 @@ def build_promotion_queue(
         "promotion_owner": "promotion-controller",
         "count": len(queue),
         "queue": queue,
+    }
+
+
+def _promotion_row_decision(
+    *,
+    artifact: dict[str, Any],
+    pointer: dict[str, Any] | None,
+    champion_version: str | None,
+    approved: bool,
+) -> dict[str, Any]:
+    """Evaluate the final promotion step against the current champion pointer.
+
+    This is the last lifecycle owner. Retrain, offline gate, and IC tracker only
+    produce evidence; this function decides whether the candidate may update the
+    champion pointer.
+    """
+    live_status = str(artifact.get("live_gate_status") or "")
+    state = str(artifact.get("state") or "")
+    candidate_type = str(artifact.get("candidate_type") or "unknown")
+    offline_decision = str(artifact.get("offline_gate_decision") or "")
+    approval_required = (
+        candidate_type in {"weekly_drift", "manual_hotfix"}
+        or str(artifact.get("approval_state") or "") == "required"
+    )
+    blockers: list[str] = []
+    if live_status != "passed" and state != "live_gate_passed":
+        blockers.append("live_gate_not_passed")
+    if not champion_version:
+        blockers.append("missing_current_champion")
+    if offline_decision in {"FAIL", "PBO_FAIL", "CPCV_FAIL"}:
+        blockers.append("offline_gate_failed")
+
+    current_artifact_id = pointer.get("champion_artifact_id") if pointer else None
+    live_evidence = _json_loads(artifact.get("live_evidence_json"))
+    offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
+    evidence = {
+        "schema_version": "promotion-controller-final-comparison-v1",
+        "evaluated_at": _now_iso(),
+        "model_name": artifact.get("model_name"),
+        "candidate_artifact_id": artifact.get("artifact_id"),
+        "candidate_version": artifact.get("version"),
+        "candidate_type": candidate_type,
+        "current_champion_version": champion_version,
+        "current_champion_artifact_id": current_artifact_id,
+        "offline_gate_decision": offline_decision,
+        "live_gate_status": live_status,
+        "live_evidence": live_evidence,
+        "offline_evidence": offline_evidence,
+        "approval_required": approval_required,
+        "approved": approved,
+        "blockers": blockers,
+    }
+
+    if blockers:
+        return {
+            "decision": "blocked",
+            "can_promote": False,
+            "approval_required": approval_required,
+            "target_state": state or "shadowing",
+            "approval_state": "required" if approval_required else "not_required",
+            "next_action": "Resolve blockers before promotion: " + ", ".join(blockers),
+            "final_compared_to": champion_version,
+            "evidence": evidence,
+        }
+    if approval_required and not approved:
+        return {
+            "decision": "approval_required",
+            "can_promote": False,
+            "approval_required": True,
+            "target_state": "approval_required",
+            "approval_state": "required",
+            "next_action": "Wei approval required before updating champion pointer.",
+            "final_compared_to": champion_version,
+            "evidence": evidence,
+        }
+    return {
+        "decision": "promote",
+        "can_promote": True,
+        "approval_required": approval_required,
+        "target_state": "production",
+        "approval_state": "approved" if approval_required else "not_required",
+        "next_action": "Update D1 champion pointer; serving reader migration still requires explicit deployment.",
+        "final_compared_to": champion_version,
+        "evidence": evidence,
+    }
+
+
+def run_promotion_controller(
+    *,
+    artifact_id: str,
+    registry_rows: list[dict[str, Any]],
+    d1_pointers: list[dict[str, Any]],
+    model_pool_versions: dict[str, str],
+    confirm: bool = False,
+    approved: bool = False,
+    approved_by: str | None = None,
+    reason: str = "promotion_controller",
+) -> dict[str, Any]:
+    """Run final comparison and optionally update the champion pointer.
+
+    ``confirm=False`` is a dry-run. ``confirm=True`` may mutate
+    model_artifact_registry and model_champion_pointers, but it still does not
+    change model_pool.json or live serving ownership.
+    """
+    artifact = next((row for row in registry_rows if str(row.get("artifact_id")) == artifact_id), None)
+    if not artifact:
+        return {
+            "status": "not_found",
+            "artifact_id": artifact_id,
+            "error": "artifact_id not found in model_artifact_registry",
+        }
+
+    model_name = str(artifact.get("model_name") or "")
+    pointer_by_model = {str(row.get("model_name")): row for row in d1_pointers if row.get("model_name")}
+    pointer = pointer_by_model.get(model_name)
+    champion_version = (
+        str(pointer.get("champion_version"))
+        if pointer and pointer.get("champion_version")
+        else model_pool_versions.get(model_name)
+    )
+    decision = _promotion_row_decision(
+        artifact=artifact,
+        pointer=pointer,
+        champion_version=champion_version,
+        approved=approved,
+    )
+    evidence = {
+        **decision["evidence"],
+        "approved_by": approved_by,
+        "reason": reason,
+        "confirmed": bool(confirm),
+    }
+
+    if not confirm:
+        return {
+            "status": "dry_run",
+            "source_of_truth": "model_artifact_registry",
+            "promotion_owner": "promotion-controller",
+            "artifact_id": artifact_id,
+            "model_name": model_name,
+            "candidate_version": artifact.get("version"),
+            **decision,
+        }
+
+    now = _now_iso()
+    errors: list[str] = []
+    try:
+        d1_client.execute(
+            """
+            UPDATE model_artifact_registry
+            SET state = ?,
+                final_compared_to = ?,
+                promotion_decision = ?,
+                approval_state = ?,
+                live_evidence_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE artifact_id = ?
+            """,
+            [
+                decision["target_state"],
+                decision["final_compared_to"],
+                decision["decision"],
+                decision["approval_state"],
+                _json_dumps({**_json_loads(artifact.get("live_evidence_json")), "promotion_controller": evidence}),
+                artifact_id,
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"artifact_update:{exc}")
+
+    if decision["can_promote"]:
+        old_artifact_id = pointer.get("champion_artifact_id") if pointer else None
+        try:
+            d1_client.execute(
+                """
+                UPDATE model_artifact_registry
+                SET state = 'archived',
+                    promotion_decision = 'replaced_by_new_champion',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE model_name = ?
+                  AND state = 'production'
+                  AND artifact_id != ?
+                """,
+                [model_name, artifact_id],
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"archive_old_production:{exc}")
+        try:
+            d1_client.execute(
+                """
+                INSERT INTO model_champion_pointers (
+                  model_name, champion_version, champion_artifact_id,
+                  rollback_version, rollback_artifact_id, promoted_at,
+                  promotion_reason, promotion_evidence_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(model_name) DO UPDATE SET
+                  champion_version = excluded.champion_version,
+                  champion_artifact_id = excluded.champion_artifact_id,
+                  rollback_version = excluded.rollback_version,
+                  rollback_artifact_id = excluded.rollback_artifact_id,
+                  promoted_at = CURRENT_TIMESTAMP,
+                  promotion_reason = excluded.promotion_reason,
+                  promotion_evidence_json = excluded.promotion_evidence_json,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    model_name,
+                    artifact.get("version"),
+                    artifact_id,
+                    champion_version,
+                    old_artifact_id,
+                    reason,
+                    _json_dumps(evidence),
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"champion_pointer_update:{exc}")
+
+    return {
+        "status": "ok" if not errors else "partial_error",
+        "source_of_truth": "model_artifact_registry",
+        "promotion_owner": "promotion-controller",
+        "artifact_id": artifact_id,
+        "model_name": model_name,
+        "candidate_version": artifact.get("version"),
+        "confirmed_at": now,
+        **decision,
+        "errors": errors,
+        "serving_reader": "model_pool.json",
+        "note": "Champion pointer updated only when can_promote=true; model_pool.json serving migration remains explicit.",
     }

@@ -377,14 +377,14 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
         raw = eff_ml.get("signal_raw") or ev2.get("signal_raw") or "HOLD"
         avg_rank = ev2.get("avg_rank")
         avg_rank_text = f"{float(avg_rank):.3f}" if isinstance(avg_rank, Real) else "n/a"
-        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
+        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，校準預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
         return "V2 模型池暫無正 IC 權重，先以觀望處理，等待 verify/IC 樣本補齊"
     if contributors:
         label = "看多" if "BUY" in signal else "觀望" if signal == "HOLD" else "偏空"
-        return f"V2 模型池{label}（{len(contributors)} 模型有權重，預期 {forecast_text}）"
+        return f"V2 模型池{label}（{len(contributors)} 模型有權重，校準預期 {forecast_text}）"
 
     total = legacy_counts.get("total", 0)
     up = legacy_counts.get("up", 0)
@@ -392,7 +392,7 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     if total <= 0:
         return "ML 資料不足"
     if "BUY" in signal:
-        return f"ML 看多（{up}/{total} 看漲，預期 {forecast_text}）"
+        return f"ML 看多（{up}/{total} 看漲，校準預期 {forecast_text}）"
     if signal == "HOLD":
         if up > down:
             return f"ML 觀望（{up}/{total} 偏多但共識未達門檻）"

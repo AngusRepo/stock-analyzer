@@ -4,6 +4,7 @@ import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
+import { runRegimeCompute } from './controllerDailyWorkflows'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
 const UPDATE_BATCH_SIZE = 40
@@ -247,6 +248,45 @@ async function finalizeUpdateChain(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven screener failed:', e)
+    return
+  }
+
+  try {
+    const startedAt = Date.now()
+    const regimeSummary = String(await runRegimeCompute(env))
+    const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: regimeStatus,
+      summary: `pre-pipeline ${regimeSummary}`,
+      duration_ms: Date.now() - startedAt,
+      run_date: triggerTime,
+    })
+    if (regimeStatus !== 'success') {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      return
+    }
+    console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: 'error',
+      summary: e instanceof Error ? e.message : String(e),
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven regime-compute failed:', e)
     return
   }
 

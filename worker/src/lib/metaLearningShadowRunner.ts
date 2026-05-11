@@ -15,6 +15,7 @@ export interface NeuralShadowRunOptions {
   endDate?: string
   limit?: number
   dryRun?: boolean
+  timeoutMs?: number
 }
 
 export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRunOptions) {
@@ -47,7 +48,7 @@ export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRu
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(300_000),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 300_000),
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')

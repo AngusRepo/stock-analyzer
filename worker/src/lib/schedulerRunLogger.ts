@@ -107,6 +107,13 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   if (normalized.startsWith('failed') || normalized.startsWith('error')) {
     return 'error'
   }
+  if (
+    normalized.includes('kv=fail') ||
+    normalized.includes('kv push failed') ||
+    normalized.includes('did not update kv')
+  ) {
+    return 'error'
+  }
   return 'success'
 }
 

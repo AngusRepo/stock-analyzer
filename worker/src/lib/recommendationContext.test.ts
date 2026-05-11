@@ -79,6 +79,7 @@ const forecastData = {
 
   assert(summary?.total === 8, 'ML vote denominator must stay at 8 alpha prediction voters')
   assert(summary?.reported === 2, 'state-space overlays and challengers must not count as reported alpha votes')
+  assert(summary?.forecastPct === 1.2, 'Worker card contract must expose forecastPct as display percent points')
   assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays and shadow models')
   assert(summary?.zeroWeightModels?.length === 0, 'all eight alpha models have positive lifecycle weights in this fixture')
 }
@@ -90,6 +91,7 @@ const forecastData = {
   assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays and challenger models')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
   assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
+  assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.58, 'dynamic rank thresholds should be visible to UI')
   assert(diagnostics?.forecastCalibration.sampleCount === 1880, 'forecast calibration sample count should be visible to UI')
   assert(diagnostics?.dispersion.rawRankStd === 0.073, 'rank dispersion should be visible to UI')
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { marketApi } from '@/lib/api'
+import { formatTwDateTimeShort } from '@/lib/twTime'
 
 interface MarketRisk {
   date: string
@@ -99,7 +100,7 @@ export default function MarketRiskPanel() {
         </div>
         <p className="mt-4 text-sm leading-relaxed text-foreground/80">{risk.riskSummary}</p>
         <div className="mt-3 text-xs text-muted-foreground">
-          更新時間：{new Date(risk.calculatedAt).toLocaleString('zh-TW')}
+          更新時間：{formatTwDateTimeShort(risk.calculatedAt)}
         </div>
       </div>
 

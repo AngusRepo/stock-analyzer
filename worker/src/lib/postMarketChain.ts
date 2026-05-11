@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
-import { runModelIcRollingRefresh, runObsidianDaily, runRegimeCompute, runVerifyV2 } from './controllerWorkflows'
+import { runModelIcRollingRefresh, runObsidianDaily, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
@@ -15,6 +15,7 @@ type ChainedTask = {
   task: string
   summary: string
   status: SchedulerRunStatus
+  critical?: boolean
 }
 
 function twDateToday(): string {
@@ -39,8 +40,10 @@ async function logChainedTask(
   ctx: ChainContext,
   task: string,
   fn: () => Promise<unknown>,
+  options: { critical?: boolean } = {},
 ): Promise<ChainedTask> {
   const t0 = Date.now()
+  const critical = options.critical !== false
   try {
     const rawSummary = await fn()
     const summary = normalizeSummary(rawSummary)
@@ -52,7 +55,7 @@ async function logChainedTask(
       run_id: ctx.upstreamRunId,
       run_date: ctx.runDate,
     }, env)
-    return { task, summary, status }
+    return { task, summary, status, critical }
   } catch (e: any) {
     const summary = e?.message ?? `${task} failed`
     await logSchedulerResult(env.KV, task, {
@@ -63,7 +66,7 @@ async function logChainedTask(
       run_id: ctx.upstreamRunId,
       run_date: ctx.runDate,
     }, env)
-    return { task, summary, status: 'error' }
+    return { task, summary, status: 'error', critical }
   }
 }
 
@@ -85,11 +88,13 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
     policyId: 'NeuralUCB',
     endDate: ctx.runDate,
     dryRun: false,
+    timeoutMs: 45_000,
   })
   const neuralTs = await runNeuralMetaShadow(env, {
     policyId: 'NeuralTS',
     endDate: ctx.runDate,
     dryRun: false,
+    timeoutMs: 45_000,
   })
   return [
     `registry_created=${registry.created.length}`,
@@ -106,7 +111,7 @@ async function logChainSummary(
   startedAt: number,
   results: ChainedTask[],
 ): Promise<void> {
-  const hasError = results.some((row) => row.status === 'error')
+  const hasError = results.some((row) => row.critical !== false && row.status === 'error')
   const summary = results.map((row) => `${row.task}:${row.status}`).join(' ')
   await logSchedulerResult(env.KV, task, {
     status: hasError ? 'error' : 'success',
@@ -125,12 +130,6 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
     await env.KV.delete(`lock:ml-predict:${ctx.runDate}`).catch(() => {})
   }
 
-  if (isCurrentBusinessDate(ctx.runDate)) {
-    results.push(await logChainedTask(env, ctx, 'regime-compute', () => runRegimeCompute(env)))
-  } else {
-    results.push(await logSkippedHistoricalTask(env, ctx, 'regime-compute'))
-  }
-
   results.push(await logChainedTask(env, ctx, 'verify-v2', () => runVerifyV2(env, ctx.runDate)))
   await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
 }
@@ -143,16 +142,16 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
 
   if (isCurrentBusinessDate(ctx.runDate)) {
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
-    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx)))
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
+    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
   }
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)

@@ -12,6 +12,7 @@ import {
   Shield, Target, Zap, RefreshCw, Tag, Building2, DollarSign,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatTwDateTimeShort } from '@/lib/twTime'
 
 // ─── Signal 設定 ───────────────────────────────────────────────────────────────
 const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; border: string }> = {
@@ -382,7 +383,7 @@ export default function StockReportPage() {
             {/* ═══ Footer ═══ */}
             <div className="text-center text-[10px] text-muted-foreground/40 py-6 border-t border-white/[0.05]">
               <p>⚠ AI 分析僅供參考，不構成投資建議。投資有風險，請獨立判斷。</p>
-              <p className="mt-1">StockVision AI Report · Generated {new Date().toLocaleString('zh-TW')}</p>
+              <p className="mt-1">StockVision AI Report · Generated {formatTwDateTimeShort(new Date().toISOString())}</p>
             </div>
           </>
         )}

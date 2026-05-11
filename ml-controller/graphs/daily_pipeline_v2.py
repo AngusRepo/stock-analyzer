@@ -920,6 +920,35 @@ def _adaptive_threshold_delta(adaptive_params: dict | None = None) -> tuple[floa
     }
 
 
+def _resolve_alpha_regime_label(
+    raw_regime: Any,
+    regime_meta: dict | None,
+    adaptive_params: dict | None,
+) -> str:
+    """Resolve alpha-framework regime from the canonical pre-pipeline contract."""
+    candidates: list[Any] = [raw_regime]
+    if isinstance(regime_meta, dict):
+        candidates.extend([
+            regime_meta.get("regime"),
+            regime_meta.get("current_regime"),
+            regime_meta.get("dominant_regime"),
+        ])
+    if isinstance(adaptive_params, dict):
+        provenance = adaptive_params.get("provenance")
+        components = adaptive_params.get("threshold_components")
+        inputs = components.get("inputs") if isinstance(components, dict) else None
+        if isinstance(provenance, dict):
+            candidates.append(provenance.get("regime"))
+        if isinstance(inputs, dict):
+            candidates.append(inputs.get("regime"))
+
+    for candidate in candidates:
+        value = str(candidate or "").strip().lower()
+        if value and value not in {"unknown", "none", "null", "n/a"}:
+            return value
+    return "unknown"
+
+
 def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
     cfg = ev2_cfg or {}
     delta, _meta = _adaptive_threshold_delta(adaptive_params)
@@ -1320,9 +1349,9 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
     try:
-        regime_label = kv_client.get("ml:regime")
+        raw_regime_label = kv_client.get("ml:regime")
     except Exception:
-        regime_label = None
+        raw_regime_label = None
     try:
         regime_meta = kv_client.get_json("ml:regime:meta", default={}) or {}
         regime_surface = (
@@ -1332,7 +1361,17 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             or {}
         )
     except Exception:
+        regime_meta = {}
         regime_surface = {}
+    regime_label = _resolve_alpha_regime_label(
+        raw_regime_label,
+        regime_meta,
+        state.get("adaptive_params") or {},
+    )
+    if regime_label == "unknown":
+        raise RuntimeError(
+            "ml:regime missing before recommendation; run regime-compute before pipeline"
+        )
 
     from services.trading_config_loader import load_merged_trading_config_with_contract
     cfg_result = load_merged_trading_config_with_contract()

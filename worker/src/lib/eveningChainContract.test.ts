@@ -10,8 +10,8 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
 const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string; query?: string }>
 
 assert(
-  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1'),
-  'GCP Scheduler must trigger one evening-chain root job for the post-market DAG',
+  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '30 9 * * 1-5'),
+  'GCP Scheduler must trigger one TW 17:30 evening-chain root job for the post-market DAG',
 )
 
 for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
@@ -52,6 +52,10 @@ assert(
 assert(
   mlPipelineTrigger.includes('indicator queue not complete'),
   'pipeline readiness must block direct triggers until indicator queue completes',
+)
+assert(
+  mlPipelineTrigger.includes('regime-compute not complete'),
+  'pipeline readiness must block direct triggers until same-date regime-compute writes ml:regime',
 )
 assert(
   mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),

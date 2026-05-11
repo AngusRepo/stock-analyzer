@@ -167,6 +167,22 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/promotion_queue', asy
   }
 })
 
+dashboardReadRoutes.post('/api/model-pool/artifact_registry/promotion_controller', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    return c.json(await controllerJson<any>(c.env, '/model_pool/artifact_registry/promotion_controller', {
+      method: 'POST',
+      jsonBody: body,
+      timeoutMs: 30_000,
+    }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
+  }
+})
+
 dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

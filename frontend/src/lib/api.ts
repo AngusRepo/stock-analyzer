@@ -189,6 +189,8 @@ export type SchedulerJob = {
   lastEffectiveRunAt?: string | null
   lastStatus: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
   lastDuration: string
+  durationConcern?: 'expected_short' | 'suspicious_short' | null
+  durationConcernReason?: string
   lastError?: string
   nextRun: string
   history7d: Array<'success' | 'failed' | 'skip'>
@@ -714,12 +716,18 @@ export type ModelArtifactRegistryRow = {
   metadata_path?: string | null
   training_run_id?: string | null
   training_manifest_path?: string | null
+  trained_from_snapshot?: string | null
+  evaluation_baseline_version?: string | null
+  final_compared_to?: string | null
+  feature_policy_version?: string | null
+  checksum?: string | null
   source_run_date?: string | null
   offline_gate_status?: string
   offline_gate_decision?: string
   offline_gate_failed_gates?: string[] | string
   offline_evidence_json?: Record<string, unknown> | string
   live_gate_status?: string
+  live_evidence_json?: Record<string, unknown> | string
   promotion_decision?: string
   approval_state?: string
   updated_at?: string
@@ -767,6 +775,28 @@ export type ModelArtifactPromotionQueueResponse = {
   }>
 }
 
+export type ModelArtifactPromotionControllerRequest = {
+  artifact_id: string
+  confirm?: boolean
+  approved?: boolean
+  approved_by?: string
+  reason?: string
+}
+
+export type ModelArtifactPromotionControllerResponse = {
+  status: string
+  promotion_owner?: string
+  artifact_id?: string
+  model_name?: string
+  candidate_version?: string
+  decision?: string
+  can_promote?: boolean
+  approval_required?: boolean
+  next_action?: string
+  errors?: string[]
+  note?: string
+}
+
 export type ModelChampionPointersResponse = {
   status: string
   source_of_truth: string
@@ -778,6 +808,8 @@ export type ModelChampionPointersResponse = {
   models: Record<string, {
     serving_version?: string | null
     d1_pointer_version?: string | null
+    d1_pointer_artifact_id?: string | null
+    artifact_link_status?: string | null
     readiness: string
     next_action: string
   }>
@@ -789,6 +821,7 @@ export const modelPoolApi = {
   artifactRegistry: (limit = 100) => get<ModelArtifactRegistryResponse>(`/model-pool/artifact_registry?limit=${limit}`),
   artifactSelection: (limit = 200) => get<ModelArtifactSelectionResponse>(`/model-pool/artifact_registry/selection?limit=${limit}`),
   artifactPromotionQueue: (limit = 200) => get<ModelArtifactPromotionQueueResponse>(`/model-pool/artifact_registry/promotion_queue?limit=${limit}`),
+  promotionController: (body: ModelArtifactPromotionControllerRequest) => post<ModelArtifactPromotionControllerResponse>('/model-pool/artifact_registry/promotion_controller', body),
   championPointers: (limit = 200) => get<ModelChampionPointersResponse>(`/model-pool/artifact_registry/champion_pointers?limit=${limit}`),
   backfillChampionPointers: (body: { confirm: boolean; reason?: string }) => post<any>('/model-pool/artifact_registry/champion_pointers/backfill', body),
 }

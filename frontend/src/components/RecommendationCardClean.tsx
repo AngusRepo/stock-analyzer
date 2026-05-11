@@ -64,6 +64,7 @@ type MlDiagnosticsSummary = {
   contributingModels?: string[]
   validationBlockedModels?: string[]
   icWeightScope?: string | null
+  rankSignalThresholds?: Record<string, unknown> | null
   forecastCalibration?: {
     method?: string | null
     source?: string | null
@@ -123,7 +124,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻：rank score >= 0.530 算看漲，<= 0.470 算看跌，中間為觀望，regime=bull。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
+  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -147,6 +148,27 @@ function fmtChipAmount(billion: number | null | undefined): string {
     return `${wan > 0 ? '+' : ''}${wan} 萬`
   }
   return `${billion > 0 ? '+' : ''}${billion.toFixed(2)} 億`
+}
+
+function displayForecastPct(summary: MlVoteSummary | null): number | null {
+  if (!summary) return null
+  if (typeof summary.forecastPct === 'number' && Number.isFinite(summary.forecastPct)) {
+    return summary.forecastPct
+  }
+  const raw = summary.forecast_pct
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
+  return Math.abs(raw) <= 0.2 ? raw * 100 : raw
+}
+
+function normalizeForecastPctForUi(raw: unknown): number | null {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return null
+  return Math.abs(value) <= 0.2 ? value * 100 : value
+}
+
+function finiteMetric(raw: unknown): number | null {
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
 }
 
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
@@ -307,7 +329,10 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
     if (reported > 0 || evidence > 0 || Number(rec.ml_score ?? 0) <= 0) {
-      return persisted
+      return {
+        ...persisted,
+        forecastPct: normalizeForecastPctForUi(persisted.forecastPct ?? persisted.forecast_pct),
+      }
     }
   }
   const forecast = parseForecastData(rec.prediction_forecast_data)
@@ -335,7 +360,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     reported: models.length,
     missing: Math.max(0, total - models.length),
     total,
-    forecastPct: forecast.ensemble_v2?.forecast_pct ?? null,
+    forecastPct: normalizeForecastPctForUi(forecast.ensemble_v2?.forecast_pct),
     icWeightScope: forecast.ensemble_v2?.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
     thresholds: thresholds
       ? {
@@ -422,12 +447,9 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   if (reported <= 0 || bullish + bearish + Number(summary.flat ?? 0) <= 0) {
     return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
-  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
-    : null
+  const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
-    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish - missing))
@@ -447,12 +469,9 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
   if (reported <= 0 || bullish + bearish + flat <= 0) {
     return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
-  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
-    : null
+  const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
-    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const flatText = flat > 0 ? `，${flat}/${total}中性` : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回報` : ''
@@ -475,12 +494,9 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish))
   const reported = Number(summary.reported ?? bullish + bearish + flat)
   const missing = Number(summary.missing ?? Math.max(0, total - reported))
-  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
-    : null
+  const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
-    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
   const missingText = missing > 0 ? `、${missing}/${total}缺資料` : ''
@@ -502,10 +518,14 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
   const blockedModels = diagnostics.validationBlockedModels ?? []
   const calibration = diagnostics.forecastCalibration
   const dispersion = diagnostics.dispersion
+  const thresholds = diagnostics.rankSignalThresholds ?? {}
+  const buyThreshold = finiteMetric((thresholds as any).buyThreshold ?? (thresholds as any).bullish)
+  const sellThreshold = finiteMetric((thresholds as any).sellThreshold ?? (thresholds as any).bearish)
   const chips: string[] = []
 
   chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) ? total : ALPHA_PREDICTION_MODEL_NAMES.length}`)
   if (diagnostics.icWeightScope) chips.push(`IC scope ${diagnostics.icWeightScope}`)
+  if (buyThreshold != null && sellThreshold != null) chips.push(`動態門檻 BUY ${fmtNumber(buyThreshold, 3)} / SELL ${fmtNumber(sellThreshold, 3)}`)
   if (dispersion?.rawRankStd != null) chips.push(`模型分歧 σ ${fmtNumber(dispersion.rawRankStd, 3)}`)
   if (dispersion?.mergeCompression != null) chips.push(`合併壓縮 ${fmtNumber(dispersion.mergeCompression, 2)}`)
   if (calibration?.method || calibration?.source) {
@@ -547,6 +567,7 @@ function translateRecommendationReason(reason: unknown): string {
       /Signal Provenance \(ranking promoted\): BUY flipped at recommendation layer \(ensemble_v2\.signal=([^,)]*), avg_rank=([^)]+)\)\. Treat as ranking promotion, not a naturally strong BUY\./g,
       '訊號來源：此檔由推薦層從 $1 提升為買進，平均排名 $2；需用分數、產業脈絡與盤中再評估輔助判讀。',
     )
+    .replace(/(^|[^校準])預期 ([+-]\d+(?:\.\d+)?%)/g, '$1校準預期 $2')
     .trim()
 }
 
@@ -787,7 +808,7 @@ function normalizeWatchPoint(point: string): string {
     const flat = point.match(/flat=([^,]+)/)?.[1] ?? '0'
     const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
     const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
-    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，預期報酬 ${forecast}%。白話：這裡只保留該股票的投票結果，門檻定義已放在上方名詞解釋。`
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，校準預期報酬 ${forecast}%。白話：投票是門檻判斷，校準預期是由 rank/verified outcomes 映射出的連續報酬估計，兩者不一定同方向。`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
@@ -965,7 +986,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <p className="text-[11px] text-muted-foreground">
               ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
               {rec.current_price != null && (
-                <span className="ml-3">參考價 ${fmtNumber(rec.current_price, 2)}</span>
+                <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
               )}
             </p>
           )}

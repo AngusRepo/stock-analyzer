@@ -210,7 +210,7 @@ function MetaLearningDecisionDesk({
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" disabled={actionBusy === `experiment:${track.id}`} onClick={() => onCreateTrackExperiment(track)}>
-                    {actionBusy === `experiment:${track.id}` ? '建立中...' : '建立 Experiment'}
+                    {actionBusy === `experiment:${track.id}` ? '建立中...' : '建立研究實驗'}
                   </Button>
                   {track.id === 'LinUCB' && (
                     <Button size="sm" variant="outline" disabled={actionBusy === 'linucb-ledger'} onClick={onRefreshLinucb}>
@@ -219,10 +219,13 @@ function MetaLearningDecisionDesk({
                   )}
                   {(track.id === 'NeuralUCB' || track.id === 'NeuralTS') && (
                     <Button size="sm" className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" disabled={actionBusy === `shadow:${track.id}`} onClick={() => onRunNeuralShadow(track.id as 'NeuralUCB' | 'NeuralTS')}>
-                      {actionBusy === `shadow:${track.id}` ? '執行中...' : 'Run Shadow'}
+                      {actionBusy === `shadow:${track.id}` ? '執行中...' : '執行 Shadow 驗證'}
                     </Button>
                   )}
                 </div>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                  建立研究實驗只寫入 hypothesis / dataset / metrics / gate 規格；Shadow 驗證才會用既有資料跑反事實決策並產出 reward evidence。只有 NeuralUCB / NeuralTS 是 live meta-router shadow，所以才有 Shadow 按鈕。
+                </p>
               </div>
                   </>
                 )

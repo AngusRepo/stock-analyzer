@@ -1,6 +1,5 @@
 import type { Bindings } from '../types'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
-import { runMLAndRiskV2 } from './mlPipelineTrigger'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
 import { runWeeklyLifecycleCheck } from './controllerWorkflows'
@@ -48,35 +47,12 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   }
 
   if (cron === '15 9 * * 1-5') {
-    runWithLog('update', async () => {
-      const { runDailyUpdate } = await import('./updateOrchestrator')
-      const summary = await runDailyUpdate(env)
-      return `market data update done: ${summary}`
-    })
-
-    runWithLog('ml-warmup', async () => {
-      if (!env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
-      const headers: Record<string, string> = {}
-      if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
-      const res = await fetch(`${env.ML_CONTROLLER_URL}/health`, {
-        headers,
-        signal: AbortSignal.timeout(30_000),
-      }).catch(() => null)
-      if (!res?.ok) return `ML Controller health failed${res ? ` (${res.status})` : ''}`
-      const health = await res.json().catch(() => ({})) as any
-      const pipelineJob = health.pipelineJobConfigured ? 'ok' : 'missing'
-      const verifyJob = health.verifyJobConfigured ? 'ok' : 'missing'
-      const callback = health.callbackConfigured ? 'ok' : 'missing'
-      return `ML Controller ok pipelineJob=${pipelineJob} verifyJob=${verifyJob} callback=${callback}`
-    })
+    runWithLog('evening-chain', async () => 'SKIP: legacy Cloudflare 17:15 cron disabled; GCP Scheduler owns TW 17:30 evening-chain')
     return true
   }
 
   if (cron === '30 9 * * 1-5') {
-    runWithLog('pipeline', async () => {
-      const result = await runMLAndRiskV2(env)
-      return `pipeline v2 trigger accepted: ${result}`
-    })
+    runWithLog('pipeline', async () => 'SKIP: legacy direct pipeline cron disabled; GCP Scheduler must trigger evening-chain root')
     return true
   }
 

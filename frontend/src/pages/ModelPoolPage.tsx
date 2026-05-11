@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
@@ -63,27 +63,6 @@ function segmentIcEntries(model: ModelPoolLineageModel) {
     .filter((row) => row.ic != null || row.samples > 0)
 }
 
-function metadataNumber(metadata: Record<string, unknown> | null | undefined, key: string): number | null {
-  const raw = metadata?.[key]
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : null
-}
-
-function sequenceReportNumber(metadata: Record<string, unknown> | null | undefined, key: string): number | null {
-  const report = metadata?.sequence_report
-  if (!report || typeof report !== 'object') return null
-  const raw = (report as Record<string, unknown>)[key]
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : null
-}
-
-function sequenceAwareMetric(metadata: Record<string, unknown> | null | undefined, topKey: string, reportKey: string): number | null {
-  const top = metadataNumber(metadata, topKey)
-  const report = sequenceReportNumber(metadata, reportKey)
-  if ((top == null || top === 0) && report != null && report > 0) return report
-  return top ?? report
-}
-
 function compactMetric(value: number | null, digits = 0): string {
   if (value == null) return 'N/A'
   return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
@@ -127,21 +106,48 @@ function experimentEvidence(candidateId: string, experiments: ResearchExperiment
   }
 }
 
-function deltaMetric(active: number | null, challenger: number | null, digits = 4): string {
-  if (active == null || challenger == null) return 'delta N/A'
-  const delta = challenger - active
-  const sign = delta > 0 ? '+' : ''
-  return `${sign}${delta.toFixed(digits)}`
+function parseArtifactEvidence(raw: unknown): Record<string, unknown> {
+  if (!raw) return {}
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof raw === 'object' ? raw as Record<string, unknown> : {}
 }
 
-function artifactAnomalies(metadata: Record<string, unknown> | null | undefined): string[] {
-  const anomalies: string[] = []
-  const topInputSeries = metadataNumber(metadata, 'n_input_series')
-  const reportInputSeries = sequenceReportNumber(metadata, 'input_series')
-  if (topInputSeries === 0 && reportInputSeries != null && reportInputSeries > 0) {
-    anomalies.push('metadata anomaly: n_input_series=0 but sequence_report.input_series has coverage')
+function deepMetric(source: unknown, keys: string[]): unknown {
+  if (!source || typeof source !== 'object') return undefined
+  const obj = source as Record<string, unknown>
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key]
   }
-  return anomalies
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === 'object') {
+      const found = deepMetric(value, keys)
+      if (found !== undefined && found !== null && found !== '') return found
+    }
+  }
+  return undefined
+}
+
+function evidenceMetric(row: ModelArtifactRegistryRow, keys: string[], digits = 4): string {
+  const offline = parseArtifactEvidence(row.offline_evidence_json)
+  const live = parseArtifactEvidence(row.live_evidence_json)
+  const value = deepMetric(live, keys) ?? deepMetric(offline, keys)
+  return compactUnknown(value, digits)
+}
+
+function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse) {
+  return Object.entries(selection?.models ?? {}).flatMap(([modelName, row]) => {
+    const items: Array<{ modelName: string; slot: 'monthly_release_candidate' | 'weekly_drift_candidate'; artifact: ModelArtifactRegistryRow }> = []
+    if (row.monthly_release_candidate) items.push({ modelName, slot: 'monthly_release_candidate', artifact: row.monthly_release_candidate })
+    if (row.weekly_drift_candidate) items.push({ modelName, slot: 'weekly_drift_candidate', artifact: row.weekly_drift_candidate })
+    return items
+  })
 }
 
 function stageTone(stage: ModelUpgradeStage): WorkstationTone {
@@ -340,66 +346,54 @@ function ArtifactMetricDelta({ label, before, after, afterNote }: { label: strin
   )
 }
 
-function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolLineageModel]> }) {
-  const rows = models
-    .filter(([, model]) => !!model.challenger)
-    .map(([name, model]) => {
-      const challenger = model.challenger ?? {}
-      const artifact = (challenger.artifact_evidence ?? {}) as NonNullable<NonNullable<ModelPoolLineageModel['challenger']>['artifact_evidence']>
-      const ic = challenger.ic_4w_avg ?? challenger.rolling_ic
-      const diagnosis = challenger.lifecycle_diagnosis
-      const samples = challenger.last_ic_sample_count ?? 0
-      return {
-        name,
-        version: challenger.version ?? 'challenger',
-        ic: ic == null ? 'N/A' : Number(ic).toFixed(4),
-        samples,
-        artifactOosIc: artifact.oos_ic == null ? 'N/A' : Number(artifact.oos_ic).toFixed(4),
-        artifactDailyIcCount: artifact.daily_ic_count ?? 0,
-        rootCause: samples > 0
-          ? challenger.last_ic_root_cause ?? diagnosis?.root_cause ?? challenger.last_ic_status ?? 'unknown'
-          : diagnosis?.status ?? artifact.status ?? 'awaiting_live_shadow',
-        status: samples > 0 ? challenger.last_ic_status ?? diagnosis?.status ?? 'unknown' : diagnosis?.status ?? artifact.status ?? 'awaiting_live_shadow',
-        reason: diagnosis?.reason ?? artifact.reason ?? 'Artifact exists; waiting for verify-v2 outcomes.',
-      }
-    })
+function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelectionResponse }) {
+  const rows = flattenSelectedArtifacts(selection)
 
   return (
-    <WorkstationPanel title="Version Challenger / 版本挑戰者" kicker="Live shadow IC + artifact evidence">
+    <WorkstationPanel title="Live Gate Evidence / 版本 Live Gate" kicker="registry-selected artifacts, not legacy challenger slot">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
-          這裡分成兩種證據：artifact OOS 是 monthly retrain 產生時的訓練/驗證證據；live shadow IC 要等新版 artifact 實際跑 prediction，且下一個可驗證交易日由 verify-v2 寫入 outcome 後才會累積。
+          這裡只看新版 registry 選出的 monthly / weekly candidate。狀態若是 not_started，代表還沒被 daily shadow predict 與 verify-v2 / model-ic-tracker 累積 actual_return live outcome；不是舊 model_pool challenger 單槽位。
         </p>
         {rows.length ? (
           <div className="grid gap-2 md:grid-cols-2">
-            {rows.map((row) => (
-              <div key={row.name} className="border border-[#263247] bg-[#05070c] p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{row.name}</p>
-                    <p className="mt-0.5 text-[10px] text-[#70809b]">{row.version}</p>
+            {rows.map(({ modelName, slot, artifact }) => {
+              const live = parseArtifactEvidence(artifact.live_evidence_json)
+              const decision = (live.decision && typeof live.decision === 'object') ? live.decision as Record<string, unknown> : {}
+              const metrics = (decision.metrics && typeof decision.metrics === 'object') ? decision.metrics as Record<string, unknown> : {}
+              const liveStatus = artifact.live_gate_status ?? 'not_started'
+              const samples = compactUnknown(metrics.shadow_samples ?? metrics.shadowSamples ?? 0, 0)
+              const rootCause = String(decision.root_cause ?? decision.reason ?? (liveStatus === 'not_started' ? 'daily shadow evidence not started' : liveStatus))
+              return (
+                <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{modelName}</p>
+                      <p className="mt-0.5 text-[10px] text-[#70809b]">{artifact.version} · {slot.replace(/_/g, ' ')}</p>
+                    </div>
+                    <WorkstationPill tone={liveStatus === 'passed' ? 'ok' : liveStatus === 'failed' ? 'error' : 'warn'}>
+                      {versionChallengerStatusLabel(liveStatus)}
+                    </WorkstationPill>
                   </div>
-                  <WorkstationPill tone={row.rootCause === 'ok' ? 'ok' : 'warn'}>{versionChallengerStatusLabel(row.status)}</WorkstationPill>
-                </div>
-                <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[11px]">
-                  <div><p className="text-[#70809b]">Live IC</p><p className="text-slate-100">{row.ic}</p></div>
-                  <div><p className="text-[#70809b]">Samples</p><p className="text-slate-100">{row.samples}</p></div>
-                  <div><p className="text-[#70809b]">Artifact OOS</p><p className="text-slate-100">{row.artifactOosIc}</p></div>
-                  <div><p className="text-[#70809b]">Daily IC</p><p className="text-slate-100">{row.artifactDailyIcCount}</p></div>
-                </div>
-                <p className="mt-2 text-[11px] leading-4 text-amber-200">root: {row.rootCause}</p>
-                <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">{row.reason}</p>
-                {row.status === 'awaiting_live_shadow' && (
-                  <p className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
-                    需要跑：新版 artifact 先進 daily ML predict shadow；等下一個可驗證交易日收盤資料到齊後，`verify-v2` 寫入 actual_return，再由 `model-ic-tracker` / post-market chain 累積 live IC。
+                  <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[11px]">
+                    <div><p className="text-[#70809b]">Shadow IC</p><p className="text-slate-100">{compactUnknown(metrics.shadow_ic, 4)}</p></div>
+                    <div><p className="text-[#70809b]">Prod IC</p><p className="text-slate-100">{compactUnknown(metrics.production_ic, 4)}</p></div>
+                    <div><p className="text-[#70809b]">Samples</p><p className="text-slate-100">{samples}</p></div>
+                    <div><p className="text-[#70809b]">Min</p><p className="text-slate-100">{compactUnknown(metrics.min_samples, 0)}</p></div>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-4 text-amber-200">root: {rootCause}</p>
+                  <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">
+                    next: {liveStatus === 'not_started'
+                      ? 'run daily ML predict shadow, then verify-v2 and model-ic-tracker'
+                      : decision.reason ? String(decision.reason) : 'continue collecting live gate evidence'}
                   </p>
-                )}
-              </div>
-            ))}
+                </div>
+              )
+            })}
           </div>
         ) : (
           <div className="border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200">
-            目前沒有 version challenger；若剛完成 retrain，請確認 model_pool.json 是否已註冊 challenger version。
+            目前 registry 沒有選出的 monthly / weekly candidate；請先確認 retrain followup 是否寫入 model_artifact_registry。
           </div>
         )}
       </div>
@@ -407,96 +401,59 @@ function LiveShadowEvidencePanel({ models }: { models: Array<[string, ModelPoolL
   )
 }
 
-function ArtifactDiffPanel({ models }: { models: Array<[string, ModelPoolLineageModel]> }) {
-  const rows = models
-    .filter(([, model]) => !!model.challenger)
-    .map(([name, model]) => {
-      const challenger = model.challenger ?? {}
-      const activeMeta = model.metadata ?? null
-      const challengerMeta = challenger.metadata ?? null
-      const activeDirAccuracy = metadataNumber(activeMeta, 'val_dir_accuracy')
-      const challengerDirAccuracy = metadataNumber(challengerMeta, 'val_dir_accuracy')
-      const challengerOosIc = metadataNumber(challengerMeta, 'oos_ic')
-      const holdoutNotes = [
-        challengerOosIc != null && challengerOosIc <= 0 ? 'artifact OOS IC <= 0：訓練時 holdout evidence 不可 promote' : null,
-        activeDirAccuracy != null && challengerDirAccuracy != null && challengerDirAccuracy < activeDirAccuracy
-          ? `dir accuracy 下降 ${deltaMetric(activeDirAccuracy, challengerDirAccuracy, 3)}`
-          : null,
-      ].filter(Boolean) as string[]
-      return {
-        name,
-        activeVersion: model.version ?? 'active',
-        challengerVersion: challenger.version ?? 'challenger',
-        shadowSince: challenger.shadow_since ?? 'N/A',
-        activeInputSeries: sequenceAwareMetric(activeMeta, 'n_input_series', 'input_series'),
-        challengerInputSeries: sequenceAwareMetric(challengerMeta, 'n_input_series', 'input_series'),
-        challengerSequenceReportInputSeries: sequenceReportNumber(challengerMeta, 'input_series'),
-        activeTrainWindows: sequenceAwareMetric(activeMeta, 'n_train_windows', 'train_windows'),
-        challengerTrainWindows: sequenceAwareMetric(challengerMeta, 'n_train_windows', 'train_windows'),
-        activeValWindows: sequenceAwareMetric(activeMeta, 'n_val_windows', 'oos_windows'),
-        challengerValWindows: sequenceAwareMetric(challengerMeta, 'n_val_windows', 'oos_windows'),
-        activeDirAccuracy,
-        challengerDirAccuracy,
-        challengerOosIc,
-        challengerDailyIcCount: metadataNumber(challengerMeta, 'daily_ic_count'),
-        anomalies: [...artifactAnomalies(activeMeta), ...artifactAnomalies(challengerMeta)],
-        holdoutNotes,
-      }
-    })
+function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactSelectionResponse; pointers?: ModelChampionPointersResponse }) {
+  const rows = flattenSelectedArtifacts(selection)
 
   return (
-    <WorkstationPanel title="Artifact Diff / 新舊 Artifact 差異" kicker="active vs version challenger metadata">
+    <WorkstationPanel title="Artifact Diff / 新舊 Artifact 差異" kicker="one algorithm per card, champion pointer -> candidate">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
-          這裡回答「新版 artifact 到底跟舊版差在哪」：訓練覆蓋、window 數、OOS IC、方向準確率與 metadata anomaly。
-          注意：active weekly IC 與 challenger OOS IC 來源不同，必須等 verify-v2 寫入 durable outcomes 後才可做 promote 判斷。
+          每張卡是一個演算法：左側是目前 champion pointer，右側是 registry candidate。若 champion_artifact_id 尚未連結，代表只能做版本級比較，artifact metadata diff 會被標為受限，而不是顯示假 NaN。
         </p>
         {rows.length ? (
-          <div className="grid gap-3">
-            {rows.map((row) => (
-              <div key={row.name} className="border border-[#263247] bg-[#05070c] p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{row.name}</p>
-                    <p className="mt-1 text-[11px] text-[#8a92a6]">
-                      active {row.activeVersion} → challenger {row.challengerVersion} · shadow_since {row.shadowSince}
+          <div className="grid gap-3 md:grid-cols-2">
+            {rows.map(({ modelName, slot, artifact }) => {
+              const pointer = pointers?.models?.[modelName]
+              const championVersion = pointer?.d1_pointer_version ?? pointer?.serving_version ?? 'champion version not linked'
+              const championArtifact = pointer?.d1_pointer_artifact_id ?? null
+              const linkStatus = pointer?.artifact_link_status ?? 'not_linked'
+              return (
+                <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{modelName}</p>
+                      <p className="mt-1 text-[11px] text-[#8a92a6]">
+                        {championVersion} → {artifact.version} · {artifact.candidate_type}
+                      </p>
+                    </div>
+                    <WorkstationPill tone={linkStatus === 'linked' ? 'ok' : 'warn'}>
+                      {linkStatus === 'linked' ? 'artifact linked' : 'version-only baseline'}
+                    </WorkstationPill>
+                  </div>
+
+                  <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-3">
+                    <ArtifactMetricDelta label="artifact id" before={championArtifact ?? 'not linked'} after={artifact.artifact_id} />
+                    <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? championVersion} after={artifact.final_compared_to ?? 'final comparison pending'} />
+                    <ArtifactMetricDelta label="feature policy" before="champion policy" after={artifact.feature_policy_version ?? 'policy not recorded'} />
+                    <ArtifactMetricDelta label="offline gate" before="current champion" after={artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state} />
+                    <ArtifactMetricDelta label="OOS IC" before="champion live IC" after={evidenceMetric(artifact, ['oos_ic', 'oosIc', 'ic'], 4)} />
+                    <ArtifactMetricDelta label="CPCV / PBO" before="champion gate" after={`${evidenceMetric(artifact, ['cpcv'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}`} />
+                    <ArtifactMetricDelta label="DSR / MC" before="champion gate" after={`${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}`} />
+                    <ArtifactMetricDelta label="live gate" before="production serving" after={artifact.live_gate_status ?? 'not_started'} />
+                  </div>
+
+                  {linkStatus !== 'linked' && (
+                    <p className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-200">
+                      champion pointer 已對齊版本，但沒有 champion_artifact_id；需要下一次 monthly release 或 artifact backfill 才能做完整 artifact-to-artifact diff。
                     </p>
-                  </div>
-                  <WorkstationPill tone={row.anomalies.length ? 'warn' : 'info'}>
-                    {row.anomalies.length ? 'metadata anomaly' : row.holdoutNotes.length ? 'holdout caution' : 'metadata comparable'}
-                  </WorkstationPill>
+                  )}
                 </div>
-
-                <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-3">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">
-                    One algorithm per card / 單一演算法版本差異
-                  </p>
-                  <div className="mt-2">
-                    <ArtifactMetricDelta label="input series" before={compactMetric(row.activeInputSeries)} after={compactMetric(row.challengerInputSeries)} afterNote={`report ${compactMetric(row.challengerSequenceReportInputSeries)}`} />
-                    <ArtifactMetricDelta label="train windows" before={compactMetric(row.activeTrainWindows)} after={compactMetric(row.challengerTrainWindows)} />
-                    <ArtifactMetricDelta label="OOS / val" before={compactMetric(row.activeValWindows)} after={compactMetric(row.challengerValWindows)} />
-                    <ArtifactMetricDelta label="dir accuracy" before={compactMetric(row.activeDirAccuracy, 3)} after={compactMetric(row.challengerDirAccuracy, 3)} afterNote={deltaMetric(row.activeDirAccuracy, row.challengerDirAccuracy, 3)} />
-                    <ArtifactMetricDelta label="OOS IC" before="active weekly IC" after={compactMetric(row.challengerOosIc, 4)} />
-                    <ArtifactMetricDelta label="daily IC rows" before="verified rows" after={compactMetric(row.challengerDailyIcCount)} />
-                  </div>
-                </div>
-
-                {row.anomalies.length > 0 && (
-                  <div className="mt-3 space-y-1 border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] text-amber-200">
-                    {row.anomalies.map((anomaly) => <p key={anomaly}>{anomaly}</p>)}
-                  </div>
-                )}
-                {row.holdoutNotes.length > 0 && (
-                  <div className="mt-3 space-y-1 border border-rose-400/25 bg-rose-400/[0.05] p-2 text-[11px] text-rose-100">
-                    {row.holdoutNotes.map((note) => <p key={note}>{note}</p>)}
-                  </div>
-                )}
-              </div>
-            ))}
+              )
+            })}
           </div>
         ) : (
           <div className="border border-amber-400/25 bg-amber-400/[0.05] p-3 text-sm text-amber-200">
-            目前沒有 version challenger，所以沒有 active/challenger artifact diff 可比較。
+            目前沒有 registry candidate，所以沒有 champion → candidate artifact diff 可比較。
           </div>
         )}
       </div>
@@ -606,7 +563,17 @@ function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelecti
   )
 }
 
-function PromotionQueuePanel({ queue }: { queue?: ModelArtifactPromotionQueueResponse }) {
+function PromotionQueuePanel({
+  queue,
+  onPromote,
+  isPromoting,
+  promotionResult,
+}: {
+  queue?: ModelArtifactPromotionQueueResponse
+  onPromote: (artifactId: string, approved: boolean, confirm: boolean) => void
+  isPromoting: boolean
+  promotionResult?: ModelArtifactPromotionControllerResponse | null
+}) {
   const rows = queue?.queue ?? []
   const approvalCount = rows.filter((row) => row.approval_required).length
   const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
@@ -644,10 +611,49 @@ function PromotionQueuePanel({ queue }: { queue?: ModelArtifactPromotionQueueRes
               </div>
             </div>
             <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!row.artifact_id || isPromoting || row.promotion_decision.includes('blocked')}
+                className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
+                onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
+              >
+                Final compare dry-run
+              </Button>
+              {row.approval_required && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!row.artifact_id || isPromoting}
+                  className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
+                  onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
+                >
+                  Wei approve + promote pointer
+                </Button>
+              )}
+              {!row.approval_required && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!row.artifact_id || isPromoting}
+                  className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
+                  onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
+                >
+                  Auto promote pointer
+                </Button>
+              )}
+            </div>
           </div>
         )) : (
           <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
             目前沒有 artifact 通過 live gate；promotion-controller 沒有待處理項目。
+          </div>
+        )}
+        {promotionResult && (
+          <div className="rounded-xl border border-sky-400/25 bg-sky-400/[0.05] p-3 text-sm text-sky-100 lg:col-span-2">
+            <p className="font-semibold">Promotion controller: {promotionResult.status} / {promotionResult.decision ?? '-'}</p>
+            <p className="mt-1 text-xs leading-5 text-sky-200">{promotionResult.next_action ?? promotionResult.note ?? '-'}</p>
           </div>
         )}
       </div>
@@ -682,6 +688,9 @@ function ChampionPointerPanel({ pointers }: { pointers?: ModelChampionPointersRe
                 {row.readiness}
               </WorkstationPill>
             </div>
+            <p className="mt-2 font-mono text-[10px] text-[#70809b]">
+              artifact link: {row.artifact_link_status ?? 'unknown'} · {row.d1_pointer_artifact_id ?? 'champion_artifact_id missing'}
+            </p>
             <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
           </div>
         )) : (
@@ -783,6 +792,7 @@ function ServingDiagnosticsPanel({ payload }: { payload: any }) {
 
 export default function ModelPoolPage() {
   const today = twToday()
+  const queryClient = useQueryClient()
   const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['model-pool', 'lineage'],
     queryFn: modelPoolApi.lineage,
@@ -821,6 +831,20 @@ export default function ModelPoolPage() {
     retry: false,
     staleTime: 60_000,
     refetchInterval: 60_000,
+  })
+  const promotionController = useMutation({
+    mutationFn: ({ artifactId, approved, confirm }: { artifactId: string; approved: boolean; confirm: boolean }) => modelPoolApi.promotionController({
+      artifact_id: artifactId,
+      confirm,
+      approved,
+      approved_by: approved ? 'Wei' : undefined,
+      reason: approved ? 'wei_approval_from_model_pool_ui' : confirm ? 'auto_promotion_from_model_pool_ui' : 'dry_run_from_model_pool_ui',
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['model-pool', 'artifact-promotion-queue'] })
+      queryClient.invalidateQueries({ queryKey: ['model-pool', 'champion-pointers'] })
+      queryClient.invalidateQueries({ queryKey: ['model-pool', 'artifact-selection'] })
+    },
   })
 
   const models = data?.models ?? {}
@@ -899,10 +923,15 @@ export default function ModelPoolPage() {
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
             <ChampionPointerPanel pointers={championPointers.data} />
             <ArtifactRegistryPanel selection={artifactSelection.data} />
-            <PromotionQueuePanel queue={artifactPromotionQueue.data} />
+            <PromotionQueuePanel
+              queue={artifactPromotionQueue.data}
+              isPromoting={promotionController.isPending}
+              promotionResult={promotionController.data}
+              onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
+            />
             <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
-            <LiveShadowEvidencePanel models={modelList} />
-            <ArtifactDiffPanel models={modelList} />
+            <LiveShadowEvidencePanel selection={artifactSelection.data} />
+            <ArtifactDiffPanel selection={artifactSelection.data} pointers={championPointers.data} />
             <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />
 
             <WorkstationPanel title="模型健康矩陣" kicker="IC, samples, coverage, metadata, challenger">

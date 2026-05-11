@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
@@ -30,6 +31,15 @@ assert(
   'verify-v2 must receive the callback business date',
 )
 assert(
+  updateOrchestrator.indexOf("runRegimeCompute(env)") > 0 &&
+    updateOrchestrator.indexOf("runRegimeCompute(env)") < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
+  'regime-compute must run before pipeline/recommendation so ml:regime is not null during alpha framework scoring',
+)
+assert(
+  !postMarketChain.includes("runRegimeCompute(env)"),
+  'post-pipeline chain must not be the primary regime producer; pipeline already consumed ml:regime by then',
+)
+assert(
   postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate)'),
   'rolling IC refresh must receive the callback business date',
 )
@@ -44,13 +54,17 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh") <
-    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
-  'Neural meta-learning shadow evidence must run after LinUCB reward ledger is refreshed',
+    postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
+  'adaptive params must run after LinUCB reward ledger is refreshed',
 )
 assert(
-  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
-    postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
-  'adaptive params must run after shadow evidence closure so OBS can show the full meta loop',
+  postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily") <
+    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
+  'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
+)
+assert(
+  postMarketChain.includes("{ critical: false }"),
+  'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')

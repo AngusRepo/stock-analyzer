@@ -1,21 +1,21 @@
 # Progress — StockVision
 
-## Session 2026-05-08
+## Session 2026-05-11
 
 ### Portfolio
-- Total: $1002663 (0.27%)
+- Total: $1005316 (0.53%)
 - Positions: 0 | Cash: $1002159
-- MDD: 11.5% | Sharpe(30d): 0.3993223070363445
+- MDD: 11.5% | Sharpe(30d): 0.39840838026112807
 
 ### Today's Pipeline
-- Screener: 62 → ML BUY: 3 → T2: 2 orders
-- Trades: 2 BUY / 0 SELL
+- Screener: 64 → ML BUY: 3 → T2: 0 orders
+- Trades: 0 BUY / 1 SELL
 
 ### Positions
 No positions.
 
 ### Model Health
-- Degraded: DLinear(IC=-0.060491)
+- Degraded: DLinear(IC=-0.030231)
 - Optuna params version: latest
 
 ### Deployments

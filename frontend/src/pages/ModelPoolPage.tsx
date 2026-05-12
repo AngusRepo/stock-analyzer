@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
@@ -143,9 +143,28 @@ function evidenceMetric(row: ModelArtifactRegistryRow, keys: string[], digits = 
 
 function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse) {
   return Object.entries(selection?.models ?? {}).flatMap(([modelName, row]) => {
-    const items: Array<{ modelName: string; slot: 'monthly_release_candidate' | 'weekly_drift_candidate'; artifact: ModelArtifactRegistryRow }> = []
-    if (row.monthly_release_candidate) items.push({ modelName, slot: 'monthly_release_candidate', artifact: row.monthly_release_candidate })
-    if (row.weekly_drift_candidate) items.push({ modelName, slot: 'weekly_drift_candidate', artifact: row.weekly_drift_candidate })
+    const items: Array<{
+      modelName: string
+      slot: 'monthly_release_candidate' | 'weekly_drift_candidate'
+      artifact: ModelArtifactRegistryRow
+      actionContext?: ModelArtifactActionContext
+    }> = []
+    if (row.monthly_release_candidate) {
+      items.push({
+        modelName,
+        slot: 'monthly_release_candidate',
+        artifact: row.monthly_release_candidate,
+        actionContext: row.action_context?.monthly_release_candidate,
+      })
+    }
+    if (row.weekly_drift_candidate) {
+      items.push({
+        modelName,
+        slot: 'weekly_drift_candidate',
+        artifact: row.weekly_drift_candidate,
+        actionContext: row.action_context?.weekly_drift_candidate,
+      })
+    }
     return items
   })
 }
@@ -350,20 +369,23 @@ function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelec
   const rows = flattenSelectedArtifacts(selection)
 
   return (
-    <WorkstationPanel title="Live Gate Evidence / 版本 Live Gate" kicker="registry-selected artifacts, not legacy challenger slot">
+    <WorkstationPanel title="Live Gate Evidence / 版本實戰驗證" kicker="selected candidate only: shadow predict -> verify-v2 -> IC tracker">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
           這裡只看新版 registry 選出的 monthly / weekly candidate。狀態若是 not_started，代表還沒被 daily shadow predict 與 verify-v2 / model-ic-tracker 累積 actual_return live outcome；不是舊 model_pool challenger 單槽位。
         </p>
         {rows.length ? (
           <div className="grid gap-2 md:grid-cols-2">
-            {rows.map(({ modelName, slot, artifact }) => {
+            {rows.map(({ modelName, slot, artifact, actionContext }) => {
               const live = parseArtifactEvidence(artifact.live_evidence_json)
               const decision = (live.decision && typeof live.decision === 'object') ? live.decision as Record<string, unknown> : {}
               const metrics = (decision.metrics && typeof decision.metrics === 'object') ? decision.metrics as Record<string, unknown> : {}
               const liveStatus = artifact.live_gate_status ?? 'not_started'
               const samples = compactUnknown(metrics.shadow_samples ?? metrics.shadowSamples ?? 0, 0)
-              const rootCause = String(decision.root_cause ?? decision.reason ?? (liveStatus === 'not_started' ? 'daily shadow evidence not started' : liveStatus))
+              const rootCause = String(actionContext?.root_cause ?? decision.root_cause ?? decision.reason ?? (liveStatus === 'not_started' ? 'daily shadow evidence not started' : liveStatus))
+              const nextAction = actionContext?.next_action ?? (liveStatus === 'not_started'
+                ? 'run daily ML predict shadow, then verify-v2 and model-ic-tracker'
+                : decision.reason ? String(decision.reason) : 'continue collecting live gate evidence')
               return (
                 <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex items-start justify-between gap-2">
@@ -382,11 +404,12 @@ function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelec
                     <div><p className="text-[#70809b]">Min</p><p className="text-slate-100">{compactUnknown(metrics.min_samples, 0)}</p></div>
                   </div>
                   <p className="mt-2 text-[11px] leading-4 text-amber-200">root: {rootCause}</p>
-                  <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">
-                    next: {liveStatus === 'not_started'
-                      ? 'run daily ML predict shadow, then verify-v2 and model-ic-tracker'
-                      : decision.reason ? String(decision.reason) : 'continue collecting live gate evidence'}
-                  </p>
+                  <p className="mt-1 text-[11px] leading-4 text-[#8a92a6]">next: {nextAction}</p>
+                  {actionContext?.affected_downstream?.length ? (
+                    <p className="mt-1 text-[11px] leading-4 text-sky-200">
+                      affects: {actionContext.affected_downstream.join(', ')}
+                    </p>
+                  ) : null}
                 </div>
               )
             })}
@@ -405,7 +428,7 @@ function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactS
   const rows = flattenSelectedArtifacts(selection)
 
   return (
-    <WorkstationPanel title="Artifact Diff / 新舊 Artifact 差異" kicker="one algorithm per card, champion pointer -> candidate">
+    <WorkstationPanel title="Artifact Diff / Champion -> Candidate 差異" kicker="one algorithm per card, champion pointer -> candidate">
       <div className="p-3">
         <p className="mb-3 text-xs leading-5 text-[#8a92a6]">
           每張卡是一個演算法：左側是目前 champion pointer，右側是 registry candidate。若 champion_artifact_id 尚未連結，代表只能做版本級比較，artifact metadata diff 會被標為受限，而不是顯示假 NaN。
@@ -490,12 +513,27 @@ function registryTone(state?: string): WorkstationTone {
   return 'neutral'
 }
 
-function ArtifactMiniCard({ title, artifact }: { title: string; artifact?: ModelArtifactRegistryRow | null }) {
+function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
+  if (!context) return null
+  return (
+    <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#8a92a6]">
+      <div className="font-mono text-amber-200">root: {context.root_cause}</div>
+      <div>impact: {context.impact}</div>
+      <div>next: {context.next_action}</div>
+      {context.scheduler_dependency?.length ? (
+        <div className="mt-1 text-sky-200">needs: {context.scheduler_dependency.join(' -> ')}</div>
+      ) : null}
+    </div>
+  )
+}
+
+function ArtifactMiniCard({ title, artifact, actionContext }: { title: string; artifact?: ModelArtifactRegistryRow | null; actionContext?: ModelArtifactActionContext }) {
   if (!artifact) {
     return (
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{title}</p>
         <p className="mt-2 text-sm text-slate-500">No selected artifact</p>
+        <ActionContextNote context={actionContext} />
       </div>
     )
   }
@@ -514,6 +552,7 @@ function ArtifactMiniCard({ title, artifact }: { title: string; artifact?: Model
         <span>approval</span><span className="text-right text-slate-200">{artifact.approval_state ?? 'not_required'}</span>
       </div>
       <p className="mt-2 truncate font-mono text-[10px] text-[#70809b]" title={artifact.artifact_path ?? undefined}>{artifact.artifact_path ?? '-'}</p>
+      <ActionContextNote context={actionContext} />
     </div>
   )
 }
@@ -525,7 +564,7 @@ function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelecti
   const archivedCount = models.reduce((sum, [, row]) => sum + (row.archive_candidates?.length ?? 0), 0)
 
   return (
-    <WorkstationPanel title="Model Registry / 模型版本中心" kicker="champion alias, release candidates, drift candidates">
+    <WorkstationPanel title="Model Registry / 模型版本中心" kicker="artifact lifecycle: registered -> gate -> selected -> shadow -> promote">
       <div className="grid gap-3 p-3 md:grid-cols-3">
         <SignalInsightCard title="Monthly release" value={String(monthlyCount)} detail="主版本列車；通過 offline gate 才進候選。" tone={monthlyCount ? 'ok' : 'warn'} />
         <SignalInsightCard title="Weekly drift" value={String(weeklyCount)} detail="只有 offline strong pass 才能占用 live shadow slot。" tone={weeklyCount ? 'info' : 'neutral'} />
@@ -540,12 +579,20 @@ function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelecti
                 <p className="mt-1 text-[11px] text-[#70809b]">release-train selection · not production promotion</p>
               </div>
               <WorkstationPill tone={row.weekly_drift_candidate ? 'info' : row.monthly_release_candidate ? 'ok' : 'neutral'}>
-                {row.weekly_drift_candidate ? 'weekly shadow eligible' : row.monthly_release_candidate ? 'monthly candidate' : 'no candidate'}
+                {row.weekly_drift_candidate ? 'weekly shadow eligible' : row.monthly_release_candidate ? 'monthly release eligible' : 'no candidate'}
               </WorkstationPill>
             </div>
             <div className="grid gap-2 md:grid-cols-2">
-              <ArtifactMiniCard title="Monthly candidate" artifact={row.monthly_release_candidate} />
-              <ArtifactMiniCard title="Weekly drift candidate" artifact={row.weekly_drift_candidate} />
+              <ArtifactMiniCard
+                title="Next Monthly Release Candidate"
+                artifact={row.monthly_release_candidate}
+                actionContext={row.action_context?.monthly_release_candidate}
+              />
+              <ArtifactMiniCard
+                title="Weekly drift candidate"
+                artifact={row.weekly_drift_candidate}
+                actionContext={row.action_context?.weekly_drift_candidate}
+              />
             </div>
             {row.archive_candidates?.length > 0 && (
               <p className="mt-2 text-[11px] text-[#8a92a6]">
@@ -611,6 +658,7 @@ function PromotionQueuePanel({
               </div>
             </div>
             <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
+            <ActionContextNote context={row.action_context} />
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
@@ -665,10 +713,12 @@ function ChampionPointerPanel({ pointers }: { pointers?: ModelChampionPointersRe
   const models = Object.entries(pointers?.models ?? {})
   const missingCount = models.filter(([, row]) => row.readiness === 'missing_d1_pointer').length
   const mismatchCount = models.filter(([, row]) => row.readiness === 'pointer_mismatch').length
+  const linkedCount = models.filter(([, row]) => row.readiness === 'pointer_ready').length
 
   return (
-    <WorkstationPanel title="Champion Pointer Contract / Production 版本指標" kicker="model_pool.json today, D1 pointer target">
-      <div className="grid gap-3 p-3 md:grid-cols-4">
+    <WorkstationPanel title="Production Champion Pointer / 現行正式版本指標" kicker="serving ownership only: champion, rollback, pointer readiness">
+      <div className="grid gap-3 p-3 md:grid-cols-5">
+        <SignalInsightCard title="Artifact linked" value={String(linkedCount)} detail="requires champion_artifact_id, not only version" tone={linkedCount === (pointers?.model_count ?? 0) ? 'ok' : 'warn'} />
         <SignalInsightCard title="Production reader" value={pointers?.production_reader ?? 'N/A'} detail="目前 serving 實際讀取來源" tone={pointers?.production_reader === 'model_pool.json' ? 'warn' : 'ok'} />
         <SignalInsightCard title="Pointer ready" value={`${pointers?.ready_count ?? 0}/${pointers?.model_count ?? 0}`} detail="D1 champion pointer 對齊數" tone={pointers?.migration_ready ? 'ok' : 'warn'} />
         <SignalInsightCard title="Missing" value={String(missingCount)} detail="尚未 backfill D1 pointer" tone={missingCount ? 'warn' : 'ok'} />
@@ -698,6 +748,67 @@ function ChampionPointerPanel({ pointers }: { pointers?: ModelChampionPointersRe
             尚未取得 champion pointer projection；請先確認 ml-controller / Worker proxy 已部署。
           </div>
         )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
+function ArtifactLifecycleSummaryPanel({
+  selection,
+  pointers,
+  queue,
+}: {
+  selection?: ModelArtifactSelectionResponse
+  pointers?: ModelChampionPointersResponse
+  queue?: ModelArtifactPromotionQueueResponse
+}) {
+  const models = Object.values(selection?.models ?? {})
+  const selectedArtifacts = models.flatMap((row) => [
+    row.monthly_release_candidate,
+    row.weekly_drift_candidate,
+  ]).filter(Boolean) as ModelArtifactRegistryRow[]
+  const contexts = models.flatMap((row) => [
+    row.action_context?.monthly_release_candidate,
+    row.action_context?.weekly_drift_candidate,
+  ]).filter(Boolean) as ModelArtifactActionContext[]
+  const liveCollecting = contexts.filter((ctx) => ctx.evidence_status === 'collecting' || ctx.evidence_status === 'offline_only').length
+  const blockers = contexts.filter((ctx) => ['failed', 'missing', 'partial'].includes(String(ctx.evidence_status))).length
+  const pointerReady = `${pointers?.ready_count ?? 0}/${pointers?.model_count ?? 0}`
+  const promotionCount = queue?.count ?? 0
+
+  return (
+    <WorkstationPanel title="Artifact Lifecycle Summary / 版本生命週期總覽" kicker="registry -> gate -> shadow -> promotion pointer">
+      <div className="grid gap-3 p-3 md:grid-cols-5">
+        <SignalInsightCard
+          title="Champion linked"
+          value={pointerReady}
+          detail="production pointer 必須連到 artifact，不只版本字串"
+          tone={pointers?.migration_ready ? 'ok' : 'warn'}
+        />
+        <SignalInsightCard
+          title="Selected candidates"
+          value={String(selectedArtifacts.length)}
+          detail="offline gate 後被選進 monthly / weekly slot"
+          tone={selectedArtifacts.length ? 'info' : 'warn'}
+        />
+        <SignalInsightCard
+          title="Live evidence"
+          value={String(liveCollecting)}
+          detail="等待 daily predict -> verify-v2 -> IC tracker"
+          tone={liveCollecting ? 'warn' : 'ok'}
+        />
+        <SignalInsightCard
+          title="Promotion queue"
+          value={String(promotionCount)}
+          detail="promotion-controller final comparison"
+          tone={promotionCount ? 'info' : 'neutral'}
+        />
+        <SignalInsightCard
+          title="Blockers"
+          value={String(blockers)}
+          detail="missing / weak / failed evidence"
+          tone={blockers ? 'warn' : 'ok'}
+        />
       </div>
     </WorkstationPanel>
   )
@@ -921,6 +1032,11 @@ export default function ModelPoolPage() {
             </div>
 
             <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
+            <ArtifactLifecycleSummaryPanel
+              selection={artifactSelection.data}
+              pointers={championPointers.data}
+              queue={artifactPromotionQueue.data}
+            />
             <ChampionPointerPanel pointers={championPointers.data} />
             <ArtifactRegistryPanel selection={artifactSelection.data} />
             <PromotionQueuePanel

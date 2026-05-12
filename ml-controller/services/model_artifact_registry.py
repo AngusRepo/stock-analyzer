@@ -475,8 +475,8 @@ def build_champion_pointer_projection(
             readiness = "pointer_ready"
             next_action = "Safe for promotion-controller final comparison; serving owner migration still requires explicit deploy."
         elif pointer_version:
-            readiness = "pointer_ready_version_only"
-            next_action = "Version pointer is aligned, but champion_artifact_id is missing; promotion final comparison can use version baseline, while Artifact Diff remains limited until champion artifact is registered."
+            readiness = "pointer_version_only"
+            next_action = "Version pointer is aligned, but champion_artifact_id is missing; run production artifact backfill before treating the pointer as migration-ready."
         else:
             readiness = "pointer_invalid"
             next_action = "Pointer row exists but champion_version is empty."
@@ -492,7 +492,7 @@ def build_champion_pointer_projection(
             "next_action": next_action,
         }
 
-    ready = sum(1 for row in out.values() if row["readiness"] in {"pointer_ready", "pointer_ready_version_only"})
+    ready = sum(1 for row in out.values() if row["readiness"] == "pointer_ready")
     return {
         "status": "ok",
         "source_of_truth": "model_pool.json",
@@ -510,6 +510,7 @@ def backfill_champion_pointers_from_model_pool(
     model_pool_versions: dict[str, str],
     registry_rows: list[dict[str, Any]],
     reason: str = "model_pool_backfill",
+    create_missing_artifacts: bool = False,
 ) -> dict[str, Any]:
     """Populate D1 champion pointers from the current serving model_pool.json.
 
@@ -525,16 +526,61 @@ def backfill_champion_pointers_from_model_pool(
             artifact_by_model_version[(model_name, version)] = row
 
     written = 0
+    created_artifacts = 0
     errors: list[str] = []
     now = _now_iso()
     for model_name, champion_version in sorted(model_pool_versions.items()):
         artifact = artifact_by_model_version.get((model_name, champion_version))
+        created_this_artifact = False
+        if not artifact and create_missing_artifacts:
+            artifact = {
+                "artifact_id": f"{model_name}:{champion_version}:production_backfill",
+                "model_name": model_name,
+                "version": champion_version,
+                "candidate_type": "unknown",
+                "state": "production",
+                "artifact_path": model_artifact_path(model_name, champion_version),
+                "metadata_path": model_metadata_path(model_name, champion_version),
+                "training_run_id": reason,
+                "training_manifest_path": None,
+                "trained_from_snapshot": None,
+                "evaluation_baseline_version": None,
+                "final_compared_to": champion_version,
+                "feature_policy_version": None,
+                "checksum": None,
+                "source_run_date": None,
+                "is_monthly": 0,
+                "offline_gate_status": "backfilled_production",
+                "offline_gate_decision": "PRODUCTION_BACKFILL",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": _json_dumps({
+                    "schema_version": "production-artifact-backfill-v1",
+                    "reason": reason,
+                    "source": "model_pool.json",
+                    "backfilled_at": now,
+                    "note": "Current serving artifact was registered to make champion_artifact_id explicit; this is not a promotion.",
+                }),
+                "live_gate_status": "not_applicable",
+                "live_evidence_json": "{}",
+                "promotion_decision": "current_production",
+                "approval_state": "not_required",
+                "created_at": now,
+            }
+            try:
+                upsert_artifact_record(artifact)
+                artifact_by_model_version[(model_name, champion_version)] = artifact
+                created_artifacts += 1
+                created_this_artifact = True
+            except Exception as exc:  # noqa: BLE001 - keep pointer migration partial and visible.
+                errors.append(f"{model_name}:{champion_version}:artifact_backfill:{exc}")
+                artifact = None
         evidence = {
             "schema_version": "champion-pointer-backfill-v1",
             "reason": reason,
             "source": "model_pool.json",
             "backfilled_at": now,
             "registry_artifact_found": bool(artifact),
+            "production_artifact_created": created_this_artifact,
         }
         try:
             d1_client.execute(
@@ -569,6 +615,7 @@ def backfill_champion_pointers_from_model_pool(
         "target": "model_champion_pointers",
         "attempted": len(model_pool_versions),
         "written": written,
+        "created_artifacts": created_artifacts,
         "errors": errors,
     }
 
@@ -600,6 +647,141 @@ def _candidate_rank(row: dict[str, Any]) -> tuple[int, str]:
         _STATE_RANK.get(str(row.get("state") or ""), 0),
         str(row.get("updated_at") or row.get("created_at") or ""),
     )
+
+
+def _artifact_live_decision(row: dict[str, Any]) -> dict[str, Any]:
+    live = _json_loads(row.get("live_evidence_json"))
+    decision = live.get("decision")
+    return decision if isinstance(decision, dict) else {}
+
+
+def build_artifact_action_context(row: dict[str, Any] | None, *, selection_slot: str | None = None) -> dict[str, Any]:
+    """Normalize artifact/gate status into a human-actionable contract.
+
+    UI and OBS should not infer root causes from scattered registry columns.
+    This context is the single artifact-level explanation: what is blocked,
+    which downstream flow is affected, and what should run next.
+    """
+    if not row:
+        return {
+            "root_cause": "candidate_missing",
+            "impact": "No selected artifact can enter live shadow, promotion, or artifact diff.",
+            "next_action": "Run retrain followup, then offline gate and candidate selection.",
+            "affected_downstream": ["live_gate", "promotion_controller", "artifact_diff"],
+            "scheduler_dependency": ["retrain_followup"],
+            "evidence_status": "missing",
+        }
+
+    state = str(row.get("state") or "registered")
+    offline_status = str(row.get("offline_gate_status") or "not_evaluated")
+    offline_decision = str(row.get("offline_gate_decision") or "PENDING")
+    live_status = str(row.get("live_gate_status") or "not_started")
+    live_decision = _artifact_live_decision(row)
+    failed_gates = row.get("offline_gate_failed_gates")
+    if isinstance(failed_gates, str):
+        try:
+            failed_gates = json.loads(failed_gates)
+        except json.JSONDecodeError:
+            failed_gates = [failed_gates]
+    if not isinstance(failed_gates, list):
+        failed_gates = []
+
+    if state in {"registration_failed", "offline_failed"} or offline_status == "failed":
+        return {
+            "root_cause": "offline_gate_failed",
+            "impact": "Artifact cannot enter selected candidate, live shadow, or promotion.",
+            "next_action": "Inspect offline evidence, fix failed gates, then rerun retrain followup/offline gate.",
+            "affected_downstream": ["candidate_selection", "live_gate", "promotion_controller"],
+            "scheduler_dependency": ["retrain_followup", "offline_gate"],
+            "evidence_status": "failed",
+            "failed_gates": failed_gates,
+        }
+
+    offline_ready_states = {
+        "offline_passed",
+        "offline_strong_pass",
+        "candidate_selected",
+        "shadowing",
+        "live_gate_passed",
+        "approval_required",
+        "approved",
+    }
+    if live_status == "not_started":
+        if state not in offline_ready_states:
+            return {
+                "root_cause": "offline_evidence_weak_or_pending",
+                "impact": "Artifact can be retained as evidence, but should not replace production.",
+                "next_action": "Complete OOS IC, CPCV/PBO, DSR/MC, and segment evidence before live shadow selection.",
+                "affected_downstream": ["candidate_selection"],
+                "scheduler_dependency": ["offline_gate", "validation_packet"],
+                "evidence_status": "partial",
+                "failed_gates": failed_gates,
+            }
+        return {
+            "root_cause": "live_shadow_not_started",
+            "impact": "Candidate has offline evidence, but no production-adjacent live comparison yet.",
+            "next_action": "Run daily ML predict with shadow output, then verify-v2 and model-ic-tracker.",
+            "affected_downstream": ["live_gate", "promotion_controller", "artifact_diff"],
+            "scheduler_dependency": ["ml-predict", "verify-v2", "model-ic-tracker"],
+            "evidence_status": "offline_only",
+            "selection_slot": selection_slot,
+        }
+
+    if live_status in {"shadowing_not_enough_data", "production_baseline_not_enough_data"}:
+        metrics = live_decision.get("metrics") if isinstance(live_decision.get("metrics"), dict) else {}
+        return {
+            "root_cause": live_decision.get("root_cause") or live_status,
+            "impact": "Live IC is not promotion-grade yet; UI should show candidate as shadowing, not failed.",
+            "next_action": "Keep daily predict/verify/model-ic-tracker running until verified rows meet min_samples.",
+            "affected_downstream": ["promotion_controller"],
+            "scheduler_dependency": ["verify-v2", "model-ic-tracker"],
+            "evidence_status": "collecting",
+            "metrics": metrics,
+            "selection_slot": selection_slot,
+        }
+
+    if state in {"registered", "offline_passed_weak"} or (offline_decision in {"PENDING", "WEAK_PASS"} and state not in offline_ready_states):
+        return {
+            "root_cause": "offline_evidence_weak_or_pending",
+            "impact": "Artifact can be retained as evidence, but should not replace production.",
+            "next_action": "Complete OOS IC, CPCV/PBO, DSR/MC, and segment evidence before live shadow selection.",
+            "affected_downstream": ["candidate_selection"],
+            "scheduler_dependency": ["offline_gate", "validation_packet"],
+            "evidence_status": "partial",
+            "failed_gates": failed_gates,
+        }
+
+    if live_status == "failed":
+        return {
+            "root_cause": live_decision.get("root_cause") or "live_gate_failed",
+            "impact": "Candidate should not promote unless a later final comparison overturns this evidence.",
+            "next_action": "Archive candidate or keep as research evidence; do not update champion pointer.",
+            "affected_downstream": ["promotion_controller"],
+            "scheduler_dependency": ["promotion_controller"],
+            "evidence_status": "failed",
+            "selection_slot": selection_slot,
+        }
+
+    if live_status == "passed" or state == "live_gate_passed":
+        return {
+            "root_cause": "live_gate_passed",
+            "impact": "Candidate is eligible for final comparison against the current champion.",
+            "next_action": "Run promotion-controller final comparison; approval may be required by policy.",
+            "affected_downstream": ["promotion_controller", "line_notification"],
+            "scheduler_dependency": ["promotion_controller"],
+            "evidence_status": "ready",
+            "selection_slot": selection_slot,
+        }
+
+    return {
+        "root_cause": live_decision.get("root_cause") or live_status or state,
+        "impact": "Artifact lifecycle is in progress; production champion pointer is unchanged.",
+        "next_action": "Inspect registry evidence and continue the lifecycle owner for this state.",
+        "affected_downstream": ["model_registry"],
+        "scheduler_dependency": [],
+        "evidence_status": "unknown",
+        "selection_slot": selection_slot,
+    }
 
 
 def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -642,6 +824,16 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "monthly_release_candidate": selected_monthly,
             "weekly_drift_candidate": selected_weekly,
             "archive_candidates": archive_candidates,
+            "action_context": {
+                "monthly_release_candidate": build_artifact_action_context(
+                    selected_monthly,
+                    selection_slot="monthly_release_candidate",
+                ),
+                "weekly_drift_candidate": build_artifact_action_context(
+                    selected_weekly,
+                    selection_slot="weekly_drift_candidate",
+                ),
+            },
             "policy": {
                 "monthly": "select best offline_passed or stronger artifact",
                 "weekly": "select only offline_strong_pass unless production decay policy later overrides",
@@ -826,6 +1018,10 @@ def update_live_gate_from_ic(
                 "promotion_decision": decision["promotion_decision"],
                 "metrics": decision["metrics"],
                 "root_cause": decision["root_cause"],
+                "action_context": build_artifact_action_context(
+                    {**row, "state": decision["state"], "live_gate_status": decision["live_gate_status"], "live_evidence_json": _json_dumps(evidence)},
+                    selection_slot=str(row.get("_selection_slot") or ""),
+                ),
             })
         except Exception as exc:  # noqa: BLE001 - IC tracker should report partial registry failures.
             errors.append(f"{artifact_id}: {exc}")
@@ -890,6 +1086,7 @@ def build_promotion_queue(
             "promotion_decision": decision,
             "approval_required": approval_required,
             "next_action": next_action,
+            "action_context": build_artifact_action_context(row),
         })
 
     return {

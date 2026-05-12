@@ -430,6 +430,7 @@ class TrainPatchTSTRequest(BaseModel):
 class BackfillChampionPointersRequest(BaseModel):
     confirm: bool = False
     reason: str = "model_pool_backfill"
+    create_missing_artifacts: bool = True
 
 
 class PromotionControllerRequest(BaseModel):
@@ -1634,6 +1635,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
             model_pool_versions=champion_versions,
             registry_rows=rows,
             reason=req.reason,
+            create_missing_artifacts=req.create_missing_artifacts,
         )
         return {
             **result,

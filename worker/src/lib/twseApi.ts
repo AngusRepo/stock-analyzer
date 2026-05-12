@@ -45,10 +45,12 @@ export const MIN_TWSE_BULK_PRICE_ROWS = 900
 export const MIN_TPEX_BULK_PRICE_ROWS = 700
 
 type TpexStockDayAllOptions = {
+  date?: string
   minRows?: number
   maxReadinessAttempts?: number
   readinessDelayMs?: number
   fetcher?: typeof fetchWithRetry
+  fallbackFetcher?: typeof fetchWithRetry
 }
 
 export function assertBulkPriceSourceReady(input: {
@@ -88,6 +90,11 @@ function rocDate(isoDate: string): string {
   return `${parseInt(y) - 1911}/${m}/${d}`
 }
 
+function rocCompactDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split('-')
+  return `${parseInt(y) - 1911}${m}${d}`
+}
+
 function isStockCode(s: string): boolean {
   return /^\d{4,6}$/.test(s.trim())
 }
@@ -101,6 +108,12 @@ function parseOpenApiArray(text: string): any[] {
   if (!normalized.startsWith('[')) return []
   const body = JSON.parse(normalized)
   return Array.isArray(body) ? body : []
+}
+
+function parseJsonObject(text: string): any {
+  const normalized = text.replace(/^\uFEFF/, '').trimStart()
+  if (!normalized.startsWith('{')) return {}
+  return JSON.parse(normalized)
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -981,12 +994,58 @@ export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
     })
 }
 
+export function parseTpexHistoricalDailyQuoteRows(body: any): StockDayAllRow[] {
+  const tables = Array.isArray(body?.tables) ? body.tables : []
+  const rows = tables.flatMap((table: any) => Array.isArray(table?.data) ? table.data : [])
+  return rows
+    .filter((r: any[]) => Array.isArray(r) && isCommonStockCode(String(r[0] ?? '')))
+    .map((r: any[]) => {
+      const pf = (v: any) => v && v !== '--' ? parseFloat(String(v).replace(/,/g, '')) || null : null
+      return {
+        symbol: String(r[0] ?? '').trim(),
+        open: pf(r[4]),
+        high: pf(r[5]),
+        low: pf(r[6]),
+        close: pf(r[2]),
+        volume: r[8] ? parseTwNum(String(r[8])) : null,
+        avg_price: pf(r[7]),
+      }
+    })
+}
+
+function tpexLatestBodyDate(body: any[]): string | null {
+  const firstDated = body.find(row => typeof row?.Date === 'string' && /^\d{7}$/.test(row.Date))
+  return firstDated?.Date ?? null
+}
+
+async function fetchTpexDateSpecificStockDayAll(
+  date: string,
+  fetcher: typeof fetchWithRetry,
+): Promise<StockDayAllRow[]> {
+  const url = `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${date.replace(/-/g, '/')}`
+  const res = await fetcher(url, {
+    headers: TWSE_HEADERS,
+    signal: AbortSignal.timeout(30000),
+  }, { label: 'TPEX_DAILY_QUOTES_DATE_SPECIFIC' })
+  if (!res.ok) return []
+  const body = parseJsonObject(await res.text())
+  const reportDate = typeof body?.date === 'string' ? body.date : null
+  const requested = twseDate(date)
+  if (reportDate && reportDate !== requested) {
+    console.warn(`[TPEX_DAILY_QUOTES_DATE_SPECIFIC] stale response: requested ${requested}, got ${reportDate}`)
+    return []
+  }
+  return parseTpexHistoricalDailyQuoteRows(body)
+}
+
 export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {}): Promise<StockDayAllRow[]> {
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
   const minRows = options.minRows ?? MIN_TPEX_BULK_PRICE_ROWS
   const maxAttempts = Math.max(1, options.maxReadinessAttempts ?? 4)
   const delayMs = Math.max(0, options.readinessDelayMs ?? 15_000)
   const fetcher = options.fetcher ?? fetchWithRetry
+  const fallbackFetcher = options.fallbackFetcher ?? fetcher
+  const expectedRocDate = options.date ? rocCompactDate(options.date) : null
   let lastRows: StockDayAllRow[] = []
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -994,15 +1053,27 @@ export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {})
       headers: TWSE_HEADERS,
       signal: AbortSignal.timeout(30000),
     }, { label: 'TPEX_DAILY_QUOTES' })
-    if (!res.ok) return []
+    if (!res.ok) break
     const text = await res.text()
     const body = parseOpenApiArray(text)
+    const bodyDate = tpexLatestBodyDate(body)
     lastRows = parseTpexDailyQuoteRows(body)
+    if (expectedRocDate && bodyDate && bodyDate !== expectedRocDate) {
+      console.warn(`[TPEX_DAILY_QUOTES] latest feed stale: requested ${expectedRocDate}, got ${bodyDate}; switching to date-specific fallback`)
+      break
+    }
     if (lastRows.length >= minRows) return lastRows
     if (attempt < maxAttempts) {
       console.warn(`[TPEX_DAILY_QUOTES] partial feed ${lastRows.length}/${minRows}, readiness retry ${attempt}/${maxAttempts}`)
       await new Promise(r => setTimeout(r, delayMs))
     }
+  }
+
+  if (options.date) {
+    const fallbackRows = await fetchTpexDateSpecificStockDayAll(options.date, fallbackFetcher)
+    if (fallbackRows.length >= minRows) return fallbackRows
+    console.warn(`[TPEX_DAILY_QUOTES_DATE_SPECIFIC] incomplete fallback ${fallbackRows.length}/${minRows} for ${options.date}`)
+    if (fallbackRows.length > lastRows.length) return fallbackRows
   }
 
   return lastRows
@@ -1045,7 +1116,7 @@ export async function bulkFetchAndStorePrices(
 ): Promise<number> {
   const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
     fetchTwseStockDayAll(date),
-    fetchTpexStockDayAll(),
+    fetchTpexStockDayAll({ date }),
     fetchEmergingStockDayAll(),
   ])
 

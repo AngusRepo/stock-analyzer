@@ -734,6 +734,18 @@ export type ModelArtifactRegistryRow = {
   created_at?: string
 }
 
+export type ModelArtifactActionContext = {
+  root_cause: string
+  impact: string
+  next_action: string
+  affected_downstream?: string[]
+  scheduler_dependency?: string[]
+  evidence_status?: string
+  failed_gates?: string[]
+  metrics?: Record<string, unknown>
+  selection_slot?: string | null
+}
+
 export type ModelArtifactRegistryResponse = {
   status: string
   source_of_truth: string
@@ -749,6 +761,10 @@ export type ModelArtifactSelectionResponse = {
     monthly_release_candidate?: ModelArtifactRegistryRow | null
     weekly_drift_candidate?: ModelArtifactRegistryRow | null
     archive_candidates: string[]
+    action_context?: {
+      monthly_release_candidate?: ModelArtifactActionContext
+      weekly_drift_candidate?: ModelArtifactActionContext
+    }
     policy: Record<string, unknown>
   }>
 }
@@ -772,6 +788,7 @@ export type ModelArtifactPromotionQueueResponse = {
     promotion_decision: string
     approval_required: boolean
     next_action: string
+    action_context?: ModelArtifactActionContext
   }>
 }
 
@@ -823,7 +840,7 @@ export const modelPoolApi = {
   artifactPromotionQueue: (limit = 200) => get<ModelArtifactPromotionQueueResponse>(`/model-pool/artifact_registry/promotion_queue?limit=${limit}`),
   promotionController: (body: ModelArtifactPromotionControllerRequest) => post<ModelArtifactPromotionControllerResponse>('/model-pool/artifact_registry/promotion_controller', body),
   championPointers: (limit = 200) => get<ModelChampionPointersResponse>(`/model-pool/artifact_registry/champion_pointers?limit=${limit}`),
-  backfillChampionPointers: (body: { confirm: boolean; reason?: string }) => post<any>('/model-pool/artifact_registry/champion_pointers/backfill', body),
+  backfillChampionPointers: (body: { confirm: boolean; reason?: string; create_missing_artifacts?: boolean }) => post<any>('/model-pool/artifact_registry/champion_pointers/backfill', body),
 }
 
 // 2026-04-21 #43 Cost Tracking API

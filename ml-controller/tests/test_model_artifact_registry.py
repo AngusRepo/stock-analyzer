@@ -133,6 +133,21 @@ def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     assert model["monthly_release_candidate"]["artifact_id"] == "XGBoost:vM:monthly_release"
     assert model["weekly_drift_candidate"]["artifact_id"] == "XGBoost:vW2:weekly_drift"
     assert "XGBoost:vW1:weekly_drift" in model["archive_candidates"]
+    assert model["action_context"]["weekly_drift_candidate"]["root_cause"] == "live_shadow_not_started"
+    assert "verify-v2" in model["action_context"]["weekly_drift_candidate"]["scheduler_dependency"]
+
+
+def test_artifact_action_context_explains_failed_offline_gate():
+    ctx = registry.build_artifact_action_context({
+        "artifact_id": "XGBoost:vBad:weekly_drift",
+        "state": "offline_failed",
+        "offline_gate_status": "failed",
+        "offline_gate_failed_gates": '["pbo_fail"]',
+    })
+
+    assert ctx["root_cause"] == "offline_gate_failed"
+    assert "candidate_selection" in ctx["affected_downstream"]
+    assert ctx["failed_gates"] == ["pbo_fail"]
 
 
 def test_candidate_selection_keeps_shadowing_weekly_candidate_selected():
@@ -243,8 +258,31 @@ def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monke
     assert result["updated"] == 1
     assert result["updates"][0]["artifact_id"] == "XGBoost:vW:weekly_drift"
     assert result["updates"][0]["live_gate_status"] == "shadowing_not_enough_data"
-    assert executed[0]["params"][0] == "shadowing"
-    assert executed[0]["params"][1] == "shadowing_not_enough_data"
+    assert result["updates"][0]["action_context"]["evidence_status"] == "collecting"
+    assert "model-ic-tracker" in result["updates"][0]["action_context"]["scheduler_dependency"]
+
+
+def test_promotion_queue_includes_backend_owned_action_context():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "XGBoost:vW:weekly_drift",
+                "model_name": "XGBoost",
+                "version": "vW",
+                "candidate_type": "weekly_drift",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "live_evidence_json": '{"decision":{"root_cause":"ok","metrics":{"shadow_samples":80}}}',
+            },
+        ],
+        champion_versions={"XGBoost": "vM"},
+    )
+
+    row = queue["queue"][0]
+    assert row["promotion_decision"] == "approval_required"
+    assert row["action_context"]["root_cause"] == "live_gate_passed"
+    assert "promotion_controller" in row["action_context"]["affected_downstream"]
 
 
 def test_update_live_gate_from_ic_passes_when_shadow_beats_production(monkeypatch):
@@ -391,7 +429,7 @@ def test_champion_pointer_projection_ready_when_d1_matches_serving():
     assert model["latest_registry_production_artifact"]["artifact_id"] == "PatchTST:vServing:monthly_release"
 
 
-def test_champion_pointer_projection_marks_version_only_pointer():
+def test_champion_pointer_projection_marks_version_only_pointer_not_migration_ready():
     projection = registry.build_champion_pointer_projection(
         registry_rows=[],
         d1_pointers=[{
@@ -402,8 +440,8 @@ def test_champion_pointer_projection_marks_version_only_pointer():
     )
 
     model = projection["models"]["PatchTST"]
-    assert projection["migration_ready"] is True
-    assert model["readiness"] == "pointer_ready_version_only"
+    assert projection["migration_ready"] is False
+    assert model["readiness"] == "pointer_version_only"
     assert model["artifact_link_status"] == "version_only_pointer"
 
 
@@ -508,3 +546,32 @@ def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versi
     assert params[1] == "vServing"
     assert params[2] == "XGBoost:vServing:monthly_release"
     assert params[3] == "test_backfill"
+
+
+def test_backfill_champion_pointers_can_register_current_production_artifact(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.backfill_champion_pointers_from_model_pool(
+        model_pool_versions={"LightGBM": "v1"},
+        registry_rows=[],
+        reason="test_production_backfill",
+        create_missing_artifacts=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["written"] == 1
+    assert result["created_artifacts"] == 1
+    artifact_params = executed[0]["params"]
+    pointer_params = executed[1]["params"]
+    assert artifact_params[0] == "LightGBM:v1:production_backfill"
+    assert artifact_params[3] == "unknown"
+    assert artifact_params[4] == "production"
+    assert pointer_params[0] == "LightGBM"
+    assert pointer_params[1] == "v1"
+    assert pointer_params[2] == "LightGBM:v1:production_backfill"

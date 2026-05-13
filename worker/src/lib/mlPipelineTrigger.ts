@@ -31,38 +31,47 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
 
     try {
       const { calcMarketRisk } = await import('./marketRisk')
-      const risk = await calcMarketRisk(
-        env.DB,
-        env.ANTHROPIC_API_KEY,
-        env.ML_CONTROLLER_URL,
-        env.ML_CONTROLLER_SECRET,
-        env.GEMINI_API_KEY,
-      )
-      await env.DB.prepare(`
-        INSERT OR REPLACE INTO market_risk
-          (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
-           foreign_consecutive_sell, foreign_net_5d, margin_ratio,
-           limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).bind(
-        risk.date,
-        risk.vix,
-        risk.vixLevel,
-        risk.twiiClose,
-        risk.twiiVol20,
-        risk.twiiMa20,
-        risk.twiiBias,
-        risk.foreignConsecutiveSell,
-        risk.foreignNet5d,
-        risk.marginRatio,
-        risk.limitDownCount,
-        risk.limitDownPct,
-        risk.riskScore,
-        risk.riskLevel,
-        risk.riskSummary,
-      ).run()
-      await env.KV.delete('market:risk:latest')
-      console.log(`[ML V2] Market risk: ${risk.riskLevel} (${risk.riskScore}/100)`)
+      const shouldRecomputeRisk = twDate === twToday()
+      const existingRisk = shouldRecomputeRisk
+        ? null
+        : await env.DB.prepare('SELECT date FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<{ date: string }>()
+      if (!shouldRecomputeRisk && existingRisk) {
+        console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
+      } else {
+        const risk = await calcMarketRisk(
+          env.DB,
+          env.ANTHROPIC_API_KEY,
+          env.ML_CONTROLLER_URL,
+          env.ML_CONTROLLER_SECRET,
+          env.GEMINI_API_KEY,
+          twDate,
+        )
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO market_risk
+            (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
+             foreign_consecutive_sell, foreign_net_5d, margin_ratio,
+             limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          risk.date,
+          risk.vix,
+          risk.vixLevel,
+          risk.twiiClose,
+          risk.twiiVol20,
+          risk.twiiMa20,
+          risk.twiiBias,
+          risk.foreignConsecutiveSell,
+          risk.foreignNet5d,
+          risk.marginRatio,
+          risk.limitDownCount,
+          risk.limitDownPct,
+          risk.riskScore,
+          risk.riskLevel,
+          risk.riskSummary,
+        ).run()
+        await env.KV.delete('market:risk:latest')
+        console.log(`[ML V2] Market risk: ${risk.riskLevel} (${risk.riskScore}/100) date=${risk.date}`)
+      }
     } catch (e) {
       console.error('[ML V2] Market risk failed (non-blocking):', e)
     }

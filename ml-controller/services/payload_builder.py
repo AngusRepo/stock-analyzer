@@ -142,8 +142,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     """
     # ── 1. Latest market_risk row ───────────────────────────────────────────
     risk_rows = d1_client.query(
-        "SELECT risk_level, risk_score, risk_summary "
-        "FROM market_risk ORDER BY date DESC LIMIT 1"
+        "SELECT date, risk_level, risk_score, risk_summary "
+        "FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1",
+        [run_date],
     )
     risk_row = risk_rows[0] if risk_rows else {}
 
@@ -151,7 +152,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     twii_rows = d1_client.query(
         "SELECT date, close FROM stock_prices "
         "WHERE stock_id=(SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1) "
-        "ORDER BY date DESC LIMIT 25"
+        "AND date <= ? ORDER BY date DESC LIMIT 25",
+        [run_date],
     )
     twii_arr = [r["close"] for r in reversed(twii_rows)]
     twii_1d = (twii_arr[-1] - twii_arr[-2]) / twii_arr[-2] if len(twii_arr) >= 2 else 0.0
@@ -173,7 +175,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close, "
         "       foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
         "       adl_value, adl_trend "
-        "FROM market_risk ORDER BY date ASC LIMIT 500"
+        "FROM market_risk WHERE date <= ? ORDER BY date ASC LIMIT 500",
+        [run_date],
     )
     adl_trend_map = {"up": 1.0, "flat": 0.0, "down": -1.0}
     for i, row in enumerate(history_rows):
@@ -197,7 +200,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     us_history_by_date: dict[str, dict] = {}
     us_rows = d1_client.query(
         "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
-        "FROM us_market_signals ORDER BY date ASC"
+        "FROM us_market_signals WHERE date <= ? ORDER BY date ASC",
+        [run_date],
     )
     for r in (us_rows or []):
         us_history_by_date[r["date"]] = {
@@ -214,7 +218,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     etf_rows = d1_client.query(
         "SELECT sp.date, sp.close FROM stock_prices sp "
         "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol = '0050' ORDER BY sp.date ASC LIMIT 800"
+        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date ASC LIMIT 800",
+        [run_date],
     )
 
     # 3c. ADL (Advance/Decline Line) — 每日上漲家數 - 下跌家數的累積
@@ -227,8 +232,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "  SELECT sp.date, sp.close, "
         "    LAG(sp.close) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) as prev_close "
         "  FROM stock_prices sp "
-        ") WHERE prev_close IS NOT NULL "
-        "GROUP BY date ORDER BY date ASC"
+        ") WHERE prev_close IS NOT NULL AND date <= ? "
+        "GROUP BY date ORDER BY date ASC",
+        [run_date],
     )
     # 累積 ADL + 5d trend + advance_ratio
     adl_by_date: dict[str, tuple[float, float]] = {}  # {date: (adl_value, adl_trend_numeric)}
@@ -262,8 +268,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "  COUNT(*) as total, "
         "  SUM(CASE WHEN sp.close >= sp.open * 0.9 AND sp.close <= sp.open * 0.905 THEN 1 ELSE 0 END) as limit_down_count "
         "FROM stock_prices sp "
-        "WHERE sp.date >= '2023-01-01' "
-        "GROUP BY sp.date ORDER BY sp.date ASC"
+        "WHERE sp.date >= '2023-01-01' AND sp.date <= ? "
+        "GROUP BY sp.date ORDER BY sp.date ASC",
+        [run_date],
     )
     breadth_by_date: dict[str, tuple[float, float]] = {}  # {date: (limit_down_count, limit_down_pct)}
     if breadth_rows:
@@ -380,7 +387,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     try:
         breadth_rows = d1_client.query(
             "SELECT date, advance_ratio, bull_alignment_pct "
-            "FROM market_breadth ORDER BY date DESC LIMIT 5"
+            "FROM market_breadth WHERE date <= ? ORDER BY date DESC LIMIT 5",
+            [run_date],
         )
     except RuntimeError as e:
         logger.warning("[payload_builder] market_breadth unavailable; degrading market_env: %s", e)

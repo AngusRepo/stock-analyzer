@@ -61,6 +61,7 @@ VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
+CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MLC_DIR="$SCRIPT_DIR/ml-controller"
@@ -136,7 +137,9 @@ required = [
     "GCP_REGION",
     "PIPELINE_JOB_NAME",
     "VERIFY_JOB_NAME",
+    "OPTUNA_JOB_NAME",
     "STOCKVISION_WORKER_URL",
+    "CF_API_TOKEN",
 ]
 
 raw = os.environ.get("SERVICE_JSON", "")
@@ -152,12 +155,13 @@ containers = (
     .get("containers", [])
 )
 envs = containers[0].get("env", []) if containers else []
-present = {
-    item.get("name"): item.get("value", "")
-    for item in envs
-    if isinstance(item, dict) and item.get("name")
-}
-missing = [name for name in required if not str(present.get(name, "")).strip()]
+present = {}
+for item in envs:
+    if not isinstance(item, dict) or not item.get("name"):
+        continue
+    if str(item.get("value", "")).strip() or item.get("valueFrom"):
+        present[item["name"]] = True
+missing = [name for name in required if not present.get(name)]
 print(", ".join(missing))
 PY
 )
@@ -328,6 +332,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
+        --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
         --env-vars-file="$env_file"; then
       echo "??Verify job update failed" >&2
       exit 4
@@ -344,6 +349,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
+        --set-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
         --env-vars-file="$env_file"; then
       echo "??Verify job create failed" >&2
       exit 4
@@ -375,6 +381,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job update failed" >&2
       exit 4
@@ -393,6 +400,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --set-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job create failed" >&2
       exit 4
@@ -411,10 +419,12 @@ run_preflight() {
   require_nonempty "PIPELINE_JOB_NAME" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
+  require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
 
   for var_name in "${REQUIRED_ENV_VARS[@]}"; do
     print_preflight_value "$var_name"
   done
+  print_preflight_value "CF_API_TOKEN_SECRET"
   print_preflight_value "OPTUNA_JOB_TIMEOUT"
   echo ""
 
@@ -424,7 +434,7 @@ run_preflight() {
     echo "  Live service already has all required env keys."
   else
     echo "  Live service missing required env keys: $LIVE_MISSING_ENV_NAMES"
-    echo "  Deploy is expected to repair this via --update-env-vars."
+    echo "  Deploy is expected to repair this via --update-env-vars / --update-secrets."
   fi
   echo ""
 
@@ -505,6 +515,7 @@ if ! gcloud run deploy "$SERVICE" \
     --region="$REGION" \
     --timeout=3600 \
     --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}" \
+    --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
     --quiet; then
   echo "❌ Service deploy failed" >&2
   exit 2
@@ -534,6 +545,7 @@ echo "=== Step 3/4: Update Job $JOB image to match Service ==="
 if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
+    --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
     --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}"; then
   echo "❌ Job update failed" >&2
   exit 4

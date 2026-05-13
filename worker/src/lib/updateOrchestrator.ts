@@ -162,9 +162,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   try {
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
+    const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
     const [{ chipCount, marginCount }, priceCount] = await Promise.all([
-      bulkFetchAndStoreChipData(env.DB, twDate, env.SHIOAJI_PROXY_URL, env.ML_CONTROLLER_SECRET),
-      bulkFetchAndStorePrices(env.DB, twDate),
+      bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })

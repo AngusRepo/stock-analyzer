@@ -53,6 +53,36 @@ type TpexStockDayAllOptions = {
   fallbackFetcher?: typeof fetchWithRetry
 }
 
+async function fetchTpexStockDayAllViaController(
+  date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<StockDayAllRow[]> {
+  if (!controllerUrl) return []
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+  const res = await fetch(`${controllerUrl}/tpex-prices`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ date }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) throw new Error(`Controller /tpex-prices HTTP ${res.status}`)
+  const data = await res.json() as any
+  const rows = Array.isArray(data?.prices) ? data.prices : []
+  return rows
+    .filter((r: any) => isCommonStockCode(String(r?.symbol ?? '')))
+    .map((r: any) => ({
+      symbol: String(r.symbol).trim(),
+      open: typeof r.open === 'number' ? r.open : null,
+      high: typeof r.high === 'number' ? r.high : null,
+      low: typeof r.low === 'number' ? r.low : null,
+      close: typeof r.close === 'number' ? r.close : null,
+      volume: typeof r.volume === 'number' ? r.volume : null,
+      avg_price: typeof r.avg_price === 'number' ? r.avg_price : null,
+    }))
+}
+
 export function assertBulkPriceSourceReady(input: {
   date: string
   twseRows: number
@@ -1118,10 +1148,33 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
 export async function bulkFetchAndStorePrices(
   db: D1Database,
   date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
 ): Promise<number> {
+  const fetchTpexRows = async (): Promise<StockDayAllRow[]> => {
+    let directRows: StockDayAllRow[] = []
+    try {
+      directRows = await fetchTpexStockDayAll({ date })
+      if (directRows.length >= MIN_TPEX_BULK_PRICE_ROWS) return directRows
+    } catch (e) {
+      console.warn('[BulkPrice] TPEX direct fetch failed before controller proxy:', e)
+    }
+
+    try {
+      const proxiedRows = await fetchTpexStockDayAllViaController(date, controllerUrl, controllerSecret)
+      if (proxiedRows.length > directRows.length) {
+        console.warn(`[BulkPrice] TPEX controller proxy recovered ${proxiedRows.length} rows (direct=${directRows.length})`)
+        return proxiedRows
+      }
+    } catch (e) {
+      console.warn('[BulkPrice] TPEX controller proxy failed:', e)
+    }
+    return directRows
+  }
+
   const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
     fetchTwseStockDayAll(date),
-    fetchTpexStockDayAll({ date }),
+    fetchTpexRows(),
     fetchEmergingStockDayAll(),
   ])
 

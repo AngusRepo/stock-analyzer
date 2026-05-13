@@ -316,6 +316,68 @@ async def proxy_tpex_chips(req: TpexProxyRequest):
 
 # ─── TWSE Proxy: CF Worker IP 被 TWSE SSL 擋，透過 Controller 代理 ──────────
 
+@router.post("/twse-prices")
+async def proxy_twse_prices(req: TpexProxyRequest):
+    """TWSE STOCK_DAY_ALL proxy for Worker bulk price update."""
+    target_date = req.date or _today_tw()
+    url = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={target_date.replace('-', '')}&response=json"
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": _USER_AGENT},
+        follow_redirects=True,
+    ) as client:
+        resp = await client.get(url, timeout=30.0)
+        resp.raise_for_status()
+        body = resp.json()
+
+    if body.get("stat") != "OK":
+        return {"date": target_date, "report_date": None, "prices": []}
+
+    report_date = str(body.get("date") or "")
+    if len(report_date) == 8:
+        report_date_iso = f"{report_date[:4]}-{report_date[4:6]}-{report_date[6:8]}"
+    else:
+        report_date_iso = None
+
+    prices = []
+    for row in body.get("data", []) or []:
+        if not isinstance(row, list) or len(row) < 8:
+            continue
+        symbol = str(row[0] or "").strip()
+        if not re.match(r"^\d{4}$", symbol):
+            continue
+
+        def pf(value):
+            text = str(value or "").replace(",", "").strip()
+            if not text or text == "--":
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
+
+        def pi(value):
+            text = str(value or "").replace(",", "").strip()
+            if not text or text == "--":
+                return None
+            try:
+                return int(float(text))
+            except ValueError:
+                return None
+
+        prices.append({
+            "symbol": symbol,
+            "open": pf(row[4]),
+            "high": pf(row[5]),
+            "low": pf(row[6]),
+            "close": pf(row[7]),
+            "volume": pi(row[2]),
+        })
+
+    logger.info(f"TWSE price proxy: {len(prices)} prices for {target_date} report_date={report_date_iso}")
+    return {"date": target_date, "report_date": report_date_iso, "prices": prices}
+
+
 @router.post("/tpex-prices")
 async def proxy_tpex_prices(req: TpexProxyRequest):
     """TPEX daily quotes proxy for Worker bulk price update."""

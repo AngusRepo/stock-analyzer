@@ -83,6 +83,38 @@ async function fetchTpexStockDayAllViaController(
     }))
 }
 
+async function fetchTwseStockDayAllViaController(
+  date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<{ reportDate: string | null; rows: StockDayAllRow[] }> {
+  if (!controllerUrl) return { reportDate: null, rows: [] }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+  const res = await fetch(`${controllerUrl}/twse-prices`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ date }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) throw new Error(`Controller /twse-prices HTTP ${res.status}`)
+  const data = await res.json() as any
+  const rows = Array.isArray(data?.prices) ? data.prices : []
+  return {
+    reportDate: typeof data?.report_date === 'string' ? data.report_date : null,
+    rows: rows
+      .filter((r: any) => isCommonStockCode(String(r?.symbol ?? '')))
+      .map((r: any) => ({
+        symbol: String(r.symbol).trim(),
+        open: typeof r.open === 'number' ? r.open : null,
+        high: typeof r.high === 'number' ? r.high : null,
+        low: typeof r.low === 'number' ? r.low : null,
+        close: typeof r.close === 'number' ? r.close : null,
+        volume: typeof r.volume === 'number' ? r.volume : null,
+      })),
+  }
+}
+
 export function assertBulkPriceSourceReady(input: {
   date: string
   twseRows: number
@@ -1151,6 +1183,27 @@ export async function bulkFetchAndStorePrices(
   controllerUrl?: string,
   controllerSecret?: string,
 ): Promise<number> {
+  const fetchTwseRows = async (): Promise<{ reportDate: string | null; rows: StockDayAllRow[] }> => {
+    let direct: { reportDate: string | null; rows: StockDayAllRow[] } = { reportDate: null, rows: [] }
+    try {
+      direct = await fetchTwseStockDayAll(date)
+      if (direct.rows.length >= MIN_TWSE_BULK_PRICE_ROWS) return direct
+    } catch (e) {
+      console.warn('[BulkPrice] TWSE direct fetch failed before controller proxy:', e)
+    }
+
+    try {
+      const proxied = await fetchTwseStockDayAllViaController(date, controllerUrl, controllerSecret)
+      if (proxied.rows.length > direct.rows.length) {
+        console.warn(`[BulkPrice] TWSE controller proxy recovered ${proxied.rows.length} rows (direct=${direct.rows.length})`)
+        return proxied
+      }
+    } catch (e) {
+      console.warn('[BulkPrice] TWSE controller proxy failed:', e)
+    }
+    return direct
+  }
+
   const fetchTpexRows = async (): Promise<StockDayAllRow[]> => {
     let directRows: StockDayAllRow[] = []
     try {
@@ -1173,7 +1226,7 @@ export async function bulkFetchAndStorePrices(
   }
 
   const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
-    fetchTwseStockDayAll(date),
+    fetchTwseRows(),
     fetchTpexRows(),
     fetchEmergingStockDayAll(),
   ])

@@ -209,3 +209,44 @@ void (async () => {
   assert(rows.length === 701, 'TPEX date-specific fallback should return complete requested-date rows')
   assert(rows[0]?.close === 12.2, 'TPEX fallback rows should replace stale latest rows')
 })()
+
+void (async () => {
+  const fallbackRows = Array.from({ length: 701 }, (_, idx) => [
+    String(3000 + idx),
+    `Stock ${idx}`,
+    '22.2',
+    '+0.1',
+    '22.0',
+    '22.5',
+    '21.8',
+    '22.1',
+    '1,000',
+  ])
+  let latestCalls = 0
+  let fallbackCalls = 0
+  const makeResponse = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  }) as Response
+
+  const rows = await fetchTpexStockDayAll({
+    date: '2026-05-13',
+    minRows: 700,
+    maxReadinessAttempts: 1,
+    readinessDelayMs: 0,
+    fetcher: async () => {
+      latestCalls += 1
+      throw new Error('Too many redirects to /errors')
+    },
+    fallbackFetcher: async () => {
+      fallbackCalls += 1
+      return makeResponse({ date: '20260513', tables: [{ data: fallbackRows }] })
+    },
+  })
+
+  assert(latestCalls === 1, 'TPEX latest should be attempted before fallback even when it throws')
+  assert(fallbackCalls === 1, 'TPEX date-specific fallback should run when latest OpenAPI redirects/errors in Worker')
+  assert(rows.length === 701, 'TPEX fallback should recover complete requested-date rows after latest feed exception')
+  assert(rows[0]?.close === 22.2, 'TPEX fallback rows should be parsed after latest feed exception')
+})()

@@ -160,13 +160,20 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
             <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
               Drilldown <ExternalLink className="h-3 w-3" />
             </a>
-            <div className="xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 md:grid-cols-2">
-              <p className={job.lastStatus === 'failed' ? 'text-rose-300' : 'text-slate-400'}>
-                <span className="font-semibold text-slate-200">Root cause：</span>{schedulerRootCause(job)}
-              </p>
+            <div className={`xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
               <p className="text-slate-400">
-                <span className="font-semibold text-slate-200">可能影響：</span>{schedulerImpact(job)}
+                <span className="font-semibold text-slate-200">狀態紀錄：</span>{schedulerStatusLog(job)}
               </p>
+              {schedulerHasRootCause(job) && (
+                <>
+                  <p className="text-rose-300">
+                    <span className="font-semibold text-slate-200">Root cause：</span>{schedulerRootCause(job)}
+                  </p>
+                  <p className="text-slate-400">
+                    <span className="font-semibold text-slate-200">可能影響：</span>{schedulerImpact(job)}
+                  </p>
+                </>
+              )}
             </div>
           </div>
         ))}
@@ -513,9 +520,27 @@ function DependencyMap() {
   )
 }
 
+function schedulerStatusLog(job: SchedulerJob) {
+  if (job.summary) return job.summary
+  if (job.lastStatus === 'success') return '已完成，產物可供後續流程使用。'
+  if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
+  if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
+  if (job.lastStatus === 'skip') return '被交易日曆、holiday policy 或執行條件跳過。'
+  if (job.lastStatus === 'running') return '執行中，等待 final callback。'
+  return job.lastRun ? `最近執行：${job.lastRun}` : '-'
+}
+
+function schedulerHasRootCause(job: SchedulerJob) {
+  const status = String(job.lastStatus ?? '').toLowerCase()
+  if (job.lastError) return true
+  if (status === 'failed' || status === 'error') return true
+  const text = String(job.summary ?? '').toLowerCase()
+  return /error|fail|failed|stale|timeout|sla|not ready|missing|incomplete|unauthorized|blocked/.test(text)
+}
+
 function schedulerRootCause(job: SchedulerJob) {
   if (job.lastError) return job.lastError
-  if (job.summary) return job.summary
+  if (schedulerHasRootCause(job) && job.summary) return job.summary
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
   if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
   if (job.lastStatus === 'skip') return '沒有今日 run log，或被交易日曆 / policy 跳過。'

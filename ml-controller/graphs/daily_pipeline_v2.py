@@ -1495,6 +1495,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        "prediction_symbols": len(stock_id_map),
+        "prediction_output_models": round(predictions_written / len(stock_id_map)) if stock_id_map else 0,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
         "sell_deleted": sell_deleted,

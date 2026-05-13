@@ -13,6 +13,8 @@ const INDICATOR_BATCH_CONCURRENCY = 4
 const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
+const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
+const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -27,6 +29,64 @@ function resolveUpdateDate(runDate?: string | null): string {
     throw new Error(`Invalid update date: ${value}; expected YYYY-MM-DD`)
   }
   return value
+}
+
+function isBulkPriceSourceNotReady(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\//i.test(message)
+}
+
+async function scheduleSourceReadinessRetry(
+  env: Bindings,
+  runDate: string,
+  attempt: number,
+  reason: string,
+): Promise<void> {
+  const safeAttempt = Math.max(1, Math.floor(attempt))
+  const summary = [
+    `source waiting for ${runDate}`,
+    `attempt=${safeAttempt}/${SOURCE_READINESS_RETRY_MAX_ATTEMPTS}`,
+    `retry_in=${SOURCE_READINESS_RETRY_DELAY_SECONDS}s`,
+    reason,
+  ].join('; ')
+
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'running',
+    summary,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `waiting for same-day TWSE/TPEX source before indicator queue; ${summary}`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+
+  if (safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS) {
+    await logSchedulerResult(env.KV, 'update', {
+      status: 'error',
+      summary: `source readiness timeout for ${runDate}; ${reason}`,
+      duration_ms: 0,
+      error: reason,
+      run_date: runDate,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `source readiness timeout before indicator queue for ${runDate}`,
+      duration_ms: 0,
+      error: reason,
+      run_date: runDate,
+    })
+    throw new Error(`source readiness timeout for ${runDate}: ${reason}`)
+  }
+
+  await env.UPDATE_QUEUE.send({
+    type: 'source_readiness_retry',
+    cursor: 0,
+    triggerTime: runDate,
+    attempt: safeAttempt + 1,
+  }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
 }
 
 type ProcessUpdateBatchDeps = {
@@ -114,18 +174,25 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
     const message = e instanceof Error ? e.message : String(e)
+    const sourceWaiting = isBulkPriceSourceNotReady(e)
+    const status = sourceWaiting ? 'running' : 'error'
+    const summary = sourceWaiting
+      ? `source waiting before bulk fetch can write same-day rows: ${message}`
+      : message
     await logSchedulerResult(env.KV, 'update', {
-      status: 'error',
-      summary: message,
+      status,
+      summary,
       duration_ms: 0,
-      error: String(e),
+      error: sourceWaiting ? undefined : String(e),
       run_date: twDate,
     }).catch((logError) => console.warn('[Cron] Bulk fetch update log failed:', logError))
     await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'error',
-      summary: `bulk fetch failed before indicator queue: ${message}`,
+      status,
+      summary: sourceWaiting
+        ? `waiting for same-day TWSE/TPEX source before indicator queue: ${message}`
+        : `bulk fetch failed before indicator queue: ${message}`,
       duration_ms: 0,
-      error: String(e),
+      error: sourceWaiting ? undefined : String(e),
       run_date: twDate,
     }).catch((logError) => console.warn('[Cron] Bulk fetch evening-chain log failed:', logError))
     throw e
@@ -379,8 +446,17 @@ async function markShardComplete(
 }
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
-  const bulkSummary = await runBulkFetch(env, force, runDate)
-  await runQueueUpdate(env, runDate, force)
+  const twDate = resolveUpdateDate(runDate)
+  let bulkSummary: string
+  try {
+    bulkSummary = await runBulkFetch(env, force, twDate)
+  } catch (e) {
+    if (!isBulkPriceSourceNotReady(e)) throw e
+    const message = e instanceof Error ? e.message : String(e)
+    await scheduleSourceReadinessRetry(env, twDate, 1, message)
+    return `source waiting; queued same-day market data retry for ${twDate}; ${message}`
+  }
+  await runQueueUpdate(env, twDate, force)
   return `triggered evening-chain: ${bulkSummary}; indicator queue accepted`
 }
 
@@ -593,6 +669,31 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'source_readiness_retry') {
+    const triggerTime = msg.triggerTime
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid source readiness retry date ${triggerTime}, skipping.`)
+      return
+    }
+
+    try {
+      const bulkSummary = await runBulkFetch(env, false, triggerTime)
+      await runQueueUpdate(env, triggerTime, false)
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `source became ready for ${triggerTime}; ${bulkSummary}; indicator queue accepted`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+    } catch (e) {
+      if (!isBulkPriceSourceNotReady(e)) throw e
+      const message = e instanceof Error ? e.message : String(e)
+      await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
+    }
+    return
+  }
+
   if (msg.type === 'news_batch') {
     const stocks = (msg.newsStocks ?? []).filter((stock) => stock?.id && stock?.symbol)
     if (!stocks.length) {

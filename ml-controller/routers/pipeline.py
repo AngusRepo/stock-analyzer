@@ -105,11 +105,18 @@ async def _emit_subtask_callbacks(
 
     # Populated by node_write_d1 in graphs/daily_pipeline_v2.py.
     predictions_n = int(metrics.get("predictions_written", 0) or 0)
+    prediction_symbols = int(metrics.get("prediction_symbols", 0) or 0)
+    prediction_models = int(metrics.get("prediction_output_models", 0) or 0)
     recos_n = int(metrics.get("recommendations_updated", 0) or 0)
+    prediction_summary = (
+        f"run_id={run_id} symbols={prediction_symbols} rows={predictions_n} models={prediction_models}"
+        if prediction_symbols > 0
+        else f"run_id={run_id} predictions={predictions_n}"
+    )
 
     subtasks = [
-        ("screener", predictions_n > 0, f"run_id={run_id} predictions_written={predictions_n}"),
-        ("ml-predict", predictions_n > 0, f"run_id={run_id} predictions={predictions_n}"),
+        ("screener", predictions_n > 0, prediction_summary),
+        ("ml-predict", predictions_n > 0, prediction_summary),
         ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
     ]
 

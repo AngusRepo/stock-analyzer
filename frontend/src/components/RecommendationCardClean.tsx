@@ -166,6 +166,12 @@ function normalizeForecastPctForUi(raw: unknown): number | null {
   return Math.abs(value) <= 0.2 ? value * 100 : value
 }
 
+function normalizePersistedForecastPctForUi(summary: any): number | null {
+  // Contract: `forecast_pct` is raw return fraction; legacy `forecastPct`
+  // rows were also written as fraction before the 2026-05-13 contract fix.
+  return normalizeForecastPctForUi(summary?.forecast_pct ?? summary?.forecastPct)
+}
+
 function finiteMetric(raw: unknown): number | null {
   const value = Number(raw)
   return Number.isFinite(value) ? value : null
@@ -331,7 +337,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     if (reported > 0 || evidence > 0 || Number(rec.ml_score ?? 0) <= 0) {
       return {
         ...persisted,
-        forecastPct: normalizeForecastPctForUi(persisted.forecastPct ?? persisted.forecast_pct),
+        forecastPct: normalizePersistedForecastPctForUi(persisted),
       }
     }
   }

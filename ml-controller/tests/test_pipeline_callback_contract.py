@@ -27,7 +27,7 @@ async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     await pipeline._emit_subtask_callbacks(
         "pipeline-v2-test",
-        {"metrics": {"predictions_written": 10, "recommendations_updated": 2}},
+        {"metrics": {"predictions_written": 10, "prediction_symbols": 2, "prediction_output_models": 5, "recommendations_updated": 2}},
         "success",
         None,
         1234,
@@ -36,6 +36,7 @@ async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     assert {payload["task"] for payload in payloads} == {"screener", "ml-predict", "recommendation"}
     assert all(payload["run_date"] == "2026-05-04" for payload in payloads)
+    assert [p for p in payloads if p["task"] == "ml-predict"][0]["summary"] == "run_id=pipeline-v2-test symbols=2 rows=10 models=5"
 
 
 def test_pipeline_terminal_callback_has_longer_timeout():

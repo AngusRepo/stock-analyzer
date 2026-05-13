@@ -402,6 +402,16 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     return "ML 偏空"
 
 
+def _forecast_fraction_to_pct(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return round(value * 100.0, 4)
+
+
 def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -> dict[str, Any]:
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
@@ -447,6 +457,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         bullish = sum(1 for value in model_scores.values() if value >= 0.55)
         bearish = sum(1 for value in model_scores.values() if value <= 0.45)
         flat = max(0, len(model_scores) - bullish - bearish)
+        raw_forecast_pct = ev2.get("forecast_pct")
         return {
             "bullish": bullish,
             "bearish": bearish,
@@ -454,7 +465,8 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
             "reported": len(model_scores),
             "missing": max(0, len(tracked) - len(model_scores)),
             "total": len(tracked),
-            "forecastPct": ev2.get("forecast_pct"),
+            "forecast_pct": raw_forecast_pct,
+            "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
             "forecastPctSource": ev2.get("forecast_pct_source"),
             "activeWeightCount": active_weight_count,
             "zeroWeightModels": zero_weight_models,
@@ -499,6 +511,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         flat = max(0, reported - bullish - bearish)
 
     total = max(8, reported)
+    raw_forecast_pct = ev2.get("forecast_pct")
     return {
         "bullish": bullish,
         "bearish": bearish,
@@ -506,7 +519,8 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "reported": reported,
         "missing": max(0, total - reported),
         "total": total,
-        "forecastPct": ev2.get("forecast_pct"),
+        "forecast_pct": raw_forecast_pct,
+        "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
         "forecastPctSource": ev2.get("forecast_pct_source"),
         "activeWeightCount": active_weight_count,
         "zeroWeightModels": zero_weight_models,

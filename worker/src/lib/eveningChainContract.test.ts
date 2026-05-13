@@ -30,7 +30,13 @@ assert(updateOrchestrator.includes('UPDATE_SHARD_COUNT'), 'indicator queue must 
 assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger must enqueue shard messages as a real batch')
 assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
 assert(
-  updateOrchestrator.includes('runQueueUpdate(env, runDate, force)'),
+  updateOrchestrator.includes("'source_readiness_retry'") &&
+    updateOrchestrator.includes('SOURCE_READINESS_RETRY_DELAY_SECONDS') &&
+    updateOrchestrator.includes('source waiting'),
+  'evening-chain must defer/retry same-day TWSE/TPEX source readiness instead of fail-closing immediately at 17:30',
+)
+assert(
+  updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
 )
 assert(updateOrchestrator.includes('runMarketScreener'), 'evening chain must run screener after indicator readiness')

@@ -1049,23 +1049,28 @@ export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {})
   let lastRows: StockDayAllRow[] = []
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetcher(url, {
-      headers: TWSE_HEADERS,
-      signal: AbortSignal.timeout(30000),
-    }, { label: 'TPEX_DAILY_QUOTES' })
-    if (!res.ok) break
-    const text = await res.text()
-    const body = parseOpenApiArray(text)
-    const bodyDate = tpexLatestBodyDate(body)
-    lastRows = parseTpexDailyQuoteRows(body)
-    if (expectedRocDate && bodyDate && bodyDate !== expectedRocDate) {
-      console.warn(`[TPEX_DAILY_QUOTES] latest feed stale: requested ${expectedRocDate}, got ${bodyDate}; switching to date-specific fallback`)
+    try {
+      const res = await fetcher(url, {
+        headers: TWSE_HEADERS,
+        signal: AbortSignal.timeout(30000),
+      }, { label: 'TPEX_DAILY_QUOTES' })
+      if (!res.ok) break
+      const text = await res.text()
+      const body = parseOpenApiArray(text)
+      const bodyDate = tpexLatestBodyDate(body)
+      lastRows = parseTpexDailyQuoteRows(body)
+      if (expectedRocDate && bodyDate && bodyDate !== expectedRocDate) {
+        console.warn(`[TPEX_DAILY_QUOTES] latest feed stale: requested ${expectedRocDate}, got ${bodyDate}; switching to date-specific fallback`)
+        break
+      }
+      if (lastRows.length >= minRows) return lastRows
+      if (attempt < maxAttempts) {
+        console.warn(`[TPEX_DAILY_QUOTES] partial feed ${lastRows.length}/${minRows}, readiness retry ${attempt}/${maxAttempts}`)
+        await new Promise(r => setTimeout(r, delayMs))
+      }
+    } catch (e) {
+      console.warn(`[TPEX_DAILY_QUOTES] latest feed failed; switching to date-specific fallback: ${e instanceof Error ? e.message : String(e)}`)
       break
-    }
-    if (lastRows.length >= minRows) return lastRows
-    if (attempt < maxAttempts) {
-      console.warn(`[TPEX_DAILY_QUOTES] partial feed ${lastRows.length}/${minRows}, readiness retry ${attempt}/${maxAttempts}`)
-      await new Promise(r => setTimeout(r, delayMs))
     }
   }
 

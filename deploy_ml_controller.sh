@@ -323,8 +323,7 @@ sync_verify_job() {
         --region="$REGION" \
         --image="$NEW_IMAGE" \
         --command=python \
-        --args=-m \
-        --args=verify_job_main \
+        --args=-m,verify_job_main \
         --cpu="$VERIFY_JOB_CPU" \
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
@@ -340,8 +339,7 @@ sync_verify_job() {
         --region="$REGION" \
         --image="$NEW_IMAGE" \
         --command=python \
-        --args=-m \
-        --args=verify_job_main \
+        --args=-m,verify_job_main \
         --cpu="$VERIFY_JOB_CPU" \
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \

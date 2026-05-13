@@ -62,6 +62,10 @@ OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
+STOCKVISION_AUTH_TOKEN_SECRET="${STOCKVISION_AUTH_TOKEN_SECRET:-stockvision-stockvision-auth-token:latest}"
+MODAL_TOKEN_ID_SECRET="${MODAL_TOKEN_ID_SECRET:-stockvision-modal-token-id:latest}"
+MODAL_TOKEN_SECRET_SECRET="${MODAL_TOKEN_SECRET_SECRET:-stockvision-modal-token-secret:latest}"
+RUN_SECRET_BINDINGS="CF_API_TOKEN=${CF_API_TOKEN_SECRET},STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET},MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET},MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MLC_DIR="$SCRIPT_DIR/ml-controller"
@@ -140,6 +144,9 @@ required = [
     "OPTUNA_JOB_NAME",
     "STOCKVISION_WORKER_URL",
     "CF_API_TOKEN",
+    "STOCKVISION_AUTH_TOKEN",
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
 ]
 
 raw = os.environ.get("SERVICE_JSON", "")
@@ -332,7 +339,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
-        --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Verify job update failed" >&2
       exit 4
@@ -349,7 +356,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
-        --set-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Verify job create failed" >&2
       exit 4
@@ -381,7 +388,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
-        --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job update failed" >&2
       exit 4
@@ -400,7 +407,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
-        --set-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job create failed" >&2
       exit 4
@@ -420,11 +427,17 @@ run_preflight() {
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
+  require_nonempty "STOCKVISION_AUTH_TOKEN_SECRET" "Secret Manager reference for Worker service token, e.g. stockvision-stockvision-auth-token:latest"
+  require_nonempty "MODAL_TOKEN_ID_SECRET" "Secret Manager reference for Modal token id, e.g. stockvision-modal-token-id:latest"
+  require_nonempty "MODAL_TOKEN_SECRET_SECRET" "Secret Manager reference for Modal token secret, e.g. stockvision-modal-token-secret:latest"
 
   for var_name in "${REQUIRED_ENV_VARS[@]}"; do
     print_preflight_value "$var_name"
   done
   print_preflight_value "CF_API_TOKEN_SECRET"
+  print_preflight_value "STOCKVISION_AUTH_TOKEN_SECRET"
+  print_preflight_value "MODAL_TOKEN_ID_SECRET"
+  print_preflight_value "MODAL_TOKEN_SECRET_SECRET"
   print_preflight_value "OPTUNA_JOB_TIMEOUT"
   echo ""
 
@@ -515,7 +528,7 @@ if ! gcloud run deploy "$SERVICE" \
     --region="$REGION" \
     --timeout=3600 \
     --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}" \
-    --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+    --update-secrets="$RUN_SECRET_BINDINGS" \
     --quiet; then
   echo "❌ Service deploy failed" >&2
   exit 2
@@ -545,7 +558,7 @@ echo "=== Step 3/4: Update Job $JOB image to match Service ==="
 if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
-    --update-secrets="CF_API_TOKEN=${CF_API_TOKEN_SECRET}" \
+    --update-secrets="$RUN_SECRET_BINDINGS" \
     --update-env-vars="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL}"; then
   echo "❌ Job update failed" >&2
   exit 4

@@ -278,6 +278,10 @@ for item in container.get("env", []):
     name = item.get("name")
     if not name:
         continue
+    # Keep Secret Manager bindings out of --env-vars-file. Writing a secret
+    # backed env var as a literal makes gcloud reject the job update.
+    if "value" not in item:
+        continue
     envs[name] = item.get("value", "")
 
 envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]

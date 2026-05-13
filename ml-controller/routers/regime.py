@@ -34,6 +34,7 @@ ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 
 class RegimeComputeRequest(BaseModel):
     force_retrain: bool = False       # retrain HMM from history before predict
+    run_date: str | None = None       # business date from Worker chain; do not infer during backfills
 
 
 def _extract_regime_surface(info: dict) -> dict:
@@ -60,14 +61,15 @@ def _extract_regime_surface(info: dict) -> dict:
     return out
 
 
-def _fetch_market_env_via_payload_builder() -> dict:
+def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
     """Use payload_builder.load_market_env which already knows the canonical
     D1 schema (market_risk + stock_prices TAIEX history + ETF 0050 fallback).
     Saves re-implementing the query here.
     """
-    run_date = datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    market_env, _, _, _, _ = load_market_env(run_date)
+    effective_date = run_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    market_env, _, _, _, _ = load_market_env(effective_date)
     env_dict = asdict(market_env)
+    env_dict["requested_run_date"] = effective_date
     return env_dict
 
 
@@ -89,7 +91,7 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
     logger.info(f"[Regime] compute start (force_retrain={req.force_retrain})")
 
     try:
-        market_env = _fetch_market_env_via_payload_builder()
+        market_env = _fetch_market_env_via_payload_builder(req.run_date)
     except Exception as e:
         logger.error(f"[Regime] load_market_env failed: {e}")
         raise HTTPException(status_code=502, detail=f"load_market_env failed: {e}")
@@ -148,4 +150,5 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         "regime_surface":  regime_surface,
         "kv_push_ok":      kv_push_ok,
         "computed_at":     info.get("computed_at", datetime.now(TW_TZ).isoformat()),
+        "run_date":        market_env.get("requested_run_date"),
     }

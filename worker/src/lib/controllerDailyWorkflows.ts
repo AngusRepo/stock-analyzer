@@ -18,13 +18,13 @@ export async function runObsidianDaily(env: Bindings, date: string) {
   return res.ok ? await res.json() : `HTTP ${res.status}`
 }
 
-export async function runRegimeCompute(env: Bindings) {
+export async function runRegimeCompute(env: Bindings, runDate?: string) {
   requireController(env)
 
   const prevLabel = await env.KV.get('ml:regime')
   const res = await controllerFetch(env, '/regime/compute', {
     method: 'POST',
-    jsonBody: { force_retrain: false, history_days: 180 },
+    jsonBody: { force_retrain: false, history_days: 180, run_date: runDate },
     timeoutMs: 180_000,
   })
   if (!res.ok) {

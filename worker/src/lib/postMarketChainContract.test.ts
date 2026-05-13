@@ -31,9 +31,9 @@ assert(
   'verify-v2 must receive the callback business date',
 )
 assert(
-  updateOrchestrator.indexOf("runRegimeCompute(env)") > 0 &&
-    updateOrchestrator.indexOf("runRegimeCompute(env)") < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
-  'regime-compute must run before pipeline/recommendation so ml:regime is not null during alpha framework scoring',
+  updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
+    updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
+  'regime-compute must run with the chain business date before pipeline/recommendation so ml:regime is not null or future-dated',
 )
 assert(
   !postMarketChain.includes("runRegimeCompute(env)"),

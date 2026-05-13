@@ -321,7 +321,7 @@ async function finalizeUpdateChain(
 
   try {
     const startedAt = Date.now()
-    const regimeSummary = String(await runRegimeCompute(env))
+    const regimeSummary = String(await runRegimeCompute(env, triggerTime))
     const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: regimeStatus,

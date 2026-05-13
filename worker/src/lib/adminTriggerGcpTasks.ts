@@ -15,7 +15,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
   return {
     'obsidian-daily': async () => runObsidianDaily(c.env, twToday()),
     'obsidian-sync': async () => runObsidianDaily(c.env, twToday()),
-    'regime-compute': async () => runRegimeCompute(c.env),
+    'regime-compute': async () => runRegimeCompute(c.env, requestedRunDate()),
     'model-ic-tracker': async () => runModelIcTrackerChain(c.env),
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),

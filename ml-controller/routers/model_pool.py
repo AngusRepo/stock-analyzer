@@ -25,6 +25,7 @@ from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
+    apply_promoted_artifact_to_model_pool,
     backfill_champion_pointers_from_model_pool,
     build_candidate_selection,
     build_champion_pointer_projection,
@@ -1557,7 +1558,7 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
                     champion_versions[str(name)] = str(version)
         rows = list_artifact_registry(limit=500)
         pointers = list_champion_pointers()
-        return run_promotion_controller(
+        result = run_promotion_controller(
             artifact_id=req.artifact_id,
             registry_rows=rows,
             d1_pointers=pointers,
@@ -1567,6 +1568,33 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
             approved_by=req.approved_by,
             reason=req.reason,
         )
+        should_update_serving = req.confirm and (
+            result.get("can_promote") is True
+            or result.get("status") == "already_promoted"
+        )
+        if should_update_serving:
+            artifact = next((row for row in rows if str(row.get("artifact_id")) == str(req.artifact_id)), None)
+            if artifact is None:
+                raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
+            pool = _json.loads(pool_blob.download_as_text())
+            serving_update = apply_promoted_artifact_to_model_pool(
+                pool,
+                artifact,
+                reason=req.reason,
+                promoted_at=result.get("confirmed_at"),
+            )
+            pool_blob.upload_from_string(
+                _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
+                content_type="application/json",
+            )
+            result = {
+                **result,
+                "serving_reader": "model_pool.json",
+                "serving_model_pool_updated": True,
+                "serving_update": serving_update,
+                "note": "Champion pointer and model_pool.json serving owner were updated together.",
+            }
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
 

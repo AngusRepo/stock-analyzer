@@ -1050,6 +1050,8 @@ def build_promotion_queue(
     for row in rows:
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
+        if state in {"production", "archived", "rejected"}:
+            continue
         if state not in {"live_gate_passed", "approval_required", "approved"} and live_status != "passed":
             continue
 
@@ -1095,6 +1097,88 @@ def build_promotion_queue(
         "promotion_owner": "promotion-controller",
         "count": len(queue),
         "queue": queue,
+    }
+
+
+def apply_promoted_artifact_to_model_pool(
+    pool: dict[str, Any],
+    artifact: dict[str, Any],
+    *,
+    reason: str,
+    promoted_at: str | None = None,
+) -> dict[str, Any]:
+    """Move an approved registry artifact into the current serving pool.
+
+    During the registry migration production still reads ``model_pool.json``.
+    A promotion that only updates D1 pointers creates split brain, so the final
+    owner must also update the serving entry until the runtime reader migrates
+    fully to D1 champion pointers.
+    """
+    model_name = str(artifact.get("model_name") or "")
+    candidate_version = str(artifact.get("version") or "")
+    if not model_name or not candidate_version:
+        raise ValueError("artifact must include model_name and version")
+
+    models = pool.setdefault("models", {})
+    entry = models.get(model_name)
+    if not isinstance(entry, dict):
+        raise KeyError(f"{model_name} missing from model_pool.json")
+
+    promoted_at = promoted_at or _now_iso()
+    old_version = entry.get("version")
+    candidate_path = artifact.get("artifact_path") or model_artifact_path(model_name, candidate_version)
+    challenger = entry.get("challenger") if isinstance(entry.get("challenger"), dict) else {}
+    challenger_matches = str(challenger.get("version") or "") == candidate_version
+
+    if str(old_version or "") != candidate_version:
+        retired_versions = entry.setdefault("retired_versions", [])
+        retired_versions.append({
+            "version": old_version,
+            "retired_at": promoted_at,
+            "reason": reason,
+            "weekly_ic_at_retire": list(entry.get("weekly_ic") or []),
+            "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
+        })
+
+    entry["status"] = "active"
+    entry["version"] = candidate_version
+    entry["gcs_path"] = candidate_path
+    entry["promoted_at"] = promoted_at
+    entry.pop("degraded_since", None)
+    entry.pop("retired_at", None)
+
+    if challenger_matches:
+        for key in (
+            "weekly_ic",
+            "ic_4w_avg",
+            "consecutive_negative_weeks",
+            "rolling_ic",
+            "last_ic_status",
+            "last_ic_sample_count",
+            "last_ic_score_sources",
+            "last_ic_by_segment",
+            "last_ic_error",
+            "last_ic_root_cause",
+            "last_ic_diagnostics",
+            "model_cpcv",
+        ):
+            if key in challenger:
+                entry[key] = challenger[key]
+        entry.pop("challenger", None)
+
+    entry["promotion_controller"] = {
+        "artifact_id": artifact.get("artifact_id"),
+        "candidate_type": artifact.get("candidate_type"),
+        "reason": reason,
+        "promoted_at": promoted_at,
+        "source": "model_artifact_registry",
+    }
+    pool["last_updated"] = promoted_at
+    return {
+        "model_name": model_name,
+        "old_version": old_version,
+        "new_version": candidate_version,
+        "challenger_moved": challenger_matches,
     }
 
 
@@ -1215,6 +1299,25 @@ def run_promotion_controller(
         if pointer and pointer.get("champion_version")
         else model_pool_versions.get(model_name)
     )
+    if pointer and pointer.get("champion_artifact_id") == artifact_id and str(pointer.get("champion_version") or "") == str(artifact.get("version") or ""):
+        return {
+            "status": "already_promoted",
+            "source_of_truth": "model_artifact_registry",
+            "promotion_owner": "promotion-controller",
+            "artifact_id": artifact_id,
+            "model_name": model_name,
+            "candidate_version": artifact.get("version"),
+            "decision": "already_production_pointer",
+            "can_promote": False,
+            "approval_required": False,
+            "target_state": artifact.get("state") or "production",
+            "approval_state": artifact.get("approval_state") or "approved",
+            "final_compared_to": champion_version,
+            "next_action": "Candidate is already the D1 champion pointer; reconcile serving model_pool.json if projection still shows mismatch.",
+            "errors": [],
+            "serving_reader": "model_pool.json",
+            "note": "Idempotent promotion-controller guard prevented rollback overwrite.",
+        }
     decision = _promotion_row_decision(
         artifact=artifact,
         pointer=pointer,

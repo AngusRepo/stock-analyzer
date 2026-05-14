@@ -520,6 +520,107 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
     assert pointer_params[4] == "LightGBM:vOld:monthly_release"
 
 
+def test_promotion_controller_is_idempotent_when_pointer_already_promoted(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_promotion_controller(
+        artifact_id="PatchTST:vNew:weekly_drift",
+        registry_rows=[{
+            "artifact_id": "PatchTST:vNew:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vNew",
+            "candidate_type": "weekly_drift",
+            "state": "production",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": "{}",
+            "approval_state": "approved",
+        }],
+        d1_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vNew",
+            "champion_artifact_id": "PatchTST:vNew:weekly_drift",
+        }],
+        model_pool_versions={"PatchTST": "vOld"},
+        confirm=True,
+        approved=True,
+        reason="repeat_click",
+    )
+
+    assert result["status"] == "already_promoted"
+    assert result["decision"] == "already_production_pointer"
+    assert executed == []
+
+
+def test_build_promotion_queue_excludes_production_artifacts():
+    queue = registry.build_promotion_queue(
+        [{
+            "artifact_id": "PatchTST:vNew:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vNew",
+            "candidate_type": "weekly_drift",
+            "state": "production",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "approval_state": "approved",
+        }],
+        champion_versions={"PatchTST": "v1"},
+    )
+
+    assert queue["queue"] == []
+
+
+def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_active():
+    pool = {
+        "models": {
+            "PatchTST": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/patchtst/v1.pt",
+                "weekly_ic": [0.1],
+                "ic_4w_avg": 0.1,
+                "challenger": {
+                    "version": "vNew",
+                    "gcs_path": "universal/patchtst/vNew.pt",
+                    "weekly_ic": [0.2],
+                    "ic_4w_avg": 0.2,
+                    "rolling_ic": 0.21,
+                    "last_ic_status": "computed",
+                },
+            }
+        }
+    }
+
+    result = registry.apply_promoted_artifact_to_model_pool(
+        pool,
+        {
+            "artifact_id": "PatchTST:vNew:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vNew",
+            "candidate_type": "weekly_drift",
+            "artifact_path": "universal/patchtst/vNew.pt",
+        },
+        reason="wei_approval",
+        promoted_at="2026-05-14T17:31:25+00:00",
+    )
+
+    entry = pool["models"]["PatchTST"]
+    assert result["challenger_moved"] is True
+    assert entry["version"] == "vNew"
+    assert entry["weekly_ic"] == [0.2]
+    assert entry["ic_4w_avg"] == 0.2
+    assert "challenger" not in entry
+    assert entry["retired_versions"][0]["version"] == "v1"
+    assert entry["promotion_controller"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
+
+
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):
     executed: list[dict[str, object]] = []
 

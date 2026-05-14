@@ -564,6 +564,15 @@ function summarizeOrderReason(order: any): string {
   return typeof order?.note === 'string' ? order.note : '-'
 }
 
+function formatTaiwanShareLots(sharesInput: unknown): string {
+  const shares = Math.max(0, Math.floor(Number(sharesInput ?? 0)))
+  const lots = Math.floor(shares / 1000)
+  const oddLotShares = shares % 1000
+  if (lots > 0 && oddLotShares > 0) return `${lots}張${oddLotShares.toLocaleString('zh-TW')}股`
+  if (lots > 0) return `${lots}張`
+  return `${oddLotShares.toLocaleString('zh-TW')}股`
+}
+
 function PositionsTable() {
   const { data, isLoading } = useQuery({
     queryKey: ['paper', 'positions'],
@@ -708,7 +717,7 @@ function PositionsTable() {
               const entry = p.entry_price ?? p.avg_cost ?? 0
               const current = p.current_price ?? entry
               const shares = p.shares ?? 0
-              const lots = shares >= 1000 ? `${Math.floor(shares / 1000)}張` : `${shares}股`
+              const lots = formatTaiwanShareLots(shares)
               const pnlPct = entry > 0 ? (current - entry) / entry : 0
               const pnlAmt = (current - entry) * shares
               const marketValue = current * shares

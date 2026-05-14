@@ -141,6 +141,31 @@ function evidenceMetric(row: ModelArtifactRegistryRow, keys: string[], digits = 
   return compactUnknown(value, digits)
 }
 
+function promotionMetric(result: ModelArtifactPromotionControllerResponse, keys: string[], digits = 4): string {
+  const value = deepMetric(result.evidence, keys)
+  return compactUnknown(value, digits)
+}
+
+function promotionMetricNumber(result: ModelArtifactPromotionControllerResponse, keys: string[]): number | null {
+  const value = deepMetric(result.evidence, keys)
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function promotionComparisonSummary(result: ModelArtifactPromotionControllerResponse) {
+  const shadowIc = promotionMetricNumber(result, ['shadow_ic', 'shadowIc'])
+  const productionIc = promotionMetricNumber(result, ['production_ic', 'productionIc'])
+  const icDelta = promotionMetricNumber(result, ['ic_delta', 'icDelta'])
+  const hasLiveComparison = shadowIc != null && productionIc != null
+  const beatsChampion = hasLiveComparison && shadowIc > productionIc
+  const blockers = Array.isArray(result.evidence?.blockers) ? result.evidence.blockers.map(String) : []
+  const approvalRequired = result.approval_required === true || result.decision === 'approval_required'
+  const resultLabel = beatsChampion
+    ? approvalRequired ? '比現行 champion 好，但需要 Wei 審核' : '比現行 champion 好，可晉級'
+    : hasLiveComparison ? '未優於現行 champion' : '流程可走，但缺 live comparison 數值'
+  return { shadowIc, productionIc, icDelta, hasLiveComparison, beatsChampion, blockers, approvalRequired, resultLabel }
+}
+
 function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse) {
   return Object.entries(selection?.models ?? {}).flatMap(([modelName, row]) => {
     const items: Array<{
@@ -458,10 +483,12 @@ function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactS
                     <ArtifactMetricDelta label="artifact id" before={championArtifact ?? 'not linked'} after={artifact.artifact_id} />
                     <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? championVersion} after={artifact.final_compared_to ?? 'final comparison pending'} />
                     <ArtifactMetricDelta label="feature policy" before="champion policy" after={artifact.feature_policy_version ?? 'policy not recorded'} />
-                    <ArtifactMetricDelta label="offline gate" before="current champion" after={artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state} />
-                    <ArtifactMetricDelta label="OOS IC" before="champion live IC" after={evidenceMetric(artifact, ['oos_ic', 'oosIc', 'ic'], 4)} />
-                    <ArtifactMetricDelta label="CPCV / PBO" before="champion gate" after={`${evidenceMetric(artifact, ['cpcv'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}`} />
-                    <ArtifactMetricDelta label="DSR / MC" before="champion gate" after={`${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}`} />
+                    <ArtifactMetricDelta label="offline gate" before="candidate evidence" after={artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state} />
+                    <ArtifactMetricDelta label="offline OOS IC" before="candidate holdout" after={evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)} afterNote="not live IC" />
+                    <ArtifactMetricDelta label="live IC" before={`champion ${evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}`} afterNote={`delta ${evidenceMetric(artifact, ['ic_delta', 'icDelta'], 4)}`} />
+                    <ArtifactMetricDelta label="live samples" before={`champion ${evidenceMetric(artifact, ['production_samples', 'productionSamples'], 0)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_samples', 'shadowSamples'], 0)}`} afterNote={`min ${evidenceMetric(artifact, ['min_samples', 'minSamples'], 0)}`} />
+                    <ArtifactMetricDelta label="CPCV / PBO" before="candidate offline gate" after={`${evidenceMetric(artifact, ['model_cpcv_decision', 'cpcv_decision'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}`} />
+                    <ArtifactMetricDelta label="DSR / MC" before="candidate offline gate" after={`${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}`} />
                     <ArtifactMetricDelta label="live gate" before="production serving" after={artifact.live_gate_status ?? 'not_started'} />
                   </div>
 
@@ -523,6 +550,57 @@ function ActionContextNote({ context }: { context?: ModelArtifactActionContext }
       {context.scheduler_dependency?.length ? (
         <div className="mt-1 text-sky-200">needs: {context.scheduler_dependency.join(' -> ')}</div>
       ) : null}
+    </div>
+  )
+}
+
+function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromotionControllerResponse }) {
+  const summary = promotionComparisonSummary(result)
+  const reason = String(deepMetric(result.evidence, ['reason']) ?? result.next_action ?? result.note ?? '-')
+  const candidate = String(result.candidate_version ?? deepMetric(result.evidence, ['candidate_version']) ?? 'candidate N/A')
+  const champion = String(result.final_compared_to ?? deepMetric(result.evidence, ['current_champion_version']) ?? 'champion N/A')
+  const tone: WorkstationTone = summary.beatsChampion ? 'ok' : summary.hasLiveComparison ? 'error' : 'warn'
+
+  return (
+    <div className="rounded-xl border border-sky-400/25 bg-sky-400/[0.05] p-3 text-sm text-sky-100 lg:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold">Promotion dry-run：{summary.resultLabel}</p>
+          <p className="mt-1 text-xs leading-5 text-sky-200">
+            {champion} <ArrowRight className="mx-1 inline h-3 w-3" /> {candidate}
+          </p>
+        </div>
+        <WorkstationPill tone={tone}>{result.status} / {result.decision ?? '-'}</WorkstationPill>
+      </div>
+      <div className="mt-3 grid gap-2 text-[11px] md:grid-cols-4">
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+          <p className="font-mono text-[#70809b]">Shadow IC</p>
+          <p className="mt-1 text-slate-100">{promotionMetric(result, ['shadow_ic', 'shadowIc'], 4)}</p>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+          <p className="font-mono text-[#70809b]">Champion IC</p>
+          <p className="mt-1 text-slate-100">{promotionMetric(result, ['production_ic', 'productionIc'], 4)}</p>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+          <p className="font-mono text-[#70809b]">IC Delta</p>
+          <p className={`mt-1 ${summary.icDelta != null && summary.icDelta > 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+            {promotionMetric(result, ['ic_delta', 'icDelta'], 4)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+          <p className="font-mono text-[#70809b]">Samples</p>
+          <p className="mt-1 text-slate-100">
+            {promotionMetric(result, ['shadow_samples', 'shadowSamples'], 0)} / min {promotionMetric(result, ['min_samples', 'minSamples'], 0)}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 rounded-lg border border-[#263247] bg-[#05070c] p-2 text-xs leading-5">
+        <p><span className="text-[#70809b]">原因：</span>{reason}</p>
+        <p><span className="text-[#70809b]">下一步：</span>{result.next_action ?? '-'}</p>
+        {summary.blockers.length > 0 && (
+          <p className="text-amber-200"><span className="text-[#70809b]">Blockers：</span>{summary.blockers.join(', ')}</p>
+        )}
+      </div>
     </div>
   )
 }
@@ -699,10 +777,7 @@ function PromotionQueuePanel({
           </div>
         )}
         {promotionResult && (
-          <div className="rounded-xl border border-sky-400/25 bg-sky-400/[0.05] p-3 text-sm text-sky-100 lg:col-span-2">
-            <p className="font-semibold">Promotion controller: {promotionResult.status} / {promotionResult.decision ?? '-'}</p>
-            <p className="mt-1 text-xs leading-5 text-sky-200">{promotionResult.next_action ?? promotionResult.note ?? '-'}</p>
-          </div>
+          <PromotionControllerResultPanel result={promotionResult} />
         )}
       </div>
     </WorkstationPanel>

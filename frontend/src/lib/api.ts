@@ -809,7 +809,11 @@ export type ModelArtifactPromotionControllerResponse = {
   decision?: string
   can_promote?: boolean
   approval_required?: boolean
+  approval_state?: string
+  target_state?: string
+  final_compared_to?: string | null
   next_action?: string
+  evidence?: Record<string, unknown>
   errors?: string[]
   note?: string
 }

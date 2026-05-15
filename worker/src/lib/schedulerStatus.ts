@@ -5,6 +5,7 @@
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
+import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 
 interface JobDef {
   id: string
@@ -398,6 +399,7 @@ export async function getSchedulerStatus(env: Bindings) {
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       summary: lastLog?.summary || '',
+      consolidation: getSchedulerDependencySpec(def.id) ?? null,
     }
   }))
 

@@ -68,6 +68,41 @@ export async function computeSectorLeaders(db: D1Database): Promise<{
   return { sectorCount: sectors, leaderCount: rows.length }
 }
 
+async function loadSectorLeaderRows(
+  db: D1Database,
+  sectors: string[],
+): Promise<Array<{ sector: string; symbol: string }>> {
+  if (!sectors.length) return []
+  const sectorPh = sectors.map(() => '?').join(',')
+  const { results } = await db.prepare(
+    `SELECT sector, symbol
+       FROM sector_leaders
+      WHERE sector IN (${sectorPh})
+      ORDER BY sector, rank`
+  ).bind(...sectors).all<{ sector: string; symbol: string }>()
+  return results ?? []
+}
+
+export async function ensureSectorLeadersForScreener(
+  db: D1Database,
+  sectors: string[],
+): Promise<{ refreshed: boolean; sectorCount: number; leaderCount: number }> {
+  const uniqueSectors = [...new Set(sectors.filter(Boolean))]
+  if (!uniqueSectors.length) return { refreshed: false, sectorCount: 0, leaderCount: 0 }
+
+  const existingRows = await loadSectorLeaderRows(db, uniqueSectors)
+  if (existingRows.length > 0) {
+    return {
+      refreshed: false,
+      sectorCount: new Set(existingRows.map(row => row.sector)).size,
+      leaderCount: existingRows.length,
+    }
+  }
+
+  const computed = await computeSectorLeaders(db)
+  return { refreshed: true, ...computed }
+}
+
 /**
  * Pearson correlation of two numeric arrays (assumes aligned, no NaN).
  */
@@ -172,16 +207,16 @@ export async function sectorLeaderBonusBatch(
   const sectors = [...new Set(cleanCandidates.map(c => c.sector).filter(Boolean) as string[])]
   if (!cleanCandidates.length || !sectors.length) return output
 
-  const sectorPh = sectors.map(() => '?').join(',')
-  const { results: leaderRows } = await db.prepare(
-    `SELECT sector, symbol
-       FROM sector_leaders
-      WHERE sector IN (${sectorPh})
-      ORDER BY sector, rank`
-  ).bind(...sectors).all<{ sector: string; symbol: string }>()
+  let leaderRows = await loadSectorLeaderRows(db, sectors)
+  if (!leaderRows.length) {
+    const refresh = await ensureSectorLeadersForScreener(db, sectors)
+    if (refresh.leaderCount > 0) {
+      leaderRows = await loadSectorLeaderRows(db, sectors)
+    }
+  }
 
   const leadersBySector = new Map<string, string[]>()
-  for (const row of leaderRows ?? []) {
+  for (const row of leaderRows) {
     if (!leadersBySector.has(row.sector)) leadersBySector.set(row.sector, [])
     const leaders = leadersBySector.get(row.sector)!
     if (leaders.length < 3) leaders.push(row.symbol)

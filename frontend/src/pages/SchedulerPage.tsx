@@ -32,6 +32,25 @@ function statusLabel(status?: string) {
   return status || 'unknown'
 }
 
+function consolidationTone(job: SchedulerJob): WorkstationTone {
+  const kind = job.consolidation?.consolidationClass
+  if (kind === 'keep_scheduler') return 'ok'
+  if (kind === 'disable_candidate') return 'error'
+  if (kind === 'manual_maintenance_candidate') return 'warn'
+  if (kind === 'merge_into_chain' || kind === 'downstream_evidence') return 'info'
+  return 'neutral'
+}
+
+function consolidationLabel(job: SchedulerJob) {
+  const kind = job.consolidation?.consolidationClass
+  if (kind === 'keep_scheduler') return 'KEEP'
+  if (kind === 'merge_into_chain') return 'MERGE'
+  if (kind === 'downstream_evidence') return 'EVIDENCE'
+  if (kind === 'manual_maintenance_candidate') return 'MANUAL'
+  if (kind === 'disable_candidate') return 'DISABLE?'
+  return 'UNCLASSIFIED'
+}
+
 function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip'> }) {
   const items = history.length ? history : ['skip', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip']
   return (
@@ -73,15 +92,24 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
 
 function JobRow({ job }: { job: SchedulerJob }) {
   const suspicious = suspiciousDuration(job)
+  const consolidation = job.consolidation
   return (
-    <div className="grid h-[76px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 font-mono text-[11px]">
+    <div className="grid min-h-[92px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px]">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+          <WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill>
           <p className="truncate text-slate-100">{job.name}</p>
           {suspicious && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
         </div>
         <p className="mt-1 truncate text-[#70809b]">{job.group} / {job.summary || job.schedule}</p>
+        {consolidation && (
+          <p className="mt-1 truncate text-[#8a92a6]">
+            {consolidation.replacementOwner
+              ? `建議：${consolidation.replacementOwner}`
+              : consolidation.recommendation}
+          </p>
+        )}
         <div className="mt-2 max-w-[220px]">
           <HistoryStrip history={job.history7d ?? []} />
         </div>
@@ -221,7 +249,7 @@ export default function SchedulerPage() {
             <VirtualizedList
               items={jobs}
               height={520}
-              itemHeight={76}
+              itemHeight={92}
               getKey={(job) => job.id}
               renderItem={(job) => <JobRow job={job} />}
               empty={<div className="p-4 text-sm text-slate-500">尚未取得 scheduler jobs。</div>}
@@ -236,6 +264,11 @@ export default function SchedulerPage() {
                     <div className="min-w-0">
                       <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
                       <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
+                      {job.consolidation && (
+                        <p className="mt-1 text-xs leading-5 text-[#70809b]">
+                          Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}
+                        </p>
+                      )}
                     </div>
                     <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>

@@ -196,6 +196,23 @@ export type SchedulerJob = {
   history7d: Array<'success' | 'failed' | 'skip'>
   rate7d: string
   summary: string
+  consolidation?: {
+    task: string
+    owner: 'gcp_scheduler' | 'worker_chain' | 'controller_chain' | 'manual_only'
+    consolidationClass:
+      | 'keep_scheduler'
+      | 'merge_into_chain'
+      | 'downstream_evidence'
+      | 'manual_maintenance_candidate'
+      | 'disable_candidate'
+    currentFunction: string
+    replacementOwner?: string
+    upstream: string[]
+    downstream: string[]
+    requiredBeforeDisable: string[]
+    operatorRisk: 'low' | 'medium' | 'high'
+    recommendation: string
+  } | null
 }
 
 export type SchedulerStatus = {

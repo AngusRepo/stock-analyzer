@@ -8,6 +8,7 @@ notes from explicit payloads and defaults to dry-run output.
 from __future__ import annotations
 
 import re
+import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -817,6 +818,274 @@ def build_wiki_recall_receipt(
         "product": product,
         "text": text,
         "recall": recall,
+    }
+
+
+def _project_hub_relative_path(product: str, title: str, slug: str | None = None) -> str:
+    clean_slug = _slugify(_clean_text(slug) or title)
+    return f"{PRODUCT_ROOTS[product]}/專案_projects/{clean_slug}.md"
+
+
+def ensure_project_hub(
+    vault_root: str | Path,
+    *,
+    product: str = "StockVision",
+    title: str = "V4 Refactor",
+    slug: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create a project hub note that anchors a large refactor in the wiki."""
+    if product not in PRODUCT_ROOTS:
+        raise ValueError(f"unsupported_product:{product}")
+    title = _clean_text(title)
+    if not title:
+        raise ValueError("title_required")
+
+    relative_path = _project_hub_relative_path(product, title, slug)
+    target = _resolve_vault_path(vault_root, relative_path)
+    if target.exists() and not overwrite:
+        return {
+            "status": "unchanged",
+            "product": product,
+            "title": title,
+            "path": relative_path,
+            "absolute_path": str(target),
+        }
+
+    content = "\n".join(
+        [
+            "---",
+            "type: project",
+            "status: active",
+            f"product: {product}",
+            f"title: {title}",
+            "tags:",
+            "  - stockvision/project",
+            "  - stockvision/v4-refactor",
+            "---",
+            "",
+            f"# {title}",
+            "",
+            "## Purpose",
+            "",
+            "- Anchor the V4 refactor in the Wei-Codex Obsidian second brain.",
+            "- Use Obsidian recall receipt before relying on prior decisions, architecture, workflow, or memory.",
+            "",
+            "## Boundaries",
+            "",
+            "- Preserve validated production contracts unless a decision note approves the change.",
+            "- Record major architectural choices as decision notes, not only session drafts.",
+            "",
+            "## Decisions",
+            "",
+            "- [[決策紀錄_decisions]]",
+            "",
+            "## Architecture",
+            "",
+            "- [[系統架構_architecture]]",
+            "",
+            "## Runbooks",
+            "",
+            "- [[Runbooks]]",
+            "",
+            "## Sessions",
+            "",
+            "- [[Sessions]]",
+            "",
+            "## Open Questions",
+            "",
+            "- ",
+            "",
+        ]
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return {
+        "status": "written" if not target.exists() or overwrite else "written",
+        "product": product,
+        "title": title,
+        "path": relative_path,
+        "absolute_path": str(target),
+        "wikilink": _note_wikilink(relative_path, title),
+    }
+
+
+def finish_wiki_task(
+    vault_root: str | Path,
+    *,
+    product: str = "StockVision",
+    title: str,
+    body: str,
+    tags: list[str] | None = None,
+    related: list[str] | None = None,
+    source_refs: list[str] | None = None,
+    source_files: list[str] | None = None,
+    now: str | None = None,
+    overwrite: bool = False,
+    update_moc: bool = True,
+    stale_days: int = 3,
+) -> dict[str, Any]:
+    """Finish a major task with a session draft, optional MOC update, and doctor check."""
+    payload = {
+        "product": product,
+        "type": "session",
+        "title": title,
+        "body": body,
+        "status": "draft",
+        "tags": tags or ["stockvision/session"],
+        "related": related or ["MOC-StockVision"],
+        "source_refs": source_refs or [],
+        "source_files": source_files or [],
+    }
+    write_result = write_wiki_note_to_local_vault(
+        payload,
+        vault_root=vault_root,
+        now=now,
+        overwrite=overwrite,
+    )
+    moc_update = (
+        append_moc_links_to_local_vault(write_result, vault_root=vault_root)
+        if update_moc
+        else {"status": "skipped", "updated_mocs": [], "unchanged_mocs": []}
+    )
+    health = inspect_wiki_vault(
+        vault_root=vault_root,
+        product=product,
+        stale_days=stale_days,
+        now=now,
+    )
+    return {
+        "status": "finished",
+        "product": product,
+        "title": title,
+        "write": write_result,
+        "moc_update": moc_update,
+        "health": health,
+    }
+
+
+def build_wiki_guard_report(
+    vault_root: str | Path,
+    *,
+    product: str = "StockVision",
+    project_slug: str = "v4-refactor",
+    stale_days: int = 3,
+    query: str | None = None,
+    max_results: int = 5,
+) -> dict[str, Any]:
+    """Preflight wiki state before memory-sensitive refactor work."""
+    if product not in PRODUCT_ROOTS:
+        raise ValueError(f"unsupported_product:{product}")
+
+    health = inspect_wiki_vault(vault_root=vault_root, product=product, stale_days=stale_days)
+    project_path = f"{PRODUCT_ROOTS[product]}/專案_projects/{_slugify(project_slug)}.md"
+    project_target = _resolve_vault_path(vault_root, project_path)
+    project_exists = project_target.exists()
+    blocking_items: list[str] = []
+    if health.get("missing_required"):
+        blocking_items.append("missing_required")
+    if health.get("is_stale"):
+        blocking_items.append("session_stale")
+    if not project_exists:
+        blocking_items.append("project_hub_missing")
+
+    receipt = None
+    if _clean_text(query):
+        receipt = build_wiki_recall_receipt(
+            query or "",
+            vault_root=vault_root,
+            product=product,
+            max_results=max_results,
+        )
+
+    return {
+        "status": "ok" if not blocking_items else "blocked",
+        "product": product,
+        "vault_root": str(Path(vault_root).resolve()),
+        "blocking_items": blocking_items,
+        "health": health,
+        "project_hub": {
+            "path": project_path,
+            "exists": project_exists,
+        },
+        "receipt": receipt,
+    }
+
+
+def _git_status_snapshot(repo_cwd: str | Path | None = None) -> dict[str, Any]:
+    cwd = Path(repo_cwd or Path.cwd()).resolve()
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--short", "--branch"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as e:
+        return {
+            "status": "error",
+            "cwd": str(cwd),
+            "branch": None,
+            "dirty": None,
+            "raw": "",
+            "error": str(e),
+        }
+
+    raw = completed.stdout.strip()
+    lines = raw.splitlines()
+    branch_line = lines[0] if lines else ""
+    branch = None
+    if branch_line.startswith("## "):
+        branch = branch_line[3:].split("...", 1)[0].strip() or None
+
+    return {
+        "status": "ok" if completed.returncode == 0 else "error",
+        "cwd": str(cwd),
+        "branch": branch,
+        "dirty": any(line.strip() for line in lines[1:]),
+        "raw": raw,
+        "error": completed.stderr.strip() if completed.returncode else "",
+    }
+
+
+def build_wiki_start_task_context(
+    vault_root: str | Path,
+    *,
+    product: str = "StockVision",
+    project_slug: str = "v4-refactor",
+    query: str,
+    repo_cwd: str | Path | None = None,
+    stale_days: int = 3,
+    max_results: int = 5,
+) -> dict[str, Any]:
+    """Bundle wiki preflight, recall proof, and git status for a new task."""
+    guard = build_wiki_guard_report(
+        vault_root,
+        product=product,
+        project_slug=project_slug,
+        stale_days=stale_days,
+        query=query,
+        max_results=max_results,
+    )
+    git = _git_status_snapshot(repo_cwd)
+    ready = guard["status"] == "ok"
+    next_actions = (
+        ["Proceed with the task using receipt citations for prior-context claims."]
+        if ready
+        else ["Resolve guard blocking_items before starting memory-sensitive work."]
+    )
+    return {
+        "status": "ready" if ready else "blocked",
+        "product": product,
+        "project_slug": project_slug,
+        "query": query,
+        "vault_root": str(Path(vault_root).resolve()),
+        "guard": guard,
+        "git": git,
+        "next_actions": next_actions,
     }
 
 

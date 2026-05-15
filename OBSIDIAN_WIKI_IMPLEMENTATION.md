@@ -232,6 +232,43 @@ The legacy GitHub vault `/obsidian/health` path imports `httpx` lazily inside
 that handler, so local wiki endpoints can still load in environments that only
 need filesystem-backed wiki tools.
 
+Active project hub:
+
+```http
+POST /obsidian/wiki-project-hub
+```
+
+Requires `confirm=true`. Creates or refreshes the project hub note, such as
+`02_Products/StockVision/專案_projects/v4-refactor.md`.
+
+Active guard:
+
+```http
+POST /obsidian/wiki-guard
+```
+
+Runs the same pre-work checks as the CLI guard: vault health, project hub
+existence, latest session freshness, and optional recall receipt.
+
+Active start-task context:
+
+```http
+POST /obsidian/wiki-start-task
+```
+
+Builds a start-of-task context pack with guard status, recall proof, and git
+status. Use this endpoint when a router/API session needs proof that the wiki
+was checked before memory-sensitive work.
+
+Active finish-task:
+
+```http
+POST /obsidian/wiki-finish-task
+```
+
+Requires `confirm=true`. Writes a session draft, updates MOC backlinks when
+requested, and returns a health report.
+
 ## Local CLI
 
 For Codex sessions, use the local CLI instead of ad hoc Python one-liners:
@@ -320,6 +357,53 @@ $env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
 `--confirm` is provided. Add `--update-moc` to append the new note link to the
 suggested MOC files. MOC updates use the `<!-- wiki-writer-links -->` marker
 and skip links that already exist, so repeated runs do not duplicate backlinks.
+
+V4 project hub:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+& C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py project-hub --title "V4 Refactor" --slug v4-refactor --confirm
+```
+
+`project-hub` creates the Obsidian entry note for a project such as the V4
+refactor. It records purpose, boundaries, decisions, architecture, runbooks,
+sessions, open questions, and the requirement to use recall receipts before
+making memory-sensitive claims.
+
+Pre-work guard:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+& C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py guard --project-slug v4-refactor --query "V4 refactor architecture decisions" --max-results 5
+```
+
+`guard` combines `doctor`, project-hub existence, latest session freshness, and
+an optional recall receipt. A blocked guard means the session should restore
+wiki context, create the missing project hub, or write a session draft before
+continuing memory-sensitive work.
+
+Start-task context:
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+& C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py start-task --project-slug v4-refactor --query "V4 refactor next task" --repo "C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12" --max-results 5
+```
+
+`start-task` wraps guard, recall proof, and `git status --short --branch` into
+one JSON response. It returns exit code `0` when ready and `1` when guard blocks
+the task.
+
+Major-task finish:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+& C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py finish-task --title "Task title" --body "What changed, what was decided, and how it was verified." --tag "stockvision/v4" --related "MOC-StockVision" --update-moc --confirm
+```
+
+`finish-task` is the "重大任務結束自動產生草稿" path. It writes a session draft,
+updates suggested MOC backlinks, and returns a health report so the second
+brain has a recoverable handoff instead of a passive snapshot.
 
 ## Research Intern Mapping
 

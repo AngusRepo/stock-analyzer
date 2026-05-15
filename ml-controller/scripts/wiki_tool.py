@@ -14,8 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.wiki_writer import (
     append_moc_links_to_local_vault,
     bootstrap_wiki_vault,
+    build_wiki_guard_report,
     build_wiki_recall_context,
     build_wiki_recall_receipt,
+    build_wiki_start_task_context,
+    ensure_project_hub,
+    finish_wiki_task,
     inspect_wiki_vault,
     search_wiki_vault,
     write_wiki_note_to_local_vault,
@@ -38,6 +42,14 @@ SUPPORTED_NOTE_TYPES = [
 
 def _json_print(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
 
 
 def _vault_path(args: argparse.Namespace) -> str:
@@ -121,6 +133,25 @@ def _build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--overwrite", action="store_true")
     bootstrap.add_argument("--confirm", action="store_true")
 
+    project = subparsers.add_parser("project-hub", help="Create a product project hub note.")
+    project.add_argument("--title", required=True)
+    project.add_argument("--slug")
+    project.add_argument("--overwrite", action="store_true")
+    project.add_argument("--confirm", action="store_true")
+
+    guard = subparsers.add_parser("guard", help="Preflight wiki state before memory-sensitive work.")
+    guard.add_argument("--project-slug", default="v4-refactor")
+    guard.add_argument("--stale-days", type=int, default=3)
+    guard.add_argument("--query")
+    guard.add_argument("--max-results", type=int, default=5)
+
+    start = subparsers.add_parser("start-task", help="Build wiki guard, recall proof, and git status before work.")
+    start.add_argument("--project-slug", default="v4-refactor")
+    start.add_argument("--query", required=True)
+    start.add_argument("--repo")
+    start.add_argument("--stale-days", type=int, default=3)
+    start.add_argument("--max-results", type=int, default=5)
+
     note = subparsers.add_parser("note", help="Write a confirmed structured wiki note.")
     note.add_argument("--type", required=True, choices=SUPPORTED_NOTE_TYPES)
     note.add_argument("--research-track")
@@ -129,10 +160,15 @@ def _build_parser() -> argparse.ArgumentParser:
     session = subparsers.add_parser("session-draft", help="Write a confirmed session draft note.")
     _add_note_arguments(session)
 
+    finish = subparsers.add_parser("finish-task", help="Write a session draft, update MOCs, and run doctor.")
+    finish.add_argument("--stale-days", type=int, default=3)
+    _add_note_arguments(finish)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -196,6 +232,46 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "project-hub":
+            if not args.confirm:
+                print("project-hub requires --confirm", file=sys.stderr)
+                return 2
+            _json_print(
+                ensure_project_hub(
+                    vault,
+                    product=args.product,
+                    title=args.title,
+                    slug=args.slug,
+                    overwrite=args.overwrite,
+                )
+            )
+            return 0
+
+        if args.command == "guard":
+            result = build_wiki_guard_report(
+                vault,
+                product=args.product,
+                project_slug=args.project_slug,
+                stale_days=args.stale_days,
+                query=args.query,
+                max_results=args.max_results,
+            )
+            _json_print(result)
+            return 0 if result["status"] == "ok" else 1
+
+        if args.command == "start-task":
+            result = build_wiki_start_task_context(
+                vault,
+                product=args.product,
+                project_slug=args.project_slug,
+                query=args.query,
+                repo_cwd=args.repo,
+                stale_days=args.stale_days,
+                max_results=args.max_results,
+            )
+            _json_print(result)
+            return 0 if result["status"] == "ready" else 1
+
         if args.command == "note":
             if not args.confirm:
                 print("note requires --confirm", file=sys.stderr)
@@ -208,6 +284,28 @@ def main(argv: list[str] | None = None) -> int:
                 print("session-draft requires --confirm", file=sys.stderr)
                 return 2
             _json_print(_write_note_from_args(args, vault=vault, note_type="session"))
+            return 0
+
+        if args.command == "finish-task":
+            if not args.confirm:
+                print("finish-task requires --confirm", file=sys.stderr)
+                return 2
+            _json_print(
+                finish_wiki_task(
+                    vault,
+                    product=args.product,
+                    title=args.title,
+                    body=args.body,
+                    tags=args.tag,
+                    related=args.related,
+                    source_refs=args.source_ref,
+                    source_files=args.source_file,
+                    now=args.now,
+                    overwrite=args.overwrite,
+                    update_moc=args.update_moc,
+                    stale_days=args.stale_days,
+                )
+            )
             return 0
     except ValueError as e:
         print(str(e), file=sys.stderr)

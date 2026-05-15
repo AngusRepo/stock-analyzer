@@ -12,14 +12,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi import HTTPException  # noqa: E402
 from routers.obsidian import (
     WikiBootstrapRequest,
+    WikiFinishTaskRequest,
+    WikiGuardRequest,
     WikiHealthRequest,
     WikiNoteRequest,
+    WikiProjectHubRequest,
     WikiRecallRequest,
     WikiSearchRequest,
+    WikiStartTaskRequest,
     bootstrap_wiki_vault_endpoint,
     build_wiki_note_preview,
     build_wiki_recall_receipt_endpoint,
+    build_wiki_start_task_endpoint,
+    create_wiki_project_hub,
+    finish_wiki_task_endpoint,
     inspect_wiki_health,
+    inspect_wiki_guard,
     recall_wiki_context,
     search_wiki_notes,
     write_wiki_note,
@@ -328,3 +336,162 @@ def test_wiki_health_endpoint_uses_configured_local_vault(monkeypatch):
     assert body["status"] == "ok"
     assert body["vault_root"] == "C:/wiki-vault"
     assert body["stale_days"] == 5
+
+
+def test_wiki_project_hub_endpoint_requires_confirm_flag(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(create_wiki_project_hub(WikiProjectHubRequest(title="V4 Refactor", confirm=False)))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "wiki project hub requires confirm=true"
+
+
+def test_wiki_project_hub_endpoint_uses_configured_local_vault(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_ensure_project_hub(vault_root, *, product, title, slug=None, overwrite=False):
+        return {
+            "status": "written",
+            "vault_root": str(vault_root),
+            "product": product,
+            "title": title,
+            "slug": slug,
+            "overwrite": overwrite,
+        }
+
+    import routers.obsidian as obsidian_router
+
+    monkeypatch.setattr(obsidian_router, "ensure_project_hub", fake_ensure_project_hub, raising=False)
+
+    body = asyncio.run(
+        create_wiki_project_hub(
+            WikiProjectHubRequest(
+                product="StockVision",
+                title="V4 Refactor",
+                slug="v4-refactor",
+                overwrite=True,
+                confirm=True,
+            )
+        )
+    )
+
+    assert body["status"] == "written"
+    assert body["vault_root"] == "C:/wiki-vault"
+    assert body["slug"] == "v4-refactor"
+    assert body["overwrite"] is True
+
+
+def test_wiki_guard_endpoint_returns_preflight_report(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_build_wiki_guard_report(vault_root, *, product, project_slug, stale_days=3, query=None, max_results=5):
+        return {
+            "status": "ok",
+            "vault_root": str(vault_root),
+            "product": product,
+            "project_slug": project_slug,
+            "query": query,
+            "stale_days": stale_days,
+            "max_results": max_results,
+        }
+
+    import routers.obsidian as obsidian_router
+
+    monkeypatch.setattr(obsidian_router, "build_wiki_guard_report", fake_build_wiki_guard_report, raising=False)
+
+    body = asyncio.run(
+        inspect_wiki_guard(
+            WikiGuardRequest(
+                product="StockVision",
+                project_slug="v4-refactor",
+                query="V4 decisions",
+                stale_days=5,
+                max_results=8,
+            )
+        )
+    )
+
+    assert body["status"] == "ok"
+    assert body["project_slug"] == "v4-refactor"
+    assert body["query"] == "V4 decisions"
+    assert body["stale_days"] == 5
+    assert body["max_results"] == 8
+
+
+def test_wiki_finish_task_endpoint_requires_confirm_flag(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(finish_wiki_task_endpoint(WikiFinishTaskRequest(title="V4 task", body="Done.", confirm=False)))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "wiki finish task requires confirm=true"
+
+
+def test_wiki_finish_task_endpoint_writes_session_and_health(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_finish_wiki_task(vault_root, *, product, title, body, tags=None, related=None, source_refs=None, source_files=None, now=None, overwrite=False, update_moc=True, stale_days=3):
+        return {
+            "status": "finished",
+            "vault_root": str(vault_root),
+            "product": product,
+            "title": title,
+            "update_moc": update_moc,
+            "health": {"status": "ok"},
+        }
+
+    import routers.obsidian as obsidian_router
+
+    monkeypatch.setattr(obsidian_router, "finish_wiki_task", fake_finish_wiki_task, raising=False)
+
+    body = asyncio.run(
+        finish_wiki_task_endpoint(
+            WikiFinishTaskRequest(
+                product="StockVision",
+                title="V4 task",
+                body="Done.",
+                tags=["stockvision/v4"],
+                confirm=True,
+            )
+        )
+    )
+
+    assert body["status"] == "finished"
+    assert body["vault_root"] == "C:/wiki-vault"
+    assert body["health"]["status"] == "ok"
+
+
+def test_wiki_start_task_endpoint_returns_context(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_start_task(vault_root, *, product, project_slug, query, repo_cwd=None, stale_days=3, max_results=5):
+        return {
+            "status": "ready",
+            "vault_root": str(vault_root),
+            "product": product,
+            "project_slug": project_slug,
+            "query": query,
+            "repo_cwd": repo_cwd,
+        }
+
+    import routers.obsidian as obsidian_router
+
+    monkeypatch.setattr(obsidian_router, "build_wiki_start_task_context", fake_start_task, raising=False)
+
+    body = asyncio.run(
+        build_wiki_start_task_endpoint(
+            WikiStartTaskRequest(
+                product="StockVision",
+                project_slug="v4-refactor",
+                query="V4 next work",
+                repo_cwd="C:/repo",
+            )
+        )
+    )
+
+    assert body["status"] == "ready"
+    assert body["vault_root"] == "C:/wiki-vault"
+    assert body["repo_cwd"] == "C:/repo"

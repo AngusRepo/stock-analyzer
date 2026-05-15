@@ -15,8 +15,12 @@ from typing import Any
 
 from services.wiki_writer import (
     bootstrap_wiki_vault,
+    build_wiki_guard_report,
     build_wiki_recall_context,
     build_wiki_recall_receipt,
+    build_wiki_start_task_context,
+    ensure_project_hub,
+    finish_wiki_task,
     inspect_wiki_vault,
 )
 
@@ -72,6 +76,46 @@ class WikiRecallRequest(BaseModel):
 class WikiHealthRequest(BaseModel):
     product: str = "StockVision"
     stale_days: int = 3
+
+
+class WikiProjectHubRequest(BaseModel):
+    product: str = "StockVision"
+    title: str
+    slug: str | None = None
+    overwrite: bool = False
+    confirm: bool = False
+
+
+class WikiGuardRequest(BaseModel):
+    product: str = "StockVision"
+    project_slug: str = "v4-refactor"
+    stale_days: int = 3
+    query: str | None = None
+    max_results: int = 5
+
+
+class WikiFinishTaskRequest(BaseModel):
+    product: str = "StockVision"
+    title: str
+    body: str
+    tags: list[str] = Field(default_factory=list)
+    related: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    source_files: list[str] = Field(default_factory=list)
+    now: str | None = None
+    overwrite: bool = False
+    update_moc: bool = True
+    stale_days: int = 3
+    confirm: bool = False
+
+
+class WikiStartTaskRequest(BaseModel):
+    product: str = "StockVision"
+    project_slug: str = "v4-refactor"
+    query: str
+    repo_cwd: str | None = None
+    stale_days: int = 3
+    max_results: int = 5
 
 
 def _request_payload(req: BaseModel) -> dict[str, Any]:
@@ -260,6 +304,98 @@ async def inspect_wiki_health(req: WikiHealthRequest = WikiHealthRequest()):
             vault_root=local_vault,
             product=req.product,
             stale_days=req.stale_days,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/wiki-project-hub")
+async def create_wiki_project_hub(req: WikiProjectHubRequest):
+    """Create or refresh the product project hub note."""
+    if req.confirm is not True:
+        raise HTTPException(status_code=400, detail="wiki project hub requires confirm=true")
+
+    local_vault = os.environ.get("OBSIDIAN_WIKI_VAULT_PATH", "").strip()
+    if not local_vault:
+        raise HTTPException(status_code=501, detail="OBSIDIAN_WIKI_VAULT_PATH not configured")
+
+    try:
+        return ensure_project_hub(
+            local_vault,
+            product=req.product,
+            title=req.title,
+            slug=req.slug,
+            overwrite=req.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/wiki-guard")
+async def inspect_wiki_guard(req: WikiGuardRequest = WikiGuardRequest()):
+    """Run the wiki preflight before memory-sensitive work."""
+    local_vault = os.environ.get("OBSIDIAN_WIKI_VAULT_PATH", "").strip()
+    if not local_vault:
+        raise HTTPException(status_code=501, detail="OBSIDIAN_WIKI_VAULT_PATH not configured")
+
+    try:
+        return build_wiki_guard_report(
+            local_vault,
+            product=req.product,
+            project_slug=req.project_slug,
+            stale_days=req.stale_days,
+            query=req.query,
+            max_results=req.max_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/wiki-finish-task")
+async def finish_wiki_task_endpoint(req: WikiFinishTaskRequest):
+    """Finish a major task with a session draft, MOC update, and health report."""
+    if req.confirm is not True:
+        raise HTTPException(status_code=400, detail="wiki finish task requires confirm=true")
+
+    local_vault = os.environ.get("OBSIDIAN_WIKI_VAULT_PATH", "").strip()
+    if not local_vault:
+        raise HTTPException(status_code=501, detail="OBSIDIAN_WIKI_VAULT_PATH not configured")
+
+    try:
+        return finish_wiki_task(
+            local_vault,
+            product=req.product,
+            title=req.title,
+            body=req.body,
+            tags=req.tags,
+            related=req.related,
+            source_refs=req.source_refs,
+            source_files=req.source_files,
+            now=req.now,
+            overwrite=req.overwrite,
+            update_moc=req.update_moc,
+            stale_days=req.stale_days,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/wiki-start-task")
+async def build_wiki_start_task_endpoint(req: WikiStartTaskRequest):
+    """Build a start-of-task context pack with guard, recall proof, and git status."""
+    local_vault = os.environ.get("OBSIDIAN_WIKI_VAULT_PATH", "").strip()
+    if not local_vault:
+        raise HTTPException(status_code=501, detail="OBSIDIAN_WIKI_VAULT_PATH not configured")
+
+    try:
+        return build_wiki_start_task_context(
+            local_vault,
+            product=req.product,
+            project_slug=req.project_slug,
+            query=req.query,
+            repo_cwd=req.repo_cwd,
+            stale_days=req.stale_days,
+            max_results=req.max_results,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

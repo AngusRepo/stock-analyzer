@@ -11,9 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.wiki_writer import (
     append_moc_links_to_local_vault,
     bootstrap_wiki_vault,
+    build_wiki_guard_report,
+    build_wiki_start_task_context,
     build_wiki_recall_context,
     build_wiki_recall_receipt,
     build_wiki_note_dry_run,
+    ensure_project_hub,
+    finish_wiki_task,
     inspect_wiki_vault,
     search_wiki_vault,
     write_wiki_note_to_local_vault,
@@ -582,3 +586,140 @@ def test_bootstrap_wiki_vault_creates_governance_files_and_product_structure(mon
 
     assert second["created_files"] == []
     assert "CLAUDE.md" in second["unchanged_files"]
+
+
+def test_ensure_project_hub_creates_v4_project_anchor(monkeypatch):
+    directories: set[str] = set()
+    files: dict[str, str] = {}
+
+    def normalized(path: Path) -> str:
+        return str(path).replace("\\", "/")
+
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    monkeypatch.setattr(Path, "exists", lambda self: normalized(self) in directories or normalized(self) in files)
+    monkeypatch.setattr(Path, "mkdir", lambda self, parents=False, exist_ok=False: directories.add(normalized(self)))
+    monkeypatch.setattr(Path, "write_text", lambda self, content, encoding=None: files.setdefault(normalized(self), content) and len(content))
+
+    result = ensure_project_hub("C:/wiki-vault", product="StockVision", title="V4 Refactor")
+
+    assert result["status"] == "written"
+    assert result["path"] == "02_Products/StockVision/專案_projects/v4-refactor.md"
+    content = files["C:/wiki-vault/02_Products/StockVision/專案_projects/v4-refactor.md"]
+    assert "# V4 Refactor" in content
+    assert "Obsidian recall receipt" in content
+    assert "## Decisions" in content
+    assert "## Sessions" in content
+
+    second = ensure_project_hub("C:/wiki-vault", product="StockVision", title="V4 Refactor")
+
+    assert second["status"] == "unchanged"
+
+
+def test_finish_wiki_task_writes_session_updates_moc_and_runs_doctor(monkeypatch):
+    import services.wiki_writer as wiki_writer
+
+    def fake_write(payload, *, vault_root, now=None, overwrite=False):
+        return {
+            "status": "written",
+            "product": payload["product"],
+            "type": payload["type"],
+            "files": [{"path": "02_Products/StockVision/Sessions/2026-05-15-v4.draft.md"}],
+            "moc_suggestions": ["06_MOC/MOC-Home.md"],
+        }
+
+    monkeypatch.setattr(wiki_writer, "write_wiki_note_to_local_vault", fake_write)
+    monkeypatch.setattr(wiki_writer, "append_moc_links_to_local_vault", lambda result, *, vault_root: {"status": "moc_updated"})
+    monkeypatch.setattr(wiki_writer, "inspect_wiki_vault", lambda *, vault_root, product, stale_days=3, now=None: {"status": "ok"})
+
+    result = finish_wiki_task(
+        "C:/wiki-vault",
+        title="V4 task",
+        body="Finished V4 planning task.",
+        tags=["stockvision/v4"],
+    )
+
+    assert result["status"] == "finished"
+    assert result["write"]["status"] == "written"
+    assert result["moc_update"]["status"] == "moc_updated"
+    assert result["health"]["status"] == "ok"
+
+
+def test_build_wiki_guard_report_checks_health_project_hub_and_receipt(monkeypatch):
+    import services.wiki_writer as wiki_writer
+
+    monkeypatch.setattr(
+        wiki_writer,
+        "inspect_wiki_vault",
+        lambda *, vault_root, product, stale_days=3, now=None: {
+            "status": "ok",
+            "missing_required": [],
+            "is_stale": False,
+        },
+    )
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    monkeypatch.setattr(Path, "exists", lambda self: str(self).replace("\\", "/").endswith("02_Products/StockVision/專案_projects/v4-refactor.md"))
+    monkeypatch.setattr(
+        wiki_writer,
+        "build_wiki_recall_receipt",
+        lambda query, *, vault_root, product, max_results=5, include_archived=False: {
+            "status": "receipt",
+            "text": "Obsidian recall receipt:",
+            "recall": {"status": "found"},
+        },
+    )
+
+    result = build_wiki_guard_report(
+        "C:/wiki-vault",
+        product="StockVision",
+        project_slug="v4-refactor",
+        query="V4 architecture decisions",
+    )
+
+    assert result["status"] == "ok"
+    assert result["blocking_items"] == []
+    assert result["project_hub"]["exists"] is True
+    assert result["receipt"]["recall"]["status"] == "found"
+
+
+def test_build_wiki_start_task_context_combines_guard_with_git_status(monkeypatch):
+    import services.wiki_writer as wiki_writer
+
+    def fake_build_wiki_guard_report(vault_root, *, product, project_slug, stale_days=3, query=None, max_results=5):
+        return {
+            "status": "ok",
+            "product": product,
+            "vault_root": vault_root,
+            "blocking_items": [],
+            "project_hub": {"path": f"02_Products/{product}/專案_projects/{project_slug}.md", "exists": True},
+            "receipt": {"text": "Obsidian recall receipt:\n- status: found"},
+        }
+
+    class Completed:
+        returncode = 0
+        stdout = "## feature/ml-pool-v1...origin/feature/ml-pool-v1\n M ml-controller/services/wiki_writer.py\n"
+        stderr = ""
+
+    def fake_run(cmd, *, cwd, capture_output, text, encoding, errors, check):
+        assert cmd == ["git", "status", "--short", "--branch"]
+        assert str(cwd).endswith("stockvision-cloudflare-v12")
+        assert capture_output is True
+        assert encoding == "utf-8"
+        assert check is False
+        return Completed()
+
+    monkeypatch.setattr(wiki_writer, "build_wiki_guard_report", fake_build_wiki_guard_report)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = build_wiki_start_task_context(
+        "C:/wiki-vault",
+        product="StockVision",
+        project_slug="v4-refactor",
+        query="V4 next work",
+        repo_cwd="C:/Users/Wei/Desktop/CloudCode/stockvision-cloudflare-v12",
+    )
+
+    assert result["status"] == "ready"
+    assert result["guard"]["status"] == "ok"
+    assert result["git"]["branch"] == "feature/ml-pool-v1"
+    assert result["git"]["dirty"] is True
+    assert result["next_actions"] == ["Proceed with the task using receipt citations for prior-context claims."]

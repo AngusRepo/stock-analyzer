@@ -121,6 +121,44 @@ C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki
 - 重要 note 必須更新或建議更新 MOC。
 - 舊結論被推翻時，不刪除；標記 `status: superseded` 並連到新 note。
 
+## V4 Obsidian Operating Loop
+
+V4 refactor sessions must treat Obsidian as the shared second brain, not a
+passive snapshot folder.
+
+Before memory-sensitive V4 work:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py guard --project-slug v4-refactor --query "V4 refactor architecture decisions" --max-results 5
+```
+
+If guard returns `blocked`, restore the missing wiki state before continuing.
+For prior decisions or preferences, no recall receipt means the answer is not
+verified.
+
+Preferred one-command start path:
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py start-task --project-slug v4-refactor --query "V4 refactor next task" --repo "C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12" --max-results 5
+```
+
+Use `start-task` when opening a V4 task because it returns wiki guard status,
+recall proof, and current git branch/status in one machine-checkable response.
+
+At the end of each major task:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py finish-task --title "Task title" --body "What changed, what was decided, and how it was verified." --tag "stockvision/v4" --related "MOC-StockVision" --update-moc --confirm
+```
+
+Use `finish-task` for durable handoff drafts. Do not rely on chat history alone
+for V4 architecture decisions, runbooks, postmortems, or accepted/rejected
+directions.
+
 ## Runtime Baseline
 
 ### Cloudflare

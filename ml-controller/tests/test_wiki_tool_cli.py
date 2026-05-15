@@ -292,3 +292,125 @@ def test_wiki_tool_bootstrap_outputs_created_structure(monkeypatch, capsys):
     assert body["vault_root"] == "C:/wiki-vault"
     assert body["overwrite"] is True
     assert "CLAUDE.md" in body["created_files"]
+
+
+def test_wiki_tool_project_hub_outputs_json(monkeypatch, capsys):
+    monkeypatch.setenv("OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_ensure_project_hub(vault_root, *, product, title, slug=None, overwrite=False):
+        return {
+            "status": "written",
+            "vault_root": str(vault_root),
+            "product": product,
+            "title": title,
+            "slug": slug,
+            "overwrite": overwrite,
+        }
+
+    monkeypatch.setattr(wiki_tool, "ensure_project_hub", fake_ensure_project_hub)
+
+    exit_code = wiki_tool.main(["project-hub", "--title", "V4 Refactor", "--slug", "v4-refactor", "--confirm"])
+
+    assert exit_code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "written"
+    assert body["title"] == "V4 Refactor"
+    assert body["slug"] == "v4-refactor"
+
+
+def test_wiki_tool_finish_task_outputs_write_and_health(monkeypatch, capsys):
+    monkeypatch.setenv("OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_finish_wiki_task(vault_root, *, product, title, body, tags=None, related=None, source_refs=None, source_files=None, now=None, overwrite=False, update_moc=True, stale_days=3):
+        return {
+            "status": "finished",
+            "vault_root": str(vault_root),
+            "product": product,
+            "title": title,
+            "update_moc": update_moc,
+            "health": {"status": "ok"},
+        }
+
+    monkeypatch.setattr(wiki_tool, "finish_wiki_task", fake_finish_wiki_task)
+
+    exit_code = wiki_tool.main(["finish-task", "--title", "V4 task", "--body", "Finished.", "--tag", "stockvision/v4", "--confirm"])
+
+    assert exit_code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "finished"
+    assert body["title"] == "V4 task"
+    assert body["health"]["status"] == "ok"
+
+
+def test_wiki_tool_guard_returns_nonzero_when_blocked(monkeypatch, capsys):
+    monkeypatch.setenv("OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_build_wiki_guard_report(vault_root, *, product, project_slug, stale_days=3, query=None, max_results=5):
+        return {
+            "status": "blocked",
+            "blocking_items": ["project_hub_missing"],
+            "vault_root": str(vault_root),
+            "product": product,
+        }
+
+    monkeypatch.setattr(wiki_tool, "build_wiki_guard_report", fake_build_wiki_guard_report)
+
+    exit_code = wiki_tool.main(["guard", "--project-slug", "v4-refactor", "--query", "V4 decisions"])
+
+    assert exit_code == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "blocked"
+    assert body["blocking_items"] == ["project_hub_missing"]
+
+
+def test_wiki_tool_start_task_returns_ready_context(monkeypatch, capsys):
+    monkeypatch.setenv("OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_start_task(vault_root, *, product, project_slug, query, repo_cwd=None, stale_days=3, max_results=5):
+        return {
+            "status": "ready",
+            "vault_root": str(vault_root),
+            "product": product,
+            "project_slug": project_slug,
+            "query": query,
+            "repo_cwd": repo_cwd,
+            "stale_days": stale_days,
+            "max_results": max_results,
+        }
+
+    monkeypatch.setattr(wiki_tool, "build_wiki_start_task_context", fake_start_task)
+
+    exit_code = wiki_tool.main(
+        [
+            "start-task",
+            "--project-slug",
+            "v4-refactor",
+            "--query",
+            "V4 next work",
+            "--repo",
+            "C:/repo",
+            "--max-results",
+            "8",
+        ]
+    )
+
+    assert exit_code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "ready"
+    assert body["repo_cwd"] == "C:/repo"
+    assert body["max_results"] == 8
+
+
+def test_wiki_tool_configures_utf8_stdio(monkeypatch):
+    calls: list[str] = []
+
+    class Stream:
+        def reconfigure(self, *, encoding):
+            calls.append(encoding)
+
+    monkeypatch.setattr(wiki_tool.sys, "stdout", Stream())
+    monkeypatch.setattr(wiki_tool.sys, "stderr", Stream())
+
+    wiki_tool._configure_utf8_stdio()
+
+    assert calls == ["utf-8", "utf-8"]

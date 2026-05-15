@@ -594,20 +594,6 @@ export default function ObservabilityPage() {
           }
         />
 
-        <div className="rounded-2xl border border-[#2b3a49] bg-[#0b111b]">
-          <div className="border-b border-[#2b3a49] px-3 py-2">
-            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#fff1cf]">Reliability Map / 可靠度地圖</p>
-            <p className="mt-1 text-xs text-slate-500">同一列看 SLO，不用箭頭假裝它們有直接相依。</p>
-          </div>
-        <section className="grid grid-cols-1 overflow-hidden bg-[#2b3a49] md:grid-cols-5">
-          <MetricCell label="Events / 事件證據" value={String(events.length)} tone={observability.error ? 'warn' : 'info'} count="OBS events" detail="root cause now lives in scheduler rows" />
-          <MetricCell label="Scheduler SLO / 排程" value={`${schedulerScore}%`} tone={failedJobs ? 'warn' : 'ok'} count={`${jobs.length} jobs`} detail={`${failedJobs} failed`} />
-          <MetricCell label="Data Trust / 資料" value={`${dataQualityScore}%`} tone={statusTone(dataQuality.data?.overall)} count={`${dqChecks.length} checks`} detail={`${failedChecks} failed`} />
-          <MetricCell label="Deploy Gate / 上線" value={formatStatus(deployGate.data?.decision)} tone={statusTone(deployGate.data?.decision)} count="gate" detail="predeploy safety" />
-          <MetricCell label="Trace / 追蹤" value={String(events.length)} tone={observability.error ? 'warn' : 'info'} count="logs" detail={observability.data?.date ?? '-'} />
-        </section>
-        </div>
-
         <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">
           <AdaptiveMetaPanel events={events} />
           <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">

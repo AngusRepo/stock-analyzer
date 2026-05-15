@@ -240,7 +240,7 @@ export interface DbAlertRule {
 
 // ─── Queue Message Types ──────────────────────────────────────────────────────
 export interface UpdateQueueMsg {
-  type: 'update_batch' | 'finalize_update' | 'news_batch' | 'source_readiness_retry'
+  type: 'update_batch' | 'finalize_update' | 'post_screener_pipeline' | 'news_batch' | 'source_readiness_retry'
   newsStocks?: Array<{
     id: number
     symbol: string

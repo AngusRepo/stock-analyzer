@@ -34,9 +34,87 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { shouldFailClosedPendingDebate } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
+const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
+
+function addRestrictedSymbolsFromRaw(target: Set<string>, raw: string | null): void {
+  if (!raw) return
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return
+    for (const item of parsed) {
+      const symbol = typeof item === 'string' ? item : item?.symbol ?? item?.code
+      if (symbol) target.add(String(symbol))
+    }
+  } catch {
+    // Ignore malformed optional cache; execution still tries live refresh below.
+  }
+}
+
+async function addD1TradingRestrictions(env: Bindings, target: Set<string>, tradeDate: string): Promise<void> {
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol
+        FROM stock_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+    `).bind(tradeDate, tradeDate).all<{ symbol: string | null }>()
+    for (const row of results ?? []) {
+      if (row.symbol) target.add(String(row.symbol))
+    }
+  } catch {
+    // Older D1 snapshots may not have this optional governance table.
+  }
+}
+
+async function loadExecutionBlockedSymbols(env: Bindings, tradeDate: string): Promise<Set<string>> {
+  const blocked = new Set<string>()
+  const [
+    punishedRaw,
+    attentionRaw,
+    tpexPunishedRaw,
+    tpexAttentionRaw,
+    delistingRaw,
+    checkedAtRaw,
+  ] = await Promise.all([
+    env.KV.get('market:punished_stocks'),
+    env.KV.get('market:attention_stocks'),
+    env.KV.get('market:tpex_punished_stocks'),
+    env.KV.get('market:tpex_attention_stocks'),
+    env.KV.get('market:delisting_risk'),
+    env.KV.get('market:restricted_execution_checked_at'),
+  ])
+
+  addRestrictedSymbolsFromRaw(blocked, punishedRaw)
+  addRestrictedSymbolsFromRaw(blocked, attentionRaw)
+  addRestrictedSymbolsFromRaw(blocked, tpexPunishedRaw)
+  addRestrictedSymbolsFromRaw(blocked, tpexAttentionRaw)
+  addRestrictedSymbolsFromRaw(blocked, delistingRaw)
+  await addD1TradingRestrictions(env, blocked, tradeDate)
+
+  const checkedAtMs = checkedAtRaw ? Date.parse(checkedAtRaw) : 0
+  const shouldRefresh = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > EXECUTION_RESTRICTED_REFRESH_TTL_MS
+  if (!shouldRefresh) return blocked
+
+  const [punishedResult, attentionResult] = await Promise.allSettled([
+    fetchPunishedStocks(),
+    fetchAttentionStocks(),
+  ])
+  if (punishedResult.status === 'fulfilled' && punishedResult.value.length > 0) {
+    for (const symbol of punishedResult.value) blocked.add(symbol)
+    await env.KV.put('market:punished_stocks', JSON.stringify(punishedResult.value), { expirationTtl: 86400 })
+  }
+  if (attentionResult.status === 'fulfilled' && attentionResult.value.length > 0) {
+    for (const symbol of attentionResult.value) blocked.add(symbol)
+    await env.KV.put('market:attention_stocks', JSON.stringify(attentionResult.value), { expirationTtl: 86400 })
+  }
+  await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
+  return blocked
+}
 
 async function loadPreTradeMomentum(
   env: Bindings,
@@ -445,12 +523,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
   }
 
-  const [punishedRaw, attentionRaw, delistingRaw] = await Promise.all([
-    env.KV.get('market:punished_stocks'),
-    env.KV.get('market:attention_stocks'),
-    env.KV.get('market:delisting_risk'),
-  ])
-
   const prevCloseMap = new Map<string, number>()
   if (pendingSymbols.length > 0) {
     const ph = pendingSymbols.map(() => '?').join(',')
@@ -466,16 +538,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
   }
 
-  const blockedSymbols = new Set<string>()
-  if (punishedRaw) {
-    try { for (const s of JSON.parse(punishedRaw)) blockedSymbols.add(typeof s === 'string' ? s : s.symbol ?? s.code) } catch {}
-  }
-  if (attentionRaw) {
-    try { for (const s of JSON.parse(attentionRaw)) blockedSymbols.add(typeof s === 'string' ? s : s.symbol ?? s.code) } catch {}
-  }
-  if (delistingRaw) {
-    try { for (const s of JSON.parse(delistingRaw)) blockedSymbols.add(typeof s === 'string' ? s : s.symbol ?? s.code) } catch {}
-  }
+  const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
   let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[] } = { risk_level: 'unknown' }
   if ((env as any).SHIOAJI_PROXY_URL) {
@@ -556,7 +619,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     if (blockedSymbols.has(pending.symbol)) {
       console.warn(`[Intraday] ${pending.symbol} 屬於懲罰/注意/下市風險清單，移出待買清單`)
-      recordExecutionEvent(pending.symbol, 'skipped', 'blocked_symbol')
+      recordExecutionEvent(pending.symbol, 'skipped', 'restricted_execution_gate', 'punished_or_attention_or_delisting')
       stateChanged = true
       continue
     }

@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
@@ -166,20 +166,25 @@ function promotionComparisonSummary(result: ModelArtifactPromotionControllerResp
   return { shadowIc, productionIc, icDelta, hasLiveComparison, beatsChampion, blockers, approvalRequired, resultLabel }
 }
 
-function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse) {
+type ArtifactDisplayRow = {
+  modelName: string
+  slot: 'monthly_release_candidate' | 'weekly_drift_candidate'
+  artifact: ModelArtifactRegistryRow
+  actionContext?: ModelArtifactActionContext
+  selected: boolean
+  displayReason?: string
+}
+
+function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse): ArtifactDisplayRow[] {
   return Object.entries(selection?.models ?? {}).flatMap(([modelName, row]) => {
-    const items: Array<{
-      modelName: string
-      slot: 'monthly_release_candidate' | 'weekly_drift_candidate'
-      artifact: ModelArtifactRegistryRow
-      actionContext?: ModelArtifactActionContext
-    }> = []
+    const items: ArtifactDisplayRow[] = []
     if (row.monthly_release_candidate) {
       items.push({
         modelName,
         slot: 'monthly_release_candidate',
         artifact: row.monthly_release_candidate,
         actionContext: row.action_context?.monthly_release_candidate,
+        selected: true,
       })
     }
     if (row.weekly_drift_candidate) {
@@ -188,9 +193,56 @@ function flattenSelectedArtifacts(selection?: ModelArtifactSelectionResponse) {
         slot: 'weekly_drift_candidate',
         artifact: row.weekly_drift_candidate,
         actionContext: row.action_context?.weekly_drift_candidate,
+        selected: true,
       })
     }
     return items
+  })
+}
+
+function latestCandidateRows(registry?: ModelArtifactRegistryResponse): ModelArtifactRegistryRow[] {
+  const latest = new Map<string, ModelArtifactRegistryRow>()
+  for (const artifact of registry?.artifacts ?? []) {
+    if (!['monthly_release', 'weekly_drift'].includes(artifact.candidate_type)) continue
+    const key = `${artifact.model_name}:${artifact.candidate_type}`
+    const prev = latest.get(key)
+    const currentTime = Date.parse(artifact.updated_at ?? artifact.created_at ?? '') || 0
+    const prevTime = Date.parse(prev?.updated_at ?? prev?.created_at ?? '') || 0
+    if (!prev || currentTime >= prevTime) latest.set(key, artifact)
+  }
+  return Array.from(latest.values())
+}
+
+function artifactExclusionReason(artifact: ModelArtifactRegistryRow): string {
+  if (artifact.state === 'production') return 'already promoted to production; shown here as current promoted candidate, not a pending queue item'
+  if (artifact.live_gate_status === 'failed') return 'live gate failed; kept as evidence, not eligible for promotion'
+  if (artifact.candidate_type === 'weekly_drift' && artifact.state === 'offline_passed') {
+    return 'weekly drift only reached PASS; policy requires STRONG_PASS before live shadow selection'
+  }
+  if (artifact.live_gate_status === 'not_started') return 'live shadow not started; needs selected candidate, daily shadow predict, verify-v2, then IC tracker'
+  return `not selected by release-train policy: state=${artifact.state}, live=${artifact.live_gate_status ?? 'n/a'}`
+}
+
+function artifactRowsWithExcluded(
+  selection?: ModelArtifactSelectionResponse,
+  registry?: ModelArtifactRegistryResponse,
+): ArtifactDisplayRow[] {
+  const selected = flattenSelectedArtifacts(selection)
+  const selectedIds = new Set(selected.map((row) => row.artifact.artifact_id))
+  const excluded = latestCandidateRows(registry)
+    .filter((artifact) => !selectedIds.has(artifact.artifact_id))
+    .map((artifact): ArtifactDisplayRow => ({
+      modelName: artifact.model_name,
+      slot: artifact.candidate_type === 'monthly_release' ? 'monthly_release_candidate' : 'weekly_drift_candidate',
+      artifact,
+      selected: false,
+      displayReason: artifactExclusionReason(artifact),
+    }))
+  return [...selected, ...excluded].sort((a, b) => {
+    const model = a.modelName.localeCompare(b.modelName)
+    if (model !== 0) return model
+    if (a.selected !== b.selected) return a.selected ? -1 : 1
+    return a.slot.localeCompare(b.slot)
   })
 }
 
@@ -217,55 +269,198 @@ function TinyBar({ label, value, tone = 'info' }: { label: string; value: number
   )
 }
 
-function ModelHealthRow({ name, model }: { name: string; model: ModelPoolLineageModel }) {
-  const ic = icValue(model)
-  const sampleCount = model.last_ic_sample_count ?? 0
-  const challenger = model.challenger
-  const metadataTone = model.metadata_exists === false ? 'warn' : 'ok'
-  const diagnosis = model.lifecycle_diagnosis
-  const icTone: WorkstationTone = ic == null || Math.abs(ic) < 0.0001 ? 'warn' : ic > 0 ? 'ok' : 'error'
-  const segmentRows = segmentIcEntries(model)
+function selectedCandidateForModel(row?: ModelArtifactSelectionResponse['models'][string]) {
+  const artifact = row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
+  const context = row?.monthly_release_candidate
+    ? row.action_context?.monthly_release_candidate
+    : row?.weekly_drift_candidate
+      ? row.action_context?.weekly_drift_candidate
+      : undefined
+  const slot = row?.monthly_release_candidate
+    ? 'monthly_release_candidate'
+    : row?.weekly_drift_candidate
+      ? 'weekly_drift_candidate'
+      : null
+  return { artifact, context, slot }
+}
 
+function UnifiedModelHealthMatrix({
+  models,
+  selection,
+  pointers,
+}: {
+  models: Array<[string, ModelPoolLineageModel]>
+  selection?: ModelArtifactSelectionResponse
+  pointers?: ModelChampionPointersResponse
+}) {
   return (
-    <tr className="hover:bg-[#101927]">
-      <td className="border border-[#263247] px-2 py-2 text-slate-100">
-        <div className="font-semibold">{name}</div>
-        <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {model.balance_family ?? 'unknown'}</div>
-      </td>
-      <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={toneFromStatus(model.status)}>{model.status ?? '-'}</WorkstationPill></td>
-      <td className="border border-[#263247] px-2 py-2">
-        <WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill>
-        {segmentRows.length > 0 && (
-          <div className="mt-1 flex max-w-[240px] flex-wrap gap-1">
-            {segmentRows.map((row) => (
-              <span key={row.segment} className="rounded border border-[#263247] bg-[#05070c] px-1.5 py-0.5 font-mono text-[10px] text-[#8a92a6]">
-                {row.segment} {row.ic == null ? 'N/A' : row.ic.toFixed(3)} / n={row.samples}
-              </span>
-            ))}
+    <WorkstationPanel
+      title="Model Health Matrix / 模型健康矩陣"
+      kicker="single source: champion pointer, registry candidate, offline gate, live gate, promotion evidence"
+    >
+      <div className="p-3">
+        <div className="mb-3 grid gap-2 text-xs text-[#8a92a6] md:grid-cols-3">
+          <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Champion / Production</p>
+            <p className="mt-1 leading-5">目前 serving 應讀 champion pointer；這裡顯示 production artifact 與近期 IC 4W。</p>
           </div>
-        )}
-      </td>
-      <td className="border border-[#263247] px-2 py-2 text-slate-300">{sampleCount}</td>
-      <td className="border border-[#263247] px-2 py-2"><WorkstationPill tone={metadataTone}>{model.metadata_exists === false ? 'missing' : 'present'}</WorkstationPill></td>
-      <td className="border border-[#263247] px-2 py-2 text-slate-300">{diagnosis?.coverage == null ? 'N/A' : `${Math.round(diagnosis.coverage * 100)}%`}</td>
-      <td className="border border-[#263247] px-2 py-2 text-slate-300">
-        {challenger ? (
-          <div className="space-y-1">
-            <div className="font-mono text-[10px] text-[#70809b]">{challenger.version ?? 'challenger'}</div>
-            <WorkstationPill tone={Number(challenger.ic_4w_avg ?? challenger.rolling_ic ?? 0) > 0 ? 'ok' : 'warn'}>
-              lifecycle IC {fmt(challenger.ic_4w_avg ?? challenger.rolling_ic)}
-            </WorkstationPill>
-            <div className="text-[10px] leading-4 text-[#8a92a6]">
-              samples {challenger.last_ic_sample_count ?? 0}; not artifact OOS IC
-            </div>
+          <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Candidate / Registry</p>
+            <p className="mt-1 leading-5">monthly / weekly artifact 先看 offline gate，再進 live shadow，不再用 legacy challenger 當 promotion evidence。</p>
           </div>
-        ) : '-'}
-      </td>
-      <td className="border border-[#263247] px-2 py-2 text-[#8a92a6]">
-        <div>{shortRootCause(model)}</div>
-        {diagnosis?.reason && <div className="mt-1 max-w-[280px] whitespace-normal text-[10px] leading-4">{diagnosis.reason}</div>}
-      </td>
-    </tr>
+          <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Live Gate / Decision</p>
+            <p className="mt-1 leading-5">正式比較基準是同一段 verified rows 的 shadow IC vs champion IC，不是 prod IC 4W 混比 lifecycle IC。</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1680px] border-collapse font-mono text-[11px]">
+            <thead className="bg-[#0c1420] text-[#70809b]">
+              <tr>
+                {[
+                  'Model',
+                  'Status',
+                  'Champion artifact',
+                  'Prod IC 4W',
+                  'Samples / Coverage',
+                  'Candidate artifact',
+                  'Feature policy',
+                  'Offline gate / OOS IC',
+                  'Live IC / Samples',
+                  'CPCV / PBO',
+                  'DSR / MC',
+                  'Live gate / Next action',
+                  'Root cause',
+                ].map((label) => (
+                  <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {models.map(([name, model]) => {
+                const selected = selectedCandidateForModel(selection?.models?.[name])
+                const artifact = selected.artifact
+                const pointer = pointers?.models?.[name]
+                const ic = icValue(model)
+                const diagnosis = model.lifecycle_diagnosis
+                const sampleCount = Number(model.last_ic_sample_count ?? 0)
+                const icTone: WorkstationTone = ic == null || Math.abs(ic) < 0.0001 ? 'warn' : ic > 0 ? 'ok' : 'error'
+                const liveTone: WorkstationTone = artifact?.live_gate_status === 'passed'
+                  ? 'ok'
+                  : artifact?.live_gate_status === 'failed'
+                    ? 'error'
+                    : artifact
+                      ? 'warn'
+                      : 'neutral'
+                const championArtifact = pointer?.d1_pointer_artifact_id ?? model.artifact_uri ?? model.gcs_path ?? model.metadata_path ?? 'not linked'
+                const segmentRows = segmentIcEntries(model)
+                const root = selected.context?.root_cause ?? shortRootCause(model)
+                const nextAction = selected.context?.next_action ?? (artifact ? artifactExclusionReason(artifact) : 'No selected registry candidate for live gate or promotion.')
+
+                return (
+                  <tr key={name} className="align-top hover:bg-[#101927]">
+                    <td className="border border-[#263247] px-2 py-2 text-slate-100">
+                      <div className="font-semibold">{name}</div>
+                      <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {model.balance_family ?? 'unknown'}</div>
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2">
+                      <WorkstationPill tone={toneFromStatus(model.status)}>{model.status ?? '-'}</WorkstationPill>
+                    </td>
+                    <td className="max-w-[220px] border border-[#263247] px-2 py-2">
+                      <div className="truncate text-slate-200" title={championArtifact}>{championArtifact}</div>
+                      <div className="mt-1 text-[10px] text-[#70809b]">serving {pointer?.serving_version ?? model.version ?? 'N/A'}</div>
+                      <WorkstationPill tone={pointer?.readiness === 'pointer_ready' ? 'ok' : pointer ? 'warn' : 'neutral'}>
+                        {pointer?.readiness ?? 'lineage only'}
+                      </WorkstationPill>
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2">
+                      <WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill>
+                      {segmentRows.length > 0 && (
+                        <div className="mt-1 flex max-w-[260px] flex-wrap gap-1">
+                          {segmentRows.slice(0, 3).map((row) => (
+                            <span key={row.segment} className="rounded border border-[#263247] bg-[#05070c] px-1.5 py-0.5 text-[10px] text-[#8a92a6]">
+                              {row.segment} {row.ic == null ? 'N/A' : row.ic.toFixed(3)} / n={row.samples}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                      <div>{sampleCount}</div>
+                      <div className="mt-1 text-[10px] text-[#70809b]">{diagnosis?.coverage == null ? 'coverage N/A' : `coverage ${Math.round(diagnosis.coverage * 100)}%`}</div>
+                      <WorkstationPill tone={model.metadata_exists === false ? 'warn' : 'ok'}>{model.metadata_exists === false ? 'metadata missing' : 'metadata present'}</WorkstationPill>
+                    </td>
+                    <td className="max-w-[240px] border border-[#263247] px-2 py-2">
+                      {artifact ? (
+                        <div>
+                          <div className="truncate font-semibold text-[#fff1cf]" title={artifact.artifact_id}>{artifact.artifact_id}</div>
+                          <div className="mt-1 text-[10px] text-[#70809b]">{artifact.version} / {artifact.candidate_type}</div>
+                          <WorkstationPill tone={registryTone(artifact.state)}>{artifact.state}</WorkstationPill>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">No selected candidate</span>
+                      )}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                      {artifact?.feature_policy_version ?? 'N/A'}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2">
+                      {artifact ? (
+                        <div className="space-y-1">
+                          <WorkstationPill tone={registryTone(artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state)}>
+                            {artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state}
+                          </WorkstationPill>
+                          <div className="text-slate-300">OOS {evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)}</div>
+                        </div>
+                      ) : 'N/A'}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2">
+                      {artifact ? (
+                        <div className="space-y-1 text-slate-300">
+                          <div>champion {evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}</div>
+                          <div>shadow {evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}</div>
+                          <div className="text-[10px] text-[#70809b]">
+                            n {evidenceMetric(artifact, ['shadow_samples', 'shadowSamples'], 0)} / min {evidenceMetric(artifact, ['min_samples', 'minSamples'], 0)}
+                          </div>
+                        </div>
+                      ) : 'N/A'}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                      {artifact ? `${evidenceMetric(artifact, ['model_cpcv_decision', 'cpcv_decision'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}` : 'N/A'}
+                    </td>
+                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                      {artifact ? `${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}` : 'N/A'}
+                    </td>
+                    <td className="max-w-[260px] border border-[#263247] px-2 py-2">
+                      {artifact ? (
+                        <div className="space-y-1">
+                          <WorkstationPill tone={liveTone}>{artifact.live_gate_status ?? 'not_started'}</WorkstationPill>
+                          <div className="text-[10px] leading-4 text-[#8a92a6]">{nextAction}</div>
+                          <details className="mt-2 rounded-lg border border-[#263247] bg-[#05070c] p-2">
+                            <summary className="cursor-pointer text-[10px] text-sky-200">Champion -&gt; Candidate diff</summary>
+                            <div className="mt-2">
+                              <ArtifactMetricDelta label="artifact" before={championArtifact} after={artifact.artifact_id} />
+                              <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? pointer?.serving_version ?? 'N/A'} after={artifact.final_compared_to ?? 'final comparison pending'} />
+                              <ArtifactMetricDelta label="feature policy" before="champion policy" after={artifact.feature_policy_version ?? 'not recorded'} />
+                              <ArtifactMetricDelta label="offline OOS IC" before="candidate holdout" after={evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)} />
+                              <ArtifactMetricDelta label="live IC" before={`champion ${evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}`} />
+                            </div>
+                          </details>
+                        </div>
+                      ) : 'N/A'}
+                    </td>
+                    <td className="max-w-[280px] border border-[#263247] px-2 py-2 text-[#8a92a6]">
+                      <div>{root}</div>
+                      {diagnosis?.reason && <div className="mt-1 text-[10px] leading-4">{diagnosis.reason}</div>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </WorkstationPanel>
   )
 }
 
@@ -390,8 +585,14 @@ function ArtifactMetricDelta({ label, before, after, afterNote }: { label: strin
   )
 }
 
-function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelectionResponse }) {
-  const rows = flattenSelectedArtifacts(selection)
+function LiveShadowEvidencePanel({
+  selection,
+  registry,
+}: {
+  selection?: ModelArtifactSelectionResponse
+  registry?: ModelArtifactRegistryResponse
+}) {
+  const rows = artifactRowsWithExcluded(selection, registry)
 
   return (
     <WorkstationPanel title="Live Gate Evidence / 版本實戰驗證" kicker="selected candidate only: shadow predict -> verify-v2 -> IC tracker">
@@ -401,13 +602,13 @@ function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelec
         </p>
         {rows.length ? (
           <div className="grid gap-2 md:grid-cols-2">
-            {rows.map(({ modelName, slot, artifact, actionContext }) => {
+            {rows.map(({ modelName, slot, artifact, actionContext, selected, displayReason }) => {
               const live = parseArtifactEvidence(artifact.live_evidence_json)
               const decision = (live.decision && typeof live.decision === 'object') ? live.decision as Record<string, unknown> : {}
               const metrics = (decision.metrics && typeof decision.metrics === 'object') ? decision.metrics as Record<string, unknown> : {}
               const liveStatus = artifact.live_gate_status ?? 'not_started'
               const samples = compactUnknown(metrics.shadow_samples ?? metrics.shadowSamples ?? 0, 0)
-              const rootCause = String(actionContext?.root_cause ?? decision.root_cause ?? decision.reason ?? (liveStatus === 'not_started' ? 'daily shadow evidence not started' : liveStatus))
+              const rootCause = String(displayReason ?? actionContext?.root_cause ?? decision.root_cause ?? decision.reason ?? (liveStatus === 'not_started' ? 'daily shadow evidence not started' : liveStatus))
               const nextAction = actionContext?.next_action ?? (liveStatus === 'not_started'
                 ? 'run daily ML predict shadow, then verify-v2 and model-ic-tracker'
                 : decision.reason ? String(decision.reason) : 'continue collecting live gate evidence')
@@ -419,7 +620,7 @@ function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelec
                       <p className="mt-0.5 text-[10px] text-[#70809b]">{artifact.version} · {slot.replace(/_/g, ' ')}</p>
                     </div>
                     <WorkstationPill tone={liveStatus === 'passed' ? 'ok' : liveStatus === 'failed' ? 'error' : 'warn'}>
-                      {versionChallengerStatusLabel(liveStatus)}
+                      {selected ? versionChallengerStatusLabel(liveStatus) : 'not selected'}
                     </WorkstationPill>
                   </div>
                   <div className="mt-3 grid grid-cols-4 gap-2 font-mono text-[11px]">
@@ -449,8 +650,16 @@ function LiveShadowEvidencePanel({ selection }: { selection?: ModelArtifactSelec
   )
 }
 
-function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactSelectionResponse; pointers?: ModelChampionPointersResponse }) {
-  const rows = flattenSelectedArtifacts(selection)
+function ArtifactDiffPanel({
+  selection,
+  pointers,
+  registry,
+}: {
+  selection?: ModelArtifactSelectionResponse
+  pointers?: ModelChampionPointersResponse
+  registry?: ModelArtifactRegistryResponse
+}) {
+  const rows = artifactRowsWithExcluded(selection, registry)
 
   return (
     <WorkstationPanel title="Artifact Diff / Champion -> Candidate 差異" kicker="one algorithm per card, champion pointer -> candidate">
@@ -460,7 +669,7 @@ function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactS
         </p>
         {rows.length ? (
           <div className="grid gap-3 md:grid-cols-2">
-            {rows.map(({ modelName, slot, artifact }) => {
+            {rows.map(({ modelName, slot, artifact, selected, displayReason }) => {
               const pointer = pointers?.models?.[modelName]
               const championVersion = pointer?.d1_pointer_version ?? pointer?.serving_version ?? 'champion version not linked'
               const championArtifact = pointer?.d1_pointer_artifact_id ?? null
@@ -475,7 +684,7 @@ function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactS
                       </p>
                     </div>
                     <WorkstationPill tone={linkStatus === 'linked' ? 'ok' : 'warn'}>
-                      {linkStatus === 'linked' ? 'artifact linked' : 'version-only baseline'}
+                      {selected ? (linkStatus === 'linked' ? 'artifact linked' : 'version-only baseline') : 'not selected'}
                     </WorkstationPill>
                   </div>
 
@@ -491,6 +700,12 @@ function ArtifactDiffPanel({ selection, pointers }: { selection?: ModelArtifactS
                     <ArtifactMetricDelta label="DSR / MC" before="candidate offline gate" after={`${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}`} />
                     <ArtifactMetricDelta label="live gate" before="production serving" after={artifact.live_gate_status ?? 'not_started'} />
                   </div>
+
+                  {!selected && (
+                    <p className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-200">
+                      not in live/diff candidate slot: {displayReason ?? artifactExclusionReason(artifact)}
+                    </p>
+                  )}
 
                   {linkStatus !== 'linked' && (
                     <p className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-200">
@@ -1004,6 +1219,13 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchInterval: 60_000,
   })
+  const artifactRegistry = useQuery({
+    queryKey: ['model-pool', 'artifact-registry'],
+    queryFn: () => modelPoolApi.artifactRegistry(300),
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
   const artifactPromotionQueue = useQuery({
     queryKey: ['model-pool', 'artifact-promotion-queue'],
     queryFn: () => modelPoolApi.artifactPromotionQueue(200),
@@ -1078,7 +1300,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch(); artifactRegistry.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -1113,7 +1335,11 @@ export default function ModelPoolPage() {
               queue={artifactPromotionQueue.data}
             />
             <ChampionPointerPanel pointers={championPointers.data} />
-            <ArtifactRegistryPanel selection={artifactSelection.data} />
+            <UnifiedModelHealthMatrix
+              models={modelList}
+              selection={artifactSelection.data}
+              pointers={championPointers.data}
+            />
             <PromotionQueuePanel
               queue={artifactPromotionQueue.data}
               isPromoting={promotionController.isPending}
@@ -1121,26 +1347,7 @@ export default function ModelPoolPage() {
               onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
             />
             <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
-            <LiveShadowEvidencePanel selection={artifactSelection.data} />
-            <ArtifactDiffPanel selection={artifactSelection.data} pointers={championPointers.data} />
             <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />
-
-            <WorkstationPanel title="模型健康矩陣" kicker="IC, samples, coverage, metadata, challenger">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] border-collapse font-mono text-[11px]">
-                  <thead className="bg-[#0c1420] text-[#70809b]">
-                    <tr>
-                      {['Model / 模型', 'Status / 狀態', 'IC 4W', 'Samples / 樣本', 'Metadata', 'Coverage / 覆蓋率', 'Shadow Challenger', 'Root cause / 根因'].map((label) => (
-                        <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {modelList.map(([name, model]) => <ModelHealthRow key={name} name={name} model={model} />)}
-                  </tbody>
-                </table>
-              </div>
-            </WorkstationPanel>
 
             <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">

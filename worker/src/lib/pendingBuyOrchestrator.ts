@@ -302,17 +302,28 @@ async function loadStockProfiles(db: D1Database, symbols: string[]): Promise<Map
   return profileMap
 }
 
-async function loadPunishedSet(kv: KVNamespace): Promise<Set<string>> {
+async function addRestrictedKvList(kv: KVNamespace, key: string, target: Set<string>): Promise<void> {
   try {
-    const raw = await kv.get('market:punished_stocks', 'json') as string[] | null
-    return new Set(raw ?? [])
+    const raw = await kv.get(key, 'json') as unknown
+    if (!Array.isArray(raw)) return
+    for (const item of raw) {
+      const symbol = typeof item === 'string' ? item : (item as any)?.symbol ?? (item as any)?.code
+      if (symbol) target.add(String(symbol))
+    }
   } catch {
-    return new Set()
+    // Optional market-risk caches should not break morning setup.
   }
 }
 
 async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<Set<string>> {
-  const restricted = await loadPunishedSet(kv)
+  const restricted = new Set<string>()
+  await Promise.all([
+    addRestrictedKvList(kv, 'market:punished_stocks', restricted),
+    addRestrictedKvList(kv, 'market:attention_stocks', restricted),
+    addRestrictedKvList(kv, 'market:tpex_punished_stocks', restricted),
+    addRestrictedKvList(kv, 'market:tpex_attention_stocks', restricted),
+    addRestrictedKvList(kv, 'market:delisting_risk', restricted),
+  ])
   try {
     const { results } = await db.prepare(`
       SELECT symbol

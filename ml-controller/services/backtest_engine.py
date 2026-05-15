@@ -2156,7 +2156,7 @@ class PositionSizeParams:
     min_stop_pct: float = 0.03
     min_position_value: float = 30_000
     max_positions: int = 5
-    daily_buy_limit: float = 200_000
+    daily_buy_limit: float = 500_000
     # Kelly sub-config
     kelly_enabled: bool = False
     kelly_half: bool = True
@@ -2181,7 +2181,7 @@ class PositionSizeParams:
             min_stop_pct=p.get("minStopPct", 0.03),
             min_position_value=p.get("minPositionValue", 30_000),
             max_positions=p.get("maxPositions", 5),
-            daily_buy_limit=p.get("dailyBuyLimit", 200_000),
+            daily_buy_limit=p.get("dailyBuyLimit", 500_000),
             kelly_enabled=k.get("enabled", False),
             kelly_half=k.get("halfKelly", True),
             kelly_conf_clip_lo=k.get("confClipLo", 0.50),

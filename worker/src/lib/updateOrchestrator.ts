@@ -6,6 +6,7 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import { fetchPunishedStocks } from './twseApi'
 
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
@@ -244,8 +245,9 @@ async function finalizeUpdateChain(
   shardCount: number,
 ): Promise<void> {
   const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
-  if (await env.KV.get(finalKey)) {
-    console.log(`[Queue] Finalize already completed for ${triggerTime} ${runId}`)
+  const acquired = await acquireFinalizeLock(env, triggerTime, runId)
+  if (!acquired) {
+    console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
     return
   }
   await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
@@ -318,6 +320,59 @@ async function finalizeUpdateChain(
     console.warn('[Queue] Event-driven screener failed:', e)
     return
   }
+
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `event-driven chain queued post-screener continuation for ${triggerTime}; run_id=${runId}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await env.UPDATE_QUEUE.send({
+    type: 'post_screener_pipeline',
+    cursor: 0,
+    triggerTime,
+    runId,
+    shardCount,
+    attempt: 1,
+  })
+}
+
+async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {
+  const lockKey = `indicator-finalize:${triggerTime}:${runId}`
+  const now = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + 7 * 86400 * 1000).toISOString()
+  try {
+    const result = await env.DB.prepare(`
+      INSERT OR IGNORE INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
+      VALUES (?, 'indicator_finalize', ?, ?, ?, ?)
+    `).bind(lockKey, triggerTime, runId, now, expiresAt).run()
+    const changes = Number(result.meta?.changes ?? 0)
+    return changes > 0
+  } catch (error) {
+    // Fail closed: without an atomic lock, multiple finalizers can advance the same chain.
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: finalize lock unavailable for ${triggerTime}`,
+      duration_ms: 0,
+      error: error instanceof Error ? error.message : String(error),
+      run_date: triggerTime,
+    })
+    throw error
+  }
+}
+
+async function continuePostScreenerPipeline(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId?: string,
+): Promise<void> {
+  await logSchedulerResult(env.KV, 'regime-compute', {
+    status: 'running',
+    summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
 
   try {
     const startedAt = Date.now()
@@ -662,6 +717,17 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
     } catch (e) {
       console.warn('[Wave2] Attention stocks proxy failed:', e)
     }
+
+    try {
+      const punishedSymbols = await fetchPunishedStocks()
+      if (punishedSymbols.length) {
+        await env.KV.put('market:punished_stocks', JSON.stringify(punishedSymbols), { expirationTtl: 86400 })
+        await env.KV.put('market:punished_stocks:checked_at', new Date().toISOString(), { expirationTtl: 86400 })
+        console.log(`[Wave2] Punished stocks (TWSE): ${punishedSymbols.length} symbols`)
+      }
+    } catch (e) {
+      console.warn('[Wave2] Punished stocks fetch failed:', e)
+    }
   }
 }
 
@@ -750,6 +816,17 @@ export async function processUpdateBatch(
     }
 
     throw new Error(`indicator queue finalize timed out for ${triggerTime}; run_id=${runId}; done=${doneCount}/${shardCount}`)
+  }
+
+  if (msg.type === 'post_screener_pipeline') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `${triggerTime}-post-screener`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-screener continuation date ${triggerTime}, skipping.`)
+      return
+    }
+    await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    return
   }
 
   const { cursor, triggerTime } = msg

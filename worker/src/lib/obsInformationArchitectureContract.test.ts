@@ -22,7 +22,7 @@ assert(!appShell.includes("href: '/data-quality'"), 'Data Quality must be remove
 assert(!obs.includes('Incident Inbox'), 'OBS must not render the old incident inbox; root cause belongs on scheduler rows')
 assert(!obs.includes('Selected Incident Detail'), 'OBS must not render the old selected incident detail pane')
 assert(obs.includes('Dependency Map'), 'OBS must expose a dependency map for ownership and blast radius')
-assert(obs.includes('Reliability Map / 可靠度地圖'), 'OBS must include a visual reliability map, not only metric boxes')
+assert(!obs.includes('Reliability Map'), 'OBS must not render the low-signal reliability map')
 assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
 assert(obs.includes('狀態紀錄：'), 'OBS scheduler rows must expose normal status logs separately from root cause')
 assert(obs.includes('發生 {job.lastRun') || obs.includes('發生 '), 'Scheduler rows must expose occurrence time')

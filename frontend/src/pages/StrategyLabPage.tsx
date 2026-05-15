@@ -138,6 +138,7 @@ function MetaLearningDecisionDesk({
   onCreateTrackExperiment,
   onRefreshLinucb,
   onRunNeuralShadow,
+  actionResult,
 }: {
   tracks: MetaLearningTrack[]
   matrix: MetaLearningEvidenceRow[]
@@ -145,6 +146,7 @@ function MetaLearningDecisionDesk({
   onCreateTrackExperiment: (track: MetaLearningTrack) => void
   onRefreshLinucb: () => void
   onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS') => void
+  actionResult: string | null
 }) {
   const visible = tracks.length ? tracks : []
   const matrixById = new Map(matrix.map((row) => [row.id, row]))
@@ -156,6 +158,11 @@ function MetaLearningDecisionDesk({
         </CardTitle>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+        {actionResult && (
+          <div className="xl:col-span-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
+            {actionResult}
+          </div>
+        )}
         <div className="grid gap-3 md:grid-cols-2">
           {visible.map((track) => (
             <div key={track.id} className="rounded-2xl border border-slate-800 bg-black/20 p-4">
@@ -295,6 +302,7 @@ export default function StrategyLabPage() {
   const [draftPersisting, setDraftPersisting] = useState(false)
   const [runningExperimentId, setRunningExperimentId] = useState<string | null>(null)
   const [metaActionBusy, setMetaActionBusy] = useState<string | null>(null)
+  const [metaActionResult, setMetaActionResult] = useState<string | null>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -375,6 +383,7 @@ export default function StrategyLabPage() {
         confirm: true,
       })
       setDraftResult(res.review_packet)
+      setMetaActionResult(`研究實驗已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'experiment registry write failed'))
@@ -406,6 +415,7 @@ export default function StrategyLabPage() {
         confirm: true,
       })
       setDraftResult(res.review_packet)
+      setMetaActionResult(`Model Benchmark 已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'model benchmark experiment write failed'))
@@ -452,7 +462,8 @@ export default function StrategyLabPage() {
     try {
       setMetaActionBusy('linucb-ledger')
       setDraftError(null)
-      await strategyLabApi.refreshLinucbRewardLedger({ limit: 5000, dry_run: false, confirm: true })
+      const res = await strategyLabApi.refreshLinucbRewardLedger({ limit: 5000, dry_run: false, confirm: true })
+      setMetaActionResult(`LinUCB reward ledger 已刷新：samples=${res.samples ?? res.source_rows ?? '-'}，arms=${res.arms ?? '-'}。`)
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'LinUCB reward ledger refresh failed'))
@@ -465,7 +476,8 @@ export default function StrategyLabPage() {
     try {
       setMetaActionBusy(`shadow:${policyId}`)
       setDraftError(null)
-      await strategyLabApi.runNeuralShadow({ policy_id: policyId, limit: 5000, dry_run: false, confirm: true })
+      const res = await strategyLabApi.runNeuralShadow({ policy_id: policyId, limit: 5000, dry_run: false, confirm: true })
+      setMetaActionResult(`${policyId} shadow 驗證完成：mode=${res.mode ?? '-'}，success=${String(res.success)}，source_rows=${res.source_rows ?? 0}，training_samples=${res.training_samples ?? 0}，persisted_rows=${res.persisted_rows ?? 0}。`)
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, `${policyId} shadow run failed`))
@@ -550,6 +562,7 @@ export default function StrategyLabPage() {
           onCreateTrackExperiment={createMetaLearningExperiment}
           onRefreshLinucb={refreshLinucbLedger}
           onRunNeuralShadow={runNeuralShadow}
+          actionResult={metaActionResult}
         />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_0.65fr]">

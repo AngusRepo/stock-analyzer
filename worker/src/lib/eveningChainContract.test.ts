@@ -25,10 +25,21 @@ const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 assert(updateOrchestrator.includes('indicator-queue'), 'indicator queue must have scheduler-visible run state')
 assert(updateOrchestrator.includes('UPDATE_SHARD_COUNT'), 'indicator queue must fan out into shards instead of one serial cursor')
 assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger must enqueue shard messages as a real batch')
 assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
+assert(
+  updateOrchestrator.includes('acquireFinalizeLock') &&
+    updateOrchestrator.includes('INSERT OR IGNORE INTO scheduler_locks'),
+  'indicator queue finalizer must use an atomic D1 lock; KV get/put is not safe for concurrent finalizers',
+)
+assert(
+  schedulerLockMigration.includes('CREATE TABLE IF NOT EXISTS scheduler_locks') &&
+    schedulerLockMigration.includes('lock_key   TEXT PRIMARY KEY'),
+  'scheduler_locks migration must exist before the atomic finalizer lock is deployed',
+)
 assert(
   updateOrchestrator.includes("'source_readiness_retry'") &&
     updateOrchestrator.includes('SOURCE_READINESS_RETRY_DELAY_SECONDS') &&

@@ -70,14 +70,35 @@ async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
   }
 }
 
-async function loadRestrictedScreenerSymbols(env: Bindings): Promise<Set<string>> {
+async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<Set<string>> {
   const restricted = new Set<string>()
-  const [cachedPunished, cachedAttention] = await Promise.all([
+  const [cachedPunished, cachedAttention, cachedTpexPunished, cachedTpexAttention, cachedDelisting] = await Promise.all([
     readSymbolList(env.KV, 'market:punished_stocks'),
     readSymbolList(env.KV, 'market:attention_stocks'),
+    readSymbolList(env.KV, 'market:tpex_punished_stocks'),
+    readSymbolList(env.KV, 'market:tpex_attention_stocks'),
+    readSymbolList(env.KV, 'market:delisting_risk'),
   ])
   for (const symbol of cachedPunished) restricted.add(symbol)
   for (const symbol of cachedAttention) restricted.add(symbol)
+  for (const symbol of cachedTpexPunished) restricted.add(symbol)
+  for (const symbol of cachedTpexAttention) restricted.add(symbol)
+  for (const symbol of cachedDelisting) restricted.add(symbol)
+
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol
+        FROM stock_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+    `).bind(runDate, runDate).all<{ symbol: string | null }>()
+    for (const row of results ?? []) {
+      if (row.symbol) restricted.add(String(row.symbol))
+    }
+  } catch {
+    // Optional governance table may not exist in older D1 snapshots.
+  }
 
   try {
     const { fetchPunishedStocks } = await import('./twseApi')
@@ -836,7 +857,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ── 處置股排除 ──
-  const punishedSet = await loadRestrictedScreenerSymbols(env)
+  const punishedSet = await loadRestrictedScreenerSymbols(env, endDate)
   // restricted symbols are loaded once through loadRestrictedScreenerSymbols above.
   debugLog.push(`[Guard] restricted symbols loaded=${punishedSet.size} (punished + attention, KV fallback enabled)`)
 

@@ -148,8 +148,8 @@ export interface TradingConfig {
     dynamicExitPriorityEnabled: boolean  // 預設 false，4/27 後 Wei KV 翻
   }
   position: {
-    dailyBuyLimit: number        // 每日自動買入上限 NT$（預設 200000）
-    manualDailyLimit: number     // 每日手動買入上限 NT$（預設 200000）
+    dailyBuyLimit: number        // 每日自動買入上限 NT$
+    manualDailyLimit: number     // 每日手動買入上限 NT$
     maxPctOfPortfolio: number    // 單筆最大佔 portfolio %（預設 0.25）
     maxPctOfCash: number         // 單筆最大佔現金 %（預設 0.30）
     minCashToTrade: number       // 最低可交易現金（預設 10000）
@@ -454,8 +454,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     dynamicExitPriorityEnabled: false,  // #16 Step 9c prep — 4/27 Wei KV 翻
   },
   position: {
-    dailyBuyLimit: 200_000,
-    manualDailyLimit: 200_000,
+    dailyBuyLimit: 500_000,
+    manualDailyLimit: 500_000,
     maxPctOfPortfolio: 0.25,
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,

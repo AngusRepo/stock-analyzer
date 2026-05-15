@@ -554,6 +554,17 @@ CREATE TABLE IF NOT EXISTS model_champion_pointers (
 CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
   ON model_champion_pointers(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS scheduler_locks (
+  lock_key   TEXT PRIMARY KEY,
+  owner      TEXT NOT NULL,
+  run_date   TEXT,
+  run_id     TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_locks_owner_date
+  ON scheduler_locks(owner, run_date, created_at DESC);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡
 -- 首次部署：wrangler d1 execute stockvision-db --remote --file=./worker/schema.sql

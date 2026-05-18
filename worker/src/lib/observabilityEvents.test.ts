@@ -54,12 +54,14 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         status: 'shadow_config',
         nextLevel: 'L3',
         approvalRequiredForNextLevel: true,
-        canRequestNextLevel: true,
-        missingEvidence: [],
+        canRequestNextLevel: false,
+        missingEvidence: ['stale_snapshot'],
       },
       best: {
         score: 1.2,
-        gate: { passed: true, failed_gates: [] },
+        metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+        gate: { passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
+        candidate: { params: { alphaFramework: { riskOverlay: { highVolThreshold: 0.05 } } } },
       },
       history: [{ generation: 0, best_score: 1.0 }, { generation: 1, best_score: 1.2 }],
     },
@@ -72,6 +74,8 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events[0].summary.includes('ready_for_l3=yes'), 'GA optimizer event should expose L3 request readiness')
   assert((events[0].evidence.promotion as any).level === 'L2', 'GA optimizer evidence should include promotion level')
   assert((events[0].evidence.promotion as any).canRequestNextLevel === true, 'GA optimizer evidence should expose L3 approval request readiness')
+  assert((events[0].evidence.promotion as any).missingEvidence.length === 0, 'GA optimizer should recompute stale missing evidence from current gates')
+  assert((events[0].evidence.promotion as any).nextAction.includes('Ready to request Wei approval for L3'), 'GA optimizer should backfill concrete next action for older KV states')
   assert((events[0].evidence as any).mutates_trading_config === false, 'GA learning must not mutate trading config')
 }
 

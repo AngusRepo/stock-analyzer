@@ -39,6 +39,12 @@ assert(
   'rescore sell execution must use the shared bid-aware fill policy',
 )
 assert(
+  workerTasks.includes('missingFinalSymbols') &&
+    workerTasks.includes('batchGetLatestPrices(env.DB, missingFinalSymbols)') &&
+    !workerTasks.includes('if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices'),
+  'daily snapshot must fill missing intraday quotes from EOD prices instead of treating partial intraday coverage as complete',
+)
+assert(
   entryTasks.includes('resolveMarketSellFill'),
   'auto-swap sells must use the shared bid-aware fill policy',
 )

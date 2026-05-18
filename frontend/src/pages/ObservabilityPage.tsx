@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, ExternalLink } from 'lucide-react'
 import AppShell from '@/components/AppShell'
-import ObservabilityEventTimeline from '@/components/charts/ObservabilityEventTimeline'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -346,11 +345,28 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const bestMetrics = asRecord(gaEvidence.best_metrics)
   const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
   const historyTail = gaEvidence.history_tail
-  const requiredEvidence = Array.isArray(promotion.requiredEvidence) ? promotion.requiredEvidence.map(String) : []
-  const missingEvidence = Array.isArray(promotion.missingEvidence) ? promotion.missingEvidence.map(String) : []
-  const pendingApprovalLevel = String(promotion.pendingApprovalLevel ?? '')
-  const canRequestNextLevel = promotion.canRequestNextLevel === true
+  const requiredEvidence = Array.isArray(promotion.requiredEvidence)
+    ? promotion.requiredEvidence.map(String)
+    : Array.isArray(promotion.required_evidence)
+      ? promotion.required_evidence.map(String)
+      : []
+  const missingEvidence = Array.isArray(promotion.missingEvidence)
+    ? promotion.missingEvidence.map(String)
+    : Array.isArray(promotion.missing_evidence)
+      ? promotion.missing_evidence.map(String)
+      : []
+  const pendingApprovalLevel = String(promotion.pendingApprovalLevel ?? promotion.pending_approval_level ?? '')
+  const canRequestNextLevel = promotion.canRequestNextLevel === true || promotion.can_request_next_level === true
   const gaNextAction = String(promotion.nextAction ?? ga?.next_action ?? '')
+  const approvalRequiredForNextLevel =
+    promotion.approvalRequiredForNextLevel === true || promotion.approval_required_for_next_level === true
+  const l3Blockers = missingEvidence.length
+    ? missingEvidence
+    : canRequestNextLevel && approvalRequiredForNextLevel
+      ? ['Wei approval']
+      : pendingApprovalLevel
+        ? [`pending ${pendingApprovalLevel}`]
+        : ['keep collecting GA history']
   const metaLearners: Array<[string, string, string, string]> = []
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
 
@@ -431,7 +447,7 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
             <div>
               <p className="text-slate-500">L3 request</p>
               <p className={`font-mono text-lg ${canRequestNextLevel || pendingApprovalLevel ? 'text-emerald-300' : 'text-slate-100'}`}>
-                {pendingApprovalLevel ? `pending ${pendingApprovalLevel}` : canRequestNextLevel ? 'ready' : 'not ready'}
+                {pendingApprovalLevel ? `pending ${pendingApprovalLevel}` : canRequestNextLevel ? 'ready for approval' : 'not ready'}
               </p>
             </div>
             <div>
@@ -460,6 +476,14 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
                 </WorkstationPill>
               ))}
             </div>
+            <div className="mt-2 flex flex-wrap items-center gap-1">
+              <span className="text-[#70809b]">L3 blockers:</span>
+              {l3Blockers.map((item) => (
+                <WorkstationPill key={item} tone={item === 'Wei approval' || item.startsWith('pending') ? 'warn' : 'info'}>
+                  {item}
+                </WorkstationPill>
+              ))}
+            </div>
             <p className="mt-2 text-[#9badbf]">{gaNextAction || 'GA promotion state has not exposed a next action yet.'}</p>
           </div>
           <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
@@ -469,8 +493,8 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
             <WorkstationPill tone={gaEvidence.mutates_trading_config === false ? 'ok' : 'error'}>
               config mutate {gaEvidence.mutates_trading_config === false ? 'blocked' : 'unknown'}
             </WorkstationPill>
-            <WorkstationPill tone={promotion.approvalRequiredForNextLevel ? 'warn' : 'ok'}>
-              approval {promotion.approvalRequiredForNextLevel ? 'required' : 'not yet'}
+            <WorkstationPill tone={approvalRequiredForNextLevel ? 'warn' : 'ok'}>
+              approval {approvalRequiredForNextLevel ? 'required' : 'not yet'}
             </WorkstationPill>
           </div>
           <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-100">
@@ -615,12 +639,6 @@ export default function ObservabilityPage() {
               <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
             </div>
           }
-        />
-
-        <ObservabilityEventTimeline
-          report={observability.data}
-          loading={observability.isLoading}
-          error={observability.error}
         />
 
         <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">

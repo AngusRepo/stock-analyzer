@@ -4,6 +4,7 @@ import { buildDataQualityReport, type DataQualityCheck } from './dataQualityMoni
 import { buildDeployGateReport } from './deployGate'
 import { getSchedulerStatus } from './schedulerStatus'
 import { controllerJson } from './controllerClient'
+import { evaluateGaPromotion } from './gaPromotion'
 
 export type ObservabilitySeverity = 'ok' | 'info' | 'warn' | 'error'
 export type ObservabilityDomain =
@@ -675,7 +676,14 @@ export function buildEventsFromGaOptimizer(input: {
     }]
   }
 
-  const promotion = state.promotion as Record<string, unknown> | undefined
+  const storedPromotion = state.promotion as Record<string, unknown> | undefined
+  const evaluatedPromotion = evaluateGaPromotion(state as Record<string, any>)
+  const promotion = {
+    ...(storedPromotion ?? {}),
+    ...evaluatedPromotion,
+    level: storedPromotion?.level ?? evaluatedPromotion.level,
+    status: storedPromotion?.status ?? evaluatedPromotion.status,
+  } as Record<string, unknown>
   const level = String(promotion?.level ?? 'L0')
   const status = String(promotion?.status ?? state.status ?? 'learning')
   const approvalRequired = promotion?.approvalRequiredForNextLevel === true

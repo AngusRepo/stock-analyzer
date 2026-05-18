@@ -22,11 +22,19 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   ).bind(ACCOUNT_ID).all<any>()
 
   const finalSymbols = (finalPos ?? []).map((p: any) => p.symbol)
-  let finalPriceMap = await batchGetIntradayPrices(finalSymbols, {
+  const finalPriceMap = await batchGetIntradayPrices(finalSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
   })
-  if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices(env.DB, finalSymbols)
+  const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
+  if (missingFinalSymbols.length) {
+    const eodPrices = await batchGetLatestPrices(env.DB, missingFinalSymbols)
+    for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
+    console.log(
+      `[Snapshot] price coverage intraday=${finalPriceMap.size - eodPrices.size}/${finalSymbols.length} ` +
+      `eod_fallback=${eodPrices.size}/${missingFinalSymbols.length}`,
+    )
+  }
 
   let finalPosValue = 0
   for (const p of (finalPos ?? [])) {

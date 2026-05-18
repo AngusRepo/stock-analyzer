@@ -36,6 +36,7 @@ from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
+from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
@@ -58,6 +59,16 @@ from services.persona_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _state_space_overlay_mode() -> str:
+    raw = (
+        os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_MODE")
+        or os.environ.get("STATE_SPACE_OVERLAY_MODE")
+        or "blocking"
+    )
+    mode = str(raw).strip().lower()
+    return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,16 +201,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"predictions": {}}
 
-    # Build Chronos series_list once (close prices per symbol) to run in parallel
-    # with feature-model batch predict. Uses last 512 values max — Chronos T5
-    # context limit. Failed rows get error dict from chronos_universal.
-    chronos_series = []
-    for p in payloads:
-        sym = p.get("symbol") if isinstance(p, dict) else None
-        prices = p.get("prices") or [] if isinstance(p, dict) else []
-        closes = [float(px.get("close", 0) or 0) for px in prices if px.get("close") is not None]
-        if sym and closes:
-            chronos_series.append({"symbol": sym, "prices": closes})
+    # Build shared close-price series once for time-series predictors.
+    chronos_series = build_state_space_series_from_payloads(payloads)
 
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
@@ -224,20 +227,38 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
     )
+    state_space_mode = _state_space_overlay_mode()
     state_space_models = {
         model_name: active_versions.get(model_name, "v1")
         for model_name in ("KalmanFilter", "MarkovSwitching")
         if model_status.get(model_name, "active") in ("active", "degraded")
     }
-    state_space_task = (
-        modal_client.state_space_overlays_batch_predict(
+
+    async def _shadow_state_space_overlays() -> dict:
+        if not state_space_models:
+            return {"error": "state-space overlays retired by model_pool", "results": []}
+        if state_space_mode == "disabled":
+            return {"error": "state-space overlays disabled by overlay mode", "results": []}
+        if state_space_mode == "shadow":
+            try:
+                spawn_info = await asyncio.to_thread(
+                    modal_client.spawn_state_space_overlays_batch_predict,
+                    chronos_series,
+                    horizon=5,
+                    version_by_model=state_space_models,
+                )
+                logger.info(f"[Pipeline V2] State-space overlays shadow spawned: {spawn_info}")
+                return {"error": "state-space overlays shadow spawned; not blocking prediction", "results": [], "shadow": spawn_info}
+            except Exception as exc:  # noqa: BLE001 - shadow overlay must not block prediction.
+                logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
+                return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
+        return await modal_client.state_space_overlays_batch_predict(
             chronos_series,
             horizon=5,
             version_by_model=state_space_models,
         )
-        if state_space_models
-        else _skip_batch("state-space overlays retired by model_pool")
-    )
+
+    state_space_task = _shadow_state_space_overlays()
     dlinear_ch_task = (
         modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
         if challenger_versions.get("DLinear")
@@ -363,6 +384,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if isinstance(state_space_raw, dict) and isinstance(state_space_raw.get("overlays"), dict):
         state_space_overlays = state_space_raw["overlays"]
         logger.info(f"[Pipeline V2] State-space overlays metrics: {state_space_raw.get('metrics')}")
+    elif isinstance(state_space_raw, dict) and state_space_raw.get("shadow"):
+        logger.info(f"[Pipeline V2] State-space overlays shadow mode: {state_space_raw.get('shadow')}")
     elif isinstance(state_space_raw, dict) and state_space_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] State-space overlays skipped: {state_space_raw.get('error')}")
     elif isinstance(state_space_raw, BaseException):

@@ -346,6 +346,11 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
   const bestMetrics = asRecord(gaEvidence.best_metrics)
   const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
   const historyTail = gaEvidence.history_tail
+  const requiredEvidence = Array.isArray(promotion.requiredEvidence) ? promotion.requiredEvidence.map(String) : []
+  const missingEvidence = Array.isArray(promotion.missingEvidence) ? promotion.missingEvidence.map(String) : []
+  const pendingApprovalLevel = String(promotion.pendingApprovalLevel ?? '')
+  const canRequestNextLevel = promotion.canRequestNextLevel === true
+  const gaNextAction = String(promotion.nextAction ?? ga?.next_action ?? '')
   const metaLearners: Array<[string, string, string, string]> = []
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
 
@@ -424,6 +429,12 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
               <p className="font-mono text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
             </div>
             <div>
+              <p className="text-slate-500">L3 request</p>
+              <p className={`font-mono text-lg ${canRequestNextLevel || pendingApprovalLevel ? 'text-emerald-300' : 'text-slate-100'}`}>
+                {pendingApprovalLevel ? `pending ${pendingApprovalLevel}` : canRequestNextLevel ? 'ready' : 'not ready'}
+              </p>
+            </div>
+            <div>
               <p className="text-slate-500">best score</p>
               <p className="font-mono text-lg text-emerald-300">{fmtNumber(gaEvidence.best_score, 4)}</p>
             </div>
@@ -439,6 +450,17 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
             <span>PBO {fmtNumber(bestMetrics.pbo, 3)}</span>
             <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
             <span>Sharpe {fmtNumber(bestMetrics.sharpe, 2)}</span>
+          </div>
+          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+            <p className="font-semibold text-slate-100">L3 gate evidence</p>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => (
+                <WorkstationPill key={item} tone={missingEvidence.includes(item) ? 'warn' : 'ok'}>
+                  {item} {missingEvidence.includes(item) ? 'missing' : 'ok'}
+                </WorkstationPill>
+              ))}
+            </div>
+            <p className="mt-2 text-[#9badbf]">{gaNextAction || 'GA promotion state has not exposed a next action yet.'}</p>
           </div>
           <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
             learned policy: {summarizeLearnedPolicy(learnedPolicy)}

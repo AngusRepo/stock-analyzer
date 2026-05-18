@@ -82,6 +82,7 @@ class FeatureSelectionPolicy:
     required_power: float = 0.99
     icir_weight: float = 0.1
     permutation_mode: str = "within_date_sector"
+    signal_sanity_max_workers: int = 2
     target_permutation_max_workers: int = 2
     k_sweep_n_jobs: int = 2
 
@@ -100,6 +101,10 @@ class FeatureSelectionPolicy:
                 "UNIVERSAL_FEATURE_SELECTION_PERMUTATION_MODE",
                 cls.permutation_mode,
             ).strip() or cls.permutation_mode,
+            signal_sanity_max_workers=_env_int(
+                "UNIVERSAL_FEATURE_SELECTION_SIGNAL_SANITY_WORKERS",
+                cls.signal_sanity_max_workers,
+            ),
             target_permutation_max_workers=_env_int(
                 "UNIVERSAL_FEATURE_SELECTION_TARGET_PERM_WORKERS",
                 cls.target_permutation_max_workers,
@@ -119,6 +124,10 @@ class FeatureSelectionPolicy:
             "required_power": _coerce_float(overrides.get("required_power"), data["required_power"]),
             "icir_weight": _coerce_float(overrides.get("icir_weight"), data["icir_weight"]),
             "permutation_mode": str(overrides.get("permutation_mode") or data["permutation_mode"]),
+            "signal_sanity_max_workers": _coerce_int(
+                overrides.get("signal_sanity_max_workers"),
+                data["signal_sanity_max_workers"],
+            ),
             "target_permutation_max_workers": _coerce_int(
                 overrides.get("target_permutation_max_workers"),
                 data["target_permutation_max_workers"],
@@ -406,6 +415,21 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
     payload["skip_feature_pool"] = policy.skip_feature_pool
     payload["feature_policy"] = policy.to_dict()
     return payload
+
+
+def build_tree_model_child_payloads(base_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Build one governed train payload per tree model for opt-in fan-out."""
+
+    tree_payload = build_group_train_payload(base_payload, "tree")
+    payloads: dict[str, dict[str, Any]] = {}
+    for model_name in TREE_MODEL_NAMES:
+        child = dict(tree_payload)
+        child["models_filter"] = [model_name]
+        child["tree_split_parent_models"] = list(TREE_MODEL_NAMES)
+        child["tree_split_model"] = model_name
+        child["training_run_suffix"] = model_name.lower()
+        payloads[model_name] = child
+    return payloads
 
 
 def should_force_full_feature_pool(models_filter: list[str] | tuple[str, ...] | None) -> bool:

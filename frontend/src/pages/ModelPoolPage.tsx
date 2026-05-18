@@ -263,6 +263,52 @@ function artifactExclusionReason(artifact: ModelArtifactRegistryRow): string {
   return `not selected by release-train policy: state=${artifact.state}, live=${artifact.live_gate_status ?? 'n/a'}`
 }
 
+const TREE_POLICY_MODELS = new Set(['CatBoost', 'ExtraTrees', 'LightGBM', 'XGBoost'])
+
+function featurePolicyCopy(modelName: string, version?: string | null) {
+  const schema = version || 'inferred'
+  if (TREE_POLICY_MODELS.has(modelName)) {
+    return {
+      label: 'Selected tabular factors',
+      detail: 'Uses governed feature selection; no all-feature fallback.',
+      schema,
+    }
+  }
+  if (modelName === 'FT-Transformer') {
+    return {
+      label: 'Wide tabular + missing mask',
+      detail: 'Keeps the broad tabular matrix and carries missingness/schema parity.',
+      schema,
+    }
+  }
+  if (modelName === 'DLinear') {
+    return {
+      label: 'Close-price sequence',
+      detail: 'Uses aligned close-price windows, not the tabular feature pool.',
+      schema,
+    }
+  }
+  if (modelName === 'PatchTST') {
+    return {
+      label: 'Patch sequence transformer',
+      detail: 'Uses channel-independent close-price sequence windows.',
+      schema,
+    }
+  }
+  if (modelName === 'Chronos') {
+    return {
+      label: 'Chronos context series',
+      detail: 'Foundation forecast slot; does not consume tree/FT feature selection.',
+      schema,
+    }
+  }
+  return {
+    label: 'Policy not mapped',
+    detail: 'Registry did not expose a known model feature policy.',
+    schema,
+  }
+}
+
 function artifactRowsWithExcluded(
   selection?: ModelArtifactSelectionResponse,
   registry?: ModelArtifactRegistryResponse,
@@ -463,6 +509,7 @@ function UnifiedModelHealthMatrix({
                 const segmentRows = segmentIcEntries(model)
                 const root = selected.context?.root_cause ?? shortRootCause(model)
                 const nextAction = selected.context?.next_action ?? (artifact ? artifactExclusionReason(artifact) : 'No selected registry candidate for live gate or promotion.')
+                const policyInfo = featurePolicyCopy(name, artifact?.feature_policy_version)
 
                 return (
                   <tr key={name} className="align-top hover:bg-[#101927]">
@@ -518,8 +565,12 @@ function UnifiedModelHealthMatrix({
                         <span className="text-slate-500">No selected candidate</span>
                       )}
                     </td>
-                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
-                      {artifact?.feature_policy_version ?? 'N/A'}
+                    <td className="min-w-[190px] border border-[#263247] px-2 py-2 text-slate-300">
+                      <div className="font-semibold text-slate-100">{policyInfo.label}</div>
+                      <div className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{policyInfo.detail}</div>
+                      <WorkstationPill tone={artifact?.feature_policy_version ? 'ok' : 'warn'}>
+                        {policyInfo.schema}
+                      </WorkstationPill>
                     </td>
                     <td className="border border-[#263247] px-2 py-2">
                       {artifact ? (
@@ -548,7 +599,7 @@ function UnifiedModelHealthMatrix({
                     <td className="border border-[#263247] px-2 py-2 text-slate-300">
                       {artifact ? `${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}` : 'N/A'}
                     </td>
-                    <td className="max-w-[360px] border border-[#263247] px-2 py-2">
+                    <td className="min-w-[420px] max-w-[560px] border border-[#263247] px-2 py-2 whitespace-normal">
                       {artifact ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={liveTone}>{artifact.live_gate_status ?? 'not_started'}</WorkstationPill>
@@ -562,7 +613,7 @@ function UnifiedModelHealthMatrix({
                             <div className="mt-2">
                               <ArtifactMetricDelta label="artifact" before={championArtifact} after={artifact.artifact_id} />
                               <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? pointer?.serving_version ?? 'N/A'} after={artifact.final_compared_to ?? 'final comparison pending'} />
-                              <ArtifactMetricDelta label="feature policy" before="champion policy" after={artifact.feature_policy_version ?? 'not recorded'} />
+                              <ArtifactMetricDelta label="feature policy" before="champion policy" after={`${policyInfo.label} (${policyInfo.schema})`} />
                               <ArtifactMetricDelta label="offline OOS IC" before="candidate holdout" after={evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)} />
                               <ArtifactMetricDelta label="live IC" before={`champion ${evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}`} />
                             </div>
@@ -639,7 +690,7 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       <p className="mt-0.5 text-[10px] text-[#70809b]">{candidate.titleZh} / {candidate.family}</p>
                     </div>
                     <WorkstationPill tone={evidence.isEvidenceReady ? 'ok' : evidence.latest ? 'warn' : 'error'}>
-                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'registry incomplete' : 'registry missing'}
+                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'experiment incomplete' : 'experiment missing'}
                     </WorkstationPill>
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
@@ -658,6 +709,10 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                     </div>
                   ) : (
                     <div className="mt-2 border border-rose-400/25 bg-rose-400/[0.04] p-2 text-[11px] leading-5 text-rose-100">
+                      <p className="font-semibold text-rose-100">research experiment registry missing</p>
+                      <p className="mt-1 text-rose-100/80">
+                        This is not model_artifact_registry yet. New model-family challengers must first write a Strategy Lab experiment/evaluation packet; only promotion-ready shadow artifacts enter model_artifact_registry.
+                      </p>
                       尚未訓練或尚未產出 registry evidence：目前沒有 OOS IC、CPCV/PBO、成本敏感度、資料切片報告，所以不能假裝它已經比 production 模型更好。
                     </div>
                   )}
@@ -690,12 +745,12 @@ function versionChallengerStatusLabel(status: string) {
 
 function ArtifactMetricDelta({ label, before, after, afterNote }: { label: string; before: string; after: string; afterNote?: string }) {
   return (
-    <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-2 border-b border-[#263247]/70 py-2 text-xs last:border-0">
+    <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-2 border-b border-[#263247]/70 py-2 text-xs last:border-0">
       <span className="text-[#70809b]">{label}</span>
-      <span className="flex min-w-0 items-center gap-2 font-mono text-slate-100">
-        <span className="truncate">{before}</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-slate-100">
+        <span className="min-w-0 break-all">{before}</span>
         <ArrowRight className="h-3 w-3 shrink-0 text-slate-500" />
-        <span className="truncate text-amber-100">{after}</span>
+        <span className="min-w-0 break-all text-amber-100">{after}</span>
         {afterNote && <span className="shrink-0 text-[10px] text-[#70809b]">{afterNote}</span>}
       </span>
     </div>
@@ -791,6 +846,7 @@ function ArtifactDiffPanel({
               const championVersion = pointer?.d1_pointer_version ?? pointer?.serving_version ?? 'champion version not linked'
               const championArtifact = pointer?.d1_pointer_artifact_id ?? null
               const linkStatus = pointer?.artifact_link_status ?? 'not_linked'
+              const policyInfo = featurePolicyCopy(modelName, artifact.feature_policy_version)
               return (
                 <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -808,7 +864,7 @@ function ArtifactDiffPanel({
                   <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-3">
                     <ArtifactMetricDelta label="artifact id" before={championArtifact ?? 'not linked'} after={artifact.artifact_id} />
                     <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? championVersion} after={artifact.final_compared_to ?? 'final comparison pending'} />
-                    <ArtifactMetricDelta label="feature policy" before="champion policy" after={artifact.feature_policy_version ?? 'policy not recorded'} />
+                    <ArtifactMetricDelta label="feature policy" before="champion policy" after={`${policyInfo.label} (${policyInfo.schema})`} />
                     <ArtifactMetricDelta label="offline gate" before="candidate evidence" after={artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state} />
                     <ArtifactMetricDelta label="offline OOS IC" before="candidate holdout" after={evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)} afterNote="not live IC" />
                     <ArtifactMetricDelta label="live IC" before={`champion ${evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}`} afterNote={`delta ${evidenceMetric(artifact, ['ic_delta', 'icDelta'], 4)}`} />
@@ -937,12 +993,28 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
   )
 }
 
-function ArtifactMiniCard({ title, artifact, actionContext }: { title: string; artifact?: ModelArtifactRegistryRow | null; actionContext?: ModelArtifactActionContext }) {
+function ArtifactMiniCard({
+  title,
+  artifact,
+  actionContext,
+  explanation,
+}: {
+  title: string
+  artifact?: ModelArtifactRegistryRow | null
+  actionContext?: ModelArtifactActionContext
+  explanation?: { title: string; body: string } | null
+}) {
   if (!artifact) {
     return (
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">{title}</p>
         <p className="mt-2 text-sm text-slate-500">No selected artifact</p>
+        {explanation && (
+          <div className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.05] p-2 text-[11px] leading-5 text-sky-100">
+            <p className="font-semibold text-sky-200">{explanation.title}</p>
+            <p className="mt-1 text-[#9badbf]">{explanation.body}</p>
+          </div>
+        )}
         <ActionContextNote context={actionContext} />
       </div>
     )
@@ -965,6 +1037,16 @@ function ArtifactMiniCard({ title, artifact, actionContext }: { title: string; a
       <ActionContextNote context={actionContext} />
     </div>
   )
+}
+
+function missingArtifactExplanation(modelName: string, slot: 'monthly_release_candidate' | 'weekly_drift_candidate') {
+  if (modelName === 'Chronos' && slot === 'monthly_release_candidate') {
+    return {
+      title: 'Chronos is not in monthly retrain',
+      body: 'Chronos is a foundation forecast slot. Monthly retrain owns tree / FT / DLinear / PatchTST artifacts; Chronos is validated by forecast outcome evidence inside the single Chronos slot.',
+    }
+  }
+  return null
 }
 
 function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelectionResponse }) {
@@ -997,11 +1079,13 @@ function ArtifactRegistryPanel({ selection }: { selection?: ModelArtifactSelecti
                 title="Next Monthly Release Candidate"
                 artifact={row.monthly_release_candidate}
                 actionContext={row.action_context?.monthly_release_candidate}
+                explanation={missingArtifactExplanation(modelName, 'monthly_release_candidate')}
               />
               <ArtifactMiniCard
                 title="Weekly drift candidate"
                 artifact={row.weekly_drift_candidate}
                 actionContext={row.action_context?.weekly_drift_candidate}
+                explanation={missingArtifactExplanation(modelName, 'weekly_drift_candidate')}
               />
             </div>
             {row.archive_candidates?.length > 0 && (
@@ -1035,12 +1119,14 @@ function PromotionQueuePanel({
   const approvalCount = rows.filter((row) => row.approval_required).length
   const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
   const blockedCount = rows.filter((row) => row.promotion_decision === 'blocked_missing_champion_pointer').length
+  const suppressedCount = queue?.suppressed_count ?? queue?.suppressed?.length ?? 0
 
   return (
     <WorkstationPanel title="Promotion Queue / 晉級決策佇列" kicker="final comparison, approval, champion pointer">
-      <div className="grid gap-3 p-3 md:grid-cols-3">
+      <div className="grid gap-3 p-3 md:grid-cols-4">
         <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release 且通過 live gate，仍需 final comparison" tone={autoCount ? 'ok' : 'neutral'} />
         <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly hotfix / manual hotfix 需要 Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
+        <SignalInsightCard title="Superseded weekly" value={String(suppressedCount)} detail="newer monthly release hides older weekly approval rows" tone={suppressedCount ? 'info' : 'neutral'} />
         <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="缺 champion pointer 或 final comparison 前置條件" tone={blockedCount ? 'error' : 'ok'} />
       </div>
       <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">

@@ -14,6 +14,7 @@ import asyncio
 import logging
 import time
 import hashlib
+import json
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,127 @@ def _stable_chunk_size(candidates: list[int], ab_key: str | None) -> int:
     return candidates[int(digest[:8], 16) % len(candidates)]
 
 
+def _parse_chunk_observations(raw: str | None) -> list[dict]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if isinstance(data, dict) and isinstance(data.get("observations"), list):
+        data = data["observations"]
+    if isinstance(data, dict):
+        observations = []
+        for chunk_size, value in data.items():
+            if isinstance(value, dict):
+                observations.append({"chunk_size": chunk_size, **value})
+        return observations
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def _num(value, default: float = 0.0) -> float:
+    try:
+        if value is not None:
+            return float(value)
+    except (TypeError, ValueError):
+        pass
+    return float(default)
+
+
+def _int(value, default: int = 0) -> int:
+    try:
+        if value is not None:
+            return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    return int(default)
+
+
+def _select_chunk_size_from_observations(
+    candidates: list[int],
+    observations: list[dict],
+    *,
+    min_runs: int = 1,
+    max_error_rate: float = 0.02,
+) -> tuple[int | None, dict]:
+    candidate_set = {int(c) for c in candidates if int(c) > 0}
+    grouped: dict[int, dict] = {}
+    for obs in observations or []:
+        chunk_size = _int(obs.get("chunk_size"))
+        if chunk_size not in candidate_set:
+            continue
+        wall_sec = _num(obs.get("wall_sec") or obs.get("duration_sec") or obs.get("elapsed_sec"))
+        input_count = _int(
+            obs.get("input_count")
+            or obs.get("n_input")
+            or obs.get("symbols")
+            or obs.get("result_count")
+        )
+        if input_count <= 0:
+            chunk_count = _int(obs.get("chunk_count"), 1)
+            input_count = max(1, chunk_size * max(1, chunk_count))
+        if wall_sec <= 0:
+            continue
+        runs = max(1, _int(obs.get("runs"), 1))
+        errors = _int(
+            obs.get("n_error")
+            or obs.get("result_error_count")
+            or obs.get("error_count")
+            or obs.get("errors")
+        )
+        bucket = grouped.setdefault(
+            chunk_size,
+            {"chunk_size": chunk_size, "runs": 0, "wall_sec": 0.0, "input_count": 0, "error_count": 0},
+        )
+        bucket["runs"] += runs
+        bucket["wall_sec"] += wall_sec
+        bucket["input_count"] += input_count
+        bucket["error_count"] += errors
+
+    ranked = []
+    rejected = []
+    for chunk_size, bucket in grouped.items():
+        input_count = max(1, int(bucket["input_count"]))
+        wall_per_symbol = float(bucket["wall_sec"]) / input_count
+        error_rate = int(bucket["error_count"]) / input_count
+        summary = {
+            "chunk_size": chunk_size,
+            "runs": int(bucket["runs"]),
+            "wall_sec": round(float(bucket["wall_sec"]), 3),
+            "input_count": input_count,
+            "error_count": int(bucket["error_count"]),
+            "wall_sec_per_symbol": round(wall_per_symbol, 6),
+            "error_rate": round(error_rate, 6),
+        }
+        if int(bucket["runs"]) < max(1, int(min_runs)):
+            rejected.append({**summary, "reason": "min_runs"})
+            continue
+        if error_rate > max(0.0, float(max_error_rate)):
+            rejected.append({**summary, "reason": "error_rate"})
+            continue
+        ranked.append(summary)
+
+    ranked.sort(key=lambda item: (item["wall_sec_per_symbol"], item["error_rate"], item["chunk_size"]))
+    if not ranked:
+        return None, {
+            "source": "observed_wall_time",
+            "selected": None,
+            "eligible": [],
+            "rejected": rejected,
+            "reason": "no_eligible_observations",
+        }
+    selected = ranked[0]
+    return int(selected["chunk_size"]), {
+        "source": "observed_wall_time",
+        "selected": selected,
+        "eligible": ranked,
+        "rejected": rejected,
+        "reason": "lowest_wall_sec_per_symbol_with_error_gate",
+    }
+
+
 def _batch_ab_key(payloads: list[dict]) -> str:
     symbols = [
         str(p.get("symbol") or p.get("stock_id") or "")
@@ -113,8 +235,23 @@ def batch_predict_contract(*, ab_key: str | None = None) -> dict:
     candidates = _parse_chunk_candidates(os.environ.get("MODAL_PREDICT_BATCH_SIZE_CANDIDATES"))
     raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE")
     chunk_size_source = "ab"
+    chunk_policy = None
     try:
-        chunk_size = max(1, int(raw_chunk_size)) if raw_chunk_size else _stable_chunk_size(candidates, ab_key)
+        if raw_chunk_size:
+            chunk_size = max(1, int(raw_chunk_size))
+        else:
+            observations = _parse_chunk_observations(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS"))
+            observed_chunk_size, chunk_policy = _select_chunk_size_from_observations(
+                candidates,
+                observations,
+                min_runs=_int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_MIN_RUNS"), 1),
+                max_error_rate=_num(os.environ.get("MODAL_PREDICT_BATCH_SIZE_MAX_ERROR_RATE"), 0.02),
+            )
+            if observed_chunk_size:
+                chunk_size = observed_chunk_size
+                chunk_size_source = "observed_wall_time"
+            else:
+                chunk_size = _stable_chunk_size(candidates, ab_key)
         if raw_chunk_size:
             chunk_size_source = "explicit"
     except (TypeError, ValueError):
@@ -125,16 +262,22 @@ def batch_predict_contract(*, ab_key: str | None = None) -> dict:
         "chunk_size_source": chunk_size_source,
         "chunk_candidates": candidates,
         "ab_key": ab_key,
+        "chunk_policy": chunk_policy,
     }
 
 
 def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
     cache = {"hits": 0, "misses": 0, "gcs_downloads": 0}
     chunks_reported = 0
+    batch_counts = {"n_input": 0, "n_error": 0}
     for response in batch_responses or []:
         if not isinstance(response, dict):
             continue
         metrics = response.get("metrics") if isinstance(response.get("metrics"), dict) else {}
+        batch = metrics.get("batch") if isinstance(metrics.get("batch"), dict) else {}
+        if batch:
+            batch_counts["n_input"] += _int(batch.get("n_input"))
+            batch_counts["n_error"] += _int(batch.get("n_error"))
         model_cache = metrics.get("model_cache") if isinstance(metrics.get("model_cache"), dict) else {}
         if not model_cache:
             continue
@@ -147,6 +290,12 @@ def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
     denom = cache["hits"] + cache["misses"]
     return {
         "chunks_reported": chunks_reported,
+        "batch": batch_counts,
+        "batch_error_rate": (
+            round(batch_counts["n_error"] / batch_counts["n_input"], 6)
+            if batch_counts["n_input"]
+            else None
+        ),
         "model_cache": cache,
         "model_cache_hit_ratio": round(cache["hits"] / denom, 4) if denom else None,
     }
@@ -257,10 +406,10 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
     chunk_size = contract["chunk_size"]
     chunks = _chunk_payloads(payloads, chunk_size)
     batch_responses: list[dict] = []
+    results: list[dict] = []
     t0 = time.time()
     try:
         fn = _lookup(function_name)
-        results: list[dict] = []
         idx = 0
         async for r in fn.map.aio(
             [{"payloads": chunk} for chunk in chunks],
@@ -296,6 +445,11 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
         return results
     finally:
         wall_sec = time.time() - t0
+        result_count = len(results)
+        result_error_count = sum(
+            1 for item in results if isinstance(item, dict) and item.get("error")
+        )
+        batch_metrics = _aggregate_predict_batch_metrics(batch_responses)
         await _record_modal_observation(
             function_name,
             wall_sec=wall_sec,
@@ -307,7 +461,12 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
                 "chunk_size": chunk_size,
                 "chunk_sizes": [len(chunk) for chunk in chunks],
                 "batch_contract": contract,
-                "batch_metrics": _aggregate_predict_batch_metrics(batch_responses),
+                "result_count": result_count,
+                "result_error_count": result_error_count,
+                "result_error_rate": round(result_error_count / result_count, 6) if result_count else None,
+                "batch_error_rate": batch_metrics.get("batch_error_rate"),
+                "model_cache_hit_ratio": batch_metrics.get("model_cache_hit_ratio"),
+                "batch_metrics": batch_metrics,
             },
         )
 
@@ -550,6 +709,34 @@ async def state_space_overlays_batch_predict(
         "horizon": horizon,
         "version_by_model": version_by_model or {},
     })
+
+
+def spawn_state_space_overlays_batch_predict(
+    series_list: list[dict],
+    *,
+    horizon: int = 5,
+    version_by_model: dict[str, str] | None = None,
+) -> dict:
+    """Spawn Kalman + Markov overlays without blocking the daily graph."""
+    fn = _lookup("state_space_universal_predict")
+    call = fn.spawn({
+        "model_names": ["KalmanFilter", "MarkovSwitching"],
+        "series_list": series_list,
+        "horizon": horizon,
+        "version_by_model": version_by_model or {},
+    })
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    return {
+        "spawned": True,
+        "function_name": "state_space_universal_predict",
+        "function_call_id": call_id,
+        "n_input": len(series_list),
+        "version_by_model": version_by_model or {},
+    }
 
 
 def _spawn_wf_ftt_window(payload: dict):

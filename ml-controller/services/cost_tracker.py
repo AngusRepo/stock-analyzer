@@ -24,11 +24,12 @@ Modal cost estimation:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json as _json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -110,6 +111,121 @@ def estimate_modal_cost(
     return round(cpu_cost + memory_cost + gpu_cost, 6)
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    numeric = _float_or_none(value)
+    return int(numeric) if numeric is not None else None
+
+
+def _first_int(meta: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _int_or_none(meta.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_float(meta: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _float_or_none(meta.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _artifact_count(meta: dict[str, Any]) -> int | None:
+    explicit = _first_int(meta, ("artifact_count", "artifacts_count", "n_artifacts", "model_artifact_count"))
+    if explicit is not None:
+        return explicit
+    for key in ("artifacts", "model_artifacts", "artifact_paths", "models"):
+        value = meta.get(key)
+        if isinstance(value, (list, tuple, set)):
+            return len(value)
+        if isinstance(value, dict):
+            return len(value)
+    return None
+
+
+def build_modal_compute_profile(
+    *,
+    source: str,
+    function_name: str,
+    compute_sec: float,
+    est_usd: float,
+    cpu: float = 1.0,
+    memory_mb: int = 0,
+    gpu: Optional[str] = None,
+    meta: Optional[dict] = None,
+) -> dict[str, Any]:
+    """Build the normalized Modal profile persisted to compute_profile_events."""
+    meta = dict(meta or {})
+    wall_sec = _float_or_none(meta.get("wall_sec"))
+    if wall_sec is None:
+        wall_sec = _float_or_none(meta.get("duration_sec")) or _float_or_none(compute_sec) or 0.0
+    profile = {
+        "provider": "modal",
+        "job_name": function_name,
+        "source": source,
+        "run_id": meta.get("run_id") or meta.get("modal_run_id") or meta.get("pipeline_run_id"),
+        "wall_sec": round(float(wall_sec), 3),
+        "compute_sec": round(float(compute_sec), 3),
+        "cpu": float(cpu),
+        "memory_mb": int(memory_mb or 0),
+        "gpu": gpu,
+        "est_usd": round(float(est_usd), 6),
+        "rows": _first_int(meta, ("rows", "n_rows", "row_count", "total_samples", "sample_count", "train_samples")),
+        "features": _first_int(meta, ("features", "n_features", "feature_count")),
+        "symbols": _first_int(meta, ("symbols", "n_symbols", "symbol_count", "input_count")),
+        "trials": _first_int(meta, ("trials", "n_trials", "trial_count")),
+        "artifact_count": _artifact_count(meta),
+        "cache_hit_ratio": _first_float(meta, ("cache_hit_ratio", "model_cache_hit_ratio")),
+        "meta": meta,
+    }
+    return profile
+
+
+def build_compute_profile_event_payload(
+    *,
+    profile: dict[str, Any],
+    event_date: str,
+) -> dict[str, Any]:
+    """Build a D1 insert payload for compute_profile_events."""
+    return {
+        "sql": (
+            "INSERT INTO compute_profile_events "
+            "(event_date, provider, job_name, run_id, wall_sec, compute_sec, cpu, memory_mb, "
+            "gpu, est_usd, rows, features, symbols, trials, cache_hit_ratio, profile_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ),
+        "params": [
+            event_date,
+            str(profile.get("provider") or "unknown"),
+            str(profile.get("job_name") or "unknown"),
+            profile.get("run_id"),
+            _float_or_none(profile.get("wall_sec")),
+            _float_or_none(profile.get("compute_sec")),
+            _float_or_none(profile.get("cpu")),
+            _int_or_none(profile.get("memory_mb")),
+            profile.get("gpu"),
+            _float_or_none(profile.get("est_usd")),
+            _int_or_none(profile.get("rows")),
+            _int_or_none(profile.get("features")),
+            _int_or_none(profile.get("symbols")),
+            _int_or_none(profile.get("trials")),
+            _float_or_none(profile.get("cache_hit_ratio")),
+            _json.dumps(profile),
+        ],
+    }
+
+
 async def _record(
     source: str,
     provider: Optional[str],
@@ -163,6 +279,34 @@ async def _record(
         logger.warning(f"[cost_tracker] exception (non-fatal): {e}")
 
 
+async def _record_compute_profile_event(profile: dict[str, Any]) -> None:
+    if not _CF_D1_URL or not _CF_API_TOKEN:
+        logger.debug("[cost_tracker] skip compute profile - CF env not configured")
+        return
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    tw_date = (now + _dt.timedelta(hours=8)).date().isoformat()
+    payload = build_compute_profile_event_payload(profile=profile, event_date=tw_date)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                _CF_D1_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {_CF_API_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if r.status_code != 200:
+                message = r.text[:200]
+                if "no such table" in message.lower():
+                    logger.debug("[cost_tracker] compute profile table missing; skip")
+                else:
+                    logger.warning(f"[cost_tracker] compute profile insert failed {r.status_code}: {message}")
+    except Exception as e:  # noqa: BLE001 - telemetry must never block callers.
+        logger.warning(f"[cost_tracker] compute profile exception (non-fatal): {e}")
+
+
 async def record_llm_call(
     source: str,
     provider: str,
@@ -199,9 +343,23 @@ async def record_modal_call(
     )
     meta = dict(meta or {})
     meta.update({"cpu": cpu, "memory_mb": memory_mb, "gpu": gpu})
-    await _record(
-        source, "modal", function_name,
-        compute_sec=compute_sec, est_usd=est, meta=meta,
+    profile = build_modal_compute_profile(
+        source=source,
+        function_name=function_name,
+        compute_sec=compute_sec,
+        est_usd=est,
+        cpu=cpu,
+        memory_mb=memory_mb,
+        gpu=gpu,
+        meta=meta,
+    )
+    await asyncio.gather(
+        _record(
+            source, "modal", function_name,
+            compute_sec=compute_sec, est_usd=est, meta=meta,
+        ),
+        _record_compute_profile_event(profile),
+        return_exceptions=True,
     )
 
 

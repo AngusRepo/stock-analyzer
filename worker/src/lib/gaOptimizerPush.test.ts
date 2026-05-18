@@ -60,9 +60,12 @@ void (async () => {
   assert(body.updatedKeys.includes('optimizer:ga:latest'), 'ga_optimizer should update latest learning key')
   assert(body.promotion.level === 'L2', 'gate-passing stable GA state should auto-promote only through L2 shadow config')
   assert(body.promotion.approvalRequiredForNextLevel === true, 'L3/L4 promotion must require Wei approval')
+  assert(body.promotion.canRequestNextLevel === true, 'L2 GA state should explicitly expose that L3 approval can be requested')
+  assert(body.promotion.missingEvidence.length === 0, 'L3-ready GA state should have no missing evidence')
 
   const latest = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
   assert(latest.status === 'shadow_config', 'latest GA state should expose promotion status')
+  assert(latest.promotion.nextAction.includes('Ready to request Wei approval for L3'), 'latest GA state should expose the concrete L3 request action')
   assert(latest.production_learning_loop === true, 'GA must be a production learning loop')
   assert(latest.mutates_trading_config === false, 'GA learning push must not mutate trading:config')
   assert(latest.best_alphaFramework.riskOverlay.highVolThreshold === 0.045, 'latest GA state should preserve learned policy')

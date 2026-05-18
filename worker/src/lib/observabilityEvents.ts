@@ -679,6 +679,9 @@ export function buildEventsFromGaOptimizer(input: {
   const level = String(promotion?.level ?? 'L0')
   const status = String(promotion?.status ?? state.status ?? 'learning')
   const approvalRequired = promotion?.approvalRequiredForNextLevel === true
+  const canRequestNextLevel = promotion?.canRequestNextLevel === true
+  const pendingApprovalLevel = promotion?.pendingApprovalLevel
+  const missingEvidence = Array.isArray(promotion?.missingEvidence) ? promotion.missingEvidence.map(String) : []
   const best = state.best as Record<string, unknown> | undefined
   const gate = best?.gate as Record<string, unknown> | undefined
   const failed = Array.isArray(gate?.failed_gates) ? gate.failed_gates.map(String) : []
@@ -693,7 +696,13 @@ export function buildEventsFromGaOptimizer(input: {
   const metrics = best?.metrics as Record<string, unknown> | undefined
   const contract = state.contract as Record<string, unknown> | undefined
   const meta = state.meta as Record<string, unknown> | undefined
-  const severity: ObservabilitySeverity = failed.length ? 'warn' : level === 'L0' ? 'info' : approvalRequired ? 'warn' : 'ok'
+  const severity: ObservabilitySeverity = failed.length || status === 'approval_required'
+    ? 'warn'
+    : level === 'L0'
+      ? 'info'
+      : canRequestNextLevel || approvalRequired
+        ? 'warn'
+        : 'ok'
 
   return [{
     id: eventId('adaptive_meta', 'ga_optimizer', level.toLowerCase()),
@@ -703,14 +712,20 @@ export function buildEventsFromGaOptimizer(input: {
     source: 'ga_optimizer',
     status,
     title: `GA optimizer ${level}`,
-    summary: `GA production learning is ${status}; next=${promotion?.nextLevel ?? 'none'}, approval=${approvalRequired ? 'required' : 'not required'}.`,
+    summary: `GA production learning is ${status}; level=${level}, next=${promotion?.nextLevel ?? 'none'}, ready_for_l3=${canRequestNextLevel ? 'yes' : 'no'}, approval=${approvalRequired ? 'required' : 'not required'}.`,
     owner: 'Adaptive Meta Layer',
     impact: approvalRequired
       ? 'Learned candidate is ready for the next production ladder step, but trading:config remains unchanged until Wei approval.'
       : 'GA learning evidence is visible without mutating trading:config.',
-    next_action: approvalRequired
-      ? 'Review GA fitness, PBO/MC gates, and candidate diff before approving L3/L4.'
-      : 'Keep GA history and promotion evidence fresh after validation runs.',
+    next_action: String(promotion?.nextAction ?? (
+      pendingApprovalLevel
+        ? `Approve or reject pending ${pendingApprovalLevel} request after reviewing GA evidence.`
+        : canRequestNextLevel
+          ? 'Request Wei L3 approval after reviewing GA fitness, PBO/MC gates, and candidate diff.'
+          : missingEvidence.length
+            ? `Collect missing GA evidence: ${missingEvidence.join(', ')}.`
+            : 'Keep GA history and promotion evidence fresh after validation runs.'
+    )),
     runbook: 'P8 GA production learning ladder',
     evidence: {
       promotion,

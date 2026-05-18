@@ -19,6 +19,7 @@ assert(chart.includes('HistogramSeries'), 'ObservabilityEventTimeline should ren
 assert(chart.includes('createSeriesMarkers'), 'ObservabilityEventTimeline should render warn/error markers')
 assert(chart.includes('Observability Visual Workbench'), 'ObservabilityEventTimeline should render a visible visual workbench')
 assert(chart.includes('eventTime(event.ts'), 'ObservabilityEventTimeline should use event timestamps instead of synthetic row labels')
+assert(chart.includes('repeat(24,minmax(18px,1fr))'), 'Severity buckets should fill the 24-hour workbench width instead of bunching at the left edge')
 
 const page = fs.readFileSync(pagePath, 'utf8')
 assert(page.includes('ObservabilityEventTimeline'), 'ObservabilityPage should render ObservabilityEventTimeline')

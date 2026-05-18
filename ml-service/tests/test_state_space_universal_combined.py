@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
 from app import state_space_universal
 
 
@@ -40,3 +43,133 @@ def test_state_space_overlays_batch_predict_combines_models(monkeypatch):
     assert result["overlays"]["MarkovSwitching"]["n_success"] == 2
     assert result["metrics"]["KalmanFilter"]["elapsed_s"] >= 0
     assert result["metrics"]["MarkovSwitching"]["elapsed_s"] >= 0
+
+
+def test_markov_batch_parallelization_preserves_input_order(monkeypatch):
+    from app import models
+
+    monkeypatch.setenv("STATE_SPACE_MARKOVSWITCHING_MAX_WORKERS", "2")
+    monkeypatch.setattr(state_space_universal, "_load_hyperparams", lambda *_: {"same": "spec"})
+
+    seen_hyperparams: list[dict] = []
+
+    def fake_markov_runner(prices, horizon=5, stock_id=0, hyperparams=None):
+        marker = float(prices[0])
+        if marker == 1.0:
+            time.sleep(0.03)
+        seen_hyperparams.append(hyperparams)
+        return SimpleNamespace(
+            forecast_pct=marker / 100.0,
+            direction="up",
+            confidence=0.6,
+        )
+
+    monkeypatch.setattr(models, "run_markov_switching", fake_markov_runner)
+
+    result = state_space_universal.state_space_batch_predict(
+        model_name="MarkovSwitching",
+        series_list=[
+            {"symbol": "slow", "prices": [1.0] * 60},
+            {"symbol": "fast", "prices": [2.0] * 60},
+            {"symbol": "mid", "prices": [3.0] * 60},
+        ],
+        horizon=5,
+        version="v-test",
+    )
+
+    assert [row["symbol"] for row in result] == ["slow", "fast", "mid"]
+    assert [row["forecast_pct"] for row in result] == [0.01, 0.02, 0.03]
+    assert all(hp == {"same": "spec"} for hp in seen_hyperparams)
+    assert all(row["model_version"] == "v-test" for row in result)
+
+
+def test_markov_parallelization_requires_explicit_worker_override(monkeypatch):
+    monkeypatch.delenv("STATE_SPACE_MARKOVSWITCHING_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("STATE_SPACE_MAX_WORKERS", raising=False)
+
+    assert state_space_universal._max_workers_for_model("MarkovSwitching", 64) == 1
+
+    monkeypatch.setenv("STATE_SPACE_MARKOVSWITCHING_MAX_WORKERS", "2")
+
+    assert state_space_universal._max_workers_for_model("MarkovSwitching", 64) == 2
+
+
+def test_state_space_parallel_parity_report_passes_for_identical_outputs(monkeypatch):
+    from app import models
+
+    monkeypatch.setattr(state_space_universal, "_load_hyperparams", lambda *_: {})
+
+    def fake_markov_runner(prices, horizon=5, stock_id=0, hyperparams=None):
+        marker = float(prices[0])
+        return SimpleNamespace(
+            forecast_pct=marker / 100.0,
+            direction="up",
+            confidence=0.6,
+        )
+
+    monkeypatch.setattr(models, "run_markov_switching", fake_markov_runner)
+
+    report = state_space_universal.build_state_space_parallel_parity_report(
+        model_name="MarkovSwitching",
+        series_list=[
+            {"symbol": "a", "prices": [1.0] * 60},
+            {"symbol": "b", "prices": [2.0] * 60},
+        ],
+        horizon=5,
+        version="v-test",
+        parallel_workers=2,
+    )
+
+    assert report["status"] == "pass"
+    assert report["parallel_workers"] == 2
+    assert report["n_mismatch"] == 0
+    assert report["n_serial_success"] == 2
+    assert report["n_parallel_success"] == 2
+
+
+def test_state_space_parallel_parity_report_flags_mismatch(monkeypatch):
+    def fake_batch_predict(model_name, series_list, horizon=5, version="v1", *, max_workers=None):
+        forecast_pct = 0.01 if max_workers == 1 else 0.02
+        return [
+            {
+                "symbol": row["symbol"],
+                "model": model_name,
+                "forecast_pct": forecast_pct,
+                "up_prob": 0.55,
+                "confidence": 0.6,
+                "direction": "up",
+                "model_version": version,
+            }
+            for row in series_list
+        ]
+
+    monkeypatch.setattr(state_space_universal, "state_space_batch_predict", fake_batch_predict)
+
+    report = state_space_universal.build_state_space_parallel_parity_report(
+        model_name="MarkovSwitching",
+        series_list=[{"symbol": "a", "prices": [1.0] * 60}],
+        parallel_workers=2,
+    )
+
+    assert report["status"] == "fail"
+    assert report["n_mismatch"] == 1
+    assert report["mismatches"][0]["symbol"] == "a"
+
+
+def test_state_space_batch_marks_insufficient_rows_without_calling_runner(monkeypatch):
+    from app import models
+
+    monkeypatch.setenv("STATE_SPACE_MARKOVSWITCHING_MAX_WORKERS", "2")
+    monkeypatch.setattr(state_space_universal, "_load_hyperparams", lambda *_: {})
+
+    def unexpected_runner(*args, **kwargs):
+        raise AssertionError("runner should not be called for insufficient rows")
+
+    monkeypatch.setattr(models, "run_markov_switching", unexpected_runner)
+
+    result = state_space_universal.state_space_batch_predict(
+        model_name="MarkovSwitching",
+        series_list=[{"symbol": "too-short", "prices": [1.0] * 10}],
+    )
+
+    assert result == [{"symbol": "too-short", "error": "insufficient data (10 < 30)"}]

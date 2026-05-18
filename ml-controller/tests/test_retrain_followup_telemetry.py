@@ -52,7 +52,13 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
                 "function_name": "train_ftt_model",
                 "compute_sec": 125.7,
                 "wall_sec": 125.7,
-                "meta": {"group": "ftt"},
+                "meta": {"group": "ftt", "artifact_count": 1, "model_artifacts": ["FT-Transformer"]},
+            },
+            {
+                "function_name": "feature_selection_pipeline",
+                "compute_sec": 3546.7,
+                "wall_sec": 3546.7,
+                "meta": {"stage": "feature_selection", "feature_count": 106, "trials": 150},
             },
             {
                 "function_name": "train_tree_models",
@@ -64,13 +70,21 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     result = await followup_router.retrain_followup(payload, _Request())
 
     assert result["status"] == "completed"
-    assert result["modal_telemetry"]["recorded"] == 2
+    assert result["modal_telemetry"]["recorded"] == 3
     assert result["artifact_registry"]["attempted"] == 0
-    assert [c["function_name"] for c in calls] == ["retrain_orchestrator", "train_ftt_model"]
+    assert [c["function_name"] for c in calls] == [
+        "retrain_orchestrator",
+        "train_ftt_model",
+        "feature_selection_pipeline",
+    ]
     assert calls[0]["source"] == "modal_followup"
     assert calls[1]["gpu"] == "L4"
     assert calls[1]["memory_mb"] == 4096
     assert calls[1]["meta"]["group"] == "ftt"
+    assert calls[1]["meta"]["artifact_count"] == 1
+    assert calls[1]["meta"]["model_artifacts"] == ["FT-Transformer"]
+    assert calls[2]["meta"]["feature_count"] == 106
+    assert calls[2]["meta"]["trials"] == 150
     assert registry_records == []
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -652,6 +653,62 @@ def _candidate_rank(row: dict[str, Any]) -> tuple[int, str]:
     )
 
 
+_VERSION_TS_RE = re.compile(r"(\d{8,14})")
+
+
+def _artifact_time_key(row: dict[str, Any] | None) -> tuple[str, str, str]:
+    if not row:
+        return ("", "", "")
+    version_match = _VERSION_TS_RE.search(str(row.get("version") or ""))
+    version_key = version_match.group(1) if version_match else ""
+    return (
+        str(row.get("source_run_date") or ""),
+        version_key,
+        str(row.get("updated_at") or row.get("created_at") or ""),
+    )
+
+
+def _promotion_ready(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    state = str(row.get("state") or "")
+    live_status = str(row.get("live_gate_status") or "")
+    return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status == "passed"
+
+
+def _monthly_supersedes_weekly(monthly: dict[str, Any] | None, weekly: dict[str, Any] | None) -> bool:
+    if not monthly or not weekly:
+        return False
+    if str(monthly.get("candidate_type") or "") != "monthly_release":
+        return False
+    if str(weekly.get("candidate_type") or "") != "weekly_drift":
+        return False
+    if not _promotion_ready(monthly):
+        return False
+    return _artifact_time_key(monthly) >= _artifact_time_key(weekly)
+
+
+def _build_superseded_action_context(
+    *,
+    superseded: dict[str, Any] | None,
+    superseding: dict[str, Any] | None,
+    selection_slot: str,
+) -> dict[str, Any]:
+    return {
+        "root_cause": "superseded_by_newer_monthly_release",
+        "impact": "Older weekly drift evidence is retained for audit, but should not occupy approval or live-shadow decision space.",
+        "next_action": "Promote or reject the newer monthly release candidate; archive the weekly hotfix after pointer readback.",
+        "affected_downstream": ["promotion_controller", "artifact_registry"],
+        "scheduler_dependency": ["promotion_controller"],
+        "evidence_status": "superseded",
+        "selection_slot": selection_slot,
+        "metrics": {
+            "superseded_artifact_id": (superseded or {}).get("artifact_id"),
+            "superseding_artifact_id": (superseding or {}).get("artifact_id"),
+        },
+    }
+
+
 def _artifact_live_decision(row: dict[str, Any]) -> dict[str, Any]:
     live = _json_loads(row.get("live_evidence_json"))
     decision = live.get("decision")
@@ -816,34 +873,58 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if best_weekly and str(best_weekly.get("state") or "") in _WEEKLY_SELECTED_STATES
             else None
         )
+        weekly_superseded_by = None
+        monthly_superseder = selected_monthly or best_monthly
+        if selected_weekly and _monthly_supersedes_weekly(monthly_superseder, selected_weekly):
+            weekly_superseded_by = monthly_superseder
+            selected_weekly = None
 
         archive_candidates = [
             r.get("artifact_id")
             for r in items
             if r is not selected_monthly and r is not selected_weekly
         ]
+        superseded_candidates = [
+            superseded_candidate_id
+            for superseded_candidate_id in [
+                best_weekly.get("artifact_id") if weekly_superseded_by and best_weekly else None
+            ]
+            if superseded_candidate_id
+        ]
+
+        weekly_context = (
+            _build_superseded_action_context(
+                superseded=best_weekly,
+                superseding=weekly_superseded_by,
+                selection_slot="weekly_drift_candidate",
+            )
+            if weekly_superseded_by
+            else build_artifact_action_context(
+                selected_weekly,
+                selection_slot="weekly_drift_candidate",
+            )
+        )
 
         selections[model_name] = {
             "monthly_release_candidate": selected_monthly,
             "weekly_drift_candidate": selected_weekly,
             "archive_candidates": archive_candidates,
+            "superseded_candidates": superseded_candidates,
             "action_context": {
                 "monthly_release_candidate": build_artifact_action_context(
                     selected_monthly,
                     selection_slot="monthly_release_candidate",
                 ),
-                "weekly_drift_candidate": build_artifact_action_context(
-                    selected_weekly,
-                    selection_slot="weekly_drift_candidate",
-                ),
+                "weekly_drift_candidate": weekly_context,
             },
             "policy": {
                 "monthly": "select best offline_passed or stronger artifact",
-                "weekly": "select only offline_strong_pass unless production decay policy later overrides",
+                "weekly": "select only offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
                 "live_shadow_slots": {
                     "monthly": 1,
                     "weekly": 1,
                 },
+                "weekly_superseded_by_monthly": bool(weekly_superseded_by),
             },
         }
 
@@ -1050,6 +1131,20 @@ def build_promotion_queue(
     """
     champion_versions = champion_versions or {}
     queue: list[dict[str, Any]] = []
+    promotable_monthly_by_model: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if str(row.get("candidate_type") or "") != "monthly_release":
+            continue
+        if str(row.get("state") or "") in {"archived", "rejected"}:
+            continue
+        if not _promotion_ready(row):
+            continue
+        model_name = str(row.get("model_name") or "")
+        current = promotable_monthly_by_model.get(model_name)
+        if not current or _artifact_time_key(row) >= _artifact_time_key(current):
+            promotable_monthly_by_model[model_name] = row
+
+    suppressed: list[dict[str, Any]] = []
     for row in rows:
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
@@ -1061,6 +1156,17 @@ def build_promotion_queue(
         model_name = str(row.get("model_name") or "")
         champion_version = champion_versions.get(model_name)
         candidate_type = str(row.get("candidate_type") or "unknown")
+        superseding_monthly = promotable_monthly_by_model.get(model_name)
+        if candidate_type == "weekly_drift" and _monthly_supersedes_weekly(superseding_monthly, row):
+            suppressed.append({
+                "artifact_id": row.get("artifact_id"),
+                "model_name": model_name,
+                "candidate_version": row.get("version"),
+                "candidate_type": candidate_type,
+                "superseded_by": superseding_monthly.get("artifact_id") if superseding_monthly else None,
+                "reason": "newer_monthly_release_ready_for_promotion",
+            })
+            continue
         offline_decision = str(row.get("offline_gate_decision") or "")
         approval_required = (
             candidate_type in {"weekly_drift", "manual_hotfix"}
@@ -1099,6 +1205,8 @@ def build_promotion_queue(
         "source_of_truth": "model_artifact_registry",
         "promotion_owner": "promotion-controller",
         "count": len(queue),
+        "suppressed_count": len(suppressed),
+        "suppressed": suppressed,
         "queue": queue,
     }
 

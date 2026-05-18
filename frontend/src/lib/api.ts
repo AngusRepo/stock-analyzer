@@ -845,6 +845,7 @@ export type ModelArtifactSelectionResponse = {
     monthly_release_candidate?: ModelArtifactRegistryRow | null
     weekly_drift_candidate?: ModelArtifactRegistryRow | null
     archive_candidates: string[]
+    superseded_candidates?: string[]
     action_context?: {
       monthly_release_candidate?: ModelArtifactActionContext
       weekly_drift_candidate?: ModelArtifactActionContext
@@ -858,6 +859,15 @@ export type ModelArtifactPromotionQueueResponse = {
   source_of_truth: string
   promotion_owner: string
   count: number
+  suppressed_count?: number
+  suppressed?: Array<{
+    artifact_id?: string | null
+    model_name: string
+    candidate_version?: string | null
+    candidate_type: string
+    superseded_by?: string | null
+    reason: string
+  }>
   queue: Array<{
     artifact_id?: string | null
     model_name: string

@@ -84,6 +84,7 @@ class UniversalTrainRequest(BaseModel):
     cpcv_min_train_groups: int | None = None
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
+    training_run_suffix: str | None = None
 
 
 def _ic_summary_value(metrics: dict) -> float | None:
@@ -120,6 +121,33 @@ def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | Non
         return None, None
     values.sort()
     return values[0], values[-1]
+
+
+def _ftt_tensor_loader(
+    torch_module,
+    X: np.ndarray,
+    y: np.ndarray | None = None,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    pin_memory: bool,
+):
+    """Build an FT-Transformer DataLoader without per-batch NumPy conversion."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    x_tensor = torch_module.as_tensor(np.asarray(X, dtype=np.float32))
+    if y is None:
+        dataset = TensorDataset(x_tensor)
+    else:
+        y_tensor = torch_module.as_tensor(np.asarray(y, dtype=np.float32))
+        dataset = TensorDataset(x_tensor, y_tensor)
+    return DataLoader(
+        dataset,
+        batch_size=max(1, int(batch_size)),
+        shuffle=shuffle and len(dataset) > 0,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
 
 
 def normalize_universal_lifecycle_request(
@@ -209,6 +237,8 @@ def _register_challenger_safe(
     version: str,
     *,
     model_cpcv: dict | None = None,
+    feature_policy_version: str | None = None,
+    feature_policy: dict | None = None,
 ) -> dict:
     try:
         from .model_pool import register_challenger
@@ -219,6 +249,8 @@ def _register_challenger_safe(
             "version": version,
             "pool_updated": bool(pool),
             "model_cpcv": model_cpcv,
+            "feature_policy_version": feature_policy_version,
+            "feature_policy": feature_policy,
         }
     except Exception as exc:
         return {
@@ -226,6 +258,8 @@ def _register_challenger_safe(
             "version": version,
             "error": str(exc),
             "model_cpcv": model_cpcv,
+            "feature_policy_version": feature_policy_version,
+            "feature_policy": feature_policy,
         }
 
 
@@ -1055,15 +1089,32 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         def _run_ftt_training(batch_sz: int, grad_accum: int = 1) -> None:
             nonlocal best_val_ic, best_state, no_improve, _global_step, last_epoch
 
+            # CPU tensors are pinned only to feed CUDA with non-blocking copies;
+            # the model, forward/backward pass, and AMP stay on `device`.
+            pin_batches = device.type == "cuda"
+            train_loader = _ftt_tensor_loader(
+                torch,
+                Xt_trn,
+                yt_trn,
+                batch_size=batch_sz,
+                shuffle=True,
+                pin_memory=pin_batches,
+            )
+            val_loader = _ftt_tensor_loader(
+                torch,
+                Xt_val,
+                None,
+                batch_size=batch_sz,
+                shuffle=False,
+                pin_memory=pin_batches,
+            )
             for epoch in range(MAX_EPOCHS):
                 model_ftt.train()
-                perm = np.random.permutation(len(Xt_trn))
                 opt.zero_grad()
                 mini_step = 0
-                for s in range(0, len(Xt_trn), batch_sz):
-                    bi = perm[s:s + batch_sz]
-                    xb = torch.tensor(Xt_trn[bi], device=device)
-                    yb = torch.tensor(yt_trn[bi], device=device)
+                for xb_cpu, yb_cpu in train_loader:
+                    xb = xb_cpu.to(device, non_blocking=pin_batches)
+                    yb = yb_cpu.to(device, non_blocking=pin_batches)
                     with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
                         preds_amp = model_ftt(xb)
                     loss = crit(preds_amp.float(), yb.float()) / grad_accum
@@ -1083,8 +1134,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 model_ftt.eval()
                 with torch.no_grad():
                     val_preds = []
-                    for vs in range(0, len(Xt_val), batch_sz):
-                        xvb = torch.tensor(Xt_val[vs:vs + batch_sz], device=device)
+                    for (xvb_cpu,) in val_loader:
+                        xvb = xvb_cpu.to(device, non_blocking=pin_batches)
                         with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
                             val_preds.append(model_ftt(xvb).float().cpu().numpy())
                     val_preds_arr = np.concatenate(val_preds)
@@ -1511,9 +1562,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         for i in range(min(len(feature_names), len(prep_missingness_rates)))
     }
 
-    training_run_id = str(
+    base_training_run_id = str(
         req.output_model_version
         or f"{gcs_prefix}:{now_utc_iso().replace(':', '').replace('-', '')}"
+    )
+    training_run_id = (
+        f"{base_training_run_id}-{req.training_run_suffix}"
+        if req.training_run_suffix
+        else base_training_run_id
     )
     manifest_path = f"{gcs_prefix}/manifests/{training_run_id}.json"
     req_params = req.model_dump() if hasattr(req, "model_dump") else req.dict()
@@ -1598,6 +1654,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         model_name,
                         req.output_model_version,
                         model_cpcv=model_cpcv_evidence_by_model.get(model_name),
+                        feature_policy_version=str(model_extra_meta.get("feature_policy_schema_version") or ""),
+                        feature_policy=model_extra_meta.get("feature_policy") if isinstance(model_extra_meta.get("feature_policy"), dict) else None,
                     )
                     registration["training_run_id"] = training_run_id
                     registration["training_manifest_path"] = manifest_path

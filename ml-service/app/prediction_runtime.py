@@ -541,6 +541,16 @@ _FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-
 _TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
+_BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
+_BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
+_BATCH_CHALLENGER_RANK_SCORES_KEY = "__batch_challenger_rank_scores"
+_BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
+_BATCH_RUNTIME_OPTION_KEYS = {
+    _BATCH_FEATURE_RANK_SCORES_KEY,
+    _BATCH_FEATURE_MODEL_ERRORS_KEY,
+    _BATCH_CHALLENGER_RANK_SCORES_KEY,
+    _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
+}
 
 
 def _normalize_market_segment_for_serving(req: PredictRequest) -> str | None:
@@ -593,7 +603,6 @@ def _rank_signal_thresholds(trading_config: dict | None, adaptive_params: dict |
 
 def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
-    import torch
     from .ensemble import load_ic_weights, merge_with_time_series, rank_to_signal
     from .model_store import load_model
     from .model_pool import get_challenger_path, load_pool as _load_pool
@@ -682,43 +691,54 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             return aligned
         return x_latest
 
-    for model_name in _FEATURE_MODEL_NAMES_V2:
-        try:
-            status = model_pool_status.get(model_name, "active")
-            if status in ("retired", "challenger"):
-                model_errors.append(f"{model_name}: skipped by model_pool status={status}")
-                continue
-
-            model_obj, meta = load_model(0, model_name)
-            if model_obj is None:
-                model_errors.append(f"{model_name}: not found in GCS")
-                continue
-
-            x_to_predict = _aligned_features(meta)
-            if model_name == "FT-Transformer":
-                bundle = model_obj
-                scaler = bundle["scaler"]
-                n_feat = bundle.get("n_features", x_to_predict.shape[1])
-                if x_to_predict.shape[1] != n_feat:
-                    model_errors.append(
-                        f"{model_name}: dim mismatch (predict={x_to_predict.shape[1]}, train={n_feat}), skipped"
-                    )
+    precomputed_rank_scores = runtime_options.get(_BATCH_FEATURE_RANK_SCORES_KEY)
+    precomputed_model_errors = runtime_options.get(_BATCH_FEATURE_MODEL_ERRORS_KEY)
+    if isinstance(precomputed_rank_scores, dict):
+        for model_name, score in precomputed_rank_scores.items():
+            if model_name in _FEATURE_MODEL_NAMES_V2:
+                rank_scores[model_name] = float(np.clip(float(score), 0.0, 1.0))
+        if isinstance(precomputed_model_errors, list):
+            model_errors.extend(str(err) for err in precomputed_model_errors if err)
+    else:
+        for model_name in _FEATURE_MODEL_NAMES_V2:
+            try:
+                status = model_pool_status.get(model_name, "active")
+                if status in ("retired", "challenger"):
+                    model_errors.append(f"{model_name}: skipped by model_pool status={status}")
                     continue
-                x_scaled = scaler.transform(x_to_predict).astype(np.float32)
-                x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-                ftt, ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
-                with torch.no_grad():
-                    raw = ftt(torch.tensor(x_scaled))
-                if ftt_type == "regression":
-                    pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
+
+                model_obj, meta = load_model(0, model_name)
+                if model_obj is None:
+                    model_errors.append(f"{model_name}: not found in GCS")
+                    continue
+
+                x_to_predict = _aligned_features(meta)
+                if model_name == "FT-Transformer":
+                    import torch
+
+                    bundle = model_obj
+                    scaler = bundle["scaler"]
+                    n_feat = bundle.get("n_features", x_to_predict.shape[1])
+                    if x_to_predict.shape[1] != n_feat:
+                        model_errors.append(
+                            f"{model_name}: dim mismatch (predict={x_to_predict.shape[1]}, train={n_feat}), skipped"
+                        )
+                        continue
+                    x_scaled = scaler.transform(x_to_predict).astype(np.float32)
+                    x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+                    ftt, ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
+                    with torch.no_grad():
+                        raw = ftt(torch.tensor(x_scaled))
+                    if ftt_type == "regression":
+                        pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
+                    else:
+                        pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
+                    rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
                 else:
-                    pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
-                rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
-            else:
-                pred = model_obj.predict(x_to_predict)
-                rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
-        except Exception as e:
-            model_errors.append(f"{model_name}: {e}")
+                    pred = model_obj.predict(x_to_predict)
+                    rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
+            except Exception as e:
+                model_errors.append(f"{model_name}: {e}")
 
     if not rank_scores:
         raise ValueError(f"All models failed for {req.symbol}: {model_errors}")
@@ -781,7 +801,15 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     challenger_rank_scores: dict[str, float] = {}
     challenger_errors: list[str] = []
 
-    if pool_snapshot:
+    precomputed_challenger_scores = runtime_options.get(_BATCH_CHALLENGER_RANK_SCORES_KEY)
+    precomputed_challenger_errors = runtime_options.get(_BATCH_CHALLENGER_MODEL_ERRORS_KEY)
+    if isinstance(precomputed_challenger_scores, dict):
+        for model_name, score in precomputed_challenger_scores.items():
+            if model_name in _FEATURE_MODEL_NAMES_V2:
+                challenger_rank_scores[model_name] = float(np.clip(float(score), 0.0, 1.0))
+        if isinstance(precomputed_challenger_errors, list):
+            challenger_errors.extend(str(err) for err in precomputed_challenger_errors if err)
+    elif pool_snapshot:
         for model_name in _FEATURE_MODEL_NAMES_V2:
             try:
                 ch_path = get_challenger_path(model_name, pool=pool_snapshot)
@@ -793,6 +821,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                     continue
                 x_to_predict = _aligned_features(ch_meta)
                 if model_name == "FT-Transformer":
+                    import torch
+
                     bundle = ch_obj
                     scaler = bundle["scaler"]
                     n_feat = bundle.get("n_features", x_to_predict.shape[1])
@@ -837,6 +867,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         rank_stacker_info = {"applied": False, "reason": f"load_or_apply_failed: {e}"}
 
     rank_thresholds = _rank_signal_thresholds(req.trading_config, req.adaptive_params)
+    public_runtime_options = {
+        key: value
+        for key, value in runtime_options.items()
+        if key not in _BATCH_RUNTIME_OPTION_KEYS
+    }
     result = rank_to_signal(
         rank_scores=rank_scores,
         current_price=current_price,
@@ -879,7 +914,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
         "challenger_errors": challenger_errors if challenger_errors else None,
         "atr": float(atr),
-        "runtime_options": runtime_options,
+        "runtime_options": public_runtime_options,
     }
 
 

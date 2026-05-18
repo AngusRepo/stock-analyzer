@@ -161,6 +161,68 @@ def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     assert "verify-v2" in model["action_context"]["weekly_drift_candidate"]["scheduler_dependency"]
 
 
+def test_candidate_selection_suppresses_weekly_when_newer_monthly_is_ready():
+    selection = registry.build_candidate_selection([
+        {
+            "artifact_id": "XGBoost:v20260517170259:monthly_release",
+            "model_name": "XGBoost",
+            "version": "v20260517170259",
+            "candidate_type": "monthly_release",
+            "state": "live_gate_passed",
+            "live_gate_status": "passed",
+            "source_run_date": "2026-05-17",
+            "updated_at": "2026-05-18T00:00:00Z",
+        },
+        {
+            "artifact_id": "XGBoost:v20260509200349:weekly_drift",
+            "model_name": "XGBoost",
+            "version": "v20260509200349",
+            "candidate_type": "weekly_drift",
+            "state": "live_gate_passed",
+            "live_gate_status": "passed",
+            "source_run_date": "2026-05-09",
+            "updated_at": "2026-05-10T00:00:00Z",
+        },
+    ])
+
+    model = selection["models"]["XGBoost"]
+    assert model["monthly_release_candidate"]["artifact_id"] == "XGBoost:v20260517170259:monthly_release"
+    assert model["weekly_drift_candidate"] is None
+    assert "XGBoost:v20260509200349:weekly_drift" in model["archive_candidates"]
+    assert model["superseded_candidates"] == ["XGBoost:v20260509200349:weekly_drift"]
+    assert model["action_context"]["weekly_drift_candidate"]["root_cause"] == "superseded_by_newer_monthly_release"
+
+
+def test_candidate_selection_keeps_weekly_suppressed_after_monthly_promotes():
+    selection = registry.build_candidate_selection([
+        {
+            "artifact_id": "XGBoost:v20260517170259:monthly_release",
+            "model_name": "XGBoost",
+            "version": "v20260517170259",
+            "candidate_type": "monthly_release",
+            "state": "production",
+            "live_gate_status": "passed",
+            "source_run_date": "2026-05-17",
+            "updated_at": "2026-05-18T00:00:00Z",
+        },
+        {
+            "artifact_id": "XGBoost:v20260509200349:weekly_drift",
+            "model_name": "XGBoost",
+            "version": "v20260509200349",
+            "candidate_type": "weekly_drift",
+            "state": "live_gate_passed",
+            "live_gate_status": "passed",
+            "source_run_date": "2026-05-09",
+            "updated_at": "2026-05-10T00:00:00Z",
+        },
+    ])
+
+    model = selection["models"]["XGBoost"]
+    assert model["monthly_release_candidate"] is None
+    assert model["weekly_drift_candidate"] is None
+    assert model["superseded_candidates"] == ["XGBoost:v20260509200349:weekly_drift"]
+
+
 def test_artifact_action_context_explains_failed_offline_gate():
     ctx = registry.build_artifact_action_context({
         "artifact_id": "XGBoost:vBad:weekly_drift",
@@ -377,6 +439,71 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift():
     assert by_model["XGBoost"]["promotion_decision"] == "approval_required"
     assert by_model["XGBoost"]["final_compared_to"] == "vOld"
     assert by_model["LightGBM"]["promotion_decision"] == "auto_promote_candidate"
+
+
+def test_build_promotion_queue_suppresses_weekly_when_newer_monthly_is_ready():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "XGBoost:v20260517170259:monthly_release",
+                "model_name": "XGBoost",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "source_run_date": "2026-05-17",
+            },
+            {
+                "artifact_id": "XGBoost:v20260509200349:weekly_drift",
+                "model_name": "XGBoost",
+                "version": "v20260509200349",
+                "candidate_type": "weekly_drift",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "source_run_date": "2026-05-09",
+            },
+        ],
+        champion_versions={"XGBoost": "v1"},
+    )
+
+    assert [row["artifact_id"] for row in queue["queue"]] == ["XGBoost:v20260517170259:monthly_release"]
+    assert queue["suppressed_count"] == 1
+    assert queue["suppressed"][0]["artifact_id"] == "XGBoost:v20260509200349:weekly_drift"
+    assert queue["suppressed"][0]["superseded_by"] == "XGBoost:v20260517170259:monthly_release"
+
+
+def test_build_promotion_queue_keeps_weekly_hidden_after_monthly_promotes():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "XGBoost:v20260517170259:monthly_release",
+                "model_name": "XGBoost",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "production",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "source_run_date": "2026-05-17",
+            },
+            {
+                "artifact_id": "XGBoost:v20260509200349:weekly_drift",
+                "model_name": "XGBoost",
+                "version": "v20260509200349",
+                "candidate_type": "weekly_drift",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "source_run_date": "2026-05-09",
+            },
+        ],
+        champion_versions={"XGBoost": "v20260517170259"},
+    )
+
+    assert queue["queue"] == []
+    assert queue["suppressed_count"] == 1
+    assert queue["suppressed"][0]["superseded_by"] == "XGBoost:v20260517170259:monthly_release"
 
 
 def test_build_promotion_queue_blocks_without_champion_pointer():

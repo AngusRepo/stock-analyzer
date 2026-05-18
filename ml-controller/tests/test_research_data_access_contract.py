@@ -157,6 +157,7 @@ def test_dataset_snapshot_exporter_produces_gcs_manifest():
 def test_pipeline_exports_research_snapshot_after_recommendation_write():
     graph_source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
     job_source = (ROOT / "pipeline_job_main.py").read_text(encoding="utf-8")
+    snapshot_job_source = (ROOT / "dataset_snapshot_job_main.py").read_text(encoding="utf-8")
 
     assert "node_export_dataset_snapshot" in graph_source
     assert "export_daily_research_snapshots" in graph_source
@@ -168,5 +169,10 @@ def test_pipeline_exports_research_snapshot_after_recommendation_write():
     assert "producer_run_id=run_id" in job_source
     assert "snapshot=" in job_source
     assert "_run_deferred_snapshot_followup" in job_source
+    assert "_trigger_deferred_snapshot_job" in job_source
+    assert "DATASET_SNAPSHOT_JOB_NAME" in job_source
     assert '"task": "dataset-snapshot-export"' in job_source
+    assert '"status": "triggered"' in job_source
     assert "STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP" in job_source
+    assert "export_daily_research_snapshots" in snapshot_job_source
+    assert '"task": "dataset-snapshot-export"' in snapshot_job_source

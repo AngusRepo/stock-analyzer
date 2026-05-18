@@ -59,6 +59,7 @@ def test_modal_predict_batch_v2_can_be_disabled(monkeypatch):
 
 def test_modal_predict_batch_contract_supports_20_40_80_ab(monkeypatch):
     monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE", raising=False)
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS", raising=False)
     monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE_CANDIDATES", "20,40,80")
 
     contract = modal_client.batch_predict_contract(ab_key="run:2026-05-06")
@@ -69,13 +70,58 @@ def test_modal_predict_batch_contract_supports_20_40_80_ab(monkeypatch):
     assert contract["ab_key"] == "run:2026-05-06"
 
 
+def test_modal_predict_batch_contract_uses_observed_wall_time(monkeypatch):
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE", raising=False)
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE_CANDIDATES", "20,40,80")
+    monkeypatch.setenv(
+        "MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS",
+        """
+        [
+          {"chunk_size": 20, "wall_sec": 120, "input_count": 60, "n_error": 0},
+          {"chunk_size": 40, "wall_sec": 90, "input_count": 60, "n_error": 0},
+          {"chunk_size": 80, "wall_sec": 110, "input_count": 60, "n_error": 0}
+        ]
+        """,
+    )
+
+    contract = modal_client.batch_predict_contract(ab_key="run:2026-05-17")
+
+    assert contract["chunk_size"] == 40
+    assert contract["chunk_size_source"] == "observed_wall_time"
+    assert contract["chunk_policy"]["selected"]["wall_sec_per_symbol"] == 1.5
+
+
+def test_modal_predict_batch_contract_rejects_high_error_observation(monkeypatch):
+    monkeypatch.delenv("MODAL_PREDICT_BATCH_SIZE", raising=False)
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE_CANDIDATES", "20,40")
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE_MAX_ERROR_RATE", "0.02")
+    monkeypatch.setenv(
+        "MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS",
+        """
+        [
+          {"chunk_size": 20, "wall_sec": 40, "input_count": 40, "n_error": 4},
+          {"chunk_size": 40, "wall_sec": 80, "input_count": 40, "n_error": 0}
+        ]
+        """,
+    )
+
+    contract = modal_client.batch_predict_contract(ab_key="run:2026-05-17")
+
+    assert contract["chunk_size"] == 40
+    assert contract["chunk_size_source"] == "observed_wall_time"
+    assert contract["chunk_policy"]["rejected"][0]["chunk_size"] == 20
+    assert contract["chunk_policy"]["rejected"][0]["reason"] == "error_rate"
+
+
 def test_modal_predict_batch_metrics_aggregate_chunk_cache_stats():
     metrics = modal_client._aggregate_predict_batch_metrics([
-        {"metrics": {"model_cache": {"hits": 5, "misses": 3, "gcs_downloads": 3}}},
-        {"metrics": {"model_cache": {"hits": 7, "misses": 0, "gcs_downloads": 0}}},
+        {"metrics": {"batch": {"n_input": 10, "n_error": 1}, "model_cache": {"hits": 5, "misses": 3, "gcs_downloads": 3}}},
+        {"metrics": {"batch": {"n_input": 10, "n_error": 0}, "model_cache": {"hits": 7, "misses": 0, "gcs_downloads": 0}}},
         {"results": []},
     ])
 
     assert metrics["chunks_reported"] == 2
+    assert metrics["batch"] == {"n_input": 20, "n_error": 1}
+    assert metrics["batch_error_rate"] == 0.05
     assert metrics["model_cache"] == {"hits": 12, "misses": 3, "gcs_downloads": 3}
     assert metrics["model_cache_hit_ratio"] == 0.8

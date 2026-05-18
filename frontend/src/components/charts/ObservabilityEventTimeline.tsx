@@ -28,6 +28,7 @@ type EventPoint = {
 }
 
 type SeverityBucket = {
+  key: string
   label: string
   ok: number
   info: number
@@ -95,27 +96,35 @@ function bucketKey(event: ObservabilityEvent, fallbackIndex: number): { key: str
 }
 
 function buildSeverityBuckets(events: ObservabilityEvent[]): SeverityBucket[] {
+  const parsedTimes = events
+    .map((event) => new Date(event.ts).getTime())
+    .filter((value) => Number.isFinite(value))
+  const end = new Date(parsedTimes.length ? Math.max(...parsedTimes) : Date.now())
+  end.setMinutes(0, 0, 0)
   const buckets = new Map<string, SeverityBucket>()
-  events
-    .slice()
-    .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
-    .forEach((event, index) => {
-      const { key, label } = bucketKey(event, events.length - index)
-      const row = buckets.get(key) ?? { label, ok: 0, info: 0, warn: 0, error: 0, total: 0 }
-      const severity = event.severity ?? 'info'
-      row[severity] += 1
-      row.total += 1
-      buckets.set(key, row)
-    })
-  return Array.from(buckets.values()).slice(-24)
+  for (let offset = 23; offset >= 0; offset -= 1) {
+    const date = new Date(end.getTime() - offset * 60 * 60 * 1000)
+    const key = date.toISOString()
+    const label = `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:00`
+    buckets.set(key, { key, label, ok: 0, info: 0, warn: 0, error: 0, total: 0 })
+  }
+  events.forEach((event, index) => {
+    const { key, label } = bucketKey(event, events.length - index)
+    const row = buckets.get(key) ?? { key, label, ok: 0, info: 0, warn: 0, error: 0, total: 0 }
+    const severity = event.severity ?? 'info'
+    row[severity] += 1
+    row.total += 1
+    buckets.set(key, row)
+  })
+  return Array.from(buckets.values()).sort((a, b) => a.key.localeCompare(b.key)).slice(-24)
 }
 
 function SeverityStack({ bucket, max }: { bucket: SeverityBucket; max: number }) {
   const height = Math.max(12, Math.round((bucket.total / Math.max(1, max)) * 260))
   const segmentHeight = (count: number) => count ? `${Math.max(4, Math.round((count / bucket.total) * height))}px` : '0px'
   return (
-    <div className="flex h-full min-w-[30px] flex-col items-center justify-end gap-1">
-      <div className="flex w-full max-w-[34px] flex-col justify-end overflow-hidden border border-[#263247] bg-[#0f151d]" style={{ height: `${height}px` }} title={`${bucket.label} ok:${bucket.ok} info:${bucket.info} warn:${bucket.warn} error:${bucket.error}`}>
+    <div className="flex h-full min-w-0 flex-col items-center justify-end gap-1">
+      <div className="flex w-full max-w-[44px] flex-col justify-end overflow-hidden border border-[#263247] bg-[#0f151d]" style={{ height: `${height}px` }} title={`${bucket.label} ok:${bucket.ok} info:${bucket.info} warn:${bucket.warn} error:${bucket.error}`}>
         <div className="bg-rose-400" style={{ height: segmentHeight(bucket.error) }} />
         <div className="bg-amber-300" style={{ height: segmentHeight(bucket.warn) }} />
         <div className="bg-sky-300" style={{ height: segmentHeight(bucket.info) }} />
@@ -268,9 +277,9 @@ export default function ObservabilityEventTimeline({ report, loading, error }: O
 
       <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
         <div className="min-h-[340px] w-full bg-[#070a10] p-4">
-          <div className="flex h-[286px] items-end gap-2 overflow-x-auto border-l border-b border-[#263247] px-3 pb-4">
+          <div className="grid h-[286px] items-end gap-1 border-l border-b border-[#263247] px-3 pb-4 [grid-template-columns:repeat(24,minmax(18px,1fr))]">
             {buckets.map((bucket) => (
-              <SeverityStack key={bucket.label} bucket={bucket} max={maxBucket} />
+              <SeverityStack key={bucket.key} bucket={bucket} max={maxBucket} />
             ))}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[#8a92a6]">

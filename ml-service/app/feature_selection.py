@@ -489,6 +489,7 @@ def signal_sanity_gate(
     dates_train: np.ndarray | None = None,
     sectors_train: np.ndarray | None = None,
     permutation_mode: str = "within_date",
+    max_parallel_workers: int = 1,
 ) -> dict:
     """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
 
@@ -500,6 +501,7 @@ def signal_sanity_gate(
     """
     from scipy.stats import spearmanr
     t0 = time.time()
+    max_workers = _bounded_parallel_workers(max_parallel_workers, default=1, hard_cap=4)
 
     # Real model IC on validation
     real_model = _train_lgbm_regression(X_train, y_train, X_val, y_val, seed=42)
@@ -512,22 +514,41 @@ def signal_sanity_gate(
 
     # Null distribution: shuffle Y, retrain, compute IC
     rng = np.random.RandomState(99)
-    null_ics = []
-    for i in range(n_permutations):
-        y_shuf = _permuted_target(
+    shuffled_targets = [
+        _permuted_target(
             y_train,
             rng=rng,
             dates=dates_train,
             sectors=sectors_train,
             mode=permutation_mode,
         )
-        null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
+        for _ in range(n_permutations)
+    ]
+
+    def _run_null_round(task: tuple[int, np.ndarray]) -> tuple[int, float]:
+        i, y_shuf = task
+        per_model_jobs = max(1, (os.cpu_count() or max_workers) // max_workers)
+        null_model = _train_lgbm_regression(
+            X_train,
+            y_shuf,
+            X_val,
+            y_val,
+            seed=100 + i,
+            lightgbm_n_jobs=per_model_jobs,
+        )
         null_preds = null_model.predict(X_val)
         if np.std(null_preds) < 1e-10:
-            null_ics.append(0.0)
-        else:
-            rho, _ = spearmanr(null_preds, y_val)
-            null_ics.append(float(rho) if not np.isnan(rho) else 0.0)
+            return i, 0.0
+        rho, _ = spearmanr(null_preds, y_val)
+        return i, float(rho) if not np.isnan(rho) else 0.0
+
+    tasks = list(enumerate(shuffled_targets))
+    if max_workers > 1 and len(tasks) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            null_results = list(executor.map(_run_null_round, tasks))
+    else:
+        null_results = [_run_null_round(task) for task in tasks]
+    null_ics = [ic for _, ic in sorted(null_results, key=lambda row: row[0])]
 
     null_arr = np.array(null_ics)
     # Empirical p-value: fraction of null ICs >= real IC
@@ -547,6 +568,7 @@ def signal_sanity_gate(
         "n_permutations": n_permutations,
         "elapsed_s": elapsed,
         "permutation_mode": permutation_mode,
+        "max_parallel_workers": max_workers,
         "sector_aware": bool(
             str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
             and sectors_train is not None
@@ -844,6 +866,7 @@ def optuna_k_sweep(
          "best_k": int, "best_ic": float, "sweep_results": [(k, ic), ...]}
     """
     import optuna
+    from threading import Lock
     from scipy.stats import spearmanr
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -854,6 +877,9 @@ def optuna_k_sweep(
     sorted_names = [n for n, _ in sorted_features]
     name_to_idx = {n: i for i, n in enumerate(feature_names)}
     n_max = len(sorted_names)
+    objective_cache: dict[int, tuple[float, int]] = {}
+    objective_cache_lock = Lock()
+    objective_cache_hits = 0
 
     if n_max < 5:
         return {
@@ -864,11 +890,20 @@ def optuna_k_sweep(
         }
 
     def objective(trial):
+        nonlocal objective_cache_hits
         k = trial.suggest_int("k", 5, n_max)
+        with objective_cache_lock:
+            cached = objective_cache.get(k)
+            if cached is not None:
+                objective_cache_hits += 1
+                return cached
         top_k = sorted_names[:k]
         indices = [name_to_idx[n] for n in top_k if n in name_to_idx]
         if len(indices) < 5:
-            return 0.0, k  # (IC, K) — Pareto: maximize IC, minimize K
+            result = (0.0, k)
+            with objective_cache_lock:
+                objective_cache.setdefault(k, result)
+            return result
         Xtr = X_train[:, indices]
         Xvl = X_val[:, indices]
         try:
@@ -889,7 +924,10 @@ def optuna_k_sweep(
                 ic = float(rho) if not np.isnan(rho) else 0.0
         except Exception:
             ic = 0.0
-        return ic, k  # Pareto: (maximize IC, minimize K)
+        result = (ic, k)
+        with objective_cache_lock:
+            objective_cache.setdefault(k, result)
+        return result
 
     # Multi-objective study: maximize IC, minimize K
     # NSGAIISampler required — TPESampler does not support multi-objective
@@ -984,6 +1022,10 @@ def optuna_k_sweep(
         "best_k": best_k,
         "best_ic": round(float(best_ic), 6),
         "n_jobs": optuna_n_jobs,
+        "n_trials": int(n_trials),
+        "actual_trials": len(study.trials),
+        "unique_k_evaluated": len(objective_cache),
+        "objective_cache_hits": int(objective_cache_hits),
         "sweep_results": sweep_results,   # all trial (k, ic) pairs sorted by k
         "pareto_front": pareto_front,     # Pareto-optimal trials only
     }
@@ -992,6 +1034,23 @@ def optuna_k_sweep(
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 5: Diversity Guard (P4 — interface defined here, full logic in P4)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _k_sweep_summary(k_sweep_result: dict) -> dict:
+    """Keep compact K-sweep scope fields for orchestration telemetry."""
+    keys = (
+        "best_k",
+        "best_ic",
+        "n_trials",
+        "actual_trials",
+        "unique_k_evaluated",
+        "objective_cache_hits",
+    )
+    return {
+        key: k_sweep_result.get(key)
+        for key in keys
+        if k_sweep_result.get(key) is not None
+    }
+
 
 def diversity_guard(
     active: list[str],
@@ -1195,6 +1254,11 @@ def run_feature_selection_pipeline(
         default=2,
         hard_cap=4,
     )
+    signal_sanity_workers = _bounded_parallel_workers(
+        selection_params.get("signal_sanity_max_workers"),
+        default=2,
+        hard_cap=4,
+    )
     k_sweep_n_jobs = _bounded_parallel_workers(
         selection_params.get("k_sweep_n_jobs"),
         default=2,
@@ -1327,6 +1391,7 @@ def run_feature_selection_pipeline(
         dates_train=dates_train,
         sectors_train=sectors_train,
         permutation_mode=permutation_mode,
+        max_parallel_workers=signal_sanity_workers,
     )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
@@ -1490,10 +1555,7 @@ def run_feature_selection_pipeline(
             "used_for_selection": False,
         },
         "signal_gate": gate_result,
-        "k_sweep": {
-            "best_k": k_sweep_result.get("best_k"),
-            "best_ic": k_sweep_result.get("best_ic"),
-        },
+        "k_sweep": _k_sweep_summary(k_sweep_result),
         "feature_governance": {
             "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
             "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},

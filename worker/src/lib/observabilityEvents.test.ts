@@ -54,6 +54,8 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         status: 'shadow_config',
         nextLevel: 'L3',
         approvalRequiredForNextLevel: true,
+        canRequestNextLevel: true,
+        missingEvidence: [],
       },
       best: {
         score: 1.2,
@@ -67,7 +69,9 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events[0].domain === 'adaptive_meta', 'GA optimizer belongs to adaptive meta owner')
   assert(events[0].source === 'ga_optimizer', 'GA optimizer event source should be explicit')
   assert(events[0].summary.includes('next=L3'), 'GA optimizer event should expose promotion ladder next step')
+  assert(events[0].summary.includes('ready_for_l3=yes'), 'GA optimizer event should expose L3 request readiness')
   assert((events[0].evidence.promotion as any).level === 'L2', 'GA optimizer evidence should include promotion level')
+  assert((events[0].evidence.promotion as any).canRequestNextLevel === true, 'GA optimizer evidence should expose L3 approval request readiness')
   assert((events[0].evidence as any).mutates_trading_config === false, 'GA learning must not mutate trading config')
 }
 

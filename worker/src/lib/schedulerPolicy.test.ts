@@ -32,11 +32,11 @@ void (async () => {
   {
     const next = await getNextRunApproxWithPolicy({
       task: 'update',
-      cron: '30 9 * * 1-5',
+      cron: '0 14 * * 1-5',
       kv: kvWithHolidays(['2026-05-01']),
       nowTw: new Date('2026-05-01T08:00:00.000Z'),
     })
-    assert(next === '5/4 17:30', `holiday/weekend next run should advance to next trading day, got ${next}`)
+    assert(next === '5/4 22:00', `holiday/weekend next run should advance to next trading day, got ${next}`)
   }
 
   {

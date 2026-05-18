@@ -47,12 +47,12 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   }
 
   if (cron === '15 9 * * 1-5') {
-    runWithLog('evening-chain', async () => 'SKIP: legacy Cloudflare 17:15 cron disabled; GCP Scheduler owns TW 17:30 evening-chain')
+    runWithLog('evening-chain', async () => 'SKIP: legacy Cloudflare 17:15 cron disabled; GCP Scheduler owns TW 22:00 evening-chain')
     return true
   }
 
   if (cron === '30 9 * * 1-5') {
-    runWithLog('pipeline', async () => 'SKIP: legacy direct pipeline cron disabled; GCP Scheduler must trigger evening-chain root')
+    runWithLog('pipeline', async () => 'SKIP: legacy direct pipeline cron disabled; GCP Scheduler must trigger TW 22:00 evening-chain root')
     return true
   }
 

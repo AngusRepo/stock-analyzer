@@ -94,7 +94,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         group: 'pipeline_chain',
         lastStatus: 'failed',
         lastDuration: '12s',
-        lastRun: '4/30 17:30',
+        lastRun: '4/30 22:00',
         summary: 'callback timeout',
       },
     ],

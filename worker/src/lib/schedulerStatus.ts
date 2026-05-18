@@ -26,7 +26,7 @@ type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
 const JOB_DEFS: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
-  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 17:30', cron: '30 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
+  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 22:00', cron: '0 14 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After evening-chain', cron: '', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 4 },

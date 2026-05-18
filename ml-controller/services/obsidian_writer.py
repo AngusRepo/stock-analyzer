@@ -2,7 +2,7 @@
 obsidian_writer.py — Auto-generate Obsidian notes and push to GitHub
 
 Trigger:
-  1. Daily 18:35 TW (after pipeline) → Daily + Trade + Pipeline notes
+  1. Daily post-verify chain after TW 22:00 root → Daily + Trade + Pipeline notes
   2. Weekly Friday 22:30 TW (after audit) → Weekly review note
   3. Manual POST /obsidian/daily or /obsidian/weekly
 

@@ -10,8 +10,8 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
 const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string; query?: string }>
 
 assert(
-  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '30 9 * * 1-5'),
-  'GCP Scheduler must trigger one TW 17:30 evening-chain root job for the post-market DAG',
+  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 14 * * 1-5'),
+  'GCP Scheduler must trigger one TW 22:00 evening-chain root job for the post-market DAG',
 )
 
 for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
@@ -44,7 +44,7 @@ assert(
   updateOrchestrator.includes("'source_readiness_retry'") &&
     updateOrchestrator.includes('SOURCE_READINESS_RETRY_DELAY_SECONDS') &&
     updateOrchestrator.includes('source waiting'),
-  'evening-chain must defer/retry same-day TWSE/TPEX source readiness instead of fail-closing immediately at 17:30',
+  'evening-chain must defer/retry same-day source readiness instead of fail-closing immediately at the scheduled root time',
 )
 assert(
   updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),

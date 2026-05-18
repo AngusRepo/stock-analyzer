@@ -1421,10 +1421,10 @@ INSERT INTO predictions (
 """.strip()
 
 
-def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date: str) -> None:
+def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_date: str) -> set[int]:
     stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
     if not stock_ids:
-        return
+        return set()
     existing: set[int] = set()
     chunk_size = 80
     for i in range(0, len(stock_ids), chunk_size):
@@ -1435,12 +1435,35 @@ def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date
             [run_date, *chunk],
         )
         existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
+    return existing
+
+
+def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], run_date: str) -> list[dict]:
+    """Return rows that are still owned by the screener seed table.
+
+    The pipeline may produce ML-only promotion rows that were not in the
+    screener-owned daily_recommendations seed set. Those rows should remain in
+    prediction/model evidence, but must not abort the post-market chain or
+    create controller-owned daily_recommendations rows.
+    """
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return recommendations
+    existing = _existing_recommendation_seed_stock_ids(recommendations, run_date)
     missing = [sid for sid in stock_ids if sid not in existing]
     if missing:
-        raise RuntimeError(
-            "Missing screener-owned daily_recommendations seed rows for "
-            f"run_date={run_date}: {missing[:10]} (missing={len(missing)}/{len(stock_ids)})"
+        if not existing:
+            raise RuntimeError(
+                "Missing screener-owned daily_recommendations seed rows for "
+                f"run_date={run_date}: {missing[:10]} (missing={len(missing)}/{len(stock_ids)})"
+            )
+        logger.warning(
+            "[recommendation_service] Skipping %s ML-only recommendation rows without screener seed for run_date=%s: %s",
+            len(missing),
+            run_date,
+            missing[:10],
         )
+    return [r for r in recommendations if r.get("stock_id") and int(r["stock_id"]) in existing]
 
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
@@ -1478,7 +1501,9 @@ def update_recommendations_in_d1(
     if not recommendations:
         return 0
 
-    _assert_recommendation_seed_rows_exist(recommendations, run_date)
+    recommendations = _filter_to_existing_recommendation_seed_rows(recommendations, run_date)
+    if not recommendations:
+        return 0
     _delete_stale_recommendation_rows(recommendations, run_date)
 
     statements: list[tuple[str, list[Any]]] = []

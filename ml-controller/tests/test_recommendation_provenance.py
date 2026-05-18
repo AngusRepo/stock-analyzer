@@ -295,6 +295,85 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     assert params[-2:] == ["2026-04-27", 1]
 
 
+def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements), "changes_total": len(statements)}
+
+    def _fake_execute(sql, params, timeout=60):
+        captured["cleanup_params"] = params
+        return {"meta": {"changes": 0}}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"stock_id": 1}],
+    )
+
+    updated = update_recommendations_in_d1([
+        {
+            "date": "2026-04-27",
+            "stock_id": 1,
+            "symbol": "2330",
+            "name": "TSMC",
+            "sector": "Semis",
+            "industry": "IC",
+            "chip_score": 12.0,
+            "tech_score": 20.0,
+            "ml_score": 25.0,
+            "score": 57.0,
+            "signal": "BUY",
+            "confidence": 0.78,
+            "has_buy_signal": 1,
+            "reason": "ok",
+            "watch_points": ["watch"],
+            "current_price": 100.0,
+        },
+        {
+            "date": "2026-04-27",
+            "stock_id": 2,
+            "symbol": "9999",
+            "name": "ML-only",
+            "sector": "Other",
+            "industry": "Other",
+            "chip_score": 0,
+            "tech_score": 0,
+            "ml_score": 30.0,
+            "score": 30.0,
+            "signal": "BUY",
+            "confidence": 0.7,
+            "has_buy_signal": 1,
+            "reason": "orphan",
+            "watch_points": [],
+            "current_price": 10.0,
+        },
+    ], "2026-04-27")
+
+    assert updated == 1
+    assert len(captured["statements"]) == 1
+    assert captured["statements"][0][1][0] == "2330"
+    assert captured["cleanup_params"] == ["2026-04-27", 1]
+
+
+def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch):
+    monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="Missing screener-owned daily_recommendations seed rows"):
+        update_recommendations_in_d1([{
+            "date": "2026-04-27",
+            "stock_id": 2,
+            "symbol": "9999",
+            "name": "ML-only",
+            "sector": "Other",
+            "industry": "Other",
+            "score": 30.0,
+        }], "2026-04-27")
+
+
 def test_hybrid_ranking_promotion_marks_signal_source():
     rows = [{
         "symbol": "2330",

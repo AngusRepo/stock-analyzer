@@ -33,22 +33,6 @@ def default_text_fetcher(url: str, headers: dict[str, str] | None = None) -> str
         return response.read().decode("utf-8", errors="replace")
 
 
-def fetch_finnhub_company_news(
-    *,
-    symbol: str,
-    from_date: str,
-    to_date: str,
-    api_key: str,
-    fetcher: JsonFetcher = default_json_fetcher,
-) -> list[dict[str, Any]]:
-    query = urlencode({"symbol": symbol, "from": from_date, "to": to_date, "token": api_key})
-    url = f"https://finnhub.io/api/v1/company-news?{query}"
-    payload = fetcher(url, {"User-Agent": "StockVision/4.1 FinnhubEvidence"})
-    if not isinstance(payload, list):
-        return []
-    return payload
-
-
 def fetch_gdelt_doc_events(
     *,
     query: str,
@@ -122,34 +106,6 @@ def _xml_text(item: ET.Element, tag: str) -> str:
     return (node.text or "").strip() if node is not None else ""
 
 
-def normalize_finnhub_news_item(
-    raw: dict[str, Any],
-    *,
-    symbol: str,
-    source_quality_score: float = 0.82,
-    entity_linking_confidence: float = 0.9,
-) -> dict[str, Any]:
-    published = raw.get("datetime")
-    if isinstance(published, (int, float)):
-        published_at = datetime.fromtimestamp(published, tz=timezone.utc).isoformat()
-    else:
-        published_at = str(raw.get("published_at") or raw.get("date") or "")
-    return {
-        "source_id": "finnhub_news",
-        "title": raw.get("headline") or raw.get("title") or "",
-        "url": raw.get("url") or raw.get("source_url") or "",
-        "published_at": published_at,
-        "symbols": [symbol],
-        "themes": raw.get("related") if isinstance(raw.get("related"), list) else [],
-        "language": "en",
-        "region": raw.get("category") or "global",
-        "source_quality_score": source_quality_score,
-        "entity_linking_confidence": entity_linking_confidence,
-        "spam_filter_status": "clean",
-        "raw": raw,
-    }
-
-
 def normalize_gdelt_article(
     raw: dict[str, Any],
     *,
@@ -179,7 +135,6 @@ def _source_weight(source_id: str) -> float:
     return {
         "official_rss": 1.2,
         "company_ir_rss": 1.1,
-        "finnhub_news": 0.85,
         "gdelt_events": 0.35,
     }.get(source_id, 0.5)
 
@@ -380,14 +335,12 @@ def external_evidence_item_d1_rows(packet: dict[str, Any]) -> list[dict[str, Any
 
 def build_external_evidence_runtime_packet(
     *,
-    finnhub_items: list[dict[str, Any]] | None = None,
     gdelt_items: list[dict[str, Any]] | None = None,
     official_items: list[dict[str, Any]] | None = None,
     company_ir_items: list[dict[str, Any]] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     raw_items = []
-    raw_items.extend(finnhub_items or [])
     raw_items.extend(gdelt_items or [])
     raw_items.extend(official_items or [])
     raw_items.extend(company_ir_items or [])

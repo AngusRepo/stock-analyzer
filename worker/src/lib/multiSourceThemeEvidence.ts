@@ -4,7 +4,6 @@ export type ThemeEvidenceSourceId =
   | 'ptt'
   | 'news'
   | 'anue'
-  | 'finnhub_news'
   | 'official_rss'
   | 'company_ir_rss'
   | 'gdelt_events'
@@ -32,7 +31,6 @@ const SOURCE_WEIGHT: Record<string, number> = {
   ptt: 1.0,
   news: 0.9,
   anue: 0.85,
-  finnhub_news: 0.8,
   official_rss: 1.15,
   company_ir_rss: 1.05,
   gdelt_events: 0.25,
@@ -123,6 +121,7 @@ export async function loadRuntimeThemeSignals(db: D1Database, date: string): Pro
       SELECT concept, score, sentiment_avg, source, evidence_count, top_titles, allowed_use, decision_effect
       FROM theme_signals
       WHERE date <= ?
+        AND source NOT IN ('finnhub_news', 'company_ir_rss')
       ORDER BY date DESC, score DESC
       LIMIT 500
     `).bind(date).all<{

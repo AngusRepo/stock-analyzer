@@ -48,13 +48,6 @@
       "lineage_required": true
     },
     {
-      "source": "finnhub_news",
-      "role": "global_company_context",
-      "datasets": ["company_news", "global_news", "us_market_context"],
-      "write_target": ["external_evidence_items", "theme_signals"],
-      "lineage_required": true
-    },
-    {
       "source": "official_rss",
       "role": "authoritative_fact_support",
       "datasets": ["twse_rss", "tpex_rss", "fsc_rss", "moea_rss"],
@@ -63,9 +56,9 @@
     },
     {
       "source": "company_ir_rss",
-      "role": "first_party_company_evidence",
-      "datasets": ["company_ir", "newsroom"],
-      "write_target": ["external_evidence_items", "manual_review_evidence"],
+      "role": "disabled_pending_curated_allowlist",
+      "datasets": ["company_ir_allowlist", "newsroom_allowlist"],
+      "write_target": ["manual_review_evidence_after_allowlist_only"],
       "lineage_required": true
     },
     {

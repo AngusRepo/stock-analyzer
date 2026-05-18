@@ -1,7 +1,7 @@
 """External evidence policy contract for StockVision V4.
 
 External news/event sources are evidence, not alpha owners. This module keeps
-Finnhub, official RSS, company IR RSS, and GDELT outputs traceable and
+official RSS, allowlisted company IR RSS, and GDELT outputs traceable and
 non-trading until separate quality and promotion gates pass.
 """
 
@@ -55,19 +55,6 @@ def build_external_evidence_policy() -> dict[str, Any]:
 
 def build_external_evidence_source_registry() -> dict[str, Any]:
     sources = [
-        {
-            "source_id": "finnhub_news",
-            "source_kind": "market_news_api",
-            "provider": "Finnhub",
-            "access_mode": "backend_only",
-            "authority": "commercial_market_data",
-            "allowed_use": "event_context_only",
-            "decision_effect": "context_only",
-            "mode": "backend_context",
-            "direct_alpha_allowed": False,
-            "secret_policy": "server_side_secret_only",
-            "promotion_gate": "license_rate_limit_entity_linking_backtest_required",
-        },
         {
             "source_id": "official_rss",
             "source_kind": "official_rss",

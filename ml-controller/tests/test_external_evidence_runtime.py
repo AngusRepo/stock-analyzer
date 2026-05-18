@@ -11,7 +11,6 @@ from services.external_evidence_runtime import (  # noqa: E402
     external_evidence_item_d1_rows,
     fetch_rss_items,
     merge_theme_signals,
-    normalize_finnhub_news_item,
     normalize_gdelt_article,
     theme_signal_d1_rows,
 )
@@ -44,36 +43,22 @@ def test_official_rss_fetcher_normalizes_items_for_authoritative_evidence():
     assert packet["items"][0]["allowed_use"] == "official_event_audit"
 
 
-def test_finnhub_news_normalizes_into_traceable_external_evidence():
-    normalized = normalize_finnhub_news_item(
-        {
-            "headline": "NVIDIA supplier demand lifts AI server chain",
-            "url": "https://finnhub.example/news/1",
-            "datetime": 1778803200,
-            "related": ["AI_SERVER", "NVIDIA"],
-        },
-        symbol="2330",
-    )
-
-    assert normalized["source_id"] == "finnhub_news"
-    assert normalized["symbols"] == ["2330"]
-    assert normalized["source_quality_score"] > 0
-    assert normalized["entity_linking_confidence"] > 0
-
-
 def test_external_evidence_runtime_builds_theme_signals_for_screener():
+    official_rows = fetch_rss_items(
+        url="https://www.twse.com.tw/rss",
+        source_id="official_rss",
+        provider="TWSE",
+        fetcher=lambda _url, _headers=None: """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel><item>
+          <title>AI server order visibility improves</title>
+          <link>https://www.twse.com.tw/news/ai</link>
+          <pubDate>Fri, 15 May 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>""",
+    )
+    official_rows[0]["themes"] = ["AI_Server"]
+    official_rows[0]["symbols"] = ["2330"]
     packet = build_external_evidence_runtime_packet(
-        finnhub_items=[
-            normalize_finnhub_news_item(
-                {
-                    "headline": "AI server order visibility improves",
-                    "url": "https://finnhub.example/news/ai",
-                    "datetime": 1778803200,
-                    "related": ["AI_Server"],
-                },
-                symbol="2330",
-            )
-        ],
+        official_items=official_rows,
         gdelt_items=[
             normalize_gdelt_article(
                 {
@@ -92,30 +77,33 @@ def test_external_evidence_runtime_builds_theme_signals_for_screener():
     assert packet["quality_summary"]["accepted"] == 2
     signals = packet["runtime"]["theme_signals"]
     by_source = {signal["source"]: signal for signal in signals}
-    assert by_source["finnhub_news"]["concept"] == "AI_Server"
-    assert by_source["finnhub_news"]["score"] > by_source["gdelt_events"]["score"]
+    assert by_source["official_rss"]["concept"] == "AI_Server"
+    assert by_source["official_rss"]["score"] > by_source["gdelt_events"]["score"]
     assert by_source["gdelt_events"]["decision_effect"] == "research_or_risk_context"
     assert theme_signal_d1_rows(signals)[0]["top_titles"].startswith("[")
     evidence_rows = external_evidence_item_d1_rows(packet)
-    assert evidence_rows[0]["source_id"] == "finnhub_news"
-    assert evidence_rows[0]["accepted"] == 1
-    assert evidence_rows[0]["raw_json"].startswith("{")
+    official_evidence = next(row for row in evidence_rows if row["source_id"] == "official_rss")
+    assert official_evidence["accepted"] == 1
+    assert official_evidence["raw_json"].startswith("{")
 
 
 def test_theme_signal_merge_preserves_source_breakdown():
+    official_rows = fetch_rss_items(
+        url="https://www.twse.com.tw/rss",
+        source_id="official_rss",
+        provider="TWSE",
+        fetcher=lambda _url, _headers=None: """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel><item>
+          <title>AI server supply chain update</title>
+          <link>https://www.twse.com.tw/news/2</link>
+          <pubDate>Fri, 15 May 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>""",
+    )
+    official_rows[0]["themes"] = ["AI_Server"]
+    official_rows[0]["symbols"] = ["2330"]
     signals = build_theme_signals_from_external_packet(
         build_external_evidence_runtime_packet(
-            finnhub_items=[
-                normalize_finnhub_news_item(
-                    {
-                        "headline": "AI server supply chain update",
-                        "url": "https://finnhub.example/news/2",
-                        "datetime": 1778803200,
-                        "related": ["AI_Server"],
-                    },
-                    symbol="2330",
-                )
-            ],
+            official_items=official_rows,
             generated_at="2026-05-16T00:00:00+00:00",
         ),
         generated_at="2026-05-16T00:00:00+00:00",
@@ -124,5 +112,5 @@ def test_theme_signal_merge_preserves_source_breakdown():
     merged = merge_theme_signals(signals)
 
     assert merged[0]["concept"] == "AI_Server"
-    assert merged[0]["sources"] == ["finnhub_news"]
-    assert merged[0]["source_breakdown"]["finnhub_news"] > 0
+    assert merged[0]["sources"] == ["official_rss"]
+    assert merged[0]["source_breakdown"]["official_rss"] > 0

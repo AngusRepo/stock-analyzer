@@ -63,7 +63,7 @@ export interface SourceCoverageRow {
   entity_link_confidence: number | null
   latest_materialization: string | null
   decision_effect: string
-  runtime_state: 'production' | 'paper_active' | 'formal_shadow' | 'missing'
+  runtime_state: 'production' | 'paper_active' | 'formal_shadow' | 'disabled' | 'missing'
 }
 
 const V41_SOURCE_COVERAGE_ROLES: Record<string, Omit<SourceCoverageRow, 'rows' | 'freshness_status' | 'missing_rate' | 'duplicate_rate' | 'entity_link_confidence' | 'latest_materialization'>> = {
@@ -71,9 +71,8 @@ const V41_SOURCE_COVERAGE_ROLES: Record<string, Omit<SourceCoverageRow, 'rows' |
   anue: { source: 'anue', role: 'tw_news_heat', decision_effect: 'theme_context', runtime_state: 'production' },
   d1_news: { source: 'd1_news', role: 'stock_news', decision_effect: 'theme_context', runtime_state: 'production' },
   finlab: { source: 'finlab', role: 'structured_primary', decision_effect: 'canonical_data_and_taxonomy', runtime_state: 'production' },
-  finnhub_news: { source: 'finnhub_news', role: 'global_company_news', decision_effect: 'context_feature_candidate', runtime_state: 'production' },
   official_rss: { source: 'official_rss', role: 'authoritative_official', decision_effect: 'fact_support_manual_review', runtime_state: 'production' },
-  company_ir_rss: { source: 'company_ir_rss', role: 'company_first_party', decision_effect: 'fact_support_manual_review', runtime_state: 'production' },
+  company_ir_rss: { source: 'company_ir_rss', role: 'company_first_party', decision_effect: 'disabled_pending_allowlist', runtime_state: 'disabled' },
   gdelt_events: { source: 'gdelt_events', role: 'global_event_pressure', decision_effect: 'risk_context_only', runtime_state: 'formal_shadow' },
 }
 
@@ -94,7 +93,6 @@ function normalizeSourceId(source: unknown): string {
   const raw = String(source ?? '').trim()
   if (!raw) return 'unknown'
   if (raw === 'finlab_taxonomy' || raw.startsWith('finlab.')) return 'finlab'
-  if (raw === 'finnhub') return 'finnhub_news'
   if (raw === 'official') return 'official_rss'
   if (raw === 'company_ir') return 'company_ir_rss'
   if (raw === 'gdelt') return 'gdelt_events'
@@ -141,6 +139,7 @@ export function buildV41SourceCoverageRows(input: {
     const counts = countBySource.get(source)
     const rows = counts?.rows ?? 0
     const latest = counts?.latest ?? quality?.latest_materialization ?? null
+    const disabled = String(quality?.freshness_status ?? '').startsWith('disabled') || role.runtime_state === 'disabled'
     const missingRate = rows > 0 ? num(quality?.missing_rate, 0) : 1
     return {
       ...role,
@@ -150,7 +149,7 @@ export function buildV41SourceCoverageRows(input: {
       duplicate_rate: num(quality?.duplicate_rate, 0),
       entity_link_confidence: counts?.confidence ?? (quality?.entity_link_confidence == null ? null : num(quality.entity_link_confidence)),
       latest_materialization: latest,
-      runtime_state: rows > 0 ? role.runtime_state : 'missing',
+      runtime_state: disabled ? 'disabled' : rows > 0 ? role.runtime_state : 'missing',
     }
   })
 }

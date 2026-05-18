@@ -18,11 +18,11 @@ const anue = buzzResultsToThemeEvidence('anue', [
 
 const runtimeSignals = [
   {
-    source: 'finnhub_news',
+    source: 'official_rss',
     concept: 'AI_Server',
     mentionCount: 2,
     sentimentAvg: 0.2,
-    topPosts: ['finnhub ai'],
+    topPosts: ['official ai'],
     score: 0.8,
   },
   {
@@ -41,6 +41,6 @@ const combined = combineMultiSourceThemeEvidence([ptt, anue, runtimeSignals])
 assert(combined.combinedBuzz[0].concept === 'AI_Server', 'AI_Server should stay top after cross-source evidence merge')
 assert((combined.scoreMap.get('AI_Server') ?? 0) > (combined.scoreMap.get('PCB') ?? 0), 'multi-source score must beat single-source weak evidence')
 assert(combined.sourceBreakdown.get('AI_Server')?.ptt !== undefined, 'PTT source contribution must be traceable')
-assert(combined.sourceBreakdown.get('AI_Server')?.finnhub_news !== undefined, 'Finnhub source contribution must be traceable')
+assert(combined.sourceBreakdown.get('AI_Server')?.official_rss !== undefined, 'official source contribution must be traceable')
 assert(combined.acceptedSources.ptt === 2, 'accepted source counts must include PTT rows')
-assert(combined.acceptedSources.finnhub_news === 1, 'accepted source counts must include Finnhub rows')
+assert(combined.acceptedSources.official_rss === 1, 'accepted source counts must include official rows')

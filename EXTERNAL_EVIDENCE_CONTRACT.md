@@ -7,9 +7,8 @@ V4-28 defines how external event/news sources enter StockVision.
 These sources are evidence, not alpha owners.
 
 ```text
-Finnhub
 Official RSS
-Company IR RSS / Newsroom
+Company IR RSS / Newsroom, disabled until curated allowlist
 GDELT
 ```
 
@@ -44,10 +43,17 @@ ml-controller/tests/test_external_evidence_contract.py
 
 | Source | Mode | Allowed Use | Boundary |
 |---|---|---|---|
-| Finnhub | backend-only | `event_context_only` | API key never goes frontend; no direct alpha. |
 | TWSE / TPEX / FSC / MOEA RSS | official audit | `official_event_audit` | Official event context and manual review. |
-| Company IR RSS / Newsroom | first-party company context | `watchlist_first_party_context` | Watchlist/manual-review; require domain allowlist. |
+| Company IR RSS / Newsroom | disabled until curated allowlist | `watchlist_first_party_context` after allowlist only | No production rows until explicit feed allowlist prevents stale/noisy first-party evidence. |
 | GDELT | shadow | `shadow_global_event_context` | Global event/tone/theme context only; high-noise source. |
+
+Removed from V4.1 production scope:
+
+```text
+Finnhub
+```
+
+Reason: FinLab paid data plus official RSS cover the current low-risk context need. Finnhub can be reconsidered later as an optional connector only if coverage gaps appear and registration/license/rate-limit cost is justified.
 
 ## Normalized Evidence Item
 

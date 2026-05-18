@@ -13,7 +13,6 @@ sys.path.insert(0, str(ML_CONTROLLER))
 from services.external_evidence_runtime import (  # noqa: E402
     build_external_evidence_runtime_packet,
     external_evidence_item_d1_rows,
-    normalize_finnhub_news_item,
     normalize_gdelt_article,
     theme_signal_d1_rows,
 )
@@ -36,17 +35,6 @@ def _symbols_from_item(item: dict) -> list[str]:
     return [str(symbol)] if symbol else []
 
 
-def _normalized_finnhub_items(items: list[dict]) -> list[dict]:
-    normalized = []
-    for item in items:
-        if item.get("source_id"):
-            normalized.append(item)
-            continue
-        symbols = _symbols_from_item(item)
-        normalized.append(normalize_finnhub_news_item(item, symbol=symbols[0] if symbols else ""))
-    return normalized
-
-
 def _normalized_gdelt_items(items: list[dict]) -> list[dict]:
     normalized = []
     for item in items:
@@ -60,7 +48,7 @@ def _normalized_gdelt_items(items: list[dict]) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build V4.1 external evidence packet and D1 row payloads from a local fixture.")
-    parser.add_argument("--input", required=True, help="JSON fixture with finnhub_items/gdelt_items/official_items/company_ir_items.")
+    parser.add_argument("--input", required=True, help="JSON fixture with gdelt_items/official_items/company_ir_items.")
     parser.add_argument("--output-dir", default=str(ROOT / "data" / "external_evidence_runtime"))
     parser.add_argument("--run-id", default="external-evidence-local")
     parser.add_argument("--generated-at")
@@ -68,7 +56,6 @@ def main() -> int:
 
     fixture = _load_json(Path(args.input))
     packet = build_external_evidence_runtime_packet(
-        finnhub_items=_normalized_finnhub_items(fixture.get("finnhub_items") or []),
         gdelt_items=_normalized_gdelt_items(fixture.get("gdelt_items") or []),
         official_items=fixture.get("official_items") or [],
         company_ir_items=fixture.get("company_ir_items") or [],

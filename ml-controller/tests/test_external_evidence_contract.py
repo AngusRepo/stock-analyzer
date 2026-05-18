@@ -19,8 +19,7 @@ def test_source_registry_keeps_external_evidence_traceable_and_non_alpha():
     by_id = {source["source_id"]: source for source in registry["sources"]}
 
     assert registry["schema_version"] == "external-evidence-contract-v1"
-    assert by_id["finnhub_news"]["access_mode"] == "backend_only"
-    assert by_id["finnhub_news"]["allowed_use"] == "event_context_only"
+    assert "finnhub_news" not in by_id
     assert by_id["gdelt_events"]["mode"] == "shadow"
     assert by_id["official_rss"]["authority"] == "official"
     assert by_id["company_ir_rss"]["authority"] == "first_party_company"
@@ -74,7 +73,7 @@ def test_gdelt_is_shadow_global_event_context_even_with_tone_and_themes():
 def test_packet_validation_blocks_direct_alpha_and_missing_traceability():
     item = normalize_external_evidence_item(
         {
-            "source_id": "finnhub_news",
+            "source_id": "official_rss",
             "title": "Company headline",
             "url": "https://example.com/a",
             "published_at": "2026-05-15T00:00:00Z",
@@ -89,8 +88,8 @@ def test_packet_validation_blocks_direct_alpha_and_missing_traceability():
     errors = validate_external_evidence_packet({"items": [item]})
 
     assert errors == [
-        "finnhub_news:direct_alpha_not_allowed",
-        "finnhub_news:source_url_required",
+        "official_rss:direct_alpha_not_allowed",
+        "official_rss:source_url_required",
     ]
 
 
@@ -112,9 +111,9 @@ def test_packet_builder_keeps_valid_items_and_quarantines_bad_items():
     packet = build_external_evidence_packet(
         [
             {
-                "source_id": "finnhub_news",
-                "title": "Company headline",
-                "url": "https://finnhub.example/news/1",
+                "source_id": "official_rss",
+                "title": "Official headline",
+                "url": "https://www.twse.com.tw/news/1",
                 "published_at": "2026-05-16T00:00:00Z",
                 "symbols": ["2330"],
                 "source_quality_score": 0.84,
@@ -122,7 +121,7 @@ def test_packet_builder_keeps_valid_items_and_quarantines_bad_items():
                 "spam_filter_status": "clean",
             },
             {
-                "source_id": "finnhub_news",
+                "source_id": "official_rss",
                 "title": "Missing URL",
                 "published_at": "2026-05-16T00:00:00Z",
                 "source_quality_score": 0.84,
@@ -147,15 +146,15 @@ def test_packet_builder_keeps_valid_items_and_quarantines_bad_items():
     assert packet["decision_effect"] == "context_manual_review_or_shadow_only"
     assert packet["direct_alpha_allowed"] is False
     assert len(packet["items"]) == 1
-    assert packet["items"][0]["source_id"] == "finnhub_news"
+    assert packet["items"][0]["source_id"] == "official_rss"
     assert packet["quality_summary"] == {
         "total": 3,
         "accepted": 1,
         "rejected": 2,
-        "by_source": {"finnhub_news": 2, "random_blog": 1},
+        "by_source": {"official_rss": 2, "random_blog": 1},
     }
     assert [item["errors"] for item in packet["rejected_items"]] == [
-        ["finnhub_news:source_url_required", "finnhub_news:dedup_key_required"],
+        ["official_rss:source_url_required", "official_rss:dedup_key_required"],
         ["random_blog:source_id_not_allowed"],
     ]
     assert validate_external_evidence_packet(packet) == []

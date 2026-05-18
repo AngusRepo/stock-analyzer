@@ -5,7 +5,7 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { DecisionPacketCell, MiniSparkline, StatusPill, WeightBar } from '@/components/workstation/VisualPrimitives'
+import { DecisionPacketCell, StatusPill, WeightBar } from '@/components/workstation/VisualPrimitives'
 import { modelPoolApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 
@@ -52,6 +52,16 @@ function familyAccentClass(family: string): string {
   if (key.includes('linear')) return 'bg-amber-300'
   if (key.includes('state')) return 'bg-violet-300'
   return 'bg-slate-300'
+}
+
+function familyChipClass(family: string): string {
+  const key = family.toLowerCase()
+  if (key.includes('tree') || key.includes('boost')) return 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+  if (key.includes('time') || key.includes('series')) return 'border-sky-400/40 bg-sky-500/10 text-sky-200'
+  if (key.includes('feature')) return 'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-200'
+  if (key.includes('linear')) return 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+  if (key.includes('state')) return 'border-violet-400/40 bg-violet-500/10 text-violet-200'
+  return 'border-slate-500/40 bg-slate-500/10 text-slate-200'
 }
 
 function statusGlyph(status?: string): string {
@@ -355,74 +365,6 @@ function TinyBar({ label, value, tone = 'info' }: { label: string; value: number
   )
 }
 
-function ServingAlphaStrip({
-  models,
-  pointers,
-  weakIc,
-  sampleGaps,
-}: {
-  models: Array<[string, ModelPoolLineageModel]>
-  pointers?: ModelChampionPointersResponse
-  weakIc: number
-  sampleGaps: number
-}) {
-  const serving = models.filter(([, model]) => isServingAlphaModel(model)).slice(0, 8)
-  const degraded = serving.filter(([, model]) => model.status === 'degraded').length
-  const retired = models.filter(([, model]) => lifecycleBucket(model) === 'retired').length
-  const shadow = models.filter(([, model]) => lifecycleBucket(model) === 'shadow').length
-  const research = models.filter(([, model]) => lifecycleBucket(model) === 'research').length
-
-  return (
-    <WorkstationPanel title="Model Ops Mission Control" kicker="serving alpha slots: active + degraded still vote">
-      <div className="grid gap-px bg-[#263247] xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="grid gap-px bg-[#263247] sm:grid-cols-2 xl:grid-cols-4">
-          {serving.map(([name, model]) => {
-            const pointer = pointers?.models?.[name]
-            const family = modelFamily(model)
-            const weight = effectiveVoteWeight(model)
-            const ic = icValue(model)
-            return (
-              <div key={name} className="bg-[#070a10] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`h-6 w-1.5 ${familyAccentClass(family)}`} />
-                      <div className="truncate font-mono text-[12px] font-semibold text-[#fff1cf]">{name}</div>
-                    </div>
-                    <div className="mt-1 text-[10px] text-[#70809b]">{family}</div>
-                  </div>
-                  <StatusPill tone={model.status === 'degraded' ? 'warn' : 'ok'}>
-                    {statusGlyph(model.status)} {model.status}
-                  </StatusPill>
-                </div>
-                <div className="mt-3 grid grid-cols-[1fr_auto] items-end gap-3">
-                  <WeightBar label="effective vote" value={weight} tone={model.status === 'degraded' ? 'warn' : 'ok'} />
-                  <MiniSparkline values={model.weekly_ic ?? [ic ?? 0]} tone={ic == null || ic < 0 ? 'warn' : 'ok'} />
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                  <DecisionPacketCell title="IC 4W" value={ic == null ? 'N/A' : ic.toFixed(4)} tone={ic == null ? 'warn' : ic >= 0 ? 'ok' : 'error'} />
-                  <DecisionPacketCell title="samples" value={Number(model.last_ic_sample_count ?? 0)} tone={Number(model.last_ic_sample_count ?? 0) > 0 ? 'ok' : 'warn'} />
-                </div>
-                <div className="mt-2 text-[10px] leading-4 text-[#8a92a6]">
-                  pointer: {pointer?.readiness ?? 'lineage only'} / {pointer?.serving_version ?? model.version ?? 'N/A'}
-                </div>
-              </div>
-            )
-          })}
-          {!serving.length && (
-            <div className="bg-[#070a10] p-3 text-sm text-amber-200">No serving alpha slots returned by lineage.</div>
-          )}
-        </div>
-        <aside className="grid gap-2 bg-[#070a10] p-3">
-          <DecisionPacketCell title="serving alpha slots" value={`${serving.length}/8`} detail={`${degraded} degraded still vote with reduced weight`} tone={serving.length === 8 ? 'ok' : 'warn'} />
-          <DecisionPacketCell title="non-serving inventory" value={`${retired} retired`} detail={`${shadow} shadow / ${research} research`} tone="neutral" />
-          <DecisionPacketCell title="quality attention" value={`IC ${weakIc}`} detail={`sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
-        </aside>
-      </div>
-    </WorkstationPanel>
-  )
-}
-
 function selectedCandidateForModel(row?: ModelArtifactSelectionResponse['models'][string]) {
   const artifact = row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
   const context = row?.monthly_release_candidate
@@ -453,23 +395,23 @@ function UnifiedModelHealthMatrix({
       kicker="single source: champion pointer, registry candidate, offline gate, live gate, promotion evidence"
     >
       <div className="p-3">
-        <div className="mb-3 grid gap-2 text-xs text-[#8a92a6] md:grid-cols-3">
+        <div className="mb-3 grid gap-2 text-[13px] text-[#9aa7bd] md:grid-cols-3">
           <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Champion / Production</p>
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#7f8da8]">Champion / Production</p>
             <p className="mt-1 leading-5">目前 serving 應讀 champion pointer；這裡顯示 production artifact 與近期 IC 4W。</p>
           </div>
           <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Candidate / Registry</p>
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#7f8da8]">Candidate / Registry</p>
             <p className="mt-1 leading-5">monthly / weekly artifact 先看 offline gate，再進 live shadow，不再用 legacy challenger 當 promotion evidence。</p>
           </div>
           <div className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Live Gate / Decision</p>
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#7f8da8]">Live Gate / Decision</p>
             <p className="mt-1 leading-5">正式比較基準是同一段 verified rows 的 shadow IC vs champion IC，不是 prod IC 4W 混比 lifecycle IC。</p>
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1540px] border-collapse font-mono text-xs">
-            <thead className="bg-[#0c1420] text-[#70809b]">
+          <table className="w-full min-w-[1640px] border-collapse font-mono text-[13px]">
+            <thead className="bg-[#0d1724] text-[#91a0ba]">
               <tr>
                 {[
                   'Model',
@@ -485,7 +427,7 @@ function UnifiedModelHealthMatrix({
                   'DSR / MC',
                   'Live gate / Root cause / Next action',
                 ].map((label) => (
-                  <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
+                  <th key={label} className="border border-[#263247] px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em]">{label}</th>
                 ))}
               </tr>
             </thead>
@@ -512,17 +454,22 @@ function UnifiedModelHealthMatrix({
                 const policyInfo = featurePolicyCopy(name, artifact?.feature_policy_version)
 
                 return (
-                  <tr key={name} className="align-top hover:bg-[#101927]">
-                    <td className="border border-[#263247] px-2 py-2 text-slate-100">
+                  <tr key={name} className="align-top transition-colors odd:bg-[#070c14] even:bg-[#09111d] hover:bg-[#111e30]">
+                    <td className="border border-[#263247] px-3 py-3 text-slate-100">
                       <div className="flex items-start gap-2">
-                        <span className={`mt-0.5 h-10 w-1.5 ${familyAccentClass(modelFamily(model))}`} />
+                        <span className={`mt-0.5 h-12 w-1.5 ${familyAccentClass(modelFamily(model))}`} />
                         <div className="min-w-0">
-                          <div className="font-semibold">{name}</div>
-                          <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {modelFamily(model)}</div>
+                          <div className="text-[15px] font-semibold">{name}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <span className={`rounded border px-2 py-0.5 text-[11px] ${familyChipClass(modelFamily(model))}`}>
+                              {modelFamily(model)}
+                            </span>
+                            <span className="text-[11px] text-[#8190ab]">{model.model_type ?? 'unknown'}</span>
+                          </div>
                         </div>
                       </div>
                     </td>
-                    <td className="border border-[#263247] px-2 py-2">
+                    <td className="border border-[#263247] px-3 py-3">
                       <div className="space-y-2">
                         <StatusPill tone={model.status === 'degraded' ? 'warn' : isServingAlphaModel(model) ? 'ok' : toneFromStatus(model.status)}>
                           {statusGlyph(model.status)} {model.status ?? '-'}
@@ -530,49 +477,49 @@ function UnifiedModelHealthMatrix({
                         <WeightBar label="vote weight" value={effectiveVoteWeight(model)} tone={model.status === 'degraded' ? 'warn' : isServingAlphaModel(model) ? 'ok' : 'neutral'} />
                       </div>
                     </td>
-                    <td className="max-w-[220px] border border-[#263247] px-2 py-2">
+                    <td className="max-w-[220px] border border-[#263247] px-3 py-3">
                       <div className="truncate text-slate-200" title={championArtifact}>{championArtifact}</div>
-                      <div className="mt-1 text-[10px] text-[#70809b]">serving {pointer?.serving_version ?? model.version ?? 'N/A'}</div>
+                      <div className="mt-1 text-[11px] text-[#8190ab]">serving {pointer?.serving_version ?? model.version ?? 'N/A'}</div>
                       <WorkstationPill tone={pointer?.readiness === 'pointer_ready' ? 'ok' : pointer ? 'warn' : 'neutral'}>
                         {pointer?.readiness ?? 'lineage only'}
                       </WorkstationPill>
                     </td>
-                    <td className="border border-[#263247] px-2 py-2">
+                    <td className="border border-[#263247] px-3 py-3">
                       <WorkstationPill tone={icTone}>{ic == null ? 'N/A' : ic.toFixed(4)}</WorkstationPill>
                       {segmentRows.length > 0 && (
                         <div className="mt-1 flex max-w-[260px] flex-wrap gap-1">
                           {segmentRows.slice(0, 3).map((row) => (
-                            <span key={row.segment} className="rounded border border-[#263247] bg-[#05070c] px-1.5 py-0.5 text-[10px] text-[#8a92a6]">
+                            <span key={row.segment} className="rounded border border-[#263247] bg-[#05070c] px-1.5 py-0.5 text-[11px] text-[#9aa7bd]">
                               {row.segment} {row.ic == null ? 'N/A' : row.ic.toFixed(3)} / n={row.samples}
                             </span>
                           ))}
                         </div>
                       )}
                     </td>
-                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                    <td className="border border-[#263247] px-3 py-3 text-slate-300">
                       <div>{sampleCount}</div>
                       <WeightBar label={diagnosis?.coverage == null ? 'coverage N/A' : 'coverage'} value={diagnosis?.coverage == null ? 0 : Math.round(diagnosis.coverage * 100)} tone={diagnosis?.coverage == null ? 'warn' : 'info'} />
                       <WorkstationPill tone={model.metadata_exists === false ? 'warn' : 'ok'}>{model.metadata_exists === false ? 'metadata missing' : 'metadata present'}</WorkstationPill>
                     </td>
-                    <td className="max-w-[240px] border border-[#263247] px-2 py-2">
+                    <td className="max-w-[240px] border border-[#263247] px-3 py-3">
                       {artifact ? (
                         <div>
                           <div className="truncate font-semibold text-[#fff1cf]" title={artifact.artifact_id}>{artifact.artifact_id}</div>
-                          <div className="mt-1 text-[10px] text-[#70809b]">{artifact.version} / {artifact.candidate_type}</div>
+                          <div className="mt-1 text-[11px] text-[#8190ab]">{artifact.version} / {artifact.candidate_type}</div>
                           <WorkstationPill tone={registryTone(artifact.state)}>{artifact.state}</WorkstationPill>
                         </div>
                       ) : (
                         <span className="text-slate-500">No selected candidate</span>
                       )}
                     </td>
-                    <td className="min-w-[190px] border border-[#263247] px-2 py-2 text-slate-300">
+                    <td className="min-w-[190px] border border-[#263247] px-3 py-3 text-slate-300">
                       <div className="font-semibold text-slate-100">{policyInfo.label}</div>
-                      <div className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{policyInfo.detail}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-[#9aa7bd]">{policyInfo.detail}</div>
                       <WorkstationPill tone={artifact?.feature_policy_version ? 'ok' : 'warn'}>
                         {policyInfo.schema}
                       </WorkstationPill>
                     </td>
-                    <td className="border border-[#263247] px-2 py-2">
+                    <td className="border border-[#263247] px-3 py-3">
                       {artifact ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={registryTone(artifact.offline_gate_decision ?? artifact.offline_gate_status ?? artifact.state)}>
@@ -582,34 +529,34 @@ function UnifiedModelHealthMatrix({
                         </div>
                       ) : 'N/A'}
                     </td>
-                    <td className="border border-[#263247] px-2 py-2">
+                    <td className="border border-[#263247] px-3 py-3">
                       {artifact ? (
                         <div className="space-y-1 text-slate-300">
                           <div>champion {evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}</div>
                           <div>shadow {evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}</div>
-                          <div className="text-[10px] text-[#70809b]">
+                          <div className="text-[11px] text-[#8190ab]">
                             n {evidenceMetric(artifact, ['shadow_samples', 'shadowSamples'], 0)} / min {evidenceMetric(artifact, ['min_samples', 'minSamples'], 0)}
                           </div>
                         </div>
                       ) : 'N/A'}
                     </td>
-                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                    <td className="border border-[#263247] px-3 py-3 text-slate-300">
                       {artifact ? `${evidenceMetric(artifact, ['model_cpcv_decision', 'cpcv_decision'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}` : 'N/A'}
                     </td>
-                    <td className="border border-[#263247] px-2 py-2 text-slate-300">
+                    <td className="border border-[#263247] px-3 py-3 text-slate-300">
                       {artifact ? `${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}` : 'N/A'}
                     </td>
-                    <td className="min-w-[420px] max-w-[560px] border border-[#263247] px-2 py-2 whitespace-normal">
+                    <td className="min-w-[460px] max-w-[620px] border border-[#263247] px-3 py-3 whitespace-normal">
                       {artifact ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={liveTone}>{artifact.live_gate_status ?? 'not_started'}</WorkstationPill>
-                          <div className="rounded border border-[#263247] bg-[#05070c] p-2 text-[11px] leading-4 text-[#d0d8e8]">
+                          <div className="rounded border border-[#33415c] bg-[#05070c] p-2.5 text-[12px] leading-5 text-[#d0d8e8]">
                             <div><span className="text-[#70809b]">root</span> {root}</div>
                             {diagnosis?.reason && <div className="mt-1 text-[#8a92a6]">{diagnosis.reason}</div>}
                           </div>
-                          <div className="text-[10px] leading-4 text-[#8a92a6]">{nextAction}</div>
+                          <div className="text-[11px] leading-4 text-[#9aa7bd]">{nextAction}</div>
                           <details className="mt-2 rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                            <summary className="cursor-pointer text-[10px] text-sky-200">Champion -&gt; Candidate diff</summary>
+                            <summary className="cursor-pointer text-[11px] text-sky-200">Champion -&gt; Candidate diff</summary>
                             <div className="mt-2">
                               <ArtifactMetricDelta label="artifact" before={championArtifact} after={artifact.artifact_id} />
                               <ArtifactMetricDelta label="baseline" before={artifact.evaluation_baseline_version ?? pointer?.serving_version ?? 'N/A'} after={artifact.final_compared_to ?? 'final comparison pending'} />
@@ -1524,13 +1471,6 @@ export default function ModelPoolPage() {
               <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM 不投票，只做 benchmark evidence。" tone="warn" />
               <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
-
-            <ServingAlphaStrip
-              models={modelList}
-              pointers={championPointers.data}
-              weakIc={weakIc}
-              sampleGaps={sampleGaps}
-            />
 
             <UnifiedModelHealthMatrix
               models={modelList}

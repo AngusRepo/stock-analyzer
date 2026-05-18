@@ -410,6 +410,47 @@ def test_update_live_gate_from_ic_passes_when_shadow_beats_production(monkeypatc
     assert executed[0]["params"][1] == "passed"
 
 
+def test_update_live_gate_from_ic_blocks_relative_win_when_shadow_ic_still_negative(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        return [
+            {
+                "artifact_id": "CatBoost:vM:monthly_release",
+                "model_name": "CatBoost",
+                "candidate_type": "monthly_release",
+                "state": "offline_strong_pass",
+                "updated_at": "2026-05-17T00:00:00Z",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": "{}",
+                "live_evidence_json": "{}",
+            },
+        ]
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.update_live_gate_from_ic(
+        {
+            "CatBoost": {"status": "computed", "ic": -0.0427, "n_samples": 153, "root_cause": "ok"},
+            "CatBoost::challenger": {"status": "computed", "ic": -0.0204, "n_samples": 153, "root_cause": "ok"},
+        },
+        min_samples=50,
+    )
+
+    update = result["updates"][0]
+    assert update["state"] == "shadowing"
+    assert update["live_gate_status"] == "failed"
+    assert update["promotion_decision"] == "reject_or_keep_shadowing"
+    assert update["root_cause"] == "shadow_beats_champion_but_absolute_ic_negative"
+    assert executed[0]["params"][0] == "shadowing"
+    assert executed[0]["params"][1] == "failed"
+
+
 def test_build_promotion_queue_requires_approval_for_weekly_drift():
     queue = registry.build_promotion_queue(
         [

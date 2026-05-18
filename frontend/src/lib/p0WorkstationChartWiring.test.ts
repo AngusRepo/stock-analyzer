@@ -44,13 +44,15 @@ assert(strategyChart.includes('createSeriesMarkers'), 'StrategyExperimentTimelin
 assert(strategyChart.includes('Strategy Visual Workbench'), 'StrategyExperimentTimeline empty state should still render a visible visual workbench')
 
 const modelPoolPage = fs.readFileSync(modelPoolPagePath, 'utf8')
-assert(modelPoolPage.includes('ModelPoolHealthChart'), 'ModelPool page should render the model health chart')
-assert(modelPoolPage.includes('ServingAlphaStrip'), 'ModelPool page should render a serving alpha strip')
+assert(modelPoolPage.includes('Model Health Matrix'), 'ModelPool page should render the unified model health matrix')
+assert(!modelPoolPage.includes('<Model' + 'PoolHealthChart'), 'ModelPool page should not render a duplicate model health chart above the serving matrix')
+assert(!modelPoolPage.includes('Model Ops Mission Control'), 'ModelPool page should not render the duplicate Model Ops Mission Control panel')
+assert(!modelPoolPage.includes('ServingAlphaStrip'), 'ModelPool page should not render a duplicate serving alpha strip')
 assert(modelPoolPage.includes('Serving Alpha Slots'), 'ModelPool KPI should use Serving Alpha Slots wording')
 assert(!modelPoolPage.includes('<Family' + 'BalancePanel'), 'ModelPool page should not render a standalone FamilyBalancePanel')
 assert(!modelPoolPage.includes('<Champion' + 'PointerPanel'), 'Champion pointer readiness should be merged into the serving strip instead of a duplicate panel')
 assert(modelPoolPage.includes('effectiveVoteWeight'), 'Model health matrix should expose effective vote weight for active and degraded models')
-assert(modelPoolPage.includes('MiniSparkline'), 'Model health matrix should include weekly IC sparkline primitives')
+assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix should not show unlabeled mini bar charts inside model cards')
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')

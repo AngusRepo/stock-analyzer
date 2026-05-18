@@ -60,6 +60,38 @@ from services.persona_service import (
 
 logger = logging.getLogger(__name__)
 
+D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
+D1_RETRYABLE_MARKERS = (
+    "HTTP 429",
+    "D1 DB is overloaded",
+    "Requests queued for too long",
+    "Too Many Requests",
+)
+
+
+def _is_retryable_d1_overload(error: Exception) -> bool:
+    message = str(error)
+    return any(marker.lower() in message.lower() for marker in D1_RETRYABLE_MARKERS)
+
+
+async def _load_market_env_with_backoff(run_date: str):
+    """Retry the hot-path market environment read when D1 is temporarily saturated."""
+    for attempt in range(len(D1_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return await asyncio.to_thread(load_market_env, run_date)
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= len(D1_RETRY_DELAYS_SECONDS) or not _is_retryable_d1_overload(exc):
+                raise
+            delay = D1_RETRY_DELAYS_SECONDS[attempt]
+            logger.warning(
+                "[Pipeline V2] load_market_env D1 overload attempt=%s/%s; retry in %.1fs: %s",
+                attempt + 1,
+                len(D1_RETRY_DELAYS_SECONDS) + 1,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
+
 
 def _state_space_overlay_mode() -> str:
     raw = (
@@ -144,7 +176,7 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
     """
     logger.info("[Pipeline V2] node_load_market_env")
-    market_env, adaptive, barrier, lifecycle, trading_cfg = load_market_env(state["run_date"])
+    market_env, adaptive, barrier, lifecycle, trading_cfg = await _load_market_env_with_backoff(state["run_date"])
     return {
         "market_env": _to_dict(market_env),
         "adaptive_params": adaptive,
@@ -1342,8 +1374,10 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
     Phase 6: Compute RRG (rs_ratio / rs_momentum / quadrant) for concept + industry
-    and upsert into sector_flow. Must run before node_recommend because downstream
-    hybrid ranking + paper.ts T2 quadrant filter depend on fresh sector_flow rows.
+    and upsert into sector_flow. Screener consumes the latest completed sector_flow
+    before this pipeline starts, so this refresh is post-write evidence for
+    dashboards and the next screener run. It must not contend with the hot-path
+    market_env reads.
 
     Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
     """
@@ -1656,24 +1690,19 @@ def build_graph():
     g.add_node("write_d1",          node_write_d1)
     g.add_node("export_dataset_snapshot", node_export_dataset_snapshot)
 
-    # 2026-04-18 P2 #40: parallelize independent loaders.
-    # load_market_env and compute_sector_flow are independent of each other
-    # (and only need load_inputs.run_date which all nodes already have via state).
-    # Fan-out from load_inputs → both run concurrently → fan-in at build_payloads.
-    # Saves ~10-20s of sequential wait per pipeline.
+    # Keep D1-heavy sector_flow out of the hot-path fan-out. The 22:00 chain
+    # already runs indicator + screener writes, and parallel D1 readers can trip
+    # Cloudflare D1 queued-too-long 429s.
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
-    g.add_edge("load_inputs",         "compute_sector_flow")
-    # Both load_market_env and compute_sector_flow converge at build_payloads.
-    # LangGraph fan-in: build_payloads waits for both upstream nodes to complete.
     g.add_edge("load_market_env",     "build_payloads")
-    g.add_edge("compute_sector_flow", "build_payloads")
     g.add_edge("build_payloads",      "ml_predict")
     g.add_edge("ml_predict",          "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
-    g.add_edge("write_d1",            "export_dataset_snapshot")
+    g.add_edge("write_d1",            "compute_sector_flow")
+    g.add_edge("compute_sector_flow", "export_dataset_snapshot")
     g.add_edge("export_dataset_snapshot", END)
 
     # Checkpointer disabled for now:

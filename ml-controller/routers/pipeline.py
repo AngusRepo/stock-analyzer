@@ -95,9 +95,9 @@ async def _emit_subtask_callbacks(
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
-    Dashboard reads scheduler:run:{task}:{date}; pipeline runs screener / ml-predict /
-    recommendation internally but only writes scheduler:run:pipeline. This reverse-
-    callback pattern keeps the UI tiles aligned with reality.
+    Dashboard reads scheduler:run:{task}:{date}. Screener is Worker-owned before
+    the pipeline trigger, so the pipeline callback must not overwrite screener
+    success/failure. Only ML predict and recommendation are pipeline-owned.
     """
     metrics: dict = {}
     if isinstance(result, dict):
@@ -115,7 +115,6 @@ async def _emit_subtask_callbacks(
     )
 
     subtasks = [
-        ("screener", predictions_n > 0, prediction_summary),
         ("ml-predict", predictions_n > 0, prediction_summary),
         ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
     ]

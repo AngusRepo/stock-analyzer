@@ -1004,17 +1004,26 @@ def _live_gate_decision(
         }
 
     delta = shadow_ic - production_ic
-    passed = shadow_ic > 0 and delta > 0
+    beats_champion = delta > 0
+    passed = shadow_ic > 0 and beats_champion
+    if passed:
+        failure_root_cause = "ok"
+        failure_reason = "Shadow candidate beats current production baseline on verified live IC."
+    elif beats_champion:
+        failure_root_cause = "shadow_beats_champion_but_absolute_ic_negative"
+        failure_reason = (
+            "Shadow candidate is less negative than the current champion, but its absolute verified IC is still negative; "
+            "keep it out of the promotion queue."
+        )
+    else:
+        failure_root_cause = "shadow_ic_not_better_than_champion"
+        failure_reason = "Shadow candidate does not beat current production baseline on verified live IC."
     return {
         "state": "live_gate_passed" if passed else "shadowing",
         "live_gate_status": "passed" if passed else "failed",
         "promotion_decision": "pending_promotion_controller" if passed else "reject_or_keep_shadowing",
         "approval_state": "not_required",
-        "reason": (
-            "Shadow candidate beats current production baseline on verified live IC."
-            if passed
-            else "Shadow candidate does not beat current production baseline on verified live IC."
-        ),
+        "reason": failure_reason,
         "metrics": {
             "shadow_model_name": shadow_name,
             "shadow_ic": shadow_ic,
@@ -1024,7 +1033,7 @@ def _live_gate_decision(
             "ic_delta": round(delta, 6),
             "min_samples": min_samples,
         },
-        "root_cause": "ok" if passed else "shadow_ic_not_better_than_champion",
+        "root_cause": failure_root_cause,
         "production_root_cause": production.get("root_cause"),
     }
 

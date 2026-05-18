@@ -13,6 +13,7 @@ from fastapi import HTTPException  # noqa: E402
 from routers.obsidian import (
     WikiBootstrapRequest,
     WikiFinishTaskRequest,
+    WikiGraphifyReportRequest,
     WikiGuardRequest,
     WikiHealthRequest,
     WikiNoteRequest,
@@ -26,6 +27,7 @@ from routers.obsidian import (
     build_wiki_start_task_endpoint,
     create_wiki_project_hub,
     finish_wiki_task_endpoint,
+    inspect_wiki_graphify_report,
     inspect_wiki_health,
     inspect_wiki_guard,
     recall_wiki_context,
@@ -495,3 +497,28 @@ def test_wiki_start_task_endpoint_returns_context(monkeypatch):
     assert body["status"] == "ready"
     assert body["vault_root"] == "C:/wiki-vault"
     assert body["repo_cwd"] == "C:/repo"
+
+
+def test_wiki_graphify_report_endpoint_returns_latest_report(monkeypatch):
+    monkeypatch.setitem(os.environ, "OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_inspect_graphify_reports(vault_root, *, limit=5, stale_days=7):
+        return {
+            "status": "found",
+            "vault_root": str(vault_root),
+            "limit": limit,
+            "stale_days": stale_days,
+            "latest_report": {"path": "03_Tooling/Graphify/poc/GRAPH_REPORT.md"},
+        }
+
+    import routers.obsidian as obsidian_router
+
+    monkeypatch.setattr(obsidian_router, "inspect_graphify_reports", fake_inspect_graphify_reports, raising=False)
+
+    body = asyncio.run(inspect_wiki_graphify_report(WikiGraphifyReportRequest(limit=3, stale_days=9)))
+
+    assert body["status"] == "found"
+    assert body["vault_root"] == "C:/wiki-vault"
+    assert body["limit"] == 3
+    assert body["stale_days"] == 9
+    assert body["latest_report"]["path"] == "03_Tooling/Graphify/poc/GRAPH_REPORT.md"

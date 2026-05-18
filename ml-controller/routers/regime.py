@@ -5,6 +5,7 @@ POST /regime/compute
   1. Fetch latest market_env from Worker D1
   2. Call ml-service /regime/current (HMM predict)
   3. Push result to Worker KV via push_optuna_result(source='regime', ...)
+     Worker writes market_regime_state and mirrors legacy ml:regime keys during migration.
 
 Trigger: Worker cron `50 10 * * 1-5` (18:50 TW) — after adapt, before EOD
 Design: memory/project_regime_pipeline_broken.md (Sprint 4-2 revisit / 2026-04-17 #30)
@@ -20,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.kv_pusher import push_optuna_result
+from services.market_regime_evidence import build_regime_evidence_pack
 from services.payload_builder import load_market_env
 from dataclasses import asdict
 
@@ -75,7 +77,7 @@ def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
 
 @router.post("/regime/compute")
 async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
-    """Compute current market regime via ml-service HMM, push label to Worker KV ml:regime.
+    """Compute current market regime via ml-service HMM and push Worker market_regime_state.
 
     Response:
       {
@@ -119,35 +121,49 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         label_zh  = info.get("label_zh", "")
         regime_surface = _extract_regime_surface(info)
 
-    # Push to Worker KV — source='regime' → worker case handles ml:regime write
+    evidence_pack = build_regime_evidence_pack(market_env, raw_label=label_en)
+    effective_label = evidence_pack["effective_label"]
+
+    # Push to Worker KV — source='regime' → worker writes market_regime_state plus legacy mirrors
     kv_push_ok = False
     try:
         result = push_optuna_result(
             source="regime",
             params={
-                "label":               label_en,
+                "label":               effective_label,
+                "raw_label":           label_en,
                 "regime_index":        reg_idx,
                 "hmm_state":           hmm_state,
                 "label_zh":            label_zh,
                 "regime_surface":      regime_surface,
                 "consensus_threshold": info.get("consensus_threshold", 0.60),
                 "weight_multipliers":  info.get("weight_multipliers", {}),
+                "regime_evidence":     evidence_pack,
+                "transition_guard":    evidence_pack["transition_guard"],
+                "monitors":            evidence_pack["monitors"],
             },
-            meta={"computed_at": info.get("computed_at", datetime.now(TW_TZ).isoformat())},
+            meta={
+                "computed_at": info.get("computed_at", datetime.now(TW_TZ).isoformat()),
+                "run_date": market_env.get("requested_run_date"),
+            },
         )
         kv_push_ok = bool(result.get("success", False))
     except Exception as e:
         logger.error(f"[Regime] KV push failed: {e}")
         # Don't raise — we want to return the regime info even if KV push fails
 
-    logger.info(f"[Regime] compute done: {label_en} (idx={reg_idx}) kv_push_ok={kv_push_ok}")
+    logger.info(f"[Regime] compute done: raw={label_en} effective={effective_label} (idx={reg_idx}) kv_push_ok={kv_push_ok}")
 
     return {
-        "regime_label_en": label_en,
+        "regime_label_en": effective_label,
+        "raw_regime_label_en": label_en,
         "regime_index":    reg_idx,
         "hmm_state":       hmm_state,
         "label_zh":        label_zh,
         "regime_surface":  regime_surface,
+        "regime_evidence": evidence_pack,
+        "transition_guard": evidence_pack["transition_guard"],
+        "monitors":        evidence_pack["monitors"],
         "kv_push_ok":      kv_push_ok,
         "computed_at":     info.get("computed_at", datetime.now(TW_TZ).isoformat()),
         "run_date":        market_env.get("requested_run_date"),

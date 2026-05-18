@@ -236,8 +236,8 @@ def run_search(group: str, n_trials: int = 80, subset_size: int = 250,
     if not spec["runnable_today"]:
         raise RuntimeError(
             f"Group '{group}' is BLOCKED: {spec['block_reason']}\n"
-            f"This script's scaffold is complete but cannot run until backtest "
-            f"engine gains the required hook. See Sprint 6b / Sprint 7+ scaffolds."
+            f"This research benchmark is blocked until the backtest "
+            f"engine gains the required hook. See Sprint 6b / Sprint 7+ runtime gates."
         )
 
     # Build subset + dataset

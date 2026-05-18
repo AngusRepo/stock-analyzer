@@ -874,6 +874,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     + (rec.dealer_net_5d ?? 0)
   )
   const chipPositive = chip5dRaw > 0
+  const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
+    || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
+  const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
 
   return (
     <div className={cn(
@@ -911,7 +914,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             </Badge>
             <span className={cn('flex items-center gap-1 text-xs', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
               <Users className="h-3 w-3" />
-              籌碼 {fmtChipAmount(chip5dRaw)}
+              {chipBadgeLabel} {fmtChipAmount(chip5dRaw)}
             </span>
             {rec.rsi14 != null && (
               <span className="flex items-center gap-1 text-xs text-muted-foreground">

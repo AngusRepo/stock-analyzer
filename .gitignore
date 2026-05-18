@@ -14,6 +14,8 @@ pytest-cache-files-*/
 *.pyc
 .modal.toml
 /tmp/
+.tmp/
+worker/.tmp/
 *.log
 scripts/data/
 scripts/backfill_output*
@@ -30,6 +32,9 @@ worker/_*.json
 osv-report*.json
 osv-report*.html
 STOCKVISION_DATA_QUALITY_MVP_V1.md
+data/tmp/
+data/finlab_remote_backfill/
+data/finlab_canonical_materialized/
 uiux_gemini_package_*/
 uiux_gemini_package_*.zip
 # Ad-hoc Chinese-named D1 exports that occasionally leak to repo root

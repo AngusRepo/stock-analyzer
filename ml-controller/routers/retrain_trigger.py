@@ -53,11 +53,16 @@ _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
 class RetrainTriggerRequest(BaseModel):
     use_optuna: bool = True
     limit: int = 50  # max stocks to retrain
+    run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
 
 
 class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks
     force_monthly: bool = False  # Force monthly flow, including feature selection.
+    run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
+    candidate_type: str | None = Field(default=None, description="Release-train candidate type, e.g. monthly_release or weekly_drift.")
+    drift_target_models: list[str] = Field(default_factory=list)
+    drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "ftt", "dlinear", "patchtst"])
     ftt_d_model: int = 128
     ftt_n_heads: int = 8
@@ -368,7 +373,7 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
     """
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    run_date = tw_now.date().isoformat()
+    run_date = req.run_date or tw_now.date().isoformat()
 
     # ── 1. Active stocks ────────────────────────────────────────────────────
     stock_rows = d1_client.query(
@@ -519,7 +524,7 @@ async def trigger_universal_retrain(
     run_id = f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
     # ── Idempotency check (P0-4, persistent via GCS) ─────────────────────────
-    run_date = tw_now.date().isoformat()
+    run_date = req.run_date or tw_now.date().isoformat()
     lock_key = f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
         lock_key,
@@ -960,6 +965,9 @@ async def trigger_universal_retrain(
             payload={
                 "batch_count": batch_count,
                 "is_monthly": is_monthly,
+                "candidate_type": req.candidate_type,
+                "drift_target_models": req.drift_target_models,
+                "drift_target_families": req.drift_target_families,
                 "train_model_groups": req.train_model_groups,
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),

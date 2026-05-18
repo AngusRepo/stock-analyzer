@@ -72,7 +72,7 @@ assert(
 )
 assert(
   mlPipelineTrigger.includes('regime-compute not complete'),
-  'pipeline readiness must block direct triggers until same-date regime-compute writes ml:regime',
+  'pipeline readiness must block direct triggers until same-date regime-compute writes market_regime_state',
 )
 assert(
   mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),

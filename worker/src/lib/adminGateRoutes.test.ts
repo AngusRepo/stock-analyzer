@@ -89,6 +89,20 @@ class FakeStatement {
         screener_report_manifest: 1,
       } as T
     }
+    if (sql.includes('FROM theme_signals')) {
+      return {
+        theme_signal_total: 8,
+        theme_signal_sources: 4,
+        theme_signal_latest_generated_at: '2026-04-30 18:00:00',
+      } as T
+    }
+    if (sql.includes('FROM stock_theme_features')) {
+      return {
+        stock_theme_feature_total: 24,
+        stock_theme_feature_symbols: 12,
+        stock_theme_feature_latest_generated_at: '2026-04-30 18:01:00',
+      } as T
+    }
     return {} as T
   }
 

@@ -147,6 +147,19 @@ C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scrip
 
 Use `start-task` when opening a V4 task because it returns wiki guard status,
 recall proof, and current git branch/status in one machine-checkable response.
+If `start-task` returns `graphify.status=found`, read the latest
+`03_Tooling/Graphify/**/GRAPH_REPORT.md` before architecture navigation.
+Graphify `INFERRED` edges are review clues only; validate them against repo code
+before writing a decision or architecture note.
+To inspect Graphify state alone, run:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py graphify-report --limit 3 --stale-days 3
+```
+
+If `graphify-report` or `start-task` returns `graphify.is_stale=true`, refresh
+the Graphify report before relying on graph navigation.
 
 At the end of each major task:
 

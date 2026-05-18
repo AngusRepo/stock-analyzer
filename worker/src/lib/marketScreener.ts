@@ -17,6 +17,7 @@ import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screener
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
+import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -325,9 +326,21 @@ async function getSectorMapping(env: Bindings): Promise<SectorMap> {
 
 // ─── Stage 1: Sector Heat Detection ─────────────────────────────────────────
 
+interface ChipDayNet {
+  foreign: number
+  trust: number
+  dealer?: number
+  brokerProxy?: number
+  source?: string
+  marketSegment?: string
+  brokerCount?: number | null
+  estimatedAmount?: number | null
+  concentration?: number | null
+}
+
 interface StockDailyData {
   prices: Map<string, FMStockPrice[]>   // stockId → sorted prices
-  chips: Map<string, Map<string, { foreign: number; trust: number }>>  // stockId → date → net
+  chips: Map<string, Map<string, ChipDayNet>>  // stockId → date → net
 }
 
 function buildStockData(
@@ -344,8 +357,9 @@ function buildStockData(
     arr.sort((a, b) => a.date.localeCompare(b.date))
   }
 
-  // Group chips by stock_id → date → { foreign, trust }
-  const chips = new Map<string, Map<string, { foreign: number; trust: number }>>()
+  // Group chips by stock_id/date. V4.1 keeps listed/OTC institution nets and
+  // emerging broker-flow proxy in the same scoring lane, while preserving source metadata.
+  const chips = new Map<string, Map<string, ChipDayNet>>()
   for (const c of allChips) {
     if (!chips.has(c.stock_id)) chips.set(c.stock_id, new Map())
     const dateMap = chips.get(c.stock_id)!
@@ -355,9 +369,17 @@ function buildStockData(
     const chipName = String(c.name ?? '').toLowerCase()
     if (chipName.includes('foreign')) entry.foreign += net
     if (chipName.includes('trust')) entry.trust += net
-    if (chipName.includes('dealer')) (entry as any).dealer = ((entry as any).dealer ?? 0) + net
+    if (chipName.includes('dealer')) entry.dealer = (entry.dealer ?? 0) + net
+    if (chipName.includes('broker_proxy')) {
+      entry.brokerProxy = (entry.brokerProxy ?? 0) + net
+    }
     if (c.name.includes('外資')) entry.foreign += net
     if (c.name.includes('投信')) entry.trust += net
+    entry.source = c.source ?? entry.source
+    entry.marketSegment = c.market_segment ?? entry.marketSegment
+    entry.brokerCount = c.broker_count ?? entry.brokerCount ?? null
+    entry.estimatedAmount = c.estimated_amount ?? entry.estimatedAmount ?? null
+    entry.concentration = c.concentration ?? entry.concentration ?? null
   }
 
   return { prices, chips }
@@ -380,6 +402,131 @@ function calcMarketReturn5d(data: StockDailyData): number {
     }
   }
   return count > 0 ? totalReturn / count : 0
+}
+
+function latestChipMeta(chipDates: Map<string, ChipDayNet> | undefined): string | null {
+  if (!chipDates?.size) return null
+  const sortedDates = [...chipDates.keys()].sort()
+  const latestDate = sortedDates[sortedDates.length - 1]
+  if (!latestDate) return null
+  const row = chipDates.get(latestDate)
+  if (!row?.source) return null
+  const parts = [`chip_source=${row.source}`, `source_date=${latestDate}`]
+  if (row.marketSegment) parts.push(`market_segment=${row.marketSegment}`)
+  if (row.brokerCount != null) parts.push(`broker_count=${row.brokerCount}`)
+  if (row.estimatedAmount != null) parts.push(`estimated_amount=${Math.round(row.estimatedAmount)}`)
+  if (row.concentration != null) parts.push(`concentration=${row.concentration.toFixed(3)}`)
+  return parts.join(',')
+}
+
+interface BrokerProxySummary {
+  netShares5d: number
+  estimatedAmount5d: number
+  turnoverIntensity5d: number | null
+  consecBuyDays: number
+  latestBrokerCount: number | null
+  latestConcentration: number | null
+  latestSource: string
+  latestDate: string
+  marketSegment: string
+}
+
+function formatAbsTwdAmount(amount: number): string {
+  const abs = Math.abs(amount)
+  if (abs < 1e8) return `${Math.round(abs / 10_000)}萬`
+  return `${(abs / 1e8).toFixed(2)}億`
+}
+
+function summarizeBrokerProxyChip(
+  chipDates: Map<string, ChipDayNet> | undefined,
+  prices: FMStockPrice[],
+  latestClose: number,
+): BrokerProxySummary | null {
+  if (!chipDates?.size) return null
+  const sortedDates = [...chipDates.keys()].sort().slice(-5)
+  if (!sortedDates.length) return null
+
+  let netShares5d = 0
+  let estimatedAmount5d = 0
+  let hasBrokerProxy = false
+  let consecBuyDays = 0
+  let streakBroken = false
+  let latestBrokerCount: number | null = null
+  let latestConcentration: number | null = null
+  let latestSource = ''
+  let latestDate = sortedDates[sortedDates.length - 1]
+  let marketSegment = ''
+
+  for (let i = sortedDates.length - 1; i >= 0; i--) {
+    const date = sortedDates[i]
+    const row = chipDates.get(date)
+    if (!row) continue
+    const shares = row.brokerProxy ?? 0
+    const amount = row.estimatedAmount ?? (shares * latestClose)
+    if (shares !== 0 || row.estimatedAmount != null) hasBrokerProxy = true
+    netShares5d += shares
+    estimatedAmount5d += Number.isFinite(amount) ? amount : 0
+    latestBrokerCount = row.brokerCount ?? latestBrokerCount
+    latestConcentration = row.concentration ?? latestConcentration
+    latestSource = row.source ?? latestSource
+    marketSegment = row.marketSegment ?? marketSegment
+    if (date > latestDate) latestDate = date
+    if (!streakBroken) {
+      if (shares > 0) consecBuyDays++
+      else streakBroken = true
+    }
+  }
+
+  if (!hasBrokerProxy) return null
+  const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / Math.max(1, prices.length)
+  const windowTurnover = avgDailyTurnover * Math.max(1, sortedDates.length)
+  const turnoverIntensity5d = windowTurnover > 0 ? estimatedAmount5d / windowTurnover : null
+
+  return {
+    netShares5d,
+    estimatedAmount5d,
+    turnoverIntensity5d,
+    consecBuyDays,
+    latestBrokerCount,
+    latestConcentration,
+    latestSource: latestSource || 'finlab.rotc_broker_transactions',
+    latestDate,
+    marketSegment: marketSegment || 'EMERGING',
+  }
+}
+
+function scoreBrokerProxyChip(summary: BrokerProxySummary): { score: number; reasons: string[] } {
+  const amount = summary.estimatedAmount5d
+  const amountBillion = amount / 1e8
+  const intensity = summary.turnoverIntensity5d
+  let score = 0
+
+  if (amount > 0) {
+    if (intensity != null) {
+      if (intensity > 0.40) score = 32
+      else if (intensity > 0.20) score = 24
+      else if (intensity > 0.08) score = 16
+      else if (intensity > 0.02) score = 8
+      else score = 4
+    } else if (amountBillion > 0.15) score = 32
+    else if (amountBillion > 0.05) score = 24
+    else if (amountBillion > 0.01) score = 16
+    else score = 8
+  } else if (amount > -1_000_000) {
+    score = 2
+  }
+
+  if (summary.consecBuyDays >= 3 && amount > 0) score += summary.consecBuyDays >= 5 ? 3 : 1
+  score = clamp(score, 0, 40)
+
+  const direction = amount >= 0 ? '買超' : '賣超'
+  const reasons = [
+    `券商分點5日${direction}${formatAbsTwdAmount(amount)}`,
+  ]
+  if (intensity != null) reasons.push(`佔5日成交${Math.abs(intensity * 100).toFixed(1)}%`)
+  if (summary.latestBrokerCount != null) reasons.push(`券商數${summary.latestBrokerCount}`)
+  if (summary.latestConcentration != null) reasons.push(`集中度${summary.latestConcentration.toFixed(2)}`)
+  return { score, reasons }
 }
 
 // ─── DB Operations ───────────────────────────────────────────────────────────
@@ -463,15 +610,34 @@ async function storeSectorHeat(
  * 取代舊 getSectorMapping()（那個讀 stocks.sector 是概念名）
  */
 async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<string, string>> {
-  const cacheKey = 'screener:industry-map'
+  const cacheKey = 'screener:industry-map:v4-finlab-taxonomy'
   const cached = await kv.get(cacheKey, 'json') as Record<string, string> | null
   if (cached) return new Map(Object.entries(cached))
 
-  const { results } = await db.prepare(
-    "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
-  ).all<{ symbol: string; tag: string }>()
   const map = new Map<string, string>()
-  for (const r of (results ?? [])) map.set(r.symbol, r.tag)
+  try {
+    const { results } = await db.prepare(`
+      SELECT symbol, tag, tag_type, source, weight, priority
+      FROM (
+        SELECT symbol, tag, tag_type, source, weight, 1 AS priority
+          FROM finlab_taxonomy_tags
+         WHERE tag_type IN ('industry_theme', 'industry', 'subindustry')
+        UNION ALL
+        SELECT symbol, tag, tag_type, source, weight, 5 AS priority
+          FROM stock_tags
+         WHERE tag_type='industry'
+      )
+      ORDER BY symbol, priority ASC, weight DESC
+    `).all<{ symbol: string; tag: string; tag_type?: string; source?: string; weight?: number; priority?: number }>()
+    for (const r of (results ?? [])) {
+      if (!map.has(r.symbol)) map.set(r.symbol, r.tag)
+    }
+  } catch {
+    const { results } = await db.prepare(
+      "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
+    ).all<{ symbol: string; tag: string }>()
+    for (const r of (results ?? [])) map.set(r.symbol, r.tag)
+  }
 
   // 快取 7 天
   await kv.put(cacheKey, JSON.stringify(Object.fromEntries(map)), { expirationTtl: 7 * 86400 })
@@ -489,7 +655,7 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
 // (ml-controller/tests/test_screener_parity.py)
 export function scoreMultiFactor(
   prices: FMStockPrice[],
-  chipDates: Map<string, { foreign: number; trust: number }> | undefined,
+  chipDates: Map<string, ChipDayNet> | undefined,
   marketReturn5d: number,
   latestClose: number,
   config?: TradingConfig,
@@ -501,49 +667,58 @@ export function scoreMultiFactor(
   // ── P0-1: 籌碼面 (0-40) — 用相對比例，消除大小型股偏差 ──
   let chip_score = 0
   if (chipDates) {
-    let netBuyShares = 0  // 5 日淨買超股數
-    let consecBuyDays = 0
-    // Sprint 6a.7b M11 fix (2026-04-08): count consecutive buy days from the
-    // most recent day going back, stopping at the first non-positive day.
-    // Previous impl zeroed consecBuyDays when hitting a negative mid-loop,
-    // which lost the count entirely — e.g. [-,+,+,+,+] returned 0 instead of 4.
-    // Python backtest_engine.score_multi_factor had this semantics already.
-    // See memory/mistake.md M11.
-    const sortedDates = [...chipDates.keys()].sort().slice(-5)
-    let streakBroken = false
-    for (let i = sortedDates.length - 1; i >= 0; i--) {
-      const d = sortedDates[i]
-      const nets = chipDates.get(d)!
-      const dayNet = nets.foreign + nets.trust + ((nets as any).dealer ?? 0)
-      netBuyShares += dayNet
-      if (!streakBroken) {
-        if (dayNet > 0) consecBuyDays++
-        else streakBroken = true
+    const brokerSummary = summarizeBrokerProxyChip(chipDates, prices, latestClose)
+    const isEmergingBrokerFlow = brokerSummary && brokerSummary.marketSegment.toUpperCase() === 'EMERGING'
+    if (isEmergingBrokerFlow) {
+      const scoredBroker = scoreBrokerProxyChip(brokerSummary)
+      chip_score = scoredBroker.score
+      reasons.push(...scoredBroker.reasons)
+      reasons.push(`broker_flow:${brokerSummary.latestSource} net=${Math.round(brokerSummary.netShares5d)} source_date=${brokerSummary.latestDate}`)
+    } else {
+      let netBuyShares = 0  // 5 日淨買超股數
+      let consecBuyDays = 0
+      // Sprint 6a.7b M11 fix (2026-04-08): count consecutive buy days from the
+      // most recent day going back, stopping at the first non-positive day.
+      // Previous impl zeroed consecBuyDays when hitting a negative mid-loop,
+      // which lost the count entirely — e.g. [-,+,+,+,+] returned 0 instead of 4.
+      // Python backtest_engine.score_multi_factor had this semantics already.
+      // See memory/mistake.md M11.
+      const sortedDates = [...chipDates.keys()].sort().slice(-5)
+      let streakBroken = false
+      for (let i = sortedDates.length - 1; i >= 0; i--) {
+        const d = sortedDates[i]
+        const nets = chipDates.get(d)!
+        const dayNet = nets.foreign + nets.trust + (nets.dealer ?? 0)
+        netBuyShares += dayNet
+        if (!streakBroken) {
+          if (dayNet > 0) consecBuyDays++
+          else streakBroken = true
+        }
       }
+
+      // chip_intensity = 淨買超金額 / 20日均成交金額（比例）
+      const netBuyAmount = netBuyShares * latestClose  // 元
+      const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
+      const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
+
+      // 相對比例分級：80%+ ADTV 才接近極端累積，避免牛市中大量候選股都接近滿分。
+      const chipTiers = sc?.chipScoreTiers ?? [32, 24, 16, 8, 2]
+      const chipThresholds = sc?.chipIntensityThresholds ?? [0.80, 0.45, 0.20, 0.05, -0.05]
+      if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]
+      else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]
+      else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]
+      else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]
+      else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 微賣
+      // else 0
+
+      if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
+
+      // 連續買超天數 bonus
+      const cbBonus = sc?.consecBuyBonusTiers ?? [3, 1]
+      const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
+      if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`連買${consecBuyDays}天`) }
+      else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
     }
-
-    // chip_intensity = 淨買超金額 / 20日均成交金額（比例）
-    const netBuyAmount = netBuyShares * latestClose  // 元
-    const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
-    const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
-
-    // 相對比例分級：80%+ ADTV 才接近極端累積，避免牛市中大量候選股都接近滿分。
-    const chipTiers = sc?.chipScoreTiers ?? [32, 24, 16, 8, 2]
-    const chipThresholds = sc?.chipIntensityThresholds ?? [0.80, 0.45, 0.20, 0.05, -0.05]
-    if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]
-    else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]
-    else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]
-    else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]
-    else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 微賣
-    // else 0
-
-    if (chipIntensity > 0.05) reasons.push(`法人佔成交${(chipIntensity * 100).toFixed(1)}%`)
-
-    // 連續買超天數 bonus
-    const cbBonus = sc?.consecBuyBonusTiers ?? [3, 1]
-    const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
-    if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`連買${consecBuyDays}天`) }
-    else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
   }
   chip_score = clamp(chip_score, 0, 40)
 
@@ -787,6 +962,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const { detectPttBuzz, storePttBuzz, loadBuzzKeywords } = await import('./pttBuzz')
   const { detectNewsBuzz } = await import('./newsBuzz')
   const { detectAnueBuzz } = await import('./anueBuzz')
+  const {
+    buzzResultsToThemeEvidence,
+    combineMultiSourceThemeEvidence,
+    loadRuntimeThemeSignals,
+  } = await import('./multiSourceThemeEvidence')
 
   type BuzzResult = Awaited<ReturnType<typeof detectPttBuzz>>
   let allPrices: FMStockPrice[]
@@ -795,15 +975,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let tpexSymbolSet = new Set<string>()
   let combinedBuzz: BuzzResult = []
   let conceptBuzzScore = new Map<string, number>()
+  let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
 
   try {
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
-    const [marketData, pttBuzz, newsBuzz, anueBuzz] = await Promise.all([
+    const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
       loadMarketDataFromD1(env, 20, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
+      loadRuntimeThemeSignals(env.DB, endDate).catch(() => []),
     ])
     allPrices = marketData.allPrices
     emergingResearchPrices = marketData.emergingResearchPrices
@@ -811,40 +993,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     tpexSymbolSet = marketData.tpexSymbols
 
     // 合併 buzz（Z-score 標準化，same as before）
-    const zNorm = (arr: { concept: string; mentionCount: number }[]): Map<string, number> => {
-      if (!arr.length) return new Map()
-      const counts = arr.map(b => b.mentionCount)
-      const mean = counts.reduce((a, b) => a + b, 0) / counts.length
-      const std = Math.sqrt(counts.reduce((a, b) => a + (b - mean) ** 2, 0) / counts.length) || 1
-      return new Map(arr.map(b => [b.concept, (b.mentionCount - mean) / std]))
-    }
-    const pttZ = zNorm(pttBuzz), newsZ = zNorm(newsBuzz), anueZ = zNorm(anueBuzz)
-    const buzzMap = new Map<string, { zSum: number; rawCount: number; sentimentSum: number; posts: string[] }>()
-    for (const [source, zMap] of [[pttBuzz, pttZ], [newsBuzz, newsZ], [anueBuzz, anueZ]] as const) {
-      for (const b of source) {
-        const z = (zMap as Map<string, number>).get(b.concept) ?? 0
-        const existing = buzzMap.get(b.concept)
-        if (existing) {
-          existing.zSum += z; existing.rawCount += b.mentionCount
-          existing.sentimentSum += b.sentimentAvg * b.mentionCount
-          existing.posts.push(...b.topPosts.slice(0, 1))
-        } else {
-          buzzMap.set(b.concept, { zSum: z, rawCount: b.mentionCount, sentimentSum: b.sentimentAvg * b.mentionCount, posts: [...b.topPosts.slice(0, 2)] })
-        }
-      }
-    }
-    combinedBuzz = [...buzzMap.entries()].map(([concept, v]) => ({
-      concept, mentionCount: v.rawCount,
-      sentimentAvg: v.rawCount > 0 ? v.sentimentSum / v.rawCount : 0,
-      topPosts: v.posts.slice(0, 3),
-    }))
-    const zSumMap = new Map([...buzzMap.entries()].map(([k, v]) => [k, v.zSum]))
-    conceptBuzzScore = zSumMap
-    combinedBuzz.sort((a, b) => (zSumMap.get(b.concept) ?? 0) - (zSumMap.get(a.concept) ?? 0))
+    const themeEvidence = combineMultiSourceThemeEvidence([
+      buzzResultsToThemeEvidence('ptt', pttBuzz),
+      buzzResultsToThemeEvidence('news', newsBuzz),
+      buzzResultsToThemeEvidence('anue', anueBuzz),
+      runtimeThemeSignals,
+    ])
+    combinedBuzz = themeEvidence.combinedBuzz
+    conceptBuzzScore = themeEvidence.scoreMap
+    conceptEvidenceBreakdown = themeEvidence.sourceBreakdown
 
     debugLog.push(
       `[Data] prices=${allPrices.length} emerging_research=${emergingResearchPrices.length} ` +
-      `chips=${allChips.length} buzz=${combinedBuzz.length} lanes=${JSON.stringify(marketData.laneCounts)}`,
+      `chips=${allChips.length} buzz=${combinedBuzz.length} theme_sources=${JSON.stringify(themeEvidence.acceptedSources)} ` +
+      `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(marketData.chipSourceSummary ?? {})}`,
     )
   } catch (e) {
     console.error('[Screener v2] Data fetch failed:', e)
@@ -1189,7 +1351,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         reasonCode: 'weighted_keyword_evidence',
         scoreBefore: before,
         scoreAfter: c.score,
-        evidence: { concept: bestTag.tag, matchedHot, sourceStrength, crowding: bestTag.crowding, crowdingPenalty, buzzBonus },
+        evidence: {
+          concept: bestTag.tag,
+          matchedHot,
+          sourceStrength,
+          sourceBreakdown: conceptEvidenceBreakdown.get(bestTag.tag) ?? {},
+          crowding: bestTag.crowding,
+          crowdingPenalty,
+          buzzBonus,
+        },
       })
     }
   }
@@ -1197,6 +1367,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // ── Step 5: 排序 + 去重 + 截斷 ──
   // Step 4 debug
   debugLog.push(`[Step 4] 情緒面加分完成 | PTT hot concepts: ${[...hotConcepts].join(', ')}`)
+  debugLog.push(`[Step 4] Theme evidence now includes PTT/news/Anue plus runtime theme_signals when available`)
   const afterSentiment = [...scored].sort((a, b) => b.score - a.score)
   debugLog.push(`[Step 4] Top 10 (with sentiment):`)
   for (const c of afterSentiment.slice(0, 10)) {
@@ -1552,6 +1723,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       const latest = prices[prices.length - 1]
       if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
       if (latest.Trading_Volume === 0) continue
+      const chipMeta = latestChipMeta(emergingData.chips.get(stockId))
       const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
         prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
       )
@@ -1568,6 +1740,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         momentum_score,
         industry,
         market_segment: 'emerging',
+        strategy_watch_points: chipMeta ? [chipMeta] : ['chip_source:missing'],
       })
     }
     applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
@@ -1614,6 +1787,43 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
   } catch (e) {
     console.warn('[Screener v2] DelistingMonitor failed:', e)
+  }
+
+  const breeze2ScreenerContext = await enrichScreenerCandidatesWithBreeze2(
+    env,
+    finalCandidates.map((candidate, index) => ({
+      ...candidate,
+      rank: index + 1,
+      watch_points: (candidate as any).strategy_watch_points ?? [],
+      recommendation_lane: 'tradable',
+    })),
+    { runDate: endDate, maxCandidates: 5, executeModal: true },
+  ).catch((error) => {
+    console.warn('[Screener v2] Breeze2 enrichment skipped:', error)
+    return new Map<string, any>()
+  })
+  if (breeze2ScreenerContext.size > 0) {
+    debugLog.push(`[Step 5f] Breeze2 semantic context enriched ${breeze2ScreenerContext.size}/${finalCandidates.length}`)
+    for (const [symbol, report] of breeze2ScreenerContext) {
+      const candidate = finalCandidates.find((item) => item.symbol === symbol)
+      pushFunnelItem(funnelItems, {
+        symbol,
+        name: candidate?.name,
+        stage: 'breeze2_semantic_context',
+        decision: report.recommended_decision_context === 'human_review' ? 'observe' : 'pass',
+        reasonCode: String(report.recommended_decision_context ?? 'semantic_context'),
+        scoreAfter: candidate ? Number((candidate as any).score ?? 0) : null,
+        evidence: {
+          allowed_use: report.allowed_use,
+          decision_effect: report.decision_effect,
+          scores: report.scores,
+          risk_flags: report.risk_flags,
+          quality: report.quality,
+        },
+      })
+    }
+  } else {
+    debugLog.push('[Step 5f] Breeze2 semantic context: no eligible/enriched candidates')
   }
 
   debugLog.push(`[Final] candidates=${finalCandidates.length}`)
@@ -1689,6 +1899,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       // #15 tag prefix + #16 sector leader bonus 一起 append 到 reason
       const flag = selectionFlagMap.get(c.symbol)
       const sectorB = sectorBonusMap.get(c.symbol)
+      const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2ScreenerContext.get(c.symbol))
+      const chipMeta = latestChipMeta(data.chips.get(c.symbol))
       const tagParts: string[] = []
       if (flag?.highFreq) tagParts.push(`📌 高頻 (20d 入選 ${flag.freq20d} 次)`)
       if (flag?.newMoney) tagParts.push('🆕 新資金 (30d 首見)')
@@ -1703,11 +1915,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         sectorBonus: sectorB?.bonus ?? 0,
         tags: tagParts,
       })
-      const watchPoints = [
+      const watchPoints = Array.from(new Set([
         ...seed.watchPoints,
         `screener_funnel:rank=${i + 1},freq20d=${flag?.freq20d ?? 0},high_freq=${flag?.highFreq ? 'yes' : 'no'},new_money=${flag?.newMoney ? 'yes' : 'no'}`,
+        ...(chipMeta ? [chipMeta] : ['chip_source:missing']),
+        ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
         ...(sc.strategy_watch_points ?? []),
-      ]
+      ]))
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,
@@ -1724,6 +1938,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       const sc = c as any
       const latestPrices = emergingData.prices.get(c.symbol)
       const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
+      const chipMeta = latestChipMeta(emergingData.chips.get(c.symbol))
       const seed = buildScreenerSeedRow({
         candidate: c as any,
         rank: 100 + i + 1,
@@ -1734,12 +1949,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           ...(sc.strategy_tags ?? []),
         ],
       })
-      const watchPoints = [
+      const watchPoints = Array.from(new Set([
         ...seed.watchPoints,
         'research_only:emerging_not_for_auto_trade',
         'board_lane:emerging_watchlist',
+        ...(chipMeta ? [chipMeta] : ['chip_source:missing']),
         ...(sc.strategy_watch_points ?? []),
-      ]
+      ]))
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
         endDate, seed.row.symbol, seed.row.symbol, seed.row.name, seed.row.sector,
         seed.rank, seed.row.seedScore,

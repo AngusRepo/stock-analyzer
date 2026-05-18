@@ -3,6 +3,13 @@ import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import { evaluateGaPromotion, formatGaPromotionNotification } from '../lib/gaPromotion'
 import { sendOperatorNotification } from '../lib/notify'
+import {
+  LEGACY_REGIME_KEY,
+  LEGACY_REGIME_META_KEY,
+  MARKET_REGIME_STATE_KEY,
+  buildMarketRegimeState,
+  persistMarketRegimeState,
+} from '../lib/marketRegimeState'
 import type { Bindings, Variables } from '../types'
 
 export const adminOptunaRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -308,22 +315,19 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         }, 400)
       }
 
-      await c.env.KV.put('ml:regime', label, { expirationTtl: 2 * 86400 })
-      await c.env.KV.put('ml:regime:meta', JSON.stringify({
+      const state = buildMarketRegimeState({
         label,
-        regime_index: Number(params.regime_index ?? 2),
-        hmm_state: Number(params.hmm_state ?? -1),
-        label_zh: String(params.label_zh ?? ''),
-        regime_surface: params.regime_surface ?? params.regime_probabilities ?? params.probabilities ?? {},
-        consensus_threshold: Number(params.consensus_threshold ?? 0.60),
-        weight_multipliers: params.weight_multipliers ?? {},
-        pushed_at: new Date().toISOString(),
-      }), { expirationTtl: 2 * 86400 })
+        runDate: typeof meta?.run_date === 'string' ? meta.run_date : null,
+        computedAt: typeof meta?.computed_at === 'string' ? meta.computed_at : null,
+        params,
+      })
+      await persistMarketRegimeState(c.env.KV, state)
 
       const auditKey = `audit:optuna-push:regime:${twToday()}`
       await c.env.KV.put(auditKey, JSON.stringify({
         source: 'regime',
         params,
+        market_regime_state: state,
         meta: meta ?? null,
         pushed_at: new Date().toISOString(),
       }), { expirationTtl: 30 * 86400 })
@@ -332,7 +336,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         success: true,
         source: 'regime',
         regime: label,
-        updatedKeys: ['ml:regime', 'ml:regime:meta'],
+        updatedKeys: [MARKET_REGIME_STATE_KEY, LEGACY_REGIME_KEY, LEGACY_REGIME_META_KEY],
       })
     }
     default:

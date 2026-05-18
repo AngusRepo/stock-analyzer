@@ -92,11 +92,11 @@ SEGMENT_POLICIES: dict[str, SegmentMlPolicy] = {
 
 def normalize_segment(segment: Any) -> str:
     value = str(segment or "").strip().upper()
-    if value in {"TWSE", "TSE", "LISTED"}:
+    if value in {"TWSE", "TSE", "LISTED", "SII"}:
         return "LISTED"
     if value in {"TPEX", "OTC"}:
         return "OTC"
-    if value in {"ESB", "EMERGING"}:
+    if value in {"ESB", "EMERGING", "ROTC"}:
         return "EMERGING"
     return "UNKNOWN"
 

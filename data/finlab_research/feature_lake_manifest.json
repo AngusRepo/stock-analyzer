@@ -1,0 +1,969 @@
+{
+  "schema_version": "finlab-feature-lake-manifest-v1",
+  "generated_at": "2026-05-15T17:56:54.265862+00:00",
+  "source_plan_checksum": "sha256:45fa20963e3345f2df972b4139bde37d84f5dec09a3202e2f9f0f04ce4ff340f",
+  "source_dagster_payload_checksum": "sha256:8bb3fb6d48f14a580c411bf71886f1ea6cb59b03ae7d25beae28e2f47052ecb8",
+  "policy": {
+    "production_ml_input": "current_106_features_only",
+    "sidecar_mode": "shadow_only",
+    "promotion_default": "no_direct_production_use",
+    "training_policy": "not_eligible_until_shadow_gates_pass",
+    "screener_policy": "not_eligible_until_explicit_promotion",
+    "emerging_stock_policy": "watchlist_only_no_pending_buy"
+  },
+  "canonical_feature_contract": {
+    "schema_version": "v2",
+    "source_module": "ml-service.app.features.FEATURE_COLS",
+    "feature_count": 106,
+    "features_hash": "sha256:24db7897d1fb9d9c0c80a25ce91da6e8b288c80a617b70e21a806ea739def88f",
+    "features": [
+      "return_1d",
+      "return_3d",
+      "return_5d",
+      "return_10d",
+      "volatility_5d",
+      "volatility_20d",
+      "rsi14",
+      "macdHist",
+      "bb_position",
+      "vol_ratio_5d",
+      "vol_ratio_20d",
+      "ma20_bias",
+      "ma60_bias",
+      "institutional_net",
+      "chip_5d",
+      "foreign_5d",
+      "sentiment",
+      "sentiment_3d",
+      "has_sentiment",
+      "atr14",
+      "market_risk_score",
+      "market_risk_level",
+      "market_return_1d",
+      "market_return_5d",
+      "market_bias_20d",
+      "stock_vs_market",
+      "linear_factor",
+      "rsi5_dulling",
+      "keltner_position",
+      "us_sox_return",
+      "us_gspc_return",
+      "us_dxy_return",
+      "us_hy_spread",
+      "us_hy_spread_chg",
+      "us_vix",
+      "us_sentiment_score",
+      "advance_ratio",
+      "bull_alignment_pct",
+      "revenue_yoy",
+      "margin_balance",
+      "short_ratio",
+      "margin_change_5d",
+      "retail_pct",
+      "margin_ratio",
+      "margin_change_5d_ts",
+      "short_change_5d",
+      "short_squeeze_proxy",
+      "vwap_bias",
+      "vwap_5d",
+      "vwap_bias_5d",
+      "dealer_5d",
+      "dealer_ratio_5d",
+      "foreign_consecutive_sell",
+      "foreign_net_5d_market",
+      "limit_down_count",
+      "limit_down_pct",
+      "adl_value",
+      "adl_trend_numeric",
+      "ma5_bias",
+      "ma10_bias",
+      "bb_upper_raw",
+      "bb_lower_raw",
+      "KMID",
+      "KLEN",
+      "KMID2",
+      "KUP",
+      "KUP2",
+      "KLOW",
+      "KLOW2",
+      "KSFT",
+      "KSFT2",
+      "IMAX_20",
+      "IMIN_20",
+      "IMXD_20",
+      "BETA_20",
+      "RSQR_20",
+      "RESI_20",
+      "CORR_10",
+      "CORD_10",
+      "BETA_5",
+      "RSQR_5",
+      "RESI_5",
+      "BETA_10",
+      "RSQR_10",
+      "RESI_10",
+      "BETA_60",
+      "RSQR_60",
+      "RESI_60",
+      "CNTP_5",
+      "CNTN_5",
+      "CNTD_5",
+      "CNTP_10",
+      "CNTN_10",
+      "CNTD_10",
+      "CNTP_20",
+      "CNTN_20",
+      "CNTD_20",
+      "VSTD_10",
+      "VSTD_20",
+      "WVMA",
+      "sector_encoded",
+      "market_cap_bucket",
+      "avg_volume_bucket",
+      "sector_peer_return_1d",
+      "sector_peer_return_5d",
+      "stock_vs_sector"
+    ],
+    "production_mutation_allowed": false,
+    "sidecar_policy": "do_not_append_finlab_features_to_feature_cols"
+  },
+  "summary": {
+    "canonical_feature_count": 106,
+    "sidecar_family_count": 15,
+    "sidecar_fields_total": 2411,
+    "families_by_stage": {
+      "diversity": 8,
+      "parity": 5,
+      "research": 2
+    }
+  },
+  "sidecar_families": [
+    {
+      "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "chip_diversity",
+      "feature_namespace": "finlab_diversity_chip_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 53,
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "quality_gates": [
+        "price_location, liquidity, crowding, extreme_value_winsorization",
+        "turnover, crowding, price_location_gate"
+      ],
+      "all_checks": [
+        "crowding",
+        "duplicate_rate",
+        "extreme_value_winsorization",
+        "field_count_positive",
+        "freshness",
+        "liquidity",
+        "null_rate",
+        "price_location",
+        "price_location_gate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "turnover"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "crowding",
+        "extreme_value_winsorization",
+        "field_count_positive",
+        "freshness",
+        "liquidity",
+        "price_location",
+        "price_location_gate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "turnover"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "emerging_chip_diversity",
+      "feature_namespace": "finlab_diversity_emerging_chip_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 1,
+      "stockvision_use": "emerging-stock broker flow proxy and concentration checks",
+      "quality_gates": [
+        "emerging_symbol_coverage, branch_concentration_bounds"
+      ],
+      "all_checks": [
+        "branch_concentration_bounds",
+        "duplicate_rate",
+        "emerging_symbol_coverage",
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "branch_concentration_bounds",
+        "emerging_symbol_coverage",
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": true,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "emerging_price_diversity",
+      "feature_namespace": "finlab_diversity_emerging_price_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 10,
+      "stockvision_use": "emerging-stock price, liquidity and spread watchlist context",
+      "quality_gates": [
+        "rotc_market_lane, liquidity_bounds, no_pending_buy"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "liquidity_bounds",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "rotc_market_lane",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "liquidity_bounds",
+        "no_pending_buy",
+        "promotion_gate_status",
+        "provenance",
+        "rotc_market_lane",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": true,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "emerging_revenue_diversity",
+      "feature_namespace": "finlab_diversity_emerging_revenue_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 9,
+      "stockvision_use": "emerging-stock revenue momentum watchlist context",
+      "quality_gates": [
+        "publication_alignment, restatement_check, no_pending_buy"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "publication_alignment",
+        "restatement_check",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "promotion_gate_status",
+        "provenance",
+        "publication_alignment",
+        "restatement_check",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": true,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "feature_namespace": "finlab_diversity_fundamental_factor_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 213,
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "quality_gates": [
+        "report_date_availability, no_lookahead, sector_normalization"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "no_lookahead",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "report_date_availability",
+        "schema_compatibility",
+        "schema_presence",
+        "sector_normalization",
+        "shadow_feature_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "no_lookahead",
+        "promotion_gate_status",
+        "provenance",
+        "report_date_availability",
+        "schema_compatibility",
+        "schema_presence",
+        "sector_normalization",
+        "shadow_feature_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "global_context",
+      "feature_namespace": "finlab_diversity_global_context",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 296,
+      "stockvision_use": "US leading, world index, morning setup and regime context",
+      "quality_gates": [
+        "coverage, delay, holiday_calendar_alignment",
+        "coverage, delay, license, survivorship_check"
+      ],
+      "all_checks": [
+        "coverage",
+        "delay",
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "holiday_calendar_alignment",
+        "license",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "survivorship_check"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "coverage",
+        "delay",
+        "field_count_positive",
+        "freshness",
+        "holiday_calendar_alignment",
+        "license",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "survivorship_check"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "regime_context",
+      "feature_namespace": "finlab_diversity_regime_context",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 118,
+      "stockvision_use": "derivatives, macro, hedge pressure and low-frequency regime evidence",
+      "quality_gates": [
+        "freshness, low_frequency_alignment",
+        "market_level_only, no_direct_alpha_gate"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "low_frequency_alignment",
+        "market_level_only",
+        "no_direct_alpha_gate",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "low_frequency_alignment",
+        "market_level_only",
+        "no_direct_alpha_gate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+      "stage": "diversity",
+      "dataset_lane": "taxonomy_expansion",
+      "feature_namespace": "finlab_diversity_taxonomy_expansion",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_diversity",
+      "field_count": 1,
+      "stockvision_use": "industry_theme/subindustry labels and sector-flow taxonomy",
+      "quality_gates": [
+        "alias_cleaning, duplicate_tag_rate, coverage_by_symbol"
+      ],
+      "all_checks": [
+        "alias_cleaning",
+        "coverage_by_symbol",
+        "duplicate_rate",
+        "duplicate_tag_rate",
+        "field_count_positive",
+        "freshness",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "alias_cleaning",
+        "coverage_by_symbol",
+        "duplicate_tag_rate",
+        "field_count_positive",
+        "freshness",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/feature_lake",
+      "stage": "parity",
+      "dataset_lane": "chip_diversity",
+      "feature_namespace": "finlab_parity_chip_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_parity",
+      "field_count": 48,
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "quality_gates": [
+        "price_location, liquidity, crowding, extreme_value_winsorization"
+      ],
+      "all_checks": [
+        "crowding",
+        "duplicate_rate",
+        "extreme_value_winsorization",
+        "field_count_positive",
+        "freshness",
+        "liquidity",
+        "null_rate",
+        "price_location",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "twse_tpex_diff_report"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate",
+        "twse_tpex_diff_report"
+      ],
+      "metadata_only_checks": [
+        "crowding",
+        "extreme_value_winsorization",
+        "field_count_positive",
+        "freshness",
+        "liquidity",
+        "price_location",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/feature_lake",
+      "stage": "parity",
+      "dataset_lane": "daily_price",
+      "feature_namespace": "finlab_parity_daily_price",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_parity",
+      "field_count": 119,
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "quality_gates": [
+        "20_30_day_parity, split_adjustment, missing_rate"
+      ],
+      "all_checks": [
+        "20_30_day_parity",
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "missing_rate",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "split_adjustment",
+        "twse_tpex_diff_report"
+      ],
+      "row_level_checks": [
+        "20_30_day_parity",
+        "duplicate_rate",
+        "missing_rate",
+        "null_rate",
+        "split_adjustment",
+        "twse_tpex_diff_report"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/feature_lake",
+      "stage": "parity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "feature_namespace": "finlab_parity_fundamental_factor_diversity",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_parity",
+      "field_count": 213,
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "quality_gates": [
+        "report_date_availability, no_lookahead, sector_normalization"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "no_lookahead",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "report_date_availability",
+        "schema_compatibility",
+        "schema_presence",
+        "sector_normalization",
+        "twse_tpex_diff_report"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate",
+        "twse_tpex_diff_report"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "no_lookahead",
+        "promotion_gate_status",
+        "provenance",
+        "report_date_availability",
+        "schema_compatibility",
+        "schema_presence",
+        "sector_normalization"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/parity/revenue/feature_lake",
+      "stage": "parity",
+      "dataset_lane": "revenue",
+      "feature_namespace": "finlab_parity_revenue",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_parity",
+      "field_count": 8,
+      "stockvision_use": "monthly revenue parity and revenue momentum feature base",
+      "quality_gates": [
+        "announcement_date_alignment, restatement_check"
+      ],
+      "all_checks": [
+        "announcement_date_alignment",
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "restatement_check",
+        "schema_compatibility",
+        "schema_presence",
+        "twse_tpex_diff_report"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate",
+        "twse_tpex_diff_report"
+      ],
+      "metadata_only_checks": [
+        "announcement_date_alignment",
+        "field_count_positive",
+        "freshness",
+        "promotion_gate_status",
+        "provenance",
+        "restatement_check",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/parity/security_master/feature_lake",
+      "stage": "parity",
+      "dataset_lane": "security_master",
+      "feature_namespace": "finlab_parity_security_master",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "shadow_parity",
+      "field_count": 1,
+      "stockvision_use": "primary security master, market lane, tradability route",
+      "quality_gates": [
+        "row_count, market_enum, known_symbol_checks"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "known_symbol_checks",
+        "market_enum",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "row_count",
+        "schema_compatibility",
+        "schema_presence",
+        "twse_tpex_diff_report"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate",
+        "twse_tpex_diff_report"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "known_symbol_checks",
+        "market_enum",
+        "promotion_gate_status",
+        "provenance",
+        "row_count",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": false,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/research/daily_price/feature_lake",
+      "stage": "research",
+      "dataset_lane": "daily_price",
+      "feature_namespace": "finlab_research_daily_price",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "research_only",
+      "field_count": 2,
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "quality_gates": [
+        "20_30_day_parity, split_adjustment, missing_rate"
+      ],
+      "all_checks": [
+        "20_30_day_parity",
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "missing_rate",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "research_only",
+        "schema_compatibility",
+        "schema_presence",
+        "split_adjustment"
+      ],
+      "row_level_checks": [
+        "20_30_day_parity",
+        "duplicate_rate",
+        "missing_rate",
+        "null_rate",
+        "split_adjustment"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "promotion_gate_status",
+        "provenance",
+        "research_only",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": true,
+      "promotion_gate_required": true
+    },
+    {
+      "asset_key": "finlab/research/research/feature_lake",
+      "stage": "research",
+      "dataset_lane": "research",
+      "feature_namespace": "finlab_research_research",
+      "output_table": "finlab_feature_lake_shadow",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "write_mode": "append_only_shadow",
+      "promotion_state": "research_only",
+      "field_count": 1319,
+      "stockvision_use": "non-core global datasets and benchmark-only research candidates",
+      "quality_gates": [
+        "manual_review",
+        "research_only"
+      ],
+      "all_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "manual_review",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "research_only",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "row_level_checks": [
+        "duplicate_rate",
+        "null_rate"
+      ],
+      "metadata_only_checks": [
+        "field_count_positive",
+        "freshness",
+        "manual_review",
+        "promotion_gate_status",
+        "provenance",
+        "research_only",
+        "schema_compatibility",
+        "schema_presence"
+      ],
+      "eligible_for_ml_training": false,
+      "eligible_for_screener": false,
+      "eligible_for_regime": false,
+      "eligible_for_pending_buy": false,
+      "watchlist_only": true,
+      "promotion_gate_required": true
+    }
+  ],
+  "checksum": "sha256:b2cd1ac34a5edb2203d9c71cb7ee7d0ab8163cd5b3ad0d6cd24e99e5e0f59595"
+}

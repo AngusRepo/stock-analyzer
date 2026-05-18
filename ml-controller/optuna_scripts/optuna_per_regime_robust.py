@@ -39,7 +39,7 @@ Runnable status:
 
 Blocked on:
   - #32 Sprint 6b walk-forward (needs per-window regime replay)
-  - #30 Regime pipeline fully deployed (scaffold done 2026-04-17, awaiting deploy)
+  - #30 Regime pipeline runtime ready (awaiting deploy approval)
 
 Usage when unblocked:
     python optuna_per_regime_robust.py --target=sltp --n-trials=200 --window-days=365

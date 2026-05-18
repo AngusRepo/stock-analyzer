@@ -401,6 +401,32 @@ def test_wiki_tool_start_task_returns_ready_context(monkeypatch, capsys):
     assert body["max_results"] == 8
 
 
+def test_wiki_tool_graphify_report_outputs_latest_report(monkeypatch, capsys):
+    monkeypatch.setenv("OBSIDIAN_WIKI_VAULT_PATH", "C:/wiki-vault")
+
+    def fake_inspect_graphify_reports(vault_root, *, limit=5, stale_days=7):
+        return {
+            "status": "found",
+            "vault_root": str(vault_root),
+            "count": 1,
+            "limit": limit,
+            "stale_days": stale_days,
+            "latest_report": {"path": "03_Tooling/Graphify/poc/GRAPH_REPORT.md"},
+            "reports": [{"path": "03_Tooling/Graphify/poc/GRAPH_REPORT.md"}],
+        }
+
+    monkeypatch.setattr(wiki_tool, "inspect_graphify_reports", fake_inspect_graphify_reports)
+
+    exit_code = wiki_tool.main(["graphify-report", "--limit", "3", "--stale-days", "9"])
+
+    assert exit_code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "found"
+    assert body["limit"] == 3
+    assert body["stale_days"] == 9
+    assert body["latest_report"]["path"] == "03_Tooling/Graphify/poc/GRAPH_REPORT.md"
+
+
 def test_wiki_tool_configures_utf8_stdio(monkeypatch):
     calls: list[str] = []
 

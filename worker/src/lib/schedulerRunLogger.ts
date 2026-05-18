@@ -44,6 +44,7 @@ const TASK_NAMES: Record<string, string> = {
   'daily-snapshot': 'Daily Snapshot',
   adapt: 'Adapt Params',
   'daily-report': 'Daily Report',
+  'paper-active-postmarket': 'Paper Active Postmarket',
   'obsidian-daily': 'Obsidian Notes',
   'obsidian-sync': 'Obsidian Sync',
   'regime-compute': 'HMM Regime',

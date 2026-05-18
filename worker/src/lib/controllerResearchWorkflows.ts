@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { controllerFetch, controllerPostJson } from './controllerClient'
+import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -48,6 +48,7 @@ interface OptunaResearchOptions {
   cadence: OptunaCadence
   nTrials: number
   subsetSize: number
+  runDate?: string
   ga?: {
     populationSize: number
     generations: number
@@ -65,6 +66,7 @@ function buildOptunaSweepRequestBody(options: OptunaResearchOptions): Record<str
     sources: OPTUNA_RESEARCH_SOURCES,
     research_data_source: 'snapshot',
     evidence_requirement: 'requires compute snapshots',
+    run_date: options.runDate,
     push_kv: true,
     dry_run: false,
   }
@@ -101,11 +103,12 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
   return `triggered ${summary}`
 }
 
-export async function runWeeklyOptunaResearch(env: Bindings) {
+export async function runWeeklyOptunaResearch(env: Bindings, runDate?: string) {
   return runOptunaResearch(env, {
     cadence: 'weekly',
     nTrials: 80,
     subsetSize: 400,
+    runDate,
     ga: {
       populationSize: 12,
       generations: 4,
@@ -113,11 +116,12 @@ export async function runWeeklyOptunaResearch(env: Bindings) {
   })
 }
 
-export async function runMonthlyOptunaResearch(env: Bindings) {
+export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) {
   return runOptunaResearch(env, {
     cadence: 'monthly',
     nTrials: 300,
     subsetSize: 1500,
+    runDate,
     ga: {
       populationSize: 36,
       generations: 12,
@@ -196,7 +200,7 @@ export async function runWeeklyLifecycleCheck(env: Bindings) {
 
   const resp = await controllerFetch(env, '/model_pool/promote_check', {
     method: 'POST',
-    jsonBody: { apply: true, confirm: true },
+    jsonBody: { apply: false, confirm: false },
     timeoutMs: 60_000,
   }).catch(() => null)
   if (!resp?.ok) return 'failed'
@@ -208,7 +212,7 @@ export async function runWeeklyLifecycleCheck(env: Bindings) {
     .filter((action: any) => !String(action.transition ?? '').endsWith('_blocked'))
     .map((action: any) => `${action.model}:${action.transition}`)
     .join(',') || 'none'
-  return `model_pool applied=${result.applied_count ?? 0}/${result.actions_count ?? 0} [${transitions}]`
+  return `model_pool dry_run=${result.actions_count ?? 0} [${transitions}]`
 }
 
 export async function runWeeklyBacktest(env: Bindings) {
@@ -314,6 +318,71 @@ export async function runWeeklyRetrain(env: Bindings) {
       Object.entries(trainResult.results ?? {}).map(([key, value]: [string, any]) => [key, value.accuracy ?? value.error ?? 'unknown']),
     ))}`,
   )
+}
+
+const MODEL_GROUP_BY_NAME: Record<string, string> = {
+  XGBoost: 'tree',
+  CatBoost: 'tree',
+  ExtraTrees: 'tree',
+  LightGBM: 'tree',
+  'FT-Transformer': 'ftt',
+  Chronos: 'chronos',
+  DLinear: 'dlinear',
+  PatchTST: 'patchtst',
+}
+
+function isWeeklyDriftTarget(model: Record<string, any>): boolean {
+  const status = String(model.status ?? '').toLowerCase()
+  const lastIcStatus = String(model.last_ic_status ?? '').toLowerCase()
+  const ic4w = Number(model.ic_4w_avg ?? 0)
+  const negWeeks = Number(model.consecutive_negative_weeks ?? 0)
+  return (
+    status === 'degraded' ||
+    negWeeks > 0 ||
+    lastIcStatus.includes('weak') ||
+    lastIcStatus.includes('negative') ||
+    lastIcStatus.includes('degraded') ||
+    ic4w < 0
+  )
+}
+
+export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
+  requireController(env)
+
+  const pool = await controllerJson<any>(env, '/model_pool/status', { timeoutMs: 30_000 })
+  const models = pool?.models && typeof pool.models === 'object' ? pool.models as Record<string, Record<string, any>> : {}
+  const targets = Object.entries(models)
+    .filter(([, model]) => isWeeklyDriftTarget(model))
+    .map(([name, model]) => ({
+      name,
+      family: String(model.balance_family ?? model.model_type ?? 'unknown'),
+      group: MODEL_GROUP_BY_NAME[name] ?? 'tree',
+      status: String(model.status ?? 'unknown'),
+      ic4w: model.ic_4w_avg ?? null,
+      consecutiveNegativeWeeks: Number(model.consecutive_negative_weeks ?? 0),
+      lastIcStatus: model.last_ic_status ?? null,
+    }))
+
+  if (targets.length === 0) {
+    return 'weekly_drift skipped: no degraded/weak model family; monthly release remains owner'
+  }
+
+  const trainModelGroups = [...new Set(targets.map((target) => target.group))]
+  controllerFetch(env, '/retrain/universal', {
+    method: 'POST',
+    jsonBody: {
+      limit: 2500,
+      force_monthly: false,
+      candidate_type: 'weekly_drift',
+      run_date: runDate,
+      train_model_groups: trainModelGroups,
+      drift_target_models: targets.map((target) => target.name),
+      drift_target_families: [...new Set(targets.map((target) => target.family))],
+    },
+    timeoutMs: 0,
+  }).catch((e) => console.error('[weekly-drift-retrain] fire-and-forget error:', e))
+
+  return `weekly_drift retrain triggered; candidate_type=weekly_drift; groups=${trainModelGroups.join(',')}; targets=${targets.map((target) => target.name).join(',')}; callback expected`
 }
 
 export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskId = forceMonthly ? 'monthly-retrain' : 'retrain') {

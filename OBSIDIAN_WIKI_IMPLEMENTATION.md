@@ -260,6 +260,16 @@ Builds a start-of-task context pack with guard status, recall proof, and git
 status. Use this endpoint when a router/API session needs proof that the wiki
 was checked before memory-sensitive work.
 
+Graphify report inspection:
+
+```http
+POST /obsidian/wiki-graphify-report
+```
+
+Returns the latest Graphify report stored under `03_Tooling/Graphify/`, plus a
+bounded list of recent reports. Use this when a session needs to verify the
+graph analysis layer without running the full `start-task` preflight.
+
 Active finish-task:
 
 ```http
@@ -393,6 +403,29 @@ $env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
 `start-task` wraps guard, recall proof, and `git status --short --branch` into
 one JSON response. It returns exit code `0` when ready and `1` when guard blocks
 the task.
+
+When a Graphify POC report exists under:
+
+```text
+03_Tooling/Graphify/**/GRAPH_REPORT.md
+```
+
+`start-task` also returns a `graphify.latest_report` block and prepends a
+`next_actions` reminder to read the latest report before architecture
+navigation. Treat Graphify `INFERRED` edges as review clues only; they are not
+decision notes until validated and written into the wiki.
+
+Standalone Graphify report inspection:
+
+```powershell
+$env:OBSIDIAN_WIKI_VAULT_PATH="C:\Users\Wei\Desktop\CloudCode\wei-codex-wiki"
+& C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe ml-controller\scripts\wiki_tool.py graphify-report --limit 3 --stale-days 3
+```
+
+`graphify-report` returns `latest_report`, `reports`, `count`, and summary lines
+from each report. It does not rerun Graphify; it only reads already captured
+vault artifacts. It also returns `age_days`, `is_stale`, and `warnings`; stale
+reports should be refreshed before relying on graph navigation.
 
 Major-task finish:
 

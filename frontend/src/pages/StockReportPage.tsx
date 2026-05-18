@@ -6,7 +6,8 @@
 import { useEffect } from 'react'
 import { useRoute, Link } from 'wouter'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { stocksApi, mlApi, llmApi } from '@/lib/api'
+import { stocksApi, mlApi, llmApi, dashboardV4Api } from '@/lib/api'
+import DashboardV4LightweightChart from '@/components/charts/DashboardV4LightweightChart'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Brain, BarChart2,
   Shield, Target, Zap, RefreshCw, Tag, Building2, DollarSign,
@@ -92,6 +93,13 @@ export default function StockReportPage() {
     retry: false,
   })
 
+  const { data: chartPacket, isLoading: chartLoading, error: chartError } = useQuery({
+    queryKey: ['dashboard-v4-chart', 'report', stockId],
+    queryFn: () => dashboardV4Api.stockChart(stockId!, { days: 365 }),
+    enabled: !!stockId,
+    staleTime: 5 * 60_000,
+  })
+
   // 4) LLM: 自動觸發摘要/技術/交易（只觸發一次）
   const summaryMut = useMutation({ mutationFn: () => llmApi.analystSummary(stockId!) })
   const techMut = useMutation({ mutationFn: () => llmApi.technicalAnalysis(stockId!) })
@@ -173,6 +181,12 @@ export default function StockReportPage() {
 
         {!isLoading && (
           <>
+            <DashboardV4LightweightChart
+              packet={chartPacket}
+              loading={chartLoading}
+              error={chartError}
+            />
+
             {/* ═══ Section 1: 信號總覽 ═══ */}
             <SectionCard title="投資信號總覽" icon={Zap}>
               <div className={cn('rounded-xl border-2 p-4 mb-4', cfg.bg, cfg.border)}>

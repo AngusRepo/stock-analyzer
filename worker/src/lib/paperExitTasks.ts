@@ -14,7 +14,12 @@ import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
-import { getTradingConfig, type TradingConfig } from './tradingConfig'
+import {
+  getCurrentRegime as getCurrentSltpRegime,
+  getTradingConfig,
+  resolveSltpForRegime,
+  type TradingConfig,
+} from './tradingConfig'
 
 const ACCOUNT_ID = 1
 
@@ -119,7 +124,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       false,
       false,
       cfg,
-      (await import('./tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       regime ?? undefined,
     )
     if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, env.DB)
@@ -256,7 +261,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       sellRecMap.has(pos.symbol),
       true,
       cfg,
-      (await import('./tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       eodRegime ?? undefined,
     )
     if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, env.DB)
@@ -463,7 +468,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       false,
       false,
       cfg,
-      (await import('./tradingConfig')).resolveSltpForRegime(cfg, await env.KV.get('ml:regime')),
+      resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       intraRegime ?? undefined,
     )
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)

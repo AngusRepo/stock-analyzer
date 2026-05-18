@@ -22,6 +22,34 @@ export interface FMChip {
   name: string
   buy: number
   sell: number
+  source?: string
+  market_segment?: string
+  broker_count?: number | null
+  estimated_amount?: number | null
+  concentration?: number | null
+}
+
+export interface CanonicalChipRow {
+  stock_id: string
+  date: string
+  market_segment: string | null
+  foreign_net: number | null
+  trust_net: number | null
+  dealer_net: number | null
+  source: string | null
+  as_of_date?: string | null
+}
+
+export interface CanonicalBrokerFlowRow {
+  stock_id: string
+  date: string
+  market_segment: string | null
+  net_shares: number | null
+  estimated_amount: number | null
+  broker_count: number | null
+  concentration: number | null
+  source: string | null
+  as_of_date?: string | null
 }
 
 export interface ScreenerPriceRow {
@@ -127,6 +155,133 @@ function latestSymbolsForLane(rows: ScreenerPriceRow[], lane: 'tradable' | 'emer
   return symbols
 }
 
+function netToChip(row: {
+  stock_id: string
+  date: string
+  market_segment?: string | null
+  source?: string | null
+}, role: string, net: number | null | undefined, extras: Partial<FMChip> = {}): FMChip | null {
+  const value = Number(net ?? 0)
+  if (!Number.isFinite(value) || value === 0) return null
+  return {
+    date: row.date,
+    stock_id: row.stock_id,
+    name: role,
+    buy: value > 0 ? value : 0,
+    sell: value < 0 ? Math.abs(value) : 0,
+    source: row.source ?? 'canonical',
+    market_segment: row.market_segment ?? undefined,
+    ...extras,
+  }
+}
+
+export function chipIdentity(chip: FMChip): string {
+  return `${chip.stock_id}|${chip.date}|${chip.name}`
+}
+
+export function canonicalChipRowsToFmChips(
+  rows: CanonicalChipRow[],
+  brokerRows: CanonicalBrokerFlowRow[] = [],
+): FMChip[] {
+  const chips: FMChip[] = []
+  for (const row of rows) {
+    const foreign = netToChip(row, 'foreign', row.foreign_net)
+    const trust = netToChip(row, 'trust', row.trust_net)
+    const dealer = netToChip(row, 'dealer', row.dealer_net)
+    if (foreign) chips.push(foreign)
+    if (trust) chips.push(trust)
+    if (dealer) chips.push(dealer)
+  }
+  for (const row of brokerRows) {
+    const broker = netToChip(row, 'broker_proxy', row.net_shares, {
+      broker_count: row.broker_count ?? null,
+      estimated_amount: row.estimated_amount ?? null,
+      concentration: row.concentration ?? null,
+    })
+    if (broker) chips.push(broker)
+  }
+  return chips
+}
+
+export function mergeCanonicalFirstChips(canonical: FMChip[], fallback: FMChip[]): FMChip[] {
+  const seen = new Set<string>()
+  const merged: FMChip[] = []
+  for (const chip of canonical) {
+    const key = chipIdentity(chip)
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(chip)
+  }
+  for (const chip of fallback) {
+    const key = chipIdentity(chip)
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(chip)
+  }
+  return merged
+}
+
+async function loadCanonicalChipsFromD1(
+  db: D1Database,
+  maxAllowedDate: string,
+  chipLookback: number,
+  chipDays: number,
+): Promise<{ chips: FMChip[]; sourceSummary: Record<string, number> }> {
+  const chips: FMChip[] = []
+  const sourceSummary: Record<string, number> = {}
+
+  try {
+    const { results: canonicalDates } = await db.prepare(
+      `SELECT DISTINCT date FROM canonical_chip_daily
+       WHERE date <= ?
+         AND date >= date(?, '-${chipLookback} days')
+       ORDER BY date DESC LIMIT ?`,
+    ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
+    const dates = (canonicalDates ?? []).map(row => row.date).sort()
+    if (dates.length) {
+      const { results } = await db.prepare(
+        `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net, source, as_of_date
+         FROM canonical_chip_daily
+         WHERE date >= ? AND date <= ?`,
+      ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()
+      for (const chip of canonicalChipRowsToFmChips(results ?? [])) {
+        chips.push(chip)
+        const source = chip.source ?? 'canonical_chip_daily'
+        sourceSummary[source] = (sourceSummary[source] ?? 0) + 1
+      }
+    }
+  } catch {
+    // V4.1 migration may not be present in older local/preview D1 snapshots.
+  }
+
+  try {
+    const { results: brokerDates } = await db.prepare(
+      `SELECT DISTINCT date FROM canonical_broker_flow_daily
+       WHERE date <= ?
+         AND date >= date(?, '-${chipLookback} days')
+       ORDER BY date DESC LIMIT ?`,
+    ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
+    const dates = (brokerDates ?? []).map(row => row.date).sort()
+    if (dates.length) {
+      const { results } = await db.prepare(
+        `SELECT stock_id, date, market_segment, net_shares, estimated_amount,
+                broker_count, concentration, source, as_of_date
+         FROM canonical_broker_flow_daily
+         WHERE date >= ? AND date <= ?`,
+      ).bind(dates[0], dates[dates.length - 1]).all<CanonicalBrokerFlowRow>()
+      for (const chip of canonicalChipRowsToFmChips([], results ?? [])) {
+        chips.push(chip)
+        const source = chip.source ?? 'canonical_broker_flow_daily'
+        sourceSummary[source] = (sourceSummary[source] ?? 0) + 1
+      }
+    }
+  } catch {
+    // Optional broker lineage table. Missing table must not break listed/OTC scoring.
+  }
+
+  return { chips, sourceSummary }
+}
+
 export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
@@ -138,6 +293,7 @@ export async function loadMarketDataFromD1(
   allChips: FMChip[]
   tpexSymbols: Set<string>
   laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
+  chipSourceSummary: Record<string, number>
 }> {
   const lookbackDays = Math.ceil(priceDays * 1.5) + 7
   const chipLookback = Math.ceil(chipDays * 1.5) + 5
@@ -159,6 +315,7 @@ export async function loadMarketDataFromD1(
       allChips: [],
       tpexSymbols: new Set(),
       laneCounts: { tradable: 0, emerging_watchlist: 0, research_only: 0 },
+      chipSourceSummary: {},
     }
   }
   const minDate = tradingDates[0]
@@ -233,7 +390,13 @@ export async function loadMarketDataFromD1(
   ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
   const chipDates = (chipDateRows ?? []).map((r) => r.date).sort()
 
-  const allChips: FMChip[] = []
+  const { chips: canonicalChips, sourceSummary: canonicalChipSources } = await loadCanonicalChipsFromD1(
+    env.DB,
+    maxAllowedDate,
+    chipLookback,
+    chipDays,
+  )
+  const fallbackChips: FMChip[] = []
   if (chipDates.length) {
     const minChipDate = chipDates[0]
     const maxChipDate = chipDates[chipDates.length - 1]
@@ -250,33 +413,44 @@ export async function loadMarketDataFromD1(
 
     for (const row of (chipRows ?? [])) {
       if (row.foreign_buy != null || row.foreign_sell != null) {
-        allChips.push({
+        fallbackChips.push({
           date: row.date,
           stock_id: row.symbol,
           name: '外資',
           buy: row.foreign_buy ?? 0,
           sell: row.foreign_sell ?? 0,
+          source: 'legacy.chip_data',
         })
       }
       if (row.trust_buy != null || row.trust_sell != null) {
-        allChips.push({
+        fallbackChips.push({
           date: row.date,
           stock_id: row.symbol,
           name: '投信',
           buy: row.trust_buy ?? 0,
           sell: row.trust_sell ?? 0,
+          source: 'legacy.chip_data',
         })
       }
       if (row.dealer_buy != null || row.dealer_sell != null) {
-        allChips.push({
+        fallbackChips.push({
           date: row.date,
           stock_id: row.symbol,
           name: 'dealer',
           buy: row.dealer_buy ?? 0,
           sell: row.dealer_sell ?? 0,
+          source: 'legacy.chip_data',
         })
       }
     }
+  }
+  const allChips = mergeCanonicalFirstChips(canonicalChips, fallbackChips)
+  const canonicalKeys = new Set(canonicalChips.map(chipIdentity))
+  const chipSourceSummary = { ...canonicalChipSources }
+  for (const chip of fallbackChips) {
+    if (canonicalKeys.has(chipIdentity(chip))) continue
+    const source = chip.source ?? 'legacy.chip_data'
+    chipSourceSummary[source] = (chipSourceSummary[source] ?? 0) + 1
   }
 
   return {
@@ -285,5 +459,6 @@ export async function loadMarketDataFromD1(
     allChips,
     tpexSymbols,
     laneCounts: finalLaneCounts,
+    chipSourceSummary,
   }
 }

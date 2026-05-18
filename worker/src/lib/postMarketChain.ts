@@ -1,10 +1,11 @@
 import type { Bindings } from '../types'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
-import { runModelIcRollingRefresh, runObsidianDaily, runVerifyV2 } from './controllerWorkflows'
+import { runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
+import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 
 type ChainContext = {
   runDate?: string
@@ -48,24 +49,42 @@ async function logChainedTask(
     const rawSummary = await fn()
     const summary = normalizeSummary(rawSummary)
     const status = classifySchedulerSummary(summary)
+    const durationMs = Date.now() - t0
     await logSchedulerResult(env.KV, task, {
       status,
       summary,
-      duration_ms: Date.now() - t0,
+      duration_ms: durationMs,
       run_id: ctx.upstreamRunId,
       run_date: ctx.runDate,
     }, env)
+    await recordWorkerTaskComputeProfile(env, {
+      task,
+      status,
+      durationMs,
+      runDate: ctx.runDate,
+      runId: ctx.upstreamRunId,
+      chain: 'post_market_callback',
+    })
     return { task, summary, status, critical }
   } catch (e: any) {
     const summary = e?.message ?? `${task} failed`
+    const durationMs = Date.now() - t0
     await logSchedulerResult(env.KV, task, {
       status: 'error',
       summary,
-      duration_ms: Date.now() - t0,
+      duration_ms: durationMs,
       error: String(e),
       run_id: ctx.upstreamRunId,
       run_date: ctx.runDate,
     }, env)
+    await recordWorkerTaskComputeProfile(env, {
+      task,
+      status: 'error',
+      durationMs,
+      runDate: ctx.runDate,
+      runId: ctx.upstreamRunId,
+      chain: 'post_market_callback',
+    })
     return { task, summary, status: 'error', critical }
   }
 }
@@ -144,12 +163,14 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
+    results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
   }

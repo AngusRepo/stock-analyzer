@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
+import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTimeline'
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
@@ -530,6 +531,12 @@ export default function StrategyLabPage() {
             </Button>
           </div>
         </div>
+
+        <StrategyExperimentTimeline
+          specs={specs?.specs ?? []}
+          dryRun={dryRun}
+          experiments={experiments?.experiments ?? []}
+        />
 
         {error && (
           <Card className="border-red-500/30">

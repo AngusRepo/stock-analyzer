@@ -31,6 +31,7 @@ import {
 import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
+import { readMarketRegimeState } from '../lib/marketRegimeState'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -567,7 +568,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest'
+  const cacheKey = 'market:risk:latest:v4-context'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -577,6 +578,34 @@ market.get('/risk', async (c) => {
   ).first<any>()
 
   if (!row) return c.json({ error: '尚無大盤風險資料，請等待排程執行' }, 404)
+
+  const regimeState = await readMarketRegimeState(c.env.KV).catch(() => null)
+  const factor = (
+    id: string,
+    label: string,
+    value: string,
+    status: 'ok' | 'warn' | 'error' | 'info',
+    source: string,
+    detail = '',
+  ) => ({ id, label, value, status, source, detail })
+  const twiiBias = Number(row.twii_bias ?? 0)
+  const foreignNet5d = Number(row.foreign_net_5d ?? 0)
+  const marginRatio = Number(row.margin_ratio ?? 0)
+  const limitDownPct = Number(row.limit_down_pct ?? 0)
+  const regimeSurface = regimeState?.regime_surface ?? {}
+  const monitors = regimeState?.monitors ?? {}
+  const transitionGuard = regimeState?.transition_guard ?? {}
+  const contextFactors = [
+    factor('price_trend', '價格趨勢', `${twiiBias.toFixed(2)}%`, twiiBias < -3 ? 'error' : twiiBias < -1 ? 'warn' : 'ok', 'market_risk.twii_bias', `TWII close ${row.twii_close ?? 'n/a'} vs MA20 ${row.twii_ma20 ?? 'n/a'}`),
+    factor('volatility', '波動', row.vix != null ? `VIX ${Number(row.vix).toFixed(1)}` : `${Number(row.twii_vol20 ?? 0).toFixed(2)}%`, String(row.vix_level ?? '').toLowerCase().includes('high') ? 'warn' : 'info', 'market_risk.vix_twii_vol20'),
+    factor('breadth', '市場廣度', `${limitDownPct.toFixed(2)}%`, limitDownPct > 3 ? 'error' : limitDownPct > 1 ? 'warn' : 'ok', 'market_risk.limit_down_pct', `limit_down_count=${row.limit_down_count ?? 0}`),
+    factor('chips', '籌碼', `${(foreignNet5d / 100000000).toFixed(1)}億`, foreignNet5d < 0 ? 'warn' : 'ok', 'market_risk.foreign_net_5d', `foreign_consecutive_sell=${row.foreign_consecutive_sell ?? 0}`),
+    factor('leverage', '槓桿', marginRatio ? `${marginRatio.toFixed(2)}%` : 'n/a', marginRatio > 40 ? 'warn' : 'info', 'market_risk.margin_ratio'),
+    factor('regime', 'Regime', regimeState?.label ?? 'missing', regimeState ? (regimeState.family === 'bear' ? 'warn' : 'ok') : 'error', regimeState?.source === 'legacy_label' ? 'legacy_regime_fallback' : 'market_regime_state', `run_date=${regimeState?.run_date ?? 'missing'}`),
+    factor('global_risk', '全球風險', String((monitors as any).global_event_pressure ?? (regimeSurface as any).global_risk ?? 'context'), (regimeSurface as any).global_risk > 0.6 ? 'warn' : 'info', 'market_regime_state.monitors'),
+    factor('lppls', 'LPPLS', String((monitors as any).lppls ?? 'context'), (transitionGuard as any).bubble_risk ? 'warn' : 'info', 'market_regime_state.monitors.lppls'),
+    factor('hawkes', 'Hawkes', String((monitors as any).hawkes ?? 'context'), (transitionGuard as any).contagion_risk ? 'warn' : 'info', 'market_regime_state.monitors.hawkes'),
+  ]
 
   const data = {
     date:                   row.date,
@@ -595,6 +624,17 @@ market.get('/risk', async (c) => {
     riskLevel:              row.risk_level,
     riskSummary:            row.risk_summary,
     calculatedAt:           row.calculated_at,
+    regimeState: regimeState ? {
+      label: regimeState.label,
+      family: regimeState.family,
+      runDate: regimeState.run_date,
+      computedAt: regimeState.computed_at,
+      source: regimeState.source,
+      regimeSurface: regimeState.regime_surface,
+      transitionGuard: regimeState.transition_guard,
+      monitors: regimeState.monitors,
+    } : null,
+    contextFactors,
   }
 
   await c.env.KV.put(cacheKey, JSON.stringify(data), { expirationTtl: 1800 })
@@ -975,6 +1015,67 @@ recommendations.use('/*', authMiddleware)
 
 const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
 
+function isEmergingRecommendation(row: Record<string, any>): boolean {
+  return String(row.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
+    || String(row.market_segment ?? '').toUpperCase() === 'EMERGING'
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function formatAbsTwdAmountFromBillion(value: number): string {
+  const abs = Math.abs(value)
+  if (abs < 0.01 && abs > 0) return `${Math.round(abs * 10_000)}萬`
+  return `${abs.toFixed(2)}億`
+}
+
+function buildEmergingBrokerEvidence(row: Record<string, any>): Record<string, any> | null {
+  if (!isEmergingRecommendation(row)) return null
+  const amountBillion = finiteNumber(row.broker_chip_cash_total_5d ?? row.chip_cash_total_5d)
+  const netShares = finiteNumber(row.broker_net_shares_5d)
+  if ((amountBillion == null || amountBillion === 0) && (netShares == null || netShares === 0)) return null
+  const latestAmount = finiteNumber(row.broker_chip_cash_latest)
+  const brokerCount = finiteNumber(row.broker_count_latest)
+  const concentration = finiteNumber(row.broker_concentration_latest)
+  const sourceDate = String(row.broker_flow_source_date ?? row.date ?? '')
+  const source = String(row.broker_flow_source ?? 'finlab.rotc_broker_transactions')
+  const direction = (amountBillion ?? 0) >= 0 ? '買超' : '賣超'
+  const reasonParts = [`券商分點近5日${direction}${formatAbsTwdAmountFromBillion(amountBillion ?? 0)}`]
+  if (brokerCount != null) reasonParts.push(`券商數${Math.round(brokerCount)}`)
+  if (concentration != null) reasonParts.push(`集中度${concentration.toFixed(2)}`)
+  return {
+    source,
+    source_date: sourceDate,
+    broker_net_amount_5d_billion: amountBillion ?? 0,
+    broker_net_amount_latest_billion: latestAmount ?? null,
+    broker_net_shares_5d: netShares ?? null,
+    broker_count_latest: brokerCount ?? null,
+    concentration_latest: concentration ?? null,
+    reason: reasonParts.join('、'),
+  }
+}
+
+function replaceChipReason(reason: unknown, chipReason: string): string {
+  const text = typeof reason === 'string' ? reason.trim() : ''
+  if (!text) return `【籌碼】${chipReason}`
+  if (text.includes('【籌碼】') && text.includes('｜【技術】')) {
+    return text.replace(/【籌碼】[^｜\n]+｜【技術】/, `【籌碼】${chipReason}｜【技術】`)
+  }
+  return `【籌碼】${chipReason}｜${text}`
+}
+
+function mergeEmergingBrokerWatchPoints(points: unknown, evidence: Record<string, any> | null): string[] {
+  const list = Array.isArray(points) ? points.map((p) => String(p ?? '')).filter(Boolean) : []
+  if (!evidence) return list
+  const filtered = list.filter((p) => !p.includes('籌碼資料不足：興櫃或資料源未提供三大法人明細'))
+  filtered.push(
+    `chip_source=${evidence.source},source_date=${evidence.source_date},broker_net_amount_5d=${evidence.broker_net_amount_5d_billion},broker_net_shares_5d=${evidence.broker_net_shares_5d ?? 'n/a'},broker_count=${evidence.broker_count_latest ?? 'n/a'},concentration=${evidence.concentration_latest ?? 'n/a'}`,
+  )
+  return Array.from(new Set(filtered))
+}
+
 // GET /api/recommendations/daily?date=YYYY-MM-DD
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
@@ -1005,6 +1106,72 @@ recommendations.get('/daily', async (c) => {
            ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
            ROUND(COALESCE(r.trust_net_5d, 0), 6) AS chip_cash_trust_5d,
            0 AS dealer_net_5d,
+           CASE
+             WHEN r.recommendation_lane = 'emerging_watchlist'
+               OR UPPER(COALESCE(r.market_segment, '')) = 'EMERGING'
+             THEN ROUND(COALESCE((
+               SELECT SUM(cbf.estimated_amount)
+                 FROM canonical_broker_flow_daily cbf
+                WHERE cbf.stock_id = r.symbol
+                  AND cbf.date <= r.date
+                  AND cbf.date >= date(r.date, '-14 days')
+             ), 0) / 100000000.0, 6)
+             ELSE ROUND(COALESCE(r.foreign_net_5d, 0) + COALESCE(r.trust_net_5d, 0), 6)
+           END AS chip_cash_total_5d,
+           ROUND(COALESCE((
+             SELECT SUM(cbf.estimated_amount)
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+                AND cbf.date >= date(r.date, '-14 days')
+           ), 0) / 100000000.0, 6) AS broker_chip_cash_total_5d,
+           ROUND(COALESCE((
+             SELECT cbf.estimated_amount
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+              ORDER BY cbf.date DESC
+              LIMIT 1
+           ), 0) / 100000000.0, 6) AS broker_chip_cash_latest,
+           (
+             SELECT SUM(cbf.net_shares)
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+                AND cbf.date >= date(r.date, '-14 days')
+           ) AS broker_net_shares_5d,
+           (
+             SELECT cbf.broker_count
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+              ORDER BY cbf.date DESC
+              LIMIT 1
+           ) AS broker_count_latest,
+           (
+             SELECT cbf.concentration
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+              ORDER BY cbf.date DESC
+              LIMIT 1
+           ) AS broker_concentration_latest,
+           (
+             SELECT cbf.source
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+              ORDER BY cbf.date DESC
+              LIMIT 1
+           ) AS broker_flow_source,
+           (
+             SELECT cbf.date
+               FROM canonical_broker_flow_daily cbf
+              WHERE cbf.stock_id = r.symbol
+                AND cbf.date <= r.date
+              ORDER BY cbf.date DESC
+              LIMIT 1
+           ) AS broker_flow_source_date,
            (
              SELECT sp.open
                FROM stock_prices sp
@@ -1098,6 +1265,15 @@ recommendations.get('/daily', async (c) => {
     const persistedScoreComponents = parsePredictionForecastData(r.score_components)
     const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
+    const parsedWatchPoints = (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })()
+    const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
+    const watchPoints = mergeEmergingBrokerWatchPoints(parsedWatchPoints, emergingBrokerEvidence)
+    const scoreComponents = persistedScoreComponents
+      ? {
+        ...persistedScoreComponents,
+        ...(emergingBrokerEvidence ? { chipEvidence: emergingBrokerEvidence } : {}),
+      }
+      : (emergingBrokerEvidence ? { chipEvidence: emergingBrokerEvidence } : null)
     const board = classifyBoard({
       market: r.market,
       open: r.latest_open,
@@ -1123,12 +1299,14 @@ recommendations.get('/daily', async (c) => {
       alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
       ml_diagnostics: buildMlDiagnostics(forecastData),
-      score_components: persistedScoreComponents ?? null,
+      score_components: scoreComponents,
+      chip_evidence: emergingBrokerEvidence,
+      reason: emergingBrokerEvidence ? replaceChipReason(r.reason, String(emergingBrokerEvidence.reason ?? '券商分點資料已更新')) : r.reason,
       screener_funnel_rank: screenerFunnel?.rank ?? null,
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
       screener_funnel_evidence: screenerFunnel?.evidence ?? null,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
-      watch_points: (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })(),
+      watch_points: watchPoints,
     }
   })
   const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')

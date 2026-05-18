@@ -5,9 +5,9 @@ import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
-import { modelPoolApi, recommendationsApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { DecisionPacketCell, MiniSparkline, StatusPill, WeightBar } from '@/components/workstation/VisualPrimitives'
+import { modelPoolApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
-import { queryTtl, recommendationDailyKey, twToday } from '@/lib/queryPolicy'
 
 function fmt(value: unknown): string {
   if (value === null || value === undefined || value === '') return 'N/A'
@@ -20,6 +20,46 @@ function toneFromStatus(status?: string): WorkstationTone {
   if (status === 'degraded' || status === 'warn' || status === 'coverage_low') return 'warn'
   if (status === 'retired' || status === 'failed' || status === 'error' || status === 'artifact_mismatch') return 'error'
   return 'neutral'
+}
+
+function isServingAlphaModel(model: ModelPoolLineageModel): boolean {
+  return model.status === 'active' || model.status === 'degraded'
+}
+
+function lifecycleBucket(model: ModelPoolLineageModel): 'serving' | 'shadow' | 'retired' | 'research' | 'other' {
+  if (isServingAlphaModel(model)) return 'serving'
+  if (model.status === 'retired') return 'retired'
+  if (model.challenger || model.status === 'challenger') return 'shadow'
+  if (model.status === 'research' || model.status === 'benchmark') return 'research'
+  return 'other'
+}
+
+function effectiveVoteWeight(model: ModelPoolLineageModel): number {
+  if (model.status === 'active') return 100
+  if (model.status === 'degraded') return 50
+  return 0
+}
+
+function modelFamily(model: ModelPoolLineageModel): string {
+  return model.balance_family ?? model.model_type ?? 'unknown'
+}
+
+function familyAccentClass(family: string): string {
+  const key = family.toLowerCase()
+  if (key.includes('tree') || key.includes('boost')) return 'bg-emerald-300'
+  if (key.includes('time') || key.includes('series')) return 'bg-sky-300'
+  if (key.includes('feature')) return 'bg-fuchsia-300'
+  if (key.includes('linear')) return 'bg-amber-300'
+  if (key.includes('state')) return 'bg-violet-300'
+  return 'bg-slate-300'
+}
+
+function statusGlyph(status?: string): string {
+  if (status === 'active') return 'A'
+  if (status === 'degraded') return 'D'
+  if (status === 'retired') return 'R'
+  if (status === 'challenger') return 'C'
+  return '?'
 }
 
 function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel) {
@@ -39,8 +79,8 @@ function icValue(model: ModelPoolLineageModel): number | null {
 
 function familyCounts(models: Array<[string, ModelPoolLineageModel]>) {
   return models.reduce<Record<string, number>>((acc, [, model]) => {
-    const family = model.balance_family ?? model.model_type ?? 'unknown'
-    if (model.status === 'active') acc[family] = (acc[family] ?? 0) + 1
+    const family = modelFamily(model)
+    if (isServingAlphaModel(model)) acc[family] = (acc[family] ?? 0) + 1
     return acc
   }, {})
 }
@@ -269,6 +309,74 @@ function TinyBar({ label, value, tone = 'info' }: { label: string; value: number
   )
 }
 
+function ServingAlphaStrip({
+  models,
+  pointers,
+  weakIc,
+  sampleGaps,
+}: {
+  models: Array<[string, ModelPoolLineageModel]>
+  pointers?: ModelChampionPointersResponse
+  weakIc: number
+  sampleGaps: number
+}) {
+  const serving = models.filter(([, model]) => isServingAlphaModel(model)).slice(0, 8)
+  const degraded = serving.filter(([, model]) => model.status === 'degraded').length
+  const retired = models.filter(([, model]) => lifecycleBucket(model) === 'retired').length
+  const shadow = models.filter(([, model]) => lifecycleBucket(model) === 'shadow').length
+  const research = models.filter(([, model]) => lifecycleBucket(model) === 'research').length
+
+  return (
+    <WorkstationPanel title="Model Ops Mission Control" kicker="serving alpha slots: active + degraded still vote">
+      <div className="grid gap-px bg-[#263247] xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid gap-px bg-[#263247] sm:grid-cols-2 xl:grid-cols-4">
+          {serving.map(([name, model]) => {
+            const pointer = pointers?.models?.[name]
+            const family = modelFamily(model)
+            const weight = effectiveVoteWeight(model)
+            const ic = icValue(model)
+            return (
+              <div key={name} className="bg-[#070a10] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`h-6 w-1.5 ${familyAccentClass(family)}`} />
+                      <div className="truncate font-mono text-[12px] font-semibold text-[#fff1cf]">{name}</div>
+                    </div>
+                    <div className="mt-1 text-[10px] text-[#70809b]">{family}</div>
+                  </div>
+                  <StatusPill tone={model.status === 'degraded' ? 'warn' : 'ok'}>
+                    {statusGlyph(model.status)} {model.status}
+                  </StatusPill>
+                </div>
+                <div className="mt-3 grid grid-cols-[1fr_auto] items-end gap-3">
+                  <WeightBar label="effective vote" value={weight} tone={model.status === 'degraded' ? 'warn' : 'ok'} />
+                  <MiniSparkline values={model.weekly_ic ?? [ic ?? 0]} tone={ic == null || ic < 0 ? 'warn' : 'ok'} />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                  <DecisionPacketCell title="IC 4W" value={ic == null ? 'N/A' : ic.toFixed(4)} tone={ic == null ? 'warn' : ic >= 0 ? 'ok' : 'error'} />
+                  <DecisionPacketCell title="samples" value={Number(model.last_ic_sample_count ?? 0)} tone={Number(model.last_ic_sample_count ?? 0) > 0 ? 'ok' : 'warn'} />
+                </div>
+                <div className="mt-2 text-[10px] leading-4 text-[#8a92a6]">
+                  pointer: {pointer?.readiness ?? 'lineage only'} / {pointer?.serving_version ?? model.version ?? 'N/A'}
+                </div>
+              </div>
+            )
+          })}
+          {!serving.length && (
+            <div className="bg-[#070a10] p-3 text-sm text-amber-200">No serving alpha slots returned by lineage.</div>
+          )}
+        </div>
+        <aside className="grid gap-2 bg-[#070a10] p-3">
+          <DecisionPacketCell title="serving alpha slots" value={`${serving.length}/8`} detail={`${degraded} degraded still vote with reduced weight`} tone={serving.length === 8 ? 'ok' : 'warn'} />
+          <DecisionPacketCell title="non-serving inventory" value={`${retired} retired`} detail={`${shadow} shadow / ${research} research`} tone="neutral" />
+          <DecisionPacketCell title="quality attention" value={`IC ${weakIc}`} detail={`sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
+        </aside>
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function selectedCandidateForModel(row?: ModelArtifactSelectionResponse['models'][string]) {
   const artifact = row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
   const context = row?.monthly_release_candidate
@@ -314,7 +422,7 @@ function UnifiedModelHealthMatrix({
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1680px] border-collapse font-mono text-[11px]">
+          <table className="w-full min-w-[1540px] border-collapse font-mono text-xs">
             <thead className="bg-[#0c1420] text-[#70809b]">
               <tr>
                 {[
@@ -329,8 +437,7 @@ function UnifiedModelHealthMatrix({
                   'Live IC / Samples',
                   'CPCV / PBO',
                   'DSR / MC',
-                  'Live gate / Next action',
-                  'Root cause',
+                  'Live gate / Root cause / Next action',
                 ].map((label) => (
                   <th key={label} className="border border-[#263247] px-2 py-2 text-left font-medium uppercase tracking-[0.14em]">{label}</th>
                 ))}
@@ -360,11 +467,21 @@ function UnifiedModelHealthMatrix({
                 return (
                   <tr key={name} className="align-top hover:bg-[#101927]">
                     <td className="border border-[#263247] px-2 py-2 text-slate-100">
-                      <div className="font-semibold">{name}</div>
-                      <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {model.balance_family ?? 'unknown'}</div>
+                      <div className="flex items-start gap-2">
+                        <span className={`mt-0.5 h-10 w-1.5 ${familyAccentClass(modelFamily(model))}`} />
+                        <div className="min-w-0">
+                          <div className="font-semibold">{name}</div>
+                          <div className="mt-0.5 text-[10px] text-[#70809b]">{model.model_type ?? 'unknown'} / {modelFamily(model)}</div>
+                        </div>
+                      </div>
                     </td>
                     <td className="border border-[#263247] px-2 py-2">
-                      <WorkstationPill tone={toneFromStatus(model.status)}>{model.status ?? '-'}</WorkstationPill>
+                      <div className="space-y-2">
+                        <StatusPill tone={model.status === 'degraded' ? 'warn' : isServingAlphaModel(model) ? 'ok' : toneFromStatus(model.status)}>
+                          {statusGlyph(model.status)} {model.status ?? '-'}
+                        </StatusPill>
+                        <WeightBar label="vote weight" value={effectiveVoteWeight(model)} tone={model.status === 'degraded' ? 'warn' : isServingAlphaModel(model) ? 'ok' : 'neutral'} />
+                      </div>
                     </td>
                     <td className="max-w-[220px] border border-[#263247] px-2 py-2">
                       <div className="truncate text-slate-200" title={championArtifact}>{championArtifact}</div>
@@ -387,7 +504,7 @@ function UnifiedModelHealthMatrix({
                     </td>
                     <td className="border border-[#263247] px-2 py-2 text-slate-300">
                       <div>{sampleCount}</div>
-                      <div className="mt-1 text-[10px] text-[#70809b]">{diagnosis?.coverage == null ? 'coverage N/A' : `coverage ${Math.round(diagnosis.coverage * 100)}%`}</div>
+                      <WeightBar label={diagnosis?.coverage == null ? 'coverage N/A' : 'coverage'} value={diagnosis?.coverage == null ? 0 : Math.round(diagnosis.coverage * 100)} tone={diagnosis?.coverage == null ? 'warn' : 'info'} />
                       <WorkstationPill tone={model.metadata_exists === false ? 'warn' : 'ok'}>{model.metadata_exists === false ? 'metadata missing' : 'metadata present'}</WorkstationPill>
                     </td>
                     <td className="max-w-[240px] border border-[#263247] px-2 py-2">
@@ -431,10 +548,14 @@ function UnifiedModelHealthMatrix({
                     <td className="border border-[#263247] px-2 py-2 text-slate-300">
                       {artifact ? `${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}` : 'N/A'}
                     </td>
-                    <td className="max-w-[260px] border border-[#263247] px-2 py-2">
+                    <td className="max-w-[360px] border border-[#263247] px-2 py-2">
                       {artifact ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={liveTone}>{artifact.live_gate_status ?? 'not_started'}</WorkstationPill>
+                          <div className="rounded border border-[#263247] bg-[#05070c] p-2 text-[11px] leading-4 text-[#d0d8e8]">
+                            <div><span className="text-[#70809b]">root</span> {root}</div>
+                            {diagnosis?.reason && <div className="mt-1 text-[#8a92a6]">{diagnosis.reason}</div>}
+                          </div>
                           <div className="text-[10px] leading-4 text-[#8a92a6]">{nextAction}</div>
                           <details className="mt-2 rounded-lg border border-[#263247] bg-[#05070c] p-2">
                             <summary className="cursor-pointer text-[10px] text-sky-200">Champion -&gt; Candidate diff</summary>
@@ -448,10 +569,6 @@ function UnifiedModelHealthMatrix({
                           </details>
                         </div>
                       ) : 'N/A'}
-                    </td>
-                    <td className="max-w-[280px] border border-[#263247] px-2 py-2 text-[#8a92a6]">
-                      <div>{root}</div>
-                      {diagnosis?.reason && <div className="mt-1 text-[10px] leading-4">{diagnosis.reason}</div>}
                     </td>
                   </tr>
                 )
@@ -726,7 +843,7 @@ function ArtifactDiffPanel({
   )
 }
 
-function FamilyBalancePanel({ counts, total }: { counts: Record<string, number>; total: number }) {
+function RemovedStandaloneFamilyPanel({ counts, total }: { counts: Record<string, number>; total: number }) {
   const entries = Object.entries(counts)
   return (
     <WorkstationPanel title="Family Balance / 模型家族平衡" kicker="do not let one family dominate">
@@ -1192,7 +1309,6 @@ function ServingDiagnosticsPanel({ payload }: { payload: any }) {
 }
 
 export default function ModelPoolPage() {
-  const today = twToday()
   const queryClient = useQueryClient()
   const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['model-pool', 'lineage'],
@@ -1204,13 +1320,6 @@ export default function ModelPoolPage() {
     queryFn: strategyLabApi.experiments,
     retry: false,
     staleTime: 60_000,
-  })
-  const servingDiagnostics = useQuery({
-    queryKey: recommendationDailyKey(today),
-    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
-    retry: false,
-    staleTime: queryTtl.dailyDecision,
-    refetchInterval: queryTtl.dailyDecision,
   })
   const artifactSelection = useQuery({
     queryKey: ['model-pool', 'artifact-selection'],
@@ -1272,6 +1381,7 @@ export default function ModelPoolPage() {
   ]
 
   const counts = familyCounts(modelList)
+  const servingAlphaModels = modelList.filter(([, model]) => isServingAlphaModel(model))
   const shadowLineageCount = modelList.filter(([, model]) => !!model.challenger).length
   const plannedShadowCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'shadow_challenger').length
   const benchmarkCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'benchmark_only').length
@@ -1281,7 +1391,8 @@ export default function ModelPoolPage() {
     return ic == null || Math.abs(ic) < 0.0001
   }).length
   const sampleGaps = modelList.filter(([, model]) => Number(model.last_ic_sample_count ?? 0) <= 0).length
-  const activeModels = modelList.filter(([, model]) => model.status === 'active').length
+  const activeModels = servingAlphaModels.filter(([, model]) => model.status === 'active').length
+  const degradedModels = servingAlphaModels.filter(([, model]) => model.status === 'degraded').length
 
   const traceSteps = useMemo(() => [
     { label: 'Alpha Vote', detail: '8 個 production slots 才會進 user-facing ML 投票。', tone: 'ok' as WorkstationTone },
@@ -1300,7 +1411,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); servingDiagnostics.refetch(); artifactSelection.refetch(); artifactRegistry.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
+              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); artifactSelection.refetch(); artifactRegistry.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -1322,19 +1433,19 @@ export default function ModelPoolPage() {
             <DecisionTraceRail title="模型生命週期規則" compact steps={traceSteps} />
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-              <SignalInsightCard title="Alpha Models / 投票模型" value={String(modelList.length)} detail={`active ${activeModels}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone="info" />
+              <SignalInsightCard title="Serving Alpha Slots" value={`${servingAlphaModels.length}/8`} detail={`active ${activeModels}; degraded ${degradedModels}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone={degradedModels ? 'warn' : 'info'} />
               <SignalInsightCard title="影子挑戰者" value={`${shadowLineageCount}+${plannedShadowCount}`} detail="左邊是 lineage 已掛載；右邊是 P7 upgrade track 計畫中的 MLP/GNN。" tone={shadowLineageCount || plannedShadowCount ? 'ok' : 'warn'} />
               <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM 不投票，只做 benchmark evidence。" tone="warn" />
               <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
 
-            <FamilyBalancePanel counts={counts} total={activeModels || modelList.length} />
-            <ArtifactLifecycleSummaryPanel
-              selection={artifactSelection.data}
+            <ServingAlphaStrip
+              models={modelList}
               pointers={championPointers.data}
-              queue={artifactPromotionQueue.data}
+              weakIc={weakIc}
+              sampleGaps={sampleGaps}
             />
-            <ChampionPointerPanel pointers={championPointers.data} />
+
             <UnifiedModelHealthMatrix
               models={modelList}
               selection={artifactSelection.data}
@@ -1346,7 +1457,6 @@ export default function ModelPoolPage() {
               promotionResult={promotionController.data}
               onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
             />
-            <ServingDiagnosticsPanel payload={servingDiagnostics.data} />
             <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />
 
             <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">

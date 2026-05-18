@@ -65,8 +65,8 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyPBO: () => runWeeklyPboWorkflow(c.env),
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
     runWeeklyLifecycleCheck: () => runWeeklyLifecycleCheckWorkflow(c.env),
-    runWeeklyOptunaResearch: () => runWeeklyOptunaResearchWorkflow(c.env),
-    runMonthlyOptunaResearch: () => runMonthlyOptunaResearchWorkflow(c.env),
+    runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
+    runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
   }),
 })

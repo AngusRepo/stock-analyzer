@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.wiki_writer import (
+    TW_TZ,
     append_moc_links_to_local_vault,
     bootstrap_wiki_vault,
     build_wiki_guard_report,
@@ -19,6 +22,7 @@ from services.wiki_writer import (
     ensure_project_hub,
     finish_wiki_task,
     inspect_wiki_vault,
+    inspect_graphify_reports,
     search_wiki_vault,
     write_wiki_note_to_local_vault,
 )  # noqa: E402
@@ -723,3 +727,84 @@ def test_build_wiki_start_task_context_combines_guard_with_git_status(monkeypatc
     assert result["git"]["branch"] == "feature/ml-pool-v1"
     assert result["git"]["dirty"] is True
     assert result["next_actions"] == ["Proceed with the task using receipt citations for prior-context claims."]
+
+
+def test_build_wiki_start_task_context_surfaces_latest_graphify_report(tmp_path, monkeypatch):
+    import services.wiki_writer as wiki_writer
+
+    vault = tmp_path / "vault"
+    older = vault / "03_Tooling" / "Graphify" / "old-poc" / "GRAPH_REPORT.md"
+    newer = vault / "03_Tooling" / "Graphify" / "new-poc" / "GRAPH_REPORT.md"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_text("# Old Graph\n", encoding="utf-8")
+    newer.write_text("# New Graph\n\n146 nodes, 246 edges\n", encoding="utf-8")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    monkeypatch.setattr(
+        wiki_writer,
+        "build_wiki_guard_report",
+        lambda vault_root, *, product, project_slug, stale_days=3, query=None, max_results=5: {
+            "status": "ok",
+            "blocking_items": [],
+            "receipt": {"text": "Obsidian recall receipt:"},
+        },
+    )
+    monkeypatch.setattr(
+        wiki_writer,
+        "_git_status_snapshot",
+        lambda repo_cwd=None: {"status": "ok", "branch": "feature/ml-pool-v1", "dirty": False, "raw": ""},
+    )
+
+    result = build_wiki_start_task_context(
+        vault,
+        product="StockVision",
+        project_slug="v4-refactor",
+        query="V4 next work",
+    )
+
+    assert result["graphify"]["status"] == "found"
+    assert result["graphify"]["latest_report"]["path"] == "03_Tooling/Graphify/new-poc/GRAPH_REPORT.md"
+    assert any("Read the latest Graphify report" in action for action in result["next_actions"])
+
+
+def test_inspect_graphify_reports_lists_latest_and_all_reports(tmp_path):
+    vault = tmp_path / "vault"
+    first = vault / "03_Tooling" / "Graphify" / "first" / "GRAPH_REPORT.md"
+    second = vault / "03_Tooling" / "Graphify" / "second" / "GRAPH_REPORT.md"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("# First\n\n100 nodes\n", encoding="utf-8")
+    second.write_text("# Second\n\n200 nodes\n", encoding="utf-8")
+    os.utime(first, (1, 1))
+    os.utime(second, (2, 2))
+
+    result = inspect_graphify_reports(vault, limit=2)
+
+    assert result["status"] == "found"
+    assert result["count"] == 2
+    assert result["latest_report"]["path"] == "03_Tooling/Graphify/second/GRAPH_REPORT.md"
+    assert result["reports"][0]["path"] == "03_Tooling/Graphify/second/GRAPH_REPORT.md"
+    assert result["reports"][1]["path"] == "03_Tooling/Graphify/first/GRAPH_REPORT.md"
+    assert "# Second" in result["latest_report"]["summary"]
+
+
+def test_inspect_graphify_reports_marks_stale_latest_report(tmp_path):
+    vault = tmp_path / "vault"
+    report = vault / "03_Tooling" / "Graphify" / "old" / "GRAPH_REPORT.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Old Graph\n", encoding="utf-8")
+    old_ts = datetime(2026, 5, 1, 8, 0, tzinfo=TW_TZ).timestamp()
+    os.utime(report, (old_ts, old_ts))
+
+    result = inspect_graphify_reports(
+        vault,
+        stale_days=3,
+        now="2026-05-16T08:00:00+08:00",
+    )
+
+    assert result["status"] == "found"
+    assert result["age_days"] == 15
+    assert result["is_stale"] is True
+    assert result["warnings"] == ["graphify_report_stale"]

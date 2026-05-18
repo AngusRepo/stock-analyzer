@@ -25,9 +25,9 @@ export function isEmergingStylePriceRow(row: { open?: number | null; avg_price?:
 
 export function normalizeBoardType(market?: string | null): BoardType {
   const value = String(market ?? '').trim().toUpperCase()
-  if (value === 'TWSE' || value === 'TSE' || value === 'LISTED') return 'LISTED'
+  if (value === 'TWSE' || value === 'TSE' || value === 'LISTED' || value === 'SII') return 'LISTED'
   if (value === 'OTC' || value === 'TPEX') return 'OTC'
-  if (value === 'EMERGING' || value === 'ESB') return 'EMERGING'
+  if (value === 'EMERGING' || value === 'ESB' || value === 'ROTC') return 'EMERGING'
   if (value === 'ETF') return 'ETF'
   return 'UNKNOWN'
 }

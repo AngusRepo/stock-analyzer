@@ -3,6 +3,7 @@ import {
   type BatchDebateCandidate,
   type StockProfile,
 } from './debateTrader'
+import { enrichMorningDebateCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
 import { sendDiscordNotification } from './notify'
 import {
   expireRecentPendingBuys,
@@ -26,6 +27,7 @@ import {
   applyPendingBuyDebateFailure,
   isPendingBuyTerminal,
 } from './pendingBuyExecutionState'
+import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
@@ -477,12 +479,28 @@ async function persistPendingBuys(
     )
   })
   await env.KV.put(pendingKey, JSON.stringify(pendingBuys), { expirationTtl: 86400 })
-  if (!meta) return
-  await env.KV.put(
-    pendingMetaKey,
-    JSON.stringify({ updated_at: new Date().toISOString(), ...meta }),
-    { expirationTtl: 86400 },
-  )
+  if (meta) {
+    await env.KV.put(
+      pendingMetaKey,
+      JSON.stringify({ updated_at: new Date().toISOString(), ...meta }),
+      { expirationTtl: 86400 },
+    )
+  }
+  if (pendingBuys.length > 0) {
+    await recordPendingBuyPaperAttribution(env, pendingBuys, {
+      tradeDate,
+      sourceRecoDate: typeof meta?.prev_day === 'string' ? String(meta.prev_day) : null,
+      paperLane: 'paper_active_baseline',
+      candidateSource: 'morning_setup_pending_buy',
+      evidenceSources: [
+        'daily_recommendations',
+        'predictions.ensemble',
+        'pending_buy_orchestrator',
+      ],
+    }).catch((error) => {
+      console.warn('[PendingBuyOrchestrator] paper attribution sidecar failed:', error)
+    })
+  }
 }
 
 export async function checkCircuitBreakers(
@@ -949,12 +967,31 @@ export async function reconcilePendingBuyDebates(
   const { usContextStr, newsContextStr, taifexContextStr } = await loadMacroContext(env, tradeDate)
   const profileMap = await loadStockProfiles(env.DB, pendingItems.map((item) => item.symbol))
   const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
+  const breeze2Context = await enrichMorningDebateCandidatesWithBreeze2(
+    env,
+    pendingItems.map((item, index) => ({
+      symbol: item.symbol,
+      name: item.name ?? item.symbol,
+      score: item.score ?? item.ml_score ?? item.confidence * 100,
+      reason: item.reason ?? 'ML ensemble signal',
+      watch_points: item.watch_points,
+      rank: index + 1,
+      recommendation_lane: 'tradable',
+    })),
+    { runDate: tradeDate, executeModal: true },
+  ).catch((error) => {
+    console.warn('[MorningSetup] Breeze2 debate context skipped:', error)
+    return new Map<string, any>()
+  })
   const candidates: BatchDebateCandidate[] = pendingItems.map((item) => ({
     symbol: item.symbol,
     stock_name: item.name ?? item.symbol,
     signal: item.signal,
     confidence: item.confidence,
-    reasoning: item.reason ?? 'ML ensemble signal',
+    reasoning: [
+      item.reason ?? 'ML ensemble signal',
+      extractBreeze2WatchPoint(breeze2Context.get(item.symbol)),
+    ].filter(Boolean).join('\n'),
     us_context: mergedUsContext || undefined,
     taifex_context: taifexContextStr,
     stock_profile: profileMap.get(item.symbol)
@@ -964,6 +1001,7 @@ export async function reconcilePendingBuyDebates(
           key_suppliers: profileMap.get(item.symbol)?.key_suppliers ?? undefined,
         }
       : undefined,
+    breeze2_context: breeze2Context.get(item.symbol),
     cache_key_date: tradeDate,
   }))
 
@@ -996,8 +1034,13 @@ export async function reconcilePendingBuyDebates(
       continue
     }
     if (debate.verdict === 'REJECT') continue
+    const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2Context.get(item.symbol))
     nextPendingBuys.push({
       ...item,
+      watch_points: [
+        ...item.watch_points,
+        ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
+      ],
       debate_verdict: debate.verdict,
       debate_status: 'completed',
       risk_pct: debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,

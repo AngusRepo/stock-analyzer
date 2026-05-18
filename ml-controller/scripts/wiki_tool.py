@@ -20,6 +20,7 @@ from services.wiki_writer import (
     build_wiki_start_task_context,
     ensure_project_hub,
     finish_wiki_task,
+    inspect_graphify_reports,
     inspect_wiki_vault,
     search_wiki_vault,
     write_wiki_note_to_local_vault,
@@ -129,6 +130,10 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="Inspect wiki structure and recent session activity.")
     doctor.add_argument("--stale-days", type=int, default=3)
 
+    graphify = subparsers.add_parser("graphify-report", help="Inspect latest Graphify reports stored in the wiki vault.")
+    graphify.add_argument("--limit", type=int, default=5)
+    graphify.add_argument("--stale-days", type=int, default=7)
+
     bootstrap = subparsers.add_parser("bootstrap", help="Create the clean Wei-Codex wiki vault skeleton.")
     bootstrap.add_argument("--overwrite", action="store_true")
     bootstrap.add_argument("--confirm", action="store_true")
@@ -230,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
                     overwrite=args.overwrite,
                 )
             )
+            return 0
+
+        if args.command == "graphify-report":
+            _json_print(inspect_graphify_reports(vault, limit=args.limit, stale_days=args.stale_days))
             return 0
 
         if args.command == "project-hub":

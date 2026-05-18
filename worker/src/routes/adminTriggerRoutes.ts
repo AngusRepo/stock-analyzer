@@ -15,7 +15,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',
-  'weekly-optuna', 'monthly-optuna',
+  'weekly-optuna', 'monthly-optuna', 'weekly-drift-retrain',
   'monthly-retrain',
 ])
 
@@ -101,6 +101,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'pbo',
       'alpha-quality',
       'weekly-optuna',
+      'weekly-drift-retrain',
       'monthly-optuna',
       'weekly-cleanup',
       'optuna-queue',

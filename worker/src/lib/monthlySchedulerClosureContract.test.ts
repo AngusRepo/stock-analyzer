@@ -24,7 +24,10 @@ assert(runLogger.includes("'monthly-retrain'"), 'scheduler run logger must displ
 assert(controlRoutes.includes("'monthly-retrain'"), 'scheduler callback report artifacts must include monthly-retrain')
 
 assert(workflows.includes('runMonthlyOptunaResearch'), 'monthly optuna must have an explicit monthly workflow')
-assert(adminGcp.includes("'monthly-optuna': () => deps.runMonthlyOptunaResearch()"), 'monthly-optuna must not alias weekly optuna')
+assert(
+  adminGcp.includes("'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate())"),
+  'monthly-optuna must not alias weekly optuna and must preserve requested run_date',
+)
 assert(workflows.includes("cadence: 'monthly'"), 'monthly optuna must pass a monthly cadence contract')
 
 assert(followup.includes('/api/admin/scheduler-callback'), 'retrain followup must notify Worker scheduler callback')

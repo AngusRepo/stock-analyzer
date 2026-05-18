@@ -5,6 +5,8 @@
  * 讀取一次、快取 300s、fallback default。
  */
 
+import { readCurrentLegacyRegimeLabel } from './marketRegimeState'
+
 // ─── Type ────────────────────────────────────────────────────────────────────
 
 export type AlphaFrameworkRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
@@ -323,7 +325,8 @@ export interface TradingConfig {
   }
   // ── #28b T2.2 (2026-04-21): Per-regime sltp overlay ─────────────────────
   // Optional — when empty (default), paper.ts uses flat sltp.* above. When
-  // present, active regime label from ml:regime KV picks the matching overlay;
+  // present, active market_regime_state label picks the matching overlay;
+  // legacy ml:regime remains only as a migration mirror/fallback.
   // fields in overlay override matching sltp.* fields; unset fields fall back
   // to flat sltp.* (partial override pattern, Kubernetes ConfigMap style).
   //
@@ -1331,9 +1334,9 @@ export function resolveSltpForRegime(
   return { ...flat, ...overlay }
 }
 
-/** Fetch current ml:regime KV label (null if unset or malformed). */
+/** Fetch current market_regime_state label, with legacy ml:regime fallback. */
 export async function getCurrentRegime(kv: KVNamespace): Promise<RegimeLabel | null> {
-  const raw = await kv.get('ml:regime', 'text')
+  const raw = await readCurrentLegacyRegimeLabel(kv)
   if (!raw) return null
   const label = raw.trim() as RegimeLabel
   const valid: Set<string> = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])

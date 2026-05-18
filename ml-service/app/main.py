@@ -113,6 +113,19 @@ async def warmup(request: Request):
     return {"status": "warm", "elapsed_s": elapsed}
 
 
+@app.post("/breeze2/research-context")
+async def breeze2_research_context_endpoint(request: Request):
+    await verify_service_token(request)
+    payload = await request.json()
+    from .breeze2_context import build_breeze2_research_context
+
+    return build_breeze2_research_context({
+        **payload,
+        "allowed_use": "research_context_only",
+        "mutation_allowed": False,
+    })
+
+
 class FactorAuditRequest(BaseModel):
     prices: list[dict]
     indicators: list[dict] = []

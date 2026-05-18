@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertTriangle, ArrowRight, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import SchedulerCadenceChart from '@/components/charts/SchedulerCadenceChart'
 import { schedulerApi, type SchedulerJob } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
 import {
@@ -239,6 +240,12 @@ export default function SchedulerPage() {
           <MetricCell label="Next Job" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
           <MetricCell label="Pipeline" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
         </section>
+
+        <SchedulerCadenceChart
+          status={scheduler.data}
+          loading={scheduler.isLoading}
+          error={scheduler.error}
+        />
 
         <WorkstationPanel title="Daily Pipeline Chain / 每日流程鏈" kicker="dependency chain">
           <PipelineDag jobs={jobs} />

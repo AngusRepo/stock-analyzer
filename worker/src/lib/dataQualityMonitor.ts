@@ -86,6 +86,12 @@ interface CountRow {
   stale_retrain_followup?: number
   oldest_retrain_followup_at?: string | null
   latest_retrain_followup_at?: string | null
+  theme_signal_total?: number
+  theme_signal_sources?: number
+  theme_signal_latest_generated_at?: string | null
+  stock_theme_feature_total?: number
+  stock_theme_feature_symbols?: number
+  stock_theme_feature_latest_generated_at?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -192,6 +198,38 @@ export function buildFreshnessCheck(input: {
     status,
     summary: `${input.label} latest=${input.latestDate} lag=${lagDays}d rows=${rows}`,
     metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor },
+  }
+}
+
+export function buildThemeSignalCoverageCheck(input: {
+  targetDate: string
+  themeSignalTotal: number
+  themeSignalSources: number
+  stockThemeFeatureTotal: number
+  stockThemeFeatureSymbols: number
+  latestThemeSignalAt?: string | null
+  latestStockThemeFeatureAt?: string | null
+}): DataQualityCheck {
+  const hasThemeSignals = input.themeSignalTotal > 0 && input.themeSignalSources > 0
+  const hasStockFeatures = input.stockThemeFeatureTotal > 0 && input.stockThemeFeatureSymbols > 0
+  const status: DataQualityStatus = hasThemeSignals && hasStockFeatures ? 'ok' : hasThemeSignals ? 'warn' : 'fail'
+  return {
+    id: 'theme_signal_runtime',
+    label: 'Theme signal runtime',
+    status,
+    summary: hasThemeSignals
+      ? `theme_signals=${input.themeSignalTotal}, stock_theme_features=${input.stockThemeFeatureTotal}`
+      : 'theme_signals missing; screener falls back to live PTT/news/Anue only',
+    metrics: {
+      target_date: input.targetDate,
+      theme_signal_total: input.themeSignalTotal,
+      theme_signal_sources: input.themeSignalSources,
+      stock_theme_feature_total: input.stockThemeFeatureTotal,
+      stock_theme_feature_symbols: input.stockThemeFeatureSymbols,
+      latest_theme_signal_at: input.latestThemeSignalAt ?? null,
+      latest_stock_theme_feature_at: input.latestStockThemeFeatureAt ?? null,
+      source_of_truth: 'theme_signals + stock_theme_features',
+    },
   }
 }
 
@@ -888,7 +926,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, retrainFollowupStats] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -1116,6 +1154,24 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ).catch((): CountRow => ({})),
     firstCount(
       env.DB,
+      `SELECT COUNT(*) AS theme_signal_total,
+              COUNT(DISTINCT source) AS theme_signal_sources,
+              MAX(generated_at) AS theme_signal_latest_generated_at
+         FROM theme_signals
+        WHERE date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS stock_theme_feature_total,
+              COUNT(DISTINCT symbol) AS stock_theme_feature_symbols,
+              MAX(generated_at) AS stock_theme_feature_latest_generated_at
+         FROM stock_theme_features
+        WHERE date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
       `SELECT COUNT(*) AS awaiting_retrain_followup,
               SUM(CASE WHEN julianday(received_at) < julianday('now') - (4.0 / 24.0) THEN 1 ELSE 0 END) AS stale_retrain_followup,
               MIN(received_at) AS oldest_retrain_followup_at,
@@ -1220,6 +1276,15 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       topConceptSymbols: Number(rrgTaxonomyStats.top_concept_symbols ?? 0),
       topUnmappedSymbols: Number(rrgTaxonomyStats.top_unmapped_symbols ?? 0),
       topOtherSymbols: Number(rrgTaxonomyStats.top_other_symbols ?? 0),
+    }),
+    buildThemeSignalCoverageCheck({
+      targetDate,
+      themeSignalTotal: Number(themeSignalStats.theme_signal_total ?? 0),
+      themeSignalSources: Number(themeSignalStats.theme_signal_sources ?? 0),
+      stockThemeFeatureTotal: Number(stockThemeFeatureStats.stock_theme_feature_total ?? 0),
+      stockThemeFeatureSymbols: Number(stockThemeFeatureStats.stock_theme_feature_symbols ?? 0),
+      latestThemeSignalAt: themeSignalStats.theme_signal_latest_generated_at ?? null,
+      latestStockThemeFeatureAt: stockThemeFeatureStats.stock_theme_feature_latest_generated_at ?? null,
     }),
     buildPendingBuyDateSanityCheck({
       targetDate,

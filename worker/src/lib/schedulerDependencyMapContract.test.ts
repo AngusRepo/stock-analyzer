@@ -17,6 +17,7 @@ const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const cronWorker = fs.readFileSync('src/lib/cronWorkerDomainTasks.ts', 'utf8')
 const cronGcp = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
+const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const sectorCorrelation = fs.readFileSync('src/lib/sectorCorrelation.ts', 'utf8')
 const combinedHandlers = `${workerTasks}\n${gcpTasks}\n${cronWorker}\n${cronGcp}`
@@ -112,11 +113,18 @@ assert(
 )
 
 const manifestTaskSet = new Set(manifest.jobs.map((job) => job.task))
-for (const task of Object.keys(SCHEDULER_DEPENDENCY_MAP)) {
-  assert(
-    manifestTaskSet.has(task),
-    `${task} must stay in GCP manifest until the replacement chain/manual owner has been deployed and verified`,
-  )
+for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
+  if (spec.owner === 'gcp_scheduler') {
+    assert(
+      manifestTaskSet.has(spec.task),
+      `${spec.task} must stay in GCP manifest until the replacement chain/manual owner has been deployed and verified`,
+    )
+  } else {
+    assert(
+      schedulerStatus.includes(`id: '${spec.task}'`),
+      `${spec.task} chain/manual owner must stay visible in scheduler status until deployment is verified`,
+    )
+  }
 }
 
 const activeConsolidations = schedulerConsolidationCandidates()

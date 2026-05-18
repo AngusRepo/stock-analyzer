@@ -1,0 +1,108 @@
+{
+  "schema_version": "finlab-sector-flow-shadow-manifest-v1",
+  "generated_at": "2026-05-15T18:06:14.900117+00:00",
+  "source_feature_lake_checksum": "sha256:b2cd1ac34a5edb2203d9c71cb7ee7d0ab8163cd5b3ad0d6cd24e99e5e0f59595",
+  "policy": {
+    "mode": "shadow_only",
+    "production_write_enabled": false,
+    "cross_layer_rollup_allowed": false,
+    "isolation_key": [
+      "date",
+      "sector",
+      "classification"
+    ],
+    "dedupe_key": [
+      "symbol",
+      "tag_type",
+      "tag"
+    ],
+    "cash_flow_source": "chip_data_5d_or_finlab_chip_diversity_shadow",
+    "promotion_default": "no_direct_screener_or_ml_use"
+  },
+  "taxonomy_source": {
+    "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+    "feature_namespace": "finlab_diversity_taxonomy_expansion",
+    "field_count": 1,
+    "metadata_only_checks": [
+      "alias_cleaning",
+      "coverage_by_symbol",
+      "duplicate_tag_rate",
+      "field_count_positive",
+      "freshness",
+      "promotion_gate_status",
+      "provenance",
+      "schema_compatibility",
+      "schema_presence",
+      "shadow_feature_only"
+    ],
+    "row_level_checks": [
+      "duplicate_rate",
+      "null_rate"
+    ]
+  },
+  "cash_flow_source": {
+    "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+    "feature_namespace": "finlab_diversity_chip_diversity",
+    "field_count": 53,
+    "row_level_checks": [
+      "duplicate_rate",
+      "null_rate"
+    ]
+  },
+  "layers": [
+    {
+      "tag_type": "industry",
+      "classification": "industry",
+      "label_level": "formal_industry",
+      "source_kind": "finlab",
+      "source_dataset": "security_categories",
+      "source_fields": [
+        "category",
+        "market"
+      ],
+      "role": "formal listed/otc/emerging industry grouping"
+    },
+    {
+      "tag_type": "industry_theme",
+      "classification": "industry_theme",
+      "label_level": "industry_theme",
+      "source_kind": "finlab",
+      "source_dataset": "security_industry_themes",
+      "source_fields": [
+        "category",
+        "name"
+      ],
+      "role": "FinLab thematic industry taxonomy"
+    },
+    {
+      "tag_type": "subindustry",
+      "classification": "subindustry",
+      "label_level": "subindustry",
+      "source_kind": "finlab",
+      "source_dataset": "security_industry_themes",
+      "source_fields": [
+        "name",
+        "category"
+      ],
+      "role": "finer taxonomy below formal industry/theme"
+    },
+    {
+      "tag_type": "concept",
+      "classification": "theme",
+      "label_level": "market_concept",
+      "source_kind": "local_overlay",
+      "source_dataset": "concept_stock_mapping.json",
+      "source_fields": [
+        "concept",
+        "symbol"
+      ],
+      "role": "local market-topic overlay and event-driven concept tags"
+    }
+  ],
+  "summary": {
+    "layer_count": 4,
+    "taxonomy_sidecar_fields": 1,
+    "chip_sidecar_fields": 53
+  },
+  "checksum": "sha256:3cdd0722d1f6f1259c81a06eb3891c0a784d20a1ff42caca19419027c73cd841"
+}

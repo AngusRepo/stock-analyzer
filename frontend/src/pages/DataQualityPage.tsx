@@ -2,8 +2,9 @@ import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Database, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
-import { dataQualityApi, type DataQualityCheck } from '@/lib/api'
+import { dataQualityApi, type DataQualityCheck, type V41DataRuntimeStatus } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
+import DataQualityTrendChart from '@/components/charts/DataQualityTrendChart'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -57,6 +58,65 @@ function DataQualityMetric({ label, value, tone, detail }: { label: string; valu
   )
 }
 
+function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus }) {
+  type SourcePanelRow = NonNullable<V41DataRuntimeStatus['source_coverage']>[number]
+  const coverageRows = runtime?.source_coverage ?? []
+  const canonical = runtime?.canonical_rows
+  const legacyRows = runtime?.source_quality_metrics ?? []
+  const sources = ['ptt', 'anue', 'd1_news', 'finlab', 'finnhub_news', 'official_rss', 'company_ir_rss', 'gdelt_events']
+  const fallbackRows: SourcePanelRow[] = legacyRows.map((row) => ({
+    source: row.source,
+    role: row.dataset,
+    rows: row.latest_materialization ? 1 : 0,
+    freshness_status: row.freshness_status,
+    missing_rate: row.missing_rate,
+    duplicate_rate: row.duplicate_rate,
+    entity_link_confidence: row.entity_link_confidence,
+    latest_materialization: row.latest_materialization,
+    decision_effect: 'quality_metric_only',
+    runtime_state: row.latest_materialization ? 'production' : 'missing',
+  }))
+  const sourceCounts = new Map<string, SourcePanelRow>(
+    coverageRows.length
+      ? coverageRows.map((row) => [row.source, row])
+      : fallbackRows.map((row) => [row.source, row]),
+  )
+
+  return (
+    <WorkstationPanel title="FinLab Dagster Data Quality" kicker="source coverage, freshness, missing, duplicate, schema drift">
+      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
+          {sources.map((source) => {
+            const row = sourceCounts.get(source)
+            const missing = row ? Math.round(row.missing_rate * 100) : 100
+            const duplicate = row ? Math.round(row.duplicate_rate * 100) : 0
+            const tone: WorkstationTone = !row || row.runtime_state === 'missing' ? 'warn' : missing < 20 ? 'ok' : 'warn'
+            return (
+              <div key={source} className="bg-[#05070c] p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{source}</p>
+                  <WorkstationPill tone={tone}>{row?.freshness_status ?? 'missing'}</WorkstationPill>
+                </div>
+                <MiniBar tone={tone} value={row ? Math.max(0, 100 - missing) : 0} />
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  rows {row?.rows ?? 0} / missing {missing}% / dup {duplicate}%
+                </p>
+                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
+                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.latest_materialization ?? 'no materialization'}</p>
+              </div>
+            )
+          })}
+        </div>
+        <aside className="grid gap-2 bg-[#070a10] p-3 text-xs">
+          <DataQualityMetric label="Theme Signals" value={String(runtime?.theme_signals?.total ?? 0)} tone={(runtime?.theme_signals?.total ?? 0) > 0 ? 'ok' : 'warn'} detail={`${runtime?.theme_signals?.sources ?? 0} sources`} />
+          <DataQualityMetric label="Canonical Rows" value={String((canonical?.market_daily ?? 0) + (canonical?.chip_daily ?? 0) + (canonical?.revenue_monthly ?? 0))} tone={(canonical?.market_daily ?? 0) > 0 ? 'ok' : 'warn'} detail={`price ${canonical?.market_daily ?? 0} / chip ${canonical?.chip_daily ?? 0} / revenue ${canonical?.revenue_monthly ?? 0}`} />
+          <DataQualityMetric label="Gap Fill" value={String(runtime?.gap_fill_candidates?.total ?? 0)} tone={(runtime?.gap_fill_candidates?.quarantined ?? 0) > 0 ? 'warn' : 'info'} detail={`candidate ${runtime?.gap_fill_candidates?.candidates ?? 0} / quarantine ${runtime?.gap_fill_candidates?.quarantined ?? 0}`} />
+        </aside>
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boolean }) {
   const tone = statusTone(check.status)
   return (
@@ -90,6 +150,11 @@ export default function DataQualityPage() {
     queryFn: () => dataQualityApi.status(),
     staleTime: queryTtl.realtime,
   })
+  const runtime = useQuery({
+    queryKey: ['data-quality', 'v4-1-runtime'],
+    queryFn: () => dataQualityApi.v41RuntimeStatus(),
+    staleTime: queryTtl.realtime,
+  })
 
   const report = quality.data
   const checks = report?.checks ?? []
@@ -103,6 +168,7 @@ export default function DataQualityPage() {
   const warnCount = checks.filter((check) => check.status === 'warn').length
   const failCount = checks.filter((check) => check.status === 'fail').length
   const trustScore = scoreFromChecks(checks)
+  const reportTone: WorkstationTone = !checks.length ? 'neutral' : failCount ? 'error' : warnCount ? 'warn' : 'ok'
 
   useEffect(() => {
     if (!focusId || !checks.length) return
@@ -142,11 +208,19 @@ export default function DataQualityPage() {
         )}
 
         <section className="grid gap-3 md:grid-cols-4">
-          <DataQualityMetric label="Trust Score" value={`${trustScore}%`} tone={failCount ? 'error' : warnCount ? 'warn' : 'ok'} detail={`date ${report?.date ?? '-'}`} />
-          <DataQualityMetric label="Checks" value={String(checks.length)} tone={failCount ? 'error' : warnCount ? 'warn' : 'ok'} detail={`ok ${okCount} / warn ${warnCount} / fail ${failCount}`} />
-          <DataQualityMetric label="Actionable Gaps" value={String(gaps.length)} tone={gaps.length ? 'warn' : 'ok'} detail={gaps.length ? 'fail/warn first' : 'no active gap'} />
+          <DataQualityMetric label="Trust Score" value={checks.length ? `${trustScore}%` : 'N/A'} tone={reportTone} detail={`date ${report?.date ?? '-'}`} />
+          <DataQualityMetric label="Checks" value={String(checks.length)} tone={reportTone} detail={`ok ${okCount} / warn ${warnCount} / fail ${failCount}`} />
+          <DataQualityMetric label="Actionable Gaps" value={String(gaps.length)} tone={!checks.length ? 'neutral' : gaps.length ? 'warn' : 'ok'} detail={gaps.length ? 'fail/warn first' : checks.length ? 'no active gap' : 'no report'} />
           <DataQualityMetric label="Generated" value={report?.generated_at ? report.generated_at.slice(11, 16) : '-'} tone="info" detail={report?.generated_at ?? 'not generated'} />
         </section>
+
+        <DataQualityTrendChart
+          report={report}
+          loading={quality.isLoading}
+          error={quality.error}
+        />
+
+        <DataRuntimeSourcePanel runtime={runtime.data} />
 
         <WorkstationPanel title="Actionable Data Gaps / 可處理缺口" kicker="fail and warn first">
           <div className="overflow-hidden">

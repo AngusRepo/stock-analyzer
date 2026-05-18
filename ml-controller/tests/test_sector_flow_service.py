@@ -83,3 +83,34 @@ def test_write_sector_flow_stock_details_refreshes_current_date(monkeypatch):
     insert_params = captured["statements"][1][1]
     assert insert_params[:5] == ["2026-05-07", "AI", "4938", "Pegatron", 0.48]
     assert insert_params[-1] == "top"
+
+
+def test_industry_theme_tag_type_maps_to_own_sector_flow_classification():
+    assert sector_flow_service._tag_type_to_classification("industry_theme") == "industry_theme"
+
+
+def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
+    captured_tag_types = []
+    captured_classifications = []
+
+    monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service, "_load_stock_tags", lambda tag_type: {})
+    monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda tag_members, symbol_flows: {})
+    monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 0)
+
+    def fake_compute(tag_type, as_of_date):
+        captured_tag_types.append(tag_type)
+        return []
+
+    def fake_write(points, classification, as_of_date, cash_flows=None):
+        captured_classifications.append(classification)
+        return 0
+
+    monkeypatch.setattr(sector_flow_service, "compute_sector_flow_for_tag_type", fake_compute)
+    monkeypatch.setattr(sector_flow_service, "write_sector_flow", fake_write)
+
+    summary = sector_flow_service.run_sector_flow_pipeline("2026-05-15")
+
+    assert "industry_theme" in captured_tag_types
+    assert "industry_theme" in captured_classifications
+    assert "industry_theme" in summary

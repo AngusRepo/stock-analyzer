@@ -16,7 +16,7 @@ scheduleReadRoutes.get('/api/cron/schedule', (c) => {
     { task: 'ml-warmup', tw_time: '17:30 chain', description: 'Evening chain warmup，不是 production 決策 owner' },
     { task: 'market-data-update', tw_time: '17:30 chain', description: '更新價格、籌碼、技術指標與 snapshot manifest' },
     { task: 'screener', tw_time: '17:30 chain', description: '更新 screener seed 與上市櫃 / 興櫃分流' },
-    { task: 'regime-compute', tw_time: 'before pipeline', description: 'HMM regime 必須先寫入 ml:regime，pipeline 才能啟動' },
+    { task: 'regime-compute', tw_time: 'before pipeline', description: 'HMM regime 必須先寫入 market_regime_state，pipeline 才能啟動；ml:regime 僅為 legacy mirror' },
     { task: 'pipeline', tw_time: 'after readiness', description: 'LangGraph pipeline v2；只在 data / screener / regime ready 後執行' },
     { task: 'ml-predict', tw_time: 'after pipeline', description: '批次 ML prediction 與 ensemble merge' },
     { task: 'recommendation', tw_time: 'after ml-predict', description: '產生 daily recommendations，不產生 pending buys' },

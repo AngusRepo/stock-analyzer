@@ -84,9 +84,13 @@ def test_weekly_monthly_optuna_sweep_has_job_trigger_and_callback_entrypoint():
     assert 'task = f"{cadence}-optuna"' in job_source
     assert '"task": task' in job_source
     assert "_callback_worker" in job_source
+    assert "OPTUNA_RUN_DATE" in job_source
+    assert "payload[\"run_date\"] = run_date" in job_source
     assert "OPTUNA_CADENCE" in job_source
     assert "OPTUNA_N_TRIALS" in job_source
     assert "OPTUNA_SUBSET_SIZE" in job_source
+    assert "run_date" in router_source
+    assert 'env_overrides["OPTUNA_RUN_DATE"] = req.run_date' in router_source
 
 
 def test_research_data_policy_prevents_silent_fallback():

@@ -90,6 +90,7 @@ class OptunaResearchSweepReq(BaseModel):
     ga_population_size: int = Field(default=24, ge=6, le=200)
     ga_generations: int = Field(default=8, ge=1, le=50)
     research_data_source: ResearchDataMode | None = "snapshot"
+    run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     push_kv: bool = True
     dry_run: bool = False
 
@@ -1103,6 +1104,8 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
         "OPTUNA_PUSH_KV": "1" if req.push_kv else "0",
         "OPTUNA_DRY_RUN": "1" if req.dry_run else "0",
     }
+    if req.run_date:
+        env_overrides["OPTUNA_RUN_DATE"] = req.run_date
     try:
         execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
     except JobAlreadyRunningError as e:

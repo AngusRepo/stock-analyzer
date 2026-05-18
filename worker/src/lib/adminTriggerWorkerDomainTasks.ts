@@ -188,7 +188,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       await runWeeklyCleanup(c.env)
       await deps.runWeeklyLifecycleCheck().catch((e) => { console.warn('[Lifecycle] failed:', e) })
       await runWeeklyLocalMaintenance(c.env)
-      return 'weekly cleanup done: local maintenance + lifecycle check; retrain is monthly/manual only'
+      return 'weekly cleanup done: local maintenance + lifecycle dry-run; retrain is monthly/manual only'
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')

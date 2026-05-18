@@ -1051,6 +1051,78 @@ def _git_status_snapshot(repo_cwd: str | Path | None = None) -> dict[str, Any]:
     }
 
 
+def inspect_graphify_reports(
+    vault_root: str | Path,
+    *,
+    limit: int = 5,
+    stale_days: int = 7,
+    now: str | None = None,
+) -> dict[str, Any]:
+    root = Path(vault_root).resolve()
+    graphify_root = root / "03_Tooling" / "Graphify"
+    if not graphify_root.exists():
+        return {
+            "status": "not_found",
+            "vault_root": str(root),
+            "count": 0,
+            "limit": limit,
+            "stale_days": stale_days,
+            "age_days": None,
+            "is_stale": None,
+            "warnings": ["graphify_report_missing"],
+            "latest_report": None,
+            "reports": [],
+        }
+
+    reports = [path for path in graphify_root.rglob("GRAPH_REPORT.md") if path.is_file()]
+    if not reports:
+        return {
+            "status": "not_found",
+            "vault_root": str(root),
+            "count": 0,
+            "limit": limit,
+            "stale_days": stale_days,
+            "age_days": None,
+            "is_stale": None,
+            "warnings": ["graphify_report_missing"],
+            "latest_report": None,
+            "reports": [],
+        }
+
+    sorted_reports = sorted(reports, key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)
+    report_items = [_graphify_report_item(path, root) for path in sorted_reports[: max(1, limit)]]
+    now_dt = datetime.fromisoformat(_now_iso(now).replace("Z", "+00:00"))
+    modified_dt = datetime.fromisoformat(report_items[0]["modified_at"])
+    age_days = max(0, (now_dt - modified_dt).days)
+    is_stale = age_days > stale_days
+    return {
+        "status": "found",
+        "vault_root": str(root),
+        "count": len(reports),
+        "limit": limit,
+        "stale_days": stale_days,
+        "age_days": age_days,
+        "is_stale": is_stale,
+        "warnings": ["graphify_report_stale"] if is_stale else [],
+        "latest_report": report_items[0],
+        "reports": report_items,
+    }
+
+
+def _graphify_report_item(path: Path, root: Path) -> dict[str, Any]:
+    summary_lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip()
+    ][:12]
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "absolute_path": str(path),
+        "summary": summary_lines,
+        "modified_at": datetime.fromtimestamp(path.stat().st_mtime, tz=TW_TZ).isoformat(),
+    }
+
+
 def build_wiki_start_task_context(
     vault_root: str | Path,
     *,
@@ -1071,12 +1143,24 @@ def build_wiki_start_task_context(
         max_results=max_results,
     )
     git = _git_status_snapshot(repo_cwd)
+    graphify = inspect_graphify_reports(vault_root, limit=1, stale_days=stale_days)
     ready = guard["status"] == "ok"
     next_actions = (
         ["Proceed with the task using receipt citations for prior-context claims."]
         if ready
         else ["Resolve guard blocking_items before starting memory-sensitive work."]
     )
+    if graphify["status"] == "found":
+        latest_report = graphify["latest_report"]
+        next_actions.insert(
+            0,
+            f"Read the latest Graphify report before architecture navigation: {latest_report['path']}",
+        )
+        if graphify.get("is_stale"):
+            next_actions.insert(
+                0,
+                "Refresh the Graphify report before relying on graph navigation; current report is stale.",
+            )
     return {
         "status": "ready" if ready else "blocked",
         "product": product,
@@ -1085,6 +1169,7 @@ def build_wiki_start_task_context(
         "vault_root": str(Path(vault_root).resolve()),
         "guard": guard,
         "git": git,
+        "graphify": graphify,
         "next_actions": next_actions,
     }
 

@@ -15,6 +15,7 @@ import {
   buildScreenerScoreDistributionCheck,
   buildSurfaceRoleConsistencyCheck,
   buildScreenerSeedQualityCheck,
+  buildThemeSignalCoverageCheck,
   daysBetweenDates,
   EXPECTED_V2_MODELS,
   resolveExpectedCompletedDataDate,
@@ -24,6 +25,31 @@ import {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  const check = buildThemeSignalCoverageCheck({
+    targetDate: '2026-05-15',
+    themeSignalTotal: 8,
+    themeSignalSources: 4,
+    stockThemeFeatureTotal: 24,
+    stockThemeFeatureSymbols: 12,
+    latestThemeSignalAt: '2026-05-15T18:00:00+08:00',
+    latestStockThemeFeatureAt: '2026-05-15T18:01:00+08:00',
+  })
+  assert(check.status === 'ok', 'theme signal runtime should pass when signals and stock-level features exist')
+  assert(check.metrics?.source_of_truth === 'theme_signals + stock_theme_features', 'theme signal runtime must declare source of truth')
+}
+
+{
+  const check = buildThemeSignalCoverageCheck({
+    targetDate: '2026-05-15',
+    themeSignalTotal: 0,
+    themeSignalSources: 0,
+    stockThemeFeatureTotal: 0,
+    stockThemeFeatureSymbols: 0,
+  })
+  assert(check.status === 'fail', 'theme signal runtime must fail when multi-source evidence is missing')
 }
 
 {

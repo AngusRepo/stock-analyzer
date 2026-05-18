@@ -37,6 +37,7 @@ D1_API = (
 
 # ── Simulation Parameters ─────────────────────────────────────────────────────
 DEFAULT_N_SIMULATIONS = 1000
+MIN_FULL_TAIL_RISK_TRADES = 30
 TW_BUY_FEE = 0.001425
 TW_SELL_FEE = 0.004425
 
@@ -59,6 +60,8 @@ class MonteCarloResult:
     simulation_method: str = "iid_shuffle"
     block_size: Optional[int] = None
     regime_counts: dict[str, int] = None
+    tail_risk_status: str = "UNKNOWN"
+    min_full_tail_risk_trades: int = MIN_FULL_TAIL_RISK_TRADES
 
 
 async def _d1_query(client, sql: str, params: list = None) -> list[dict]:
@@ -436,6 +439,9 @@ def _run_monte_carlo(
     result.mdd_worst = mdds[-1]
     result.mdds_sorted = [round(m, 6) for m in mdds]  # store for reuse
 
+    low_sample_tail_risk = len(trade_returns) < MIN_FULL_TAIL_RISK_TRADES
+    result.tail_risk_status = "LOW_SAMPLE_TAIL_RISK" if low_sample_tail_risk else "FULL_SAMPLE_TAIL_RISK"
+
     # Go-live verdict
     # 台股策略: MDD 95th < 20% = PASS, 20-30% = CAUTION, > 30% = FAIL
     if result.mdd_95th < 0.20:
@@ -455,6 +461,15 @@ def _run_monte_carlo(
         result.verdict_reason = (
             f"95th percentile MDD = {result.mdd_95th:.1%} > 30% threshold. "
             f"Strategy risk too high for live trading. Optimize parameters first."
+        )
+
+    if low_sample_tail_risk:
+        if result.go_live_verdict == "FAIL":
+            result.go_live_verdict = "CAUTION"
+        result.verdict_reason = (
+            f"LOW_SAMPLE_TAIL_RISK: n={len(trade_returns)} < {MIN_FULL_TAIL_RISK_TRADES}. "
+            "Treat Monte Carlo as an early warning, not a complete strategy failure. "
+            + result.verdict_reason
         )
 
     return result
@@ -584,6 +599,8 @@ async def run_monte_carlo_mdd(
             "simulation_method": mc.simulation_method,
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
+            "tail_risk_status": mc.tail_risk_status,
+            "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
             "data_quality": data_quality_info or None,
         }, ensure_ascii=False)
 
@@ -631,6 +648,8 @@ async def run_monte_carlo_mdd(
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
             "data_quality": data_quality_info or None,
+            "tail_risk_status": mc.tail_risk_status,
+            "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
         }
         logger.info(f"[MonteCarlo] Done: {mc.go_live_verdict} — 95th MDD = {mc.mdd_95th:.2%}")
         return summary

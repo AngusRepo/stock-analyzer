@@ -9,6 +9,7 @@ import { recommendationsApi, paperApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
+import DailyPipelineRunLane from '@/components/charts/DailyPipelineRunLane'
 import {
   Filter, Brain, Star, Scale, ChevronDown, ChevronUp,
   TrendingUp, TrendingDown, Minus,
@@ -285,6 +286,14 @@ export default function PipelinePage() {
             <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
           </div>
         </div>
+
+        <DailyPipelineRunLane
+          recommendations={allRecs}
+          pendingBuys={pendingBuys}
+          quadrantFilters={qfList}
+          recDate={recDate}
+          loading={isLoading}
+        />
 
         {/* Pipeline flow indicator */}
         <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">

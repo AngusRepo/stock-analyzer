@@ -265,6 +265,73 @@ export type DeployGateReport = {
 
 export const dataQualityApi = {
   status: (date?: string) => get<DataQualityReport>(`/admin/data-quality/status${date ? `?date=${date}` : ''}`),
+  v41RuntimeStatus: (date?: string) => get<V41DataRuntimeStatus>(`/dashboard/v4/data-runtime/status${date ? `?date=${date}` : ''}`),
+}
+
+export type V41DataRuntimeStatus = {
+  date: string
+  schema_version: string
+  theme_signals?: { total: number; sources: number; latest_generated_at: string | null }
+  stock_theme_features?: { total: number; symbols: number; latest_generated_at: string | null }
+  external_evidence?: { total: number; accepted: number; rejected: number; latest_published_at: string | null }
+  finlab_backfill?: Record<string, unknown> | null
+  source_diff?: { total: number; missing_in_stockvision: number; value_conflicts: number; latest_generated_at: string | null }
+  gap_fill_candidates?: { total: number; candidates: number; quarantined: number; latest_generated_at: string | null }
+  canonical_rows?: { market_daily: number; chip_daily: number; revenue_monthly: number }
+  source_quality_metrics?: Array<{
+    source: string
+    dataset: string
+    freshness_status: string
+    missing_rate: number
+    duplicate_rate: number
+    schema_drift_status: string
+    entity_link_confidence: number | null
+    latest_materialization: string | null
+  }>
+  source_coverage?: Array<{
+    source: string
+    role: string
+    rows: number
+    freshness_status: string
+    missing_rate: number
+    duplicate_rate: number
+    entity_link_confidence: number | null
+    latest_materialization: string | null
+    decision_effect: string
+    runtime_state: 'production' | 'paper_active' | 'formal_shadow' | 'missing'
+  }>
+}
+
+export type DashboardV4ChartPacket = {
+  schemaVersion: 'dashboard-v4-chart-contract-v1'
+  generatedAt: string
+  chartLibrary: 'lightweight-charts'
+  dataOwner: 'stockvision_owned'
+  externalWidgetUrls: string[]
+  stock: { id: number; symbol: string; name: string; market: string }
+  panels: string[]
+  series: {
+    priceCandles: Array<{ time: string; open: number; high: number; low: number; close: number }>
+    volumeHistogram: Array<{ time: string; value: number; color?: string }>
+    modelMarkers: Array<{ time: string; position: 'aboveBar' | 'belowBar'; shape: 'arrowUp' | 'arrowDown' | 'circle'; color: string; text: string }>
+    sectorFlow: Array<{ time: string; value: number; sector: string; classification: string; foreign_net: number | null; trust_net: number | null }>
+  }
+  lightweightChartsSpec: Record<string, unknown>
+  regimeOverlay: Record<string, unknown> | null
+  dataQuality: DataQualityReport | { overall: string; checks: unknown[] }
+  finlabDiff: { mode: 'shadow_audit_only'; rows: Array<Record<string, unknown>>; empty: boolean }
+  previewBlockedReasons: Array<{ status: string; reason: string; source: string; created_at: string }>
+  sourceOwnership: Record<string, string>
+}
+
+export const dashboardV4Api = {
+  stockChart: (stockId: number, opts?: { days?: number; date?: string }) => {
+    const params = new URLSearchParams()
+    if (opts?.days) params.set('days', String(opts.days))
+    if (opts?.date) params.set('date', opts.date)
+    const query = params.toString()
+    return get<DashboardV4ChartPacket>(`/dashboard/v4/stocks/${stockId}/chart${query ? `?${query}` : ''}`)
+  },
 }
 
 export const deployGateApi = {
@@ -902,7 +969,7 @@ export const costsApi = {
 export const paperApi = {
   account:         () => get<any>('/paper/account'),
   positions:       () => get<any>('/paper/positions'),
-  orders:          (limit = 50) => get<any[]>(`/paper/orders?limit=${limit}`),
+  orders:          (limit = 50) => get<any>(`/paper/orders?limit=${limit}`),
   pnl:             () => get<any>('/paper/pnl'),
   realized:        () => get<any>('/paper/realized'),
   journal:         () => get<any>('/paper/journal'),

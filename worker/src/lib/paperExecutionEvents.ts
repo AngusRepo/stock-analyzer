@@ -6,7 +6,7 @@ export interface PaperExecutionEventInput {
   tradeDate?: string
   symbol?: string | null
   side?: 'buy' | 'sell' | null
-  eventType: 'pending_buy' | 'paper_order' | 'debate' | 'snapshot_audit'
+  eventType: 'pending_buy' | 'paper_order' | 'debate' | 'snapshot_audit' | 'finlab_preview'
   status: string
   reason?: string | null
   detail?: Record<string, unknown> | null

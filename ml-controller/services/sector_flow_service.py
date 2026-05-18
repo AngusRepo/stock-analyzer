@@ -7,6 +7,8 @@ Replaces:
 
 Drops B8 bug: `in_current_watchlist=1` filter (only 33 stocks) — now reads ALL stocks.
 Fixes B9 bug: uses `tag_type` filter to separate concept vs industry.
+V4 adds FinLab taxonomy layer `industry_theme` between formal industry and
+subindustry, so sector-flow can aggregate all four label layers separately.
 
 Mapping:
     stock_tags.tag_type = 'concept'  → sector_flow.classification = 'theme'
@@ -21,8 +23,8 @@ from services._rrg_calculator import build_rrg_point, RrgPoint
 
 logger = logging.getLogger(__name__)
 
-TagType = Literal["concept", "industry", "subindustry"]
-Classification = Literal["theme", "industry", "subindustry"]
+TagType = Literal["concept", "industry", "industry_theme", "subindustry"]
+Classification = Literal["theme", "industry", "industry_theme", "subindustry"]
 
 
 class CashFlow(TypedDict):
@@ -35,6 +37,8 @@ class CashFlow(TypedDict):
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
     if tag_type == "concept":
         return "theme"
+    if tag_type == "industry_theme":
+        return "industry_theme"
     if tag_type == "subindustry":
         return "subindustry"
     return "industry"
@@ -395,7 +399,8 @@ def write_sector_flow(
 
 def run_sector_flow_pipeline(as_of_date: str) -> dict:
     """
-    Full pipeline: compute concept + subindustry + industry, write all to sector_flow.
+    Full pipeline: compute concept + industry_theme + subindustry + industry,
+    write all to sector_flow.
 
     Called by:
     - daily_pipeline_v2.py node_compute_sector_flow
@@ -409,6 +414,7 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
 
     paths: list[tuple[TagType, Classification]] = [
         ("concept", "theme"),
+        ("industry_theme", "industry_theme"),
         ("subindustry", "subindustry"),
         ("industry", "industry"),
     ]

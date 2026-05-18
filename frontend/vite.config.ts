@@ -96,7 +96,7 @@ export default defineConfig({
         manualChunks: {
           'vendor-react':  ['react', 'react-dom', 'react-router-dom'],
           'vendor-query':  ['@tanstack/react-query'],
-          'vendor-charts': ['recharts'],
+          'vendor-charts': ['recharts', 'lightweight-charts'],
           'vendor-ui':     ['@radix-ui/react-tabs', '@radix-ui/react-dialog',
                             '@radix-ui/react-dropdown-menu', '@radix-ui/react-tooltip'],
         },

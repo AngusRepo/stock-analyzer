@@ -20,8 +20,8 @@ export interface TriggerDeps {
   runWeeklyPBO: () => Promise<any>
   runWeeklyAlphaQuality: () => Promise<any>
   runWeeklyLifecycleCheck: () => Promise<any>
-  runWeeklyOptunaResearch: () => Promise<any>
-  runMonthlyOptunaResearch: () => Promise<any>
+  runWeeklyOptunaResearch: (runDate?: string) => Promise<any>
+  runMonthlyOptunaResearch: (runDate?: string) => Promise<any>
   runOptunaQueueProcessor: () => Promise<any>
 }
 

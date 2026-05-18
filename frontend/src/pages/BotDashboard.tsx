@@ -16,15 +16,16 @@ import {
   Activity, TrendingUp, Wallet, Bot, ShieldCheck, ShieldAlert,
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
-import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
+import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
+import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
 import {
   WorkstationCatCard,
   WorkstationFlow,
@@ -128,7 +129,7 @@ function PortfolioSummary() {
   const positionSummary = positions?.summary ?? null
   const cash = positionSummary?.cash ?? acc?.cash ?? 0
   const initialCash = acc?.initial_cash ?? positionSummary?.initial_cash ?? 1_000_000
-  const posArr = positions?.positions ?? positions ?? []
+  const posArr = paperPositionsFromPayload(positions)
   const positionValue = Array.isArray(posArr)
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
     : 0
@@ -137,7 +138,7 @@ function PortfolioSummary() {
   const totalReturn = initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
-  const snapshots: any[] = pnlData?.snapshots ?? pnlData?.daily ?? []
+  const snapshots = paperPnlSnapshotsFromPayload(pnlData)
   const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null
   const first = snapshots.length > 0 ? snapshots[0] : null
 
@@ -586,9 +587,9 @@ function PositionsTable() {
     staleTime: 60_000,
   })
 
-  const positions = data?.positions ?? data ?? []
+  const positions = paperPositionsFromPayload(data)
   const summary = (data as any)?.summary
-  const orders = Array.isArray(ordersData) ? ordersData : (ordersData as any)?.orders ?? []
+  const orders = paperOrdersFromPayload(ordersData)
 
   // 已實現損益 = 所有 sell orders 的 (proceeds - cost)
   const realizedPnl = orders
@@ -799,7 +800,7 @@ function TradeHistory() {
     staleTime: 60_000,
   })
 
-  const orders = Array.isArray(data) ? data : (data as any)?.orders ?? []
+  const orders = paperOrdersFromPayload(data)
   if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
   if (!orders.length) {
     return (
@@ -977,108 +978,32 @@ function GateCalibrationPanel() {
   )
 }
 
-const PERIODS = [
-  { key: '1W', days: 7, label: '1W' },
-  { key: '1M', days: 30, label: '1M' },
-  { key: '3M', days: 90, label: '3M' },
-  { key: 'ALL', days: 9999, label: 'ALL' },
-] as const
-
 function PerformanceChart() {
-  const [period, setPeriod] = useState<string>('ALL')
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['paper', 'pnl'],
     queryFn: paperApi.pnl,
     staleTime: 5 * 60_000,
   })
-
-  const rawSnapshots: any[] = data?.snapshots ?? data?.daily ?? []
-  // 確保按日期升序排列（左→右 = 舊→新）
-  const allSnapshots = [...rawSnapshots].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
-
-  if (!Array.isArray(allSnapshots) || allSnapshots.length === 0) {
-    return (
-      <div className="text-center py-12 text-muted-foreground">
-        <Activity className="w-12 h-12 mx-auto mb-3 opacity-30" />
-        <p>No performance data yet</p>
-        <p className="text-xs mt-1">Chart will appear after the first trading day</p>
-      </div>
-    )
-  }
-
-  // Filter by period
-  const periodDays = PERIODS.find(p => p.key === period)?.days ?? 9999
-  const cutoffDate = new Date(Date.now() - periodDays * 86400000).toISOString().slice(0, 10)
-  const snapshots = period === 'ALL' ? allSnapshots : allSnapshots.filter((s: any) => s.date >= cutoffDate)
-
-  if (snapshots.length === 0) return null
-
-  // Base values for % calc（第一天 = 0%）
-  const baseVal = snapshots[0]?.total_value ?? snapshots[0]?.portfolio_value ?? 1_000_000
-  const baseBm = snapshots[0]?.benchmark_value
-  const baseTwii = snapshots[0]?.twii_value
-  const hasBenchmark = baseBm != null && baseBm > 0
-  const hasTwii = baseTwii != null && baseTwii > 0
-
-  const chartData = snapshots.map((s: any) => {
-    const val = s.total_value ?? s.portfolio_value ?? baseVal
-    const bm = s.benchmark_value
-    const twii = s.twii_value
-    return {
-      date: s.date?.slice(5) ?? '',
-      bot: ((val / baseVal) - 1) * 100,
-      ...(hasBenchmark && bm != null ? { benchmark: ((bm / baseBm) - 1) * 100 } : {}),
-      ...(hasTwii && twii != null ? { twii: ((twii / baseTwii) - 1) * 100 } : {}),
-    }
+  const { data: ordersData } = useQuery({
+    queryKey: ['paper', 'orders', 'performance-chart'],
+    queryFn: () => paperApi.orders(200),
+    staleTime: 60_000,
   })
-
-  const nameMap: Record<string, string> = { bot: 'Bot', benchmark: '0050', twii: '加權' }
+  const { data: pendingData } = useQuery({
+    queryKey: ['paper', 'pending-buys', 'performance-chart'],
+    queryFn: () => paperApi.pendingBuys(),
+    staleTime: 60_000,
+  })
+  const orders = paperOrdersFromPayload(ordersData)
+  const pendingBuys = paperPendingBuysFromPayload(pendingData)
 
   return (
-    <div>
-      {/* Period selector pills */}
-      <div className="flex items-center gap-1 mb-3">
-        {PERIODS.map(p => (
-          <button
-            key={p.key}
-            onClick={() => setPeriod(p.key)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-              period === p.key
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'text-muted-foreground hover:text-foreground/80 border border-transparent'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      <ResponsiveContainer width="100%" height={180}>
-        <AreaChart data={chartData}>
-          <defs>
-            <linearGradient id="botGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#228B22" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#228B22" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis dataKey="date" tick={{ fill: '#52525b', fontSize: 10 }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fill: '#52525b', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v.toFixed(1)}%`} width={45} />
-          <Tooltip
-            contentStyle={{ background: '#1a1d21', border: '1px solid #333', borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: '#71717a' }}
-            formatter={(v: number, name: string) => [`${v.toFixed(2)}%`, nameMap[name] ?? name]}
-          />
-          <Area type="monotone" dataKey="bot" stroke="#228B22" strokeWidth={2} fill="url(#botGrad)" dot={false} name="bot" />
-          {hasBenchmark && (
-            <Area type="monotone" dataKey="benchmark" stroke="#6366f1" strokeWidth={1} fill="none" dot={false} strokeDasharray="4 2" name="benchmark" />
-          )}
-          {hasTwii && (
-            <Area type="monotone" dataKey="twii" stroke="#a78bfa" strokeWidth={1} fill="none" dot={false} strokeDasharray="2 2" name="twii" />
-          )}
-          <Legend formatter={(value) => <span className="text-[10px] text-muted-foreground">{nameMap[value] ?? value}</span>} iconSize={8} />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
+    <PaperTradePerformanceChart
+      pnl={data}
+      orders={orders}
+      pendingBuys={pendingBuys}
+      loading={isLoading}
+    />
   )
 }
 
@@ -1177,19 +1102,30 @@ function BacktestCard() {
           <div className="mb-1 font-medium text-foreground/70">怎麼讀這張卡</div>
           <div>先看 MDD / Calmar 判斷風險是否可承受，再看 Sharpe / Sortino 判斷報酬品質，最後用 PF / Expectancy 確認每筆交易是否真的有正期望；Trades 太少時所有結論都只能當觀察，不應直接 go-live。</div>
         </div>
-        {/* MC + PBO go-live verdicts */}
+        {/* Weekly Validation split: PBO credibility, MC tail risk, backtest consistency */}
         {(mcVerdict || pboVerdict) && (
-          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/[0.06]">
-            {mcVerdict && (
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${mcBadge}`}>
-                MC 95th: {mcData.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict}
-              </span>
-            )}
-            {pboVerdict && (
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${pboBadge}`}>
-                PBO: {pboData.pbo != null ? `${(pboData.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict}
-              </span>
-            )}
+          <div className="mt-3 grid gap-2 border-t border-white/[0.06] pt-2 md:grid-cols-3">
+            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">PBO alpha credibility</div>
+              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] font-mono ${pboBadge || 'bg-white/5 text-muted-foreground'}`}>
+                PBO {pboData?.pbo != null ? `${(pboData.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict ?? 'N/A'}
+              </div>
+            </div>
+            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">MC tail risk</div>
+              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] font-mono ${mcBadge || 'bg-white/5 text-muted-foreground'}`}>
+                95th {mcData?.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict ?? 'N/A'}
+              </div>
+              {String((mcData as any)?.raw_distribution ?? '').includes('LOW_SAMPLE_TAIL_RISK') && (
+                <div className="mt-1 text-[10px] text-amber-300">LOW_SAMPLE_TAIL_RISK</div>
+              )}
+            </div>
+            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Backtest consistency</div>
+              <div className="mt-1 text-[10px] font-mono text-slate-200">
+                MDD {data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-'} / Trades {data.total_trades ?? '-'}
+              </div>
+            </div>
           </div>
         )}
         {data.timerange && (

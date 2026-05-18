@@ -156,7 +156,7 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
       await runWeeklyCleanup(env)
       await runWeeklyLifecycleCheck(env).catch((e) => { console.warn('[Lifecycle] failed:', e) })
       await runWeeklyLocalMaintenance(env)
-      return 'weekly cleanup done: local maintenance + lifecycle check; retrain is monthly/manual only'
+      return 'weekly cleanup done: local maintenance + lifecycle dry-run; retrain is monthly/manual only'
     })
     return true
   }

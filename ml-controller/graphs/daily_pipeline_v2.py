@@ -34,6 +34,7 @@ from services.payload_builder import (
 )
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.recommendation_service import (
     filter_and_score_recommendations,
@@ -1348,29 +1349,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     except Exception:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
-    try:
-        raw_regime_label = kv_client.get("ml:regime")
-    except Exception:
-        raw_regime_label = None
-    try:
-        regime_meta = kv_client.get_json("ml:regime:meta", default={}) or {}
-        regime_surface = (
-            regime_meta.get("regime_surface")
-            or regime_meta.get("regime_probabilities")
-            or regime_meta.get("probabilities")
-            or {}
-        )
-    except Exception:
-        regime_meta = {}
-        regime_surface = {}
-    regime_label = _resolve_alpha_regime_label(
-        raw_regime_label,
-        regime_meta,
-        state.get("adaptive_params") or {},
-    )
-    if regime_label == "unknown":
+    regime_contract = resolve_market_regime_contract(kv_client)
+    regime_label = str(regime_contract.get("alpha_regime") or "unknown")
+    regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
+    if regime_contract.get("missing") or regime_label == "unknown":
         raise RuntimeError(
-            "ml:regime missing before recommendation; run regime-compute before pipeline"
+            "market_regime_state missing before recommendation; run regime-compute before pipeline"
         )
 
     from services.trading_config_loader import load_merged_trading_config_with_contract

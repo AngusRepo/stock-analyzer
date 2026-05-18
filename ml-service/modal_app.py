@@ -734,6 +734,25 @@ def research_model_benchmark(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=1,
+    memory=1024,
+    timeout=600,
+    scaledown_window=60,
+    max_containers=2,
+)
+def breeze2_research_context(payload: dict) -> dict:
+    """Build Breeze2 research-context evidence for debate/screener callers."""
+    _setup_env()
+    from app.breeze2_context import build_breeze2_research_context
+
+    return build_breeze2_research_context({
+        **payload,
+        "allowed_use": "research_context_only",
+        "mutation_allowed": False,
+    })
+
+
+@app.function(
     cpu=1,                       # 1 CPU per prediction container.
     memory=2048,                 # 2GB is sufficient for CPU prediction runtime.
     timeout=300,                 # 5 min buffer for tail inference and cold start.

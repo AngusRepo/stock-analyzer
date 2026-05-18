@@ -1,5 +1,5 @@
 import { sendDiscordNotification } from './notify'
-import { getTradingConfig } from './tradingConfig'
+import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
 import {
   batchGetATR,
@@ -783,8 +783,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue
 
     const volPct = atr14 / fillPrice
-    const { resolveSltpForRegime } = await import('./tradingConfig')
-    const regimeLabel = await env.KV.get('ml:regime')
+    const regimeLabel = await getCurrentSltpRegime(env.KV)
     const sltp = resolveSltpForRegime(cfg, regimeLabel)
     const volLow = sltp?.volThresholdLow ?? 0.015
     const volHigh = sltp?.volThresholdHigh ?? 0.03

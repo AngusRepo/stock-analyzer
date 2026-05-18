@@ -33,11 +33,11 @@ assert(
 assert(
   updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
     updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
-  'regime-compute must run with the chain business date before pipeline/recommendation so ml:regime is not null or future-dated',
+  'regime-compute must run with the chain business date before pipeline/recommendation so market_regime_state is not null or future-dated',
 )
 assert(
   !postMarketChain.includes("runRegimeCompute(env)"),
-  'post-pipeline chain must not be the primary regime producer; pipeline already consumed ml:regime by then',
+  'post-pipeline chain must not be the primary regime producer; pipeline already consumed market_regime_state by then',
 )
 assert(
   postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate)'),
@@ -63,10 +63,29 @@ assert(
   'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
 )
 assert(
+  postMarketChain.includes('runPaperActivePostmarketPromotion'),
+  'post-verify chain must include paper-active postmarket promotion closure',
+)
+assert(
+  postMarketChain.indexOf("'daily-report', () => generateDailyReport") <
+    postMarketChain.indexOf("'paper-active-postmarket', () => runPaperActivePostmarketPromotion"),
+  'paper-active postmarket promotion should run after daily report source metrics are available',
+)
+assert(
+  postMarketChain.indexOf("'paper-active-postmarket', () => runPaperActivePostmarketPromotion") <
+    postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily"),
+  'paper-active postmarket summary should be available before obsidian sync',
+)
+assert(
   postMarketChain.includes("{ critical: false }"),
   'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
+)
+assert(
+  postMarketChain.includes('recordWorkerTaskComputeProfile'),
+  'post-market callback tasks must emit compute profile events from the shared task logger',
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'paper-active-postmarket'"), 'paper-active postmarket must be visible in scheduler/OBS logs')

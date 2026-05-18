@@ -21,6 +21,7 @@ from services.wiki_writer import (
     build_wiki_start_task_context,
     ensure_project_hub,
     finish_wiki_task,
+    inspect_graphify_reports,
     inspect_wiki_vault,
 )
 
@@ -76,6 +77,11 @@ class WikiRecallRequest(BaseModel):
 class WikiHealthRequest(BaseModel):
     product: str = "StockVision"
     stale_days: int = 3
+
+
+class WikiGraphifyReportRequest(BaseModel):
+    limit: int = 5
+    stale_days: int = 7
 
 
 class WikiProjectHubRequest(BaseModel):
@@ -305,6 +311,19 @@ async def inspect_wiki_health(req: WikiHealthRequest = WikiHealthRequest()):
             product=req.product,
             stale_days=req.stale_days,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/wiki-graphify-report")
+async def inspect_wiki_graphify_report(req: WikiGraphifyReportRequest = WikiGraphifyReportRequest()):
+    """Inspect Graphify reports stored in the local Wei-Codex wiki vault."""
+    local_vault = os.environ.get("OBSIDIAN_WIKI_VAULT_PATH", "").strip()
+    if not local_vault:
+        raise HTTPException(status_code=501, detail="OBSIDIAN_WIKI_VAULT_PATH not configured")
+
+    try:
+        return inspect_graphify_reports(local_vault, limit=req.limit, stale_days=req.stale_days)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

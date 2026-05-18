@@ -1,0 +1,3667 @@
+{
+  "schema_version": "finlab-dagster-asset-graph-v1",
+  "generated_at": "2026-05-17T09:43:35.827629+00:00",
+  "source_plan_checksum": "sha256:45fa20963e3345f2df972b4139bde37d84f5dec09a3202e2f9f0f04ce4ff340f",
+  "source_plan_schema_version": "finlab-adoption-plan-v1",
+  "policy": {
+    "dagster_role": "orchestration_only",
+    "langgraph_role": "reasoning_and_decision_flow",
+    "production_contract": "current_106_features_remain_stable",
+    "finlab_data_role": "parity_and_diversity_feature_lake_shadow_before_promotion"
+  },
+  "summary": {
+    "source_asset_count": 15,
+    "node_count": 45,
+    "check_count": 190,
+    "formal_asset_count": 10
+  },
+  "formal_assets": [
+    "security_master",
+    "daily_price",
+    "chip_flow",
+    "broker_flow",
+    "rotc_price",
+    "rotc_broker_transactions",
+    "taxonomy",
+    "macro",
+    "world_index",
+    "feature_lake"
+  ],
+  "nodes": [
+    {
+      "asset_key": "finlab/diversity/chip_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.raw",
+        "field_count": 53,
+        "namespaces": [
+          "broker_transactions",
+          "etl",
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/chip_diversity/raw/",
+      "stage": "diversity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 53,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "broker_transactions",
+        "etl",
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/diversity/chip_diversity",
+      "source_checksum": "sha256:3a70f1e2ef630108be1260cd75b77a045d6e2b4aa743a94a564455cd56bb4a4c"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/chip_diversity/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.clean",
+        "field_count": 53,
+        "namespaces": [
+          "broker_transactions",
+          "etl",
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/chip_diversity/clean/",
+      "stage": "diversity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 53,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "broker_transactions",
+        "etl",
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/diversity/chip_diversity",
+      "source_checksum": "sha256:3a70f1e2ef630108be1260cd75b77a045d6e2b4aa743a94a564455cd56bb4a4c"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/chip_diversity/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.feature_lake",
+        "field_count": 53,
+        "namespaces": [
+          "broker_transactions",
+          "etl",
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/chip_diversity/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 53,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "broker_transactions",
+        "etl",
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/diversity/chip_diversity",
+      "source_checksum": "sha256:3a70f1e2ef630108be1260cd75b77a045d6e2b4aa743a94a564455cd56bb4a4c"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_chip_diversity.raw",
+        "field_count": 1,
+        "namespaces": [
+          "rotc_broker_transactions"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_chip_diversity/raw/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_chip_diversity",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_broker_transactions"
+      ],
+      "stockvision_use": "emerging-stock broker flow proxy and concentration checks",
+      "source_asset_key": "finlab/diversity/emerging_chip_diversity",
+      "source_checksum": "sha256:e08717a2783a202c1dea04d5036c956b78324f1ba0e3ea6218e180743942f229"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/emerging_chip_diversity/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_chip_diversity.clean",
+        "field_count": 1,
+        "namespaces": [
+          "rotc_broker_transactions"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_chip_diversity/clean/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_chip_diversity",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_broker_transactions"
+      ],
+      "stockvision_use": "emerging-stock broker flow proxy and concentration checks",
+      "source_asset_key": "finlab/diversity/emerging_chip_diversity",
+      "source_checksum": "sha256:e08717a2783a202c1dea04d5036c956b78324f1ba0e3ea6218e180743942f229"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/emerging_chip_diversity/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_chip_diversity.feature_lake",
+        "field_count": 1,
+        "namespaces": [
+          "rotc_broker_transactions"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_chip_diversity/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_chip_diversity",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_broker_transactions"
+      ],
+      "stockvision_use": "emerging-stock broker flow proxy and concentration checks",
+      "source_asset_key": "finlab/diversity/emerging_chip_diversity",
+      "source_checksum": "sha256:e08717a2783a202c1dea04d5036c956b78324f1ba0e3ea6218e180743942f229"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_price_diversity.raw",
+        "field_count": 10,
+        "namespaces": [
+          "rotc_price"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_price_diversity/raw/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_price_diversity",
+      "access_tier": "compute",
+      "field_count": 10,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_price"
+      ],
+      "stockvision_use": "emerging-stock price, liquidity and spread watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_price_diversity",
+      "source_checksum": "sha256:92414362c94687f0a0e36cea7ead3537e8cc513b780ceba769fc3455a8467f85"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/emerging_price_diversity/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_price_diversity.clean",
+        "field_count": 10,
+        "namespaces": [
+          "rotc_price"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_price_diversity/clean/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_price_diversity",
+      "access_tier": "compute",
+      "field_count": 10,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_price"
+      ],
+      "stockvision_use": "emerging-stock price, liquidity and spread watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_price_diversity",
+      "source_checksum": "sha256:92414362c94687f0a0e36cea7ead3537e8cc513b780ceba769fc3455a8467f85"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/emerging_price_diversity/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_price_diversity.feature_lake",
+        "field_count": 10,
+        "namespaces": [
+          "rotc_price"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_price_diversity/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_price_diversity",
+      "access_tier": "compute",
+      "field_count": 10,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_price"
+      ],
+      "stockvision_use": "emerging-stock price, liquidity and spread watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_price_diversity",
+      "source_checksum": "sha256:92414362c94687f0a0e36cea7ead3537e8cc513b780ceba769fc3455a8467f85"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_revenue_diversity.raw",
+        "field_count": 9,
+        "namespaces": [
+          "rotc_monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_revenue_diversity/raw/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_revenue_diversity",
+      "access_tier": "compute",
+      "field_count": 9,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_monthly_revenue"
+      ],
+      "stockvision_use": "emerging-stock revenue momentum watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_revenue_diversity",
+      "source_checksum": "sha256:7d174fc8cc1eb2e454752479b144f6d9f9babfba22ad906638aabd9f9b799a11"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/emerging_revenue_diversity/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_revenue_diversity.clean",
+        "field_count": 9,
+        "namespaces": [
+          "rotc_monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_revenue_diversity/clean/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_revenue_diversity",
+      "access_tier": "compute",
+      "field_count": 9,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_monthly_revenue"
+      ],
+      "stockvision_use": "emerging-stock revenue momentum watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_revenue_diversity",
+      "source_checksum": "sha256:7d174fc8cc1eb2e454752479b144f6d9f9babfba22ad906638aabd9f9b799a11"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/emerging_revenue_diversity/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.emerging_revenue_diversity.feature_lake",
+        "field_count": 9,
+        "namespaces": [
+          "rotc_monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/emerging_revenue_diversity/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "emerging_revenue_diversity",
+      "access_tier": "compute",
+      "field_count": 9,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_monthly_revenue"
+      ],
+      "stockvision_use": "emerging-stock revenue momentum watchlist context",
+      "source_asset_key": "finlab/diversity/emerging_revenue_diversity",
+      "source_checksum": "sha256:7d174fc8cc1eb2e454752479b144f6d9f9babfba22ad906638aabd9f9b799a11"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.raw",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/fundamental_factor_diversity/raw/",
+      "stage": "diversity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/diversity/fundamental_factor_diversity",
+      "source_checksum": "sha256:7f4f4756cfe56ecc6b610fdead8dc89985be81c3a391192912acc9f805613e1f"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/fundamental_factor_diversity/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.clean",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/fundamental_factor_diversity/clean/",
+      "stage": "diversity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/diversity/fundamental_factor_diversity",
+      "source_checksum": "sha256:7f4f4756cfe56ecc6b610fdead8dc89985be81c3a391192912acc9f805613e1f"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/fundamental_factor_diversity/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.feature_lake",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/fundamental_factor_diversity/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/diversity/fundamental_factor_diversity",
+      "source_checksum": "sha256:7f4f4756cfe56ecc6b610fdead8dc89985be81c3a391192912acc9f805613e1f"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.global_context.raw",
+        "field_count": 296,
+        "namespaces": [
+          "us_analyst_consensus",
+          "us_balance_sheet",
+          "us_cash_flow",
+          "us_company_profile",
+          "us_dcf",
+          "us_earnings_surprises",
+          "us_fund_price",
+          "us_income_statement",
+          "us_index_constituents",
+          "us_key_metrics",
+          "us_price",
+          "us_price_target_summary",
+          "us_ratios",
+          "us_stock_rating",
+          "world_index"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/global_context/raw/",
+      "stage": "diversity",
+      "dataset_lane": "global_context",
+      "access_tier": "compute",
+      "field_count": 296,
+      "markets": [
+        "tw",
+        "us"
+      ],
+      "namespaces": [
+        "us_analyst_consensus",
+        "us_balance_sheet",
+        "us_cash_flow",
+        "us_company_profile",
+        "us_dcf",
+        "us_earnings_surprises",
+        "us_fund_price",
+        "us_income_statement",
+        "us_index_constituents",
+        "us_key_metrics",
+        "us_price",
+        "us_price_target_summary",
+        "us_ratios",
+        "us_stock_rating",
+        "world_index"
+      ],
+      "stockvision_use": "US leading, world index, morning setup and regime context",
+      "source_asset_key": "finlab/diversity/global_context",
+      "source_checksum": "sha256:5344b8fabc1bdaf9a7d967a3e00c37ec48c0584148ddc0189e8dd0aa0fcfc404"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/global_context/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.global_context.clean",
+        "field_count": 296,
+        "namespaces": [
+          "us_analyst_consensus",
+          "us_balance_sheet",
+          "us_cash_flow",
+          "us_company_profile",
+          "us_dcf",
+          "us_earnings_surprises",
+          "us_fund_price",
+          "us_income_statement",
+          "us_index_constituents",
+          "us_key_metrics",
+          "us_price",
+          "us_price_target_summary",
+          "us_ratios",
+          "us_stock_rating",
+          "world_index"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/global_context/clean/",
+      "stage": "diversity",
+      "dataset_lane": "global_context",
+      "access_tier": "compute",
+      "field_count": 296,
+      "markets": [
+        "tw",
+        "us"
+      ],
+      "namespaces": [
+        "us_analyst_consensus",
+        "us_balance_sheet",
+        "us_cash_flow",
+        "us_company_profile",
+        "us_dcf",
+        "us_earnings_surprises",
+        "us_fund_price",
+        "us_income_statement",
+        "us_index_constituents",
+        "us_key_metrics",
+        "us_price",
+        "us_price_target_summary",
+        "us_ratios",
+        "us_stock_rating",
+        "world_index"
+      ],
+      "stockvision_use": "US leading, world index, morning setup and regime context",
+      "source_asset_key": "finlab/diversity/global_context",
+      "source_checksum": "sha256:5344b8fabc1bdaf9a7d967a3e00c37ec48c0584148ddc0189e8dd0aa0fcfc404"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/global_context/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.global_context.feature_lake",
+        "field_count": 296,
+        "namespaces": [
+          "us_analyst_consensus",
+          "us_balance_sheet",
+          "us_cash_flow",
+          "us_company_profile",
+          "us_dcf",
+          "us_earnings_surprises",
+          "us_fund_price",
+          "us_income_statement",
+          "us_index_constituents",
+          "us_key_metrics",
+          "us_price",
+          "us_price_target_summary",
+          "us_ratios",
+          "us_stock_rating",
+          "world_index"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/global_context/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "global_context",
+      "access_tier": "compute",
+      "field_count": 296,
+      "markets": [
+        "tw",
+        "us"
+      ],
+      "namespaces": [
+        "us_analyst_consensus",
+        "us_balance_sheet",
+        "us_cash_flow",
+        "us_company_profile",
+        "us_dcf",
+        "us_earnings_surprises",
+        "us_fund_price",
+        "us_income_statement",
+        "us_index_constituents",
+        "us_key_metrics",
+        "us_price",
+        "us_price_target_summary",
+        "us_ratios",
+        "us_stock_rating",
+        "world_index"
+      ],
+      "stockvision_use": "US leading, world index, morning setup and regime context",
+      "source_asset_key": "finlab/diversity/global_context",
+      "source_checksum": "sha256:5344b8fabc1bdaf9a7d967a3e00c37ec48c0584148ddc0189e8dd0aa0fcfc404"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.regime_context.raw",
+        "field_count": 118,
+        "namespaces": [
+          "futures_institutional_investors_trading_summary",
+          "futures_price",
+          "single_stock_futures_and_equity_options_underlying",
+          "tw_business_indicators",
+          "tw_business_indicators_details",
+          "tw_etf_basic_info",
+          "tw_etf_beneficiary_stats",
+          "tw_etf_dividend_events",
+          "tw_etf_nav_daily",
+          "tw_industry_nmi",
+          "tw_industry_pmi",
+          "tw_monetary_aggregates",
+          "tw_news_cnyes",
+          "tw_option_daily_delta",
+          "tw_option_daily_summary",
+          "tw_option_put_call_ratio",
+          "tw_option_recent_trades",
+          "tw_taifex_futures_large_trader",
+          "tw_taifex_option_institutional_breakdown",
+          "tw_taifex_option_large_trader",
+          "tw_taifex_option_liquidity",
+          "tw_total_nmi",
+          "tw_total_pmi"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/regime_context/raw/",
+      "stage": "diversity",
+      "dataset_lane": "regime_context",
+      "access_tier": "compute",
+      "field_count": 118,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "futures_institutional_investors_trading_summary",
+        "futures_price",
+        "single_stock_futures_and_equity_options_underlying",
+        "tw_business_indicators",
+        "tw_business_indicators_details",
+        "tw_etf_basic_info",
+        "tw_etf_beneficiary_stats",
+        "tw_etf_dividend_events",
+        "tw_etf_nav_daily",
+        "tw_industry_nmi",
+        "tw_industry_pmi",
+        "tw_monetary_aggregates",
+        "tw_news_cnyes",
+        "tw_option_daily_delta",
+        "tw_option_daily_summary",
+        "tw_option_put_call_ratio",
+        "tw_option_recent_trades",
+        "tw_taifex_futures_large_trader",
+        "tw_taifex_option_institutional_breakdown",
+        "tw_taifex_option_large_trader",
+        "tw_taifex_option_liquidity",
+        "tw_total_nmi",
+        "tw_total_pmi"
+      ],
+      "stockvision_use": "derivatives, macro, hedge pressure and low-frequency regime evidence",
+      "source_asset_key": "finlab/diversity/regime_context",
+      "source_checksum": "sha256:c359c8cef79931c7edae06d76204d0379ab6e230e275f1e78cca6e63adbdb00b"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/regime_context/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.regime_context.clean",
+        "field_count": 118,
+        "namespaces": [
+          "futures_institutional_investors_trading_summary",
+          "futures_price",
+          "single_stock_futures_and_equity_options_underlying",
+          "tw_business_indicators",
+          "tw_business_indicators_details",
+          "tw_etf_basic_info",
+          "tw_etf_beneficiary_stats",
+          "tw_etf_dividend_events",
+          "tw_etf_nav_daily",
+          "tw_industry_nmi",
+          "tw_industry_pmi",
+          "tw_monetary_aggregates",
+          "tw_news_cnyes",
+          "tw_option_daily_delta",
+          "tw_option_daily_summary",
+          "tw_option_put_call_ratio",
+          "tw_option_recent_trades",
+          "tw_taifex_futures_large_trader",
+          "tw_taifex_option_institutional_breakdown",
+          "tw_taifex_option_large_trader",
+          "tw_taifex_option_liquidity",
+          "tw_total_nmi",
+          "tw_total_pmi"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/regime_context/clean/",
+      "stage": "diversity",
+      "dataset_lane": "regime_context",
+      "access_tier": "compute",
+      "field_count": 118,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "futures_institutional_investors_trading_summary",
+        "futures_price",
+        "single_stock_futures_and_equity_options_underlying",
+        "tw_business_indicators",
+        "tw_business_indicators_details",
+        "tw_etf_basic_info",
+        "tw_etf_beneficiary_stats",
+        "tw_etf_dividend_events",
+        "tw_etf_nav_daily",
+        "tw_industry_nmi",
+        "tw_industry_pmi",
+        "tw_monetary_aggregates",
+        "tw_news_cnyes",
+        "tw_option_daily_delta",
+        "tw_option_daily_summary",
+        "tw_option_put_call_ratio",
+        "tw_option_recent_trades",
+        "tw_taifex_futures_large_trader",
+        "tw_taifex_option_institutional_breakdown",
+        "tw_taifex_option_large_trader",
+        "tw_taifex_option_liquidity",
+        "tw_total_nmi",
+        "tw_total_pmi"
+      ],
+      "stockvision_use": "derivatives, macro, hedge pressure and low-frequency regime evidence",
+      "source_asset_key": "finlab/diversity/regime_context",
+      "source_checksum": "sha256:c359c8cef79931c7edae06d76204d0379ab6e230e275f1e78cca6e63adbdb00b"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/regime_context/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.regime_context.feature_lake",
+        "field_count": 118,
+        "namespaces": [
+          "futures_institutional_investors_trading_summary",
+          "futures_price",
+          "single_stock_futures_and_equity_options_underlying",
+          "tw_business_indicators",
+          "tw_business_indicators_details",
+          "tw_etf_basic_info",
+          "tw_etf_beneficiary_stats",
+          "tw_etf_dividend_events",
+          "tw_etf_nav_daily",
+          "tw_industry_nmi",
+          "tw_industry_pmi",
+          "tw_monetary_aggregates",
+          "tw_news_cnyes",
+          "tw_option_daily_delta",
+          "tw_option_daily_summary",
+          "tw_option_put_call_ratio",
+          "tw_option_recent_trades",
+          "tw_taifex_futures_large_trader",
+          "tw_taifex_option_institutional_breakdown",
+          "tw_taifex_option_large_trader",
+          "tw_taifex_option_liquidity",
+          "tw_total_nmi",
+          "tw_total_pmi"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/regime_context/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "regime_context",
+      "access_tier": "compute",
+      "field_count": 118,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "futures_institutional_investors_trading_summary",
+        "futures_price",
+        "single_stock_futures_and_equity_options_underlying",
+        "tw_business_indicators",
+        "tw_business_indicators_details",
+        "tw_etf_basic_info",
+        "tw_etf_beneficiary_stats",
+        "tw_etf_dividend_events",
+        "tw_etf_nav_daily",
+        "tw_industry_nmi",
+        "tw_industry_pmi",
+        "tw_monetary_aggregates",
+        "tw_news_cnyes",
+        "tw_option_daily_delta",
+        "tw_option_daily_summary",
+        "tw_option_put_call_ratio",
+        "tw_option_recent_trades",
+        "tw_taifex_futures_large_trader",
+        "tw_taifex_option_institutional_breakdown",
+        "tw_taifex_option_large_trader",
+        "tw_taifex_option_liquidity",
+        "tw_total_nmi",
+        "tw_total_pmi"
+      ],
+      "stockvision_use": "derivatives, macro, hedge pressure and low-frequency regime evidence",
+      "source_asset_key": "finlab/diversity/regime_context",
+      "source_checksum": "sha256:c359c8cef79931c7edae06d76204d0379ab6e230e275f1e78cca6e63adbdb00b"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.taxonomy_expansion.raw",
+        "field_count": 1,
+        "namespaces": [
+          "security_industry_themes"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/taxonomy_expansion/raw/",
+      "stage": "diversity",
+      "dataset_lane": "taxonomy_expansion",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_industry_themes"
+      ],
+      "stockvision_use": "industry_theme/subindustry labels and sector-flow taxonomy",
+      "source_asset_key": "finlab/diversity/taxonomy_expansion",
+      "source_checksum": "sha256:d1fad66d341858d2c84d7fc31caf1e310d64407ddf6ec1aa36fd8a7e1bcfee21"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/diversity/taxonomy_expansion/raw"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.taxonomy_expansion.clean",
+        "field_count": 1,
+        "namespaces": [
+          "security_industry_themes"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/taxonomy_expansion/clean/",
+      "stage": "diversity",
+      "dataset_lane": "taxonomy_expansion",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_industry_themes"
+      ],
+      "stockvision_use": "industry_theme/subindustry labels and sector-flow taxonomy",
+      "source_asset_key": "finlab/diversity/taxonomy_expansion",
+      "source_checksum": "sha256:d1fad66d341858d2c84d7fc31caf1e310d64407ddf6ec1aa36fd8a7e1bcfee21"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/diversity/taxonomy_expansion/clean"
+      ],
+      "group_name": "finlab_v4_diversity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.taxonomy_expansion.feature_lake",
+        "field_count": 1,
+        "namespaces": [
+          "security_industry_themes"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/diversity/taxonomy_expansion/feature_lake/",
+      "stage": "diversity",
+      "dataset_lane": "taxonomy_expansion",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_industry_themes"
+      ],
+      "stockvision_use": "industry_theme/subindustry labels and sector-flow taxonomy",
+      "source_asset_key": "finlab/diversity/taxonomy_expansion",
+      "source_checksum": "sha256:d1fad66d341858d2c84d7fc31caf1e310d64407ddf6ec1aa36fd8a7e1bcfee21"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.raw",
+        "field_count": 48,
+        "namespaces": [
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/chip_diversity/raw/",
+      "stage": "parity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 48,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/parity/chip_diversity",
+      "source_checksum": "sha256:750b35d095f87e03c070f089f9bbf6d073ae8b620868d57faae65e7b0674a77b"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/parity/chip_diversity/raw"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.clean",
+        "field_count": 48,
+        "namespaces": [
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/chip_diversity/clean/",
+      "stage": "parity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 48,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/parity/chip_diversity",
+      "source_checksum": "sha256:750b35d095f87e03c070f089f9bbf6d073ae8b620868d57faae65e7b0674a77b"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/parity/chip_diversity/clean"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.chip_diversity.feature_lake",
+        "field_count": 48,
+        "namespaces": [
+          "institutional_investors_trading_all_market_summary",
+          "institutional_investors_trading_summary",
+          "margin_balance",
+          "margin_short_sale_suspension",
+          "margin_transactions",
+          "security_lending",
+          "security_lending_sell"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/chip_diversity/feature_lake/",
+      "stage": "parity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 48,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "source_asset_key": "finlab/parity/chip_diversity",
+      "source_checksum": "sha256:750b35d095f87e03c070f089f9bbf6d073ae8b620868d57faae65e7b0674a77b"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.raw",
+        "field_count": 119,
+        "namespaces": [
+          "etl",
+          "price",
+          "price_earning_ratio"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/daily_price/raw/",
+      "stage": "parity",
+      "dataset_lane": "daily_price",
+      "access_tier": "compute",
+      "field_count": 119,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "etl",
+        "price",
+        "price_earning_ratio"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/parity/daily_price",
+      "source_checksum": "sha256:1a320487313f5c14a7479c511ae7bc1b1361aaab31338ef423c013acc2c4f93d"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/parity/daily_price/raw"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.clean",
+        "field_count": 119,
+        "namespaces": [
+          "etl",
+          "price",
+          "price_earning_ratio"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/daily_price/clean/",
+      "stage": "parity",
+      "dataset_lane": "daily_price",
+      "access_tier": "compute",
+      "field_count": 119,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "etl",
+        "price",
+        "price_earning_ratio"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/parity/daily_price",
+      "source_checksum": "sha256:1a320487313f5c14a7479c511ae7bc1b1361aaab31338ef423c013acc2c4f93d"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/parity/daily_price/clean"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.feature_lake",
+        "field_count": 119,
+        "namespaces": [
+          "etl",
+          "price",
+          "price_earning_ratio"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/daily_price/feature_lake/",
+      "stage": "parity",
+      "dataset_lane": "daily_price",
+      "access_tier": "compute",
+      "field_count": 119,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "etl",
+        "price",
+        "price_earning_ratio"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/parity/daily_price",
+      "source_checksum": "sha256:1a320487313f5c14a7479c511ae7bc1b1361aaab31338ef423c013acc2c4f93d"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.raw",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/fundamental_factor_diversity/raw/",
+      "stage": "parity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/parity/fundamental_factor_diversity",
+      "source_checksum": "sha256:62a2221341ea2687623854ff0f410fbcd05ea6266b940144d87d550042d466a1"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/parity/fundamental_factor_diversity/raw"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.clean",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/fundamental_factor_diversity/clean/",
+      "stage": "parity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/parity/fundamental_factor_diversity",
+      "source_checksum": "sha256:62a2221341ea2687623854ff0f410fbcd05ea6266b940144d87d550042d466a1"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/parity/fundamental_factor_diversity/clean"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.fundamental_factor_diversity.feature_lake",
+        "field_count": 213,
+        "namespaces": [
+          "financial_statement",
+          "financial_statements_upload_detail",
+          "fundamental_features"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/fundamental_factor_diversity/feature_lake/",
+      "stage": "parity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "source_asset_key": "finlab/parity/fundamental_factor_diversity",
+      "source_checksum": "sha256:62a2221341ea2687623854ff0f410fbcd05ea6266b940144d87d550042d466a1"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.revenue.raw",
+        "field_count": 8,
+        "namespaces": [
+          "monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "revenue_month"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/revenue/raw/",
+      "stage": "parity",
+      "dataset_lane": "revenue",
+      "access_tier": "compute",
+      "field_count": 8,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "monthly_revenue"
+      ],
+      "stockvision_use": "monthly revenue parity and revenue momentum feature base",
+      "source_asset_key": "finlab/parity/revenue",
+      "source_checksum": "sha256:fbf3bac68f4223944c553b49df22589f66d9393014a0630a6b71c96d1ba01907"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/parity/revenue/raw"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.revenue.clean",
+        "field_count": 8,
+        "namespaces": [
+          "monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "revenue_month"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/revenue/clean/",
+      "stage": "parity",
+      "dataset_lane": "revenue",
+      "access_tier": "compute",
+      "field_count": 8,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "monthly_revenue"
+      ],
+      "stockvision_use": "monthly revenue parity and revenue momentum feature base",
+      "source_asset_key": "finlab/parity/revenue",
+      "source_checksum": "sha256:fbf3bac68f4223944c553b49df22589f66d9393014a0630a6b71c96d1ba01907"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/parity/revenue/clean"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.revenue.feature_lake",
+        "field_count": 8,
+        "namespaces": [
+          "monthly_revenue"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "revenue_month"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/revenue/feature_lake/",
+      "stage": "parity",
+      "dataset_lane": "revenue",
+      "access_tier": "compute",
+      "field_count": 8,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "monthly_revenue"
+      ],
+      "stockvision_use": "monthly revenue parity and revenue momentum feature base",
+      "source_asset_key": "finlab/parity/revenue",
+      "source_checksum": "sha256:fbf3bac68f4223944c553b49df22589f66d9393014a0630a6b71c96d1ba01907"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.security_master.raw",
+        "field_count": 1,
+        "namespaces": [
+          "security_categories"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/security_master/raw/",
+      "stage": "parity",
+      "dataset_lane": "security_master",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_categories"
+      ],
+      "stockvision_use": "primary security master, market lane, tradability route",
+      "source_asset_key": "finlab/parity/security_master",
+      "source_checksum": "sha256:c391bc30fe18de29f5cdcfa6c0c1d1b26e4532016ea7c6f8795fa7be24f18447"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/parity/security_master/raw"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.security_master.clean",
+        "field_count": 1,
+        "namespaces": [
+          "security_categories"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/security_master/clean/",
+      "stage": "parity",
+      "dataset_lane": "security_master",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_categories"
+      ],
+      "stockvision_use": "primary security master, market lane, tradability route",
+      "source_asset_key": "finlab/parity/security_master",
+      "source_checksum": "sha256:c391bc30fe18de29f5cdcfa6c0c1d1b26e4532016ea7c6f8795fa7be24f18447"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/parity/security_master/clean"
+      ],
+      "group_name": "finlab_v4_parity",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.security_master.feature_lake",
+        "field_count": 1,
+        "namespaces": [
+          "security_categories"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/parity/security_master/feature_lake/",
+      "stage": "parity",
+      "dataset_lane": "security_master",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_categories"
+      ],
+      "stockvision_use": "primary security master, market lane, tradability route",
+      "source_asset_key": "finlab/parity/security_master",
+      "source_checksum": "sha256:c391bc30fe18de29f5cdcfa6c0c1d1b26e4532016ea7c6f8795fa7be24f18447"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.raw",
+        "field_count": 2,
+        "namespaces": [
+          "etl"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/daily_price/raw/",
+      "stage": "research",
+      "dataset_lane": "daily_price",
+      "access_tier": "archive",
+      "field_count": 2,
+      "markets": [
+        "us"
+      ],
+      "namespaces": [
+        "etl"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/research/daily_price",
+      "source_checksum": "sha256:6484ba3cbb95950c88b880106ba9dcaf946be916def4246a354e2e3d2f08c2b3"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/research/daily_price/raw"
+      ],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.clean",
+        "field_count": 2,
+        "namespaces": [
+          "etl"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/daily_price/clean/",
+      "stage": "research",
+      "dataset_lane": "daily_price",
+      "access_tier": "archive",
+      "field_count": 2,
+      "markets": [
+        "us"
+      ],
+      "namespaces": [
+        "etl"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/research/daily_price",
+      "source_checksum": "sha256:6484ba3cbb95950c88b880106ba9dcaf946be916def4246a354e2e3d2f08c2b3"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/research/daily_price/clean"
+      ],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.daily_price.feature_lake",
+        "field_count": 2,
+        "namespaces": [
+          "etl"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "stock_id",
+        "date"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/daily_price/feature_lake/",
+      "stage": "research",
+      "dataset_lane": "daily_price",
+      "access_tier": "archive",
+      "field_count": 2,
+      "markets": [
+        "us"
+      ],
+      "namespaces": [
+        "etl"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "source_asset_key": "finlab/research/daily_price",
+      "source_checksum": "sha256:6484ba3cbb95950c88b880106ba9dcaf946be916def4246a354e2e3d2f08c2b3"
+    },
+    {
+      "asset_key": "finlab/research/research/raw",
+      "layer": "raw",
+      "deps": [],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.research.raw",
+        "field_count": 1319,
+        "namespaces": [
+          "after_market_odd_lot_trade",
+          "benchmark_return",
+          "board_dividend_announcement",
+          "capital_reduction_otc",
+          "capital_reduction_tse",
+          "cb_converted_status",
+          "cb_price",
+          "cb_published_info",
+          "change_transaction",
+          "company_basic_info",
+          "company_main_business",
+          "day_trade_short_suspension",
+          "delisted_companies",
+          "delisted_companies_otc",
+          "delisted_companies_tse",
+          "disposal_information",
+          "dividend_announcement",
+          "dividend_otc",
+          "dividend_tse",
+          "etf_split",
+          "foreign_investors_shareholding",
+          "hk_analyst_consensus",
+          "hk_balance_sheet",
+          "hk_cash_flow",
+          "hk_company_profile",
+          "hk_dcf",
+          "hk_earnings_surprises",
+          "hk_fund_price",
+          "hk_income_statement",
+          "hk_key_metrics",
+          "hk_price",
+          "hk_ratios",
+          "hk_stock_rating",
+          "important_info_announcement",
+          "important_subsidiary",
+          "insider_shareholding_transfer_declaration",
+          "internal_equity_changes",
+          "internal_equity_insufficient",
+          "internal_equity_pledge",
+          "intraday_lending_fee",
+          "intraday_odd_lot_trade",
+          "intraday_trading",
+          "intraday_trading_stat",
+          "inventory",
+          "investors_conference",
+          "jp_analyst_consensus",
+          "jp_balance_sheet",
+          "jp_cash_flow",
+          "jp_company_profile",
+          "jp_dcf",
+          "jp_earnings_surprises",
+          "jp_fund_price",
+          "jp_income_statement",
+          "jp_key_metrics",
+          "jp_price",
+          "jp_ratios",
+          "jp_stock_rating",
+          "kr_analyst_consensus",
+          "kr_balance_sheet",
+          "kr_cash_flow",
+          "kr_company_profile",
+          "kr_dcf",
+          "kr_earnings_surprises",
+          "kr_fund_price",
+          "kr_income_statement",
+          "kr_key_metrics",
+          "kr_price",
+          "kr_ratios",
+          "kr_stock_rating",
+          "lawsuit_info",
+          "market_transaction_info",
+          "national_security_fund",
+          "oversea_investment",
+          "par_value_change_otc",
+          "par_value_change_tse",
+          "quality_factor_z_score",
+          "reference_price",
+          "shareholders_meeting",
+          "stock_index_price",
+          "stock_index_vol",
+          "taiex_total_index",
+          "trading_attention",
+          "treasury_stock",
+          "uk_analyst_consensus",
+          "uk_balance_sheet",
+          "uk_cash_flow",
+          "uk_company_profile",
+          "uk_dcf",
+          "uk_earnings_surprises",
+          "uk_fund_price",
+          "uk_income_statement",
+          "uk_key_metrics",
+          "uk_price",
+          "uk_ratios",
+          "uk_stock_rating"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/research/raw/",
+      "stage": "research",
+      "dataset_lane": "research",
+      "access_tier": "archive",
+      "field_count": 1319,
+      "markets": [
+        "hk",
+        "jp",
+        "kr",
+        "tw",
+        "uk"
+      ],
+      "namespaces": [
+        "after_market_odd_lot_trade",
+        "benchmark_return",
+        "board_dividend_announcement",
+        "capital_reduction_otc",
+        "capital_reduction_tse",
+        "cb_converted_status",
+        "cb_price",
+        "cb_published_info",
+        "change_transaction",
+        "company_basic_info",
+        "company_main_business",
+        "day_trade_short_suspension",
+        "delisted_companies",
+        "delisted_companies_otc",
+        "delisted_companies_tse",
+        "disposal_information",
+        "dividend_announcement",
+        "dividend_otc",
+        "dividend_tse",
+        "etf_split",
+        "foreign_investors_shareholding",
+        "hk_analyst_consensus",
+        "hk_balance_sheet",
+        "hk_cash_flow",
+        "hk_company_profile",
+        "hk_dcf",
+        "hk_earnings_surprises",
+        "hk_fund_price",
+        "hk_income_statement",
+        "hk_key_metrics",
+        "hk_price",
+        "hk_ratios",
+        "hk_stock_rating",
+        "important_info_announcement",
+        "important_subsidiary",
+        "insider_shareholding_transfer_declaration",
+        "internal_equity_changes",
+        "internal_equity_insufficient",
+        "internal_equity_pledge",
+        "intraday_lending_fee",
+        "intraday_odd_lot_trade",
+        "intraday_trading",
+        "intraday_trading_stat",
+        "inventory",
+        "investors_conference",
+        "jp_analyst_consensus",
+        "jp_balance_sheet",
+        "jp_cash_flow",
+        "jp_company_profile",
+        "jp_dcf",
+        "jp_earnings_surprises",
+        "jp_fund_price",
+        "jp_income_statement",
+        "jp_key_metrics",
+        "jp_price",
+        "jp_ratios",
+        "jp_stock_rating",
+        "kr_analyst_consensus",
+        "kr_balance_sheet",
+        "kr_cash_flow",
+        "kr_company_profile",
+        "kr_dcf",
+        "kr_earnings_surprises",
+        "kr_fund_price",
+        "kr_income_statement",
+        "kr_key_metrics",
+        "kr_price",
+        "kr_ratios",
+        "kr_stock_rating",
+        "lawsuit_info",
+        "market_transaction_info",
+        "national_security_fund",
+        "oversea_investment",
+        "par_value_change_otc",
+        "par_value_change_tse",
+        "quality_factor_z_score",
+        "reference_price",
+        "shareholders_meeting",
+        "stock_index_price",
+        "stock_index_vol",
+        "taiex_total_index",
+        "trading_attention",
+        "treasury_stock",
+        "uk_analyst_consensus",
+        "uk_balance_sheet",
+        "uk_cash_flow",
+        "uk_company_profile",
+        "uk_dcf",
+        "uk_earnings_surprises",
+        "uk_fund_price",
+        "uk_income_statement",
+        "uk_key_metrics",
+        "uk_price",
+        "uk_ratios",
+        "uk_stock_rating"
+      ],
+      "stockvision_use": "non-core global datasets and benchmark-only research candidates",
+      "source_asset_key": "finlab/research/research",
+      "source_checksum": "sha256:212ac1fc6ff82db09213d2d3a415f20c43f85713401fbf3e3c849a379b71243b"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "layer": "clean",
+      "deps": [
+        "finlab/research/research/raw"
+      ],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.research.clean",
+        "field_count": 1319,
+        "namespaces": [
+          "after_market_odd_lot_trade",
+          "benchmark_return",
+          "board_dividend_announcement",
+          "capital_reduction_otc",
+          "capital_reduction_tse",
+          "cb_converted_status",
+          "cb_price",
+          "cb_published_info",
+          "change_transaction",
+          "company_basic_info",
+          "company_main_business",
+          "day_trade_short_suspension",
+          "delisted_companies",
+          "delisted_companies_otc",
+          "delisted_companies_tse",
+          "disposal_information",
+          "dividend_announcement",
+          "dividend_otc",
+          "dividend_tse",
+          "etf_split",
+          "foreign_investors_shareholding",
+          "hk_analyst_consensus",
+          "hk_balance_sheet",
+          "hk_cash_flow",
+          "hk_company_profile",
+          "hk_dcf",
+          "hk_earnings_surprises",
+          "hk_fund_price",
+          "hk_income_statement",
+          "hk_key_metrics",
+          "hk_price",
+          "hk_ratios",
+          "hk_stock_rating",
+          "important_info_announcement",
+          "important_subsidiary",
+          "insider_shareholding_transfer_declaration",
+          "internal_equity_changes",
+          "internal_equity_insufficient",
+          "internal_equity_pledge",
+          "intraday_lending_fee",
+          "intraday_odd_lot_trade",
+          "intraday_trading",
+          "intraday_trading_stat",
+          "inventory",
+          "investors_conference",
+          "jp_analyst_consensus",
+          "jp_balance_sheet",
+          "jp_cash_flow",
+          "jp_company_profile",
+          "jp_dcf",
+          "jp_earnings_surprises",
+          "jp_fund_price",
+          "jp_income_statement",
+          "jp_key_metrics",
+          "jp_price",
+          "jp_ratios",
+          "jp_stock_rating",
+          "kr_analyst_consensus",
+          "kr_balance_sheet",
+          "kr_cash_flow",
+          "kr_company_profile",
+          "kr_dcf",
+          "kr_earnings_surprises",
+          "kr_fund_price",
+          "kr_income_statement",
+          "kr_key_metrics",
+          "kr_price",
+          "kr_ratios",
+          "kr_stock_rating",
+          "lawsuit_info",
+          "market_transaction_info",
+          "national_security_fund",
+          "oversea_investment",
+          "par_value_change_otc",
+          "par_value_change_tse",
+          "quality_factor_z_score",
+          "reference_price",
+          "shareholders_meeting",
+          "stock_index_price",
+          "stock_index_vol",
+          "taiex_total_index",
+          "trading_attention",
+          "treasury_stock",
+          "uk_analyst_consensus",
+          "uk_balance_sheet",
+          "uk_cash_flow",
+          "uk_company_profile",
+          "uk_dcf",
+          "uk_earnings_surprises",
+          "uk_fund_price",
+          "uk_income_statement",
+          "uk_key_metrics",
+          "uk_price",
+          "uk_ratios",
+          "uk_stock_rating"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/research/clean/",
+      "stage": "research",
+      "dataset_lane": "research",
+      "access_tier": "archive",
+      "field_count": 1319,
+      "markets": [
+        "hk",
+        "jp",
+        "kr",
+        "tw",
+        "uk"
+      ],
+      "namespaces": [
+        "after_market_odd_lot_trade",
+        "benchmark_return",
+        "board_dividend_announcement",
+        "capital_reduction_otc",
+        "capital_reduction_tse",
+        "cb_converted_status",
+        "cb_price",
+        "cb_published_info",
+        "change_transaction",
+        "company_basic_info",
+        "company_main_business",
+        "day_trade_short_suspension",
+        "delisted_companies",
+        "delisted_companies_otc",
+        "delisted_companies_tse",
+        "disposal_information",
+        "dividend_announcement",
+        "dividend_otc",
+        "dividend_tse",
+        "etf_split",
+        "foreign_investors_shareholding",
+        "hk_analyst_consensus",
+        "hk_balance_sheet",
+        "hk_cash_flow",
+        "hk_company_profile",
+        "hk_dcf",
+        "hk_earnings_surprises",
+        "hk_fund_price",
+        "hk_income_statement",
+        "hk_key_metrics",
+        "hk_price",
+        "hk_ratios",
+        "hk_stock_rating",
+        "important_info_announcement",
+        "important_subsidiary",
+        "insider_shareholding_transfer_declaration",
+        "internal_equity_changes",
+        "internal_equity_insufficient",
+        "internal_equity_pledge",
+        "intraday_lending_fee",
+        "intraday_odd_lot_trade",
+        "intraday_trading",
+        "intraday_trading_stat",
+        "inventory",
+        "investors_conference",
+        "jp_analyst_consensus",
+        "jp_balance_sheet",
+        "jp_cash_flow",
+        "jp_company_profile",
+        "jp_dcf",
+        "jp_earnings_surprises",
+        "jp_fund_price",
+        "jp_income_statement",
+        "jp_key_metrics",
+        "jp_price",
+        "jp_ratios",
+        "jp_stock_rating",
+        "kr_analyst_consensus",
+        "kr_balance_sheet",
+        "kr_cash_flow",
+        "kr_company_profile",
+        "kr_dcf",
+        "kr_earnings_surprises",
+        "kr_fund_price",
+        "kr_income_statement",
+        "kr_key_metrics",
+        "kr_price",
+        "kr_ratios",
+        "kr_stock_rating",
+        "lawsuit_info",
+        "market_transaction_info",
+        "national_security_fund",
+        "oversea_investment",
+        "par_value_change_otc",
+        "par_value_change_tse",
+        "quality_factor_z_score",
+        "reference_price",
+        "shareholders_meeting",
+        "stock_index_price",
+        "stock_index_vol",
+        "taiex_total_index",
+        "trading_attention",
+        "treasury_stock",
+        "uk_analyst_consensus",
+        "uk_balance_sheet",
+        "uk_cash_flow",
+        "uk_company_profile",
+        "uk_dcf",
+        "uk_earnings_surprises",
+        "uk_fund_price",
+        "uk_income_statement",
+        "uk_key_metrics",
+        "uk_price",
+        "uk_ratios",
+        "uk_stock_rating"
+      ],
+      "stockvision_use": "non-core global datasets and benchmark-only research candidates",
+      "source_asset_key": "finlab/research/research",
+      "source_checksum": "sha256:212ac1fc6ff82db09213d2d3a415f20c43f85713401fbf3e3c849a379b71243b"
+    },
+    {
+      "asset_key": "finlab/research/research/feature_lake",
+      "layer": "feature_lake",
+      "deps": [
+        "finlab/research/research/clean"
+      ],
+      "group_name": "finlab_v4_research",
+      "owner": "stockvision_data_platform",
+      "source": "finlab",
+      "schema": {
+        "schema_ref": "finlab.research.feature_lake",
+        "field_count": 1319,
+        "namespaces": [
+          "after_market_odd_lot_trade",
+          "benchmark_return",
+          "board_dividend_announcement",
+          "capital_reduction_otc",
+          "capital_reduction_tse",
+          "cb_converted_status",
+          "cb_price",
+          "cb_published_info",
+          "change_transaction",
+          "company_basic_info",
+          "company_main_business",
+          "day_trade_short_suspension",
+          "delisted_companies",
+          "delisted_companies_otc",
+          "delisted_companies_tse",
+          "disposal_information",
+          "dividend_announcement",
+          "dividend_otc",
+          "dividend_tse",
+          "etf_split",
+          "foreign_investors_shareholding",
+          "hk_analyst_consensus",
+          "hk_balance_sheet",
+          "hk_cash_flow",
+          "hk_company_profile",
+          "hk_dcf",
+          "hk_earnings_surprises",
+          "hk_fund_price",
+          "hk_income_statement",
+          "hk_key_metrics",
+          "hk_price",
+          "hk_ratios",
+          "hk_stock_rating",
+          "important_info_announcement",
+          "important_subsidiary",
+          "insider_shareholding_transfer_declaration",
+          "internal_equity_changes",
+          "internal_equity_insufficient",
+          "internal_equity_pledge",
+          "intraday_lending_fee",
+          "intraday_odd_lot_trade",
+          "intraday_trading",
+          "intraday_trading_stat",
+          "inventory",
+          "investors_conference",
+          "jp_analyst_consensus",
+          "jp_balance_sheet",
+          "jp_cash_flow",
+          "jp_company_profile",
+          "jp_dcf",
+          "jp_earnings_surprises",
+          "jp_fund_price",
+          "jp_income_statement",
+          "jp_key_metrics",
+          "jp_price",
+          "jp_ratios",
+          "jp_stock_rating",
+          "kr_analyst_consensus",
+          "kr_balance_sheet",
+          "kr_cash_flow",
+          "kr_company_profile",
+          "kr_dcf",
+          "kr_earnings_surprises",
+          "kr_fund_price",
+          "kr_income_statement",
+          "kr_key_metrics",
+          "kr_price",
+          "kr_ratios",
+          "kr_stock_rating",
+          "lawsuit_info",
+          "market_transaction_info",
+          "national_security_fund",
+          "oversea_investment",
+          "par_value_change_otc",
+          "par_value_change_tse",
+          "quality_factor_z_score",
+          "reference_price",
+          "shareholders_meeting",
+          "stock_index_price",
+          "stock_index_vol",
+          "taiex_total_index",
+          "trading_attention",
+          "treasury_stock",
+          "uk_analyst_consensus",
+          "uk_balance_sheet",
+          "uk_cash_flow",
+          "uk_company_profile",
+          "uk_dcf",
+          "uk_earnings_surprises",
+          "uk_fund_price",
+          "uk_income_statement",
+          "uk_key_metrics",
+          "uk_price",
+          "uk_ratios",
+          "uk_stock_rating"
+        ]
+      },
+      "freshness": {
+        "policy": "trading_day_after_close",
+        "timezone": "Asia/Taipei",
+        "max_lag_hours": 30
+      },
+      "join_key": [
+        "as_of_date",
+        "dataset"
+      ],
+      "output_location": "gcs://stockvision-models/finlab_v4/research/research/feature_lake/",
+      "stage": "research",
+      "dataset_lane": "research",
+      "access_tier": "archive",
+      "field_count": 1319,
+      "markets": [
+        "hk",
+        "jp",
+        "kr",
+        "tw",
+        "uk"
+      ],
+      "namespaces": [
+        "after_market_odd_lot_trade",
+        "benchmark_return",
+        "board_dividend_announcement",
+        "capital_reduction_otc",
+        "capital_reduction_tse",
+        "cb_converted_status",
+        "cb_price",
+        "cb_published_info",
+        "change_transaction",
+        "company_basic_info",
+        "company_main_business",
+        "day_trade_short_suspension",
+        "delisted_companies",
+        "delisted_companies_otc",
+        "delisted_companies_tse",
+        "disposal_information",
+        "dividend_announcement",
+        "dividend_otc",
+        "dividend_tse",
+        "etf_split",
+        "foreign_investors_shareholding",
+        "hk_analyst_consensus",
+        "hk_balance_sheet",
+        "hk_cash_flow",
+        "hk_company_profile",
+        "hk_dcf",
+        "hk_earnings_surprises",
+        "hk_fund_price",
+        "hk_income_statement",
+        "hk_key_metrics",
+        "hk_price",
+        "hk_ratios",
+        "hk_stock_rating",
+        "important_info_announcement",
+        "important_subsidiary",
+        "insider_shareholding_transfer_declaration",
+        "internal_equity_changes",
+        "internal_equity_insufficient",
+        "internal_equity_pledge",
+        "intraday_lending_fee",
+        "intraday_odd_lot_trade",
+        "intraday_trading",
+        "intraday_trading_stat",
+        "inventory",
+        "investors_conference",
+        "jp_analyst_consensus",
+        "jp_balance_sheet",
+        "jp_cash_flow",
+        "jp_company_profile",
+        "jp_dcf",
+        "jp_earnings_surprises",
+        "jp_fund_price",
+        "jp_income_statement",
+        "jp_key_metrics",
+        "jp_price",
+        "jp_ratios",
+        "jp_stock_rating",
+        "kr_analyst_consensus",
+        "kr_balance_sheet",
+        "kr_cash_flow",
+        "kr_company_profile",
+        "kr_dcf",
+        "kr_earnings_surprises",
+        "kr_fund_price",
+        "kr_income_statement",
+        "kr_key_metrics",
+        "kr_price",
+        "kr_ratios",
+        "kr_stock_rating",
+        "lawsuit_info",
+        "market_transaction_info",
+        "national_security_fund",
+        "oversea_investment",
+        "par_value_change_otc",
+        "par_value_change_tse",
+        "quality_factor_z_score",
+        "reference_price",
+        "shareholders_meeting",
+        "stock_index_price",
+        "stock_index_vol",
+        "taiex_total_index",
+        "trading_attention",
+        "treasury_stock",
+        "uk_analyst_consensus",
+        "uk_balance_sheet",
+        "uk_cash_flow",
+        "uk_company_profile",
+        "uk_dcf",
+        "uk_earnings_surprises",
+        "uk_fund_price",
+        "uk_income_statement",
+        "uk_key_metrics",
+        "uk_price",
+        "uk_ratios",
+        "uk_stock_rating"
+      ],
+      "stockvision_use": "non-core global datasets and benchmark-only research candidates",
+      "source_asset_key": "finlab/research/research",
+      "source_checksum": "sha256:212ac1fc6ff82db09213d2d3a415f20c43f85713401fbf3e3c849a379b71243b"
+    }
+  ],
+  "checks": [
+    {
+      "asset_key": "finlab/diversity/chip_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "crowding",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "extreme_value_winsorization",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "liquidity",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "price_location",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "price_location_gate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/clean",
+      "check_name": "turnover",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/chip_diversity/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "check_name": "branch_concentration_bounds",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/clean",
+      "check_name": "emerging_symbol_coverage",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "check_name": "no_pending_buy",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "check_name": "watchlist_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "liquidity_bounds",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "no_pending_buy",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/clean",
+      "check_name": "rotc_market_lane",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "check_name": "no_pending_buy",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "check_name": "watchlist_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "no_pending_buy",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "publication_alignment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/clean",
+      "check_name": "restatement_check",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "check_name": "no_pending_buy",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "check_name": "watchlist_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "no_lookahead",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "report_date_availability",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/clean",
+      "check_name": "sector_normalization",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "coverage",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "delay",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "holiday_calendar_alignment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "license",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/clean",
+      "check_name": "survivorship_check",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "low_frequency_alignment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "market_level_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/clean",
+      "check_name": "no_direct_alpha_gate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "alias_cleaning",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "coverage_by_symbol",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/clean",
+      "check_name": "duplicate_tag_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion/feature_lake",
+      "check_name": "shadow_feature_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "crowding",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "extreme_value_winsorization",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "liquidity",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/clean",
+      "check_name": "price_location",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity/feature_lake",
+      "check_name": "twse_tpex_diff_report",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "20_30_day_parity",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "missing_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/clean",
+      "check_name": "split_adjustment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price/feature_lake",
+      "check_name": "twse_tpex_diff_report",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "no_lookahead",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "report_date_availability",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/clean",
+      "check_name": "sector_normalization",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity/feature_lake",
+      "check_name": "twse_tpex_diff_report",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "check_name": "announcement_date_alignment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/clean",
+      "check_name": "restatement_check",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/revenue/feature_lake",
+      "check_name": "twse_tpex_diff_report",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "known_symbol_checks",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "market_enum",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/clean",
+      "check_name": "row_count",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/parity/security_master/feature_lake",
+      "check_name": "twse_tpex_diff_report",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "20_30_day_parity",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "missing_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/clean",
+      "check_name": "split_adjustment",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/daily_price/feature_lake",
+      "check_name": "research_only",
+      "severity": "warn"
+    },
+    {
+      "asset_key": "finlab/research/research/raw",
+      "check_name": "freshness",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/raw",
+      "check_name": "schema_presence",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/raw",
+      "check_name": "field_count_positive",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "check_name": "schema_compatibility",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "check_name": "null_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "check_name": "duplicate_rate",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/feature_lake",
+      "check_name": "provenance",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/feature_lake",
+      "check_name": "promotion_gate_status",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "check_name": "manual_review",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/clean",
+      "check_name": "research_only",
+      "severity": "error"
+    },
+    {
+      "asset_key": "finlab/research/research/feature_lake",
+      "check_name": "research_only",
+      "severity": "warn"
+    }
+  ],
+  "checksum": "sha256:0bc05f924f7ce7ba0130f495fb771531a0263690a4a527a4edc51ff0bfcccf44"
+}

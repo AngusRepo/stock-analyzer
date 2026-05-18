@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, ExternalLink } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import ObservabilityEventTimeline from '@/components/charts/ObservabilityEventTimeline'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -592,6 +593,12 @@ export default function ObservabilityPage() {
               <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
             </div>
           }
+        />
+
+        <ObservabilityEventTimeline
+          report={observability.data}
+          loading={observability.isLoading}
+          error={observability.error}
         />
 
         <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">

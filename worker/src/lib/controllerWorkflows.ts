@@ -5,6 +5,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'model-ic-tracker',
   'verify-v2',
   'weekly-audit',
+  'weekly-drift-retrain',
   'weekly-optuna',
   'monthly-optuna',
   'alpha-quality',
@@ -21,6 +22,7 @@ export {
   runModelIcRollingRefresh,
   runModelIcTrackerChain,
   runObsidianDaily,
+  runPaperActivePostmarketPromotion,
   runRegimeCompute,
   runVerifyV2,
 } from './controllerDailyWorkflows'
@@ -35,6 +37,7 @@ export {
   runWeeklyMonteCarlo,
   runWeeklyOptunaResearch,
   runWeeklyPBO,
+  runWeeklyDriftRetrain,
   runWeeklyRetrain,
   summarizeWeeklyValidationChain,
   triggerRetrain,

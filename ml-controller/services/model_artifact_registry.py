@@ -202,7 +202,10 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     if not version or not isinstance(registrations, dict) or not registrations:
         return []
 
-    candidate_type = candidate_type_from_retrain(is_monthly=payload_dict.get("is_monthly"))
+    candidate_type = candidate_type_from_retrain(
+        is_monthly=payload_dict.get("is_monthly"),
+        explicit=payload_dict.get("candidate_type"),
+    )
     ic_summary = payload_dict.get("ic_summary") if isinstance(payload_dict.get("ic_summary"), dict) else {}
     now = _now_iso()
     out: list[dict[str, Any]] = []

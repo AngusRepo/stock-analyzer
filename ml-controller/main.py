@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -93,7 +93,7 @@ app.include_router(obsidian.router, prefix="/obsidian", dependencies=[Depends(ve
 app.include_router(intraday.router, dependencies=[Depends(verify_token)])
 # 2026-04-17 #30: HMM regime → ml:regime KV (Sprint 4-2 revisit)
 app.include_router(regime.router,   dependencies=[Depends(verify_token)])
-# 2026-04-17 #32: Sprint 6b walk-forward ML retrain orchestrator (scaffold)
+# 2026-04-17 #32: Sprint 6b walk-forward ML retrain orchestrator
 app.include_router(walk_forward.router, dependencies=[Depends(verify_token)])
 # 2026-04-18 #39: Morning Debate full port — runBuyDebate migrated from Worker
 app.include_router(debate.router,       dependencies=[Depends(verify_token)])
@@ -106,6 +106,8 @@ app.include_router(admin.router,        dependencies=[Depends(verify_token)])
 app.include_router(research_benchmark.router, dependencies=[Depends(verify_token)])
 app.include_router(dataset_snapshots.router, dependencies=[Depends(verify_token)])
 app.include_router(meta_learning.router, dependencies=[Depends(verify_token)])
+app.include_router(paper_challenger.router, dependencies=[Depends(verify_token)])
+app.include_router(breeze2.router, dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])

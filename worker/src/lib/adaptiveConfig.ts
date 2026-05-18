@@ -1,3 +1,5 @@
+import { readMarketRegimeState } from './marketRegimeState'
+
 export type AdaptiveRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
 export type AdaptiveParamSource = 'ml-controller' | 'risk-assess' | 'manual' | 'fallback' | 'unknown'
 
@@ -360,9 +362,8 @@ export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams
 }
 
 async function readCurrentRegime(kv: KVNamespace): Promise<string | null> {
-  const meta = await kv.get('ml:regime:meta', 'json').catch(() => null) as Record<string, unknown> | null
-  if (meta?.label) return String(meta.label)
-  return await kv.get('ml:regime').catch(() => null)
+  const state = await readMarketRegimeState(kv)
+  return state?.family ?? state?.label ?? null
 }
 
 export async function getAdaptiveParamsForRegime(

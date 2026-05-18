@@ -130,7 +130,7 @@ const OWNER_BOUNDARIES: ObservabilityEventReport['owner_boundaries'] = [
   { owner: 'Cloud Run', responsibility: 'Pipeline and controller orchestration', source_of_truth: 'ml-controller graphs/services' },
   { owner: 'Modal', responsibility: 'Heavy ML runtime and model artifacts', source_of_truth: 'ml-service runtime + GCS metadata' },
   { owner: 'Worker', responsibility: 'Serving APIs, D1/KV state, UI contracts', source_of_truth: 'worker routes/lib contracts' },
-  { owner: 'Adaptive Meta Layer', responsibility: 'Regime-aware deltas, bandit protection, and meta optimizer boundaries', source_of_truth: 'ml:adaptive_params + ml:regime:meta' },
+  { owner: 'Adaptive Meta Layer', responsibility: 'Regime-aware deltas, bandit protection, and meta optimizer boundaries', source_of_truth: 'ml:adaptive_params + market_regime_state' },
   { owner: 'Frontend', responsibility: 'Read-only decision cockpit', source_of_truth: 'typed API payloads, no business ownership' },
 ]
 
@@ -578,7 +578,7 @@ export function buildEventsFromAdaptiveMeta(input: {
       summary: 'OBS could not read effective regime-aware adaptive params.',
       owner: 'Adaptive Meta Layer',
       impact: 'Screener, morning setup, and ML runtime may use fallback adaptive deltas.',
-      next_action: 'Check Worker KV ml:adaptive_params, ml:regime:meta, and risk-assess scheduler.',
+      next_action: 'Check Worker KV ml:adaptive_params, market_regime_state, and risk-assess scheduler.',
       runbook: 'P8 adaptive meta layer contract',
       evidence: { error: input.sourceError },
     }]

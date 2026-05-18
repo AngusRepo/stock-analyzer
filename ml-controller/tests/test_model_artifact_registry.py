@@ -72,6 +72,30 @@ def test_build_artifact_records_from_weekly_followup_failed_registration():
     assert "artifact_registration_failed" in row["offline_gate_failed_gates"]
 
 
+def test_explicit_candidate_type_from_weekly_drift_payload_wins_over_monthly_flag():
+    payload = {
+        "run_id": "weekly-drift-hotfix",
+        "run_date": "2026-05-18",
+        "is_monthly": True,
+        "candidate_type": "weekly_drift",
+        "candidate_version": "v20260518w",
+        "status": "completed",
+        "ic_summary": {"PatchTST": 0.041},
+        "challenger_registrations": {
+            "PatchTST": {
+                "status": "registered",
+                "version": "v20260518w",
+                "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.036},
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert records[0]["artifact_id"] == "PatchTST:v20260518w:weekly_drift"
+    assert records[0]["candidate_type"] == "weekly_drift"
+
+
 def test_followup_without_candidate_version_does_not_create_registry_records():
     records = registry.build_artifact_records_from_retrain_followup({
         "run_id": "legacy-run",

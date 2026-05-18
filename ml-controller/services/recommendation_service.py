@@ -583,7 +583,7 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
     final_score = row.get("score") or raw_score
-    return {
+    components = {
         "chip": row.get("chip_score") or 0,
         "tech": row.get("tech_score") or 0,
         "screenerMomentum": row.get("momentum_score") or 0,
@@ -602,6 +602,9 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
             "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
         },
     }
+    if isinstance(row.get("chip_evidence"), dict):
+        components["chipEvidence"] = row["chip_evidence"]
+    return components
 
 
 def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) -> float:
@@ -622,6 +625,49 @@ def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) ->
             continue
         total += float(c.get(field) or 0.0) * close / 1e8
     return round(total, 6)
+
+
+def _sum_broker_cash_billion(chips: list[dict], prices: list[dict]) -> float:
+    """Prefer FinLab estimated broker amount, fallback to broker shares * close."""
+    if not chips:
+        return 0.0
+    total_amount = 0.0
+    missing_amount_rows: list[dict] = []
+    for c in chips:
+        if c.get("broker_estimated_amount") is None:
+            missing_amount_rows.append(c)
+            continue
+        total_amount += float(c.get("broker_estimated_amount") or 0.0)
+    if missing_amount_rows:
+        price_by_date = {p.get("date"): float(p.get("close") or 0.0) for p in prices if p.get("date")}
+        fallback_close = 0.0
+        for p in reversed(prices):
+            close = float(p.get("close") or 0.0)
+            if close > 0:
+                fallback_close = close
+                break
+        for c in missing_amount_rows:
+            close = price_by_date.get(c.get("date")) or fallback_close
+            total_amount += float(c.get("broker_net_shares") or 0.0) * close
+    return round(total_amount / 1e8, 6)
+
+
+def _sum_numeric(chips: list[dict], field: str) -> float:
+    return round(sum(float(c.get(field) or 0.0) for c in chips), 6)
+
+
+def _latest_broker_chip(chips: list[dict]) -> dict:
+    for c in reversed(chips):
+        if c.get("broker_net_shares") is not None or c.get("broker_estimated_amount") is not None:
+            return c
+    return {}
+
+
+def _format_abs_cash_billion(value: float) -> str:
+    abs_value = abs(value)
+    if 0 < abs_value < 0.01:
+        return f"{round(abs_value * 10000):.0f}萬"
+    return f"{abs_value:.2f}億"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -700,17 +746,32 @@ def build_reason(s: dict) -> str:
     fnet = float(s.get("foreign_net_5d") or 0.0)
     tnet = float(s.get("trust_net_5d") or 0.0)
     dnet = float(s.get("dealer_net_5d") or 0.0)
-    net_amount = fnet + tnet + dnet
-    if net_amount > 5:
-        chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
-    elif net_amount > 1:
-        chip_reason = f"法人買超 {net_amount:.1f} 億"
-    elif net_amount > 0:
-        chip_reason = "法人小幅買超"
-    elif net_amount > -1:
-        chip_reason = "法人買賣超接近平衡"
+    market_segment = str(s.get("market_segment") or "").upper()
+    broker_cash_5d = float(s.get("broker_net_amount_5d") or 0.0)
+    broker_rows = int(s.get("broker_rows") or 0)
+    if market_segment == "EMERGING" and broker_rows > 0:
+        direction = "買超" if broker_cash_5d >= 0 else "賣超"
+        chip_reason = f"券商分點近5日{direction}{_format_abs_cash_billion(broker_cash_5d)}"
+        broker_count = s.get("broker_count_latest")
+        concentration = s.get("broker_concentration_latest")
+        if broker_count is not None:
+            chip_reason += f"、券商數{int(float(broker_count))}"
+        if concentration is not None:
+            chip_reason += f"、集中度{float(concentration):.2f}"
+    elif market_segment == "EMERGING":
+        chip_reason = "興櫃券商分點資料不足，暫不以三大法人語意判讀"
     else:
-        chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
+        net_amount = fnet + tnet + dnet
+        if net_amount > 5:
+            chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
+        elif net_amount > 1:
+            chip_reason = f"法人買超 {net_amount:.1f} 億"
+        elif net_amount > 0:
+            chip_reason = "法人小幅買超"
+        elif net_amount > -1:
+            chip_reason = "法人買賣超接近平衡"
+        else:
+            chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
 
     rsi = float(s.get("rsi14") or 0.0)
     macd_up = float(s.get("macd_hist") or 0.0) > 0
@@ -751,8 +812,12 @@ def build_watch_points(s: dict) -> list[str]:
         points.append("外資近 5 日偏賣，籌碼需再確認")
     if float(s.get("trust_net_5d") or 0.0) < 0 < float(s.get("foreign_net_5d") or 0.0):
         points.append("外資與投信方向不一致")
-    if str(s.get("market_segment") or "").upper() == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
-        points.append("籌碼資料不足：興櫃或資料源未提供三大法人明細，籌碼分不是看壞而是不可比")
+    market_segment = str(s.get("market_segment") or "").upper()
+    broker_rows = int(s.get("broker_rows") or 0)
+    if market_segment == "EMERGING" and broker_rows > 0:
+        points.append("興櫃籌碼採 FinLab 券商分點 proxy；不可與上市櫃三大法人直接同比")
+    elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
+        points.append("興櫃券商分點資料不足；暫不以三大法人語意判讀")
     if "BUY" in sig and forecast_pct < 0:
         points.append("ML 訊號與預期報酬矛盾，禁止直接追價")
     elif conf < 0.45:
@@ -882,6 +947,24 @@ def filter_and_score_recommendations(
         foreign_net_5d = _sum_chip_cash_billion(recent_chips, prices, "foreign_net")
         trust_net_5d = _sum_chip_cash_billion(recent_chips, prices, "trust_net")
         dealer_net_5d = _sum_chip_cash_billion(recent_chips, prices, "dealer_net")
+        broker_net_amount_5d = _sum_broker_cash_billion(recent_chips, prices)
+        broker_net_shares_5d = _sum_numeric(recent_chips, "broker_net_shares")
+        latest_broker = _latest_broker_chip(recent_chips)
+        broker_rows = sum(
+            1 for chip in recent_chips
+            if chip.get("broker_net_shares") is not None or chip.get("broker_estimated_amount") is not None
+        )
+        chip_evidence = None
+        if broker_rows > 0:
+            chip_evidence = {
+                "source": latest_broker.get("chip_source") or "finlab.rotc_broker_transactions",
+                "source_date": latest_broker.get("date"),
+                "broker_net_amount_5d_billion": broker_net_amount_5d,
+                "broker_net_shares_5d": broker_net_shares_5d,
+                "broker_count_latest": latest_broker.get("broker_count"),
+                "concentration_latest": latest_broker.get("broker_concentration"),
+                "as_of_date": latest_broker.get("as_of_date"),
+            }
 
         # ML model votes from prediction
         ml_models_total = 0
@@ -916,6 +999,11 @@ def filter_and_score_recommendations(
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
             "dealer_net_5d": dealer_net_5d,
+            "broker_net_amount_5d": broker_net_amount_5d,
+            "broker_net_shares_5d": broker_net_shares_5d,
+            "broker_count_latest": latest_broker.get("broker_count"),
+            "broker_concentration_latest": latest_broker.get("broker_concentration"),
+            "broker_rows": broker_rows,
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
             "current_price": current_price,
@@ -971,6 +1059,7 @@ def filter_and_score_recommendations(
             "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
+            "chip_evidence": chip_evidence,
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
         }

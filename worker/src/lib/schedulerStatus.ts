@@ -39,7 +39,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'model-ic-tracker', name: 'Model IC Tracker', schedule: 'After verify callback / Friday full check', cron: '30 11 * * 5', group: 'pipeline_chain', chainIndex: 11 },
   { id: 'adapt', name: 'Adapt Params', schedule: 'After rolling IC', cron: '', group: 'pipeline_chain', chainIndex: 12 },
   { id: 'daily-report', name: 'Daily Report', schedule: 'After adapt', cron: '', group: 'pipeline_chain', chainIndex: 13 },
-  { id: 'obsidian-sync', name: 'Obsidian Sync', schedule: 'After daily report', cron: '', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'paper-active-postmarket', name: 'Paper Active Postmarket', schedule: 'After daily report', cron: '', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'obsidian-sync', name: 'Obsidian Sync', schedule: 'After paper-active postmarket', cron: '', group: 'pipeline_chain', chainIndex: 15 },
 
   { id: 'us-leading', name: 'US Leading', schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
@@ -57,6 +58,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'weekly-backtest', name: 'Weekly Validation/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
+  { id: 'weekly-drift-retrain', name: 'Weekly Drift Retrain', schedule: 'Manual, approval-gated shadow candidate', cron: 'manual confirm=weekly_drift', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00 UTC', cron: 'first saturday of month 16:00', group: 'monthly' },
   { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
@@ -78,6 +80,7 @@ const CHAIN_STEP_IDS = [
   'model-ic-tracker',
   'adapt',
   'daily-report',
+  'paper-active-postmarket',
   'obsidian-sync',
 ]
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])

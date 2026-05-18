@@ -109,7 +109,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       if (!validEod && !c.req.query('force')) return Promise.resolve('SKIPPED: 僅限 EOD 13:25-13:35 TW，請加 force=1')
       return deps.runEODExit()
     },
-    'daily-snapshot': () => deps.runDailySnapshot(),
+    'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),
     warmup: () => deps.runMorningWarmup(),
     'ml-warmup': () => runMlControllerWarmup(c.env),
     'pre-market-warmup': async () => {

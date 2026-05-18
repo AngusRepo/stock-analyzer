@@ -12,7 +12,7 @@ export interface TriggerDeps {
   setupMorningPendingBuys: () => Promise<any>
   runIntradayCheck: () => Promise<any>
   runEODExit: () => Promise<any>
-  runDailySnapshot: () => Promise<any>
+  runDailySnapshot: (runDate?: string) => Promise<any>
   runMorningWarmup: () => Promise<any>
   runWeeklyAudit: () => Promise<any>
   runWeeklyBacktest: () => Promise<any>

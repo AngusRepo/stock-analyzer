@@ -10,9 +10,19 @@ import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAc
 
 const ACCOUNT_ID = 1
 
-export async function runDailySnapshot(env: Bindings): Promise<void> {
+export type DailySnapshotOptions = {
+  date?: string
+}
+
+function snapshotDate(raw?: string): string {
+  const value = String(raw ?? '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}): Promise<{ date: string }> {
   console.log('[Snapshot] Starting...')
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = snapshotDate(options.date)
 
   const updatedAcc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!updatedAcc) return
@@ -62,8 +72,8 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   const twiiValue: number | null = twiiRow?.twii_close ?? null
 
   const { results: allSnapshots } = await env.DB.prepare(
-    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC',
-  ).bind(ACCOUNT_ID).all<any>()
+    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date ASC',
+  ).bind(ACCOUNT_ID, today).all<any>()
   let maxDrawdownToDate: number | null = null
   if (allSnapshots && allSnapshots.length > 0) {
     let peak = updatedAcc.initial_cash
@@ -83,10 +93,10 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   let calmar: number | null = null
 
   const { results: recent30 } = await env.DB.prepare(
-    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 31',
-  ).bind(ACCOUNT_ID).all<any>()
-  if (recent30 && recent30.length >= 10) {
-    const values = recent30.map((s: any) => s.total_value as number).reverse()
+    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date DESC LIMIT 30',
+  ).bind(ACCOUNT_ID, today).all<any>()
+  if (recent30 && recent30.length >= 9) {
+    const values = [...recent30.map((s: any) => s.total_value as number).reverse(), totalValue]
     const returns: number[] = []
     for (let i = 1; i < values.length; i += 1) {
       if (values[i - 1] > 0) returns.push((values[i] - values[i - 1]) / values[i - 1])
@@ -162,6 +172,8 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     (env as any).DISCORD_WEBHOOK_URL,
     formatDailySummary(totalValue, pnlPct / 100, todayOrderCount?.cnt ?? 0, maxDrawdownToDate, sharpe30d),
   )
+
+  return { date: today }
 }
 
 export async function runPaperAutoTrade(env: Bindings): Promise<void> {

@@ -63,7 +63,7 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
   const coverageRows = runtime?.source_coverage ?? []
   const canonical = runtime?.canonical_rows
   const legacyRows = runtime?.source_quality_metrics ?? []
-  const sources = ['ptt', 'anue', 'd1_news', 'finlab', 'finnhub_news', 'official_rss', 'company_ir_rss', 'gdelt_events']
+  const sources = ['ptt', 'anue', 'd1_news', 'finlab', 'official_rss', 'company_ir_rss', 'gdelt_events']
   const fallbackRows: SourcePanelRow[] = legacyRows.map((row) => ({
     source: row.source,
     role: row.dataset,

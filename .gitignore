@@ -15,6 +15,7 @@ pytest-cache-files-*/
 .modal.toml
 /tmp/
 .tmp/
+.bug-hunter/
 worker/.tmp/
 *.log
 scripts/data/

@@ -32,8 +32,11 @@ def main() -> int:
     parser.add_argument("--start-date", default="")
     parser.add_argument("--end-date", default="")
     parser.add_argument("--limit-per-dataset", type=int, default=0, help="Test/smoke limiter; 0 means no limit.")
+    parser.add_argument("--datasets", default="", help="Comma-separated canonical datasets to materialize.")
+    parser.add_argument("--generated-at", default="", help="Override generated_at/as_of_date, e.g. 2026-05-18T23:00:00+00:00.")
     parser.add_argument("--output-dir", default=str(ROOT / "data" / "finlab_canonical_materialized"))
     args = parser.parse_args()
+    datasets = [part.strip() for part in args.datasets.split(",") if part.strip()]
 
     outputs = materialize_finlab_canonical_outputs(
         args.artifact_root,
@@ -41,6 +44,8 @@ def main() -> int:
         start_date=args.start_date or None,
         end_date=args.end_date or None,
         limit_per_dataset=args.limit_per_dataset or None,
+        generated_at=args.generated_at or None,
+        datasets=datasets or None,
     )
     out = Path(args.output_dir) / outputs.run_id
     tables = {

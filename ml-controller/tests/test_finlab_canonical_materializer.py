@@ -132,3 +132,24 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:
+    root = _root("materialize_revenue_only")
+    _write(root / "raw" / "revenue" / "revenue.parquet", pl.DataFrame({"date": ["2026-05-01"], "2330": [100.0]}))
+    for field in ["mom", "yoy"]:
+        _write(root / "raw" / "revenue" / f"{field}.parquet", pl.DataFrame({"date": ["2026-05-01"], "2330": [1.0]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-18T00:00:00+00:00",
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        datasets=["canonical_revenue_monthly"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_revenue_monthly": 1}
+    assert outputs.canonical_market_daily == []
+    assert outputs.canonical_chip_daily == []
+    assert outputs.canonical_revenue_monthly[0]["stock_id"] == "2330"
+    assert outputs.source_quality_metrics[0]["dataset"] == "canonical_revenue_monthly"

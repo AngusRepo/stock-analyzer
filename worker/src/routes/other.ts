@@ -32,6 +32,12 @@ import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
+import {
+  buildMarketRegimeFactorPacket,
+  loadMarketRegimeFactorPacket,
+  upsertMarketRegimeFactorPacket,
+} from '../lib/marketRegimeFactorPacket'
+import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -568,7 +574,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v4-context'
+  const cacheKey = 'market:risk:latest:v4-factor-packet-rebuild'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -595,17 +601,27 @@ market.get('/risk', async (c) => {
   const regimeSurface = regimeState?.regime_surface ?? {}
   const monitors = regimeState?.monitors ?? {}
   const transitionGuard = regimeState?.transition_guard ?? {}
-  const contextFactors = [
+  const legacyContextFactors = [
     factor('price_trend', '價格趨勢', `${twiiBias.toFixed(2)}%`, twiiBias < -3 ? 'error' : twiiBias < -1 ? 'warn' : 'ok', 'market_risk.twii_bias', `TWII close ${row.twii_close ?? 'n/a'} vs MA20 ${row.twii_ma20 ?? 'n/a'}`),
     factor('volatility', '波動', row.vix != null ? `VIX ${Number(row.vix).toFixed(1)}` : `${Number(row.twii_vol20 ?? 0).toFixed(2)}%`, String(row.vix_level ?? '').toLowerCase().includes('high') ? 'warn' : 'info', 'market_risk.vix_twii_vol20'),
     factor('breadth', '市場廣度', `${limitDownPct.toFixed(2)}%`, limitDownPct > 3 ? 'error' : limitDownPct > 1 ? 'warn' : 'ok', 'market_risk.limit_down_pct', `limit_down_count=${row.limit_down_count ?? 0}`),
-    factor('chips', '籌碼', `${(foreignNet5d / 100000000).toFixed(1)}億`, foreignNet5d < 0 ? 'warn' : 'ok', 'market_risk.foreign_net_5d', `foreign_consecutive_sell=${row.foreign_consecutive_sell ?? 0}`),
+    factor('chips', '籌碼', `${foreignNet5d.toFixed(1)}億`, foreignNet5d < 0 ? 'warn' : 'ok', 'market_risk.foreign_net_5d', `foreign_consecutive_sell=${row.foreign_consecutive_sell ?? 0}`),
     factor('leverage', '槓桿', marginRatio ? `${marginRatio.toFixed(2)}%` : 'n/a', marginRatio > 40 ? 'warn' : 'info', 'market_risk.margin_ratio'),
     factor('regime', 'Regime', regimeState?.label ?? 'missing', regimeState ? (regimeState.family === 'bear' ? 'warn' : 'ok') : 'error', regimeState?.source === 'legacy_label' ? 'legacy_regime_fallback' : 'market_regime_state', `run_date=${regimeState?.run_date ?? 'missing'}`),
     factor('global_risk', '全球風險', String((monitors as any).global_event_pressure ?? (regimeSurface as any).global_risk ?? 'context'), (regimeSurface as any).global_risk > 0.6 ? 'warn' : 'info', 'market_regime_state.monitors'),
     factor('lppls', 'LPPLS', String((monitors as any).lppls ?? 'context'), (transitionGuard as any).bubble_risk ? 'warn' : 'info', 'market_regime_state.monitors.lppls'),
     factor('hawkes', 'Hawkes', String((monitors as any).hawkes ?? 'context'), (transitionGuard as any).contagion_risk ? 'warn' : 'info', 'market_regime_state.monitors.hawkes'),
   ]
+  let factorPacket = await buildMarketRegimeFactorPacket(c.env.DB, row, regimeState).catch(() => null)
+  if (factorPacket) {
+    await upsertMarketRegimeFactorPacket(c.env.DB, factorPacket).catch(() => {})
+  } else {
+    factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
+  }
+  const contextFactors = factorPacket?.factors ?? legacyContextFactors
+  const packetSummary = factorPacket
+    ? `V4 weighted factors: ${factorPacket.factors.map((item) => `${item.label} ${item.value}`).join(' / ')}`
+    : row.risk_summary
 
   const data = {
     date:                   row.date,
@@ -620,9 +636,9 @@ market.get('/risk', async (c) => {
     marginRatio:            row.margin_ratio,
     limitDownCount:         row.limit_down_count,
     limitDownPct:           row.limit_down_pct,
-    riskScore:              row.risk_score,
-    riskLevel:              row.risk_level,
-    riskSummary:            row.risk_summary,
+    riskScore:              factorPacket?.score ?? row.risk_score,
+    riskLevel:              factorPacket?.level ?? row.risk_level,
+    riskSummary:            packetSummary,
     calculatedAt:           row.calculated_at,
     regimeState: regimeState ? {
       label: regimeState.label,
@@ -634,6 +650,7 @@ market.get('/risk', async (c) => {
       transitionGuard: regimeState.transition_guard,
       monitors: regimeState.monitors,
     } : null,
+    factorPacket,
     contextFactors,
   }
 
@@ -1309,6 +1326,18 @@ recommendations.get('/daily', async (c) => {
       watch_points: watchPoints,
     }
   })
+  const evidenceLinksBySymbol = await loadRecommendationEvidenceLinks(
+    c.env.DB,
+    String(date),
+    recs.map((r: any) => String(r.symbol ?? '')),
+    3,
+  ).catch((e) => {
+    console.warn('[recommendations/daily] evidence links unavailable:', e)
+    return new Map<string, any[]>()
+  })
+  for (const rec of recs) {
+    rec.evidence_links = evidenceLinksBySymbol.get(String(rec.symbol ?? '').trim()) ?? []
+  }
   const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
   const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
   const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')

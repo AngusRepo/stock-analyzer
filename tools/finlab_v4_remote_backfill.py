@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,9 +102,24 @@ CORE_SPECS = [
         keys={"security_industry_themes": "security_industry_themes"},
     ),
     DatasetSpec(
+        lane="trading_restrictions",
+        kind="table",
+        keys={"trading_attention": "trading_attention"},
+    ),
+    DatasetSpec(
         lane="emerging_chip_diversity",
         kind="rotc_broker_aggregate",
         keys={"rotc_broker_transactions": "rotc_broker_transactions"},
+    ),
+]
+
+TRADING_RESTRICTION_RETENTION_DAYS = int(os.environ.get("FINLAB_TRADING_RESTRICTION_RETENTION_DAYS", "31"))
+
+OPTIONAL_NEWS_SPECS = [
+    DatasetSpec(
+        lane="tw_news_cnyes",
+        kind="table",
+        keys={"tw_news_cnyes": "tw_news_cnyes"},
     ),
 ]
 
@@ -240,6 +255,49 @@ def table_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     return data.to_dict(orient="records")
 
 
+def _row_value(row: dict[str, Any], names: list[str]) -> Any:
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for name in names:
+        key = name.strip().lower()
+        if key in lowered and pd.notna(lowered[key]):
+            return lowered[key]
+    return None
+
+
+def _clean_symbol(value: Any, row: dict[str, Any] | None = None) -> str:
+    import re
+
+    text = str(value or "").strip()
+    match = re.search(r"\b(\d{4,6})\b", text)
+    if match:
+        return match.group(1)
+    if row:
+        joined = " ".join(str(v) for v in row.values() if pd.notna(v))
+        match = re.search(r"\b(\d{4,6})\b", joined)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _clean_date(value: Any, fallback: str) -> str:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return fallback
+    return str(parsed.date())
+
+
+def _add_days(value: str, days: int) -> str:
+    parsed = datetime.fromisoformat(value)
+    return (parsed + timedelta(days=days)).date().isoformat()
+
+
+def _source_url(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return fallback
+
+
 def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
@@ -250,8 +308,13 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
 
-    for spec in CORE_SPECS:
+    specs = list(CORE_SPECS)
+    if os.environ.get("INCLUDE_FINLAB_CNYES_NEWS", "0").lower() in {"1", "true", "yes"}:
+        specs.extend(OPTIONAL_NEWS_SPECS)
+
+    for spec in specs:
         t0 = time.time()
+        print(f"[finlab-backfill] start lane={spec.lane} kind={spec.kind}", flush=True)
         lane_dir = run_dir / "raw" / spec.lane
         artifacts: list[dict[str, Any]] = []
         finlab_rows = 0
@@ -364,6 +427,10 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
             "artifacts": artifacts,
         })
         write_json(run_dir / "diff" / f"{spec.lane}.json", diff)
+        print(
+            f"[finlab-backfill] done lane={spec.lane} rows={finlab_rows} latest={latest} seconds={round(time.time() - t0, 2)}",
+            flush=True,
+        )
 
     return dataset_summaries, diff_reports
 
@@ -474,6 +541,151 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             )
 
 
+def _artifact_path(manifest: dict[str, Any], lane: str) -> Path | None:
+    for dataset in manifest.get("datasets") or []:
+        if dataset.get("lane") != lane:
+            continue
+        artifacts = dataset.get("artifacts") or []
+        if not artifacts:
+            return None
+        path = artifacts[0].get("path")
+        return Path(path) if path else None
+    return None
+
+
+def insert_finlab_trading_restrictions(
+    manifest: dict[str, Any],
+    *,
+    lookback_days: int = TRADING_RESTRICTION_RETENTION_DAYS,
+    max_rows: int = 1200,
+) -> int:
+    path = _artifact_path(manifest, "trading_restrictions")
+    if not path or not path.exists():
+        return 0
+    generated_date = str(manifest.get("generated_at") or utc_now())[:10]
+    cutoff = (datetime.fromisoformat(generated_date) - timedelta(days=lookback_days)).date().isoformat()
+    rows = pd.read_parquet(path).to_dict(orient="records")
+    prepared: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        source_date = _clean_date(_row_value(row, ["date", "日期", "公布日期", "created_at", "updated_at"]), generated_date)
+        if source_date < cutoff:
+            continue
+        prepared.append((source_date, row))
+    prepared.sort(key=lambda item: item[0], reverse=True)
+
+    inserted = 0
+    for source_date, row in prepared[:max_rows]:
+        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "證券代號", "股票代號", "code"]), row)
+        if not symbol:
+            continue
+        raw_type = str(_row_value(row, ["type", "restriction_type", "類別", "處置類別", "注意處置"]) or "attention")
+        restriction_type = "disposition" if any(word in raw_type for word in ["處置", "punish", "disposition"]) else "attention"
+        title = str(_row_value(row, ["title", "name", "股票名稱", "證券名稱", "說明", "reason"]) or f"{restriction_type}:{symbol}")[:240]
+        url = _source_url(_row_value(row, ["url", "source_url", "link"]), "https://www.finlab.tw/")
+        end_date = _add_days(source_date, lookback_days)
+        d1_exec(
+            """
+            INSERT INTO canonical_trading_restrictions (
+              symbol, restriction_type, market_segment, start_date, end_date, source,
+              source_date, title, source_url, lineage_json, active, updated_at
+            )
+            VALUES (?, ?, NULL, ?, ?, 'finlab.trading_attention', ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(symbol, restriction_type, source, source_date) DO UPDATE SET
+              title=excluded.title,
+              end_date=excluded.end_date,
+              source_url=excluded.source_url,
+              lineage_json=excluded.lineage_json,
+              active=excluded.active,
+              updated_at=CURRENT_TIMESTAMP
+            """,
+            [
+                symbol,
+                restriction_type,
+                source_date,
+                end_date,
+                source_date,
+                title,
+                url,
+                json.dumps({"schema_version": "finlab-trading-attention-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
+            ],
+        )
+        inserted += 1
+    return inserted
+
+
+def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRICTION_RETENTION_DAYS) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
+    result = d1_exec(
+        """
+        DELETE FROM canonical_trading_restrictions
+         WHERE source = 'finlab.trading_attention'
+           AND source_date < ?
+        """,
+        [cutoff],
+    )
+    return int(result.get("meta", {}).get("changes") or 0)
+
+
+def insert_finlab_cnyes_evidence(manifest: dict[str, Any], *, max_rows: int = 800) -> int:
+    path = _artifact_path(manifest, "tw_news_cnyes")
+    if not path or not path.exists():
+        return 0
+    generated_date = str(manifest.get("generated_at") or utc_now())[:10]
+    frame = pd.read_parquet(path)
+    if frame.empty:
+        return 0
+    records = table_rows(frame)
+    records.sort(
+        key=lambda row: str(_row_value(row, ["published_at", "date", "日期", "time", "datetime"]) or ""),
+        reverse=True,
+    )
+    inserted = 0
+    for row in records[:max_rows]:
+        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "股票代號", "code"]), row)
+        title = str(_row_value(row, ["title", "標題", "headline", "name"]) or "").strip()
+        url = _source_url(_row_value(row, ["url", "source_url", "link", "連結"]), "")
+        published_at = _clean_date(_row_value(row, ["published_at", "date", "日期", "time", "datetime"]), generated_date)
+        if not title or not url:
+            continue
+        symbols_json = json.dumps([symbol], ensure_ascii=False) if symbol else json.dumps([], ensure_ascii=False)
+        d1_exec(
+            """
+            INSERT INTO external_evidence_items (
+              source_id, source_kind, title, published_at, source_url, symbols_json, themes_json,
+              allowed_use, decision_effect, source_quality_score, entity_linking_confidence,
+              spam_filter_status, accepted, packet_checksum, raw_json
+            )
+            SELECT 'anue', 'finlab_tw_news_cnyes', ?, ?, ?, ?, '[]',
+                   'theme_context', 'theme_context', 0.86, ?, 'clean', 1, ?, ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM external_evidence_items
+               WHERE source_id='anue' AND source_url=? AND published_at=?
+            )
+            """,
+            [
+                title[:240],
+                published_at,
+                url,
+                symbols_json,
+                0.9 if symbol else 0.35,
+                f"finlab_tw_news_cnyes:{manifest['run_id']}:{url}:{published_at}",
+                json.dumps({"schema_version": "finlab-cnyes-news-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
+                url,
+                published_at,
+            ],
+        )
+        inserted += 1
+    return inserted
+
+
+def insert_finlab_runtime_tables(manifest: dict[str, Any]) -> dict[str, int]:
+    return {
+        "canonical_trading_restrictions": insert_finlab_trading_restrictions(manifest),
+        "canonical_trading_restrictions_deleted_old": cleanup_finlab_trading_restrictions(),
+        "external_evidence_items": insert_finlab_cnyes_evidence(manifest),
+    }
+
+
 def canonical_table_for_lane(lane: str) -> str:
     if "price" in lane or lane == "global_context":
         return "canonical_market_daily"
@@ -546,8 +758,17 @@ def main() -> int:
 
     if args.write_d1:
         insert_d1_summary(manifest)
+        manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
+        write_json(run_dir / "manifest.json", manifest)
 
-    print(json.dumps({"run_id": run_id, "years": args.years, "summary": summary, "artifact_root": str(run_dir), "gcs_upload": manifest.get("gcs_upload")}, ensure_ascii=False, sort_keys=True))
+    print(json.dumps({
+        "run_id": run_id,
+        "years": args.years,
+        "summary": summary,
+        "artifact_root": str(run_dir),
+        "gcs_upload": manifest.get("gcs_upload"),
+        "runtime_table_writeback": manifest.get("runtime_table_writeback"),
+    }, ensure_ascii=False, sort_keys=True))
     return 0
 
 

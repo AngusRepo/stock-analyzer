@@ -1438,6 +1438,19 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
     return existing
 
 
+def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date: str) -> set[int]:
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return set()
+    existing = _existing_recommendation_seed_stock_ids(recommendations, run_date)
+    if not existing:
+        raise RuntimeError(
+            "Missing screener-owned daily_recommendations seed rows for "
+            f"run_date={run_date}: {stock_ids[:10]} (missing={len(stock_ids)}/{len(stock_ids)})"
+        )
+    return existing
+
+
 def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], run_date: str) -> list[dict]:
     """Return rows that are still owned by the screener seed table.
 
@@ -1449,14 +1462,9 @@ def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], ru
     stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
     if not stock_ids:
         return recommendations
-    existing = _existing_recommendation_seed_stock_ids(recommendations, run_date)
+    existing = _assert_recommendation_seed_rows_exist(recommendations, run_date)
     missing = [sid for sid in stock_ids if sid not in existing]
     if missing:
-        if not existing:
-            raise RuntimeError(
-                "Missing screener-owned daily_recommendations seed rows for "
-                f"run_date={run_date}: {missing[:10]} (missing={len(missing)}/{len(stock_ids)})"
-            )
         logger.warning(
             "[recommendation_service] Skipping %s ML-only recommendation rows without screener seed for run_date=%s: %s",
             len(missing),

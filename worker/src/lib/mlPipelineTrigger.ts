@@ -1,6 +1,8 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
+import { readMarketRegimeState } from './marketRegimeState'
+import { buildMarketRegimeFactorPacket, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
 
 function resolvePipelineRunDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -34,9 +36,15 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
       const shouldRecomputeRisk = twDate === twToday()
       const existingRisk = shouldRecomputeRisk
         ? null
-        : await env.DB.prepare('SELECT date FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<{ date: string }>()
+        : await env.DB.prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
       if (!shouldRecomputeRisk && existingRisk) {
         console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
+        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
+        const packet = await buildMarketRegimeFactorPacket(env.DB, existingRisk, regimeState)
+        await upsertMarketRegimeFactorPacket(env.DB, packet)
+        await env.KV.delete('market:risk:latest')
+        await env.KV.delete('market:risk:latest:v4-context')
+        console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
       } else {
         const risk = await calcMarketRisk(
           env.DB,
@@ -69,8 +77,28 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
           risk.riskLevel,
           risk.riskSummary,
         ).run()
+        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
+        const packet = await buildMarketRegimeFactorPacket(env.DB, {
+          date: risk.date,
+          vix: risk.vix,
+          vix_level: risk.vixLevel,
+          twii_close: risk.twiiClose,
+          twii_vol20: risk.twiiVol20,
+          twii_ma20: risk.twiiMa20,
+          twii_bias: risk.twiiBias,
+          foreign_consecutive_sell: risk.foreignConsecutiveSell,
+          foreign_net_5d: risk.foreignNet5d,
+          margin_ratio: risk.marginRatio,
+          limit_down_count: risk.limitDownCount,
+          limit_down_pct: risk.limitDownPct,
+          risk_score: risk.riskScore,
+          risk_level: risk.riskLevel,
+          risk_summary: risk.riskSummary,
+        }, regimeState)
+        await upsertMarketRegimeFactorPacket(env.DB, packet)
         await env.KV.delete('market:risk:latest')
-        console.log(`[ML V2] Market risk: ${risk.riskLevel} (${risk.riskScore}/100) date=${risk.date}`)
+        await env.KV.delete('market:risk:latest:v4-context')
+        console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
       }
     } catch (e) {
       console.error('[ML V2] Market risk failed (non-blocking):', e)

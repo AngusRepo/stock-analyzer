@@ -5,15 +5,18 @@ import pytest
 
 def test_symbol_cash_flows_convert_chip_shares_to_twd_billions(monkeypatch):
     def fake_query(sql, params=None):
-        if "SELECT DISTINCT date" in sql:
+        if "FROM canonical_chip_daily" in sql and "SELECT DISTINCT date" in sql:
             return [{"date": "2026-04-30"}]
-        return [{
-            "symbol": "4938",
-            "foreign_net": -17_248,
-            "trust_net": -447_258,
-            "dealer_net": -60_587,
-            "close": 82.3,
-        }]
+        if "FROM canonical_chip_daily c" in sql:
+            return [{
+                "symbol": "4938",
+                "date": "2026-04-30",
+                "foreign_net": -17_248,
+                "trust_net": -447_258,
+                "dealer_net": -60_587,
+                "close": 82.3,
+            }]
+        return []
 
     monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
 
@@ -22,6 +25,28 @@ def test_symbol_cash_flows_convert_chip_shares_to_twd_billions(monkeypatch):
     assert flows["4938"]["total_net"] == pytest.approx((-17_248 - 447_258 - 60_587) * 82.3 / 1e8)
     assert flows["4938"]["foreign_net"] == pytest.approx(-17_248 * 82.3 / 1e8)
     assert flows["4938"]["trust_net"] == pytest.approx(-447_258 * 82.3 / 1e8)
+
+
+def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatch):
+    def fake_query(sql, params=None):
+        if "FROM finlab_taxonomy_tags" in sql:
+            return [
+                {"tag": "AI伺服器", "symbol": "2330"},
+                {"tag": "AI伺服器", "symbol": "2382"},
+            ]
+        if "FROM stock_tags" in sql:
+            return [
+                {"tag": "AI伺服器", "symbol": "2382"},
+                {"tag": "高速傳輸", "symbol": "3665"},
+            ]
+        return []
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+
+    tags = sector_flow_service._load_stock_tags("industry_theme")
+
+    assert tags["AI伺服器"] == ["2330", "2382"]
+    assert tags["高速傳輸"] == ["3665"]
 
 
 def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):

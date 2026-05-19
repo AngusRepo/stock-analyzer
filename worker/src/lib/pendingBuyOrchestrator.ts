@@ -31,6 +31,7 @@ import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
+import { loadTradingRestrictionSet } from './tradingRestrictions'
 import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
@@ -319,6 +320,12 @@ async function addRestrictedKvList(kv: KVNamespace, key: string, target: Set<str
 
 async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<Set<string>> {
   const restricted = new Set<string>()
+  try {
+    const canonical = await loadTradingRestrictionSet({ DB: db, KV: kv } as any, tradeDate, { refreshOfficialIfStale: false })
+    for (const symbol of canonical.symbols) restricted.add(symbol)
+  } catch {
+    // Canonical restrictions are additive; continue with legacy KV/governance.
+  }
   await Promise.all([
     addRestrictedKvList(kv, 'market:punished_stocks', restricted),
     addRestrictedKvList(kv, 'market:attention_stocks', restricted),

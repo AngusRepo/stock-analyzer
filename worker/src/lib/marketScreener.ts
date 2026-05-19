@@ -18,6 +18,9 @@ import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
+import { loadTradingRestrictionSet } from './tradingRestrictions'
+
+const D1_IN_CHUNK_SIZE = 40
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +65,15 @@ function resolveScreenerRunDate(runDate?: string | null): string {
   return value
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const safeSize = Math.max(1, Math.min(D1_IN_CHUNK_SIZE, Math.floor(size || D1_IN_CHUNK_SIZE)))
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += safeSize) {
+    chunks.push(items.slice(i, i + safeSize))
+  }
+  return chunks
+}
+
 async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
   try {
     const value = await kv.get(key, 'json') as unknown
@@ -72,47 +84,21 @@ async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
 }
 
 async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<Set<string>> {
-  const restricted = new Set<string>()
-  const [cachedPunished, cachedAttention, cachedTpexPunished, cachedTpexAttention, cachedDelisting] = await Promise.all([
-    readSymbolList(env.KV, 'market:punished_stocks'),
-    readSymbolList(env.KV, 'market:attention_stocks'),
-    readSymbolList(env.KV, 'market:tpex_punished_stocks'),
-    readSymbolList(env.KV, 'market:tpex_attention_stocks'),
-    readSymbolList(env.KV, 'market:delisting_risk'),
-  ])
-  for (const symbol of cachedPunished) restricted.add(symbol)
-  for (const symbol of cachedAttention) restricted.add(symbol)
-  for (const symbol of cachedTpexPunished) restricted.add(symbol)
-  for (const symbol of cachedTpexAttention) restricted.add(symbol)
-  for (const symbol of cachedDelisting) restricted.add(symbol)
-
-  try {
-    const { results } = await env.DB.prepare(`
-      SELECT symbol
-        FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
-         AND (start_date IS NULL OR start_date <= ?)
-         AND (end_date IS NULL OR end_date >= ?)
-    `).bind(runDate, runDate).all<{ symbol: string | null }>()
-    for (const row of results ?? []) {
-      if (row.symbol) restricted.add(String(row.symbol))
-    }
-  } catch {
-    // Optional governance table may not exist in older D1 snapshots.
-  }
-
-  try {
-    const { fetchPunishedStocks } = await import('./twseApi')
-    const punished = await fetchPunishedStocks()
-    if (punished.length) {
-      for (const symbol of punished) restricted.add(symbol)
-      await env.KV.put('market:punished_stocks', JSON.stringify(punished), { expirationTtl: 86400 })
-    }
-  } catch (e) {
-    console.warn('[Screener v2] punished stock fetch failed; using KV fallback:', e)
-  }
-
-  return restricted
+  const restricted = await loadTradingRestrictionSet(env, runDate, {
+    refreshOfficialIfStale: true,
+    refreshTtlMs: 12 * 60 * 60_000,
+  })
+  await env.KV.put(
+    `market:trading_restrictions:summary:${runDate}`,
+    JSON.stringify({
+      count: restricted.symbols.size,
+      source_counts: restricted.sourceCounts,
+      freshness: restricted.freshness,
+      generated_at: new Date().toISOString(),
+    }),
+    { expirationTtl: 7 * 86400 },
+  ).catch(() => {})
+  return restricted.symbols
 }
 
 export interface ScreenerSelectionFlag {
@@ -134,20 +120,25 @@ export async function loadSelectionHistoryFlags(
   }
   if (!uniqueSymbols.length) return selectionFlagMap
 
-  const placeholders = uniqueSymbols.map(() => '?').join(',')
   const highFreqThreshold = Math.max(1, Math.floor(options.highFreqThreshold ?? 12))
+  const historyRows: Array<{ symbol: string; freq20d: number; freq30d: number }> = []
 
-  const { results: historyRows } = await db.prepare(
-    `SELECT
-       symbol,
-       SUM(CASE WHEN date >= date(?, '-20 days') THEN 1 ELSE 0 END) as freq20d,
-       COUNT(*) as freq30d
-     FROM screener_selection_history
-     WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
-     GROUP BY symbol`,
-  ).bind(endDate, endDate, endDate, ...uniqueSymbols).all<{ symbol: string; freq20d: number; freq30d: number }>()
+  for (let i = 0; i < uniqueSymbols.length; i += D1_IN_CHUNK_SIZE) {
+    const chunk = uniqueSymbols.slice(i, i + D1_IN_CHUNK_SIZE)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT
+         symbol,
+         SUM(CASE WHEN date >= date(?, '-20 days') THEN 1 ELSE 0 END) as freq20d,
+         COUNT(*) as freq30d
+       FROM screener_selection_history
+       WHERE date >= date(?, '-30 days') AND date < ? AND symbol IN (${placeholders})
+       GROUP BY symbol`,
+    ).bind(endDate, endDate, endDate, ...chunk).all<{ symbol: string; freq20d: number; freq30d: number }>()
+    historyRows.push(...(results ?? []))
+  }
 
-  const historyMap = new Map((historyRows ?? []).map(r => [r.symbol, {
+  const historyMap = new Map(historyRows.map(r => [r.symbol, {
     freq20d: Number(r.freq20d ?? 0),
     freq30d: Number(r.freq30d ?? 0),
   }]))
@@ -199,23 +190,100 @@ export async function queryTopConceptTagsForSymbols(
   db: D1Database,
   symbols: string[],
   chunkSize = 400,
-): Promise<Array<{ symbol: string; tag: string }>> {
+): Promise<Array<{ symbol: string; tag: string; tag_type?: string }>> {
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  const safeChunkSize = Math.max(1, Math.min(400, Math.floor(chunkSize || 400)))
-  const rows: Array<{ symbol: string; tag: string }> = []
+  const safeChunkSize = Math.max(1, Math.min(D1_IN_CHUNK_SIZE, Math.floor(chunkSize || D1_IN_CHUNK_SIZE)))
+  const rows: Array<{ symbol: string; tag: string; tag_type?: string }> = []
 
   for (let i = 0; i < uniqueSymbols.length; i += safeChunkSize) {
     const chunk = uniqueSymbols.slice(i, i + safeChunkSize)
     const placeholders = chunk.map(() => '?').join(',')
     const { results } = await db.prepare(
-      `SELECT symbol, tag FROM stock_tags
-       WHERE tag_type='concept' AND symbol IN (${placeholders})
-       ORDER BY symbol, weight DESC`
-    ).bind(...chunk).all<{ symbol: string; tag: string }>()
+      `SELECT symbol, tag, tag_type
+         FROM (
+           SELECT symbol, tag, tag_type, weight, 1 AS priority
+             FROM finlab_taxonomy_tags
+            WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
+              AND symbol IN (${placeholders})
+           UNION ALL
+           SELECT symbol, tag, tag_type, weight, 2 AS priority
+             FROM stock_tags
+            WHERE tag_type='concept'
+              AND symbol IN (${placeholders})
+         )
+        ORDER BY symbol, priority ASC, weight DESC`
+    ).bind(...chunk, ...chunk).all<{ symbol: string; tag: string; tag_type?: string }>()
     rows.push(...(results ?? []))
   }
 
   return rows
+}
+
+interface SymbolTaxonomyProfile {
+  industry?: string
+  industryTheme?: string
+  subindustry?: string
+  concepts: string[]
+  tags: string[]
+}
+
+async function loadSymbolTaxonomyProfiles(
+  db: D1Database,
+  symbols: string[],
+): Promise<Map<string, SymbolTaxonomyProfile>> {
+  const rows = await queryTopConceptTagsForSymbols(db, symbols)
+  const profiles = new Map<string, SymbolTaxonomyProfile>()
+  for (const row of rows) {
+    const symbol = String(row.symbol || '').trim()
+    const tag = String(row.tag || '').trim()
+    if (!symbol || !tag) continue
+    const profile = profiles.get(symbol) ?? { concepts: [], tags: [] }
+    const tagType = String(row.tag_type || 'concept')
+    if (tagType === 'industry' && !profile.industry) profile.industry = tag
+    else if (tagType === 'industry_theme' && !profile.industryTheme) profile.industryTheme = tag
+    else if (tagType === 'subindustry' && !profile.subindustry) profile.subindustry = tag
+    else if (!profile.concepts.includes(tag)) profile.concepts.push(tag)
+    if (!profile.tags.includes(tag)) profile.tags.push(tag)
+    profiles.set(symbol, profile)
+  }
+  return profiles
+}
+
+function taxonomyDisplay(profile: SymbolTaxonomyProfile | undefined, fallback: string): string {
+  return profile?.industryTheme || profile?.industry || profile?.subindustry || fallback
+}
+
+function taxonomyWatchPoint(profile: SymbolTaxonomyProfile | undefined): string | null {
+  if (!profile) return null
+  const parts = [
+    profile.industry ? `industry=${profile.industry}` : null,
+    profile.industryTheme ? `industry_theme=${profile.industryTheme}` : null,
+    profile.subindustry ? `subindustry=${profile.subindustry}` : null,
+    profile.concepts.length ? `concept=${profile.concepts.slice(0, 3).join('/')}` : null,
+  ].filter(Boolean)
+  return parts.length ? `taxonomy:${parts.join(',')}` : null
+}
+
+function taxonomyLayerValue(candidate: { taxonomy?: SymbolTaxonomyProfile; industry?: string }, layer: 'industryTheme' | 'subindustry' | 'industry' | 'concept'): string | null {
+  if (layer === 'concept') return candidate.taxonomy?.concepts?.[0] ?? null
+  return candidate.taxonomy?.[layer] ?? (layer === 'industry' ? candidate.industry ?? null : null)
+}
+
+function applyTaxonomyDiversityCap<T extends { taxonomy?: SymbolTaxonomyProfile; industry?: string }>(
+  candidates: T[],
+  layer: 'industryTheme' | 'subindustry' | 'industry' | 'concept',
+  maxPerLayer: number,
+): T[] {
+  const max = Math.max(1, Math.floor(maxPerLayer))
+  const counts = new Map<string, number>()
+  return candidates.filter((candidate) => {
+    const key = taxonomyLayerValue(candidate, layer)
+    if (!key) return true
+    const count = counts.get(key) ?? 0
+    if (count >= max) return false
+    counts.set(key, count + 1)
+    return true
+  })
 }
 
 async function writeScreenerFunnel(
@@ -502,22 +570,30 @@ function scoreBrokerProxyChip(summary: BrokerProxySummary): { score: number; rea
   let score = 0
 
   if (amount > 0) {
-    if (intensity != null) {
-      if (intensity > 0.40) score = 32
-      else if (intensity > 0.20) score = 24
-      else if (intensity > 0.08) score = 16
-      else if (intensity > 0.02) score = 8
-      else score = 4
-    } else if (amountBillion > 0.15) score = 32
-    else if (amountBillion > 0.05) score = 24
-    else if (amountBillion > 0.01) score = 16
-    else score = 8
+    const amountScore = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 4.5, 4, 18)
+    const intensityScore = intensity == null
+      ? clamp(amountBillion * 80, 0, 14)
+      : clamp(Math.sqrt(Math.abs(intensity)) * 24, 0, 16)
+    const breadthScore = summary.latestBrokerCount == null
+      ? 3
+      : clamp(Math.log2(Math.max(1, summary.latestBrokerCount)) * 1.2, 1, 6)
+    const concentrationPenalty = summary.latestConcentration == null
+      ? 0
+      : summary.latestConcentration > 0.85
+        ? 5
+        : summary.latestConcentration > 0.65
+          ? 3
+          : 0
+    score = amountScore + intensityScore + breadthScore - concentrationPenalty
   } else if (amount > -1_000_000) {
     score = 2
+  } else {
+    const sellPressure = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 2.5, 2, 10)
+    score = Math.max(0, 6 - sellPressure)
   }
 
   if (summary.consecBuyDays >= 3 && amount > 0) score += summary.consecBuyDays >= 5 ? 3 : 1
-  score = clamp(score, 0, 40)
+  score = Math.round(clamp(score, 0, 40) * 10) / 10
 
   const direction = amount >= 0 ? '買超' : '賣超'
   const reasons = [
@@ -542,10 +618,14 @@ async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandi
     return
   }
 
-  const placeholders = candidateSymbols.map(() => '?').join(',')
-  await db.prepare(
-    `UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
-  ).bind(...candidateSymbols).run()
+  if (candidateSymbols.length > 900) {
+    await db.prepare("UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
+  } else {
+    const placeholders = candidateSymbols.map(() => '?').join(',')
+    await db.prepare(
+      `UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
+    ).bind(...candidateSymbols).run()
+  }
 
   // ── Step 2: Upsert 候選股票 ────────────────────────────────────────────
   // pinned 股票：只更新 in_current_watchlist=1、sector，不動 source
@@ -610,7 +690,7 @@ async function storeSectorHeat(
  * 取代舊 getSectorMapping()（那個讀 stocks.sector 是概念名）
  */
 async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<string, string>> {
-  const cacheKey = 'screener:industry-map:v4-finlab-taxonomy'
+  const cacheKey = 'screener:industry-map:v4.2-finlab-four-layer-taxonomy'
   const cached = await kv.get(cacheKey, 'json') as Record<string, string> | null
   if (cached) return new Map(Object.entries(cached))
 
@@ -868,15 +948,18 @@ async function deduplicateByCorrelation(
   if (candidates.length <= 1) return candidates
   const symbols = candidates.map(c => c.symbol)
 
-  // 從 D1 查 N 天收盤價
-  const ph = symbols.map(() => '?').join(',')
-  const { results: priceRows } = await db.prepare(`
-    SELECT s.symbol, sp.date, sp.close
-    FROM stock_prices sp
-    JOIN stocks s ON sp.stock_id = s.id
-    WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-${windowDays + 30} days')
-    ORDER BY s.symbol, sp.date
-  `).bind(...symbols).all<{ symbol: string; date: string; close: number }>()
+  const priceRows: { symbol: string; date: string; close: number }[] = []
+  for (const chunk of chunkArray(symbols, 400)) {
+    const ph = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(`
+      SELECT s.symbol, sp.date, sp.close
+      FROM stock_prices sp
+      JOIN stocks s ON sp.stock_id = s.id
+      WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-${windowDays + 30} days')
+      ORDER BY s.symbol, sp.date
+    `).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
+    priceRows.push(...(results ?? []))
+  }
 
   if (!priceRows?.length) return candidates
 
@@ -1025,9 +1108,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ── 讀取官方產業 mapping + 概念標籤 ──
   const industryMap = await getIndustryMapping(env.DB, env.KV)
-  const { results: tagRows } = await env.DB.prepare(
-    "SELECT symbol, tag, weight FROM stock_tags WHERE tag_type='concept'"
-  ).all<{ symbol: string; tag: string; weight: number }>()
+  const taxonomyUniverse = [...new Set([
+    ...allPrices.map((p) => p.stock_id),
+    ...emergingResearchPrices.map((p) => p.stock_id),
+  ].map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  const taxonomyProfiles = await loadSymbolTaxonomyProfiles(env.DB, taxonomyUniverse)
+  const tagRows = [...taxonomyProfiles.entries()].flatMap(([symbol, profile]) =>
+    profile.tags.map((tag) => ({ symbol, tag, weight: 1 })),
+  )
   const symbolConceptTags = new Map<string, string[]>()
   const conceptCrowding = new Map<string, number>()
   for (const r of (tagRows ?? [])) {
@@ -1035,6 +1123,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     symbolConceptTags.get(r.symbol)!.push(r.tag)
     conceptCrowding.set(r.tag, (conceptCrowding.get(r.tag) ?? 0) + 1)
   }
+  debugLog.push(`[Taxonomy] FinLab four-layer profiles=${taxonomyProfiles.size}/${taxonomyUniverse.length} tags=${tagRows.length}`)
 
   // ── 股票名稱 mapping ──
   const sectorMap = await getSectorMapping(env)
@@ -1131,7 +1220,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   debugLog.push(universeMsg)
 
   // ── Step 2: 多因子評分 ──
-  type ScoredCandidate = ScreenerCandidate & { chip_score: number; tech_score: number; momentum_score: number; industry: string; market_segment: string }
+  type ScoredCandidate = ScreenerCandidate & {
+    chip_score: number
+    tech_score: number
+    momentum_score: number
+    industry: string
+    market_segment: string
+    taxonomy?: SymbolTaxonomyProfile
+  }
   const scored: ScoredCandidate[] = []
 
   for (const { stockId, prices } of universe) {
@@ -1142,7 +1238,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
 
     const info = sectorMap[stockId]
-    const industry = industryMap.get(stockId) ?? '其他'
+    const taxonomy = taxonomyProfiles.get(stockId)
+    const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '其他')
 
     scored.push({
       symbol: stockId,
@@ -1153,6 +1250,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       chip_score, tech_score, momentum_score,
       industry,
       market_segment: 'listed_otc',
+      taxonomy,
     })
     pushFunnelItem(funnelItems, {
       symbol: stockId,
@@ -1161,7 +1259,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       decision: 'pass',
       reasonCode: 'base_score_computed',
       scoreAfter: base_score,
-      evidence: { chip_score, tech_score, momentum_score, reasons },
+      evidence: { chip_score, tech_score, momentum_score, reasons, taxonomy },
     })
   }
 
@@ -1208,12 +1306,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         tags.push(r.tag)
         symbolTags.set(r.symbol, tags)
       }
-      // (b) 最新 sector_flow (theme) 的 quadrant
+      // (b) 最新 sector_flow 的四層 taxonomy quadrant
       const { results: qRows } = await env.DB.prepare(
         `SELECT sector, quadrant, rs_ratio, rs_momentum FROM sector_flow
-         WHERE classification='theme' AND quadrant IS NOT NULL
+         WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
+           AND quadrant IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
-                       WHERE classification='theme' AND quadrant IS NOT NULL)`
+                       WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
+                         AND quadrant IS NOT NULL)`
       ).all<{ sector: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
       const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number }>()
       for (const r of qRows ?? []) themeQuadrant.set(r.sector, {
@@ -1278,7 +1378,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
       debugLog.push(
         `[Step 3] RRG overlay applied to ${rrgAdjustedCount}/${scored.length} ` +
-        `(themes loaded: ${themeQuadrant.size}, ` +
+        `(taxonomy sectors loaded: ${themeQuadrant.size}, ` +
         `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
       )
     } catch (e) {
@@ -1296,14 +1396,18 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
     if (topSymbols.length > 0) {
       // 查 stocks 表拿 stock_id
-      const ph = topSymbols.map(() => '?').join(',')
-      const { results: newsAgg } = await env.DB.prepare(`
-        SELECT s.symbol, n.sentiment, COUNT(*) as cnt
-        FROM news n
-        JOIN stocks s ON n.stock_id = s.id
-        WHERE s.symbol IN (${ph}) AND n.published_at >= date('now', '-7 days')
-        GROUP BY s.symbol, n.sentiment
-      `).bind(...topSymbols).all<{ symbol: string; sentiment: string; cnt: number }>()
+      const newsAgg: { symbol: string; sentiment: string; cnt: number }[] = []
+      for (const chunk of chunkArray(topSymbols, 400)) {
+        const ph = chunk.map(() => '?').join(',')
+        const { results } = await env.DB.prepare(`
+          SELECT s.symbol, n.sentiment, COUNT(*) as cnt
+          FROM news n
+          JOIN stocks s ON n.stock_id = s.id
+          WHERE s.symbol IN (${ph}) AND n.published_at >= date('now', '-7 days')
+          GROUP BY s.symbol, n.sentiment
+        `).bind(...chunk).all<{ symbol: string; sentiment: string; cnt: number }>()
+        newsAgg.push(...(results ?? []))
+      }
 
       const sentimentMap = new Map<string, { pos: number; neg: number; total: number }>()
       for (const r of (newsAgg ?? [])) {
@@ -1675,6 +1779,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     industryCount.set(c.industry, cnt + 1)
     return true
   })
+  const selectionTargetSize = screenerPolicy.sizing.mlShortlistSize
+  const dynamicThemeCap = Number((sc as any).maxPerIndustryTheme ?? Math.max(3, Math.ceil(selectionTargetSize * 0.18)))
+  const dynamicSubindustryCap = Number((sc as any).maxPerSubindustry ?? Math.max(2, Math.ceil(selectionTargetSize * 0.14)))
+  const beforeTaxonomyCap = afterIndustryLimit.length
+  afterIndustryLimit = applyTaxonomyDiversityCap(afterIndustryLimit, 'industryTheme', dynamicThemeCap)
+  afterIndustryLimit = applyTaxonomyDiversityCap(afterIndustryLimit, 'subindustry', dynamicSubindustryCap)
+  debugLog.push(
+    `[Step 5b] taxonomy diversity cap industry<=${maxPerIndustry} ` +
+    `industry_theme<=${dynamicThemeCap} subindustry<=${dynamicSubindustryCap} ` +
+    `${beforeTaxonomyCap}->${afterIndustryLimit.length}`,
+  )
 
   // 5c: 報酬率相關性去重
   const corrThreshold = (sc as any).correlationThreshold ?? 0.8
@@ -1728,7 +1843,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
       )
       const info = sectorMap[stockId]
-      const industry = industryMap.get(stockId) ?? '其他'
+      const taxonomy = taxonomyProfiles.get(stockId)
+      const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '其他')
       emergingScored.push({
         symbol: stockId,
         name: info?.name ?? stockId,
@@ -1740,6 +1856,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         momentum_score,
         industry,
         market_segment: 'emerging',
+        taxonomy,
         strategy_watch_points: chipMeta ? [chipMeta] : ['chip_source:missing'],
       })
     }
@@ -1901,6 +2018,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       const sectorB = sectorBonusMap.get(c.symbol)
       const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2ScreenerContext.get(c.symbol))
       const chipMeta = latestChipMeta(data.chips.get(c.symbol))
+      const taxPoint = taxonomyWatchPoint((c as any).taxonomy)
       const tagParts: string[] = []
       if (flag?.highFreq) tagParts.push(`📌 高頻 (20d 入選 ${flag.freq20d} 次)`)
       if (flag?.newMoney) tagParts.push('🆕 新資金 (30d 首見)')
@@ -1919,6 +2037,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         ...seed.watchPoints,
         `screener_funnel:rank=${i + 1},freq20d=${flag?.freq20d ?? 0},high_freq=${flag?.highFreq ? 'yes' : 'no'},new_money=${flag?.newMoney ? 'yes' : 'no'}`,
         ...(chipMeta ? [chipMeta] : ['chip_source:missing']),
+        ...(taxPoint ? [taxPoint] : ['taxonomy:missing']),
         ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
         ...(sc.strategy_watch_points ?? []),
       ]))
@@ -1939,6 +2058,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       const latestPrices = emergingData.prices.get(c.symbol)
       const currentPrice = latestPrices?.length ? latestPrices[latestPrices.length - 1].close : null
       const chipMeta = latestChipMeta(emergingData.chips.get(c.symbol))
+      const taxPoint = taxonomyWatchPoint((c as any).taxonomy)
       const seed = buildScreenerSeedRow({
         candidate: c as any,
         rank: 100 + i + 1,
@@ -1954,6 +2074,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         'research_only:emerging_not_for_auto_trade',
         'board_lane:emerging_watchlist',
         ...(chipMeta ? [chipMeta] : ['chip_source:missing']),
+        ...(taxPoint ? [taxPoint] : ['taxonomy:missing']),
         ...(sc.strategy_watch_points ?? []),
       ]))
       return env.DB.prepare(buildScreenerSeedUpsertSql()).bind(
@@ -2171,13 +2292,17 @@ export async function calcFactorIC(env: Bindings): Promise<{
 
   // 查每支股票的未來報酬（5d, 10d, 20d）
   const symbols = [...new Set(recRows.map(r => r.symbol))]
-  const ph = symbols.map(() => '?').join(',')
-  const { results: priceRows } = await env.DB.prepare(`
-    SELECT s.symbol, sp.date, sp.close
-    FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
-    WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-60 days')
-    ORDER BY s.symbol, sp.date
-  `).bind(...symbols).all<{ symbol: string; date: string; close: number }>()
+  const priceRows: { symbol: string; date: string; close: number }[] = []
+  for (const chunk of chunkArray(symbols, 400)) {
+    const ph = chunk.map(() => '?').join(',')
+    const { results } = await env.DB.prepare(`
+      SELECT s.symbol, sp.date, sp.close
+      FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
+      WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-60 days')
+      ORDER BY s.symbol, sp.date
+    `).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
+    priceRows.push(...(results ?? []))
+  }
 
   // 建 symbol → date → close map
   const priceMap = new Map<string, Map<string, number>>()

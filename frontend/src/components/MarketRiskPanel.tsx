@@ -3,15 +3,20 @@ import { Activity, AlertTriangle, BarChart3, Globe2, LineChart, ShieldCheck, Tre
 import { marketApi } from '@/lib/api'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 
-type FactorStatus = 'ok' | 'info' | 'warn' | 'error'
+type FactorStatus = 'ok' | 'info' | 'warn' | 'error' | 'missing'
 
 interface MarketRiskFactor {
   id: string
   label: string
   value: string
+  score?: number
+  weight?: number
+  contribution?: number
   status: FactorStatus
   source: string
+  source_date?: string | null
   detail?: string
+  missing_reason?: string
 }
 
 interface MarketRisk {
@@ -28,6 +33,13 @@ interface MarketRisk {
   riskSummary: string
   calculatedAt: string
   contextFactors?: MarketRiskFactor[]
+  factorPacket?: {
+    schema_version: string
+    score: number
+    level: MarketRisk['riskLevel']
+    generated_at: string
+    missing_reasons?: Record<string, string>
+  } | null
   regimeState?: {
     label: string
     family: string
@@ -59,8 +71,10 @@ const FACTOR_ICONS: Record<string, typeof Activity> = {
   leverage: Activity,
   regime: ShieldCheck,
   global_risk: Globe2,
+  global: Globe2,
   lppls: AlertTriangle,
   hawkes: Activity,
+  event_monitors: AlertTriangle,
 }
 
 const STATUS_STYLE: Record<FactorStatus, string> = {
@@ -68,13 +82,19 @@ const STATUS_STYLE: Record<FactorStatus, string> = {
   info: 'border-sky-400/20 bg-sky-400/8 text-sky-200',
   warn: 'border-amber-400/25 bg-amber-400/8 text-amber-200',
   error: 'border-red-400/25 bg-red-400/8 text-red-200',
+  missing: 'border-slate-400/20 bg-slate-400/8 text-slate-300',
+}
+
+function fmtNumber(value: unknown, decimals = 1): string {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(decimals) : '0.0'
 }
 
 function fallbackFactors(risk: MarketRisk): MarketRiskFactor[] {
   return [
     { id: 'price_trend', label: '價格趨勢', value: `${Number(risk.twiiBias ?? 0).toFixed(2)}%`, status: Number(risk.twiiBias ?? 0) < -1 ? 'warn' : 'ok', source: 'market_risk.twii_bias' },
     { id: 'volatility', label: '波動', value: `${Number(risk.twiiVol20 ?? 0).toFixed(2)}%`, status: 'info', source: 'market_risk.twii_vol20' },
-    { id: 'chips', label: '籌碼', value: `${(Number(risk.foreignNet5d ?? 0) / 100000000).toFixed(1)}億`, status: Number(risk.foreignNet5d ?? 0) < 0 ? 'warn' : 'ok', source: 'market_risk.foreign_net_5d' },
+    { id: 'chips', label: '籌碼', value: `${Number(risk.foreignNet5d ?? 0).toFixed(1)}億`, status: Number(risk.foreignNet5d ?? 0) < 0 ? 'warn' : 'ok', source: 'market_risk.foreign_net_5d' },
     { id: 'leverage', label: '槓桿', value: risk.marginRatio == null ? 'n/a' : `${Number(risk.marginRatio).toFixed(2)}%`, status: 'info', source: 'market_risk.margin_ratio' },
     { id: 'regime', label: 'Regime', value: risk.regimeState?.label ?? 'missing', status: risk.regimeState ? 'ok' : 'error', source: risk.regimeState?.source ?? 'market_regime_state' },
   ]
@@ -127,6 +147,7 @@ export default function MarketRiskPanel() {
 
   const cfg = LEVEL_CONFIG[risk.riskLevel] ?? LEVEL_CONFIG.green
   const factors = (risk.contextFactors?.length ? risk.contextFactors : fallbackFactors(risk)).slice(0, 9)
+  const packetGeneratedAt = risk.factorPacket?.generated_at ?? risk.calculatedAt
 
   return (
     <div className="space-y-3">
@@ -137,6 +158,9 @@ export default function MarketRiskPanel() {
             <div className={`mt-1 text-2xl font-bold ${cfg.color}`}>{cfg.label}</div>
             <div className="mt-1 text-xs text-muted-foreground">
               regime={risk.regimeState?.label ?? 'missing'} · run_date={risk.regimeState?.runDate ?? risk.date}
+            </div>
+            <div className="mt-2 text-[11px] font-mono text-muted-foreground">
+              policy={risk.factorPacket?.schema_version ?? 'legacy-market-risk'} · generated={formatTwDateTimeShort(packetGeneratedAt)}
             </div>
           </div>
           <div className="text-right">
@@ -154,6 +178,7 @@ export default function MarketRiskPanel() {
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {factors.map((factor) => {
             const Icon = FACTOR_ICONS[factor.id] ?? Activity
+            const scoreWidth = Math.max(4, Math.min(100, Number(factor.score ?? 0)))
             return (
               <div key={`${factor.id}:${factor.source}`} className={`rounded-md border p-3 ${STATUS_STYLE[factor.status] ?? STATUS_STYLE.info}`}>
                 <div className="flex items-center justify-between gap-3">
@@ -163,8 +188,17 @@ export default function MarketRiskPanel() {
                   </div>
                   <span className="shrink-0 font-mono text-xs">{factor.value}</span>
                 </div>
-                <div className="mt-2 truncate font-mono text-[10px] text-muted-foreground">{factor.source}</div>
-                {factor.detail ? <div className="mt-1 truncate text-[11px] text-muted-foreground">{factor.detail}</div> : null}
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/20">
+                  <div className="h-full rounded-full bg-current opacity-80" style={{ width: `${scoreWidth}%` }} />
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground">
+                  <span className="truncate">{factor.source}</span>
+                  <span className="shrink-0">w{Math.round(Number(factor.weight ?? 0) * 100)} / c{fmtNumber(factor.contribution, 1)}</span>
+                </div>
+                <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {factor.missing_reason ? `missing=${factor.missing_reason}` : factor.detail ?? ''}
+                </div>
+                {factor.source_date ? <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">source_date={factor.source_date}</div> : null}
               </div>
             )
           })}

@@ -121,7 +121,7 @@ export async function loadRuntimeThemeSignals(db: D1Database, date: string): Pro
       SELECT concept, score, sentiment_avg, source, evidence_count, top_titles, allowed_use, decision_effect
       FROM theme_signals
       WHERE date <= ?
-        AND source NOT IN ('finnhub_news', 'company_ir_rss')
+        AND source NOT IN ('finnhub_news', 'company_ir_rss', 'gdelt_events')
       ORDER BY date DESC, score DESC
       LIMIT 500
     `).bind(date).all<{

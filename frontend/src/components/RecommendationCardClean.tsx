@@ -4,6 +4,7 @@ import {
   BarChart3,
   ChevronDown,
   ChevronUp,
+  ExternalLink,
   Minus,
   ShieldCheck,
   TrendingDown,
@@ -104,6 +105,13 @@ type ScoreComponents = {
       flags?: string[]
     }> | null
   } | null
+}
+
+type EvidenceLink = {
+  source?: string
+  title?: string
+  url?: string
+  published_at?: string
 }
 
 const ALPHA_PREDICTION_MODEL_NAMES = [
@@ -856,6 +864,24 @@ function displayWatchPoints(points: string[]): string[] {
   return [...latestByKey.values()]
 }
 
+function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
+  if (!Array.isArray(raw)) return []
+  const links: EvidenceLink[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as EvidenceLink
+    if (typeof row.url !== 'string' || !/^https?:\/\//i.test(row.url)) continue
+    links.push({
+      source: String(row.source ?? 'news'),
+      title: String(row.title ?? row.url).slice(0, 90),
+      url: row.url,
+      published_at: row.published_at ? String(row.published_at) : '',
+    })
+    if (links.length >= 3) break
+  }
+  return links
+}
+
 export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
@@ -874,6 +900,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     + (rec.dealer_net_5d ?? 0)
   )
   const chipPositive = chip5dRaw > 0
+  const evidenceLinks = normalizeEvidenceLinks(rec.evidence_links)
   const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
@@ -947,6 +974,25 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
         )}
       </div>
+
+      {evidenceLinks.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-t border-border/30 px-4 py-2">
+          {evidenceLinks.map((link) => (
+            <a
+              key={`${link.source}:${link.url}`}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => event.stopPropagation()}
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
+            >
+              <ExternalLink className="h-3 w-3 shrink-0" />
+              <span className="shrink-0 font-mono uppercase">{link.source}</span>
+              <span className="truncate">{link.title}</span>
+            </a>
+          ))}
+        </div>
+      )}
 
       {expanded && (
         <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">

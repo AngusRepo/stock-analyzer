@@ -112,23 +112,129 @@ def _load_twii_return_5d(as_of_date: str) -> float:
 def _load_stock_tags(tag_type: TagType) -> dict[str, list[str]]:
     """
     Load {tag_name: [symbols]} for a given tag_type.
+
+    V4.1: self-built concepts remain in stock_tags, while FinLab taxonomy is
+    the primary structured source for industry / industry_theme / subindustry.
     """
-    sql = """
-    SELECT tag, symbol FROM stock_tags
-    WHERE tag_type = ?
-    """
-    rows = d1_client.query(sql, [tag_type])
+    rows: list[dict] = []
+    if tag_type != "concept":
+        try:
+            rows.extend(d1_client.query(
+                """
+                SELECT tag, symbol
+                FROM finlab_taxonomy_tags
+                WHERE tag_type = ?
+                """,
+                [tag_type],
+            ))
+        except Exception as exc:
+            logger.warning("[sector_flow] FinLab taxonomy load failed for %s: %s", tag_type, exc)
+    try:
+        rows.extend(d1_client.query(
+            """
+            SELECT tag, symbol
+            FROM stock_tags
+            WHERE tag_type = ?
+            """,
+            [tag_type],
+        ))
+    except Exception as exc:
+        logger.warning("[sector_flow] stock_tags load failed for %s: %s", tag_type, exc)
+
     by_tag: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
     for r in rows:
-        tag = r.get("tag")
-        sym = r.get("symbol")
-        if tag and sym:
+        tag = str(r.get("tag") or "").strip()
+        sym = str(r.get("symbol") or "").strip()
+        key = (tag, sym)
+        if tag and sym and key not in seen:
+            seen.add(key)
             by_tag.setdefault(tag, []).append(sym)
     return by_tag
 
 
-def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
-    """Load per-symbol 5-day institutional cash flow in TWD billions."""
+def _accumulate_cash_flow(
+    flows: dict[str, CashFlow],
+    row: dict,
+    *,
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
+    symbol = str(row.get("symbol") or "").strip()
+    date = str(row.get("date") or "").strip()
+    close = float(row.get("close") or 0)
+    if not symbol or close <= 0:
+        return
+    key = (symbol, date)
+    if date and key in seen_symbol_dates:
+        return
+    if date:
+        seen_symbol_dates.add(key)
+    entry = flows.setdefault(
+        symbol,
+        {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
+    )
+    foreign_cash = float(row.get("foreign_net") or 0) * close / 1e8
+    trust_cash = float(row.get("trust_net") or 0) * close / 1e8
+    dealer_cash = float(row.get("dealer_net") or 0) * close / 1e8
+    entry["foreign_net"] += foreign_cash
+    entry["trust_net"] += trust_cash
+    entry["dealer_net"] += dealer_cash
+    entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+
+
+def _load_canonical_symbol_cash_flows_5d(
+    as_of_date: str,
+    lookback_days: int,
+    flows: dict[str, CashFlow],
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
+    date_rows = d1_client.query(
+        """
+        SELECT DISTINCT date
+        FROM canonical_chip_daily
+        WHERE date <= ?
+        ORDER BY date DESC
+        LIMIT ?
+        """,
+        [as_of_date, lookback_days],
+    )
+    dates = [r.get("date") for r in date_rows if r.get("date")]
+    if not dates:
+        return
+
+    placeholders = ",".join("?" * len(dates))
+    rows = d1_client.query(
+        f"""
+        SELECT
+          c.stock_id AS symbol,
+          c.date,
+          COALESCE(c.foreign_net, 0) AS foreign_net,
+          COALESCE(c.trust_net, 0) AS trust_net,
+          COALESCE(c.dealer_net, 0) AS dealer_net,
+          (
+            SELECT sp.close
+            FROM stock_prices sp
+            JOIN stocks s ON s.id = sp.stock_id
+            WHERE s.symbol = c.stock_id
+              AND sp.date <= c.date
+            ORDER BY sp.date DESC
+            LIMIT 1
+          ) AS close
+        FROM canonical_chip_daily c
+        WHERE c.date IN ({placeholders})
+        """,
+        dates,
+    )
+    for row in rows:
+        _accumulate_cash_flow(flows, row, seen_symbol_dates=seen_symbol_dates)
+
+
+def _load_legacy_symbol_cash_flows_5d(
+    as_of_date: str,
+    lookback_days: int,
+    flows: dict[str, CashFlow],
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
     date_rows = d1_client.query(
         """
         SELECT DISTINCT date
@@ -148,6 +254,7 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
         f"""
         SELECT
           c.symbol,
+          c.date,
           COALESCE(c.foreign_net, 0) AS foreign_net,
           COALESCE(c.trust_net, 0) AS trust_net,
           COALESCE(c.dealer_net, 0) AS dealer_net,
@@ -166,23 +273,20 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
         dates,
     )
 
-    flows: dict[str, CashFlow] = {}
     for r in rows:
-        symbol = r.get("symbol")
-        close = float(r.get("close") or 0)
-        if not symbol or close <= 0:
-            continue
-        entry = flows.setdefault(
-            symbol,
-            {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
-        )
-        foreign_cash = float(r.get("foreign_net") or 0) * close / 1e8
-        trust_cash = float(r.get("trust_net") or 0) * close / 1e8
-        dealer_cash = float(r.get("dealer_net") or 0) * close / 1e8
-        entry["foreign_net"] += foreign_cash
-        entry["trust_net"] += trust_cash
-        entry["dealer_net"] += dealer_cash
-        entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+        _accumulate_cash_flow(flows, r, seen_symbol_dates=seen_symbol_dates)
+
+
+def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
+    """Load per-symbol 5-day institutional cash flow in TWD billions.
+
+    FinLab canonical rows are primary. Legacy TWSE/TPEX chip_data only fills
+    symbol-date gaps that canonical data has not materialized yet.
+    """
+    flows: dict[str, CashFlow] = {}
+    seen_symbol_dates: set[tuple[str, str]] = set()
+    _load_canonical_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
+    _load_legacy_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
     return flows
 
 

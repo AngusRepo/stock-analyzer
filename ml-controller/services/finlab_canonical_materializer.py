@@ -483,10 +483,15 @@ def materialize_finlab_canonical_outputs(
     end_date: str | None = None,
     limit_per_dataset: int | None = None,
     generated_at: str | None = None,
+    datasets: Iterable[str] | None = None,
 ) -> FinLabCanonicalOutputs:
     root = Path(artifact_root)
     timestamp = generated_at or utc_now()
     rid = run_id or root.name
+    dataset_filter = {str(name).strip() for name in datasets or [] if str(name).strip()}
+
+    def wants(name: str) -> bool:
+        return not dataset_filter or name in dataset_filter
 
     listed_market = build_market_rows(
         root,
@@ -498,7 +503,7 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    )
+    ) if wants("canonical_market_daily") else []
     emerging_market = build_market_rows(
         root,
         run_id=rid,
@@ -509,7 +514,7 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    )
+    ) if wants("canonical_market_daily") else []
     listed_chip = build_chip_rows(
         root,
         run_id=rid,
@@ -517,15 +522,22 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    )
-    emerging_chip, broker_flow = build_emerging_broker_rows(
-        root,
-        run_id=rid,
-        generated_at=timestamp,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit_per_dataset,
-    )
+    ) if wants("canonical_chip_daily") else []
+    if wants("canonical_chip_daily") or wants("canonical_broker_flow_daily"):
+        emerging_chip, broker_flow = build_emerging_broker_rows(
+            root,
+            run_id=rid,
+            generated_at=timestamp,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit_per_dataset,
+        )
+        if not wants("canonical_chip_daily"):
+            emerging_chip = []
+        if not wants("canonical_broker_flow_daily"):
+            broker_flow = []
+    else:
+        emerging_chip, broker_flow = [], []
     listed_revenue = build_revenue_rows(
         root,
         run_id=rid,
@@ -536,7 +548,7 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    )
+    ) if wants("canonical_revenue_monthly") else []
     emerging_revenue = build_revenue_rows(
         root,
         run_id=rid,
@@ -547,16 +559,20 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    )
-    taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset)
+    ) if wants("canonical_revenue_monthly") else []
+    taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
 
-    output_rows = {
-        "canonical_market_daily": listed_market + emerging_market,
-        "canonical_chip_daily": listed_chip + emerging_chip,
-        "canonical_revenue_monthly": listed_revenue + emerging_revenue,
-        "canonical_broker_flow_daily": broker_flow,
-        "finlab_taxonomy_tags": taxonomy,
-    }
+    output_rows: dict[str, list[dict[str, Any]]] = {}
+    if wants("canonical_market_daily"):
+        output_rows["canonical_market_daily"] = listed_market + emerging_market
+    if wants("canonical_chip_daily"):
+        output_rows["canonical_chip_daily"] = listed_chip + emerging_chip
+    if wants("canonical_revenue_monthly"):
+        output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
+    if wants("canonical_broker_flow_daily"):
+        output_rows["canonical_broker_flow_daily"] = broker_flow
+    if wants("finlab_taxonomy_tags"):
+        output_rows["finlab_taxonomy_tags"] = taxonomy
     inventory = build_inventory_rows(output_rows, generated_at=timestamp)
     quality = build_quality_rows(output_rows, generated_at=timestamp)
     row_counts = {name: len(rows) for name, rows in output_rows.items()}
@@ -565,7 +581,12 @@ def materialize_finlab_canonical_outputs(
         "run_id": rid,
         "generated_at": timestamp,
         "artifact_root": str(root),
-        "filters": {"start_date": start_date, "end_date": end_date, "limit_per_dataset": limit_per_dataset},
+        "filters": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "limit_per_dataset": limit_per_dataset,
+            "datasets": sorted(dataset_filter) if dataset_filter else None,
+        },
         "row_counts": row_counts,
     }
     manifest["checksum"] = sha256_json(manifest)
@@ -573,11 +594,11 @@ def materialize_finlab_canonical_outputs(
         run_id=rid,
         generated_at=timestamp,
         artifact_root=str(root),
-        canonical_market_daily=output_rows["canonical_market_daily"],
-        canonical_chip_daily=output_rows["canonical_chip_daily"],
-        canonical_revenue_monthly=output_rows["canonical_revenue_monthly"],
-        canonical_broker_flow_daily=output_rows["canonical_broker_flow_daily"],
-        finlab_taxonomy_tags=output_rows["finlab_taxonomy_tags"],
+        canonical_market_daily=output_rows.get("canonical_market_daily", []),
+        canonical_chip_daily=output_rows.get("canonical_chip_daily", []),
+        canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
+        canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
+        finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
         data_source_inventory=inventory,
         source_quality_metrics=quality,
         manifest=manifest,

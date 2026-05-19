@@ -35,6 +35,7 @@ import { shouldFailClosedPendingDebate } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
+import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from './tradingRestrictions'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -55,6 +56,12 @@ function addRestrictedSymbolsFromRaw(target: Set<string>, raw: string | null): v
 }
 
 async function addD1TradingRestrictions(env: Bindings, target: Set<string>, tradeDate: string): Promise<void> {
+  try {
+    const canonical = await loadTradingRestrictionSet(env, tradeDate, { refreshOfficialIfStale: false })
+    for (const symbol of canonical.symbols) target.add(symbol)
+  } catch {
+    // Canonical FinLab/official restriction table is additive; fall back below.
+  }
   try {
     const { results } = await env.DB.prepare(`
       SELECT symbol
@@ -112,6 +119,7 @@ async function loadExecutionBlockedSymbols(env: Bindings, tradeDate: string): Pr
     for (const symbol of attentionResult.value) blocked.add(symbol)
     await env.KV.put('market:attention_stocks', JSON.stringify(attentionResult.value), { expirationTtl: 86400 })
   }
+  await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))
   await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
   return blocked
 }

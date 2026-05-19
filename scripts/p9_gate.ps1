@@ -1,5 +1,7 @@
 param(
   [switch]$SkipFrontendBuild,
+  [switch]$SkipBugHunter,
+  [int]$BugHunterMaxAgeHours = 48,
   [switch]$LiveSmoke,
   [string]$ApiBase = $env:STOCKVISION_API_BASE,
   [string]$AuthToken = $env:STOCKVISION_AUTH_TOKEN
@@ -79,6 +81,10 @@ Pop-Location
 Write-Host '[P9 gate] P12 secret scan'
 & (Join-Path $PSScriptRoot 'p12_secret_scan.ps1') -Root $Root
 if ($LASTEXITCODE -ne 0) { throw "P12 secret scan failed" }
+
+Write-Host '[P9 gate] Bug Hunter CPD gate'
+& (Join-Path $PSScriptRoot 'bug_hunter_cpd_gate.ps1') -Root $Root -MaxAgeHours $BugHunterMaxAgeHours -Skip:$SkipBugHunter
+if ($LASTEXITCODE -ne 0) { throw "Bug Hunter CPD gate failed" }
 
 if ($LiveSmoke) {
   Write-Host '[P9 gate] live smoke'

@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 from services.external_evidence_runtime import (  # noqa: E402
     build_external_evidence_runtime_packet,
     external_evidence_item_d1_rows,
+    fetch_gdelt_doc_events,
+    normalize_gdelt_article,
     theme_signal_d1_rows,
 )
 
@@ -236,6 +238,122 @@ def build_official_items(tags_by_symbol: dict[str, list[str]]) -> list[dict[str,
     return items
 
 
+def gdelt_timestamp(day: str, *, end_of_day: bool = False) -> str:
+    try:
+        parsed = datetime.fromisoformat(day[:10])
+    except ValueError:
+        parsed = datetime.now(timezone.utc)
+    if end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59)
+    else:
+        parsed = parsed.replace(hour=0, minute=0, second=0)
+    return parsed.strftime("%Y%m%d%H%M%S")
+
+
+def gdelt_start_timestamp(day: str, lookback_days: int = 10) -> str:
+    try:
+        parsed = datetime.fromisoformat(day[:10])
+    except ValueError:
+        parsed = datetime.now(timezone.utc)
+    parsed = (parsed - timedelta(days=lookback_days)).replace(hour=0, minute=0, second=0)
+    return parsed.strftime("%Y%m%d%H%M%S")
+
+
+def build_gdelt_items(
+    recommendations: list[dict[str, Any]],
+    tags_by_symbol: dict[str, list[str]],
+    *,
+    max_symbols: int = 6,
+    max_total_items: int = 48,
+) -> tuple[list[dict[str, Any]], str]:
+    if os.environ.get("GDELT_FORMAL_SHADOW_ENABLED", "1").lower() in {"0", "false", "no"}:
+        return [], "disabled"
+
+    max_symbols = max(0, int(os.environ.get("GDELT_MAX_SYMBOLS", str(max_symbols))))
+    max_total_items = max(1, int(os.environ.get("GDELT_MAX_TOTAL_ITEMS", str(max_total_items))))
+    timeout_seconds = max(2, int(os.environ.get("GDELT_FETCH_TIMEOUT_SECONDS", "5")))
+    if max_symbols <= 0:
+        return [], "disabled_max_symbols_0"
+
+    def bounded_fetcher(url: str, headers: dict[str, str] | None = None) -> Any:
+        req = urllib.request.Request(url, headers=headers or {"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=timeout_seconds, context=SSL_CTX) as resp:
+            return json.loads(resp.read(1_000_000).decode("utf-8", "replace"))
+
+    start = gdelt_start_timestamp(AS_OF_DATE)
+    end = gdelt_timestamp(AS_OF_DATE, end_of_day=True)
+    items: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    failures = 0
+
+    for row in recommendations[:max_symbols]:
+        symbol = str(row.get("symbol") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not symbol or not name:
+            continue
+        query = f'"{name}"'
+        try:
+            articles = fetch_gdelt_doc_events(
+                query=query,
+                start_datetime=start,
+                end_datetime=end,
+                max_records=3,
+                fetcher=bounded_fetcher,
+            )
+        except Exception:
+            failures += 1
+            continue
+        themes = ["global_event_pressure", *tags_by_symbol.get(symbol, [])[:3]]
+        for article in articles:
+            url = str(article.get("url") or article.get("source_url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            item = normalize_gdelt_article(
+                {**article, "stockvision_query": query},
+                symbols=[symbol],
+                themes=themes,
+                source_quality_score=0.52,
+                entity_linking_confidence=0.48,
+            )
+            item["source_kind"] = "gdelt_doc_article"
+            item["allowed_use"] = "formal_shadow"
+            item["decision_effect"] = "risk_context_only"
+            items.append(item)
+            if len(items) >= max_total_items:
+                return items, "ok" if items else "no_rows"
+
+    if items:
+        return items, "ok"
+    return [], "fetch_failed" if failures else "no_rows"
+
+
+def build_gdelt_context_status_item(status: str) -> dict[str, Any]:
+    """Keep GDELT formal-shadow visible even when the live fetch has no rows."""
+    return {
+        "source_id": "gdelt_events",
+        "source_kind": "global_event_graph_status",
+        "title": f"GDELT formal shadow status: {status}",
+        "url": "https://api.gdeltproject.org/api/v2/doc/doc",
+        "published_at": AS_OF_DATE,
+        "symbols": [],
+        "themes": ["global_event_pressure"],
+        "language": "multi",
+        "region": "global",
+        "tone": 0,
+        "source_quality_score": 0.05,
+        "entity_linking_confidence": 0.05,
+        "spam_filter_status": "clean",
+        "domain_allowlist_match": True,
+        "raw": {
+            "status": status,
+            "formal_shadow": True,
+            "decision_effect": "risk_context_only",
+            "generated_at": GENERATED_AT,
+        },
+    }
+
+
 def load_company_ir_allowlist(
     tags_by_symbol: dict[str, list[str]],
     target_symbols: set[str],
@@ -296,11 +414,7 @@ def build_stock_features(
         except Exception:
             symbols = []
         for symbol in symbols:
-            if symbol in target_symbols and concept in {
-                "twse_disposition",
-                "twse_attention",
-                "company_ir_update",
-            }:
+            if symbol in target_symbols:
                 tag_to_symbols[concept].add(symbol)
 
     features: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -445,8 +559,12 @@ def upsert_quality(
     root_cause: str = "ok",
 ) -> None:
     freshness_status = "present" if rows > 0 else "missing"
+    missing_rate = 0 if rows > 0 else 1
     if source == "company_ir_rss" and root_cause == "disabled_pending_allowlist":
         freshness_status = "disabled_pending_allowlist"
+    if source == "gdelt_events" and root_cause != "ok" and rows > 0:
+        freshness_status = "degraded_context_only"
+        missing_rate = 0.5
     if rows > 0 and latest:
         parsed_date = str(latest)[:10]
         if re.match(r"^\d{4}-\d{2}-\d{2}$", parsed_date) and parsed_date < "2026-04-18":
@@ -472,7 +590,7 @@ def upsert_quality(
             dataset,
             AS_OF_DATE,
             freshness_status,
-            0 if rows > 0 else 1,
+            missing_rate,
             0,
             "ok",
             confidence,
@@ -495,8 +613,12 @@ def main() -> None:
     official_items = build_official_items(tags_by_symbol)
 
     company_ir_items, company_ir_status = load_company_ir_allowlist(tags_by_symbol, target_symbols)
+    gdelt_items, gdelt_status = build_gdelt_items(recommendations, tags_by_symbol)
+    if not gdelt_items and gdelt_status not in {"disabled", "disabled_max_symbols_0"}:
+        gdelt_items = [build_gdelt_context_status_item(gdelt_status)]
 
     packet = build_external_evidence_runtime_packet(
+        gdelt_items=gdelt_items,
         official_items=official_items,
         company_ir_items=company_ir_items,
         generated_at=GENERATED_AT,
@@ -528,12 +650,15 @@ def main() -> None:
     for source, dataset in [
         ("official_rss", "official_event_evidence"),
         ("company_ir_rss", "company_first_party_feed"),
+        ("gdelt_events", "global_event_pressure"),
     ]:
         confidences = confidence_by_source.get(source) or []
         avg_confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
         root = "ok"
         if source == "company_ir_rss" and company_ir_status != "ok":
             root = company_ir_status
+        elif source == "gdelt_events" and gdelt_status != "ok":
+            root = f"formal_shadow_{gdelt_status}"
         elif by_source.get(source, 0) == 0:
             root = "no_accepted_rows"
         upsert_quality(source, dataset, by_source.get(source, 0), latest_by_source.get(source), avg_confidence, root)
@@ -553,7 +678,7 @@ def main() -> None:
         SELECT source, dataset, freshness_status, missing_rate, entity_link_confidence,
                latest_materialization, metrics_json
         FROM source_quality_metrics
-        WHERE source IN ('official_rss','company_ir_rss')
+        WHERE source IN ('official_rss','company_ir_rss','gdelt_events')
         ORDER BY source, dataset
         """
     )
@@ -565,6 +690,8 @@ def main() -> None:
                 "official_items_built": len(official_items),
                 "company_ir_items_built": len(company_ir_items),
                 "company_ir_status": company_ir_status,
+                "gdelt_items_built": len(gdelt_items),
+                "gdelt_status": gdelt_status,
                 "packet_quality": packet.get("quality_summary"),
                 "evidence_rows_written_or_existing": len(evidence_rows),
                 "theme_rows_upserted": len(theme_rows),

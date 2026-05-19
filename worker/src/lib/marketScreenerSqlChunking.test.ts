@@ -18,8 +18,9 @@ function makeDb() {
           }
           return {
             async all<T>() {
+              const uniqueSymbols = [...new Set(params.map((symbol) => String(symbol)))]
               return {
-                results: params.map((symbol) => ({ symbol, tag: `tag-${symbol}` })) as T[],
+                results: uniqueSymbols.map((symbol) => ({ symbol, tag: `tag-${symbol}`, tag_type: 'industry_theme' })) as T[],
               }
             },
           }
@@ -37,9 +38,10 @@ void (async () => {
   const rows = await queryTopConceptTagsForSymbols(db, symbols, 400)
 
   assert(rows.length === 1001, 'chunked concept tag query should return all rows')
-  assert(calls.length === 3, '1001 symbols with chunkSize=400 should issue 3 D1 queries')
-  assert(calls.every((call) => call.params.length <= 400), 'each D1 query should stay below chunk size')
-  assert(calls.every((call) => call.sql.includes("tag_type='concept'")), 'query should only read concept tags')
+  assert(calls.length === 26, '1001 symbols should be capped by the runtime D1 chunk size')
+  assert(calls.every((call) => call.params.length <= 80), 'each taxonomy query binds two symbol chunks and stays below D1 limits')
+  assert(calls.every((call) => call.sql.includes('finlab_taxonomy_tags')), 'query should read FinLab taxonomy first')
+  assert(calls.every((call) => call.sql.includes("tag_type='concept'")), 'query should keep stock_tags concept overlay')
 })().catch((error) => {
   console.error(error)
   process.exit(1)

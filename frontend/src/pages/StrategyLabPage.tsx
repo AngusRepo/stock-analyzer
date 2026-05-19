@@ -389,21 +389,26 @@ function StrategyLearningPanel({
   const policyWeights = Object.entries(policy?.strategy_weights ?? {})
     .sort((a, b) => Number(b[1]) - Number(a[1]))
     .slice(0, 5)
+  const policyWeightById = new Map(Object.entries(policy?.strategy_weights ?? {}))
   const totals = rows.reduce(
     (acc, row) => {
       acc.decisions += row.learning.decisions
-      acc.matched += row.learning.matched
       acc.samples += row.learning.samples
+      if (row.learning.hit_rate != null) {
+        acc.hitRateSum += Number(row.learning.hit_rate)
+        acc.hitRateCount += 1
+      }
       return acc
     },
-    { decisions: 0, matched: 0, samples: 0 },
+    { decisions: 0, samples: 0, hitRateSum: 0, hitRateCount: 0 },
   )
+  const avgHitRate = totals.hitRateCount ? totals.hitRateSum / totals.hitRateCount : null
   return (
     <Card className="border-slate-800 bg-slate-950/70">
       <CardHeader className="pb-3">
         <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <span className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-emerald-300" /> Strategy Learning Curve
+            <Activity className="h-4 w-4 text-emerald-300" /> Learning + Reward Ledger
           </span>
           <span className="text-[11px] font-normal text-slate-500">
             {learning?.date ?? '-'} / {learning?.spec_source ?? 'default_fallback'}
@@ -417,12 +422,13 @@ function StrategyLearningPanel({
             <div className="mt-1 text-xl font-semibold text-slate-100">{totals.decisions}</div>
           </div>
           <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-            <div className="text-slate-500">Matched</div>
-            <div className="mt-1 text-xl font-semibold text-cyan-200">{totals.matched}</div>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
             <div className="text-slate-500">Reward samples</div>
             <div className="mt-1 text-xl font-semibold text-emerald-200">{totals.samples}</div>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+            <div className="text-slate-400">Avg hit rate</div>
+            <div className="mt-1 text-xl font-semibold text-cyan-100">{pct(avgHitRate)}</div>
+            <div className="mt-1 text-[11px] text-cyan-100/70">reward ledger only</div>
           </div>
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
             <div className="text-slate-400">Adaptive policy</div>
@@ -467,74 +473,77 @@ function StrategyLearningPanel({
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-          {rows.map((row) => {
-            const matchPct = row.learning.match_rate == null ? 0 : Math.max(0, Math.min(100, row.learning.match_rate * 100))
-            const hitPct = row.learning.hit_rate == null ? 0 : Math.max(0, Math.min(100, row.learning.hit_rate * 100))
-            const gate = gateById.get(`${row.id}:${row.version}`)
-            return (
-              <div key={`${row.id}:${row.version}`} className="rounded-2xl border border-slate-800 bg-black/20 p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-100">{row.name}</div>
-                    <div className="mt-1 text-[11px] text-slate-500">{row.id}</div>
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black/20">
+          <div className="grid grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <div>Strategy</div>
+            <div>Outcomes</div>
+            <div>Reward</div>
+            <div>Policy weight</div>
+            <div>Promotion gate</div>
+          </div>
+          <div className="divide-y divide-slate-900">
+            {rows.map((row) => {
+              const gate = gateById.get(`${row.id}:${row.version}`)
+              const weight = Number(policyWeightById.get(row.id) ?? 0)
+              return (
+                <div key={`${row.id}:${row.version}`} className="grid grid-cols-1 gap-3 px-4 py-3 text-xs xl:grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-slate-100">{row.name}</div>
+                      <Badge variant="outline" className={statusClass(row.learning.status)}>{row.learning.status}</Badge>
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-slate-500">{row.id}</div>
                   </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <Badge variant="outline" className={statusClass(row.learning.status)}>{row.learning.status}</Badge>
-                    {gate && <Badge variant="outline" className={strategyGateClass(gate.decision)}>{gate.decision}</Badge>}
+                  <div className="grid grid-cols-2 gap-2 xl:block xl:space-y-1">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
+                      <span className="text-slate-500">decisions </span><span className="text-slate-200">{row.learning.decisions}</span>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
+                      <span className="text-slate-500">samples </span><span className="text-slate-200">{row.learning.samples}</span>
+                    </div>
                   </div>
-                </div>
-                <div className="mt-4 space-y-3">
+                  <div className="grid grid-cols-3 gap-2 xl:block xl:space-y-1">
+                    <div><span className="text-slate-500">hit </span><span className="text-cyan-200">{pct(row.learning.hit_rate)}</span></div>
+                    <div><span className="text-slate-500">avg </span><span className={Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>{pct(row.learning.avg_return_pct)}</span></div>
+                    <div><span className="text-slate-500">MDD </span><span className="text-amber-200">{pct(row.learning.max_drawdown_pct)}</span></div>
+                  </div>
                   <div>
-                    <div className="flex justify-between text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                      <span>match rate</span><span>{pct(row.learning.match_rate)}</span>
+                    <div className="flex justify-between gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                      <span>shadow</span><span>{pct(weight)}</span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div className="h-full bg-cyan-300" style={{ width: `${matchPct}%` }} />
+                      <div className="h-full bg-gradient-to-r from-emerald-300 to-cyan-300" style={{ width: `${Math.max(0, Math.min(100, weight * 100))}%` }} />
                     </div>
                   </div>
                   <div>
-                    <div className="flex justify-between text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                      <span>hit rate</span><span>{pct(row.learning.hit_rate)}</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {gate && <Badge variant="outline" className={strategyGateClass(gate.decision)}>{gate.decision}</Badge>}
+                      {gate?.requires_wei_approval && (
+                        <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">Wei approval</Badge>
+                      )}
                     </div>
-                    <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div className="h-full bg-emerald-300" style={{ width: `${hitPct}%` }} />
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(gate?.missing_evidence ?? []).slice(0, 3).map((item) => (
+                        <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+                          {compactEvidenceLabel(item)}
+                        </Badge>
+                      ))}
+                      {gate && gate.missing_evidence.length === 0 && (
+                        <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
+                          evidence ready
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-xl border border-slate-800 p-2">
-                    <div className="text-slate-500">avg return</div>
-                    <div className={Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>
-                      {pct(row.learning.avg_return_pct)}
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-slate-800 p-2">
-                    <div className="text-slate-500">MDD</div>
-                    <div className="text-amber-200">{pct(row.learning.max_drawdown_pct)}</div>
-                  </div>
-                </div>
-                <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-slate-200">Promotion gate</span>
-                    <span className="text-slate-500">next: {gate?.recommended_next_status ?? '-'}</span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {(gate?.missing_evidence ?? []).slice(0, 4).map((item) => (
-                      <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
-                        {compactEvidenceLabel(item)}
-                      </Badge>
-                    ))}
-                    {gate && gate.missing_evidence.length === 0 && (
-                      <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
-                        evidence ready
-                      </Badge>
-                    )}
-                  </div>
-                </div>
+              )
+            })}
+            {!rows.length && (
+              <div className="px-4 py-6 text-sm text-slate-500">
+                尚無 reward ledger。先 materialize decision log，等 verify / paper outcome 回灌後才會形成學習曲線。
               </div>
-            )
-          })}
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" disabled={busy === 'strategy-decision-log'} onClick={onMaterialize}>
@@ -1688,7 +1697,10 @@ export default function StrategyLabPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Strategy Ops</div>
-              <div className="mt-1 text-sm font-semibold text-slate-100">Spec + Dry-run / Learning + Reward</div>
+              <div className="mt-1 text-sm font-semibold text-slate-100">Pre-trade Spec + Dry-run / Post-trade Learning + Reward</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                左欄只看策略定義與當日候選池命中；右欄只看後驗 reward、promotion gate 與 adaptive shadow 權重。
+              </p>
             </div>
             <Badge variant="outline" className="border-emerald-500/25 text-emerald-200">
               lifecycle view
@@ -1698,7 +1710,7 @@ export default function StrategyLabPage() {
             <Card className="border-slate-800 bg-slate-950/70">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  <GitBranch className="h-4 w-4 text-cyan-300" /> Spec + Dry-run
+                  <GitBranch className="h-4 w-4 text-cyan-300" /> Pre-trade Spec + Dry-run
                 </CardTitle>
               </CardHeader>
               <CardContent className="grid grid-cols-1 gap-3">

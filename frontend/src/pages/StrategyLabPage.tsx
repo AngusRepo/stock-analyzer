@@ -180,18 +180,23 @@ function StrategySpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: Strat
 function ModelUpgradeLaunchpad({
   status,
   busy,
+  actionResult,
+  actionError,
   onSeedRegistry,
   onRunEvaluations,
 }: {
   status: ModelUpgradeResearchStatusResponse | null
   busy: string | null
+  actionResult: string | null
+  actionError: string | null
   onSeedRegistry: () => void
   onRunEvaluations: () => void
 }) {
   const rows = status?.candidates ?? []
   const registryRows = rows.filter((row) => row.requires_experiment_registry)
   const trackOnlyRows = rows.filter((row) => !row.requires_experiment_registry)
-  const counts = rows.reduce(
+  const isModelUpgradeBusy = busy === 'model-upgrade-seed' || busy === 'model-upgrade-evaluation'
+  const counts = registryRows.reduce(
     (acc, row) => {
       acc[row.registry_status] = (acc[row.registry_status] ?? 0) + 1
       return acc
@@ -206,21 +211,43 @@ function ModelUpgradeLaunchpad({
             <GitBranch className="h-4 w-4 text-cyan-300" /> Model Upgrade Launchpad
           </span>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" disabled={busy === 'model-upgrade-seed'} onClick={onSeedRegistry}>
+            <Button size="sm" variant="outline" disabled={isModelUpgradeBusy} onClick={onSeedRegistry}>
               {busy === 'model-upgrade-seed' ? '建立中...' : 'Seed missing experiments'}
             </Button>
-            <Button size="sm" variant="outline" disabled={busy === 'model-upgrade-evaluation'} onClick={onRunEvaluations}>
-              <PlayCircle className="mr-1 h-3.5 w-3.5" />
+            <Button size="sm" variant="outline" disabled={isModelUpgradeBusy} onClick={onRunEvaluations}>
+              {busy === 'model-upgrade-evaluation'
+                ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                : <PlayCircle className="mr-1 h-3.5 w-3.5" />}
               {busy === 'model-upgrade-evaluation' ? '驗證中...' : 'Run shadow/benchmark dry-runs'}
             </Button>
           </div>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {isModelUpgradeBusy && (
+          <div aria-live="polite" className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
+            {busy === 'model-upgrade-seed'
+              ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與下方 Experiment Registry。'
+              : '正在執行 shadow/benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
+          </div>
+        )}
+        {actionResult && (
+          <div aria-live="polite" className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-100">
+            {actionResult}
+          </div>
+        )}
+        {actionError && (
+          <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-100">
+            <div>{actionError}</div>
+            <div className="mt-1 text-red-100/75">
+              若出現 Unauthorized，代表目前瀏覽器 session 沒有 admin/service token；重新登入後再按一次。
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
           <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-            <div className="text-slate-500">P7 tracks</div>
-            <div className="mt-1 text-xl font-semibold text-slate-100">{rows.length}</div>
+            <div className="text-slate-500">research tracks</div>
+            <div className="mt-1 text-xl font-semibold text-slate-100">{registryRows.length}</div>
           </div>
           <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3">
             <div className="text-slate-400">missing</div>
@@ -235,15 +262,15 @@ function ModelUpgradeLaunchpad({
             <div className="mt-1 text-xl font-semibold text-emerald-100">{counts.ready_for_review ?? 0}</div>
           </div>
           <div className="rounded-xl border border-violet-500/20 bg-violet-500/10 p-3">
-            <div className="text-slate-400">track only</div>
-            <div className="mt-1 text-xl font-semibold text-violet-100">{counts.track_only ?? 0}</div>
+            <div className="text-slate-400">governance elsewhere</div>
+            <div className="mt-1 text-xl font-semibold text-violet-100">{trackOnlyRows.length}</div>
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          P7 tracks total {rows.length}；其中 {registryRows.length} 個需要 Strategy Lab experiment registry，{trackOnlyRows.length} 個只走 slot / meta / overlay governance。
+          這裡只列需要 Strategy Lab experiment registry 的模型研究項目。Chronos 內部版本留在 Chronos slot，GAOptimizer 留在 OBS adaptive meta，Kalman/Markov 留在 Model Pool state-space overlay lineage。
         </div>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
-          {rows.map((row) => (
+          {registryRows.map((row) => (
             <div key={row.candidate_id} className="rounded-2xl border border-slate-800 bg-black/20 p-3 text-xs">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -256,24 +283,18 @@ function ModelUpgradeLaunchpad({
               </div>
               <div className="mt-3 text-slate-400">{row.family}</div>
               <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2 text-[11px] leading-5 text-slate-400">
-                <div>registry mode: {row.requires_experiment_registry ? 'experiment required' : 'track only'}</div>
+                <div>registry mode: experiment required</div>
                 <div>experiment: {row.latest_experiment_id ?? '-'}</div>
                 <div>evaluation: {row.latest_evaluation_verdict ?? '-'}</div>
                 <div>vote: {String(row.can_vote)} / predict: {String(row.can_predict)}</div>
-                {row.requires_experiment_registry ? (
-                  <>
-                    <div>handoff: {shortIdentifier(row.latest_patch_handoff_id)}</div>
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span>artifact intent:</span>
-                      <Badge variant="outline" className={artifactIntentTone(row.latest_artifact_intent_status)}>
-                        {row.latest_artifact_intent_status ?? 'none'}
-                      </Badge>
-                    </div>
-                    <div>registry preflight: {row.registry_preflight_ready ? 'ready' : 'blocked'}</div>
-                  </>
-                ) : (
-                  <div>governance: {row.next_action}</div>
-                )}
+                <div>handoff: {shortIdentifier(row.latest_patch_handoff_id)}</div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span>artifact intent:</span>
+                  <Badge variant="outline" className={artifactIntentTone(row.latest_artifact_intent_status)}>
+                    {row.latest_artifact_intent_status ?? 'none'}
+                  </Badge>
+                </div>
+                <div>registry preflight: {row.registry_preflight_ready ? 'ready' : 'blocked'}</div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {row.missing_evidence.slice(0, 3).map((item) => (
@@ -694,6 +715,8 @@ export default function StrategyLabPage() {
   const [runningExperimentId, setRunningExperimentId] = useState<string | null>(null)
   const [metaActionBusy, setMetaActionBusy] = useState<string | null>(null)
   const [metaActionResult, setMetaActionResult] = useState<string | null>(null)
+  const [modelUpgradeActionResult, setModelUpgradeActionResult] = useState<string | null>(null)
+  const [modelUpgradeActionError, setModelUpgradeActionError] = useState<string | null>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -845,11 +868,18 @@ export default function StrategyLabPage() {
     try {
       setMetaActionBusy('model-upgrade-seed')
       setDraftError(null)
+      setModelUpgradeActionError(null)
+      setModelUpgradeActionResult('正在建立 Strategy Lab experiment registry metadata...')
       const res = await strategyLabApi.seedModelUpgradeRegistry({ dry_run: false, confirm: true })
-      setMetaActionResult(`Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。`)
+      const message = `Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。`
+      setMetaActionResult(message)
+      setModelUpgradeActionResult(message)
       await load()
     } catch (e: unknown) {
-      setDraftError(getErrorMessage(e, 'model upgrade registry seed failed'))
+      const message = getErrorMessage(e, 'model upgrade registry seed failed')
+      setDraftError(message)
+      setModelUpgradeActionError(message)
+      setModelUpgradeActionResult(null)
     } finally {
       setMetaActionBusy(null)
     }
@@ -859,6 +889,8 @@ export default function StrategyLabPage() {
     try {
       setMetaActionBusy('model-upgrade-evaluation')
       setDraftError(null)
+      setModelUpgradeActionError(null)
+      setModelUpgradeActionResult('正在執行 model upgrade shadow/benchmark dry-run evaluation...')
       const res = await strategyLabApi.runModelUpgradeEvaluations({
         dry_run: true,
         seed_missing: true,
@@ -868,11 +900,16 @@ export default function StrategyLabPage() {
       })
       const ready = res.runs.filter((run) => run.verdict === 'ready_for_review').length
       const attention = res.runs.filter((run) => run.verdict !== 'ready_for_review').length
-      setMetaActionResult(`Model upgrade dry-runs 完成：runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。`)
+      const message = `Model upgrade dry-runs 完成：runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。`
+      setMetaActionResult(message)
+      setModelUpgradeActionResult(message)
       if (res.status) setModelUpgradeStatus(res.status)
       await load()
     } catch (e: unknown) {
-      setDraftError(getErrorMessage(e, 'model upgrade dry-run evaluation failed'))
+      const message = getErrorMessage(e, 'model upgrade dry-run evaluation failed')
+      setDraftError(message)
+      setModelUpgradeActionError(message)
+      setModelUpgradeActionResult(null)
     } finally {
       setMetaActionBusy(null)
     }
@@ -1132,6 +1169,8 @@ export default function StrategyLabPage() {
         <ModelUpgradeLaunchpad
           status={modelUpgradeStatus}
           busy={metaActionBusy}
+          actionResult={modelUpgradeActionResult}
+          actionError={modelUpgradeActionError}
           onSeedRegistry={seedModelUpgradeRegistry}
           onRunEvaluations={runModelUpgradeEvaluations}
         />

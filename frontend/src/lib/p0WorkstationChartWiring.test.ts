@@ -56,6 +56,10 @@ assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix sho
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')
+assert(strategyLabPage.includes('actionResult: string | null'), 'ModelUpgradeLaunchpad should receive scoped action feedback props')
+assert(strategyLabPage.includes('actionError: string | null'), 'ModelUpgradeLaunchpad should receive scoped action error props')
+assert(strategyLabPage.includes('正在建立 Strategy Lab experiment registry metadata'), 'ModelUpgradeLaunchpad should show immediate progress when seeding registry')
+assert(strategyLabPage.includes('若出現 Unauthorized'), 'ModelUpgradeLaunchpad should show auth/root-cause guidance at the clicked action surface')
 assert(
   strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
   'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',

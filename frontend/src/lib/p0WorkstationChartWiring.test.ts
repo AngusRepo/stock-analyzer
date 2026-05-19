@@ -62,6 +62,8 @@ assert(strategyLabPage.includes('正在建立 Strategy Lab experiment registry m
 assert(strategyLabPage.includes('若出現 Unauthorized'), 'ModelUpgradeLaunchpad should show auth/root-cause guidance at the clicked action surface')
 assert(strategyLabPage.includes('applyModelUpgradeSeedFeedback'), 'ModelUpgradeLaunchpad should optimistically reflect metadata-only seed writes')
 assert(strategyLabPage.includes('KV list 可能短暫延遲'), 'ModelUpgradeLaunchpad should explain short Cloudflare KV list consistency lag')
+assert(strategyLabPage.includes('Run next dry-run'), 'ModelUpgradeLaunchpad should run one pending model-upgrade experiment at a time')
+assert(strategyLabPage.includes('limit: 1'), 'ModelUpgrade dry-run action should avoid sequential batch timeouts')
 assert(
   strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
   'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',

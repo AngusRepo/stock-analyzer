@@ -247,7 +247,7 @@ function ModelUpgradeLaunchpad({
               {busy === 'model-upgrade-evaluation'
                 ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                 : <PlayCircle className="mr-1 h-3.5 w-3.5" />}
-              {busy === 'model-upgrade-evaluation' ? '驗證中...' : 'Run shadow/benchmark dry-runs'}
+              {busy === 'model-upgrade-evaluation' ? '驗證中...' : 'Run next dry-run'}
             </Button>
           </div>
         </CardTitle>
@@ -296,7 +296,7 @@ function ModelUpgradeLaunchpad({
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只列需要 Strategy Lab experiment registry 的模型研究項目。Chronos 內部版本留在 Chronos slot，GAOptimizer 留在 OBS adaptive meta，Kalman/Markov 留在 Model Pool state-space overlay lineage。
+          這裡只列需要 Strategy Lab experiment registry 的模型研究項目。Dry-run 每次只跑下一個 pending experiment，避免 backtest / walk-forward / verify / benchmark 整批 sequential timeout。
         </div>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
           {registryRows.map((row) => (
@@ -922,17 +922,17 @@ export default function StrategyLabPage() {
       setMetaActionBusy('model-upgrade-evaluation')
       setDraftError(null)
       setModelUpgradeActionError(null)
-      setModelUpgradeActionResult('正在執行 model upgrade shadow/benchmark dry-run evaluation...')
+      setModelUpgradeActionResult('正在執行下一個 model upgrade shadow/benchmark dry-run evaluation...')
       const res = await strategyLabApi.runModelUpgradeEvaluations({
         dry_run: true,
         seed_missing: true,
         include_ready: false,
-        limit: 10,
+        limit: 1,
         confirm: true,
       })
       const ready = res.runs.filter((run) => run.verdict === 'ready_for_review').length
       const attention = res.runs.filter((run) => run.verdict !== 'ready_for_review').length
-      const message = `Model upgrade dry-runs 完成：runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。`
+      const message = `Model upgrade dry-run 完成：runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。若仍有 pending，請再按一次跑下一筆。`
       setMetaActionResult(message)
       setModelUpgradeActionResult(message)
       if (res.status) setModelUpgradeStatus(res.status)

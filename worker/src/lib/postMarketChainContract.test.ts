@@ -63,6 +63,11 @@ assert(
   'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
 )
 assert(
+  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
+    postMarketChain.indexOf("'strategy-learning', () => runStrategyLearningClosureTask"),
+  'Strategy learning reward closure should run after model/meta-learning evidence is available',
+)
+assert(
   postMarketChain.includes('runPaperActivePostmarketPromotion'),
   'post-verify chain must include paper-active postmarket promotion closure',
 )
@@ -88,4 +93,5 @@ assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be vi
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'strategy-learning'"), 'Strategy learning closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-active-postmarket'"), 'paper-active postmarket must be visible in scheduler/OBS logs')

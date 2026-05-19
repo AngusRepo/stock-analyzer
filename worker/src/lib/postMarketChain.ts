@@ -123,6 +123,11 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
   ].join(' ')
 }
 
+async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const { runStrategyLearningClosure } = await import('./strategyLearning')
+  return runStrategyLearningClosure(env.DB, ctx.runDate ?? new Date().toISOString().slice(0, 10))
+}
+
 async function logChainSummary(
   env: Bindings,
   ctx: ChainContext,
@@ -166,6 +171,7 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+    results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
@@ -173,6 +179,7 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
   }
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)

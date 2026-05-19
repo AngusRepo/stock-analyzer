@@ -540,6 +540,7 @@ def predict_stock(req: PredictRequest) -> dict:
 _FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
 _TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
+_SHADOW_CHALLENGER_MODEL_NAMES = ["ResidualMLP", "GNN"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
 _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
@@ -804,8 +805,9 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     precomputed_challenger_scores = runtime_options.get(_BATCH_CHALLENGER_RANK_SCORES_KEY)
     precomputed_challenger_errors = runtime_options.get(_BATCH_CHALLENGER_MODEL_ERRORS_KEY)
     if isinstance(precomputed_challenger_scores, dict):
+        allowed_challengers = set(_FEATURE_MODEL_NAMES_V2) | set(_SHADOW_CHALLENGER_MODEL_NAMES)
         for model_name, score in precomputed_challenger_scores.items():
-            if model_name in _FEATURE_MODEL_NAMES_V2:
+            if model_name in allowed_challengers:
                 challenger_rank_scores[model_name] = float(np.clip(float(score), 0.0, 1.0))
         if isinstance(precomputed_challenger_errors, list):
             challenger_errors.extend(str(err) for err in precomputed_challenger_errors if err)

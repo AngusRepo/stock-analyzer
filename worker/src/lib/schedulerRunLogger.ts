@@ -33,6 +33,7 @@ const TASK_NAMES: Record<string, string> = {
   'dataset-snapshot-export': 'Dataset Snapshot Export',
   'linucb-reward-ledger': 'LinUCB Reward Ledger',
   'meta-learning-shadow': 'Meta Learning Shadow',
+  'strategy-learning': 'Strategy Learning',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',

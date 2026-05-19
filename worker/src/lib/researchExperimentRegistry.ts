@@ -128,6 +128,29 @@ export async function putResearchExperiment(kv: KVNamespace, record: ResearchExp
   await kv.put(`${RESEARCH_EXPERIMENT_PREFIX}${record.id}`, JSON.stringify(record))
 }
 
+export async function getResearchExperiment(kv: KVNamespace, id: string): Promise<ResearchExperimentRecord | null> {
+  const record = await kv.get(`${RESEARCH_EXPERIMENT_PREFIX}${id}`, 'json') as ResearchExperimentRecord | null
+  return record?.version === RESEARCH_REGISTRY_VERSION ? record : null
+}
+
+export async function updateResearchExperimentStatus(
+  kv: KVNamespace,
+  id: string,
+  status: ResearchExperimentStatus,
+  options: { nowIso?: string } = {},
+): Promise<ResearchExperimentRecord | null> {
+  assertOwnerCanOwn('research', 'experiment_registry')
+  const record = await getResearchExperiment(kv, id)
+  if (!record) return null
+  const next: ResearchExperimentRecord = {
+    ...record,
+    status,
+    updated_at: options.nowIso ?? new Date().toISOString(),
+  }
+  await putResearchExperiment(kv, next)
+  return next
+}
+
 export async function listResearchExperiments(kv: KVNamespace, limit = 50): Promise<ResearchExperimentRecord[]> {
   const listed = await kv.list({ prefix: RESEARCH_EXPERIMENT_PREFIX, limit: Math.max(1, Math.min(limit, 100)) })
   const records: ResearchExperimentRecord[] = []

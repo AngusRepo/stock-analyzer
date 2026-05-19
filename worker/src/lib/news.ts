@@ -167,11 +167,12 @@ interface CrawledNews {
 export async function crawlAndStoreNews(db: D1Database, stock: any): Promise<{ count: number }> {
   const symbol  = stock.symbol as string
   const stockNo = symbol.replace(/\.(TW|TWO)$/i, '')
+  const isUsMarket = String(stock.market ?? '').toUpperCase() === 'US'
 
   // 並行爬取三個來源
   const [yahooApi, yahooRss, cnyes] = await Promise.all([
-    crawlYahooNews(symbol, stock.id),
-    crawlYahooRSS(symbol, stock.id),
+    isUsMarket ? crawlYahooNews(symbol, stock.id) : Promise.resolve([]),
+    isUsMarket ? crawlYahooRSS(symbol, stock.id) : Promise.resolve([]),
     stock.market !== 'US' ? crawlCnyesRSS(stockNo, stock.id) : Promise.resolve([]),
   ])
 

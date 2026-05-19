@@ -1329,7 +1329,7 @@ recommendations.get('/daily', async (c) => {
   const evidenceLinksBySymbol = await loadRecommendationEvidenceLinks(
     c.env.DB,
     String(date),
-    recs.map((r: any) => String(r.symbol ?? '')),
+    recs.map((r: any) => ({ symbol: String(r.symbol ?? ''), name: String(r.name ?? '') })),
     3,
   ).catch((e) => {
     console.warn('[recommendations/daily] evidence links unavailable:', e)

@@ -199,16 +199,47 @@ adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { listStrategySpecs } = await import('../lib/strategyLab')
+  const { listStrategySpecsForLearning } = await import('../lib/strategyLearning')
   const { validateStrategySpec } = await import('../lib/strategySpec')
   const { STRATEGY_OWNER_BOUNDARIES } = await import('../lib/strategyOwnerFreeze')
-  const specs = listStrategySpecs()
+  const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
   return c.json({
     success: true,
     version: specs[0]?.version ?? 'strategy-spec-v1',
     mode: 'read_only',
+    source,
     specs: specs.map((spec) => ({ ...spec, validation: validateStrategySpec(spec) })),
     owner_boundaries: STRATEGY_OWNER_BOUNDARIES,
+  })
+})
+
+adminReadRoutes.get('/api/admin/strategy/learning', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const { buildStrategyLearningSummary } = await import('../lib/strategyLearning')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    ...(await buildStrategyLearningSummary(c.env.DB, date)),
+  })
+})
+
+adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const { buildStrategyLearningSummary, getLatestStrategyPolicyState } = await import('../lib/strategyLearning')
+  const summary = await buildStrategyLearningSummary(c.env.DB, date)
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    date,
+    latest: await getLatestStrategyPolicyState(c.env.DB),
+    preview: summary.policy_state_preview,
+    promotion_gate: summary.promotion_gate,
   })
 })
 
@@ -313,6 +344,44 @@ adminReadRoutes.get('/api/admin/research/experiments/:id/evaluation-runs', async
     experiment_id: id,
     runs: await listResearchEvaluationRunReports(c.env.KV, id, limit),
   })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/patch-handoffs', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '10', 10) || 10, 50))
+  const { listResearchPatchHandoffs } = await import('../lib/researchPatchHandoff')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiment_id: id,
+    handoffs: await listResearchPatchHandoffs(c.env.KV, id, limit),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/artifact-intents', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '10', 10) || 10, 50))
+  const { listResearchArtifactIntents } = await import('../lib/researchArtifactIntent')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiment_id: id,
+    intents: await listResearchArtifactIntents(c.env.KV, id, limit),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/model-upgrade/status', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildModelUpgradeResearchStatus } = await import('../lib/modelUpgradeResearchRegistry')
+  return c.json(await buildModelUpgradeResearchStatus(c.env.KV))
 })
 
 adminReadRoutes.post('/api/admin/research/gate', async (c) => {

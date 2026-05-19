@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
-import { requireServiceToken } from '../lib/auth'
+import { requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { evaluateGaPromotion, formatGaPromotionNotification } from '../lib/gaPromotion'
 import { sendOperatorNotification } from '../lib/notify'
 import {
@@ -13,6 +13,87 @@ import {
 import type { Bindings, Variables } from '../types'
 
 export const adminOptunaRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+adminOptunaRoutes.post('/api/admin/ga-promotion/review', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => null)
+  const action = String(body?.action ?? '').toLowerCase()
+  const level = String(body?.level ?? 'L3').toUpperCase()
+  if (!['request', 'approve', 'reject'].includes(action)) {
+    return c.json({ error: "action must be 'request', 'approve', or 'reject'" }, 400)
+  }
+  if (!['L3', 'L4'].includes(level)) {
+    return c.json({ error: 'level must be L3 or L4' }, 400)
+  }
+
+  const latestKey = 'optimizer:ga:latest'
+  const previousRaw = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
+  if (!previousRaw) return c.json({ error: 'optimizer:ga:latest missing' }, 404)
+
+  const now = new Date().toISOString()
+  const promotionPatch: Record<string, unknown> = {
+    ...((previousRaw as any).promotion ?? {}),
+    requested_level: level,
+    reviewed_at: now,
+    reviewed_by: body?.reviewed_by ?? body?.approved_by ?? 'Wei',
+    review_action: action,
+    review_reason: body?.reason ?? null,
+  }
+  if (action === 'approve') {
+    promotionPatch.approved_level = level
+    promotionPatch.approved_at = now
+  }
+  if (action === 'reject') {
+    promotionPatch.requested_level = null
+    promotionPatch.rejected_level = level
+    promotionPatch.rejected_at = now
+    promotionPatch.approved_level = null
+  }
+
+  const nextState: Record<string, any> = {
+    ...(previousRaw as Record<string, unknown>),
+    promotion: promotionPatch,
+    updated_at: now,
+    production_learning_loop: true,
+    mutates_trading_config: false,
+  }
+  const promotion = evaluateGaPromotion(nextState as Record<string, any>, previousRaw)
+  nextState.status = promotion.status
+  nextState.promotion = {
+    ...promotionPatch,
+    ...promotion,
+    evaluated_at: now,
+    previous_level: previousRaw?.promotion?.level ?? null,
+    trading_config_unchanged: true,
+  }
+
+  const auditKey = `optimizer:ga:review:${twToday()}:${Date.now()}`
+  await c.env.KV.put(latestKey, JSON.stringify(nextState))
+  await c.env.KV.put(auditKey, JSON.stringify({
+    source: 'ga_optimizer',
+    action,
+    level,
+    reviewer: nextState.promotion.reviewed_by,
+    reason: body?.reason ?? null,
+    promotion,
+    latest_key: latestKey,
+    reviewed_at: now,
+    trading_config_unchanged: true,
+  }), { expirationTtl: 180 * 86400 })
+
+  return c.json({
+    success: true,
+    source: 'ga_optimizer',
+    action,
+    level,
+    updatedKeys: [latestKey, auditKey],
+    promotion: nextState.promotion,
+    mutates_trading_config: false,
+    message: 'GA promotion review recorded; trading:config remains unchanged.',
+  })
+})
 
 adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
   const authError = await requireServiceToken(c)

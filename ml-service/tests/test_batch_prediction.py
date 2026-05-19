@@ -166,6 +166,44 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
 
 
+def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
+    from app.prediction_runtime import _BATCH_CHALLENGER_RANK_SCORES_KEY
+    from app.schemas import PredictRequest
+
+    class FakeModel:
+        def predict(self, x_batch):
+            return np.array([0.61, 0.39], dtype=np.float32)
+
+    def fake_load_artifact(model_name, explicit_path=None):
+        if model_name == "ResidualMLP":
+            assert explicit_path == "experimental_shadow/residualmlp/v1.joblib"
+            return FakeModel(), {"feature_names": [], "feature_medians": {}}
+        return None, {}
+
+    pool = {
+        "models": {},
+        "shadow_models": {
+            "ResidualMLP": {
+                "status": "challenger",
+                "version": "v1",
+                "gcs_path": "experimental_shadow/residualmlp/v1.joblib",
+            },
+        },
+    }
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
+    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
+
+    requests = [
+        PredictRequest(**_predict_payload("2330", 2330, 100.0)),
+        PredictRequest(**_predict_payload("2317", 2317, 80.0)),
+    ]
+
+    overrides = batch_prediction._build_feature_model_batch_runtime_overrides(requests)
+
+    assert overrides[0][_BATCH_CHALLENGER_RANK_SCORES_KEY]["ResidualMLP"] == pytest.approx(0.61)
+    assert overrides[1][_BATCH_CHALLENGER_RANK_SCORES_KEY]["ResidualMLP"] == pytest.approx(0.39)
+
+
 def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
 
@@ -227,13 +265,14 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         **payload["runtime_options"],
         _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.82},
         _BATCH_FEATURE_MODEL_ERRORS_KEY: ["LightGBM: not found in GCS"],
-        _BATCH_CHALLENGER_RANK_SCORES_KEY: {},
+        _BATCH_CHALLENGER_RANK_SCORES_KEY: {"ResidualMLP": 0.64},
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY: [],
     }
 
     result = prediction_runtime.predict_stock_v2(PredictRequest(**payload))
 
     assert result["rank_scores"]["XGBoost"] == pytest.approx(0.82)
+    assert result["challenger_rank_scores"]["ResidualMLP"] == pytest.approx(0.64)
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"

@@ -70,4 +70,30 @@ void (async () => {
   assert(latest.mutates_trading_config === false, 'GA learning push must not mutate trading:config')
   assert(latest.best_alphaFramework.riskOverlay.highVolThreshold === 0.045, 'latest GA state should preserve learned policy')
   assert(!(env.KV as any).store.has('trading:config'), 'ga_optimizer push must not write trading:config')
+
+  const requestReview = await adminOptunaRoutes.request('/api/admin/ga-promotion/review', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer service-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action: 'request', level: 'L3', reason: 'test_request' }),
+  }, env)
+  assert(requestReview.status === 200, 'GA L3 review request should be accepted from admin/service UI path')
+  const requested = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  assert(requested.promotion.pendingApprovalLevel === 'L3', 'GA review request should create explicit pending L3 approval')
+  assert(requested.mutates_trading_config === false, 'GA review request must not mutate trading:config')
+
+  const approveReview = await adminOptunaRoutes.request('/api/admin/ga-promotion/review', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer service-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action: 'approve', level: 'L3', reason: 'test_approve' }),
+  }, env)
+  assert(approveReview.status === 200, 'GA L3 approval should be accepted from admin/service UI path')
+  const approved = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  assert(approved.promotion.level === 'L3', 'approved GA review should advance promotion state to L3')
+  assert(!(env.KV as any).store.has('trading:config'), 'GA review approval must not write trading:config directly')
 })()

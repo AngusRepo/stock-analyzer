@@ -177,11 +177,13 @@ export async function listResearchEvaluationRunReports(
   experimentId: string,
   limit = 20,
 ): Promise<StoredResearchEvaluationRunReport[]> {
-  const { keys } = await kv.list({ prefix: evaluationRunPrefix(experimentId), limit })
+  const requestedLimit = Math.max(1, Math.min(limit, 50))
+  const { keys } = await kv.list({ prefix: evaluationRunPrefix(experimentId), limit: 50 })
   const rows = await Promise.all(
     keys.map(async (key) => kv.get(key.name, 'json') as Promise<StoredResearchEvaluationRunReport | null>),
   )
   return rows
     .filter((row): row is StoredResearchEvaluationRunReport => Boolean(row))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+    .slice(0, requestedLimit)
 }

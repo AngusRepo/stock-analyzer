@@ -3,6 +3,19 @@ export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'
 
 let _token: string | null = sessionStorage.getItem('sv_token')
 
+function formatApiError(path: string, status: number, statusText: string, payload: any): string {
+  const serverMessage = typeof payload?.error === 'string' && payload.error.trim()
+    ? payload.error.trim()
+    : typeof payload?.message === 'string' && payload.message.trim()
+      ? payload.message.trim()
+      : ''
+  const rawBase = serverMessage || statusText || `HTTP ${status}`
+  const isOpaqueProxy500 = status === 500 && rawBase === 'Internal Server Error'
+  const base = isOpaqueProxy500 ? 'API unavailable' : rawBase
+  const localHint = isOpaqueProxy500 ? ' Local dev hint: check that the Worker API is running on localhost:8787.' : ''
+  return `${base} (${path}, HTTP ${status}).${localHint}`
+}
+
 function emitAuthTokenEvent(authenticated: boolean) {
   window.dispatchEvent(new CustomEvent(AUTH_TOKEN_EVENT, { detail: { authenticated } }))
 }
@@ -26,7 +39,10 @@ async function req<T>(method: string, path: string, body?: unknown, extraHeaders
   Object.assign(headers, extraHeaders)
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
   if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
-  if (!res.ok) { const e = await res.json().catch(() => ({ error: res.statusText })) as any; throw new Error(e.error ?? `HTTP ${res.status}`) }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({})) as any
+    throw new Error(formatApiError(path, res.status, res.statusText, e))
+  }
   return res.json()
 }
 const get  = <T>(p: string)            => req<T>('GET',    p)
@@ -442,6 +458,8 @@ export const observabilityApi = {
     const query = params.toString()
     return get<ObservabilityDrilldownReport>(`/admin/observability/drilldown${query ? `?${query}` : ''}`)
   },
+  reviewGaPromotion: (body: { action: 'request' | 'approve' | 'reject'; level?: 'L3' | 'L4'; reason?: string }) =>
+    post<any>('/admin/ga-promotion/review', body),
 }
 
 export type OpsRunbookReport = {
@@ -518,6 +536,7 @@ export type StrategySpecsResponse = {
   success: boolean
   version: string
   mode: 'read_only'
+  source?: 'registry' | 'default_fallback'
   specs: StrategySpec[]
   owner_boundaries: StrategyOwnerBoundary[]
 }
@@ -538,6 +557,81 @@ export type StrategyDryRunResponse = {
   source: 'request_body' | 'daily_recommendations'
   candidate_count: number
   results: StrategyDryRunResult[]
+}
+
+export type StrategyLearningResponse = {
+  success: boolean
+  mode: 'read_only'
+  version: string
+  date: string
+  spec_source: 'registry' | 'default_fallback'
+  specs: Array<Omit<StrategySpec, 'validation'> & {
+    validation?: StrategySpec['validation']
+    learning: {
+      decisions: number
+      matched: number
+      match_rate: number | null
+      samples: number
+      hit_rate: number | null
+      avg_return_pct: number | null
+      max_drawdown_pct: number | null
+      status: 'learning' | 'no_decisions' | 'no_reward'
+    }
+  }>
+  promotion_gate: StrategyPromotionGate[]
+  policy_state_preview: StrategyAdaptivePolicyState
+}
+
+export type StrategyPromotionGate = {
+  strategy_id: string
+  strategy_version: string
+  strategy_status: StrategySpecStatus
+  alpha_bucket: string
+  decision: 'not_ready' | 'candidate_ready' | 'active_monitor'
+  recommended_next_status: 'shadow' | 'candidate' | 'active'
+  requires_wei_approval: boolean
+  production_effect: false
+  missing_evidence: string[]
+  evidence: {
+    decisions: number
+    matched: number
+    match_rate: number | null
+    samples: number
+    hit_rate: number | null
+    avg_return_pct: number | null
+    max_drawdown_pct: number | null
+  }
+}
+
+export type StrategyAdaptivePolicyState = {
+  policy_id: string
+  version: string
+  status: 'shadow' | 'candidate' | 'active' | 'retired'
+  strategy_weights: Record<string, number>
+  threshold_deltas: Record<string, {
+    minSeedScore?: number
+    minChipScore?: number
+    minTechScore?: number
+  }>
+  evidence: {
+    version: string
+    date: string
+    source: 'strategy_reward_ledger'
+    production_effect: false
+    requires_approval_to_activate: true
+    eligible_strategy_count: number
+    missing_evidence: Record<string, string[]>
+  }
+  updated_at: string
+}
+
+export type StrategyPolicyStateResponse = {
+  success: boolean
+  mode: 'read_only'
+  date: string
+  latest: StrategyAdaptivePolicyState | null
+  preview: StrategyAdaptivePolicyState
+  promotion_gate: StrategyPromotionGate[]
 }
 
 export type ResearchExperiment = {
@@ -577,6 +671,7 @@ export type ResearchExperiment = {
 export type ResearchEvaluationRunResponse = {
   success: boolean
   mode: 'dry_run_execution'
+  experiment?: ResearchExperiment
   report: {
     success: boolean
     mode: 'dry_run_execution'
@@ -648,6 +743,140 @@ export type ResearchExperimentsResponse = {
   meta_learning_decision_packet?: string
 }
 
+export type ModelUpgradeResearchStatusRow = {
+  candidate_id: string
+  stage: 'production_slot_member' | 'shadow_challenger' | 'benchmark_only' | 'meta_optimizer' | 'state_space_overlay'
+  family: string
+  role: string
+  registry_status: 'track_only' | 'experiment_missing' | 'evaluation_pending' | 'needs_attention' | 'ready_for_review' | 'approved_for_patch' | 'rejected'
+  registered_experiment_ids: string[]
+  latest_experiment_id: string | null
+  latest_experiment_status: string | null
+  latest_evaluation_verdict: 'ready_for_review' | 'needs_attention' | null
+  latest_evaluation_at: string | null
+  latest_patch_handoff_id: string | null
+  latest_patch_handoff_at: string | null
+  latest_artifact_intent_id: string | null
+  latest_artifact_intent_status: 'blocked_missing_artifact' | 'ready_for_registry_preflight' | null
+  artifact_intent_missing_fields: string[]
+  registry_preflight_ready: boolean
+  requires_experiment_registry: boolean
+  can_predict: boolean
+  can_vote: boolean
+  production_effect: false
+  next_action: string
+  missing_evidence: string[]
+}
+
+export type ModelUpgradeResearchStatusResponse = {
+  success: true
+  mode: 'read_only'
+  version: string
+  candidates: ModelUpgradeResearchStatusRow[]
+}
+
+export type ModelUpgradeEvaluationRunResponse = {
+  success: true
+  mode: 'dry_run_execution'
+  version: string
+  production_effect: false
+  seeded: { created: string[]; existing: string[]; total: number } | null
+  requested_candidates: string[]
+  runs: Array<{
+    candidate_id: string
+    experiment_id: string
+    stage: ModelUpgradeResearchStatusRow['stage']
+    verdict: 'ready_for_review' | 'needs_attention'
+    status_after: string
+    stored_id: string
+    ok_steps: number
+    skipped_steps: number
+    error_steps: number
+  }>
+  status: ModelUpgradeResearchStatusResponse
+  blocked_capabilities: string[]
+  note?: string
+}
+
+export type ResearchPatchHandoff = {
+  id: string
+  version: string
+  mode: 'metadata_only'
+  experiment_id: string
+  experiment_status: ResearchExperiment['status']
+  created_at: string
+  reviewer: string
+  reason: string | null
+  production_effect: false
+  can_write_model_artifact_registry: false
+  artifact_bridge: {
+    candidate_type: 'model_family_shadow' | 'research_benchmark' | 'strategy_patch'
+    candidate_ids: string[]
+    requires_external_artifact: boolean
+    target_registry: 'model_artifact_registry' | 'strategy_spec_registry'
+  }
+  implementation_plan: string[]
+  validation_plan: string[]
+  latest_evaluation: {
+    id: string
+    created_at: string
+    verdict: 'ready_for_review' | 'needs_attention'
+    review_packet: string
+  } | null
+  blocked_capabilities: string[]
+}
+
+export type ResearchPatchHandoffsResponse = {
+  success: boolean
+  mode: 'read_only'
+  experiment_id: string
+  handoffs: ResearchPatchHandoff[]
+}
+
+export type ResearchArtifactIntent = {
+  id: string
+  version: string
+  mode: 'metadata_only'
+  experiment_id: string
+  handoff_id: string
+  status: 'blocked_missing_artifact' | 'ready_for_registry_preflight'
+  created_at: string
+  reviewer: string
+  reason: string | null
+  production_effect: false
+  target_registry: 'model_artifact_registry'
+  registry_candidate: {
+    artifact_id: string
+    model_name: string
+    version: string
+    candidate_type: 'model_family_shadow' | 'research_benchmark'
+    state: 'registered'
+    artifact_path: string | null
+    metadata_path: string | null
+    training_manifest_path: string | null
+    feature_policy_version: string | null
+    checksum: string | null
+    source_run_date: string
+    approval_state: 'required'
+    promotion_decision: 'not_evaluated'
+  }
+  preflight: {
+    can_write_registry: false
+    ready_for_manual_registry_write: boolean
+    missing_fields: string[]
+    blockers: string[]
+    required_manual_steps: string[]
+  }
+  blocked_capabilities: string[]
+}
+
+export type ResearchArtifactIntentsResponse = {
+  success: boolean
+  mode: 'read_only'
+  experiment_id: string
+  intents: ResearchArtifactIntent[]
+}
+
 export type ResearchGateResult = {
   decision: 'ALLOW' | 'REQUIRE_APPROVAL' | 'BLOCK'
   action: string
@@ -665,7 +894,87 @@ export type ResearchGateResponse = {
 export const strategyLabApi = {
   specs: () => get<StrategySpecsResponse>('/admin/strategy/specs'),
   dryRun: (date?: string) => post<StrategyDryRunResponse>(`/admin/strategy/dry-run${date ? `?date=${date}` : ''}`),
+  learning: (date?: string) => get<StrategyLearningResponse>(`/admin/strategy/learning${date ? `?date=${date}` : ''}`),
+  policyState: (date?: string) => get<StrategyPolicyStateResponse>(`/admin/strategy/policy-state${date ? `?date=${date}` : ''}`),
+  materializeDecisionLog: (body?: { date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/strategy/decision-log/materialize',
+    { ...body, dry_run: body?.dry_run ?? false },
+    body?.confirm !== false ? { 'X-Confirm-Strategy-Learning': 'true' } : undefined,
+  ),
+  refreshStrategyRewardLedger: (body?: { start_date?: string; end_date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/strategy/reward-ledger/refresh',
+    { ...body, dry_run: body?.dry_run ?? false },
+    body?.confirm !== false ? { 'X-Confirm-Strategy-Learning': 'true' } : undefined,
+  ),
+  refreshStrategyPolicyState: (body?: { date?: string; dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/strategy/policy-state/refresh',
+    { ...body, dry_run: body?.dry_run ?? false },
+    body?.confirm !== false ? { 'X-Confirm-Strategy-Learning': 'true' } : undefined,
+  ),
   experiments: () => get<ResearchExperimentsResponse>('/admin/research/experiments'),
+  modelUpgradeStatus: () => get<ModelUpgradeResearchStatusResponse>('/admin/research/model-upgrade/status'),
+  seedModelUpgradeRegistry: (body?: { dry_run?: boolean; confirm?: boolean }) => req<any>(
+    'POST',
+    '/admin/research/model-upgrade/seed',
+    { ...body, dry_run: body?.dry_run ?? false },
+    body?.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
+  ),
+  runModelUpgradeEvaluations: (body?: { candidate_ids?: string[]; limit?: number; dry_run?: boolean; seed_missing?: boolean; include_ready?: boolean; confirm?: boolean }) => req<ModelUpgradeEvaluationRunResponse>(
+    'POST',
+    '/admin/research/model-upgrade/evaluation-run',
+    { ...body, dry_run: body?.dry_run ?? true, seed_missing: body?.seed_missing ?? true },
+    body?.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
+  ),
+  updateExperimentStatus: (id: string, body: { status: 'running' | 'review_ready' | 'approved_for_patch' | 'rejected' | 'archived'; reason?: string; confirm?: boolean }) => req<{ success: boolean; mode: 'metadata_only'; experiment: ResearchExperiment; production_effect: false; blocked_capabilities: string[] }>(
+    'POST',
+    `/admin/research/experiments/${encodeURIComponent(id)}/status`,
+    { status: body.status, reason: body.reason },
+    body.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
+  ),
+  createPatchHandoff: (id: string, body?: { reviewer?: string; reason?: string; dry_run?: boolean; confirm?: boolean }) => req<{ success: boolean; mode: 'metadata_only'; handoff: ResearchPatchHandoff; production_effect: false; note?: string }>(
+    'POST',
+    `/admin/research/experiments/${encodeURIComponent(id)}/patch-handoff`,
+    { reviewer: body?.reviewer ?? 'Wei', reason: body?.reason, dry_run: body?.dry_run ?? true },
+    body?.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
+  ),
+  patchHandoffs: (id: string) => get<ResearchPatchHandoffsResponse>(
+    `/admin/research/experiments/${encodeURIComponent(id)}/patch-handoffs`,
+  ),
+  createArtifactIntent: (id: string, body?: {
+    model_name?: string
+    artifact_version?: string
+    artifact_path?: string
+    metadata_path?: string
+    training_manifest_path?: string
+    feature_policy_version?: string
+    checksum?: string
+    reviewer?: string
+    reason?: string
+    dry_run?: boolean
+    confirm?: boolean
+  }) => req<{ success: boolean; mode: 'metadata_only'; intent: ResearchArtifactIntent; production_effect: false; note?: string }>(
+    'POST',
+    `/admin/research/experiments/${encodeURIComponent(id)}/artifact-intent`,
+    {
+      model_name: body?.model_name,
+      artifact_version: body?.artifact_version,
+      artifact_path: body?.artifact_path,
+      metadata_path: body?.metadata_path,
+      training_manifest_path: body?.training_manifest_path,
+      feature_policy_version: body?.feature_policy_version,
+      checksum: body?.checksum,
+      reviewer: body?.reviewer ?? 'Wei',
+      reason: body?.reason,
+      dry_run: body?.dry_run ?? true,
+    },
+    body?.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
+  ),
+  artifactIntents: (id: string) => get<ResearchArtifactIntentsResponse>(
+    `/admin/research/experiments/${encodeURIComponent(id)}/artifact-intents`,
+  ),
   gate: (action: string, opts?: { dryRun?: boolean }) => post<ResearchGateResponse>('/admin/research/gate', { action, dryRun: opts?.dryRun }),
   createExperiment: (body: {
     hypothesis: string

@@ -7,7 +7,14 @@ from typing import Any, Literal
 
 from services import d1_client
 
-CandidateType = Literal["monthly_release", "weekly_drift", "manual_hotfix", "unknown"]
+CandidateType = Literal[
+    "monthly_release",
+    "weekly_drift",
+    "manual_hotfix",
+    "model_family_shadow",
+    "research_benchmark",
+    "unknown",
+]
 ArtifactState = Literal[
     "registered",
     "registration_failed",
@@ -56,7 +63,7 @@ def _as_float(value: Any) -> float | None:
 
 
 def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None = None) -> CandidateType:
-    if explicit in {"monthly_release", "weekly_drift", "manual_hotfix"}:
+    if explicit in {"monthly_release", "weekly_drift", "manual_hotfix", "model_family_shadow", "research_benchmark"}:
         return explicit  # type: ignore[return-value]
     if is_monthly is True:
         return "monthly_release"

@@ -1,6 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, ExternalLink } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { ArrowRight, ExternalLink, Loader2 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { Button } from '@/components/ui/button'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -331,7 +332,17 @@ function summarizeLearnedPolicy(policy: Record<string, unknown>) {
   return parts.length ? parts.join(' / ') : 'learned params not exposed'
 }
 
-function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
+function AdaptiveMetaPanel({
+  events,
+  onGaReview,
+  gaReviewPending = false,
+  gaReviewError,
+}: {
+  events: ObservabilityEvent[]
+  onGaReview?: (action: 'request' | 'approve' | 'reject', level: 'L3' | 'L4') => void
+  gaReviewPending?: boolean
+  gaReviewError?: string | null
+}) {
   const adaptive = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'adaptive_params')
   const ga = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'ga_optimizer')
   const evidence = asRecord(adaptive?.evidence)
@@ -355,8 +366,10 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
     : Array.isArray(promotion.missing_evidence)
       ? promotion.missing_evidence.map(String)
       : []
-  const pendingApprovalLevel = String(promotion.pendingApprovalLevel ?? promotion.pending_approval_level ?? '')
+  const pendingApprovalRaw = String(promotion.pendingApprovalLevel ?? promotion.pending_approval_level ?? '').toUpperCase()
+  const pendingApprovalLevel = (pendingApprovalRaw === 'L3' || pendingApprovalRaw === 'L4' ? pendingApprovalRaw : '') as '' | 'L3' | 'L4'
   const canRequestNextLevel = promotion.canRequestNextLevel === true || promotion.can_request_next_level === true
+  const nextLevel = (String(promotion.nextLevel ?? promotion.next_level ?? 'L3').toUpperCase() === 'L4' ? 'L4' : 'L3') as 'L3' | 'L4'
   const gaNextAction = String(promotion.nextAction ?? ga?.next_action ?? '')
   const approvalRequiredForNextLevel =
     promotion.approvalRequiredForNextLevel === true || promotion.approval_required_for_next_level === true
@@ -500,9 +513,47 @@ function AdaptiveMetaPanel({ events }: { events: ObservabilityEvent[] }) {
           <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-100">
             <p className="font-semibold text-amber-200">L3 晉級規則</p>
             <p>GA 會自動學習並產生 candidate，但 L3/L4 會先停在 approval gate：必須看到 fitness、PBO/MC、candidate diff 都合格，且由 Wei 審核後才允許寫入 production trading:config。</p>
-            <a href="/strategy-lab" className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200 hover:text-amber-100">
-              Review GA candidate <ExternalLink className="h-3 w-3" />
-            </a>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {canRequestNextLevel && !pendingApprovalLevel && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!onGaReview || gaReviewPending}
+                  className="h-7 rounded-full border-amber-400/30 px-3 text-[11px] text-amber-200 hover:bg-amber-400/10"
+                  onClick={() => onGaReview?.('request', nextLevel)}
+                >
+                  {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                  Request {nextLevel} review
+                </Button>
+              )}
+              {pendingApprovalLevel && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!onGaReview || gaReviewPending}
+                    className="h-7 rounded-full border-emerald-400/30 px-3 text-[11px] text-emerald-200 hover:bg-emerald-400/10"
+                    onClick={() => onGaReview?.('approve', pendingApprovalLevel)}
+                  >
+                    {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                    Approve {pendingApprovalLevel}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!onGaReview || gaReviewPending}
+                    className="h-7 rounded-full border-rose-400/30 px-3 text-[11px] text-rose-200 hover:bg-rose-400/10"
+                    onClick={() => onGaReview?.('reject', pendingApprovalLevel)}
+                  >
+                    Reject {pendingApprovalLevel}
+                  </Button>
+                </>
+              )}
+              <a href="/strategy-lab" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200 hover:text-amber-100">
+                Review GA candidate <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+            {gaReviewError && <p className="mt-2 text-rose-200">{gaReviewError}</p>}
           </div>
         </div>
       </div>
@@ -614,6 +665,13 @@ export default function ObservabilityPage() {
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
+  const gaReview = useMutation({
+    mutationFn: ({ action, level }: { action: 'request' | 'approve' | 'reject'; level: 'L3' | 'L4' }) =>
+      observabilityApi.reviewGaPromotion({ action, level, reason: `obs_ui_${action}` }),
+    onSuccess: () => {
+      observability.refetch()
+    },
+  })
 
   const events = observability.data?.events ?? []
   const jobs = scheduler.data?.jobs ?? []
@@ -623,10 +681,21 @@ export default function ObservabilityPage() {
   const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
   const failedJobs = jobs.filter((job) => job.lastStatus === 'failed').length
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
+  const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
 
   return (
     <AppShell>
-      <div className="space-y-4 p-4 lg:p-5">
+      <div className="relative min-h-[70vh] p-4 lg:p-5">
+        {initialLoading && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
+            <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
+              <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
+              <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.18em] text-sky-200">Loading OBS evidence</p>
+              <p className="mt-1 text-xs text-slate-500">scheduler / data quality / deploy gate / model events</p>
+            </div>
+          </div>
+        )}
+        <div className={`space-y-4 ${initialLoading ? 'pointer-events-none opacity-0' : 'opacity-100 transition-opacity duration-300'}`}>
         <WorkstationPageTitle
           kicker="Observability"
           title="OBS 可觀測中心"
@@ -642,7 +711,12 @@ export default function ObservabilityPage() {
         />
 
         <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">
-          <AdaptiveMetaPanel events={events} />
+          <AdaptiveMetaPanel
+            events={events}
+            onGaReview={(action, level) => gaReview.mutate({ action, level })}
+            gaReviewPending={gaReview.isPending}
+            gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
+          />
           <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">
             <DependencyMap />
           </WorkstationPanel>
@@ -691,6 +765,7 @@ export default function ObservabilityPage() {
             </div>
           </div>
         </WorkstationPanel>
+        </div>
       </div>
     </AppShell>
   )

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { DecisionTraceRail, SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
 import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 import { DecisionPacketCell, StatusPill, WeightBar } from '@/components/workstation/VisualPrimitives'
-import { modelPoolApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ResearchExperiment } from '@/lib/api'
+import { modelPoolApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ModelUpgradeResearchStatusRow, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 
 function fmt(value: unknown): string {
@@ -125,6 +125,18 @@ function compactUnknown(value: unknown, digits = 4): string {
   return String(value)
 }
 
+function shortEvidenceId(value?: string | null): string {
+  if (!value) return '-'
+  return value.length > 44 ? `${value.slice(0, 26)}...${value.slice(-10)}` : value
+}
+
+function preflightLabel(row?: ModelUpgradeResearchStatusRow): string {
+  if (!row) return 'blocked'
+  if (row.registry_preflight_ready) return 'ready'
+  const missing = row.artifact_intent_missing_fields?.slice(0, 3).join(', ')
+  return missing ? `blocked; missing ${missing}` : 'blocked'
+}
+
 function formatCalibrationMethod(method: string): string {
   if (method === 'empirical_rank_bins_monotonic') return '單調分箱校準'
   if (method === 'rank_to_return_curve') return '排名轉報酬曲線'
@@ -133,16 +145,19 @@ function formatCalibrationMethod(method: string): string {
   return method.replace(/_/g, ' ')
 }
 
-function experimentEvidence(candidateId: string, experiments: ResearchExperiment[]) {
+function experimentEvidence(candidateId: string, experiments: ResearchExperiment[], statusRows: ModelUpgradeResearchStatusRow[] = []) {
   const matched = candidateExperiments(candidateId, experiments)
   const latest = matched[0]
+  const statusRow = statusRows.find((row) => row.candidate_id.toLowerCase() === candidateId.toLowerCase())
   const dataSlice = latest?.data_slice ?? {}
   const metricText = latest?.metrics?.length ? latest.metrics.join(', ') : 'missing'
   const approval = latest?.approval_gate ?? {}
   const hasEvaluationPlan = Boolean(latest?.evaluation_plan)
   const isEvidenceReady = Boolean(
+    statusRow?.registry_status === 'ready_for_review' ||
+    statusRow?.registry_status === 'approved_for_patch' ||
     latest &&
-    (latest.status === 'ready_for_review' || latest.status === 'completed' || latest.status === 'reviewed') &&
+    (latest.status === 'ready_for_review' || latest.status === 'approved_for_patch' || latest.status === 'completed' || latest.status === 'reviewed') &&
     latest.metrics?.some((metric) => /oos|ic|pbo|cpcv|cost|slice/i.test(metric)),
   )
   return {
@@ -153,6 +168,7 @@ function experimentEvidence(candidateId: string, experiments: ResearchExperiment
     hasEvaluationPlan,
     isEvidenceReady,
     approval,
+    statusRow,
   }
 }
 
@@ -347,6 +363,10 @@ function stageTone(stage: ModelUpgradeStage): WorkstationTone {
   if (stage === 'benchmark_only') return 'warn'
   if (stage === 'production_slot_member') return 'ok'
   return 'neutral'
+}
+
+function modelUpgradeNeedsExperiment(stage: ModelUpgradeStage): boolean {
+  return stage === 'shadow_challenger' || stage === 'benchmark_only'
 }
 
 function TinyBar({ label, value, tone = 'info' }: { label: string; value: number; tone?: WorkstationTone }) {
@@ -600,19 +620,34 @@ function modelUpgradeNextAction(stage: ModelUpgradeStage, hasEvidence: boolean) 
   if (stage === 'shadow_challenger') {
     return '下一步不是 Scheduler job：到 Strategy Lab 建立或選擇 experiment，執行 model_benchmark dry-run / shadow evaluation，產出 OOS IC、CPCV/PBO、cost profile；若要固定自動跑，需另建 research-evaluation scheduler。'
   }
+  if (stage === 'production_slot_member') {
+    return '下一步：確認它歸屬既有 production slot，不增加 alpha slot 分母；需要 forecast validation / outcome join / rank IC 後才可調整該 slot 內部配置。'
+  }
+  if (stage === 'meta_optimizer') {
+    return '下一步：走 meta optimizer governance，只能產生參數候選；不得進 stock alpha vote 或 model_artifact_registry alpha slot。'
+  }
+  if (stage === 'state_space_overlay') {
+    return '下一步：只接 regime/risk overlay evidence，通過 diagnostics 後供 dashboard 與風控 context 使用，不進 alpha model vote。'
+  }
   return '下一步不是 Scheduler job：到 Strategy Lab 建立 model benchmark experiment，呼叫 /research/model-benchmark/dry-run 產出 benchmark report；通過後才可升級成 shadow challenger。'
 }
 
-function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperiment[] }) {
+function UpgradeTrackPanel({ experiments = [], statusRows = [] }: { experiments?: ResearchExperiment[]; statusRows?: ModelUpgradeResearchStatusRow[] }) {
   const byStage = MODEL_UPGRADE_CANDIDATES.reduce<Record<string, typeof MODEL_UPGRADE_CANDIDATES>>((acc, candidate) => {
     acc[candidate.stage] = [...(acc[candidate.stage] ?? []), candidate]
     return acc
   }, {})
-  const stageOrder: ModelUpgradeStage[] = ['shadow_challenger', 'benchmark_only']
+  const stageOrder: ModelUpgradeStage[] = [
+    'production_slot_member',
+    'shadow_challenger',
+    'benchmark_only',
+    'meta_optimizer',
+    'state_space_overlay',
+  ]
 
   return (
-    <WorkstationPanel title="Model-family Challenger / 新模型家族挑戰者" kicker="Shadow Challengers / 影子挑戰者 · Research Benchmarks / 研究基準">
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-2">
+    <WorkstationPanel title="Model Upgrade Tracks / 模型升級軌道" kicker="production slot members · shadow challengers · benchmarks · meta optimizers · overlays">
+      <div className="grid gap-px bg-[#263247] lg:grid-cols-2 2xl:grid-cols-3">
         {stageOrder.map((stage) => (
           <div key={stage} className="bg-[#070a10] p-3">
             <div className="mb-3 flex items-start justify-between gap-2">
@@ -621,14 +656,39 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                 <p className="mt-1 text-xs leading-5 text-[#8a92a6]">
                   {stage === 'shadow_challenger'
                     ? '這裡只放 ResidualMLP / GNN 這種新模型家族。它們應該先產生 shadow evidence，但 promotion 前不投 production vote。'
-                    : '只做研究 benchmark，不跑 production inference，避免成本暴增。'}
+                    : stage === 'benchmark_only'
+                      ? '只做研究 benchmark，不跑 production inference，避免成本暴增。'
+                      : stage === 'production_slot_member'
+                        ? '歸屬既有 production slot 的內部成員，不增加 serving alpha slot 數。'
+                        : stage === 'meta_optimizer'
+                          ? '只學 ensemble / strategy / risk 參數，不產生個股 alpha vote。'
+                          : '只提供 regime / risk context overlay，不列入 alpha model count。'}
                 </p>
               </div>
               <WorkstationPill tone={stageTone(stage)}>{byStage[stage]?.length ?? 0}</WorkstationPill>
             </div>
             <div className="grid gap-2">
               {(byStage[stage] ?? []).map((candidate) => {
-                const evidence = experimentEvidence(candidate.id, experiments)
+                const evidence = experimentEvidence(candidate.id, experiments, statusRows)
+                const needsExperiment = modelUpgradeNeedsExperiment(candidate.stage)
+                const registryLabel = evidence.statusRow?.registry_status
+                  ?? (evidence.isEvidenceReady
+                    ? 'ready_for_review'
+                    : evidence.latest
+                      ? 'evaluation_pending'
+                      : needsExperiment
+                        ? 'experiment_missing'
+                        : 'track_only')
+                const statusTone: WorkstationTone = !needsExperiment
+                  ? stageTone(candidate.stage)
+                  : evidence.isEvidenceReady
+                    ? 'ok'
+                    : evidence.latest || evidence.statusRow
+                      ? 'warn'
+                      : 'error'
+                const statusLabel = !needsExperiment
+                  ? (evidence.statusRow?.registry_status ?? 'track_only')
+                  : (evidence.isEvidenceReady ? 'evidence ready' : registryLabel)
                 return (
                 <div key={candidate.id} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex items-start justify-between gap-2">
@@ -636,9 +696,7 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{candidate.id}</p>
                       <p className="mt-0.5 text-[10px] text-[#70809b]">{candidate.titleZh} / {candidate.family}</p>
                     </div>
-                    <WorkstationPill tone={evidence.isEvidenceReady ? 'ok' : evidence.latest ? 'warn' : 'error'}>
-                      {evidence.isEvidenceReady ? 'evidence ready' : evidence.latest ? 'experiment incomplete' : 'experiment missing'}
-                    </WorkstationPill>
+                    <WorkstationPill tone={statusTone}>{statusLabel}</WorkstationPill>
                   </div>
                   <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{candidate.roleZh}</p>
                   <p className="mt-1 text-[11px] leading-5 text-slate-500">{candidate.roleEn}</p>
@@ -647,9 +705,25 @@ function UpgradeTrackPanel({ experiments = [] }: { experiments?: ResearchExperim
                       <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
                     ))}
                   </div>
-                  {evidence.latest ? (
+                  {!needsExperiment ? (
+                    <div className="mt-2 border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
+                      <p className="font-semibold">{registryLabel}</p>
+                      <p className="mt-1 text-sky-100/80">
+                        這個軌道不走 Strategy Lab experiment registry：{candidate.stage === 'production_slot_member'
+                          ? '它是既有 production slot 的內部成員。'
+                          : candidate.stage === 'meta_optimizer'
+                            ? '它只產生參數候選。'
+                            : '它只提供 regime / risk overlay。'}
+                      </p>
+                      <p className="mt-1 text-sky-100/70">next: {evidence.statusRow?.next_action ?? modelUpgradeNextAction(candidate.stage, false)}</p>
+                    </div>
+                  ) : evidence.latest || evidence.statusRow ? (
                     <div className="mt-2 border border-emerald-400/20 bg-emerald-400/[0.04] p-2 text-[11px] leading-5 text-emerald-100">
-                      <p>registry: {evidence.latest.id} · status {evidence.latest.status}</p>
+                      <p>registry: {evidence.latest?.id ?? evidence.statusRow?.latest_experiment_id ?? '-'} · status {evidence.latest?.status ?? evidence.statusRow?.latest_experiment_status ?? '-'}</p>
+                      <p>evaluation: {evidence.statusRow?.latest_evaluation_verdict ?? '-'} / next: {evidence.statusRow?.next_action ?? '-'}</p>
+                      <p>handoff: {shortEvidenceId(evidence.statusRow?.latest_patch_handoff_id)}</p>
+                      <p>artifact intent: {evidence.statusRow?.latest_artifact_intent_status ?? '-'}</p>
+                      <p>registry preflight: {preflightLabel(evidence.statusRow)}</p>
                       <p>metrics: {evidence.metricText}</p>
                       <p>slice: {Object.entries(evidence.dataSlice).slice(0, 4).map(([key, value]) => `${key}=${compactUnknown(value, 0)}`).join(' / ') || 'missing'}</p>
                       <p>evaluation plan: {evidence.hasEvaluationPlan ? 'ready' : 'missing'} · approval gate: {Object.keys(evidence.approval).length ? 'defined' : 'missing'}</p>
@@ -1354,6 +1428,13 @@ export default function ModelPoolPage() {
     retry: false,
     staleTime: 60_000,
   })
+  const { data: modelUpgradeStatus } = useQuery({
+    queryKey: ['research', 'model-upgrade-status'],
+    queryFn: strategyLabApi.modelUpgradeStatus,
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
   const artifactSelection = useQuery({
     queryKey: ['model-pool', 'artifact-selection'],
     queryFn: () => modelPoolApi.artifactSelection(200),
@@ -1483,7 +1564,7 @@ export default function ModelPoolPage() {
               promotionResult={promotionController.data}
               onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
             />
-            <UpgradeTrackPanel experiments={researchData?.experiments ?? []} />
+            <UpgradeTrackPanel experiments={researchData?.experiments ?? []} statusRows={modelUpgradeStatus?.candidates ?? []} />
 
             <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">

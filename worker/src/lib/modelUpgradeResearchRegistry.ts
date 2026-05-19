@@ -191,6 +191,15 @@ function missingEvidenceFor(candidate: ModelUpgradeCandidate, latestRun: StoredR
   })
 }
 
+function evaluationTargetPriority(status: ModelUpgradeResearchStatusRow['registry_status']): number {
+  if (status === 'evaluation_pending') return 0
+  if (status === 'needs_attention') return 1
+  if (status === 'approved_for_patch') return 2
+  if (status === 'rejected') return 3
+  if (status === 'ready_for_review') return 4
+  return 9
+}
+
 function nextActionFor(
   latest: ResearchExperimentRecord | null,
   candidate: ModelUpgradeCandidate,
@@ -336,6 +345,7 @@ export async function runModelUpgradeResearchEvaluations(
     .filter((row) => row.latest_experiment_id)
     .filter((row) => !requested.size || requested.has(row.candidate_id.toLowerCase()))
     .filter((row) => options.includeReady === true || row.registry_status !== 'ready_for_review')
+    .sort((a, b) => evaluationTargetPriority(a.registry_status) - evaluationTargetPriority(b.registry_status))
     .slice(0, limit)
 
   const runs: ModelUpgradeEvaluationRunRow[] = []

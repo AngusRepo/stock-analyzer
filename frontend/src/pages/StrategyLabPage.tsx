@@ -919,11 +919,19 @@ export default function StrategyLabPage() {
 
   async function runModelUpgradeEvaluations() {
     try {
+      const nextTarget = modelUpgradeStatus?.candidates.find((row) => row.requires_experiment_registry && row.registry_status === 'evaluation_pending')
+        ?? modelUpgradeStatus?.candidates.find((row) => row.requires_experiment_registry && row.registry_status === 'needs_attention')
+      if (!nextTarget) {
+        setModelUpgradeActionError(null)
+        setModelUpgradeActionResult('目前沒有 pending / needs_attention 的 model upgrade experiment 可跑。')
+        return
+      }
       setMetaActionBusy('model-upgrade-evaluation')
       setDraftError(null)
       setModelUpgradeActionError(null)
-      setModelUpgradeActionResult('正在執行下一個 model upgrade shadow/benchmark dry-run evaluation...')
+      setModelUpgradeActionResult(`正在執行下一個 model upgrade dry-run evaluation：${nextTarget.candidate_id}`)
       const res = await strategyLabApi.runModelUpgradeEvaluations({
+        candidate_ids: [nextTarget.candidate_id],
         dry_run: true,
         seed_missing: true,
         include_ready: false,
@@ -932,7 +940,7 @@ export default function StrategyLabPage() {
       })
       const ready = res.runs.filter((run) => run.verdict === 'ready_for_review').length
       const attention = res.runs.filter((run) => run.verdict !== 'ready_for_review').length
-      const message = `Model upgrade dry-run 完成：runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。若仍有 pending，請再按一次跑下一筆。`
+      const message = `Model upgrade dry-run 完成：target=${nextTarget.candidate_id}，runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。若仍有 pending，請再按一次跑下一筆。`
       setMetaActionResult(message)
       setModelUpgradeActionResult(message)
       if (res.status) setModelUpgradeStatus(res.status)

@@ -64,6 +64,8 @@ assert(strategyLabPage.includes('applyModelUpgradeSeedFeedback'), 'ModelUpgradeL
 assert(strategyLabPage.includes('KV list 可能短暫延遲'), 'ModelUpgradeLaunchpad should explain short Cloudflare KV list consistency lag')
 assert(strategyLabPage.includes('Run next dry-run'), 'ModelUpgradeLaunchpad should run one pending model-upgrade experiment at a time')
 assert(strategyLabPage.includes('limit: 1'), 'ModelUpgrade dry-run action should avoid sequential batch timeouts')
+assert(strategyLabPage.includes("registry_status === 'evaluation_pending'"), 'ModelUpgrade dry-run action should advance pending experiments before rerunning needs-attention rows')
+assert(strategyLabPage.includes('candidate_ids: [nextTarget.candidate_id]'), 'ModelUpgrade dry-run action should send an explicit target candidate id')
 assert(
   strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
   'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',

@@ -453,6 +453,15 @@ void (async () => {
       assert(runBody.runs.length === 2, 'model upgrade evaluation route should run requested batch limit')
       assert(runBody.runs.every((run: any) => run.verdict === 'ready_for_review'), 'model upgrade evaluation dry-runs should create review-ready evidence when safe steps pass')
       assert(calls.every((url) => url.includes('/dry-run') || url.includes('/backtest/replay')), 'model upgrade evaluation route must call safe dry-run endpoints only')
+      const priorityRunRes = await adminWriteRoutes.request('/api/admin/research/model-upgrade/evaluation-run', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ dry_run: true, seed_missing: true, limit: 1 }),
+      }, env)
+      assert(priorityRunRes.status === 200, 'model upgrade evaluation route should support one-at-a-time dry-run progression')
+      const priorityRunBody = await priorityRunRes.json() as any
+      assert(priorityRunBody.runs.length === 1, 'one-at-a-time model upgrade dry-run should execute a single target')
+      assert(priorityRunBody.runs[0].candidate_id !== 'ResidualMLP', 'one-at-a-time route should advance pending candidates before rerunning prior needs-attention rows')
       const statusRes = await adminReadRoutes.request('/api/admin/research/model-upgrade/status', {
         headers: { Authorization: 'Bearer service-token' },
       }, env)

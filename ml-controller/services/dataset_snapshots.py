@@ -46,11 +46,11 @@ STORE_ROLE_BY_ACCESS_TIER: dict[str, SnapshotStoreRole] = {
         "reason": "Frontend drilldown previews use R2 instead of scanning D1 history.",
     },
     "archive": {
-        "primary_store": "r2",
+        "primary_store": "gcs",
         "access_tier": "archive",
-        "requires_gcs": False,
-        "requires_r2": True,
-        "reason": "Cold audit artifacts are object-store records, not D1 serving rows.",
+        "requires_gcs": True,
+        "requires_r2": False,
+        "reason": "Cold compute/audit archives live in GCS; R2 is reserved for small previews and reports.",
     },
 }
 

@@ -61,11 +61,11 @@ const STORE_ROLE_BY_ACCESS_TIER: Record<SnapshotAccessTier, SnapshotStoreRole> =
     reason: 'Frontend drilldown previews use R2 instead of scanning D1 history.',
   },
   archive: {
-    primary_store: 'r2',
+    primary_store: 'gcs',
     access_tier: 'archive',
-    requires_gcs: false,
-    requires_r2: true,
-    reason: 'Cold audit artifacts are object-store records, not D1 serving rows.',
+    requires_gcs: true,
+    requires_r2: false,
+    reason: 'Cold compute/audit archives live in GCS; R2 is reserved for small previews and reports.',
   },
 }
 
@@ -184,20 +184,26 @@ type D1ManifestSpec = {
   table: string
   dateColumn: string
   where?: string
+  archiveRequired?: boolean
 }
+
+export const D1_HOT_WINDOW_DAYS = 504
+export const D1_COLD_ARCHIVE_KIND = 'd1_cold_archive'
 
 const D1_HOT_WINDOW_MANIFESTS: D1ManifestSpec[] = [
   { kind: 'price_hot_window', table: 'stock_prices', dateColumn: 'date' },
   { kind: 'technical_indicator_hot_window', table: 'technical_indicators', dateColumn: 'date' },
   { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date' },
+  { kind: 'margin_hot_window', table: 'margin_data', dateColumn: 'date' },
   { kind: 'monthly_revenue_hot_window', table: 'monthly_revenue', dateColumn: 'date' },
 ]
 
 const D1_RETENTION_TABLES: D1ManifestSpec[] = [
-  { kind: 'price_hot_window', table: 'stock_prices', dateColumn: 'date' },
-  { kind: 'technical_indicator_hot_window', table: 'technical_indicators', dateColumn: 'date' },
-  { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date' },
-  { kind: 'prediction_hot_window', table: 'predictions', dateColumn: 'prediction_date' },
+  { kind: 'price_hot_window', table: 'stock_prices', dateColumn: 'date', archiveRequired: true },
+  { kind: 'technical_indicator_hot_window', table: 'technical_indicators', dateColumn: 'date', archiveRequired: true },
+  { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date', archiveRequired: true },
+  { kind: 'margin_hot_window', table: 'margin_data', dateColumn: 'date', archiveRequired: true },
+  { kind: 'prediction_hot_window', table: 'predictions', dateColumn: 'prediction_date', archiveRequired: true },
 ]
 
 function d1ServingChecksum(kind: string, businessDate: string, rowCount: number, maxDate: string | null): string {
@@ -382,6 +388,126 @@ function isoDateOffset(date: string, days: number): string {
   return new Date(base.getTime() + days * 86_400_000).toISOString().slice(0, 10)
 }
 
+type ArchiveCoverage = {
+  status: 'covered' | 'missing' | 'not_required'
+  snapshot_id: string | null
+  gcs_uri: string | null
+  coverage_start: string | null
+  coverage_end: string | null
+  reason: string | null
+}
+
+type ArchiveCoverageCandidate = {
+  snapshot_id?: string | null
+  gcs_uri?: string | null
+  metadata_json?: string | null
+}
+
+function parseSnapshotMetadata(metadataJson?: string | null): Record<string, unknown> {
+  if (!metadataJson) return {}
+  try {
+    const parsed = JSON.parse(metadataJson)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function tableCoverageFromMetadata(
+  metadata: Record<string, unknown>,
+  table: string,
+): { coverage_start: string | null; coverage_end: string | null } | null {
+  const coverages = metadata.table_coverage
+  if (Array.isArray(coverages)) {
+    for (const item of coverages) {
+      if (!item || typeof item !== 'object') continue
+      const record = item as Record<string, unknown>
+      if (record.table !== table) continue
+      return {
+        coverage_start: String(record.coverage_start ?? record.start_date ?? ''),
+        coverage_end: String(record.coverage_end ?? record.end_date ?? ''),
+      }
+    }
+  }
+
+  const coverage = metadata.coverage
+  if (coverage && typeof coverage === 'object') {
+    const record = coverage as Record<string, unknown>
+    if (!record.table || record.table === table) {
+      return {
+        coverage_start: String(record.coverage_start ?? record.start_date ?? metadata.start_date ?? ''),
+        coverage_end: String(record.coverage_end ?? record.end_date ?? metadata.end_date ?? ''),
+      }
+    }
+  }
+
+  return null
+}
+
+async function findColdArchiveCoverage(
+  env: Pick<Bindings, 'DB'>,
+  spec: D1ManifestSpec,
+  coldMinDate: string | null,
+  coldMaxDate: string | null,
+): Promise<ArchiveCoverage> {
+  if (!spec.archiveRequired) {
+    return {
+      status: 'not_required',
+      snapshot_id: null,
+      gcs_uri: null,
+      coverage_start: null,
+      coverage_end: null,
+      reason: 'archive_not_required_for_table',
+    }
+  }
+  if (!coldMinDate || !coldMaxDate) {
+    return {
+      status: 'not_required',
+      snapshot_id: null,
+      gcs_uri: null,
+      coverage_start: null,
+      coverage_end: null,
+      reason: 'no_cold_rows',
+    }
+  }
+
+  const { results } = await env.DB.prepare(`
+    SELECT snapshot_id, gcs_uri, metadata_json
+      FROM dataset_snapshots
+     WHERE kind = ?
+       AND access_tier = 'archive'
+       AND primary_store = 'gcs'
+       AND status = 'ready'
+     ORDER BY business_date DESC, created_at DESC
+     LIMIT 50
+  `).bind(D1_COLD_ARCHIVE_KIND).all<ArchiveCoverageCandidate>()
+
+  for (const row of results ?? []) {
+    const metadata = parseSnapshotMetadata(row.metadata_json)
+    const coverage = tableCoverageFromMetadata(metadata, spec.table)
+    if (!coverage?.coverage_start || !coverage.coverage_end) continue
+    if (coverage.coverage_start <= coldMinDate && coverage.coverage_end >= coldMaxDate) {
+      return {
+        status: 'covered',
+        snapshot_id: row.snapshot_id ?? null,
+        gcs_uri: row.gcs_uri ?? null,
+        coverage_start: coverage.coverage_start,
+        coverage_end: coverage.coverage_end,
+        reason: null,
+      }
+    }
+  }
+
+  return {
+    status: 'missing',
+    snapshot_id: null,
+    gcs_uri: null,
+    coverage_start: null,
+    coverage_end: null,
+    reason: 'missing_gcs_archive_manifest_covering_cold_range',
+  }
+}
+
 export async function buildDatasetRetentionPlan(
   env: Pick<Bindings, 'DB'>,
   options: {
@@ -389,7 +515,7 @@ export async function buildDatasetRetentionPlan(
     hotWindowDays?: number
   },
 ): Promise<Record<string, unknown>> {
-  const hotWindowDays = Math.max(30, Math.min(Number(options.hotWindowDays ?? 252) || 252, 1600))
+  const hotWindowDays = Math.max(30, Math.min(Number(options.hotWindowDays ?? D1_HOT_WINDOW_DAYS) || D1_HOT_WINDOW_DAYS, 1600))
   const cutoffDate = isoDateOffset(options.businessDate, -hotWindowDays)
   const tables = []
 
@@ -406,19 +532,33 @@ export async function buildDatasetRetentionPlan(
       min_date?: string | null
       max_date?: string | null
     }>()
+    const coldRows = Number(row?.cold_rows ?? 0)
+    const minDate = row?.min_date ?? null
+    const maxDate = row?.max_date ?? null
+    const archive = await findColdArchiveCoverage(env, spec, minDate, maxDate)
+    const safeToDelete = coldRows === 0 || archive.status === 'covered'
     tables.push({
       table: spec.table,
       kind: spec.kind,
       date_column: spec.dateColumn,
       cutoff_date: cutoffDate,
-      cold_rows: Number(row?.cold_rows ?? 0),
-      min_date: row?.min_date ?? null,
-      max_date: row?.max_date ?? null,
+      cold_rows: coldRows,
+      min_date: minDate,
+      max_date: maxDate,
+      archive_required: Boolean(spec.archiveRequired),
+      archive_coverage_status: archive.status,
+      archive_snapshot_id: archive.snapshot_id,
+      archive_gcs_uri: archive.gcs_uri,
+      archive_coverage_start: archive.coverage_start,
+      archive_coverage_end: archive.coverage_end,
+      safe_to_delete: safeToDelete,
+      delete_blocker: safeToDelete ? null : archive.reason,
       dry_run: true,
       delete_sql: `DELETE FROM ${spec.table} WHERE ${spec.dateColumn} IS NOT NULL AND ${spec.dateColumn} < ?`,
     })
   }
 
+  const blockedTables = tables.filter((table) => Number(table.cold_rows ?? 0) > 0 && !table.safe_to_delete)
   return {
     dry_run: true,
     business_date: options.businessDate,
@@ -426,6 +566,12 @@ export async function buildDatasetRetentionPlan(
     cutoff_date: cutoffDate,
     tables,
     total_cold_rows: tables.reduce((sum, table) => sum + Number(table.cold_rows ?? 0), 0),
-    note: 'This endpoint is an audit plan only; it does not delete D1 cold rows.',
+    blocked_tables: blockedTables.map((table) => ({
+      table: table.table,
+      cold_rows: table.cold_rows,
+      reason: table.delete_blocker,
+    })),
+    all_tables_archive_covered: blockedTables.length === 0,
+    note: 'This endpoint is an archive-gated dry-run plan only; it does not delete D1 cold rows.',
   }
 }

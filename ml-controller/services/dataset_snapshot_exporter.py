@@ -67,6 +67,14 @@ def _gcs_client_bucket():
     return storage.Client().bucket(bucket_name), bucket_name
 
 
+def _temporary_directory(prefix: str):
+    base_dir = os.environ.get("STOCKVISION_TMP_DIR", "").strip()
+    if base_dir:
+        Path(base_dir).mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix=prefix, dir=base_dir, ignore_cleanup_errors=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True)
+
+
 def _write_component_to_gcs(bucket, prefix: str, name: str, df: pl.DataFrame, tmp_dir: Path) -> dict[str, Any]:
     local_path = tmp_dir / f"{name}.parquet"
     df.write_parquet(local_path)
@@ -85,6 +93,181 @@ def _write_component_to_gcs(bucket, prefix: str, name: str, df: pl.DataFrame, tm
 def _checksum_payload(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class D1ColdArchiveExportRequest:
+    business_date: str
+    start_date: str
+    end_date: str
+    tables: tuple[str, ...] = (
+        "stock_prices",
+        "technical_indicators",
+        "chip_data",
+        "margin_data",
+        "predictions",
+    )
+    gcs_prefix: str | None = None
+    producer_run_id: str | None = None
+    chunk_days: int = 10
+    hot_window_days: int = 504
+
+
+@dataclass(frozen=True)
+class FinLabRawArchiveMetadataRequest:
+    manifest_path: str
+    business_date: str
+    producer_run_id: str
+    gcs_uri: str | None = None
+
+
+D1_COLD_ARCHIVE_TABLE_SPECS: dict[str, dict[str, str]] = {
+    "stock_prices": {"date_column": "date", "order_by": "date, stock_id"},
+    "technical_indicators": {"date_column": "date", "order_by": "date, stock_id"},
+    "chip_data": {"date_column": "date", "order_by": "date, symbol"},
+    "margin_data": {"date_column": "date", "order_by": "date, stock_id"},
+    "predictions": {"date_column": "prediction_date", "order_by": "prediction_date, stock_id"},
+}
+
+
+def _query_cold_archive_table(table: str, start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
+    spec = D1_COLD_ARCHIVE_TABLE_SPECS.get(table)
+    if not spec:
+        raise ValueError(f"d1_cold_archive_table_not_allowed:{table}")
+    date_column = spec["date_column"]
+    return _query_date_range(
+        f"""
+        SELECT *
+        FROM {table}
+        WHERE {date_column} >= ? AND {date_column} <= ?
+        ORDER BY {spec["order_by"]}
+        """,
+        start_date,
+        end_date,
+        chunk_days,
+    )
+
+
+def export_d1_cold_archive_snapshot(req: D1ColdArchiveExportRequest) -> dict[str, Any]:
+    """Export exact D1 cold rows to a GCS archive snapshot before any D1 deletion."""
+    started = time.perf_counter()
+    chunk_days = max(1, min(int(req.chunk_days or 10), 30))
+    allowed_tables = tuple(dict.fromkeys(req.tables))
+
+    bucket, bucket_name = _gcs_client_bucket()
+    run_id = req.producer_run_id or f"d1-cold-archive-{req.business_date}-{int(time.time())}"
+    prefix = (
+        req.gcs_prefix
+        or f"archives/d1_cold_archive/business_date={req.business_date}/run_id={run_id}"
+    ).strip("/")
+
+    components: dict[str, pl.DataFrame] = {}
+    table_query_counts: dict[str, int] = {}
+    for table in allowed_tables:
+        df, query_count = _query_cold_archive_table(table, req.start_date, req.end_date, chunk_days)
+        table_query_counts[table] = query_count
+        if not df.is_empty():
+            components[table] = df
+
+    if not components:
+        raise RuntimeError("d1_cold_archive_no_rows")
+
+    component_meta: dict[str, dict[str, Any]] = {}
+    with _temporary_directory(prefix="stockvision-d1-cold-archive-") as tmp:
+        tmp_dir = Path(tmp)
+        for table, df in components.items():
+            component_meta[table] = _write_component_to_gcs(bucket, prefix, f"d1_{table}", df, tmp_dir)
+
+    table_coverage = []
+    for table, meta in component_meta.items():
+        spec = D1_COLD_ARCHIVE_TABLE_SPECS[table]
+        table_coverage.append({
+            "table": table,
+            "date_column": spec["date_column"],
+            "coverage_start": req.start_date,
+            "coverage_end": req.end_date,
+            "source": "stockvision_d1_exact",
+            "component_gcs_uri": meta["gcs_uri"],
+            "row_count": meta["row_count"],
+        })
+
+    row_count = sum(int(meta["row_count"]) for meta in component_meta.values())
+    metadata = {
+        "role": "d1_cold_archive",
+        "source": "stockvision_d1_exact",
+        "business_date": req.business_date,
+        "start_date": req.start_date,
+        "end_date": req.end_date,
+        "hot_window_days": int(req.hot_window_days),
+        "delete_requires_manual_approval": True,
+        "table_coverage": table_coverage,
+        "component_meta": component_meta,
+        "d1_query_counts": table_query_counts,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+    manifest_payload = {
+        "kind": "d1_cold_archive",
+        "business_date": req.business_date,
+        "start_date": req.start_date,
+        "end_date": req.end_date,
+        "row_count": row_count,
+        "table_coverage": table_coverage,
+    }
+    manifest = build_dataset_snapshot_manifest(
+        snapshot_id=f"d1_cold_archive:{req.business_date}:{run_id}",
+        kind="d1_cold_archive",
+        business_date=req.business_date,
+        schema_version="d1-cold-archive-parquet-v1",
+        row_count=row_count,
+        checksum=_checksum_payload(manifest_payload),
+        access_tier="archive",
+        producer_run_id=run_id,
+        gcs_uri=f"gs://{bucket_name}/{prefix}",
+        metadata_json=json.dumps(metadata, ensure_ascii=False),
+    )
+    upsert_dataset_snapshot_manifest(manifest)
+    return {
+        "status": "ready",
+        "snapshot": manifest,
+        "component_meta": component_meta,
+        "table_coverage": table_coverage,
+        "d1_query_counts": table_query_counts,
+        "elapsed_s": round(time.perf_counter() - started, 3),
+    }
+
+
+def build_finlab_5y_raw_archive_metadata(req: FinLabRawArchiveMetadataRequest) -> dict[str, Any]:
+    """Normalize an existing local FinLab 5Y raw manifest without calling FinLab API."""
+    manifest_path = Path(req.manifest_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    datasets = payload.get("datasets") or {}
+    dataset_coverage = []
+    for name, info in sorted(datasets.items()):
+        if not isinstance(info, dict):
+            continue
+        dataset_coverage.append({
+            "dataset": name,
+            "row_count": int(info.get("rows") or info.get("row_count") or 0),
+            "min_date": info.get("min_date") or info.get("start_date"),
+            "max_date": info.get("max_date") or info.get("end_date"),
+            "artifact_count": len(info.get("artifacts") or []),
+        })
+    return {
+        "role": "finlab_5y_raw_archive_metadata",
+        "source": "finlab_5y_raw",
+        "business_date": req.business_date,
+        "producer_run_id": req.producer_run_id,
+        "local_manifest_path": str(manifest_path),
+        "gcs_uri": req.gcs_uri,
+        "run_id": payload.get("run_id"),
+        "lookback_years": payload.get("lookback_years"),
+        "dataset_count": int(payload.get("dataset_count") or len(dataset_coverage)),
+        "finlab_rows": int(payload.get("finlab_rows") or 0),
+        "missing_in_stockvision": int(payload.get("missing_in_stockvision") or 0),
+        "value_conflicts": int(payload.get("value_conflicts") or 0),
+        "dataset_coverage": dataset_coverage,
+        "normalized_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _query_active_stocks(start_date: str, end_date: str) -> pl.DataFrame:
@@ -203,7 +386,7 @@ def _write_compute_snapshot(
     ).strip("/")
 
     component_meta: dict[str, dict[str, Any]] = {}
-    with tempfile.TemporaryDirectory(prefix="stockvision-dataset-export-") as tmp:
+    with _temporary_directory(prefix="stockvision-dataset-export-") as tmp:
         tmp_dir = Path(tmp)
         for name, df in components.items():
             component_meta[name] = _write_component_to_gcs(bucket, prefix, name, df, tmp_dir)

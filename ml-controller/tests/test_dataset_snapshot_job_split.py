@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import sys
 import types
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -16,13 +15,13 @@ except ImportError:
 run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
 setattr(google_cloud, "run_v2", run_v2_stub)
 sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
 import pipeline_job_main  # noqa: E402
 
 
-@pytest.mark.asyncio
-async def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
+def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
     payloads: list[dict] = []
     calls: list[dict] = []
 
@@ -45,10 +44,10 @@ async def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
     monkeypatch.setattr(pipeline_job_main, "CloudRunJobsClient", FakeJobsClient)
     monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
 
-    await pipeline_job_main._run_deferred_snapshot_followup(
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
         run_date="2026-05-18",
         run_id="pipeline-v2-test",
-    )
+    ))
 
     assert calls[0]["init"]["job_name"] == "dataset-snapshot-export"
     assert calls[1]["env_overrides"] == {
@@ -72,8 +71,7 @@ async def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
-async def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypatch):
+def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypatch):
     inline_calls: list[dict] = []
 
     async def fake_inline(**kwargs):
@@ -84,16 +82,15 @@ async def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypa
     monkeypatch.delenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", raising=False)
     monkeypatch.setattr(pipeline_job_main, "_run_deferred_snapshot_inline", fake_inline)
 
-    await pipeline_job_main._run_deferred_snapshot_followup(
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
         run_date="2026-05-18",
         run_id="pipeline-v2-test",
-    )
+    ))
 
     assert inline_calls == [{"run_date": "2026-05-18", "run_id": "pipeline-v2-test"}]
 
 
-@pytest.mark.asyncio
-async def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):
+def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):
     payloads: list[dict] = []
     requests = []
 
@@ -120,7 +117,7 @@ async def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):
     monkeypatch.setattr(dataset_snapshot_job_main, "export_daily_research_snapshots", fake_export)
     monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", fake_callback_worker)
 
-    exit_code = await dataset_snapshot_job_main._run()
+    exit_code = asyncio.run(dataset_snapshot_job_main._run())
 
     assert exit_code == 0
     assert requests[0].business_date == "2026-05-18"

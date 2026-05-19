@@ -29,9 +29,9 @@ logger = logging.getLogger("dataset_snapshot_job")
 
 def _snapshot_export_start_date(run_date: str) -> str:
     try:
-        lookback_days = int(os.environ.get("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "420") or "420")
+        lookback_days = int(os.environ.get("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "504") or "504")
     except ValueError:
-        lookback_days = 420
+        lookback_days = 504
     lookback_days = max(30, min(lookback_days, 1600))
     return (datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 

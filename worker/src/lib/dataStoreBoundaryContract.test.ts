@@ -57,8 +57,9 @@ assert(
   datasetSnapshots.includes('recordD1HotWindowDatasetManifests') &&
     datasetSnapshots.includes('price_hot_window') &&
     datasetSnapshots.includes('technical_indicator_hot_window') &&
-    datasetSnapshots.includes('chip_hot_window'),
-  'data update must record D1 hot-window manifests for freshness/parity checks',
+    datasetSnapshots.includes('chip_hot_window') &&
+    datasetSnapshots.includes('margin_hot_window'),
+  'data update must record D1 hot-window manifests for freshness/parity checks, including margin/short data',
 )
 
 assert(
@@ -106,4 +107,13 @@ assert(
     datasetSnapshots.includes('dry_run') &&
     datasetSnapshots.includes('cold_rows'),
   'D1 cold-data slimming must start as a dry-run retention plan, not an unreviewed delete path',
+)
+
+assert(
+  datasetSnapshots.includes('D1_HOT_WINDOW_DAYS = 504') &&
+    datasetSnapshots.includes('D1_COLD_ARCHIVE_KIND') &&
+    datasetSnapshots.includes('findColdArchiveCoverage') &&
+    datasetSnapshots.includes('safe_to_delete') &&
+    datasetSnapshots.includes('delete_blocker'),
+  'D1 retention must use the approved 504-day hot window and require GCS archive coverage before deletion is allowed',
 )

@@ -23,7 +23,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -189,6 +189,34 @@ class DebateResult:
 
 # ── Prompts (zh-TW, ported 1:1 from TS) ───────────────────────────────────────
 
+def format_breeze2_context_block(breeze2_context: dict[str, Any] | None) -> str:
+    if not isinstance(breeze2_context, dict):
+        return ""
+    if breeze2_context.get("allowed_use") != "research_context_only":
+        return ""
+
+    decision_effect = str(breeze2_context.get("decision_effect") or "advisory_only")
+    recommended = str(breeze2_context.get("recommended_decision_context") or "observe")
+    scores = breeze2_context.get("scores")
+    if not isinstance(scores, dict):
+        scores = {}
+    flags = breeze2_context.get("risk_flags")
+    risk_flags = ", ".join(str(flag) for flag in flags[:6]) if isinstance(flags, list) else "none"
+    quality = breeze2_context.get("quality")
+    data_issues = quality.get("data_issues") if isinstance(quality, dict) else None
+
+    return "\n".join([
+        "Breeze2 semantic context (research_context_only, advisory_only; decision authority: none):",
+        f"- recommended_context: {recommended}",
+        f"- decision_effect: {decision_effect}",
+        f"- fact_support: {scores.get('fact_support', 'n/a')}",
+        f"- hype_risk: {scores.get('hype_risk', 'n/a')}",
+        f"- source_quality: {scores.get('source_quality', 'n/a')}",
+        f"- risk_flags: {risk_flags}",
+        f"- data_issues: {data_issues if data_issues else 'none'}",
+    ])
+
+
 _ZEALOT_SYS_BASE = "\n".join([
     "你是 Zealot — 一位極度樂觀的多頭交易員。",
     "你的信念：每一支被 ML 模型選中的股票都有獨到的買入理由。",
@@ -242,6 +270,7 @@ async def run_buy_debate(
     us_context: Optional[str] = None,
     stock_profile: Optional[StockProfile] = None,
     taifex_context: Optional[str] = None,
+    breeze2_context: Optional[dict[str, Any]] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> DebateResult:
     close_client = False
@@ -275,6 +304,9 @@ async def run_buy_debate(
             ml_context_parts.append(f"【美股前夜】{us_context}")
         if taifex_context:
             ml_context_parts.append(f"【台指期夜盤】{taifex_context}")
+        breeze2_block = format_breeze2_context_block(breeze2_context)
+        if breeze2_block:
+            ml_context_parts.append(breeze2_block)
         ml_context_parts.extend(profile_lines)
         ml_context_parts.append("ML Ensemble Reasoning:")
         ml_context_parts.append(reasoning)
@@ -461,6 +493,7 @@ async def run_buy_debate_cached(
     us_context: Optional[str] = None,
     stock_profile: Optional[StockProfile] = None,
     taifex_context: Optional[str] = None,
+    breeze2_context: Optional[dict[str, Any]] = None,
     cache_key_date: Optional[str] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> DebateResult:
@@ -498,7 +531,8 @@ async def run_buy_debate_cached(
             symbol=symbol, stock_name=stock_name,
             signal=signal, confidence=confidence, reasoning=reasoning,
             us_context=us_context, stock_profile=stock_profile,
-            taifex_context=taifex_context, client=client,
+            taifex_context=taifex_context, breeze2_context=breeze2_context,
+            client=client,
         )
 
         # Persist to KV for 24h dedup
@@ -559,6 +593,7 @@ async def run_buy_debate_batch(
                         us_context=cand.get("us_context"),
                         stock_profile=profile,
                         taifex_context=cand.get("taifex_context"),
+                        breeze2_context=cand.get("breeze2_context"),
                         cache_key_date=cand.get("cache_key_date"),
                         client=client,
                     )

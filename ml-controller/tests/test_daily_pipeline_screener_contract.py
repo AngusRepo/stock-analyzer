@@ -19,6 +19,18 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "build_ml_universe([], screener_recs)" in source
 
 
+def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert 'g.add_edge("load_inputs",         "compute_sector_flow")' not in source
+    assert 'g.add_edge("compute_sector_flow", "build_payloads")' not in source
+    assert source.index('g.add_edge("write_d1",            "compute_sector_flow")') < source.index(
+        'g.add_edge("compute_sector_flow", "export_dataset_snapshot")'
+    )
+    assert "_load_market_env_with_backoff" in source
+    assert "D1_RETRYABLE_MARKERS" in source
+
+
 def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
     universe = build_ml_universe([], [{
         "stock_id": 1,

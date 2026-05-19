@@ -66,8 +66,78 @@ const report: ObservabilityEventReport = {
   assert(drilldown.incidents.length === 2, 'drilldown should focus on non-ok incidents')
   assert(drilldown.incidents[0].domain === 'scheduler', 'highest severity incident should come first')
   assert(drilldown.incidents[0].run_ids.includes('pipeline-v2-abc'), 'scheduler incident should expose run_id')
+  assert(drilldown.incidents[0].root_cause.startsWith('scheduler_orchestration:'), 'scheduler incident root cause should expose the concrete summary instead of a generic run id')
   assert(drilldown.incidents[1].affected_symbols.includes('4938'), 'data-quality incident should expose affected symbols')
   assert(drilldown.operator_questions.some((row) => row.question.includes('為什麼')), 'drilldown should answer root-cause questions')
+}
+
+{
+  const drilldown = buildObservabilityDrilldown(report, {
+    auditRows: [{
+      event_id: 'data_quality:price',
+      date: '2026-05-04',
+      severity: 'warn',
+      domain: 'data_quality',
+      source: 'data_quality_report',
+      status: 'warn',
+      title: 'Price freshness',
+      summary: 'one symbol stale',
+      owner: 'Worker',
+      impact: 'Cards may show stale close.',
+      next_action: 'Trace data update writer.',
+      evidence: {},
+      created_at: '2026-05-04T10:15:00.000Z',
+    }],
+  })
+  const incident = drilldown.incidents.find((item) => item.domain === 'data_quality')
+  assert(incident?.first_seen === '2026-05-04T10:15:00.000Z', 'drilldown should prefer persisted audit first_seen over page-open generated_at')
+  assert(incident?.last_seen === '2026-05-05T01:00:00.000Z', 'drilldown should keep live event as last_seen when issue is still active')
+}
+
+{
+  const marketDataReport = {
+    ...report,
+    events: [{
+      ...report.events[0],
+      summary: 'Error: market data not ready: OTC price rows=15/700',
+      evidence: { task_id: 'evening-chain', summary: 'Error: market data not ready: OTC price rows=15/700' },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(marketDataReport)
+  assert(drilldown.incidents[0].root_cause.includes('market_data_readiness'), 'market-data readiness failures should be visible as the root cause')
+  assert(drilldown.incidents[0].root_cause.includes('OTC price rows=15/700'), 'root cause should include the failing market row count')
+}
+
+{
+  const staleRunningReport = {
+    ...report,
+    events: [{
+      ...report.events[0],
+      status: 'failed' as const,
+      summary: 'stale running: no final callback after 4h0m; SLA 1h30m',
+      evidence: { task_id: 'evening-chain', error: 'stale running: no final callback after 4h0m; SLA 1h30m' },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(staleRunningReport)
+  assert(drilldown.incidents[0].root_cause.includes('scheduler_callback_missing'), 'stale running incidents should point to missing final callback')
+}
+
+{
+  const classificationReport = {
+    ...report,
+    events: [{
+      ...report.events[1],
+      title: 'Classification coverage',
+      summary: 'tradable_industry_tags=40/40 missing=0; research_missing=24/24',
+      evidence: {
+        tradable_missing_industry_tags: 0,
+        research_missing_industry_tags: 24,
+      },
+    }],
+  }
+  const drilldown = buildObservabilityDrilldown(classificationReport)
+  assert(drilldown.incidents[0].root_cause.includes('classification_taxonomy_gap'), 'classification incident should identify taxonomy coverage gap')
+  assert(drilldown.incidents[0].root_cause.includes('tradable_missing=0'), 'classification root cause should separate tradable lane from research lane')
 }
 
 {

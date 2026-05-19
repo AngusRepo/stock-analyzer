@@ -68,6 +68,41 @@ export async function computeSectorLeaders(db: D1Database): Promise<{
   return { sectorCount: sectors, leaderCount: rows.length }
 }
 
+async function loadSectorLeaderRows(
+  db: D1Database,
+  sectors: string[],
+): Promise<Array<{ sector: string; symbol: string }>> {
+  if (!sectors.length) return []
+  const sectorPh = sectors.map(() => '?').join(',')
+  const { results } = await db.prepare(
+    `SELECT sector, symbol
+       FROM sector_leaders
+      WHERE sector IN (${sectorPh})
+      ORDER BY sector, rank`
+  ).bind(...sectors).all<{ sector: string; symbol: string }>()
+  return results ?? []
+}
+
+export async function ensureSectorLeadersForScreener(
+  db: D1Database,
+  sectors: string[],
+): Promise<{ refreshed: boolean; sectorCount: number; leaderCount: number }> {
+  const uniqueSectors = [...new Set(sectors.filter(Boolean))]
+  if (!uniqueSectors.length) return { refreshed: false, sectorCount: 0, leaderCount: 0 }
+
+  const existingRows = await loadSectorLeaderRows(db, uniqueSectors)
+  if (existingRows.length > 0) {
+    return {
+      refreshed: false,
+      sectorCount: new Set(existingRows.map(row => row.sector)).size,
+      leaderCount: existingRows.length,
+    }
+  }
+
+  const computed = await computeSectorLeaders(db)
+  return { refreshed: true, ...computed }
+}
+
 /**
  * Pearson correlation of two numeric arrays (assumes aligned, no NaN).
  */
@@ -156,4 +191,111 @@ export async function sectorLeaderBonus(
   const avgCorr = corrs.reduce((s, x) => s + x, 0) / corrs.length
   const bonus = avgCorr > corrThreshold ? bonusPoints : 0
   return { bonus, avgCorr, leaderCount: leaders.length }
+}
+
+export async function sectorLeaderBonusBatch(
+  db: D1Database,
+  candidates: Array<{ symbol: string; sector?: string | null }>,
+  corrThreshold: number,
+  bonusPoints: number,
+): Promise<Map<string, { bonus: number; avgCorr: number | null; leaderCount: number }>> {
+  const output = new Map<string, { bonus: number; avgCorr: number | null; leaderCount: number }>()
+  const cleanCandidates = candidates
+    .map(c => ({ symbol: String(c.symbol || '').trim(), sector: c.sector || null }))
+    .filter(c => c.symbol)
+  for (const c of cleanCandidates) output.set(c.symbol, { bonus: 0, avgCorr: null, leaderCount: 0 })
+  const sectors = [...new Set(cleanCandidates.map(c => c.sector).filter(Boolean) as string[])]
+  if (!cleanCandidates.length || !sectors.length) return output
+
+  let leaderRows = await loadSectorLeaderRows(db, sectors)
+  if (!leaderRows.length) {
+    const refresh = await ensureSectorLeadersForScreener(db, sectors)
+    if (refresh.leaderCount > 0) {
+      leaderRows = await loadSectorLeaderRows(db, sectors)
+    }
+  }
+
+  const leadersBySector = new Map<string, string[]>()
+  for (const row of leaderRows) {
+    if (!leadersBySector.has(row.sector)) leadersBySector.set(row.sector, [])
+    const leaders = leadersBySector.get(row.sector)!
+    if (leaders.length < 3) leaders.push(row.symbol)
+  }
+
+  const symbols = new Set(cleanCandidates.map(c => c.symbol))
+  for (const leaders of leadersBySector.values()) {
+    for (const symbol of leaders) symbols.add(symbol)
+  }
+  const allSymbols = [...symbols]
+  if (!allSymbols.length) return output
+
+  const symbolPh = allSymbols.map(() => '?').join(',')
+  const { results: priceRows } = await db.prepare(
+    `SELECT s.symbol, sp.date, sp.close
+       FROM stock_prices sp
+       JOIN stocks s ON sp.stock_id = s.id
+      WHERE s.symbol IN (${symbolPh})
+        AND sp.date >= date('now', '-${LOOKBACK_DAYS_CORR * 2} days')
+        AND sp.close IS NOT NULL
+      ORDER BY s.symbol, sp.date`
+  ).bind(...allSymbols).all<{ symbol: string; date: string; close: number }>()
+
+  const seriesBySymbol = new Map<string, { date: string; close: number }[]>()
+  for (const row of priceRows ?? []) {
+    if (!seriesBySymbol.has(row.symbol)) seriesBySymbol.set(row.symbol, [])
+    seriesBySymbol.get(row.symbol)!.push({ date: row.date, close: row.close })
+  }
+  const returnsBySymbol = new Map<string, Map<string, number>>()
+  const toReturns = (series: { date: string; close: number }[]): Map<string, number> => {
+    const cached = new Map<string, number>()
+    for (let i = 1; i < series.length; i++) {
+      const prev = series[i - 1].close
+      if (prev > 0) cached.set(series[i].date, (series[i].close - prev) / prev)
+    }
+    return cached
+  }
+  for (const [symbol, series] of seriesBySymbol) {
+    returnsBySymbol.set(symbol, toReturns(series))
+  }
+
+  for (const candidate of cleanCandidates) {
+    if (!candidate.sector) continue
+    const leaders = (leadersBySector.get(candidate.sector) ?? []).filter(symbol => symbol !== candidate.symbol).slice(0, 3)
+    if (!leaders.length) continue
+    const candSeries = seriesBySymbol.get(candidate.symbol)
+    if (!candSeries || candSeries.length < LOOKBACK_DAYS_CORR) {
+      output.set(candidate.symbol, { bonus: 0, avgCorr: null, leaderCount: leaders.length })
+      continue
+    }
+    const candRet = returnsBySymbol.get(candidate.symbol)
+    if (!candRet) continue
+    const corrs: number[] = []
+    for (const leader of leaders) {
+      const leaderSeries = seriesBySymbol.get(leader)
+      const leaderRet = returnsBySymbol.get(leader)
+      if (!leaderSeries || leaderSeries.length < LOOKBACK_DAYS_CORR || !leaderRet) continue
+      const a: number[] = []
+      const b: number[] = []
+      for (const [date, rv] of candRet) {
+        const lv = leaderRet.get(date)
+        if (lv !== undefined) {
+          a.push(rv)
+          b.push(lv)
+        }
+      }
+      const corr = pearson(a, b)
+      if (Number.isFinite(corr)) corrs.push(corr)
+    }
+    if (!corrs.length) {
+      output.set(candidate.symbol, { bonus: 0, avgCorr: null, leaderCount: leaders.length })
+      continue
+    }
+    const avgCorr = corrs.reduce((sum, value) => sum + value, 0) / corrs.length
+    output.set(candidate.symbol, {
+      bonus: avgCorr > corrThreshold ? bonusPoints : 0,
+      avgCorr,
+      leaderCount: leaders.length,
+    })
+  }
+  return output
 }

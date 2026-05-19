@@ -24,26 +24,111 @@ from typing import Literal, Any
 from .models import ModelPrediction
 
 logger = logging.getLogger("ensemble")
-_IC_WEIGHTS_CACHE: dict[str, float] | None = None
+_IC_WEIGHTS_CACHE: dict[str, dict[str, float]] | None = None
 _IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
 
 
-def _extract_model_pool_ic(pool: dict) -> dict[str, float]:
-    """Extract serving IC weights from model_pool.json."""
+def _normalize_market_segment(segment: Any) -> str | None:
+    value = str(segment or "").strip().upper()
+    if value in {"TWSE", "TSE", "LISTED"}:
+        return "LISTED"
+    if value in {"TPEX", "OTC"}:
+        return "OTC"
+    if value in {"ESB", "EMERGING"}:
+        return "EMERGING"
+    return None
+
+
+def _coerce_ic_value(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("ic", "rolling_ic", "ic_4w_avg", "value"):
+            if key in value:
+                return _coerce_ic_value(value.get(key))
+        return None
+    try:
+        if value is not None:
+            return float(value)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> float | None:
+    """Choose the IC that matches the prediction lane before using global IC."""
+    segment = _normalize_market_segment(market_segment)
+    segment_map = entry.get("last_ic_by_segment")
+    if segment and isinstance(segment_map, dict):
+        segment_ic = _coerce_ic_value(segment_map.get(segment))
+        if segment_ic is not None:
+            return segment_ic
+
+    for key in ("ic_4w_avg", "weekly_ic", "rolling_ic"):
+        value = entry.get(key)
+        if key == "weekly_ic":
+            history = value or []
+            if history:
+                value = history[-1]
+            else:
+                value = None
+        ic_value = _coerce_ic_value(value)
+        if ic_value is not None:
+            return ic_value
+    return None
+
+
+def _coerce_sample_count(value: Any) -> int | None:
+    try:
+        if value is not None:
+            return max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_ic_sample_count(entry: dict, market_segment: str | None = None) -> int:
+    segment = _normalize_market_segment(market_segment)
+    segment_map = entry.get("last_ic_by_segment")
+    if segment and isinstance(segment_map, dict):
+        segment_value = segment_map.get(segment)
+        if isinstance(segment_value, dict):
+            for key in ("n_samples", "sample_count", "samples", "coverage"):
+                count = _coerce_sample_count(segment_value.get(key))
+                if count is not None:
+                    return count
+    for key in ("last_ic_sample_count", "active_ic_samples", "ic_sample_count", "sample_count", "coverage_samples"):
+        count = _coerce_sample_count(entry.get(key))
+        if count is not None:
+            return count
+    history = entry.get("weekly_ic") or []
+    if isinstance(history, list):
+        return len(history)
+    return 0
+
+
+def _shrink_ic_weight(ic_value: float, sample_count: int) -> float:
+    prior_ic = float(os.environ.get("IC_WEIGHT_PRIOR", "0.015") or "0.015")
+    prior_strength = max(0.0, float(os.environ.get("IC_WEIGHT_PRIOR_STRENGTH", "20") or "20"))
+    min_samples_for_hard_zero = int(os.environ.get("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40") or "40")
+    n = max(0, int(sample_count or 0))
+    alpha = n / (n + prior_strength) if (n + prior_strength) > 0 else 1.0
+    posterior = (alpha * float(ic_value)) + ((1.0 - alpha) * prior_ic)
+    if n >= min_samples_for_hard_zero and float(ic_value) < 0 and posterior <= 0:
+        return 0.0
+    return max(0.0, posterior)
+
+
+def _extract_model_pool_ic(pool: dict, market_segment: str | None = None) -> dict[str, float]:
+    """Extract serving IC weights from model_pool.json.
+
+    Production serving is lane-aware: a listed stock should not have its model
+    weight zeroed because the same model underperformed on OTC/emerging names.
+    """
     weights: dict[str, float] = {}
     for name, entry in (pool.get("models") or {}).items():
-        ic_value = entry.get("rolling_ic")
-        if ic_value is None:
-            ic_value = entry.get("ic_4w_avg")
-        if ic_value is None:
-            history = entry.get("weekly_ic") or []
-            if history:
-                ic_value = history[-1]
-        try:
-            if ic_value is not None:
-                weights[name] = float(ic_value)
-        except (TypeError, ValueError):
-            continue
+        ic_value = _entry_serving_ic(entry, market_segment=market_segment)
+        if ic_value is not None:
+            sample_count = _entry_ic_sample_count(entry, market_segment=market_segment)
+            weights[name] = _shrink_ic_weight(ic_value, sample_count)
     return weights
 
 @dataclass
@@ -412,22 +497,27 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # 2.0 Rank → Signal 翻譯層
 # ══════════════════════════════════════════════════════════════════════════════
 
-def load_ic_weights() -> dict[str, float]:
+def load_ic_weights(market_segment: str | None = None) -> dict[str, float]:
     """Load serving IC weights from model_pool.json only."""
     global _IC_WEIGHTS_CACHE, _IC_WEIGHTS_CACHE_LOADED_AT
     ttl = int(os.environ.get("IC_WEIGHTS_CACHE_TTL_SECONDS", "300") or "300")
+    segment = _normalize_market_segment(market_segment) or "GLOBAL"
     if _IC_WEIGHTS_CACHE is not None and time.time() - _IC_WEIGHTS_CACHE_LOADED_AT < max(0, ttl):
-        return dict(_IC_WEIGHTS_CACHE)
+        return dict(_IC_WEIGHTS_CACHE.get(segment, {}))
     try:
         from .model_pool import load_pool
-        weights: dict[str, float] = {}
+        weights_by_segment: dict[str, dict[str, float]] = {}
         pool = load_pool()
         if pool:
-            weights.update(_extract_model_pool_ic(pool))
+            for key in ("GLOBAL", "LISTED", "OTC", "EMERGING"):
+                weights_by_segment[key] = _extract_model_pool_ic(
+                    pool,
+                    market_segment=None if key == "GLOBAL" else key,
+                )
 
-        _IC_WEIGHTS_CACHE = dict(weights)
+        _IC_WEIGHTS_CACHE = dict(weights_by_segment)
         _IC_WEIGHTS_CACHE_LOADED_AT = time.time()
-        return weights
+        return dict(weights_by_segment.get(segment, {}))
     except Exception:
         return {}
 

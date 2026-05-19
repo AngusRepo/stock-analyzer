@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from services.debate_service import (
     run_buy_debate_cached,
@@ -37,6 +37,7 @@ class BuyDebateRequest(BaseModel):
     us_context: Optional[str] = None
     taifex_context: Optional[str] = None
     stock_profile: Optional[StockProfileIn] = None
+    breeze2_context: Optional[dict[str, Any]] = None
     cache_key_date: Optional[str] = None
 
 
@@ -60,6 +61,7 @@ async def debate_buy_single(req: BuyDebateRequest):
             us_context=req.us_context,
             stock_profile=profile,
             taifex_context=req.taifex_context,
+            breeze2_context=req.breeze2_context,
             cache_key_date=req.cache_key_date,
         )
         return {

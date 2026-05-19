@@ -5,6 +5,8 @@
  * 讀取一次、快取 300s、fallback default。
  */
 
+import { readCurrentLegacyRegimeLabel } from './marketRegimeState'
+
 // ─── Type ────────────────────────────────────────────────────────────────────
 
 export type AlphaFrameworkRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
@@ -148,8 +150,8 @@ export interface TradingConfig {
     dynamicExitPriorityEnabled: boolean  // 預設 false，4/27 後 Wei KV 翻
   }
   position: {
-    dailyBuyLimit: number        // 每日自動買入上限 NT$（預設 200000）
-    manualDailyLimit: number     // 每日手動買入上限 NT$（預設 200000）
+    dailyBuyLimit: number        // 每日自動買入上限 NT$
+    manualDailyLimit: number     // 每日手動買入上限 NT$
     maxPctOfPortfolio: number    // 單筆最大佔 portfolio %（預設 0.25）
     maxPctOfCash: number         // 單筆最大佔現金 %（預設 0.30）
     minCashToTrade: number       // 最低可交易現金（預設 10000）
@@ -323,7 +325,8 @@ export interface TradingConfig {
   }
   // ── #28b T2.2 (2026-04-21): Per-regime sltp overlay ─────────────────────
   // Optional — when empty (default), paper.ts uses flat sltp.* above. When
-  // present, active regime label from ml:regime KV picks the matching overlay;
+  // present, active market_regime_state label picks the matching overlay;
+  // legacy ml:regime remains only as a migration mirror/fallback.
   // fields in overlay override matching sltp.* fields; unset fields fall back
   // to flat sltp.* (partial override pattern, Kubernetes ConfigMap style).
   //
@@ -454,8 +457,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     dynamicExitPriorityEnabled: false,  // #16 Step 9c prep — 4/27 Wei KV 翻
   },
   position: {
-    dailyBuyLimit: 200_000,
-    manualDailyLimit: 200_000,
+    dailyBuyLimit: 500_000,
+    manualDailyLimit: 500_000,
     maxPctOfPortfolio: 0.25,
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,
@@ -1331,9 +1334,9 @@ export function resolveSltpForRegime(
   return { ...flat, ...overlay }
 }
 
-/** Fetch current ml:regime KV label (null if unset or malformed). */
+/** Fetch current market_regime_state label, with legacy ml:regime fallback. */
 export async function getCurrentRegime(kv: KVNamespace): Promise<RegimeLabel | null> {
-  const raw = await kv.get('ml:regime', 'text')
+  const raw = await readCurrentLegacyRegimeLabel(kv)
   if (!raw) return null
   const label = raw.trim() as RegimeLabel
   const valid: Set<string> = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])

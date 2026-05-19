@@ -7,6 +7,8 @@ Replaces:
 
 Drops B8 bug: `in_current_watchlist=1` filter (only 33 stocks) — now reads ALL stocks.
 Fixes B9 bug: uses `tag_type` filter to separate concept vs industry.
+V4 adds FinLab taxonomy layer `industry_theme` between formal industry and
+subindustry, so sector-flow can aggregate all four label layers separately.
 
 Mapping:
     stock_tags.tag_type = 'concept'  → sector_flow.classification = 'theme'
@@ -21,8 +23,8 @@ from services._rrg_calculator import build_rrg_point, RrgPoint
 
 logger = logging.getLogger(__name__)
 
-TagType = Literal["concept", "industry", "subindustry"]
-Classification = Literal["theme", "industry", "subindustry"]
+TagType = Literal["concept", "industry", "industry_theme", "subindustry"]
+Classification = Literal["theme", "industry", "industry_theme", "subindustry"]
 
 
 class CashFlow(TypedDict):
@@ -35,6 +37,8 @@ class CashFlow(TypedDict):
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
     if tag_type == "concept":
         return "theme"
+    if tag_type == "industry_theme":
+        return "industry_theme"
     if tag_type == "subindustry":
         return "subindustry"
     return "industry"
@@ -108,23 +112,129 @@ def _load_twii_return_5d(as_of_date: str) -> float:
 def _load_stock_tags(tag_type: TagType) -> dict[str, list[str]]:
     """
     Load {tag_name: [symbols]} for a given tag_type.
+
+    V4.1: self-built concepts remain in stock_tags, while FinLab taxonomy is
+    the primary structured source for industry / industry_theme / subindustry.
     """
-    sql = """
-    SELECT tag, symbol FROM stock_tags
-    WHERE tag_type = ?
-    """
-    rows = d1_client.query(sql, [tag_type])
+    rows: list[dict] = []
+    if tag_type != "concept":
+        try:
+            rows.extend(d1_client.query(
+                """
+                SELECT tag, symbol
+                FROM finlab_taxonomy_tags
+                WHERE tag_type = ?
+                """,
+                [tag_type],
+            ))
+        except Exception as exc:
+            logger.warning("[sector_flow] FinLab taxonomy load failed for %s: %s", tag_type, exc)
+    try:
+        rows.extend(d1_client.query(
+            """
+            SELECT tag, symbol
+            FROM stock_tags
+            WHERE tag_type = ?
+            """,
+            [tag_type],
+        ))
+    except Exception as exc:
+        logger.warning("[sector_flow] stock_tags load failed for %s: %s", tag_type, exc)
+
     by_tag: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
     for r in rows:
-        tag = r.get("tag")
-        sym = r.get("symbol")
-        if tag and sym:
+        tag = str(r.get("tag") or "").strip()
+        sym = str(r.get("symbol") or "").strip()
+        key = (tag, sym)
+        if tag and sym and key not in seen:
+            seen.add(key)
             by_tag.setdefault(tag, []).append(sym)
     return by_tag
 
 
-def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
-    """Load per-symbol 5-day institutional cash flow in TWD billions."""
+def _accumulate_cash_flow(
+    flows: dict[str, CashFlow],
+    row: dict,
+    *,
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
+    symbol = str(row.get("symbol") or "").strip()
+    date = str(row.get("date") or "").strip()
+    close = float(row.get("close") or 0)
+    if not symbol or close <= 0:
+        return
+    key = (symbol, date)
+    if date and key in seen_symbol_dates:
+        return
+    if date:
+        seen_symbol_dates.add(key)
+    entry = flows.setdefault(
+        symbol,
+        {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
+    )
+    foreign_cash = float(row.get("foreign_net") or 0) * close / 1e8
+    trust_cash = float(row.get("trust_net") or 0) * close / 1e8
+    dealer_cash = float(row.get("dealer_net") or 0) * close / 1e8
+    entry["foreign_net"] += foreign_cash
+    entry["trust_net"] += trust_cash
+    entry["dealer_net"] += dealer_cash
+    entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+
+
+def _load_canonical_symbol_cash_flows_5d(
+    as_of_date: str,
+    lookback_days: int,
+    flows: dict[str, CashFlow],
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
+    date_rows = d1_client.query(
+        """
+        SELECT DISTINCT date
+        FROM canonical_chip_daily
+        WHERE date <= ?
+        ORDER BY date DESC
+        LIMIT ?
+        """,
+        [as_of_date, lookback_days],
+    )
+    dates = [r.get("date") for r in date_rows if r.get("date")]
+    if not dates:
+        return
+
+    placeholders = ",".join("?" * len(dates))
+    rows = d1_client.query(
+        f"""
+        SELECT
+          c.stock_id AS symbol,
+          c.date,
+          COALESCE(c.foreign_net, 0) AS foreign_net,
+          COALESCE(c.trust_net, 0) AS trust_net,
+          COALESCE(c.dealer_net, 0) AS dealer_net,
+          (
+            SELECT sp.close
+            FROM stock_prices sp
+            JOIN stocks s ON s.id = sp.stock_id
+            WHERE s.symbol = c.stock_id
+              AND sp.date <= c.date
+            ORDER BY sp.date DESC
+            LIMIT 1
+          ) AS close
+        FROM canonical_chip_daily c
+        WHERE c.date IN ({placeholders})
+        """,
+        dates,
+    )
+    for row in rows:
+        _accumulate_cash_flow(flows, row, seen_symbol_dates=seen_symbol_dates)
+
+
+def _load_legacy_symbol_cash_flows_5d(
+    as_of_date: str,
+    lookback_days: int,
+    flows: dict[str, CashFlow],
+    seen_symbol_dates: set[tuple[str, str]],
+) -> None:
     date_rows = d1_client.query(
         """
         SELECT DISTINCT date
@@ -144,6 +254,7 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
         f"""
         SELECT
           c.symbol,
+          c.date,
           COALESCE(c.foreign_net, 0) AS foreign_net,
           COALESCE(c.trust_net, 0) AS trust_net,
           COALESCE(c.dealer_net, 0) AS dealer_net,
@@ -162,23 +273,20 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
         dates,
     )
 
-    flows: dict[str, CashFlow] = {}
     for r in rows:
-        symbol = r.get("symbol")
-        close = float(r.get("close") or 0)
-        if not symbol or close <= 0:
-            continue
-        entry = flows.setdefault(
-            symbol,
-            {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
-        )
-        foreign_cash = float(r.get("foreign_net") or 0) * close / 1e8
-        trust_cash = float(r.get("trust_net") or 0) * close / 1e8
-        dealer_cash = float(r.get("dealer_net") or 0) * close / 1e8
-        entry["foreign_net"] += foreign_cash
-        entry["trust_net"] += trust_cash
-        entry["dealer_net"] += dealer_cash
-        entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+        _accumulate_cash_flow(flows, r, seen_symbol_dates=seen_symbol_dates)
+
+
+def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[str, CashFlow]:
+    """Load per-symbol 5-day institutional cash flow in TWD billions.
+
+    FinLab canonical rows are primary. Legacy TWSE/TPEX chip_data only fills
+    symbol-date gaps that canonical data has not materialized yet.
+    """
+    flows: dict[str, CashFlow] = {}
+    seen_symbol_dates: set[tuple[str, str]] = set()
+    _load_canonical_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
+    _load_legacy_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
     return flows
 
 
@@ -199,6 +307,71 @@ def _aggregate_tag_cash_flows(
             flow["total_net"] += sf["total_net"]
         tag_flows[tag] = flow
     return tag_flows
+
+
+def _load_stock_names() -> dict[str, str]:
+    rows = d1_client.query("SELECT symbol, name FROM stocks")
+    return {
+        str(r.get("symbol")): str(r.get("name") or r.get("symbol"))
+        for r in rows
+        if r.get("symbol")
+    }
+
+
+def write_sector_flow_stock_details(
+    *,
+    as_of_date: str,
+    tag_members: dict[str, list[str]],
+    symbol_flows: dict[str, CashFlow],
+    top_per_theme: int = 10,
+) -> int:
+    """Refresh sector_flow_stocks so UI detail rows do not fall back to stale dates."""
+    if not tag_members:
+        return 0
+
+    stock_names = _load_stock_names()
+    statements: list[tuple[str, list]] = [
+        ("DELETE FROM sector_flow_stocks WHERE date = ?", [as_of_date])
+    ]
+    for tag, members in tag_members.items():
+        ranked = sorted(
+            (
+                (symbol, symbol_flows.get(symbol))
+                for symbol in members
+                if symbol_flows.get(symbol) and float(symbol_flows[symbol].get("total_net") or 0.0) > 0
+            ),
+            key=lambda item: float((item[1] or {}).get("total_net") or 0.0),
+            reverse=True,
+        )[: max(1, int(top_per_theme))]
+        for symbol, flow in ranked:
+            if not flow:
+                continue
+            statements.append((
+                """
+                INSERT INTO sector_flow_stocks
+                  (date, theme, symbol, name, net_amount, foreign_net, trust_net, volume_ratio, classification)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.strip(),
+                [
+                    as_of_date,
+                    tag,
+                    symbol,
+                    stock_names.get(symbol, symbol),
+                    round(float(flow.get("total_net") or 0.0), 4),
+                    round(float(flow.get("foreign_net") or 0.0), 4),
+                    round(float(flow.get("trust_net") or 0.0), 4),
+                    None,
+                    "top",
+                ],
+            ))
+
+    if len(statements) == 1:
+        d1_client.execute(statements[0][0], statements[0][1])
+        return 0
+    result = d1_client.batch_execute(statements, chunk_size=100)
+    written = max(0, int(result.get("success_count") or result.get("total") or 0) - 1)
+    logger.info(f"[sector_flow] Wrote {written} sector_flow_stocks rows for {as_of_date}")
+    return written
 
 
 def _load_prev_rs_ratios(
@@ -330,7 +503,8 @@ def write_sector_flow(
 
 def run_sector_flow_pipeline(as_of_date: str) -> dict:
     """
-    Full pipeline: compute concept + subindustry + industry, write all to sector_flow.
+    Full pipeline: compute concept + industry_theme + subindustry + industry,
+    write all to sector_flow.
 
     Called by:
     - daily_pipeline_v2.py node_compute_sector_flow
@@ -344,6 +518,7 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
 
     paths: list[tuple[TagType, Classification]] = [
         ("concept", "theme"),
+        ("industry_theme", "industry_theme"),
         ("subindustry", "subindustry"),
         ("industry", "industry"),
     ]
@@ -365,6 +540,12 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
                 "written": written,
                 "quadrants": counts,
             }
+            if tag_type == "concept":
+                summary[tag_type]["stock_details_written"] = write_sector_flow_stock_details(
+                    as_of_date=as_of_date,
+                    tag_members=tag_members,
+                    symbol_flows=symbol_flows,
+                )
         except Exception as e:
             logger.error(f"[sector_flow] {tag_type} path failed: {e}")
             summary[tag_type] = {"error": str(e)}

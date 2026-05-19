@@ -1,4 +1,10 @@
-import type { ObservabilityDomain, ObservabilityEvent, ObservabilityEventReport, ObservabilitySeverity } from './observabilityEvents'
+import type {
+  ObservabilityAuditRow,
+  ObservabilityDomain,
+  ObservabilityEvent,
+  ObservabilityEventReport,
+  ObservabilitySeverity,
+} from './observabilityEvents'
 
 export type IncidentStatus = 'open' | 'watch' | 'resolved'
 
@@ -96,12 +102,37 @@ function collectAffectedSymbols(event: ObservabilityEvent): string[] {
 function inferRootCause(event: ObservabilityEvent): string {
   const evidence = event.evidence ?? {}
   if (event.domain === 'scheduler') {
+    const summary = cleanText(evidence.summary)
+    const error = cleanText(evidence.error)
+    const diagnostic = error || summary || cleanText(event.summary)
+    if (diagnostic) {
+      if (/market data not ready|price rows|chip rows|indicator/i.test(diagnostic)) {
+        return `market_data_readiness:${diagnostic.slice(0, 180)}`
+      }
+      if (/research failure|optuna|ga_optimizer|SKIPPED_NOT_READY|HTTP\d+/i.test(diagnostic)) {
+        return `optuna_research:${diagnostic.slice(0, 180)}`
+      }
+      if (/stale (running|triggered)|final callback|SLA/i.test(diagnostic)) {
+        return `scheduler_callback_missing:${diagnostic.slice(0, 180)}`
+      }
+      if (/callback|run state|locked|timeout/i.test(diagnostic)) {
+        return `scheduler_orchestration:${diagnostic.slice(0, 180)}`
+      }
+    }
     const runId = cleanText(evidence.run_id) || cleanText(evidence.task_id)
     return runId
       ? `scheduler_callback_or_run_state:${runId}`
       : `scheduler_status:${event.status}`
   }
   if (event.domain === 'data_quality') {
+    if (event.title === 'Classification coverage' || event.source === 'data_quality_report' && /classification/i.test(event.title)) {
+      const tradableMissing = evidence.tradable_missing_industry_tags
+      const researchMissing = evidence.research_missing_industry_tags
+      return `classification_taxonomy_gap:tradable_missing=${tradableMissing ?? 'n/a'}, research_missing=${researchMissing ?? 'n/a'}`
+    }
+    if (/price/i.test(event.title) || evidence.latest_date || evidence.target_date) {
+      return `data_freshness:${event.summary}`
+    }
     return `data_quality_gate:${event.status}:${event.source}`
   }
   if (event.domain === 'model_pool') {
@@ -131,11 +162,24 @@ function incidentStatus(severity: ObservabilitySeverity): IncidentStatus {
   return 'open'
 }
 
-function mergeEvents(domain: ObservabilityDomain, events: ObservabilityEvent[]): ObservabilityIncident {
+function auditTimesFor(events: ObservabilityEvent[], auditRows: ObservabilityAuditRow[]): string[] {
+  const ids = new Set(events.map((event) => event.id))
+  const sources = new Set(events.map((event) => `${event.domain}:${event.source}:${event.status}:${event.title}`))
+  return auditRows
+    .filter((row) => (
+      ids.has(row.event_id)
+      || sources.has(`${row.domain}:${row.source}:${row.status}:${row.title}`)
+    ))
+    .map((row) => row.created_at)
+    .filter(Boolean)
+}
+
+function mergeEvents(domain: ObservabilityDomain, events: ObservabilityEvent[], auditRows: ObservabilityAuditRow[] = []): ObservabilityIncident {
   const severity = worstSeverity(events)
   const primary = events.find((event) => event.severity === severity) ?? events[0]
   const eventTimes = events
     .map((event) => event.ts)
+    .concat(auditTimesFor(events, auditRows))
     .filter(Boolean)
     .sort()
   const runIds = [...new Set(events.flatMap(collectRunIds))]
@@ -165,7 +209,10 @@ function mergeEvents(domain: ObservabilityDomain, events: ObservabilityEvent[]):
   }
 }
 
-export function buildObservabilityDrilldown(report: ObservabilityEventReport): ObservabilityDrilldownReport {
+export function buildObservabilityDrilldown(
+  report: ObservabilityEventReport,
+  options: { auditRows?: ObservabilityAuditRow[] } = {},
+): ObservabilityDrilldownReport {
   const actionable = report.events.filter((event) => event.severity !== 'ok')
   const source = actionable.length ? actionable : report.events.slice(0, 1)
   const byDomain = new Map<ObservabilityDomain, ObservabilityEvent[]>()
@@ -173,7 +220,7 @@ export function buildObservabilityDrilldown(report: ObservabilityEventReport): O
     byDomain.set(event.domain, [...(byDomain.get(event.domain) ?? []), event])
   }
   const incidents = [...byDomain.entries()]
-    .map(([domain, events]) => mergeEvents(domain, events))
+    .map(([domain, events]) => mergeEvents(domain, events, options.auditRows ?? []))
     .sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity])
 
   return {

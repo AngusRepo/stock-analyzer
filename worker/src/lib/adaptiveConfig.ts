@@ -1,3 +1,5 @@
+import { readMarketRegimeState } from './marketRegimeState'
+
 export type AdaptiveRegime = 'bull' | 'bear' | 'volatile' | 'sideways'
 export type AdaptiveParamSource = 'ml-controller' | 'risk-assess' | 'manual' | 'fallback' | 'unknown'
 
@@ -18,8 +20,11 @@ export interface AdaptiveScreenerDelta {
   emerging_research_delta?: number
 }
 
+export type AdaptiveThresholdComponents = Record<string, unknown>
+
 export interface AdaptiveRegimeOverride {
   confidence_delta?: number
+  threshold_components?: AdaptiveThresholdComponents
   position_pct_delta?: number
   sltp_add?: {
     sl_add: number
@@ -29,6 +34,7 @@ export interface AdaptiveRegimeOverride {
   screener?: AdaptiveScreenerDelta
   bandit_max_mult?: number
   bandit_force_explore?: boolean
+  bandit_context?: Record<string, unknown>
 }
 
 export interface AdaptiveMetaLayerGovernance {
@@ -58,6 +64,10 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     Conformal: 'prediction uncertainty calibration and coverage guard',
     Stacking: 'meta learner for ensemble blending after base-model predictions',
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
+    NeuralUCB: 'shadow meta-router for nonlinear model-weight and threshold policy comparison',
+    NeuralTS: 'shadow Thompson sampler to audit NeuralUCB optimism before production consideration',
+    OnlinePortfolioBandit: 'research-layer allocation policy; waits for execution/slippage parity',
+    NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
   immutable_risk_boundaries: [
     'circuit',
@@ -82,6 +92,7 @@ export interface AdaptiveParams {
   hold_signal_score?: number
 
   confidence_delta: number
+  threshold_components?: AdaptiveThresholdComponents
   position_pct_delta: number
   sltp_add: {
     sl_add: number
@@ -91,6 +102,7 @@ export interface AdaptiveParams {
   screener?: AdaptiveScreenerDelta
   bandit_max_mult: number
   bandit_force_explore: boolean
+  bandit_context?: Record<string, unknown>
   computed_at: string
   market_risk_score: number
   recent_accuracy_30d: number
@@ -104,7 +116,8 @@ export interface AdaptiveParams {
   sl_tp_override?: { sl_add: number; tp_add: number } | null
 }
 
-const KV_KEY = 'ml:adaptive_params'
+export const ADAPTIVE_PARAMS_KV_KEY = 'ml:adaptive_params'
+const KV_KEY = ADAPTIVE_PARAMS_KV_KEY
 const CACHE_TTL_MS = 300_000
 
 function nowIso(): string {
@@ -119,6 +132,7 @@ export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
   screener: {},
   bandit_max_mult: 2.5,
   bandit_force_explore: false,
+  bandit_context: undefined,
   computed_at: '',
   market_risk_score: 50,
   recent_accuracy_30d: 0.6,
@@ -183,6 +197,11 @@ function normalizeScreenerDelta(value: unknown): AdaptiveScreenerDelta {
   return out
 }
 
+function normalizeThresholdComponents(value: unknown): AdaptiveThresholdComponents | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as AdaptiveThresholdComponents
+}
+
 function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   if (!value || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
@@ -191,12 +210,15 @@ function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   const position = optionalNumber(raw.position_pct_delta)
   const banditMax = optionalNumber(raw.bandit_max_mult)
   if (confidence != null) out.confidence_delta = confidence
+  const thresholdComponents = normalizeThresholdComponents(raw.threshold_components)
+  if (thresholdComponents) out.threshold_components = thresholdComponents
   if (position != null) out.position_pct_delta = position
   if (Object.prototype.hasOwnProperty.call(raw, 'sltp_add')) out.sltp_add = normalizeSltpAdd(raw.sltp_add)
   if (raw.pf_quality_mult && typeof raw.pf_quality_mult === 'object') out.pf_quality_mult = normalizeNumberRecord(raw.pf_quality_mult)
   if (raw.screener && typeof raw.screener === 'object') out.screener = normalizeScreenerDelta(raw.screener)
   if (banditMax != null) out.bandit_max_mult = banditMax
   if (typeof raw.bandit_force_explore === 'boolean') out.bandit_force_explore = raw.bandit_force_explore
+  if (raw.bandit_context && typeof raw.bandit_context === 'object') out.bandit_context = raw.bandit_context as Record<string, unknown>
   return out
 }
 
@@ -249,12 +271,14 @@ export function normalizeAdaptiveParams(
   const computedAt = String(raw.computed_at ?? DEFAULT_ADAPTIVE_PARAMS.computed_at)
   const normalized: AdaptiveParams = {
     confidence_delta: finiteNumber(raw.confidence_delta, DEFAULT_ADAPTIVE_PARAMS.confidence_delta),
+    threshold_components: normalizeThresholdComponents(raw.threshold_components),
     position_pct_delta: finiteNumber(raw.position_pct_delta, DEFAULT_ADAPTIVE_PARAMS.position_pct_delta),
     sltp_add: normalizeSltpAdd(raw.sltp_add),
     pf_quality_mult: normalizeNumberRecord(raw.pf_quality_mult),
     screener: normalizeScreenerDelta(raw.screener),
     bandit_max_mult: finiteNumber(raw.bandit_max_mult, DEFAULT_ADAPTIVE_PARAMS.bandit_max_mult),
     bandit_force_explore: finiteBoolean(raw.bandit_force_explore, DEFAULT_ADAPTIVE_PARAMS.bandit_force_explore),
+    bandit_context: raw.bandit_context && typeof raw.bandit_context === 'object' ? raw.bandit_context as Record<string, unknown> : undefined,
     computed_at: computedAt,
     market_risk_score: finiteNumber(raw.market_risk_score, DEFAULT_ADAPTIVE_PARAMS.market_risk_score),
     recent_accuracy_30d: finiteNumber(raw.recent_accuracy_30d, DEFAULT_ADAPTIVE_PARAMS.recent_accuracy_30d),
@@ -338,9 +362,8 @@ export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams
 }
 
 async function readCurrentRegime(kv: KVNamespace): Promise<string | null> {
-  const meta = await kv.get('ml:regime:meta', 'json').catch(() => null) as Record<string, unknown> | null
-  if (meta?.label) return String(meta.label)
-  return await kv.get('ml:regime').catch(() => null)
+  const state = await readMarketRegimeState(kv)
+  return state?.family ?? state?.label ?? null
 }
 
 export async function getAdaptiveParamsForRegime(
@@ -359,6 +382,10 @@ export async function setAdaptiveParams(
 ): Promise<void> {
   const normalized = normalizeAdaptiveParams(params, options)
   await kv.put(KV_KEY, JSON.stringify(normalized))
+  const persisted = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
+  if (!persisted || typeof persisted !== 'object') {
+    throw new Error(`adaptive params KV write verification failed: ${KV_KEY} missing after put`)
+  }
   _cached = normalized
   _cachedAt = Date.now()
 }

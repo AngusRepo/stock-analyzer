@@ -22,7 +22,7 @@
 - Basic `ic_tracking.json` with 5 models' last-run IC, no historical trend
 - No shadow/challenger mechanism — retrained model goes straight to production
 
-**Blocker**: `predict_stock_v2` crash (OPEN ISSUE §3.1 in `memory/project_handoff_to_gpt.md`) must be resolved before model pool work starts — otherwise scaffolding on broken predict path.
+**Blocker**: `predict_stock_v2` crash (OPEN ISSUE §3.1 in `memory/project_handoff_to_gpt.md`) must be resolved before model pool work starts; do not build on a broken predict path.
 
 Estimated effort when unblocked: **4.5 days** (P1-P5).
 

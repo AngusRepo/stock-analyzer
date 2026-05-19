@@ -345,8 +345,8 @@ def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | No
 def _is_use_ensemble_v2() -> bool:
     """Read trading:config.mlPool.useEnsembleV2 (default True). KV override."""
     try:
-        from services import kv_client
-        tcfg = kv_client.get_json("trading:config", default={}) or {}
+        from services.trading_config_loader import load_merged_trading_config
+        tcfg = load_merged_trading_config()
         ml_pool_cfg = tcfg.get("mlPool", {}) or {}
         v = ml_pool_cfg.get("useEnsembleV2")
         return True if v is None else bool(v)
@@ -377,14 +377,14 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
         raw = eff_ml.get("signal_raw") or ev2.get("signal_raw") or "HOLD"
         avg_rank = ev2.get("avg_rank")
         avg_rank_text = f"{float(avg_rank):.3f}" if isinstance(avg_rank, Real) else "n/a"
-        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
+        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，校準預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
         return "V2 模型池暫無正 IC 權重，先以觀望處理，等待 verify/IC 樣本補齊"
     if contributors:
         label = "看多" if "BUY" in signal else "觀望" if signal == "HOLD" else "偏空"
-        return f"V2 模型池{label}（{len(contributors)} 模型有權重，預期 {forecast_text}）"
+        return f"V2 模型池{label}（{len(contributors)} 模型有權重，校準預期 {forecast_text}）"
 
     total = legacy_counts.get("total", 0)
     up = legacy_counts.get("up", 0)
@@ -392,7 +392,7 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     if total <= 0:
         return "ML 資料不足"
     if "BUY" in signal:
-        return f"ML 看多（{up}/{total} 看漲，預期 {forecast_text}）"
+        return f"ML 看多（{up}/{total} 看漲，校準預期 {forecast_text}）"
     if signal == "HOLD":
         if up > down:
             return f"ML 觀望（{up}/{total} 偏多但共識未達門檻）"
@@ -400,6 +400,16 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
             return f"ML 觀望（{down}/{total} 偏空，暫不追價）"
         return f"ML 觀望（多空分歧 {up}/{down}）"
     return "ML 偏空"
+
+
+def _forecast_fraction_to_pct(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return round(value * 100.0, 4)
 
 
 def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -> dict[str, Any]:
@@ -418,6 +428,12 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     zero_weight_models = [
         name for name in tracked
         if name in weights and _sanitize_non_finite(weights.get(name))[0] in (0, 0.0, None)
+    ]
+    thresholds = ev2.get("rank_signal_thresholds") if isinstance(ev2.get("rank_signal_thresholds"), dict) else {}
+    diagnostics = ev2.get("ic_weight_diagnostics") if isinstance(ev2.get("ic_weight_diagnostics"), dict) else {}
+    validation_blocked_models = [
+        name for name, detail in diagnostics.items()
+        if isinstance(detail, dict) and str(detail.get("validation_status") or "").upper() == "FAIL"
     ]
 
     model_scores: dict[str, float] = {}
@@ -441,6 +457,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         bullish = sum(1 for value in model_scores.values() if value >= 0.55)
         bearish = sum(1 for value in model_scores.values() if value <= 0.45)
         flat = max(0, len(model_scores) - bullish - bearish)
+        raw_forecast_pct = ev2.get("forecast_pct")
         return {
             "bullish": bullish,
             "bearish": bearish,
@@ -448,10 +465,19 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
             "reported": len(model_scores),
             "missing": max(0, len(tracked) - len(model_scores)),
             "total": len(tracked),
-            "forecastPct": ev2.get("forecast_pct"),
+            "forecast_pct": raw_forecast_pct,
+            "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
             "forecastPctSource": ev2.get("forecast_pct_source"),
             "activeWeightCount": active_weight_count,
             "zeroWeightModels": zero_weight_models,
+            "thresholds": {
+                "bullish": thresholds.get("buyThreshold"),
+                "bearish": thresholds.get("sellThreshold"),
+                "strongBullish": thresholds.get("strongBuyThreshold"),
+                "strongBearish": thresholds.get("strongSellThreshold"),
+            } if thresholds else None,
+            "icWeightScope": ev2.get("ic_weight_scope"),
+            "validationBlockedModels": validation_blocked_models,
             "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
             "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
             "contributingModels": ev2.get("contributing_models") or [],
@@ -485,6 +511,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         flat = max(0, reported - bullish - bearish)
 
     total = max(8, reported)
+    raw_forecast_pct = ev2.get("forecast_pct")
     return {
         "bullish": bullish,
         "bearish": bearish,
@@ -492,10 +519,19 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "reported": reported,
         "missing": max(0, total - reported),
         "total": total,
-        "forecastPct": ev2.get("forecast_pct"),
+        "forecast_pct": raw_forecast_pct,
+        "forecastPct": _forecast_fraction_to_pct(raw_forecast_pct),
         "forecastPctSource": ev2.get("forecast_pct_source"),
         "activeWeightCount": active_weight_count,
         "zeroWeightModels": zero_weight_models,
+        "thresholds": {
+            "bullish": thresholds.get("buyThreshold"),
+            "bearish": thresholds.get("sellThreshold"),
+            "strongBullish": thresholds.get("strongBuyThreshold"),
+            "strongBearish": thresholds.get("strongSellThreshold"),
+        } if thresholds else None,
+        "icWeightScope": ev2.get("ic_weight_scope"),
+        "validationBlockedModels": validation_blocked_models,
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],
@@ -547,7 +583,7 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
     final_score = row.get("score") or raw_score
-    return {
+    components = {
         "chip": row.get("chip_score") or 0,
         "tech": row.get("tech_score") or 0,
         "screenerMomentum": row.get("momentum_score") or 0,
@@ -566,6 +602,9 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
             "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
         },
     }
+    if isinstance(row.get("chip_evidence"), dict):
+        components["chipEvidence"] = row["chip_evidence"]
+    return components
 
 
 def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) -> float:
@@ -586,6 +625,49 @@ def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) ->
             continue
         total += float(c.get(field) or 0.0) * close / 1e8
     return round(total, 6)
+
+
+def _sum_broker_cash_billion(chips: list[dict], prices: list[dict]) -> float:
+    """Prefer FinLab estimated broker amount, fallback to broker shares * close."""
+    if not chips:
+        return 0.0
+    total_amount = 0.0
+    missing_amount_rows: list[dict] = []
+    for c in chips:
+        if c.get("broker_estimated_amount") is None:
+            missing_amount_rows.append(c)
+            continue
+        total_amount += float(c.get("broker_estimated_amount") or 0.0)
+    if missing_amount_rows:
+        price_by_date = {p.get("date"): float(p.get("close") or 0.0) for p in prices if p.get("date")}
+        fallback_close = 0.0
+        for p in reversed(prices):
+            close = float(p.get("close") or 0.0)
+            if close > 0:
+                fallback_close = close
+                break
+        for c in missing_amount_rows:
+            close = price_by_date.get(c.get("date")) or fallback_close
+            total_amount += float(c.get("broker_net_shares") or 0.0) * close
+    return round(total_amount / 1e8, 6)
+
+
+def _sum_numeric(chips: list[dict], field: str) -> float:
+    return round(sum(float(c.get(field) or 0.0) for c in chips), 6)
+
+
+def _latest_broker_chip(chips: list[dict]) -> dict:
+    for c in reversed(chips):
+        if c.get("broker_net_shares") is not None or c.get("broker_estimated_amount") is not None:
+            return c
+    return {}
+
+
+def _format_abs_cash_billion(value: float) -> str:
+    abs_value = abs(value)
+    if 0 < abs_value < 0.01:
+        return f"{round(abs_value * 10000):.0f}萬"
+    return f"{abs_value:.2f}億"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -664,17 +746,32 @@ def build_reason(s: dict) -> str:
     fnet = float(s.get("foreign_net_5d") or 0.0)
     tnet = float(s.get("trust_net_5d") or 0.0)
     dnet = float(s.get("dealer_net_5d") or 0.0)
-    net_amount = fnet + tnet + dnet
-    if net_amount > 5:
-        chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
-    elif net_amount > 1:
-        chip_reason = f"法人買超 {net_amount:.1f} 億"
-    elif net_amount > 0:
-        chip_reason = "法人小幅買超"
-    elif net_amount > -1:
-        chip_reason = "法人買賣超接近平衡"
+    market_segment = str(s.get("market_segment") or "").upper()
+    broker_cash_5d = float(s.get("broker_net_amount_5d") or 0.0)
+    broker_rows = int(s.get("broker_rows") or 0)
+    if market_segment == "EMERGING" and broker_rows > 0:
+        direction = "買超" if broker_cash_5d >= 0 else "賣超"
+        chip_reason = f"券商分點近5日{direction}{_format_abs_cash_billion(broker_cash_5d)}"
+        broker_count = s.get("broker_count_latest")
+        concentration = s.get("broker_concentration_latest")
+        if broker_count is not None:
+            chip_reason += f"、券商數{int(float(broker_count))}"
+        if concentration is not None:
+            chip_reason += f"、集中度{float(concentration):.2f}"
+    elif market_segment == "EMERGING":
+        chip_reason = "興櫃券商分點資料不足，暫不以三大法人語意判讀"
     else:
-        chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
+        net_amount = fnet + tnet + dnet
+        if net_amount > 5:
+            chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
+        elif net_amount > 1:
+            chip_reason = f"法人買超 {net_amount:.1f} 億"
+        elif net_amount > 0:
+            chip_reason = "法人小幅買超"
+        elif net_amount > -1:
+            chip_reason = "法人買賣超接近平衡"
+        else:
+            chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
 
     rsi = float(s.get("rsi14") or 0.0)
     macd_up = float(s.get("macd_hist") or 0.0) > 0
@@ -715,8 +812,12 @@ def build_watch_points(s: dict) -> list[str]:
         points.append("外資近 5 日偏賣，籌碼需再確認")
     if float(s.get("trust_net_5d") or 0.0) < 0 < float(s.get("foreign_net_5d") or 0.0):
         points.append("外資與投信方向不一致")
-    if str(s.get("market_segment") or "").upper() == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
-        points.append("籌碼資料不足：興櫃或資料源未提供三大法人明細，籌碼分不是看壞而是不可比")
+    market_segment = str(s.get("market_segment") or "").upper()
+    broker_rows = int(s.get("broker_rows") or 0)
+    if market_segment == "EMERGING" and broker_rows > 0:
+        points.append("興櫃籌碼採 FinLab 券商分點 proxy；不可與上市櫃三大法人直接同比")
+    elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
+        points.append("興櫃券商分點資料不足；暫不以三大法人語意判讀")
     if "BUY" in sig and forecast_pct < 0:
         points.append("ML 訊號與預期報酬矛盾，禁止直接追價")
     elif conf < 0.45:
@@ -846,6 +947,24 @@ def filter_and_score_recommendations(
         foreign_net_5d = _sum_chip_cash_billion(recent_chips, prices, "foreign_net")
         trust_net_5d = _sum_chip_cash_billion(recent_chips, prices, "trust_net")
         dealer_net_5d = _sum_chip_cash_billion(recent_chips, prices, "dealer_net")
+        broker_net_amount_5d = _sum_broker_cash_billion(recent_chips, prices)
+        broker_net_shares_5d = _sum_numeric(recent_chips, "broker_net_shares")
+        latest_broker = _latest_broker_chip(recent_chips)
+        broker_rows = sum(
+            1 for chip in recent_chips
+            if chip.get("broker_net_shares") is not None or chip.get("broker_estimated_amount") is not None
+        )
+        chip_evidence = None
+        if broker_rows > 0:
+            chip_evidence = {
+                "source": latest_broker.get("chip_source") or "finlab.rotc_broker_transactions",
+                "source_date": latest_broker.get("date"),
+                "broker_net_amount_5d_billion": broker_net_amount_5d,
+                "broker_net_shares_5d": broker_net_shares_5d,
+                "broker_count_latest": latest_broker.get("broker_count"),
+                "concentration_latest": latest_broker.get("broker_concentration"),
+                "as_of_date": latest_broker.get("as_of_date"),
+            }
 
         # ML model votes from prediction
         ml_models_total = 0
@@ -880,6 +999,11 @@ def filter_and_score_recommendations(
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
             "dealer_net_5d": dealer_net_5d,
+            "broker_net_amount_5d": broker_net_amount_5d,
+            "broker_net_shares_5d": broker_net_shares_5d,
+            "broker_count_latest": latest_broker.get("broker_count"),
+            "broker_concentration_latest": latest_broker.get("broker_concentration"),
+            "broker_rows": broker_rows,
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
             "current_price": current_price,
@@ -935,6 +1059,7 @@ def filter_and_score_recommendations(
             "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
+            "chip_evidence": chip_evidence,
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
         }
@@ -1121,6 +1246,7 @@ def write_predictions_to_d1(
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
+            "dispersion_diagnostics": data.get("dispersion_diagnostics"),
             "stock_meta": _enrich_stock_meta_with_segment_policy(data.get("stock_meta")),
         })
         sanitized_count += replaced
@@ -1295,10 +1421,10 @@ INSERT INTO predictions (
 """.strip()
 
 
-def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date: str) -> None:
+def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_date: str) -> set[int]:
     stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
     if not stock_ids:
-        return
+        return set()
     existing: set[int] = set()
     chunk_size = 80
     for i in range(0, len(stock_ids), chunk_size):
@@ -1309,12 +1435,43 @@ def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date
             [run_date, *chunk],
         )
         existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
-    missing = [sid for sid in stock_ids if sid not in existing]
-    if missing:
+    return existing
+
+
+def _assert_recommendation_seed_rows_exist(recommendations: list[dict], run_date: str) -> set[int]:
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return set()
+    existing = _existing_recommendation_seed_stock_ids(recommendations, run_date)
+    if not existing:
         raise RuntimeError(
             "Missing screener-owned daily_recommendations seed rows for "
-            f"run_date={run_date}: {missing[:10]} (missing={len(missing)}/{len(stock_ids)})"
+            f"run_date={run_date}: {stock_ids[:10]} (missing={len(stock_ids)}/{len(stock_ids)})"
         )
+    return existing
+
+
+def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], run_date: str) -> list[dict]:
+    """Return rows that are still owned by the screener seed table.
+
+    The pipeline may produce ML-only promotion rows that were not in the
+    screener-owned daily_recommendations seed set. Those rows should remain in
+    prediction/model evidence, but must not abort the post-market chain or
+    create controller-owned daily_recommendations rows.
+    """
+    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    if not stock_ids:
+        return recommendations
+    existing = _assert_recommendation_seed_rows_exist(recommendations, run_date)
+    missing = [sid for sid in stock_ids if sid not in existing]
+    if missing:
+        logger.warning(
+            "[recommendation_service] Skipping %s ML-only recommendation rows without screener seed for run_date=%s: %s",
+            len(missing),
+            run_date,
+            missing[:10],
+        )
+    return [r for r in recommendations if r.get("stock_id") and int(r["stock_id"]) in existing]
 
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
@@ -1352,7 +1509,9 @@ def update_recommendations_in_d1(
     if not recommendations:
         return 0
 
-    _assert_recommendation_seed_rows_exist(recommendations, run_date)
+    recommendations = _filter_to_existing_recommendation_seed_rows(recommendations, run_date)
+    if not recommendations:
+        return 0
     _delete_stale_recommendation_rows(recommendations, run_date)
 
     statements: list[tuple[str, list[Any]]] = []

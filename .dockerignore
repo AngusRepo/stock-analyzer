@@ -7,14 +7,24 @@
 .gitignore
 .vscode/
 .idea/
+.github/
+.claude/
 
 # Node / worker
+frontend/
 worker/node_modules/
 worker/dist/
 worker/.wrangler/
 worker/build/
+worker/.tmp/
 
 # Python caches
+.uv-cache/
+.uv-python/
+.uv-tools/
+.venv/
+.venv-smoke/
+**/.venv/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
@@ -23,16 +33,31 @@ worker/build/
 **/.ruff_cache/
 
 # Large dirs not needed in image
+data/*
+!data/finlab_research/
+data/finlab_research/*
+!data/finlab_research/dagster_asset_graph.json
+.tmp/
+.wrangler/
 _external/
+freqtrade/
+shioaji-proxy/
+infra/
 memory/
 docs/
 notebooks/
+scripts/
+!ml-service/scripts/
+!ml-service/scripts/**
+screen_*.png
+/*.json
 *.md
 *.ipynb
 *.log
 *.tmp
 
 # Test fixtures / local-only
+**/tests/
 **/tests/fixtures/
 **/test_*.py
 **/*_test.py
@@ -40,6 +65,8 @@ notebooks/
 # Worker-only (ml-controller image doesn't need CF code)
 worker/
 
-# Scripts root (not needed in ml-controller)
+# Scripts/tools root (not needed in ml-controller except the FinLab backfill helper copied by Dockerfile)
 deploy_ml_controller.sh
+tools/*
+!tools/finlab_v4_remote_backfill.py
 *.sh

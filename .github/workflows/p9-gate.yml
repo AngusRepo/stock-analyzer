@@ -30,4 +30,4 @@ jobs:
 
       - name: Run P9 gate
         shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File scripts/p9_gate.ps1
+        run: powershell -ExecutionPolicy Bypass -File scripts/p9_gate.ps1 -SkipBugHunter

@@ -68,6 +68,9 @@ def test_universal_explicit_model_load_is_cached_within_container(monkeypatch):
     assert first_meta == second_meta
     assert model_blob.download_count == 1
     assert meta_blob.download_count == 1
+    assert model_store.get_model_cache_stats()["misses"] == 1
+    assert model_store.get_model_cache_stats()["hits"] == 1
+    assert model_store.get_model_cache_stats()["gcs_downloads"] == 1
 
 
 def test_clear_model_cache_invalidates_cached_model(monkeypatch):

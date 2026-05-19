@@ -36,6 +36,15 @@ void (async () => {
       params: {
         optimizer: 'GAOptimizer',
         status: 'learning',
+        history: [
+          { generation: 0, best_score: 1.0 },
+          { generation: 1, best_score: 1.2 },
+        ],
+        best: {
+          score: 1.2,
+          metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+          gate: { decision: 'PASS', passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
+        },
         best_alphaFramework: {
           riskOverlay: { highVolThreshold: 0.045 },
           allocation: { weights: { bull: { trend_following: 0.5 } } },
@@ -47,10 +56,44 @@ void (async () => {
 
   assert(res.status === 200, 'ga_optimizer push should be accepted')
   const body = await res.json() as any
-  assert(body.target === 'meta_optimizer_learning_state', 'ga_optimizer should write learning state, not sandbox')
+  assert(body.target === 'production_meta_optimizer_learning_state', 'ga_optimizer should write production learning state, not sandbox')
   assert(body.updatedKeys.includes('optimizer:ga:latest'), 'ga_optimizer should update latest learning key')
+  assert(body.promotion.level === 'L2', 'gate-passing stable GA state should auto-promote only through L2 shadow config')
+  assert(body.promotion.approvalRequiredForNextLevel === true, 'L3/L4 promotion must require Wei approval')
+  assert(body.promotion.canRequestNextLevel === true, 'L2 GA state should explicitly expose that L3 approval can be requested')
+  assert(body.promotion.missingEvidence.length === 0, 'L3-ready GA state should have no missing evidence')
 
   const latest = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
-  assert(latest.status === 'learning', 'latest GA state should stay in learning mode')
+  assert(latest.status === 'shadow_config', 'latest GA state should expose promotion status')
+  assert(latest.promotion.nextAction.includes('Ready to request Wei approval for L3'), 'latest GA state should expose the concrete L3 request action')
+  assert(latest.production_learning_loop === true, 'GA must be a production learning loop')
+  assert(latest.mutates_trading_config === false, 'GA learning push must not mutate trading:config')
   assert(latest.best_alphaFramework.riskOverlay.highVolThreshold === 0.045, 'latest GA state should preserve learned policy')
+  assert(!(env.KV as any).store.has('trading:config'), 'ga_optimizer push must not write trading:config')
+
+  const requestReview = await adminOptunaRoutes.request('/api/admin/ga-promotion/review', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer service-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action: 'request', level: 'L3', reason: 'test_request' }),
+  }, env)
+  assert(requestReview.status === 200, 'GA L3 review request should be accepted from admin/service UI path')
+  const requested = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  assert(requested.promotion.pendingApprovalLevel === 'L3', 'GA review request should create explicit pending L3 approval')
+  assert(requested.mutates_trading_config === false, 'GA review request must not mutate trading:config')
+
+  const approveReview = await adminOptunaRoutes.request('/api/admin/ga-promotion/review', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer service-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action: 'approve', level: 'L3', reason: 'test_approve' }),
+  }, env)
+  assert(approveReview.status === 200, 'GA L3 approval should be accepted from admin/service UI path')
+  const approved = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  assert(approved.promotion.level === 'L3', 'approved GA review should advance promotion state to L3')
+  assert(!(env.KV as any).store.has('trading:config'), 'GA review approval must not write trading:config directly')
 })()

@@ -13,8 +13,11 @@ import time
 import json
 import uuid
 import logging
+import asyncio
+import tempfile
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Body, Request
@@ -43,16 +46,23 @@ router = APIRouter(prefix="/retrain", tags=["retrain"])
 # services.retrain_lock for design (GCS CAS via if_generation_match).
 _LOCK_TTL_SECONDS = 600  # 10 分鐘
 _UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SECONDS", str(12 * 3600)))
+_UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
+_UNIVERSAL_PREP_CONCURRENCY_MAX = 5
 
 
 class RetrainTriggerRequest(BaseModel):
     use_optuna: bool = True
     limit: int = 50  # max stocks to retrain
+    run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
 
 
 class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks
     force_monthly: bool = False  # Force monthly flow, including feature selection.
+    run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
+    candidate_type: str | None = Field(default=None, description="Release-train candidate type, e.g. monthly_release or weekly_drift.")
+    drift_target_models: list[str] = Field(default_factory=list)
+    drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "ftt", "dlinear", "patchtst"])
     ftt_d_model: int = 128
     ftt_n_heads: int = 8
@@ -73,6 +83,230 @@ def _force_https(url: str) -> str:
     if host in {"localhost", "127.0.0.1"}:
         return url.rstrip("/")
     return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment)).rstrip("/")
+
+
+def _universal_prep_concurrency() -> int:
+    raw = os.environ.get("UNIVERSAL_PREP_CONCURRENCY", str(_UNIVERSAL_PREP_CONCURRENCY_DEFAULT))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = _UNIVERSAL_PREP_CONCURRENCY_DEFAULT
+    return max(1, min(_UNIVERSAL_PREP_CONCURRENCY_MAX, value))
+
+
+def _parse_gcs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"invalid_gcs_uri:{uri}")
+    raw = uri[5:]
+    bucket, _, blob = raw.partition("/")
+    if not bucket or not blob:
+        raise ValueError(f"invalid_gcs_uri:{uri}")
+    return bucket, blob
+
+
+def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
+    try:
+        metadata = json.loads(snapshot.get("metadata_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    component_meta = metadata.get("component_meta") or {}
+    components = metadata.get("components") or {}
+    out: dict[str, str] = {}
+    for name, meta in component_meta.items():
+        uri = meta.get("gcs_uri") if isinstance(meta, dict) else None
+        if uri:
+            out[str(name)] = str(uri)
+    for name, uri in components.items():
+        out.setdefault(str(name), str(uri))
+    return out
+
+
+def _read_gcs_parquet_rows(gcs_uri: str) -> list[dict]:
+    import polars as pl
+    from google.cloud import storage
+
+    bucket_name, blob_name = _parse_gcs_uri(gcs_uri)
+    with tempfile.TemporaryDirectory(prefix="stockvision-retrain-snapshot-") as tmp:
+        local_path = Path(tmp) / Path(blob_name).name
+        storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(local_path))
+        return pl.read_parquet(local_path).to_dicts()
+
+
+def _group_rows_by_key(
+    rows: list[dict],
+    *,
+    key: str,
+    allowed: set,
+    limit: int,
+    mapper,
+) -> dict:
+    grouped = {item: [] for item in allowed}
+    for row in sorted(rows, key=lambda r: (str(r.get(key)), str(r.get("date") or ""))):
+        value = row.get(key)
+        if value not in grouped:
+            continue
+        grouped[value].append(mapper(row))
+    for value in grouped:
+        if len(grouped[value]) > limit:
+            grouped[value] = grouped[value][-limit:]
+    return grouped
+
+
+def _snapshot_sentiment_map(rows: list[dict], stock_ids: list[int], limit: int = 45) -> dict[int, list[dict]]:
+    return _group_rows_by_key(
+        rows,
+        key="stock_id",
+        allowed=set(stock_ids),
+        limit=limit,
+        mapper=lambda r: {"date": r.get("date"), "score": r.get("score")},
+    )
+
+
+def _snapshot_per_stock_ts_map(
+    *,
+    monthly_revenue_rows: list[dict] | None,
+    margin_rows: list[dict] | None,
+    shareholding_rows: list[dict] | None,
+    stock_ids: list[int],
+) -> dict[int, dict[str, dict]]:
+    stock_id_set = set(stock_ids)
+    per_stock_ts: dict[int, dict[str, dict]] = {}
+
+    def ensure_date(stock_id, date_key: str) -> dict:
+        per_stock_ts.setdefault(stock_id, {})
+        per_stock_ts[stock_id].setdefault(date_key, {})
+        return per_stock_ts[stock_id][date_key]
+
+    for row in monthly_revenue_rows or []:
+        sid = row.get("stock_id")
+        if sid not in stock_id_set or row.get("revenue_yoy") is None:
+            continue
+        date_key = monthly_revenue_available_date(str(row.get("date") or ""))
+        ensure_date(sid, date_key)["revenue_yoy"] = row.get("revenue_yoy", 0)
+
+    for row in margin_rows or []:
+        sid = row.get("stock_id")
+        if sid not in stock_id_set or not row.get("date"):
+            continue
+        values = ensure_date(sid, str(row.get("date")))
+        if row.get("margin_balance") is not None:
+            values["margin_balance"] = row["margin_balance"]
+        if row.get("short_ratio") is not None:
+            values["short_ratio"] = row["short_ratio"]
+
+    for row in shareholding_rows or []:
+        sid = row.get("stock_id")
+        if sid not in stock_id_set or not row.get("date") or row.get("retail_pct") is None:
+            continue
+        ensure_date(sid, str(row.get("date")))["retail_pct"] = row.get("retail_pct")
+
+    return per_stock_ts
+
+
+def _load_training_maps_from_snapshot(
+    *,
+    stock_ids: list[int],
+    symbols: list[str],
+    prices_lookback: int,
+    as_of_business_date: str | None = None,
+) -> tuple[
+    dict[int, list[dict]],
+    dict[int, list[dict]],
+    dict[str, list[dict]],
+    dict[int, list[dict]],
+    dict[int, dict[str, dict]],
+    dict,
+] | None:
+    from services.dataset_snapshots import latest_dataset_snapshot
+
+    snapshot = latest_dataset_snapshot(
+        kind="backtest_dataset",
+        access_tier="compute",
+        as_of_business_date=as_of_business_date,
+    )
+    if not snapshot or snapshot.get("manifest_errors"):
+        return None
+    component_uris = _snapshot_component_uris(snapshot)
+    required = {"prices", "indicators", "chips"}
+    if not required.issubset(component_uris):
+        return None
+
+    stock_id_set = set(stock_ids)
+    symbol_set = set(symbols)
+    prices_rows = _read_gcs_parquet_rows(component_uris["prices"])
+    indicators_rows = _read_gcs_parquet_rows(component_uris["indicators"])
+    chips_rows = _read_gcs_parquet_rows(component_uris["chips"])
+    sentiment_rows = _read_gcs_parquet_rows(component_uris["sentiment"]) if component_uris.get("sentiment") else []
+    monthly_revenue_rows = (
+        _read_gcs_parquet_rows(component_uris["monthly_revenue"]) if component_uris.get("monthly_revenue") else []
+    )
+    margin_rows = _read_gcs_parquet_rows(component_uris["margin_data"]) if component_uris.get("margin_data") else []
+    shareholding_rows = (
+        _read_gcs_parquet_rows(component_uris["shareholding"]) if component_uris.get("shareholding") else []
+    )
+
+    prices_map = _group_rows_by_key(
+        prices_rows,
+        key="stock_id",
+        allowed=stock_id_set,
+        limit=prices_lookback,
+        mapper=lambda r: {
+            "date": r.get("date"),
+            "open": r.get("open"),
+            "high": r.get("high"),
+            "low": r.get("low"),
+            "close": r.get("close"),
+            "volume": r.get("volume"),
+            "adj_close": r.get("adj_close"),
+            "avg_price": r.get("avg_price"),
+        },
+    )
+    indicators_map = _group_rows_by_key(
+        indicators_rows,
+        key="stock_id",
+        allowed=stock_id_set,
+        limit=prices_lookback,
+        mapper=lambda r: {
+            "date": r.get("date"),
+            "ma5": r.get("ma5"),
+            "ma10": r.get("ma10"),
+            "ma20": r.get("ma20"),
+            "ma60": r.get("ma60"),
+            "rsi14": r.get("rsi14"),
+            "macdHist": r.get("macd_hist", r.get("macdHist")),
+            "bb_upper": r.get("bb_upper"),
+            "bb_lower": r.get("bb_lower"),
+            "atr14": r.get("atr14"),
+        },
+    )
+    chips_map = _group_rows_by_key(
+        chips_rows,
+        key="symbol",
+        allowed=symbol_set,
+        limit=252,
+        mapper=lambda r: {
+            "date": r.get("date"),
+            "foreign_net": r.get("foreign_net"),
+            "trust_net": r.get("trust_net"),
+            "dealer_net": r.get("dealer_net"),
+            "margin_balance": r.get("margin_balance"),
+            "short_balance": r.get("short_balance"),
+        },
+    )
+    sentiment_map = _snapshot_sentiment_map(sentiment_rows, stock_ids) if sentiment_rows else {}
+    per_stock_ts_map = _snapshot_per_stock_ts_map(
+        monthly_revenue_rows=monthly_revenue_rows,
+        margin_rows=margin_rows,
+        shareholding_rows=shareholding_rows,
+        stock_ids=stock_ids,
+    )
+    return prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, {
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "business_date": snapshot.get("business_date"),
+        "row_count": snapshot.get("row_count"),
+        "gcs_uri": snapshot.get("gcs_uri"),
+        "components": sorted(component_uris),
+    }
 
 
 def _build_followup_webhook_url(request: Request | None) -> str:
@@ -139,7 +373,7 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
     """
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    run_date = tw_now.date().isoformat()
+    run_date = req.run_date or tw_now.date().isoformat()
 
     # ── 1. Active stocks ────────────────────────────────────────────────────
     stock_rows = d1_client.query(
@@ -290,7 +524,7 @@ async def trigger_universal_retrain(
     run_id = f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
     # ── Idempotency check (P0-4, persistent via GCS) ─────────────────────────
-    run_date = tw_now.date().isoformat()
+    run_date = req.run_date or tw_now.date().isoformat()
     lock_key = f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
         lock_key,
@@ -405,75 +639,109 @@ async def trigger_universal_retrain(
     indicators_map: dict = {}
     chips_map: dict = {}
     sentiment_map: dict = {}
+    per_stock_ts_map: dict[int, dict[str, dict]] = {}
+    dataset_snapshot_info: dict | None = None
+    try:
+        snapshot_maps = _load_training_maps_from_snapshot(
+            stock_ids=stock_ids,
+            symbols=symbols,
+            prices_lookback=prices_lookback,
+            as_of_business_date=run_date,
+        )
+    except Exception as snapshot_err:  # noqa: BLE001 - D1 fallback keeps retrain available.
+        logger.warning("[retrain/universal] GCS snapshot load failed, falling back to D1: %s", snapshot_err)
+        snapshot_maps = None
+
+    if snapshot_maps:
+        prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, dataset_snapshot_info = snapshot_maps
+        logger.info(
+            "[retrain/universal] GCS snapshot bulk load done: "
+            f"snapshot={dataset_snapshot_info.get('snapshot_id')} "
+            f"business_date={dataset_snapshot_info.get('business_date')} "
+            f"prices={len(prices_map)} indicators={len(indicators_map)} chips={len(chips_map)} "
+            f"sentiment={len(sentiment_map)} per_stock_ts={len(per_stock_ts_map)}"
+        )
+
+    snapshot_components = set((dataset_snapshot_info or {}).get("components") or [])
     for ci in range(0, len(stock_ids), D1_CHUNK):
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         chunk_syms = [id_to_sym[sid] for sid in chunk_ids]
-        prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback))
-        indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback))
-        chips_map.update(_bulk_load_chips(chunk_syms, limit=252))
-        sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45))
-    logger.info(f"[retrain/universal] D1 bulk load done: {len(prices_map)} prices")
+        if not dataset_snapshot_info:
+            prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback))
+            indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback))
+            chips_map.update(_bulk_load_chips(chunk_syms, limit=252))
+        if "sentiment" not in snapshot_components:
+            sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45))
+    source = "gcs_snapshot" if dataset_snapshot_info else "d1"
+    if dataset_snapshot_info and "sentiment" not in snapshot_components:
+        source += "+d1_sentiment"
+    logger.info(
+        f"[retrain/universal] Bulk load done: source={source} "
+        f"prices={len(prices_map)} indicators={len(indicators_map)} chips={len(chips_map)}"
+    )
 
     # ── 3b. Bulk load per-stock time-series for Wave 3 features ────────────
     # revenue_yoy (monthly, per stock) + margin_data (daily, per stock)
-    per_stock_ts_map: dict[int, dict[str, dict]] = {}  # {stock_id: {date: {revenue_yoy, margin_balance, ...}}}
-
     # monthly_revenue: all stocks × all months
-    rev_rows = d1_client.query(
-        "SELECT stock_id, date, revenue_yoy FROM monthly_revenue "
-        "WHERE revenue_yoy IS NOT NULL ORDER BY stock_id, date ASC",
-        timeout=120.0,
-    )
-    for r in (rev_rows or []):
-        sid = r["stock_id"]
-        ym = r["date"]  # Usually revenue period "YYYY-MM"; full publication date is also accepted.
-        if sid not in per_stock_ts_map:
-            per_stock_ts_map[sid] = {}
-        date_key = monthly_revenue_available_date(ym)
-        if date_key not in per_stock_ts_map[sid]:
-            per_stock_ts_map[sid][date_key] = {}
-        per_stock_ts_map[sid][date_key]["revenue_yoy"] = r.get("revenue_yoy", 0)
+    rev_rows = []
+    if "monthly_revenue" not in snapshot_components:
+        rev_rows = d1_client.query(
+            "SELECT stock_id, date, revenue_yoy FROM monthly_revenue "
+            "WHERE revenue_yoy IS NOT NULL ORDER BY stock_id, date ASC",
+            timeout=120.0,
+        )
+        for r in (rev_rows or []):
+            sid = r["stock_id"]
+            ym = r["date"]  # Usually revenue period "YYYY-MM"; full publication date is also accepted.
+            if sid not in per_stock_ts_map:
+                per_stock_ts_map[sid] = {}
+            date_key = monthly_revenue_available_date(ym)
+            if date_key not in per_stock_ts_map[sid]:
+                per_stock_ts_map[sid][date_key] = {}
+            per_stock_ts_map[sid][date_key]["revenue_yoy"] = r.get("revenue_yoy", 0)
 
     # margin_data: all stocks × all dates (margin_balance, short_ratio)
     for ci in range(0, len(stock_ids), D1_CHUNK):
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         placeholders = ",".join("?" * len(chunk_ids))
-        margin_rows = d1_client.query(
-            f"SELECT stock_id, date, margin_balance, short_ratio "
-            f"FROM margin_data WHERE stock_id IN ({placeholders}) "
-            f"ORDER BY stock_id, date ASC",
-            list(chunk_ids),
-            timeout=120.0,
-        )
-        for r in (margin_rows or []):
-            sid = r["stock_id"]
-            date_key = r["date"]
-            if sid not in per_stock_ts_map:
-                per_stock_ts_map[sid] = {}
-            if date_key not in per_stock_ts_map[sid]:
-                per_stock_ts_map[sid][date_key] = {}
-            if r.get("margin_balance") is not None:
-                per_stock_ts_map[sid][date_key]["margin_balance"] = r["margin_balance"]
-            if r.get("short_ratio") is not None:
-                per_stock_ts_map[sid][date_key]["short_ratio"] = r["short_ratio"]
+        if "margin_data" not in snapshot_components:
+            margin_rows = d1_client.query(
+                f"SELECT stock_id, date, margin_balance, short_ratio "
+                f"FROM margin_data WHERE stock_id IN ({placeholders}) "
+                f"ORDER BY stock_id, date ASC",
+                list(chunk_ids),
+                timeout=120.0,
+            )
+            for r in (margin_rows or []):
+                sid = r["stock_id"]
+                date_key = r["date"]
+                if sid not in per_stock_ts_map:
+                    per_stock_ts_map[sid] = {}
+                if date_key not in per_stock_ts_map[sid]:
+                    per_stock_ts_map[sid][date_key] = {}
+                if r.get("margin_balance") is not None:
+                    per_stock_ts_map[sid][date_key]["margin_balance"] = r["margin_balance"]
+                if r.get("short_ratio") is not None:
+                    per_stock_ts_map[sid][date_key]["short_ratio"] = r["short_ratio"]
 
         # shareholding: retail_pct (same chunk)
-        sh_rows = d1_client.query(
-            f"SELECT stock_id, date, retail_pct "
-            f"FROM shareholding WHERE stock_id IN ({placeholders}) "
-            f"ORDER BY stock_id, date ASC",
-            list(chunk_ids),
-            timeout=120.0,
-        )
-        for r in (sh_rows or []):
-            sid = r["stock_id"]
-            date_key = r["date"]
-            if sid not in per_stock_ts_map:
-                per_stock_ts_map[sid] = {}
-            if date_key not in per_stock_ts_map[sid]:
-                per_stock_ts_map[sid][date_key] = {}
-            if r.get("retail_pct") is not None:
-                per_stock_ts_map[sid][date_key]["retail_pct"] = r["retail_pct"]
+        if "shareholding" not in snapshot_components:
+            sh_rows = d1_client.query(
+                f"SELECT stock_id, date, retail_pct "
+                f"FROM shareholding WHERE stock_id IN ({placeholders}) "
+                f"ORDER BY stock_id, date ASC",
+                list(chunk_ids),
+                timeout=120.0,
+            )
+            for r in (sh_rows or []):
+                sid = r["stock_id"]
+                date_key = r["date"]
+                if sid not in per_stock_ts_map:
+                    per_stock_ts_map[sid] = {}
+                if date_key not in per_stock_ts_map[sid]:
+                    per_stock_ts_map[sid][date_key] = {}
+                if r.get("retail_pct") is not None:
+                    per_stock_ts_map[sid][date_key]["retail_pct"] = r["retail_pct"]
 
     logger.info(
         f"[retrain/universal] Per-stock TS: {len(per_stock_ts_map)} stocks with history, "
@@ -593,35 +861,58 @@ async def trigger_universal_retrain(
             f"(payloads={len(per_stock_payloads)}, skipped={len(skipped)}, limit={req.limit}). "
             f"Verify D1 prices availability."
         )
-    prep_results = []
+    prep_results: list[dict] = []
 
     # Shared data: pass once per batch, not per stock (saves ~2.5GB memory)
     shared_history = asdict(market_env).get("history", {})
     # per_stock_ts: convert int keys to str for JSON serialization
     ps_ts_str = {str(k): v for k, v in per_stock_ts_map.items()} if per_stock_ts_map else {}
 
-    for idx, batch_payloads in enumerate(batches):
-        # Only include per_stock_ts for stocks in this batch
-        batch_stock_ids = {str(p["stock_id"]) for p in batch_payloads}
-        batch_ps_ts = {k: v for k, v in ps_ts_str.items() if k in batch_stock_ids}
-        logger.info(f"[retrain/universal] Prep batch {idx}/{batch_count} ({len(batch_payloads)} stocks, {len(batch_ps_ts)} with per_stock_ts)")
-        prep_payload = {
-            "payloads": batch_payloads,
-            "barrier_params": barrier_params,
-            "batch_index": idx,
-            "shared_market_history": shared_history,
-            "per_stock_ts_map": batch_ps_ts,
-            "gcs_prefix": "universal",
-        }
-        if active_features:
-            prep_payload["active_features"] = active_features
-        result = await prep_universal_batch(prep_payload)
+    prep_concurrency = min(_universal_prep_concurrency(), max(1, batch_count))
+    prep_semaphore = asyncio.Semaphore(prep_concurrency)
+
+    async def _run_prep_batch(idx: int, batch_payloads: list[dict]) -> dict:
+        async with prep_semaphore:
+            # Only include per_stock_ts for stocks in this batch.
+            batch_stock_ids = {str(p["stock_id"]) for p in batch_payloads}
+            batch_ps_ts = {k: v for k, v in ps_ts_str.items() if k in batch_stock_ids}
+            logger.info(
+                f"[retrain/universal] Prep batch {idx}/{batch_count} "
+                f"({len(batch_payloads)} stocks, {len(batch_ps_ts)} with per_stock_ts, "
+                f"concurrency={prep_concurrency})"
+            )
+            prep_payload = {
+                "payloads": batch_payloads,
+                "barrier_params": barrier_params,
+                "batch_index": idx,
+                "shared_market_history": shared_history,
+                "per_stock_ts_map": batch_ps_ts,
+                "gcs_prefix": "universal",
+            }
+            if active_features:
+                prep_payload["active_features"] = active_features
+            result = await prep_universal_batch(prep_payload)
+            if not isinstance(result, dict):
+                return {"batch_index": idx, "error": f"invalid prep result type: {type(result).__name__}"}
+            result.setdefault("batch_index", idx)
+            return result
+
+    prep_task_results = await asyncio.gather(
+        *(_run_prep_batch(idx, batch_payloads) for idx, batch_payloads in enumerate(batches)),
+        return_exceptions=True,
+    )
+    for idx, result in enumerate(prep_task_results):
+        if isinstance(result, Exception):
+            result = {"batch_index": idx, "error": str(result)}
         prep_results.append(result)
         if result.get("error"):
             logger.warning(f"[retrain/universal] Batch {idx} error: {result['error']}")
 
     total_rows = sum(r.get("rows", 0) for r in prep_results)
-    logger.info(f"[retrain/universal] Prep done: {batch_count} batches, {total_rows} total rows")
+    logger.info(
+        f"[retrain/universal] Prep done: {batch_count} batches, "
+        f"concurrency={prep_concurrency}, {total_rows} total rows"
+    )
     _upsert_retrain_status(
         run_id,
         status="prep_complete",
@@ -630,6 +921,8 @@ async def trigger_universal_retrain(
             "run_date": run_date,
             "is_monthly": is_monthly,
             "batch_count": batch_count,
+            "prep_concurrency": prep_concurrency,
+            "dataset_snapshot": dataset_snapshot_info,
             "total_prep_rows": total_rows,
             "stocks_sent": len(per_stock_payloads),
             "stocks_skipped": len(skipped),
@@ -648,6 +941,8 @@ async def trigger_universal_retrain(
                 "lock_key": lock_key,
                 "run_date": run_date,
                 "batch_count": batch_count,
+                "prep_concurrency": prep_concurrency,
+                "dataset_snapshot": dataset_snapshot_info,
                 "total_prep_rows": total_rows,
             },
             downstream_notes="aborted_before_orchestrator",
@@ -670,9 +965,13 @@ async def trigger_universal_retrain(
             payload={
                 "batch_count": batch_count,
                 "is_monthly": is_monthly,
+                "candidate_type": req.candidate_type,
+                "drift_target_models": req.drift_target_models,
+                "drift_target_families": req.drift_target_families,
                 "train_model_groups": req.train_model_groups,
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
+                "dataset_snapshot": dataset_snapshot_info,
                 "ftt_d_model": req.ftt_d_model,
                 "ftt_n_heads": req.ftt_n_heads,
                 "ftt_n_layers": req.ftt_n_layers,
@@ -702,6 +1001,8 @@ async def trigger_universal_retrain(
                 "lock_key": lock_key,
                 "run_date": run_date,
                 "batch_count": batch_count,
+                "prep_concurrency": prep_concurrency,
+                "dataset_snapshot": dataset_snapshot_info,
                 "total_prep_rows": total_rows,
                 "error": str(orch_err),
             },
@@ -720,6 +1021,8 @@ async def trigger_universal_retrain(
             "run_date": run_date,
             "is_monthly": is_monthly,
             "batch_count": batch_count,
+            "prep_concurrency": prep_concurrency,
+            "dataset_snapshot": dataset_snapshot_info,
             "total_prep_rows": total_rows,
             "followup_webhook_url": followup_webhook_url,
             "stocks_sent": len(per_stock_payloads),
@@ -738,6 +1041,8 @@ async def trigger_universal_retrain(
         "stocks_skipped": len(skipped),
         "skipped_sample": skipped[:20],
         "batch_count": batch_count,
+        "prep_concurrency": prep_concurrency,
+        "dataset_snapshot": dataset_snapshot_info,
         "total_prep_rows": total_rows,
         "prep_results": prep_results,
         "orchestrator_result": orchestrator_result,

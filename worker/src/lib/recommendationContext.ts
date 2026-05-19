@@ -18,11 +18,45 @@ export interface MlVoteSummary {
   }
 }
 
+export interface MlDiagnosticsSummary {
+  totalAlphaModels: number
+  activeWeightCount: number
+  zeroWeightModels: string[]
+  contributingModels: string[]
+  validationBlockedModels: string[]
+  icWeightScope: string | null
+  rankSignalThresholds: Record<string, unknown> | null
+  forecastCalibration: {
+    method: string | null
+    source: string | null
+    sampleCount: number | null
+    binSamples: number | null
+    bin: string | number | null
+  }
+  dispersion: {
+    rawModelCount: number | null
+    rawRankStd: number | null
+    mergeCompression: number | null
+    weightHhi: number | null
+  }
+}
+
 export interface PerModelPredictionRow {
   model_name?: string | null
   signal_raw?: string | null
   forecast_data?: unknown
   direction_accuracy?: number | null
+}
+
+export function compactRecommendationForCard(rec: Record<string, any>) {
+  const {
+    prediction_forecast_data: _predictionForecastData,
+    screener_funnel_timeline: _screenerFunnelTimeline,
+    latest_open: _latestOpen,
+    latest_avg_price: _latestAvgPrice,
+    ...cardRec
+  } = rec
+  return cardRec
 }
 
 export interface MlVoteThresholdPolicy {
@@ -97,6 +131,11 @@ function normalizeRegime(raw: unknown): string {
 function finiteOrDefault(value: unknown, fallback: number): number {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
+}
+
+function finiteOrNull(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
 }
 
 function clamp01(value: number): number {
@@ -209,6 +248,63 @@ export function buildMlVoteSummary(
     contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models : [],
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
     thresholds,
+  }
+}
+
+export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary | null {
+  const data = parsePredictionForecastData(forecastData)
+  if (!data) return null
+
+  const ev2 = data.ensemble_v2 && typeof data.ensemble_v2 === 'object'
+    ? data.ensemble_v2 as Record<string, any>
+    : {}
+  const weights = ev2.weights && typeof ev2.weights === 'object'
+    ? ev2.weights as Record<string, unknown>
+    : {}
+  const diagnostics = ev2.ic_weight_diagnostics && typeof ev2.ic_weight_diagnostics === 'object'
+    ? ev2.ic_weight_diagnostics as Record<string, any>
+    : {}
+  const dispersion = data.dispersion_diagnostics && typeof data.dispersion_diagnostics === 'object'
+    ? data.dispersion_diagnostics as Record<string, any>
+    : {}
+
+  const trackedWeightKeys = Object.keys(weights).filter(isTrackedAlphaModelName)
+  const zeroWeightModels = Array.isArray(dispersion.zero_weight_models)
+    ? dispersion.zero_weight_models.filter(isTrackedAlphaModelName)
+    : TRACKED_MODEL_NAMES.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
+  const contributingModels = Array.isArray(ev2.contributing_models)
+    ? ev2.contributing_models.filter(isTrackedAlphaModelName)
+    : []
+  const validationBlockedModels = Object.entries(diagnostics)
+    .filter(([, detail]) => String((detail as any)?.validation_status ?? '').toUpperCase() === 'FAIL')
+    .map(([name]) => name)
+    .filter(isTrackedAlphaModelName)
+
+  return {
+    totalAlphaModels: TRACKED_MODEL_NAMES.length,
+    activeWeightCount: trackedWeightKeys.filter((name) => Number(weights[name] ?? 0) > 0).length,
+    zeroWeightModels,
+    contributingModels,
+    validationBlockedModels,
+    icWeightScope: typeof ev2.ic_weight_scope === 'string' ? ev2.ic_weight_scope : null,
+    rankSignalThresholds: ev2.rank_signal_thresholds && typeof ev2.rank_signal_thresholds === 'object'
+      ? ev2.rank_signal_thresholds
+      : null,
+    forecastCalibration: {
+      method: typeof ev2.forecast_calibration_method === 'string' ? ev2.forecast_calibration_method : null,
+      source: typeof ev2.forecast_pct_source === 'string' ? ev2.forecast_pct_source : null,
+      sampleCount: finiteOrNull(ev2.forecast_calibration_sample_count),
+      binSamples: finiteOrNull(ev2.forecast_calibration_bin_samples),
+      bin: typeof ev2.forecast_calibration_bin === 'string' || typeof ev2.forecast_calibration_bin === 'number'
+        ? ev2.forecast_calibration_bin
+        : null,
+    },
+    dispersion: {
+      rawModelCount: finiteOrNull(dispersion.raw_model_count),
+      rawRankStd: finiteOrNull(dispersion.raw_rank_std),
+      mergeCompression: finiteOrNull(dispersion.merge_compression),
+      weightHhi: finiteOrNull(dispersion.weight_hhi),
+    },
   }
 }
 

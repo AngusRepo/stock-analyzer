@@ -74,7 +74,51 @@ def test_load_ic_weights_uses_model_pool_only(monkeypatch):
 
     weights = ensemble.load_ic_weights()
 
-    assert weights["XGBoost"] == 0.12
-    assert weights["CatBoost"] == 0.08
-    assert weights["ExtraTrees"] == 0.04
+    assert 0.014 < weights["XGBoost"] < 0.016
+    assert weights["CatBoost"] == 0.015
+    assert 0.017 < weights["ExtraTrees"] < 0.018
     assert "LightGBM" not in weights
+
+
+def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):
+    import json
+
+    from app import ensemble
+
+    class FakeBlob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps({
+                "models": {
+                    "LightGBM": {
+                        "rolling_ic": -0.03,
+                        "weekly_ic": [0.06],
+                        "last_ic_by_segment": {"LISTED": 0.19, "OTC": -0.48},
+                    },
+                    "Chronos": {
+                        "rolling_ic": -0.14,
+                        "weekly_ic": [0.24],
+                        "last_ic_by_segment": {"LISTED": -0.12, "OTC": -0.28},
+                    },
+                }
+            })
+
+    class FakeBucket:
+        def blob(self, path):
+            return FakeBlob()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr("app.model_pool._get_bucket", lambda: FakeBucket())
+    monkeypatch.setattr("app.model_pool._POOL_CACHE", None)
+    monkeypatch.setattr("app.model_pool._POOL_CACHE_LOADED_AT", 0.0)
+    ensemble._IC_WEIGHTS_CACHE = None
+    ensemble._IC_WEIGHTS_CACHE_LOADED_AT = 0.0
+
+    listed_weights = ensemble.load_ic_weights(market_segment="LISTED")
+    otc_weights = ensemble.load_ic_weights(market_segment="OTC")
+
+    assert 0.023 < listed_weights["LightGBM"] < 0.024
+    assert 0.008 < listed_weights["Chronos"] < 0.009
+    assert otc_weights["LightGBM"] == 0.0

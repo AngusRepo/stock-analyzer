@@ -5,6 +5,7 @@
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
+import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 
 interface JobDef {
   id: string
@@ -15,26 +16,37 @@ interface JobDef {
   chainIndex?: number
 }
 
+type SchedulerLastStatus = 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
+type SchedulerResolvedStatus = {
+  status: SchedulerLastStatus | null
+  staleRunning: boolean
+  staleReason?: string
+}
+type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
+
 const JOB_DEFS: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
-  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
-  { id: 'ml-warmup', name: 'ML Warmup', schedule: 'Weekdays 17:15', cron: '15 9 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
-  { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After evening-chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
-  { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 4 },
-  { id: 'pipeline', name: 'Pipeline', schedule: 'After screener', cron: '', group: 'pipeline_chain', chainIndex: 5 },
+  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 22:00', cron: '0 14 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
+  { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After evening-chain', cron: '', group: 'pipeline_chain', chainIndex: 2 },
+  { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'regime-compute', name: 'HMM Regime', schedule: 'Before pipeline recommendation', cron: '', group: 'pipeline_chain', chainIndex: 4 },
+  { id: 'pipeline', name: 'Pipeline', schedule: 'After screener + regime', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 6 },
   { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 7 },
+  { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 8 },
+  { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 9 },
+  { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 10 },
+  { id: 'model-ic-tracker', name: 'Model IC Tracker', schedule: 'After verify callback / Friday full check', cron: '30 11 * * 5', group: 'pipeline_chain', chainIndex: 11 },
+  { id: 'adapt', name: 'Adapt Params', schedule: 'After rolling IC', cron: '', group: 'pipeline_chain', chainIndex: 12 },
+  { id: 'daily-report', name: 'Daily Report', schedule: 'After adapt', cron: '', group: 'pipeline_chain', chainIndex: 13 },
+  { id: 'paper-active-postmarket', name: 'Paper Active Postmarket', schedule: 'After daily report', cron: '', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'obsidian-sync', name: 'Obsidian Sync', schedule: 'After paper-active postmarket', cron: '', group: 'pipeline_chain', chainIndex: 15 },
 
   { id: 'us-leading', name: 'US Leading', schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
   { id: 'morning-setup', name: 'Morning Setup / Debate', schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
   { id: 'morning-briefing', name: 'Morning Briefing', schedule: 'Mon-Fri 07:50', cron: '50 23 * * SUN-THU', group: 'daily' },
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
-  { id: 'adapt', name: 'Adapt Params', schedule: 'Weekdays 18:20', cron: '20 10 * * 1-5', group: 'daily' },
-  { id: 'daily-report', name: 'Daily Report', schedule: 'Weekdays 18:25', cron: '25 10 * * 1-5', group: 'daily' },
-  { id: 'obsidian-sync', name: 'Obsidian Sync', schedule: 'Weekdays 18:40', cron: '40 10 * * 1-5', group: 'daily' },
-  { id: 'regime-compute', name: 'HMM Regime', schedule: 'Weekdays 18:50', cron: '50 10 * * 1-5', group: 'daily' },
-  { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'Weekdays 19:00', cron: '0 11 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
@@ -42,19 +54,35 @@ const JOB_DEFS: JobDef[] = [
   { id: 'eod-exit', name: 'EOD Exit', schedule: 'Weekdays 13:25', cron: '25 5 * * 1-5', group: 'intraday' },
 
   { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },
-  { id: 'model-ic-tracker', name: 'Model IC Tracker', schedule: 'Friday 19:30', cron: '30 11 * * 5', group: 'weekly' },
-  { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00', cron: '0 20 * * 6', group: 'weekly' },
-  { id: 'weekly-backtest', name: 'Weekly Backtest/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
+  { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00 (no retrain)', cron: '0 20 * * 6', group: 'weekly' },
+  { id: 'weekly-backtest', name: 'Weekly Validation/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
+  { id: 'weekly-drift-retrain', name: 'Weekly Drift Retrain', schedule: 'Manual, approval-gated shadow candidate', cron: 'manual confirm=weekly_drift', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00 UTC', cron: 'first saturday of month 16:00', group: 'monthly' },
-  { id: 'retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
+  { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
 ]
 
-const DAG_STEPS = ['Market Data Update', 'Screener', 'ML Predict', 'Recommend', 'LLM Reason', 'Write D1']
+const CHAIN_STEP_IDS = [
+  'update',
+  'indicator-queue',
+  'screener',
+  'regime-compute',
+  'pipeline',
+  'ml-predict',
+  'recommendation',
+  'post-pipeline-chain',
+  'verify-v2',
+  'post-verify-chain',
+  'model-ic-tracker',
+  'adapt',
+  'daily-report',
+  'paper-active-postmarket',
+  'obsidian-sync',
+]
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
 
 export interface SchedulerDisplayLogCandidate {
@@ -91,14 +119,52 @@ function formatDuration(durationMs?: number | null): string {
   return `${Math.floor(durationMs / 1000)}s`
 }
 
-function getLast7Dates(): string[] {
+function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
+  durationConcern: SchedulerDurationConcern
+  durationConcernReason?: string
+} {
+  if (!log || log.duration_ms == null || log.duration_ms >= 2000) return { durationConcern: null }
+
+  const summary = `${log.summary ?? ''} ${log.error ?? ''}`.toLowerCase()
+  const status = log.status
+  const expectedTriggerOrDerived =
+    status === 'triggered' ||
+    status === 'running' ||
+    summary.includes('callback expected') ||
+    summary.includes('awaiting callback') ||
+    summary.includes('triggered') ||
+    summary.includes('derived from pipeline') ||
+    summary.includes('already running') ||
+    summary.includes('queue accepted') ||
+    summary.includes('shard') ||
+    summary.includes('run_id') ||
+    summary.includes('execution_id') ||
+    summary.includes('job=')
+
+  if (expectedTriggerOrDerived) {
+    return {
+      durationConcern: 'expected_short',
+      durationConcernReason: 'short trigger/callback/derived run; final work is tracked by callback or downstream job',
+    }
+  }
+
+  if (status === 'success') {
+    return {
+      durationConcern: 'suspicious_short',
+      durationConcernReason: 'success under 2s without trigger/callback evidence',
+    }
+  }
+
+  return { durationConcern: null }
+}
+
+export function getSchedulerScanDates(): string[] {
   const dates: string[] = []
   const now = new Date(Date.now() + 8 * 3600_000)
-  for (let i = 0; i < 10 && dates.length < 7; i += 1) {
+  for (let i = 0; i < 14; i += 1) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
-    const dow = d.getDay()
-    if (dow >= 1 && dow <= 5) dates.push(d.toISOString().slice(0, 10))
+    dates.push(d.toISOString().slice(0, 10))
   }
   return dates
 }
@@ -194,8 +260,89 @@ function parseNextRunForSort(value: string): number {
   return candidate.getTime()
 }
 
+function nextRunTwDate(value: string): string | null {
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\s+(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const nowTw = new Date(Date.now() + 8 * 3600_000)
+  const candidate = new Date(Date.UTC(
+    nowTw.getUTCFullYear(),
+    Number.parseInt(match[1], 10) - 1,
+    Number.parseInt(match[2], 10),
+    Number.parseInt(match[3], 10),
+    Number.parseInt(match[4], 10),
+    0,
+    0,
+  ))
+  if (candidate < nowTw) candidate.setUTCFullYear(candidate.getUTCFullYear() + 1)
+  return candidate.toISOString().slice(0, 10)
+}
+
+function isWeekdayTw(date: string): boolean {
+  const d = new Date(`${date}T00:00:00+08:00`)
+  const day = d.getDay()
+  return day >= 1 && day <= 5
+}
+
+function runningSlaMs(def?: Pick<JobDef, 'id' | 'group'>): number {
+  if (!def) return 60 * 60_000
+  if (def.id === 'monthly-retrain') return 8 * 60 * 60_000
+  if (def.id === 'monthly-optuna') return 4 * 60 * 60_000
+  if (def.id === 'weekly-optuna') return 3 * 60 * 60_000
+  if (def.group === 'weekly' || def.group === 'monthly') return 2 * 60 * 60_000
+  if (def.group === 'pipeline_chain') return 90 * 60_000
+  if (def.group === 'intraday') return 20 * 60_000
+  return 45 * 60_000
+}
+
+function formatAgeForSummary(ageMs: number): string {
+  if (ageMs >= 60 * 60_000) {
+    const hours = Math.floor(ageMs / 60 / 60_000)
+    const minutes = Math.floor((ageMs % (60 * 60_000)) / 60_000)
+    return `${hours}h${minutes}m`
+  }
+  return `${Math.max(1, Math.floor(ageMs / 60_000))}m`
+}
+
+function logAgeMs(log?: CronLogEntry, nowMs = Date.now()): number | null {
+  if (!log?.timestamp) return null
+  const ts = Date.parse(log.timestamp)
+  if (!Number.isFinite(ts)) return null
+  return Math.max(0, nowMs - ts)
+}
+
+export function resolveSchedulerLogStatus(
+  log?: CronLogEntry,
+  def?: Pick<JobDef, 'id' | 'group'>,
+  nowMs = Date.now(),
+): SchedulerResolvedStatus {
+  if (!log) return { status: null, staleRunning: false }
+  if (log.status === 'success') return { status: 'success', staleRunning: false }
+  if (log.status === 'error') return { status: 'failed', staleRunning: false }
+  if (log.status === 'skipped') return { status: 'skip', staleRunning: false }
+  if (log.status === 'triggered' || log.status === 'running') {
+    const ageMs = logAgeMs(log, nowMs)
+    const slaMs = runningSlaMs(def)
+    if (ageMs != null && ageMs > slaMs) {
+      return {
+        status: 'failed',
+        staleRunning: true,
+        staleReason: `stale ${log.status}: no final callback after ${formatAgeForSummary(ageMs)}; SLA ${formatAgeForSummary(slaMs)}`,
+      }
+    }
+    return { status: 'running', staleRunning: false }
+  }
+  return { status: null, staleRunning: false }
+}
+
+function inferIdleStatus(def: JobDef, nextRun: string, today: string): SchedulerLastStatus {
+  if (nextRunTwDate(nextRun) === today) return 'waiting'
+  if (def.group === 'pipeline_chain' && def.chainIndex != null && def.chainIndex > 1 && isWeekdayTw(today)) return 'waiting'
+  return 'sleep'
+}
+
 export async function getSchedulerStatus(env: Bindings) {
-  const dates = getLast7Dates()
+  const dates = getSchedulerScanDates()
+  const displayDates = dates.slice(0, 7)
   const today = dates[0]
 
   const allLogs: Record<string, CronLogEntry[]> = {}
@@ -207,6 +354,7 @@ export async function getSchedulerStatus(env: Bindings) {
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getDisplayLog(allLogs[today], def.id) ?? inferPipelineChildLog(allLogs[today], def.id)
+    const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV })
 
     const displayLogs = dates.map((date) => ({
       date,
@@ -215,21 +363,17 @@ export async function getSchedulerStatus(env: Bindings) {
     const { lastAttempt, lastEffective } = selectSchedulerDisplayLogs(displayLogs)
     const lastLog = lastAttempt ?? lastEffective
 
-    const history7d = dates.map((date) => {
+    const history7d = displayDates.map((date) => {
       const log = getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id)
       if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
 
-    const lastStatus = lastLog?.status === 'success'
-      ? 'success' as const
-      : lastLog?.status === 'error'
-        ? 'failed' as const
-        : lastLog?.status === 'triggered' || lastLog?.status === 'running'
-          ? 'running' as const
-          : 'skip' as const
+    const resolvedToday = resolveSchedulerLogStatus(todayLog, def)
+    const lastStatus = resolvedToday.status ?? inferIdleStatus(def, nextRun, today)
 
     const lastDuration = formatDuration(lastLog?.duration_ms)
+    const shortRun = inferShortRunConcern(def, lastLog)
 
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
@@ -242,17 +386,23 @@ export async function getSchedulerStatus(env: Bindings) {
       group: def.group,
       chainIndex: def.chainIndex,
       lastRun: lastLog?.timestamp ? formatTimestamp(lastLog.timestamp) : 'N/A',
+      lastRunAt: lastLog?.timestamp ?? null,
       lastAttempt: lastAttempt?.timestamp ? formatTimestamp(lastAttempt.timestamp) : 'N/A',
+      lastAttemptAt: lastAttempt?.timestamp ?? null,
       lastAttemptStatus: lastAttempt?.status ?? 'none',
       lastEffectiveRun: lastEffective?.timestamp ? formatTimestamp(lastEffective.timestamp) : 'N/A',
+      lastEffectiveRunAt: lastEffective?.timestamp ?? null,
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
       lastDuration,
-      lastError: todayLog?.error ?? lastLog?.error,
-      nextRun: await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV }),
+      durationConcern: shortRun.durationConcern,
+      durationConcernReason: shortRun.durationConcernReason,
+      lastError: resolvedToday.staleReason ?? todayLog?.error ?? lastLog?.error,
+      nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       summary: lastLog?.summary || '',
+      consolidation: getSchedulerDependencySpec(def.id) ?? null,
     }
   }))
 
@@ -270,29 +420,24 @@ export async function getSchedulerStatus(env: Bindings) {
     .filter((job) => job.nextRun !== 'N/A')
     .sort((a, b) => parseNextRunForSort(a.nextRun) - parseNextRunForSort(b.nextRun))[0]
 
-  let dagSteps = DAG_STEPS.map((name) => ({ name, duration: 'N/A', status: 'skip' as string }))
-  try {
-    const pipelineLog = allLogs[today]?.find((entry) => entry.task === 'pipeline' && entry.status === 'success')
-    if (pipelineLog?.details) {
-      dagSteps = DAG_STEPS.map((name) => {
-        const detail = pipelineLog.details?.find((row) => row.includes(name))
-        return {
-          name,
-          duration: detail?.match(/(\d+[ms]+\d*[s]*)/)?.[1] || 'N/A',
-          status: detail?.toLowerCase().includes('error') ? 'failed' : 'success',
-        }
-      })
+  const dagSteps = CHAIN_STEP_IDS.map((jobId) => {
+    const job = jobs.find((row) => row.id === jobId)
+    return {
+      id: jobId,
+      name: job?.name ?? jobId,
+      duration: job?.lastDuration ?? 'N/A',
+      status: job?.lastStatus ?? 'skip',
+      lastRun: job?.lastRun ?? 'N/A',
+      summary: job?.summary ?? '',
     }
-  } catch {
-    dagSteps = DAG_STEPS.map((name) => ({ name, duration: 'N/A', status: 'skip' as string }))
-  }
+  })
 
   const heatmapJobs = ['pipeline', 'ml-predict', 'intraday-rescore', 'morning-setup', 'us-leading', 'weekly-cleanup', 'weekly-audit', 'obsidian-sync']
   const heatmap = heatmapJobs.map((jobId) => {
     const job = jobs.find((row) => row.id === jobId)
     return {
       name: job?.name || jobId,
-      cells: dates.map((date) => {
+      cells: displayDates.map((date) => {
         const log = getDisplayLog(allLogs[date], jobId) ?? inferPipelineChildLog(allLogs[date], jobId)
         if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
         return log.status === 'success' ? 'success' : 'failed'
@@ -316,6 +461,6 @@ export async function getSchedulerStatus(env: Bindings) {
       steps: dagSteps,
     },
     heatmap,
-    dates: dates.reverse(),
+    dates: displayDates.reverse(),
   }
 }

@@ -1,6 +1,8 @@
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
+import { readMarketRegimeState } from './marketRegimeState'
+import { buildMarketRegimeFactorPacket, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
 
 function resolvePipelineRunDate(runDate?: string | null): string {
   const value = (runDate || '').trim()
@@ -31,38 +33,73 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
 
     try {
       const { calcMarketRisk } = await import('./marketRisk')
-      const risk = await calcMarketRisk(
-        env.DB,
-        env.ANTHROPIC_API_KEY,
-        env.ML_CONTROLLER_URL,
-        env.ML_CONTROLLER_SECRET,
-        env.GEMINI_API_KEY,
-      )
-      await env.DB.prepare(`
-        INSERT OR REPLACE INTO market_risk
-          (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
-           foreign_consecutive_sell, foreign_net_5d, margin_ratio,
-           limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).bind(
-        risk.date,
-        risk.vix,
-        risk.vixLevel,
-        risk.twiiClose,
-        risk.twiiVol20,
-        risk.twiiMa20,
-        risk.twiiBias,
-        risk.foreignConsecutiveSell,
-        risk.foreignNet5d,
-        risk.marginRatio,
-        risk.limitDownCount,
-        risk.limitDownPct,
-        risk.riskScore,
-        risk.riskLevel,
-        risk.riskSummary,
-      ).run()
-      await env.KV.delete('market:risk:latest')
-      console.log(`[ML V2] Market risk: ${risk.riskLevel} (${risk.riskScore}/100)`)
+      const shouldRecomputeRisk = twDate === twToday()
+      const existingRisk = shouldRecomputeRisk
+        ? null
+        : await env.DB.prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
+      if (!shouldRecomputeRisk && existingRisk) {
+        console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
+        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
+        const packet = await buildMarketRegimeFactorPacket(env.DB, existingRisk, regimeState)
+        await upsertMarketRegimeFactorPacket(env.DB, packet)
+        await env.KV.delete('market:risk:latest')
+        await env.KV.delete('market:risk:latest:v4-context')
+        console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
+      } else {
+        const risk = await calcMarketRisk(
+          env.DB,
+          env.ANTHROPIC_API_KEY,
+          env.ML_CONTROLLER_URL,
+          env.ML_CONTROLLER_SECRET,
+          env.GEMINI_API_KEY,
+          twDate,
+        )
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO market_risk
+            (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
+             foreign_consecutive_sell, foreign_net_5d, margin_ratio,
+             limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          risk.date,
+          risk.vix,
+          risk.vixLevel,
+          risk.twiiClose,
+          risk.twiiVol20,
+          risk.twiiMa20,
+          risk.twiiBias,
+          risk.foreignConsecutiveSell,
+          risk.foreignNet5d,
+          risk.marginRatio,
+          risk.limitDownCount,
+          risk.limitDownPct,
+          risk.riskScore,
+          risk.riskLevel,
+          risk.riskSummary,
+        ).run()
+        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
+        const packet = await buildMarketRegimeFactorPacket(env.DB, {
+          date: risk.date,
+          vix: risk.vix,
+          vix_level: risk.vixLevel,
+          twii_close: risk.twiiClose,
+          twii_vol20: risk.twiiVol20,
+          twii_ma20: risk.twiiMa20,
+          twii_bias: risk.twiiBias,
+          foreign_consecutive_sell: risk.foreignConsecutiveSell,
+          foreign_net_5d: risk.foreignNet5d,
+          margin_ratio: risk.marginRatio,
+          limit_down_count: risk.limitDownCount,
+          limit_down_pct: risk.limitDownPct,
+          risk_score: risk.riskScore,
+          risk_level: risk.riskLevel,
+          risk_summary: risk.riskSummary,
+        }, regimeState)
+        await upsertMarketRegimeFactorPacket(env.DB, packet)
+        await env.KV.delete('market:risk:latest')
+        await env.KV.delete('market:risk:latest:v4-context')
+        console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
+      }
     } catch (e) {
       console.error('[ML V2] Market risk failed (non-blocking):', e)
     }
@@ -82,6 +119,10 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
 
     if (res.status !== 202 && !res.ok) {
       const text = await res.text().catch(() => '')
+      if (res.status === 409 && text.toLowerCase().includes('active execution')) {
+        console.log(`[ML V2] Controller reports active execution for ${twDate}; preserving active-run contract`)
+        return `LOCKED active execution for ${twDate}: ${text.slice(0, 220)}`
+      }
       throw new Error(`Pipeline V2 trigger HTTP ${res.status}: ${text.slice(0, 300)}`)
     }
 
@@ -111,10 +152,23 @@ export async function assertEveningPipelineReady(
     summary?: string
   } | null
 
-  if (queueLog && queueLog.status !== 'success') {
-    console.warn(
-      `[ML V2] indicator queue log is ${queueLog.status} for ${twDate}, ` +
-      `but D1 market-data readiness passed; continuing. summary=${queueLog.summary ?? ''}`,
+  // Waiting belongs to the evening-chain queue finalizer. This guard only blocks
+  // direct pipeline triggers from bypassing the event-driven dependency chain.
+  if (!queueLog || queueLog.status !== 'success') {
+    throw new Error(
+      `indicator queue not complete for ${twDate}: status=${queueLog?.status ?? 'missing'}; ` +
+      `summary=${queueLog?.summary ?? ''}`,
+    )
+  }
+
+  const regimeLog = await env.KV.get(`scheduler:run:regime-compute:${twDate}`, 'json') as {
+    status?: string
+    summary?: string
+  } | null
+  if (!regimeLog || regimeLog.status !== 'success') {
+    throw new Error(
+      `regime-compute not complete for ${twDate}: status=${regimeLog?.status ?? 'missing'}; ` +
+      `summary=${regimeLog?.summary ?? ''}`,
     )
   }
 

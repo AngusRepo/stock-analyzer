@@ -17,7 +17,8 @@ import asyncio
 import json
 import logging
 import operator
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -33,6 +34,9 @@ from services.payload_builder import (
 )
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.market_regime_state import resolve_market_regime_contract
+from services.prediction_dispersion import build_prediction_dispersion_report
+from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
@@ -56,6 +60,48 @@ from services.persona_service import (
 
 logger = logging.getLogger(__name__)
 
+D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
+D1_RETRYABLE_MARKERS = (
+    "HTTP 429",
+    "D1 DB is overloaded",
+    "Requests queued for too long",
+    "Too Many Requests",
+)
+
+
+def _is_retryable_d1_overload(error: Exception) -> bool:
+    message = str(error)
+    return any(marker.lower() in message.lower() for marker in D1_RETRYABLE_MARKERS)
+
+
+async def _load_market_env_with_backoff(run_date: str):
+    """Retry the hot-path market environment read when D1 is temporarily saturated."""
+    for attempt in range(len(D1_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return await asyncio.to_thread(load_market_env, run_date)
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= len(D1_RETRY_DELAYS_SECONDS) or not _is_retryable_d1_overload(exc):
+                raise
+            delay = D1_RETRY_DELAYS_SECONDS[attempt]
+            logger.warning(
+                "[Pipeline V2] load_market_env D1 overload attempt=%s/%s; retry in %.1fs: %s",
+                attempt + 1,
+                len(D1_RETRY_DELAYS_SECONDS) + 1,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
+
+
+def _state_space_overlay_mode() -> str:
+    raw = (
+        os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_MODE")
+        or os.environ.get("STATE_SPACE_OVERLAY_MODE")
+        or "blocking"
+    )
+    mode = str(raw).strip().lower()
+    return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # State schema — typed, contains domain data (not just step_status)
@@ -67,6 +113,7 @@ class PipelineStateV2(TypedDict, total=False):
     LangGraph reducer merges updates back into state automatically.
     """
     run_date: str
+    producer_run_id: str
 
     # Loaded inputs
     active_stocks: list[dict]              # from daily_recommendations V2 screener universe
@@ -129,7 +176,7 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
     """
     logger.info("[Pipeline V2] node_load_market_env")
-    market_env, adaptive, barrier, lifecycle, trading_cfg = load_market_env(state["run_date"])
+    market_env, adaptive, barrier, lifecycle, trading_cfg = await _load_market_env_with_backoff(state["run_date"])
     return {
         "market_env": _to_dict(market_env),
         "adaptive_params": adaptive,
@@ -186,16 +233,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"predictions": {}}
 
-    # Build Chronos series_list once (close prices per symbol) to run in parallel
-    # with feature-model batch predict. Uses last 512 values max — Chronos T5
-    # context limit. Failed rows get error dict from chronos_universal.
-    chronos_series = []
-    for p in payloads:
-        sym = p.get("symbol") if isinstance(p, dict) else None
-        prices = p.get("prices") or [] if isinstance(p, dict) else []
-        closes = [float(px.get("close", 0) or 0) for px in prices if px.get("close") is not None]
-        if sym and closes:
-            chronos_series.append({"symbol": sym, "prices": closes})
+    # Build shared close-price series once for time-series predictors.
+    chronos_series = build_state_space_series_from_payloads(payloads)
 
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
@@ -220,16 +259,38 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
     )
-    kalman_task = (
-        modal_client.kalman_batch_predict(chronos_series, horizon=5, version=active_versions.get("KalmanFilter", "v1"))
-        if model_status.get("KalmanFilter", "active") in ("active", "degraded")
-        else _skip_batch("KalmanFilter retired by model_pool")
-    )
-    markov_task = (
-        modal_client.markov_switching_batch_predict(chronos_series, horizon=5, version=active_versions.get("MarkovSwitching", "v1"))
-        if model_status.get("MarkovSwitching", "active") in ("active", "degraded")
-        else _skip_batch("MarkovSwitching retired by model_pool")
-    )
+    state_space_mode = _state_space_overlay_mode()
+    state_space_models = {
+        model_name: active_versions.get(model_name, "v1")
+        for model_name in ("KalmanFilter", "MarkovSwitching")
+        if model_status.get(model_name, "active") in ("active", "degraded")
+    }
+
+    async def _shadow_state_space_overlays() -> dict:
+        if not state_space_models:
+            return {"error": "state-space overlays retired by model_pool", "results": []}
+        if state_space_mode == "disabled":
+            return {"error": "state-space overlays disabled by overlay mode", "results": []}
+        if state_space_mode == "shadow":
+            try:
+                spawn_info = await asyncio.to_thread(
+                    modal_client.spawn_state_space_overlays_batch_predict,
+                    chronos_series,
+                    horizon=5,
+                    version_by_model=state_space_models,
+                )
+                logger.info(f"[Pipeline V2] State-space overlays shadow spawned: {spawn_info}")
+                return {"error": "state-space overlays shadow spawned; not blocking prediction", "results": [], "shadow": spawn_info}
+            except Exception as exc:  # noqa: BLE001 - shadow overlay must not block prediction.
+                logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
+                return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
+        return await modal_client.state_space_overlays_batch_predict(
+            chronos_series,
+            horizon=5,
+            version_by_model=state_space_models,
+        )
+
+    state_space_task = _shadow_state_space_overlays()
     dlinear_ch_task = (
         modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
         if challenger_versions.get("DLinear")
@@ -245,8 +306,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         chronos_raw,
         dlinear_raw,
         patchtst_raw,
-        kalman_raw,
-        markov_raw,
+        state_space_raw,
         dlinear_ch_raw,
         patchtst_ch_raw,
     ) = await asyncio.gather(
@@ -254,8 +314,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         chronos_task,
         dlinear_task,
         patchtst_task,
-        kalman_task,
-        markov_task,
+        state_space_task,
         dlinear_ch_task,
         patchtst_ch_task,
         return_exceptions=True,
@@ -335,23 +394,49 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
 
-    # Stage 6.2: KalmanFilter + MarkovSwitching state-space (per-stock loop, shared hyperparams)
+    # Stage 6.2: KalmanFilter + MarkovSwitching state-space overlays.
+    # They share one Modal call to avoid duplicate cold-start/import paths.
     def _drain_state_space(raw, name: str) -> dict[str, dict]:
         out: dict[str, dict] = {}
         if isinstance(raw, BaseException):
             logger.warning(f"[Pipeline V2] {name} batch failed: {raw}")
             return out
         if isinstance(raw, dict) and not raw.get("error"):
+            fallback_count = 0
+            fallback_reasons: dict[str, int] = {}
             for r in raw.get("results") or []:
                 sym = r.get("symbol")
                 if sym and not r.get("error"):
                     out[sym] = r
-            logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded")
+                    reason = r.get("fallback_reason")
+                    if r.get("degraded") or reason:
+                        fallback_count += 1
+                        if reason:
+                            fallback_reasons[str(reason)] = fallback_reasons.get(str(reason), 0) + 1
+            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded fallback={fallback_count}"
+            if fallback_count:
+                logger.warning(f"{log_msg} reasons={fallback_reasons}")
+            else:
+                logger.info(log_msg)
         elif isinstance(raw, dict) and raw.get("results") == []:
             logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
         else:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
+    state_space_overlays = {}
+    if isinstance(state_space_raw, dict) and isinstance(state_space_raw.get("overlays"), dict):
+        state_space_overlays = state_space_raw["overlays"]
+        logger.info(f"[Pipeline V2] State-space overlays metrics: {state_space_raw.get('metrics')}")
+    elif isinstance(state_space_raw, dict) and state_space_raw.get("shadow"):
+        logger.info(f"[Pipeline V2] State-space overlays shadow mode: {state_space_raw.get('shadow')}")
+    elif isinstance(state_space_raw, dict) and state_space_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] State-space overlays skipped: {state_space_raw.get('error')}")
+    elif isinstance(state_space_raw, BaseException):
+        logger.warning(f"[Pipeline V2] State-space overlays failed entirely: {state_space_raw}")
+    else:
+        logger.warning(f"[Pipeline V2] State-space overlays returned invalid payload: {state_space_raw}")
+    kalman_raw = state_space_overlays.get("KalmanFilter", {})
+    markov_raw = state_space_overlays.get("MarkovSwitching", {})
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
 
@@ -506,14 +591,28 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     )
 
     # ── A: ML_POOL ensemble merge (8 alpha models with lifecycle) ──
-    # 2026-04-19 R1+R3 hybrid: weight = max(0, ic) × status_filter × dampening.
-    # No more hardcoded 0.1 degraded multiplier; pure IC drives weight, with
-    # KV-overridable dampening for degraded models (default 1.0 = no dampening).
-    model_status, ic_universe, degraded_dampening, ev2_cfg, used_pool = await asyncio.to_thread(_load_pool_and_ic)
+    # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
+    # Short-sample negative IC no longer hard-zeros a model; confirmed negative
+    # IC plus failed validation still fail-closed.
+    model_status, ic_universe, degraded_dampening, ev2_cfg, used_pool, pool = await asyncio.to_thread(_load_pool_and_ic)
     if used_pool:
         for sym, r in pred_map.items():
             try:
-                _attach_ensemble_v2(r, model_status, ic_universe, degraded_dampening, ev2_cfg)
+                serving_ic = _build_serving_ic_bundle(pool, _prediction_market_segment(r), ev2_cfg)
+                if not serving_ic["weights"] and ic_universe:
+                    serving_ic = {
+                        "scope": _prediction_market_segment(r) or "GLOBAL",
+                        "weights": dict(ic_universe),
+                        "diagnostics": {},
+                    }
+                _attach_ensemble_v2(
+                    r,
+                    model_status,
+                    serving_ic,
+                    degraded_dampening,
+                    ev2_cfg,
+                    adaptive_params=state.get("adaptive_params") or {},
+                )
             except Exception as e:
                 logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
         logger.info(
@@ -558,7 +657,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
 
-    return {"predictions": pred_map}
+    dispersion = build_prediction_dispersion_report(pred_map)
+    logger.info(
+        "[Pipeline V2] Prediction dispersion: "
+        f"symbols={dispersion.get('n_symbols')} models={dispersion.get('n_models_seen')} "
+        f"active_avg={dispersion.get('avg_active_weight_count')} "
+        f"rank_std={dispersion.get('avg_raw_rank_std')} "
+        f"merge_compression={dispersion.get('avg_merge_compression')} "
+        f"flags={dispersion.get('flags')}"
+    )
+    return {"predictions": pred_map, "prediction_dispersion": dispersion}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,11 +720,322 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         return {}, active_defaults, {}, False
 
 
+def _normalize_market_segment(segment: Any) -> str | None:
+    value = str(segment or "").strip().upper()
+    if value in {"TWSE", "TSE", "LISTED"}:
+        return "LISTED"
+    if value in {"TPEX", "OTC"}:
+        return "OTC"
+    if value in {"ESB", "EMERGING"}:
+        return "EMERGING"
+    return None
+
+
+def _prediction_market_segment(pred: dict) -> str | None:
+    meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
+    return _normalize_market_segment(meta.get("market_segment") or meta.get("market"))
+
+
+def _coerce_ic_value(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("ic", "rolling_ic", "ic_4w_avg", "value"):
+            if key in value:
+                return _coerce_ic_value(value.get(key))
+        return None
+    try:
+        if value is not None:
+            return float(value)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> tuple[float | None, str]:
+    """Choose lane IC first; fall back to global lifecycle IC only when absent."""
+    segment = _normalize_market_segment(market_segment)
+    segment_map = entry.get("last_ic_by_segment")
+    if segment and isinstance(segment_map, dict):
+        segment_ic = _coerce_ic_value(segment_map.get(segment))
+        if segment_ic is not None:
+            return segment_ic, f"last_ic_by_segment.{segment}"
+
+    for key in ("ic_4w_avg", "weekly_ic", "rolling_ic"):
+        value = entry.get(key)
+        if key == "weekly_ic":
+            history = value or []
+            value = history[-1] if history else None
+        ic_value = _coerce_ic_value(value)
+        if ic_value is not None:
+            return ic_value, key
+    return None, "missing"
+
+
+def _coerce_sample_count(value: Any) -> int | None:
+    try:
+        if value is not None:
+            return max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_ic_sample_count(entry: dict, source: str) -> int:
+    if source.startswith("last_ic_by_segment."):
+        segment = source.split(".", 1)[1]
+        segment_map = entry.get("last_ic_by_segment")
+        segment_value = segment_map.get(segment) if isinstance(segment_map, dict) else None
+        if isinstance(segment_value, dict):
+            for key in ("n_samples", "sample_count", "samples", "coverage"):
+                count = _coerce_sample_count(segment_value.get(key))
+                if count is not None:
+                    return count
+    for key in ("last_ic_sample_count", "active_ic_samples", "ic_sample_count", "sample_count", "coverage_samples"):
+        count = _coerce_sample_count(entry.get(key))
+        if count is not None:
+            return count
+    history = entry.get("weekly_ic") or []
+    if source == "weekly_ic" and isinstance(history, list):
+        return len(history)
+    return 0
+
+
+def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
+    raw = ((ev2_cfg or {}).get("icWeighting") or {}) if isinstance(ev2_cfg, dict) else {}
+    return {
+        "method": str(raw.get("method") or "empirical_bayes_shrinkage"),
+        "enabled": bool(raw.get("enabled", True)),
+        "prior_ic": float(raw.get("priorIc", raw.get("priorIC", 0.015)) or 0.015),
+        "prior_strength": float(raw.get("priorStrength", 20.0) or 20.0),
+        "min_samples_for_hard_zero": int(raw.get("minSamplesForHardZero", 40) or 40),
+        "uncertain_negative_floor": float(raw.get("uncertainNegativeFloor", raw.get("pooledSegmentFloor", 0.0025)) or 0.0025),
+        "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", True)),
+        "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
+        "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
+        "pooled_segment_cap": float(raw.get("pooledSegmentCap", 0.015) or 0.015),
+    }
+
+
+def _shrink_ic_weight(
+    ic_value: float | None,
+    sample_count: int,
+    validation_multiplier: float,
+    ev2_cfg: dict | None = None,
+) -> tuple[float | None, dict[str, Any]]:
+    policy = _ic_weighting_policy(ev2_cfg)
+    if ic_value is None:
+        return None, {"policy": policy["method"], "reason": "ic_missing"}
+    raw_ic = float(ic_value)
+    if not policy["enabled"]:
+        effective = raw_ic * validation_multiplier
+        return effective, {
+            "policy": "raw_ic",
+            "raw_ic": raw_ic,
+            "sample_count": sample_count,
+            "posterior_ic": raw_ic,
+            "effective_weight": effective,
+        }
+
+    prior_strength = max(0.0, float(policy["prior_strength"]))
+    n = max(0, int(sample_count or 0))
+    alpha = n / (n + prior_strength) if (n + prior_strength) > 0 else 1.0
+    posterior = (alpha * raw_ic) + ((1.0 - alpha) * float(policy["prior_ic"]))
+    if n >= int(policy["min_samples_for_hard_zero"]) and raw_ic < 0 and posterior <= 0:
+        effective = 0.0
+        reason = "negative_ic_confirmed"
+    elif raw_ic < 0 and posterior <= 0:
+        # Low-sample segment IC is noisy; keep a tiny exploration floor instead of
+        # freezing the model out before pooled/global evidence can recover it.
+        effective = max(0.0, float(policy["uncertain_negative_floor"]))
+        reason = "uncertain_negative_floor"
+    else:
+        effective = max(0.0, posterior)
+        reason = "shrunk_to_prior"
+    effective *= max(0.0, float(validation_multiplier or 0.0))
+    return effective, {
+        "policy": policy["method"],
+        "raw_ic": raw_ic,
+        "prior_ic": float(policy["prior_ic"]),
+        "prior_strength": prior_strength,
+        "sample_count": n,
+        "shrink_alpha": round(alpha, 6),
+        "posterior_ic": round(posterior, 8),
+        "effective_weight": round(effective, 8),
+        "reason": reason,
+    }
+
+
+def _validation_multiplier(entry: dict) -> tuple[float, str, str]:
+    evidence = (
+        entry.get("model_cpcv")
+        or entry.get("validation_packet")
+        or entry.get("promotion_gate")
+        or entry.get("validation")
+        or {}
+    )
+    if not isinstance(evidence, dict) or not evidence:
+        return 1.0, "MISSING", "no_model_validation_evidence"
+    decision = str(
+        evidence.get("decision")
+        or evidence.get("go_live_verdict")
+        or evidence.get("status")
+        or ""
+    ).strip().upper()
+    try:
+        pbo_fail = evidence.get("pbo") is not None and float(evidence.get("pbo")) >= 0.50
+    except (TypeError, ValueError):
+        pbo_fail = False
+    if decision == "FAIL" or pbo_fail:
+        return 0.0, "FAIL", "cpcv_pbo_failed"
+    if decision in {"WARN", "WARNING"}:
+        return 0.5, "WARN", "validation_warning"
+    if decision == "PASS":
+        return 1.0, "PASS", "validation_pass"
+    return 1.0, "UNKNOWN", "validation_evidence_unrecognized"
+
+
+def _build_serving_ic_bundle(
+    pool: dict | None,
+    market_segment: str | None = None,
+    ev2_cfg: dict | None = None,
+) -> dict:
+    scope = _normalize_market_segment(market_segment) or "GLOBAL"
+    weights: dict[str, float] = {}
+    diagnostics: dict[str, dict] = {}
+    for name, entry in ((pool or {}).get("models") or {}).items():
+        ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
+        multiplier, validation_status, validation_reason = _validation_multiplier(entry)
+        sample_count = _entry_ic_sample_count(entry, source)
+        effective_weight, shrinkage = _shrink_ic_weight(ic_value, sample_count, multiplier, ev2_cfg)
+        policy = _ic_weighting_policy(ev2_cfg)
+        if (
+            scope != "GLOBAL"
+            and policy.get("pooled_segment_fallback_enabled")
+            and float(effective_weight or 0.0) == 0.0
+            and shrinkage.get("reason") == "negative_ic_confirmed"
+            and multiplier > 0
+        ):
+            pooled_ic, pooled_source = _entry_serving_ic(entry, None)
+            pooled_sample_count = _entry_ic_sample_count(entry, pooled_source)
+            pooled_weight, pooled_shrinkage = _shrink_ic_weight(
+                pooled_ic,
+                pooled_sample_count,
+                multiplier,
+                ev2_cfg,
+            )
+            if pooled_weight is not None and pooled_weight > 0:
+                fallback_weight = min(
+                    float(policy["pooled_segment_cap"]),
+                    max(
+                        float(policy["pooled_segment_floor"]),
+                        float(pooled_weight) * float(policy["pooled_segment_fallback_multiplier"]),
+                    ),
+                )
+                effective_weight = fallback_weight
+                shrinkage = {
+                    **shrinkage,
+                    "reason": "pooled_segment_floor",
+                    "segment_reason": "negative_ic_confirmed",
+                    "pooled_ic": pooled_ic,
+                    "pooled_ic_source": pooled_source,
+                    "pooled_ic_sample_count": pooled_sample_count,
+                    "pooled_effective_weight": round(float(pooled_weight), 8),
+                    "pooled_floor_weight": round(float(fallback_weight), 8),
+                    "pooled_shrinkage_reason": pooled_shrinkage.get("reason"),
+                }
+        if effective_weight is not None:
+            weights[name] = float(effective_weight)
+        diagnostics[name] = {
+            "scope": scope,
+            "ic_value": ic_value,
+            "ic_source": source,
+            "ic_sample_count": sample_count,
+            "ic_shrinkage": shrinkage,
+            "validation_multiplier": multiplier,
+            "validation_status": validation_status,
+            "validation_reason": validation_reason,
+            "last_ic_status": entry.get("last_ic_status"),
+            "last_ic_root_cause": entry.get("last_ic_root_cause"),
+            "last_ic_sample_count": entry.get("last_ic_sample_count"),
+        }
+    return {"scope": scope, "weights": weights, "diagnostics": diagnostics}
+
+
+def _adaptive_threshold_delta(adaptive_params: dict | None = None) -> tuple[float, dict[str, Any]]:
+    params = adaptive_params or {}
+    components = params.get("threshold_components") if isinstance(params.get("threshold_components"), dict) else None
+    if components and components.get("effective_delta") is not None:
+        try:
+            delta = float(components.get("effective_delta") or 0.0)
+        except (TypeError, ValueError):
+            delta = 0.0
+        return delta, {
+            "source": "threshold_components.effective_delta",
+            "effective_delta": round(delta, 4),
+            "components": components,
+            "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
+        }
+
+    try:
+        delta = float(params.get("confidence_delta") or 0.0)
+    except (TypeError, ValueError):
+        delta = 0.0
+    return delta, {
+        "source": "confidence_delta_legacy",
+        "effective_delta": round(delta, 4),
+        "components": None,
+        "provenance": params.get("provenance") if isinstance(params.get("provenance"), dict) else {},
+    }
+
+
+def _resolve_alpha_regime_label(
+    raw_regime: Any,
+    regime_meta: dict | None,
+    adaptive_params: dict | None,
+) -> str:
+    """Resolve alpha-framework regime from the canonical pre-pipeline contract."""
+    candidates: list[Any] = [raw_regime]
+    if isinstance(regime_meta, dict):
+        candidates.extend([
+            regime_meta.get("regime"),
+            regime_meta.get("current_regime"),
+            regime_meta.get("dominant_regime"),
+        ])
+    if isinstance(adaptive_params, dict):
+        provenance = adaptive_params.get("provenance")
+        components = adaptive_params.get("threshold_components")
+        inputs = components.get("inputs") if isinstance(components, dict) else None
+        if isinstance(provenance, dict):
+            candidates.append(provenance.get("regime"))
+        if isinstance(inputs, dict):
+            candidates.append(inputs.get("regime"))
+
+    for candidate in candidates:
+        value = str(candidate or "").strip().lower()
+        if value and value not in {"unknown", "none", "null", "n/a"}:
+            return value
+    return "unknown"
+
+
+def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
+    cfg = ev2_cfg or {}
+    delta, _meta = _adaptive_threshold_delta(adaptive_params)
+
+    def clipped(value: float) -> float:
+        return max(0.01, min(0.99, value))
+
+    return {
+        "strongBuyThreshold": clipped(float(cfg.get("strongBuyThreshold", 0.85)) + delta),
+        "buyThreshold": clipped(float(cfg.get("buyThreshold", 0.70)) + delta),
+        "sellThreshold": clipped(float(cfg.get("sellThreshold", 0.30)) - delta),
+        "strongSellThreshold": clipped(float(cfg.get("strongSellThreshold", 0.15)) - delta),
+    }
+
+
 def _load_pool_and_ic():
     """Synchronous loader (called via asyncio.to_thread).
 
     Returns:
-      (model_status, ic_weights, degraded_dampening, ev2_cfg, used_pool)
+      (model_status, ic_weights, degraded_dampening, ev2_cfg, used_pool, pool)
 
     2026-04-19 R1+R3 hybrid:
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
@@ -634,11 +1053,11 @@ def _load_pool_and_ic():
         bucket_name = os.getenv("GCS_BUCKET_NAME")
         if not bucket_name:
             logger.warning("[Pipeline V2] GCS_BUCKET_NAME not set; skip model pool / IC load")
-            return {}, {}, 1.0, {}, False
+            return {}, {}, 1.0, {}, False, {}
         bucket = storage.Client().bucket(bucket_name)
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {}, {}, 1.0, {}, False
+            return {}, {}, 1.0, {}, False, {}
         pool = _json.loads(pool_blob.download_as_text())
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
@@ -668,8 +1087,11 @@ def _load_pool_and_ic():
         degraded_dampening = 1.0
         ev2_cfg: dict = {}
         try:
-            from services import kv_client
-            tcfg = kv_client.get_json("trading:config", default={}) or {}
+            from services.trading_config_loader import load_merged_trading_config_with_contract
+            cfg_result = load_merged_trading_config_with_contract()
+            tcfg = cfg_result.config
+            if cfg_result.contract.degraded:
+                logger.warning("[Pipeline V2] trading:config degraded: %s", cfg_result.contract.to_dict())
             ml_pool_cfg = tcfg.get("mlPool", {}) or {}
             degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
             ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
@@ -678,11 +1100,11 @@ def _load_pool_and_ic():
                 if calibration:
                     ev2_cfg["expectedReturnCalibration"] = calibration
         except Exception as _e:
-            logger.debug(f"[Pipeline V2] trading:config KV lookup failed (using defaults): {_e}")
-        return model_status, ic_weights, degraded_dampening, ev2_cfg, True
+            logger.debug(f"[Pipeline V2] trading:config merged lookup failed (using defaults): {_e}")
+        return model_status, ic_weights, degraded_dampening, ev2_cfg, True, pool
     except Exception as e:
         logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
-        return {}, {}, 1.0, {}, False
+        return {}, {}, 1.0, {}, False, {}
 
 
 def _load_expected_return_calibration(
@@ -759,13 +1181,50 @@ def _load_expected_return_calibration(
 
     if not bins:
         return None
+    bins = _monotonic_smooth_return_bins(bins)
     return {
         "source": "verified_ensemble_outcomes",
+        "method": "empirical_rank_bins_monotonic",
         "lookbackDays": int(lookback_days),
         "minSamples": int(min_bin_samples),
         "sampleCount": len(samples),
         "bins": bins,
     }
+
+
+def _monotonic_smooth_return_bins(bins: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pool adjacent return bins so higher rank never maps to lower return."""
+    blocks: list[dict[str, Any]] = []
+    for idx, row in enumerate(bins):
+        samples = max(1, int(row.get("samples") or 1))
+        mean_return = float(row.get("meanReturn") or 0.0)
+        blocks.append({
+            "weight": samples,
+            "sum": mean_return * samples,
+            "items": [idx],
+        })
+        while len(blocks) >= 2:
+            left = blocks[-2]
+            right = blocks[-1]
+            left_mean = left["sum"] / left["weight"]
+            right_mean = right["sum"] / right["weight"]
+            if left_mean <= right_mean:
+                break
+            merged = {
+                "weight": left["weight"] + right["weight"],
+                "sum": left["sum"] + right["sum"],
+                "items": left["items"] + right["items"],
+            }
+            blocks[-2:] = [merged]
+
+    smoothed = [dict(row) for row in bins]
+    for block in blocks:
+        block_mean = block["sum"] / block["weight"]
+        for idx in block["items"]:
+            smoothed[idx]["rawMeanReturn"] = smoothed[idx].get("meanReturn")
+            smoothed[idx]["meanReturn"] = round(block_mean, 6)
+            smoothed[idx]["calibration"] = "pava_monotonic"
+    return smoothed
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
@@ -781,8 +1240,30 @@ def _attach_ensemble_v2(
     ic_weights: dict,
     degraded_dampening: float,
     ev2_cfg: dict | None = None,
+    *,
+    adaptive_params: dict | None = None,
 ) -> None:
-    attach_ensemble_v2(pred, model_status, ic_weights, degraded_dampening, ev2_cfg)
+    bundle = ic_weights if isinstance(ic_weights, dict) and "weights" in ic_weights else None
+    serving_weights = bundle.get("weights", {}) if bundle else ic_weights
+    thresholds = _rank_signal_thresholds(ev2_cfg, adaptive_params)
+    adaptive_threshold_delta, adaptive_threshold_meta = _adaptive_threshold_delta(adaptive_params)
+    effective_cfg = {**(ev2_cfg or {}), **thresholds}
+    if bundle:
+        effective_cfg["observedIcModels"] = [
+            name for name, diag in (bundle.get("diagnostics") or {}).items()
+            if isinstance(diag, dict) and diag.get("ic_value") is not None
+        ]
+    attach_ensemble_v2(pred, model_status, serving_weights, degraded_dampening, effective_cfg)
+    ev2 = pred.get("ensemble_v2")
+    if isinstance(ev2, dict):
+        ev2["ic_weight_scope"] = (bundle or {}).get("scope") or _prediction_market_segment(pred) or "GLOBAL"
+        ev2["rank_signal_thresholds"] = {k: round(float(v), 4) for k, v in thresholds.items()}
+        ev2["adaptive_threshold"] = {
+            **adaptive_threshold_meta,
+            "applied_delta": round(float(adaptive_threshold_delta), 4),
+        }
+        if bundle:
+            ev2["ic_weight_diagnostics"] = bundle.get("diagnostics") or {}
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """
@@ -904,8 +1385,10 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
     Phase 6: Compute RRG (rs_ratio / rs_momentum / quadrant) for concept + industry
-    and upsert into sector_flow. Must run before node_recommend because downstream
-    hybrid ranking + paper.ts T2 quadrant filter depend on fresh sector_flow rows.
+    and upsert into sector_flow. Screener consumes the latest completed sector_flow
+    before this pipeline starts, so this refresh is post-write evidence for
+    dashboards and the next screener run. It must not contend with the hot-path
+    market_env reads.
 
     Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
     """
@@ -934,22 +1417,19 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     except Exception:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
-    try:
-        regime_label = kv_client.get("ml:regime")
-    except Exception:
-        regime_label = None
-    try:
-        regime_meta = kv_client.get_json("ml:regime:meta", default={}) or {}
-        regime_surface = (
-            regime_meta.get("regime_surface")
-            or regime_meta.get("regime_probabilities")
-            or regime_meta.get("probabilities")
-            or {}
+    regime_contract = resolve_market_regime_contract(kv_client)
+    regime_label = str(regime_contract.get("alpha_regime") or "unknown")
+    regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
+    if regime_contract.get("missing") or regime_label == "unknown":
+        raise RuntimeError(
+            "market_regime_state missing before recommendation; run regime-compute before pipeline"
         )
-    except Exception:
-        regime_surface = {}
 
-    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    trading_cfg = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Pipeline V2] trading:config degraded in recommend: %s", cfg_result.contract.to_dict())
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
     screener_recs = state["screener_recs"]
     if not screener_recs:
@@ -1067,6 +1547,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        "prediction_symbols": len(stock_id_map),
+        "prediction_output_models": round(predictions_written / len(stock_id_map)) if stock_id_map else 0,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
         "sell_deleted": sell_deleted,
@@ -1075,6 +1557,12 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
         "alpha_skip_count": alpha_skip_count,
     }
+    dispersion = state.get("prediction_dispersion") or {}
+    if dispersion:
+        metrics["prediction_dispersion"] = {
+            key: value for key, value in dispersion.items()
+            if key != "symbols"
+        }
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}
 
@@ -1082,6 +1570,93 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _snapshot_export_start_date(run_date: str) -> str:
+    """Resolve the rolling research snapshot window from the pipeline run date."""
+    try:
+        lookback_days = int(os.getenv("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "504") or "504")
+    except ValueError:
+        lookback_days = 504
+    lookback_days = max(30, min(lookback_days, 1600))
+    return (datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+
+async def node_export_dataset_snapshot(state: PipelineStateV2) -> dict:
+    """Export the post-recommendation research snapshot after serving D1 is written."""
+    logger.info("[Pipeline V2] node_export_dataset_snapshot")
+    metrics = dict(state.get("metrics") or {})
+    run_date = state["run_date"]
+    producer_run_id = state.get("producer_run_id") or f"pipeline-v2:{run_date}"
+
+    if os.getenv("STOCKVISION_EXPORT_RESEARCH_SNAPSHOT", "1").strip().lower() in {"0", "false", "no", "off"}:
+        metrics["dataset_snapshot_export"] = {
+            "status": "skipped",
+            "reason": "STOCKVISION_EXPORT_RESEARCH_SNAPSHOT disabled",
+        }
+        return {"metrics": metrics}
+
+    mode = os.getenv("STOCKVISION_RESEARCH_SNAPSHOT_MODE", "deferred").strip().lower()
+    if mode not in {"blocking", "sync", "synchronous"}:
+        metrics["dataset_snapshot_export"] = {
+            "status": "deferred",
+            "mode": mode or "deferred",
+            "reason": "daily serving pipeline must not block on research/backtest snapshot export",
+            "producer_run_id": producer_run_id,
+        }
+        return {"metrics": metrics}
+
+    try:
+        from services.dataset_snapshot_exporter import (
+            DatasetSnapshotExportRequest,
+            export_daily_research_snapshots,
+        )
+
+        request = DatasetSnapshotExportRequest(
+            business_date=run_date,
+            start_date=_snapshot_export_start_date(run_date),
+            end_date=run_date,
+            producer_run_id=producer_run_id,
+            include_signals=True,
+        )
+        combined = await asyncio.to_thread(export_daily_research_snapshots, request)
+        backtest_summary = (combined.get("snapshots") or {}).get("backtest_dataset") or {}
+        price_summary = (combined.get("snapshots") or {}).get("price_history") or {}
+        backtest_snapshot = backtest_summary.get("snapshot") or {}
+        price_snapshot = price_summary.get("snapshot") or {}
+        metrics["dataset_snapshot_export"] = {
+            "status": "ready",
+            "snapshots": {
+                "backtest_dataset": {
+                    "snapshot_id": backtest_snapshot.get("snapshot_id"),
+                    "row_count": backtest_snapshot.get("row_count"),
+                    "elapsed_s": backtest_summary.get("elapsed_s"),
+                    "d1_query_counts": backtest_summary.get("d1_query_counts"),
+                },
+                "price_history": {
+                    "snapshot_id": price_snapshot.get("snapshot_id"),
+                    "row_count": price_snapshot.get("row_count"),
+                    "elapsed_s": price_summary.get("elapsed_s"),
+                    "d1_query_counts": price_summary.get("d1_query_counts"),
+                },
+            },
+        }
+        logger.info(
+            "[Pipeline V2] dataset snapshots exported: backtest=%s price_history=%s",
+            backtest_snapshot.get("snapshot_id"),
+            price_snapshot.get("snapshot_id"),
+        )
+        return {"metrics": metrics}
+    except Exception as e:  # noqa: BLE001
+        metrics["dataset_snapshot_export"] = {
+            "status": "error",
+            "error": f"{type(e).__name__}: {e}",
+        }
+        logger.exception("[Pipeline V2] dataset snapshot export failed")
+        return {
+            "metrics": metrics,
+            "errors": [f"dataset_snapshot_export: {type(e).__name__}: {e}"],
+        }
+
 
 def _to_dict(obj: Any) -> dict:
     """Convert dataclass or dict to plain dict (for state serialization)."""
@@ -1124,25 +1699,22 @@ def build_graph():
     g.add_node("recommend",         node_recommend)
     g.add_node("gen_llm_reasons",   node_llm_reasons)
     g.add_node("write_d1",          node_write_d1)
+    g.add_node("export_dataset_snapshot", node_export_dataset_snapshot)
 
-    # 2026-04-18 P2 #40: parallelize independent loaders.
-    # load_market_env and compute_sector_flow are independent of each other
-    # (and only need load_inputs.run_date which all nodes already have via state).
-    # Fan-out from load_inputs → both run concurrently → fan-in at build_payloads.
-    # Saves ~10-20s of sequential wait per pipeline.
+    # Keep D1-heavy sector_flow out of the hot-path fan-out. The 22:00 chain
+    # already runs indicator + screener writes, and parallel D1 readers can trip
+    # Cloudflare D1 queued-too-long 429s.
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
-    g.add_edge("load_inputs",         "compute_sector_flow")
-    # Both load_market_env and compute_sector_flow converge at build_payloads.
-    # LangGraph fan-in: build_payloads waits for both upstream nodes to complete.
     g.add_edge("load_market_env",     "build_payloads")
-    g.add_edge("compute_sector_flow", "build_payloads")
     g.add_edge("build_payloads",      "ml_predict")
     g.add_edge("ml_predict",          "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
-    g.add_edge("write_d1",            END)
+    g.add_edge("write_d1",            "compute_sector_flow")
+    g.add_edge("compute_sector_flow", "export_dataset_snapshot")
+    g.add_edge("export_dataset_snapshot", END)
 
     # Checkpointer disabled for now:
     # - Local sqlite checkpointing is not durable in Cloud Run /tmp.
@@ -1167,7 +1739,7 @@ def get_graph():
 # Public runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_pipeline_v2(run_date: str = "") -> dict:
+async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict:
     """
     Execute the full pipeline V2.
 
@@ -1184,6 +1756,7 @@ async def run_pipeline_v2(run_date: str = "") -> dict:
 
     initial_state: PipelineStateV2 = {
         "run_date": run_date,
+        "producer_run_id": producer_run_id or f"pipeline-v2:{run_date}",
         "errors": [],
         "metrics": {},
     }

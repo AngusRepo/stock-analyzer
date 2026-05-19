@@ -11,12 +11,15 @@ export interface SchedulerRunLogEntry {
   details?: string[]
   duration_ms: number
   timestamp: string
+  run_id?: string
+  run_date?: string
   error?: string
 }
 
 type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
   date?: string
   run_date?: string
+  strict?: boolean
 }
 
 const TASK_NAMES: Record<string, string> = {
@@ -25,6 +28,12 @@ const TASK_NAMES: Record<string, string> = {
   update: 'Market Data Update',
   'indicator-queue': 'Indicator Queue',
   'ml-warmup': 'ML Warmup',
+  'post-pipeline-chain': 'Post Pipeline Chain',
+  'post-verify-chain': 'Post Verify Chain',
+  'dataset-snapshot-export': 'Dataset Snapshot Export',
+  'linucb-reward-ledger': 'LinUCB Reward Ledger',
+  'meta-learning-shadow': 'Meta Learning Shadow',
+  'strategy-learning': 'Strategy Learning',
   pipeline: 'Pipeline',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',
@@ -36,6 +45,7 @@ const TASK_NAMES: Record<string, string> = {
   'daily-snapshot': 'Daily Snapshot',
   adapt: 'Adapt Params',
   'daily-report': 'Daily Report',
+  'paper-active-postmarket': 'Paper Active Postmarket',
   'obsidian-daily': 'Obsidian Notes',
   'obsidian-sync': 'Obsidian Sync',
   'regime-compute': 'HMM Regime',
@@ -50,7 +60,10 @@ const TASK_NAMES: Record<string, string> = {
   'weekly-backtest': 'Weekly Backtest/MC',
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',
+  'sector-leaders': 'Sector Leaders',
+  'monthly-optuna': 'Monthly Optuna',
   'optuna-queue': 'Optuna Queue Processor',
+  'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
 }
 
@@ -96,6 +109,13 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   if (normalized.startsWith('failed') || normalized.startsWith('error')) {
     return 'error'
   }
+  if (
+    normalized.includes('kv=fail') ||
+    normalized.includes('kv push failed') ||
+    normalized.includes('did not update kv')
+  ) {
+    return 'error'
+  }
   return 'success'
 }
 
@@ -115,6 +135,8 @@ export async function logSchedulerRunResult(
     summary: result.summary,
     details: result.details,
     duration_ms: result.duration_ms,
+    run_id: result.run_id,
+    run_date: today,
     error: result.error,
     timestamp: new Date().toISOString(),
   }
@@ -129,6 +151,7 @@ export async function logSchedulerRunResult(
     // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.
     console.warn(`[schedulerRunLogger] KV write failed for task=${task}:`, error)
+    if (result.strict) throw error
   }
 
   if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {

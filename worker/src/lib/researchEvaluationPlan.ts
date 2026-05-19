@@ -87,14 +87,20 @@ function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
 }
 
 function benchmarkCandidateIds(record: ResearchExperimentRecord): ModelUpgradeCandidateId[] {
-  const requested = new Set(cleanStringArray(cleanObject(record.data_slice).benchmark_candidates))
+  const dataSlice = cleanObject(record.data_slice)
+  const requested = new Set([
+    ...cleanStringArray(dataSlice.benchmark_candidates),
+    ...cleanStringArray(dataSlice.shadow_candidates),
+  ])
   const benchmarkOnly = listModelUpgradeCandidates('benchmark_only')
+  const shadowChallengers = listModelUpgradeCandidates('shadow_challenger')
+  const eligible = [...benchmarkOnly, ...shadowChallengers]
   if (!requested.size) {
     return wantsModelBenchmark(record)
       ? benchmarkOnly.map((candidate) => candidate.id)
       : []
   }
-  return benchmarkOnly
+  return eligible
     .map((candidate) => candidate.id)
     .filter((id) => requested.has(id))
 }

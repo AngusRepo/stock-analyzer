@@ -15,23 +15,67 @@ const RISK_COLORS: Record<string, number> = {
   red: 0xe74c3c,
 }
 
-const RISK_EMOJI: Record<string, string> = {
-  low: '🟢',
-  green: '🟢',
-  medium: '🟡',
-  yellow: '🟡',
-  high: '🟠',
-  orange: '🟠',
-  extreme: '🔴',
-  red: '🔴',
+const RISK_LABELS: Record<string, string> = {
+  low: 'LOW',
+  green: 'LOW',
+  medium: 'MEDIUM',
+  yellow: 'MEDIUM',
+  high: 'HIGH',
+  orange: 'HIGH',
+  extreme: 'EXTREME',
+  red: 'EXTREME',
+}
+
+type MorningEvidence = {
+  usSignal: any | null
+  newsReport: any | null
+  notes: string[]
+}
+
+async function ensureMorningEvidence(env: Bindings, twToday: string): Promise<MorningEvidence> {
+  const notes: string[] = []
+  let usSignal = await env.KV.get(`us:leading:${twToday}`, 'json') as any
+
+  if (usSignal) {
+    notes.push('us-leading:kv')
+  } else {
+    try {
+      const { fetchAndStoreUSLeading } = await import('./usLeading')
+      usSignal = await fetchAndStoreUSLeading(env)
+      notes.push(usSignal ? 'us-leading:refreshed' : 'us-leading:missing')
+    } catch (error) {
+      notes.push(`us-leading:error:${truncate(String(error), 60)}`)
+    }
+  }
+
+  if (!usSignal) {
+    const previous = await env.KV.get(`us:leading:${getPrevDate(twToday)}`, 'json') as any
+    if (previous) {
+      usSignal = previous
+      notes.push('us-leading:previous-day')
+    }
+  }
+
+  let newsReport: any | null = null
+  try {
+    const { readCurrentNewsReport, runDailyNewsAnalysis } = await import('./newsAnalyst')
+    newsReport = await readCurrentNewsReport(env.KV, twToday)
+    if (newsReport) {
+      notes.push('news-analyst:kv')
+    } else {
+      newsReport = await runDailyNewsAnalysis(env as any)
+      notes.push(newsReport ? 'news-analyst:refreshed' : 'news-analyst:missing')
+    }
+  } catch (error) {
+    notes.push(`news-analyst:error:${truncate(String(error), 60)}`)
+  }
+
+  return { usSignal, newsReport, notes }
 }
 
 export async function generateMorningBriefing(env: Bindings): Promise<string> {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-
-  const usSignal = await env.KV.get(`us:leading:${twToday}`, 'json') as any
-  const usYesterday = await env.KV.get(`us:leading:${getPrevDate(twToday)}`, 'json') as any
-  const us = usSignal ?? usYesterday
+  const evidence = await ensureMorningEvidence(env, twToday)
 
   const risk = await env.DB.prepare(
     'SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1',
@@ -42,23 +86,30 @@ export async function generateMorningBriefing(env: Bindings): Promise<string> {
   const pendingState = buildPendingBuyStateSummary(pending, pendingSnapshot.meta)
 
   const riskLevel = String(risk?.risk_level ?? 'medium').toLowerCase()
-  const riskEmoji = RISK_EMOJI[riskLevel] ?? '🟡'
   const riskColor = RISK_COLORS[riskLevel] ?? 0xf1c40f
+  const riskLabel = RISK_LABELS[riskLevel] ?? 'MEDIUM'
 
-  const usLine = us
-    ? `SOX ${fmtPct(us.sox_return)} | S&P ${fmtPct(us.gspc_return)} | VIX ${us.vix_close?.toFixed(1) ?? 'N/A'} | ${us.sentiment ?? 'N/A'}`
-    : '尚無最新美股前導訊號'
+  const usLine = evidence.usSignal
+    ? `SOX ${fmtPct(evidence.usSignal.sox_return)} | S&P ${fmtPct(evidence.usSignal.gspc_return)} | VIX ${fmtNumber(evidence.usSignal.vix_close, 1)} | ${evidence.usSignal.sentiment ?? 'N/A'}`
+    : 'US leading signal unavailable'
+
+  const newsLine = evidence.newsReport
+    ? `${String(evidence.newsReport.bias ?? 'neutral').toUpperCase()} | confidence ${fmtNumber(evidence.newsReport.confidence, 2)} | ${truncate(String(evidence.newsReport.summary ?? ''), 180) || 'no summary'}`
+    : 'news analyst unavailable'
 
   const pendingText = formatPendingBuyBriefing(pending, pendingState)
+  const evidenceLine = evidence.notes.length > 0 ? evidence.notes.join(' | ') : 'scheduled evidence ready'
 
   const embeds: DiscordEmbed[] = [
     {
-      title: `盤前簡報 ${twToday}`,
+      title: `Morning briefing ${twToday}`,
       color: riskColor,
       fields: [
-        { name: '美股前導訊號', value: usLine, inline: false },
-        { name: `${riskEmoji} 市場風險`, value: `**${riskLevel.toUpperCase()}** (${risk?.risk_score ?? '?'}/100)`, inline: true },
-        { name: '待買清單', value: pendingText, inline: false },
+        { name: 'US leading / 美股前導', value: usLine, inline: false },
+        { name: 'News analyst / 早盤新聞情緒', value: newsLine, inline: false },
+        { name: 'Market risk / 大盤風險', value: `**${riskLabel}** (${risk?.risk_score ?? '?'}/100)`, inline: true },
+        { name: 'Pending buys / 候選掛單', value: pendingText, inline: false },
+        { name: 'Evidence path / 資料閉環', value: evidenceLine, inline: false },
       ],
       footer: { text: 'StockVision | Morning Briefing' },
       timestamp: new Date().toISOString(),
@@ -67,19 +118,28 @@ export async function generateMorningBriefing(env: Bindings): Promise<string> {
 
   if (risk?.risk_summary) {
     embeds.push({
-      description: `風險摘要：${risk.risk_summary}`,
+      description: `Market risk summary: ${risk.risk_summary}`,
       color: riskColor,
     })
   }
 
-  const channel = await sendReportToChannels(env as any, embeds, `盤前簡報 ${twToday}`)
-  return `盤前簡報已送出到 ${channel}，state=${pendingState.state} active=${pendingState.active_count}/${pendingState.total_count}`
+  const channel = await sendReportToChannels(env as any, embeds, `Morning briefing ${twToday}`)
+  return `Morning briefing sent to ${channel}; state=${pendingState.state} active=${pendingState.active_count}/${pendingState.total_count}; evidence=${evidenceLine}`
 }
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return 'N/A'
   const pct = (v * 100).toFixed(1)
   return v >= 0 ? `+${pct}%` : `${pct}%`
+}
+
+function fmtNumber(v: number | null | undefined, digits: number): string {
+  if (v == null || !Number.isFinite(Number(v))) return 'N/A'
+  return Number(v).toFixed(digits)
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value
 }
 
 function getPrevDate(dateStr: string): string {

@@ -24,6 +24,16 @@ from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
+from services.model_artifact_registry import (
+    apply_promoted_artifact_to_model_pool,
+    backfill_champion_pointers_from_model_pool,
+    build_candidate_selection,
+    build_champion_pointer_projection,
+    build_promotion_queue,
+    list_artifact_registry,
+    list_champion_pointers,
+    run_promotion_controller,
+)
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
@@ -108,6 +118,38 @@ def _metadata_summary(raw: dict) -> dict:
     return summary
 
 
+def _artifact_evidence(metadata: dict | None) -> dict:
+    """Summarize training-time artifact evidence separately from live IC."""
+    if not isinstance(metadata, dict):
+        return {
+            "status": "metadata_missing",
+            "oos_ic": None,
+            "daily_ic_count": 0,
+            "reason": "Artifact metadata is missing; training-time evidence cannot be shown.",
+        }
+    metrics = metadata.get("metrics") if isinstance(metadata.get("metrics"), dict) else {}
+    oos_ic = metadata.get("oos_ic", metrics.get("oos_ic"))
+    daily_ic_count = metadata.get("daily_ic_count", metrics.get("daily_ic_count", 0))
+    try:
+        daily_ic_count_int = int(daily_ic_count or 0)
+    except (TypeError, ValueError):
+        daily_ic_count_int = 0
+    status = "ready" if oos_ic is not None or daily_ic_count_int > 0 else "metadata_present"
+    return {
+        "status": status,
+        "oos_ic": oos_ic,
+        "daily_ic_count": daily_ic_count_int,
+        "val_dir_accuracy": metadata.get("val_dir_accuracy", metrics.get("val_dir_accuracy")),
+        "feature_policy": metadata.get("feature_policy"),
+        "dataset_snapshot": metadata.get("dataset_snapshot"),
+        "reason": (
+            "Training-time artifact evidence is present; live shadow IC still needs verified production outcomes."
+            if status == "ready"
+            else "Metadata exists but no explicit OOS IC/daily IC fields were recorded."
+        ),
+    }
+
+
 def _ic_coverage(diagnostics: dict) -> float | None:
     raw_rows = diagnostics.get("raw_rows")
     production_rows = diagnostics.get("production_rows")
@@ -127,6 +169,7 @@ def _lifecycle_diagnosis(
     entry: dict,
     metadata_exists: bool,
     metadata: dict | None,
+    is_challenger: bool = False,
 ) -> dict:
     diagnostics = entry.get("last_ic_diagnostics") or {}
     root_cause = entry.get("last_ic_root_cause")
@@ -148,7 +191,10 @@ def _lifecycle_diagnosis(
     if model_name == "FT-Transformer" and metadata_exists and not metadata_feature_count:
         blockers.append("ft_feature_metadata_missing")
 
-    if not blockers:
+    if is_challenger and sample_count <= 0 and metadata_exists:
+        status = "awaiting_live_shadow"
+        reason = "Challenger artifact exists, but live shadow predictions have not accumulated verified outcomes yet."
+    elif not blockers:
         status = "ok"
         reason = "IC, samples, metadata are present."
     elif "metadata_missing" in blockers or "ft_feature_metadata_missing" in blockers:
@@ -380,6 +426,20 @@ class TrainPatchTSTRequest(BaseModel):
     val_ratio: float = 0.15
     version: str = "v1"
     confirm: bool = False
+
+
+class BackfillChampionPointersRequest(BaseModel):
+    confirm: bool = False
+    reason: str = "model_pool_backfill"
+    create_missing_artifacts: bool = True
+
+
+class PromotionControllerRequest(BaseModel):
+    artifact_id: str
+    confirm: bool = False
+    approved: bool = False
+    approved_by: str | None = None
+    reason: str = "promotion_controller"
 
 
 @router.post("/train_patchtst")
@@ -614,7 +674,9 @@ class ComputeWeeklyICRequest(BaseModel):
     history_max: int = 26               # cap weekly_ic array (~6 months rolling)
     min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
     update_pool: bool = True            # write back to model_pool.json
+    update_registry: bool = True        # write selected artifact live-gate evidence
     append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
+    run_date: str | None = None         # optional upper bound for verify callback/backfill parity
 
 
 @router.post("/compute_weekly_ic")
@@ -646,6 +708,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         compute_weekly_ic_from_rows,
         tracked_model_names,
     )
+    from services.model_artifact_registry import update_live_gate_from_ic
 
     t0 = time.time()
     all_tracked = tracked_model_names()
@@ -654,13 +717,23 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     # missing verification/outcome/rank-signal root causes instead of letting SQL
     # hide them behind a generic insufficient_samples result.
     placeholders = ",".join(["?"] * len(all_tracked))
-    sql = f"""
-        SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
-        FROM predictions
-        WHERE model_name IN ({placeholders})
-          AND date(prediction_date) >= date('now', ?)
-    """
-    rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+    if req.run_date:
+        sql = f"""
+            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+            FROM predictions
+            WHERE model_name IN ({placeholders})
+              AND date(prediction_date) <= date(?)
+              AND date(prediction_date) >= date(?, ?)
+        """
+        rows = d1_query(sql, [*all_tracked, req.run_date, req.run_date, f"-{req.lookback_days} days"])
+    else:
+        sql = f"""
+            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+            FROM predictions
+            WHERE model_name IN ({placeholders})
+              AND date(prediction_date) >= date('now', ?)
+        """
+        rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
     per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
 
     # 3. Update model_pool.json.
@@ -689,6 +762,20 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
 
+    registry_updates: dict | None = None
+    if req.update_registry:
+        try:
+            registry_updates = update_live_gate_from_ic(
+                per_model_ic,
+                min_samples=req.min_samples,
+            )
+        except Exception as e:
+            logger.error(f"[ModelPool] artifact registry live gate update failed: {e}")
+            registry_updates = {
+                "status": "error",
+                "error": f"artifact_registry_live_gate_failed: {e}",
+            }
+
     # 4. Stage 5 alerts: weekly summary + decay-detection per-event
     # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status;
     # Stage 4 promote gate owns the actual transitions):
@@ -706,10 +793,12 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     return {
         "status": "ok",
+        "run_date": req.run_date,
         "lookback_days": req.lookback_days,
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
         "pool_updates": pool_changes if req.update_pool else None,
+        "artifact_registry_updates": registry_updates,
         "elapsed_s": round(time.time() - t0, 1),
     }
 
@@ -1079,6 +1168,24 @@ async def promote_check(req: PromoteCheckRequest):
 
     promotion_gate = None
     has_promote_action = any(a.get("transition") == "promote" for a in actions)
+    if req.apply and has_promote_action:
+        disabled_governance = []
+        if not req.require_promotion_gate:
+            disabled_governance.append("promotion_gate")
+        if not req.require_shadow_ab:
+            disabled_governance.append("shadow_ab")
+        if not req.require_paper_order_ab:
+            disabled_governance.append("paper_order_ab")
+        if not req.require_model_cpcv:
+            disabled_governance.append("model_cpcv")
+        if disabled_governance:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "apply=true with promote actions cannot disable production promotion "
+                    f"governance: {', '.join(disabled_governance)}"
+                ),
+            )
     shadow_ab_by_model = None
     paper_order_ab_by_model = None
     model_cpcv_by_model = {}
@@ -1357,6 +1464,218 @@ async def status():
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
 
 
+@router.get("/artifact_registry")
+async def artifact_registry(
+    model_name: str | None = None,
+    state: str | None = None,
+    candidate_type: str | None = None,
+    limit: int = 100,
+):
+    """Read registered retrain artifacts and gate states.
+
+    Production serving still uses model_pool active/champion pointers. This
+    endpoint exposes the release-train registry so UI/OBS can show why a
+    retrain artifact is registered, offline-passed, shadowing, or archived.
+    """
+    try:
+        rows = list_artifact_registry(
+            model_name=model_name,
+            state=state,
+            candidate_type=candidate_type,
+            limit=limit,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry failed: {e}")
+    return {
+        "status": "ok",
+        "source_of_truth": "model_artifact_registry",
+        "count": len(rows),
+        "artifacts": rows,
+    }
+
+
+@router.get("/artifact_registry/selection")
+async def artifact_registry_selection(model_name: str | None = None, limit: int = 200):
+    """Read-only release-train candidate selection.
+
+    This does not promote or shadow anything. It explains which registered
+    monthly/weekly artifacts are eligible for the next gate.
+    """
+    try:
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        return build_candidate_selection(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
+
+
+@router.get("/artifact_registry/promotion_queue")
+async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200):
+    """Read-only promotion-controller queue for registry artifacts.
+
+    This does not mutate champion pointers. It explains which live-gate-passed
+    artifacts need final comparison, approval, or auto-promotion review.
+    """
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        return build_promotion_queue(rows, champion_versions=champion_versions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
+
+
+@router.post("/artifact_registry/promotion_controller")
+async def artifact_registry_promotion_controller(req: PromotionControllerRequest):
+    """Run final comparison and optionally update the champion pointer.
+
+    ``confirm=false`` is dry-run. ``confirm=true`` may update D1
+    model_champion_pointers, but it still does not mutate model_pool.json.
+    """
+    if not req.artifact_id:
+        raise HTTPException(status_code=400, detail="artifact_id is required")
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        rows = list_artifact_registry(limit=500)
+        pointers = list_champion_pointers()
+        result = run_promotion_controller(
+            artifact_id=req.artifact_id,
+            registry_rows=rows,
+            d1_pointers=pointers,
+            model_pool_versions=champion_versions,
+            confirm=req.confirm,
+            approved=req.approved,
+            approved_by=req.approved_by,
+            reason=req.reason,
+        )
+        should_update_serving = req.confirm and (
+            result.get("can_promote") is True
+            or result.get("status") == "already_promoted"
+        )
+        if should_update_serving:
+            artifact = next((row for row in rows if str(row.get("artifact_id")) == str(req.artifact_id)), None)
+            if artifact is None:
+                raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
+            pool = _json.loads(pool_blob.download_as_text())
+            serving_update = apply_promoted_artifact_to_model_pool(
+                pool,
+                artifact,
+                reason=req.reason,
+                promoted_at=result.get("confirmed_at"),
+            )
+            pool_blob.upload_from_string(
+                _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
+                content_type="application/json",
+            )
+            result = {
+                **result,
+                "serving_reader": "model_pool.json",
+                "serving_model_pool_updated": True,
+                "serving_update": serving_update,
+                "note": "Champion pointer and model_pool.json serving owner were updated together.",
+            }
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
+
+
+@router.get("/artifact_registry/champion_pointers")
+async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
+    """Read-only champion pointer migration contract.
+
+    Production currently reads model_pool.json. This endpoint compares that
+    serving pointer with registry-owned D1 pointers so the next migration step
+    cannot silently create split-brain.
+    """
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        d1_pointers = list_champion_pointers(model_name=model_name)
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        return build_champion_pointer_projection(
+            registry_rows=rows,
+            d1_pointers=d1_pointers,
+            model_pool_versions=champion_versions,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
+
+
+@router.post("/artifact_registry/champion_pointers/backfill")
+async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPointersRequest):
+    """Backfill D1 champion pointers from current model_pool.json.
+
+    This does not promote any artifact. It only mirrors today's production
+    champion versions into the registry pointer table so future final
+    comparisons have a stable source of truth.
+    """
+    if not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="champion pointer backfill requires confirm=true; this writes model_champion_pointers but does not change production serving",
+        )
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            raise HTTPException(status_code=404, detail="model_pool.json not found")
+        pool = _json.loads(pool_blob.download_as_text())
+        for name, entry in (pool.get("models") or {}).items():
+            version = entry.get("version")
+            if version:
+                champion_versions[str(name)] = str(version)
+        rows = list_artifact_registry(limit=500)
+        result = backfill_champion_pointers_from_model_pool(
+            model_pool_versions=champion_versions,
+            registry_rows=rows,
+            reason=req.reason,
+            create_missing_artifacts=req.create_missing_artifacts,
+        )
+        return {
+            **result,
+            "production_reader": "model_pool.json",
+            "note": "Backfill only; serving owner migration still requires explicit deploy.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointer backfill failed: {e}")
+
+
 @router.get("/lineage")
 async def lineage():
     """Return model_pool lineage pointers plus recent lifecycle events."""
@@ -1408,6 +1727,7 @@ async def lineage():
                     "metadata_path": ch_metadata_path,
                     "metadata_exists": ch_metadata_exists,
                     "metadata": ch_metadata,
+                    "artifact_evidence": _artifact_evidence(ch_metadata),
                     "shadow_since": challenger.get("shadow_since"),
                     "rolling_ic": challenger.get("rolling_ic"),
                     "weekly_ic": challenger.get("weekly_ic") or [],
@@ -1424,6 +1744,7 @@ async def lineage():
                         entry=challenger,
                         metadata_exists=ch_metadata_exists,
                         metadata=ch_metadata,
+                        is_challenger=True,
                     ),
                 }
 

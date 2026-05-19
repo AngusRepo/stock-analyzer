@@ -4,6 +4,7 @@ import {
   BarChart3,
   ChevronDown,
   ChevronUp,
+  ExternalLink,
   Minus,
   ShieldCheck,
   TrendingDown,
@@ -53,6 +54,31 @@ type MlVoteSummary = {
     regime?: string
     adjustment?: number
   }
+  icWeightScope?: string
+  validationBlockedModels?: string[]
+}
+
+type MlDiagnosticsSummary = {
+  totalAlphaModels?: number
+  activeWeightCount?: number
+  zeroWeightModels?: string[]
+  contributingModels?: string[]
+  validationBlockedModels?: string[]
+  icWeightScope?: string | null
+  rankSignalThresholds?: Record<string, unknown> | null
+  forecastCalibration?: {
+    method?: string | null
+    source?: string | null
+    sampleCount?: number | null
+    binSamples?: number | null
+    bin?: string | number | null
+  }
+  dispersion?: {
+    rawModelCount?: number | null
+    rawRankStd?: number | null
+    mergeCompression?: number | null
+    weightHhi?: number | null
+  }
 }
 
 type ScoreComponents = {
@@ -81,6 +107,13 @@ type ScoreComponents = {
   } | null
 }
 
+type EvidenceLink = {
+  source?: string
+  title?: string
+  url?: string
+  published_at?: string
+}
+
 const ALPHA_PREDICTION_MODEL_NAMES = [
   'XGBoost',
   'CatBoost',
@@ -99,7 +132,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。'
+  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -123,6 +156,33 @@ function fmtChipAmount(billion: number | null | undefined): string {
     return `${wan > 0 ? '+' : ''}${wan} 萬`
   }
   return `${billion > 0 ? '+' : ''}${billion.toFixed(2)} 億`
+}
+
+function displayForecastPct(summary: MlVoteSummary | null): number | null {
+  if (!summary) return null
+  if (typeof summary.forecastPct === 'number' && Number.isFinite(summary.forecastPct)) {
+    return summary.forecastPct
+  }
+  const raw = summary.forecast_pct
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
+  return Math.abs(raw) <= 0.2 ? raw * 100 : raw
+}
+
+function normalizeForecastPctForUi(raw: unknown): number | null {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return null
+  return Math.abs(value) <= 0.2 ? value * 100 : value
+}
+
+function normalizePersistedForecastPctForUi(summary: any): number | null {
+  // Contract: `forecast_pct` is raw return fraction; legacy `forecastPct`
+  // rows were also written as fraction before the 2026-05-13 contract fix.
+  return normalizeForecastPctForUi(summary?.forecast_pct ?? summary?.forecastPct)
+}
+
+function finiteMetric(raw: unknown): number | null {
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
 }
 
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
@@ -277,65 +337,16 @@ function parseObject(raw: unknown): any | null {
   }
 }
 
-function screenerFunnelFromRec(rec: any): { rank: number | null; chips: string[]; notes: string[] } | null {
-  const evidence = parseObject(rec.screener_funnel_evidence)
-  if (!evidence && rec.screener_funnel_rank == null) return null
-
-  const chips: string[] = []
-  if (rec.screener_funnel_rank != null) chips.push(`入選排名 #${rec.screener_funnel_rank}`)
-  if (evidence?.industry) chips.push(`產業：${evidence.industry}`)
-  if (Array.isArray(evidence?.strategy_tags) && evidence.strategy_tags.length > 0) {
-    chips.push(...evidence.strategy_tags.slice(0, 3).map((tag: unknown) => String(tag)))
-  }
-
-  const notes: string[] = []
-  if (evidence?.chip_score != null) notes.push(`籌碼 ${fmtNumber(evidence.chip_score, 1)}`)
-  if (evidence?.tech_score != null) notes.push(`技術 ${fmtNumber(evidence.tech_score, 1)}`)
-  if (evidence?.momentum_score != null) notes.push(`動能 ${fmtNumber(evidence.momentum_score, 1)}`)
-  const rrg = parseObject(evidence?.rrg_overlay)
-  if (rrg?.quadrant) {
-    const adjustment = fmtOptionalNumber(rrg.adjustment, 1)
-    notes.push(`RRG：${rrg.tag ?? '題材'} / ${rrg.quadrant}${adjustment ? `，調整 ${adjustment}` : ''}`)
-  }
-  const buzz = parseObject(evidence?.buzz_evidence)
-  if (buzz?.concept) {
-    const bonus = fmtOptionalNumber(buzz.buzzBonus, 1)
-    notes.push(`熱門題材：${buzz.concept}${bonus ? `，加權 ${bonus}` : ''}`)
-  }
-  const cooldown = Array.isArray(evidence?.diversity_cooldown) ? evidence.diversity_cooldown : []
-  for (const item of cooldown.slice(0, 2)) {
-    const row = parseObject(item)
-    if (row?.reason_code === 'high_frequency_cooldown') {
-      notes.push(`重複入選降溫：20日 ${row.freq20d ?? '-'} 次`)
-    } else if (row?.reason_code === 'new_money_boost') {
-      notes.push('新進候選加權：避免清單每天長一樣')
-    }
-  }
-  if (evidence?.freq20d != null) notes.push(`20日入選 ${evidence.freq20d} 次`)
-  if (evidence?.highFreq) notes.push('重複入選已降溫')
-  if (evidence?.newMoney) notes.push('新進資金/新題材加權')
-  if (Array.isArray(evidence?.decision_path) && evidence.decision_path.length > 0) {
-    notes.push(`漏斗路徑：${evidence.decision_path.map((step: any) => step.stage).filter(Boolean).join(' → ')}`)
-  }
-
-  if (chips.length === 0 && notes.length === 0 && rec.screener_funnel_rank == null) {
-    return null
-  }
-
-  return {
-    rank: rec.screener_funnel_rank ?? null,
-    chips,
-    notes,
-  }
-}
-
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
     if (reported > 0 || evidence > 0 || Number(rec.ml_score ?? 0) <= 0) {
-      return persisted
+      return {
+        ...persisted,
+        forecastPct: normalizePersistedForecastPctForUi(persisted),
+      }
     }
   }
   const forecast = parseForecastData(rec.prediction_forecast_data)
@@ -345,6 +356,12 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const weights = forecast?.ensemble_v2?.weights && typeof forecast.ensemble_v2.weights === 'object'
     ? forecast.ensemble_v2.weights
     : {}
+  const diagnostics = forecast?.ensemble_v2?.ic_weight_diagnostics && typeof forecast.ensemble_v2.ic_weight_diagnostics === 'object'
+    ? forecast.ensemble_v2.ic_weight_diagnostics
+    : {}
+  const thresholds = forecast?.ensemble_v2?.rank_signal_thresholds && typeof forecast.ensemble_v2.rank_signal_thresholds === 'object'
+    ? forecast.ensemble_v2.rank_signal_thresholds
+    : null
   const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
   const total = Math.max(ALPHA_PREDICTION_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
   if (!forecast || total <= 0) return null
@@ -357,7 +374,70 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     reported: models.length,
     missing: Math.max(0, total - models.length),
     total,
-    forecastPct: forecast.ensemble_v2?.forecast_pct ?? null,
+    forecastPct: normalizeForecastPctForUi(forecast.ensemble_v2?.forecast_pct),
+    icWeightScope: forecast.ensemble_v2?.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
+    thresholds: thresholds
+      ? {
+          bullish: Number(thresholds.buyThreshold ?? thresholds.strongBuyThreshold),
+          bearish: Number(thresholds.sellThreshold ?? thresholds.strongSellThreshold),
+          adjustment: Number(thresholds.confidence_delta ?? 0),
+        }
+      : undefined,
+    zeroWeightModels: Object.entries(weights)
+      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .map(([name]) => name),
+    validationBlockedModels: Object.entries(diagnostics)
+      .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
+      .map(([name]) => name),
+  }
+}
+
+function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
+  const persisted = parseObject(rec.ml_diagnostics)
+  if (persisted) return persisted
+  const forecast = parseForecastData(rec.prediction_forecast_data)
+  if (!forecast) return null
+  const ev2 = forecast?.ensemble_v2 && typeof forecast.ensemble_v2 === 'object'
+    ? forecast.ensemble_v2
+    : {}
+  const weights = ev2?.weights && typeof ev2.weights === 'object'
+    ? ev2.weights
+    : {}
+  const diagnostics = ev2?.ic_weight_diagnostics && typeof ev2.ic_weight_diagnostics === 'object'
+    ? ev2.ic_weight_diagnostics
+    : {}
+  const dispersion = forecast?.dispersion_diagnostics && typeof forecast.dispersion_diagnostics === 'object'
+    ? forecast.dispersion_diagnostics
+    : {}
+  const zeroWeightModels = Array.isArray(dispersion.zero_weight_models)
+    ? dispersion.zero_weight_models.filter(isAlphaPredictionModelName)
+    : Object.entries(weights)
+      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .map(([name]) => name)
+
+  return {
+    totalAlphaModels: ALPHA_PREDICTION_MODEL_NAMES.length,
+    activeWeightCount: Object.entries(weights).filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) > 0).length,
+    zeroWeightModels,
+    contributingModels: Array.isArray(ev2.contributing_models) ? ev2.contributing_models.filter(isAlphaPredictionModelName) : [],
+    validationBlockedModels: Object.entries(diagnostics)
+      .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
+      .map(([name]) => name)
+      .filter(isAlphaPredictionModelName),
+    icWeightScope: ev2.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
+    forecastCalibration: {
+      method: ev2.forecast_calibration_method ?? null,
+      source: ev2.forecast_pct_source ?? null,
+      sampleCount: Number.isFinite(Number(ev2.forecast_calibration_sample_count)) ? Number(ev2.forecast_calibration_sample_count) : null,
+      binSamples: Number.isFinite(Number(ev2.forecast_calibration_bin_samples)) ? Number(ev2.forecast_calibration_bin_samples) : null,
+      bin: ev2.forecast_calibration_bin ?? null,
+    },
+    dispersion: {
+      rawModelCount: Number.isFinite(Number(dispersion.raw_model_count)) ? Number(dispersion.raw_model_count) : null,
+      rawRankStd: Number.isFinite(Number(dispersion.raw_rank_std)) ? Number(dispersion.raw_rank_std) : null,
+      mergeCompression: Number.isFinite(Number(dispersion.merge_compression)) ? Number(dispersion.merge_compression) : null,
+      weightHhi: Number.isFinite(Number(dispersion.weight_hhi)) ? Number(dispersion.weight_hhi) : null,
+    },
   }
 }
 
@@ -381,12 +461,9 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   if (reported <= 0 || bullish + bearish + Number(summary.flat ?? 0) <= 0) {
     return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
-  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
-    : null
+  const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
-    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回傳` : ''
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish - missing))
@@ -406,29 +483,91 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
   if (reported <= 0 || bullish + bearish + flat <= 0) {
     return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
-  const forecastRaw = summary.forecastPct ?? summary.forecast_pct
-  const forecastPct = typeof forecastRaw === 'number' && Number.isFinite(forecastRaw)
-    ? (Math.abs(forecastRaw) <= 1 ? forecastRaw * 100 : forecastRaw)
-    : null
+  const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
-    ? `，預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
   const flatText = flat > 0 ? `，${flat}/${total}中性` : ''
   const missingText = missing > 0 ? `，${missing}/${total}未回報` : ''
-  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
-    ? `；${summary.zeroWeightModels.join('/')} 權重=0（IC/lifecycle gate）`
+  const activeWeight = Number(summary.activeWeightCount ?? total - (summary.zeroWeightModels?.length ?? 0))
+  const weightText = Number.isFinite(activeWeight)
+    ? `；採信權重 ${Math.max(0, activeWeight)}/${total}`
     : ''
-  return `${bullish}/${total}看漲、${bearish}/${total}看跌${flatText}${missingText}${forecast}${zeroWeightText}`
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `（0 權重：${summary.zeroWeightModels.join('/')}，IC/lifecycle gate）`
+    : ''
+  return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
 }
 
-function formatMlThresholdText(summary: MlVoteSummary | null): string | null {
-  const bullish = summary?.thresholds?.bullish
-  const bearish = summary?.thresholds?.bearish
-  if (typeof bullish !== 'number' || typeof bearish !== 'number') return null
-  const regime = summary?.thresholds?.regime && summary.thresholds.regime !== 'unknown'
-    ? `，regime=${summary.thresholds.regime}`
+function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | null {
+  if (!summary) return null
+  const total = Number(summary.total ?? 0)
+  if (!Number.isFinite(total) || total <= 0) return null
+  const bullish = Number(summary.bullish ?? 0)
+  const bearish = Number(summary.bearish ?? 0)
+  const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish))
+  const reported = Number(summary.reported ?? bullish + bearish + flat)
+  const missing = Number(summary.missing ?? Math.max(0, total - reported))
+  const forecastPct = displayForecastPct(summary)
+  const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
+    ? `，校準預期${forecastPct >= 0 ? '+' : ''}${forecastPct.toFixed(1)}%`
     : ''
-  return `投票門檻：rank score >= ${bullish.toFixed(3)} 算看漲，<= ${bearish.toFixed(3)} 算看跌，中間為觀望${regime}。`
+  const flatText = flat > 0 ? `、${flat}/${total}中性` : ''
+  const missingText = missing > 0 ? `、${missing}/${total}缺資料` : ''
+  const activeWeight = Number(summary.activeWeightCount ?? total - (summary.zeroWeightModels?.length ?? 0))
+  const weightText = Number.isFinite(activeWeight)
+    ? `；採信權重${Math.max(0, activeWeight)}/${total}`
+    : ''
+  const zeroWeightText = Array.isArray(summary.zeroWeightModels) && summary.zeroWeightModels.length > 0
+    ? `（${summary.zeroWeightModels.length}模型0權重）`
+    : ''
+  return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
+}
+
+function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary | null }) {
+  if (!diagnostics) return null
+  const total = Number(diagnostics.totalAlphaModels ?? ALPHA_PREDICTION_MODEL_NAMES.length)
+  const active = Number(diagnostics.activeWeightCount ?? 0)
+  const zeroWeightModels = diagnostics.zeroWeightModels ?? []
+  const blockedModels = diagnostics.validationBlockedModels ?? []
+  const calibration = diagnostics.forecastCalibration
+  const dispersion = diagnostics.dispersion
+  const thresholds = diagnostics.rankSignalThresholds ?? {}
+  const buyThreshold = finiteMetric((thresholds as any).buyThreshold ?? (thresholds as any).bullish)
+  const sellThreshold = finiteMetric((thresholds as any).sellThreshold ?? (thresholds as any).bearish)
+  const chips: string[] = []
+
+  chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) ? total : ALPHA_PREDICTION_MODEL_NAMES.length}`)
+  if (diagnostics.icWeightScope) chips.push(`IC scope ${diagnostics.icWeightScope}`)
+  if (buyThreshold != null && sellThreshold != null) chips.push(`動態門檻 BUY ${fmtNumber(buyThreshold, 3)} / SELL ${fmtNumber(sellThreshold, 3)}`)
+  if (dispersion?.rawRankStd != null) chips.push(`模型分歧 σ ${fmtNumber(dispersion.rawRankStd, 3)}`)
+  if (dispersion?.mergeCompression != null) chips.push(`合併壓縮 ${fmtNumber(dispersion.mergeCompression, 2)}`)
+  if (calibration?.method || calibration?.source) {
+    const samples = calibration.sampleCount != null ? ` / 樣本 ${fmtNumber(calibration.sampleCount, 0)}` : ''
+    chips.push(`預期值校準 ${calibration.method ?? calibration.source}${samples}`)
+  }
+
+  const warnings = [
+    zeroWeightModels.length > 0 ? `0 權重：${zeroWeightModels.join('、')}` : null,
+    blockedModels.length > 0 ? `驗證擋下：${blockedModels.join('、')}` : null,
+  ].filter(Boolean)
+
+  return (
+    <div className="mt-2 rounded-md border border-emerald-500/15 bg-background/45 p-2">
+      <div className="mb-1.5 flex flex-wrap gap-1.5">
+        {chips.map((chip) => (
+          <Badge key={chip} variant="outline" className="border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+            {chip}
+          </Badge>
+        ))}
+      </div>
+      {warnings.length > 0 && (
+        <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+          {warnings.join('；')}。這代表該模型有回報 raw rank，但目前不被 ensemble 採信或只給探索底權重，原因通常是 segment IC、lifecycle 或 validation gate 不足。
+        </p>
+      )}
+    </div>
+  )
 }
 
 function translateRecommendationReason(reason: unknown): string {
@@ -442,6 +581,7 @@ function translateRecommendationReason(reason: unknown): string {
       /Signal Provenance \(ranking promoted\): BUY flipped at recommendation layer \(ensemble_v2\.signal=([^,)]*), avg_rank=([^)]+)\)\. Treat as ranking promotion, not a naturally strong BUY\./g,
       '訊號來源：此檔由推薦層從 $1 提升為買進，平均排名 $2；需用分數、產業脈絡與盤中再評估輔助判讀。',
     )
+    .replace(/(^|[^校準])預期 ([+-]\d+(?:\.\d+)?%)/g, '$1校準預期 $2')
     .trim()
 }
 
@@ -638,8 +778,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
-          Market structure：POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶；
-          {LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
+          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
         </p>
       </div>
       {context.skip && (
@@ -675,7 +814,7 @@ function normalizeWatchPoint(point: string): string {
     const optimisticHelp = optimisticExceeded
       ? '目前價格已高於順風上緣，這是偏追高提醒，不是樂觀目標價。'
       : '樂觀情境是順風時的上緣假設，不是保證目標價。'
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：POC 是近期量能重心，fair value 是正常合理價格帶；${optimisticHelp}`
+    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：這是量價結構位置與追高/低估提醒；${optimisticHelp}`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
@@ -683,12 +822,7 @@ function normalizeWatchPoint(point: string): string {
     const flat = point.match(/flat=([^,]+)/)?.[1] ?? '0'
     const missing = point.match(/missing=([^,]+)/)?.[1] ?? '0'
     const forecast = point.match(/forecast=([^,%]+)%/)?.[1] ?? 'n/a'
-    const bullishThreshold = point.match(/bullish_threshold=([^,]+)/)?.[1]
-    const bearishThreshold = point.match(/bearish_threshold=([^,]+)/)?.[1]
-    const thresholdText = bullishThreshold && bearishThreshold
-      ? `目前門檻：>=${bullishThreshold} 看漲，<=${bearishThreshold} 看跌。`
-      : '目前門檻會依 regime / trading config 調整。'
-    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，預期報酬 ${forecast}%。白話：觀望不是模型沒跑，而是 rank score 落在看漲/看跌門檻中間，訊號強度不夠明確。${thresholdText}`
+    return `ML ensemble：${bullish} 看漲、${bearish} 看跌、${flat} 觀望、${missing} 未回傳，校準預期報酬 ${forecast}%。白話：投票是門檻判斷，校準預期是由 rank/verified outcomes 映射出的連續報酬估計，兩者不一定同方向。`
   }
   const executionExplanation = explainExecutionEvent(point)
   if (executionExplanation) return executionExplanation
@@ -730,6 +864,24 @@ function displayWatchPoints(points: string[]): string[] {
   return [...latestByKey.values()]
 }
 
+function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
+  if (!Array.isArray(raw)) return []
+  const links: EvidenceLink[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as EvidenceLink
+    if (typeof row.url !== 'string' || !/^https?:\/\//i.test(row.url)) continue
+    links.push({
+      source: String(row.source ?? 'news'),
+      title: String(row.title ?? row.url).slice(0, 90),
+      url: row.url,
+      published_at: row.published_at ? String(row.published_at) : '',
+    })
+    if (links.length >= 3) break
+  }
+  return links
+}
+
 export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
@@ -739,16 +891,19 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const alphaContext = alphaContextFromRec(rec, watchPoints)
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
-  const mlSummary = formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlDiagnostics = mlDiagnosticsFromRec(rec)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
-  const mlThresholdText = formatMlThresholdText(mlVoteSummary)
-  const screenerFunnel = screenerFunnelFromRec(rec)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
     (rec.chip_cash_foreign_5d ?? rec.foreign_net_5d ?? 0)
     + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
     + (rec.dealer_net_5d ?? 0)
   )
   const chipPositive = chip5dRaw > 0
+  const evidenceLinks = normalizeEvidenceLinks(rec.evidence_links)
+  const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
+    || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
+  const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
 
   return (
     <div className={cn(
@@ -786,7 +941,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             </Badge>
             <span className={cn('flex items-center gap-1 text-xs', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
               <Users className="h-3 w-3" />
-              籌碼 {fmtChipAmount(chip5dRaw)}
+              {chipBadgeLabel} {fmtChipAmount(chip5dRaw)}
             </span>
             {rec.rsi14 != null && (
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -795,7 +950,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               </span>
             )}
             {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="max-w-full truncate border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
                 ML {mlSummary ?? `分數 ${fmtNumber(rec.ml_score, 1)}，投票明細待同步`}
               </Badge>
             )}
@@ -820,6 +975,25 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
         )}
       </div>
 
+      {evidenceLinks.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-t border-border/30 px-4 py-2">
+          {evidenceLinks.map((link) => (
+            <a
+              key={`${link.source}:${link.url}`}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => event.stopPropagation()}
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
+            >
+              <ExternalLink className="h-3 w-3 shrink-0" />
+              <span className="shrink-0 font-mono uppercase">{link.source}</span>
+              <span className="truncate">{link.title}</span>
+            </a>
+          ))}
+        </div>
+      )}
+
       {expanded && (
         <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
           <div className="space-y-1.5">
@@ -831,41 +1005,16 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <ScoreBreakdownV2 rec={rec} />
 
-          {screenerFunnel && (
-            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="font-medium text-cyan-700 dark:text-cyan-300">Screener 入選漏斗</p>
-                {screenerFunnel.rank != null && (
-                  <span className="font-mono text-cyan-700 dark:text-cyan-300">#{screenerFunnel.rank}</span>
-                )}
-              </div>
-              {screenerFunnel.chips.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {screenerFunnel.chips.map((chip) => (
-                    <Badge key={chip} variant="outline" className="border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0 text-[10px] text-cyan-700 dark:text-cyan-300">
-                      {chip}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-              {screenerFunnel.notes.length > 0 && (
-                <p className="leading-relaxed text-muted-foreground">
-                  {screenerFunnel.notes.join('；')}
-                </p>
-              )}
-            </div>
-          )}
-
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
             <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
           </div>
 
-          {(mlSummary || mlMetadataGap) && (
+          {(mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
               <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
-              <p>{mlSummary ? `${mlSummary}。這是模型投票/共識與預期報酬的摘要，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。` : mlMetadataGap}</p>
-              {mlThresholdText && <p className="mt-1 text-muted-foreground/80">{mlThresholdText}</p>}
+              <p>{mlSummary ?? mlMetadataGap}</p>
+              <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>
           )}
 
@@ -892,7 +1041,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             <p className="text-[11px] text-muted-foreground">
               ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
               {rec.current_price != null && (
-                <span className="ml-3">參考價 ${fmtNumber(rec.current_price, 2)}</span>
+                <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
               )}
             </p>
           )}

@@ -239,6 +239,7 @@ export interface BatchDebateCandidate {
   us_context?: string
   taifex_context?: string
   stock_profile?: StockProfile
+  breeze2_context?: Record<string, unknown>
   cache_key_date?: string
 }
 

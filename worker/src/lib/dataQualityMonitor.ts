@@ -37,6 +37,10 @@ interface CountRow {
   missing_components?: number
   missing_reasons?: number
   missing_industry_tags?: number
+  tradable_total?: number
+  tradable_missing_industry_tags?: number
+  research_total?: number
+  research_missing_industry_tags?: number
   current_price_valid?: number
   tradable_count?: number
   emerging_watchlist_count?: number
@@ -67,6 +71,27 @@ interface CountRow {
   funnel_candidate_count?: number
   funnel_universe_count?: number
   funnel_created_at?: string | null
+  manifest_total?: number
+  price_hot_window_manifest?: number
+  technical_indicator_hot_window_manifest?: number
+  chip_hot_window_manifest?: number
+  backtest_compute_snapshot_manifest?: number
+  price_history_compute_snapshot_manifest?: number
+  pipeline_report_manifest?: number
+  screener_report_manifest?: number
+  latest_d1_serving_manifest_at?: string | null
+  latest_gcs_compute_manifest_at?: string | null
+  latest_r2_report_manifest_at?: string | null
+  awaiting_retrain_followup?: number
+  stale_retrain_followup?: number
+  oldest_retrain_followup_at?: string | null
+  latest_retrain_followup_at?: string | null
+  theme_signal_total?: number
+  theme_signal_sources?: number
+  theme_signal_latest_generated_at?: string | null
+  stock_theme_feature_total?: number
+  stock_theme_feature_symbols?: number
+  stock_theme_feature_latest_generated_at?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -173,6 +198,38 @@ export function buildFreshnessCheck(input: {
     status,
     summary: `${input.label} latest=${input.latestDate} lag=${lagDays}d rows=${rows}`,
     metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor },
+  }
+}
+
+export function buildThemeSignalCoverageCheck(input: {
+  targetDate: string
+  themeSignalTotal: number
+  themeSignalSources: number
+  stockThemeFeatureTotal: number
+  stockThemeFeatureSymbols: number
+  latestThemeSignalAt?: string | null
+  latestStockThemeFeatureAt?: string | null
+}): DataQualityCheck {
+  const hasThemeSignals = input.themeSignalTotal > 0 && input.themeSignalSources > 0
+  const hasStockFeatures = input.stockThemeFeatureTotal > 0 && input.stockThemeFeatureSymbols > 0
+  const status: DataQualityStatus = hasThemeSignals && hasStockFeatures ? 'ok' : hasThemeSignals ? 'warn' : 'fail'
+  return {
+    id: 'theme_signal_runtime',
+    label: 'Theme signal runtime',
+    status,
+    summary: hasThemeSignals
+      ? `theme_signals=${input.themeSignalTotal}, stock_theme_features=${input.stockThemeFeatureTotal}`
+      : 'theme_signals missing; screener falls back to live PTT/news/Anue only',
+    metrics: {
+      target_date: input.targetDate,
+      theme_signal_total: input.themeSignalTotal,
+      theme_signal_sources: input.themeSignalSources,
+      stock_theme_feature_total: input.stockThemeFeatureTotal,
+      stock_theme_feature_symbols: input.stockThemeFeatureSymbols,
+      latest_theme_signal_at: input.latestThemeSignalAt ?? null,
+      latest_stock_theme_feature_at: input.latestStockThemeFeatureAt ?? null,
+      source_of_truth: 'theme_signals + stock_theme_features',
+    },
   }
 }
 
@@ -526,9 +583,17 @@ export function buildScreenerSourceOfTruthCheck(input: {
 export function buildClassificationCoverageCheck(input: {
   total: number
   missingIndustryTags: number
+  tradableTotal?: number
+  tradableMissingIndustryTags?: number
+  researchTotal?: number
+  researchMissingIndustryTags?: number
 }): DataQualityCheck {
   const total = Number(input.total ?? 0)
   const missing = Number(input.missingIndustryTags ?? 0)
+  const tradableTotal = Number(input.tradableTotal ?? total)
+  const tradableMissing = Number(input.tradableMissingIndustryTags ?? missing)
+  const researchTotal = Number(input.researchTotal ?? Math.max(0, total - tradableTotal))
+  const researchMissing = Number(input.researchMissingIndustryTags ?? Math.max(0, missing - tradableMissing))
   if (total <= 0) {
     return {
       id: 'classification_coverage',
@@ -539,7 +604,9 @@ export function buildClassificationCoverageCheck(input: {
     }
   }
 
-  const ratio = missing / total
+  const statusTotal = tradableTotal > 0 ? tradableTotal : total
+  const statusMissing = tradableTotal > 0 ? tradableMissing : missing
+  const ratio = statusMissing / Math.max(1, statusTotal)
   const status: DataQualityStatus = ratio > 0.5
     ? 'fail'
     : ratio > 0.25
@@ -550,11 +617,16 @@ export function buildClassificationCoverageCheck(input: {
     id: 'classification_coverage',
     label: 'Classification coverage',
     status,
-    summary: `industry_tags=${total - missing}/${total} missing=${missing}`,
+    summary: `tradable_industry_tags=${tradableTotal - tradableMissing}/${tradableTotal} missing=${tradableMissing}; research_missing=${researchMissing}/${researchTotal}`,
     metrics: {
       total,
       missing_industry_tags: missing,
       missing_ratio: ratio,
+      tradable_total: tradableTotal,
+      tradable_missing_industry_tags: tradableMissing,
+      research_total: researchTotal,
+      research_missing_industry_tags: researchMissing,
+      status_scope: tradableTotal > 0 ? 'tradable_lane' : 'all_recommendations',
     },
   }
 }
@@ -748,6 +820,97 @@ function buildSchemaCheck(columns: string[]): DataQualityCheck {
   }
 }
 
+export function buildDatasetSnapshotManifestCheck(input: {
+  targetDate: string
+  priceHotWindow: number
+  technicalHotWindow: number
+  chipHotWindow: number
+  backtestComputeSnapshot: number
+  priceHistoryComputeSnapshot: number
+  pipelineReport: number
+  screenerReport: number
+  total: number
+  latestD1ServingManifestAt?: string | null
+  latestGcsComputeManifestAt?: string | null
+  latestR2ReportManifestAt?: string | null
+}): DataQualityCheck {
+  const missingServing = [
+    input.priceHotWindow > 0 ? null : 'price_hot_window',
+    input.technicalHotWindow > 0 ? null : 'technical_indicator_hot_window',
+    input.chipHotWindow > 0 ? null : 'chip_hot_window',
+  ].filter(Boolean)
+  const missingArtifacts = [
+    input.backtestComputeSnapshot > 0 ? null : 'backtest_dataset_compute',
+    input.priceHistoryComputeSnapshot > 0 ? null : 'price_history_compute',
+    input.pipelineReport > 0 ? null : 'pipeline_run_report_r2',
+    input.screenerReport > 0 ? null : 'screener_run_report_r2',
+  ].filter(Boolean)
+  const status: DataQualityStatus = missingServing.length ? 'fail' : missingArtifacts.length ? 'warn' : 'ok'
+  const summary = status === 'ok'
+    ? `D1 serving manifests and object-store artifacts ready for ${input.targetDate}`
+    : missingServing.length
+      ? `source-of-truth D1 serving manifests missing: ${missingServing.join(', ')}`
+      : `D1 serving manifests ready; object-store artifacts pending: ${missingArtifacts.join(', ')}`
+
+  return {
+    id: 'dataset_snapshot_manifest',
+    label: 'Dataset snapshot manifest',
+    status,
+    summary,
+    metrics: {
+      target_date: input.targetDate,
+      manifest_total: input.total,
+      missing_serving_manifests: missingServing,
+      pending_object_artifacts: missingArtifacts,
+      source_snapshot_frequency: {
+        d1_serving: 'after indicator queue finalize',
+        r2_report: 'after screener/pipeline callback',
+        gcs_compute: 'after daily_pipeline_v2 write_d1',
+      },
+      latest_manifest_at: {
+        d1_serving: input.latestD1ServingManifestAt ?? null,
+        gcs_compute: input.latestGcsComputeManifestAt ?? null,
+        r2_report: input.latestR2ReportManifestAt ?? null,
+      },
+      price_hot_window_manifest: input.priceHotWindow,
+      technical_indicator_hot_window_manifest: input.technicalHotWindow,
+      chip_hot_window_manifest: input.chipHotWindow,
+      backtest_compute_snapshot_manifest: input.backtestComputeSnapshot,
+      price_history_compute_snapshot_manifest: input.priceHistoryComputeSnapshot,
+      pipeline_report_manifest: input.pipelineReport,
+      screener_report_manifest: input.screenerReport,
+    },
+  }
+}
+
+export function buildRetrainFollowupClosureCheck(input: {
+  awaiting: number
+  stale: number
+  oldestAt?: string | null
+  latestAt?: string | null
+}): DataQualityCheck {
+  const awaiting = Number(input.awaiting ?? 0)
+  const stale = Number(input.stale ?? 0)
+  const status: DataQualityStatus = stale > 0 ? 'fail' : awaiting > 0 ? 'warn' : 'ok'
+  return {
+    id: 'retrain_followup_closure',
+    label: 'Monthly retrain followup closure',
+    status,
+    summary: status === 'ok'
+      ? 'No monthly retrain run is waiting for Modal followup.'
+      : stale > 0
+        ? `monthly retrain followup appears orphaned stale=${stale}/${awaiting}`
+        : `monthly retrain followup still in flight awaiting=${awaiting}`,
+    metrics: {
+      awaiting_modal_followup: awaiting,
+      stale_4h: stale,
+      oldest_awaiting_at: input.oldestAt ?? null,
+      latest_awaiting_at: input.latestAt ?? null,
+      stale_rule: 'status=orchestrator_dispatched + downstream_notes=await_modal_followup + age>4h',
+    },
+  }
+}
+
 async function firstCount(db: D1Database, sql: string, ...binds: unknown[]): Promise<CountRow> {
   return await db.prepare(sql).bind(...binds).first<CountRow>() ?? {}
 }
@@ -763,7 +926,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows] = await Promise.all([
+  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -803,7 +966,11 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     firstCount(
       env.DB,
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN st.symbol IS NULL THEN 1 ELSE 0 END) AS missing_industry_tags
+              SUM(CASE WHEN st.symbol IS NULL THEN 1 ELSE 0 END) AS missing_industry_tags,
+              SUM(CASE WHEN dr.recommendation_lane = 'tradable' THEN 1 ELSE 0 END) AS tradable_total,
+              SUM(CASE WHEN dr.recommendation_lane = 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS tradable_missing_industry_tags,
+              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' THEN 1 ELSE 0 END) AS research_total,
+              SUM(CASE WHEN dr.recommendation_lane <> 'tradable' AND st.symbol IS NULL THEN 1 ELSE 0 END) AS research_missing_industry_tags
        FROM daily_recommendations dr
        LEFT JOIN stock_tags st
          ON st.symbol = dr.symbol AND st.tag_type = 'industry'
@@ -968,6 +1135,52 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        ORDER BY model_name`,
     ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
     env.DB.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS manifest_total,
+              SUM(CASE WHEN kind = 'price_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS price_hot_window_manifest,
+              SUM(CASE WHEN kind = 'technical_indicator_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS technical_indicator_hot_window_manifest,
+              SUM(CASE WHEN kind = 'chip_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS chip_hot_window_manifest,
+              SUM(CASE WHEN kind = 'backtest_dataset' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS backtest_compute_snapshot_manifest,
+              SUM(CASE WHEN kind = 'price_history' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS price_history_compute_snapshot_manifest,
+              SUM(CASE WHEN kind = 'pipeline_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS pipeline_report_manifest,
+              SUM(CASE WHEN kind = 'screener_run_report' AND access_tier = 'report' AND status = 'ready' THEN 1 ELSE 0 END) AS screener_report_manifest,
+              MAX(CASE WHEN access_tier = 'serving' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_d1_serving_manifest_at,
+              MAX(CASE WHEN access_tier = 'compute' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_gcs_compute_manifest_at,
+              MAX(CASE WHEN access_tier = 'report' AND status = 'ready' THEN created_at ELSE NULL END) AS latest_r2_report_manifest_at
+         FROM dataset_snapshots
+        WHERE business_date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS theme_signal_total,
+              COUNT(DISTINCT source) AS theme_signal_sources,
+              MAX(generated_at) AS theme_signal_latest_generated_at
+         FROM theme_signals
+        WHERE date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS stock_theme_feature_total,
+              COUNT(DISTINCT symbol) AS stock_theme_feature_symbols,
+              MAX(generated_at) AS stock_theme_feature_latest_generated_at
+         FROM stock_theme_features
+        WHERE date = ?`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT COUNT(*) AS awaiting_retrain_followup,
+              SUM(CASE WHEN julianday(received_at) < julianday('now') - (4.0 / 24.0) THEN 1 ELSE 0 END) AS stale_retrain_followup,
+              MIN(received_at) AS oldest_retrain_followup_at,
+              MAX(received_at) AS latest_retrain_followup_at
+         FROM webhook_log
+        WHERE action = 'retrain_followup'
+          AND status = 'orchestrator_dispatched'
+          AND downstream_notes = 'await_modal_followup'`,
+    ).catch((): CountRow => ({})),
   ])
 
   const predictionRows = (predictionGroups.results ?? []).reduce((sum, row) => sum + Number(row.count ?? 0), 0)
@@ -1051,6 +1264,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     buildClassificationCoverageCheck({
       total: Number(classificationStats.total ?? 0),
       missingIndustryTags: Number(classificationStats.missing_industry_tags ?? 0),
+      tradableTotal: Number(classificationStats.tradable_total ?? 0),
+      tradableMissingIndustryTags: Number(classificationStats.tradable_missing_industry_tags ?? 0),
+      researchTotal: Number(classificationStats.research_total ?? 0),
+      researchMissingIndustryTags: Number(classificationStats.research_missing_industry_tags ?? 0),
     }),
     buildRrgTaxonomyCoverageCheck({
       latestThemeDate: rrgTaxonomyStats.latest_theme_date,
@@ -1059,6 +1276,15 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       topConceptSymbols: Number(rrgTaxonomyStats.top_concept_symbols ?? 0),
       topUnmappedSymbols: Number(rrgTaxonomyStats.top_unmapped_symbols ?? 0),
       topOtherSymbols: Number(rrgTaxonomyStats.top_other_symbols ?? 0),
+    }),
+    buildThemeSignalCoverageCheck({
+      targetDate,
+      themeSignalTotal: Number(themeSignalStats.theme_signal_total ?? 0),
+      themeSignalSources: Number(themeSignalStats.theme_signal_sources ?? 0),
+      stockThemeFeatureTotal: Number(stockThemeFeatureStats.stock_theme_feature_total ?? 0),
+      stockThemeFeatureSymbols: Number(stockThemeFeatureStats.stock_theme_feature_symbols ?? 0),
+      latestThemeSignalAt: themeSignalStats.theme_signal_latest_generated_at ?? null,
+      latestStockThemeFeatureAt: stockThemeFeatureStats.stock_theme_feature_latest_generated_at ?? null,
     }),
     buildPendingBuyDateSanityCheck({
       targetDate,
@@ -1077,6 +1303,26 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     }),
     buildModelIcEvidenceCheck(modelIcEvidence.results ?? []),
     buildSchemaCheck((schemaRows.results ?? []).map((row) => row.name)),
+    buildDatasetSnapshotManifestCheck({
+      targetDate,
+      total: Number(datasetManifestStats.manifest_total ?? 0),
+      priceHotWindow: Number(datasetManifestStats.price_hot_window_manifest ?? 0),
+      technicalHotWindow: Number(datasetManifestStats.technical_indicator_hot_window_manifest ?? 0),
+      chipHotWindow: Number(datasetManifestStats.chip_hot_window_manifest ?? 0),
+      backtestComputeSnapshot: Number(datasetManifestStats.backtest_compute_snapshot_manifest ?? 0),
+      priceHistoryComputeSnapshot: Number(datasetManifestStats.price_history_compute_snapshot_manifest ?? 0),
+      pipelineReport: Number(datasetManifestStats.pipeline_report_manifest ?? 0),
+      screenerReport: Number(datasetManifestStats.screener_report_manifest ?? 0),
+      latestD1ServingManifestAt: datasetManifestStats.latest_d1_serving_manifest_at ?? null,
+      latestGcsComputeManifestAt: datasetManifestStats.latest_gcs_compute_manifest_at ?? null,
+      latestR2ReportManifestAt: datasetManifestStats.latest_r2_report_manifest_at ?? null,
+    }),
+    buildRetrainFollowupClosureCheck({
+      awaiting: Number(retrainFollowupStats.awaiting_retrain_followup ?? 0),
+      stale: Number(retrainFollowupStats.stale_retrain_followup ?? 0),
+      oldestAt: retrainFollowupStats.oldest_retrain_followup_at ?? null,
+      latestAt: retrainFollowupStats.latest_retrain_followup_at ?? null,
+    }),
   ]
 
   return {

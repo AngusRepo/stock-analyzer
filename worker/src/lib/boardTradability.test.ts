@@ -1,6 +1,7 @@
 import {
   classifyBoard,
   isEmergingStylePriceRow,
+  normalizeBoardType,
   recommendationLaneForBoard,
 } from './boardTradability'
 
@@ -34,4 +35,11 @@ function assert(condition: unknown, message: string): void {
   assert(!isEmergingStylePriceRow({ open: 52.4, avg_price: null }), 'regular OHLC rows are not emerging-style')
   assert(recommendationLaneForBoard('EMERGING') === 'emerging_watchlist', 'emerging board should route to watchlist lane')
   assert(recommendationLaneForBoard('OTC') === 'tradable', 'OTC board should route to tradable lane')
+}
+
+{
+  assert(normalizeBoardType('sii') === 'LISTED', 'FinLab sii should map to listed board')
+  assert(normalizeBoardType('otc') === 'OTC', 'FinLab otc should map to OTC board')
+  assert(normalizeBoardType('rotc') === 'EMERGING', 'FinLab rotc should map to emerging board')
+  assert(normalizeBoardType('pub') === 'UNKNOWN', 'FinLab pub should not become tradable by default')
 }

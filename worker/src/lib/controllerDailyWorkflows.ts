@@ -1,5 +1,7 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson } from './controllerClient'
+import { readCurrentLegacyRegimeLabel } from './marketRegimeState'
+import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -18,13 +20,13 @@ export async function runObsidianDaily(env: Bindings, date: string) {
   return res.ok ? await res.json() : `HTTP ${res.status}`
 }
 
-export async function runRegimeCompute(env: Bindings) {
+export async function runRegimeCompute(env: Bindings, runDate?: string) {
   requireController(env)
 
-  const prevLabel = await env.KV.get('ml:regime')
+  const prevLabel = await readCurrentLegacyRegimeLabel(env.KV)
   const res = await controllerFetch(env, '/regime/compute', {
     method: 'POST',
-    jsonBody: { force_retrain: false, history_days: 180 },
+    jsonBody: { force_retrain: false, history_days: 180, run_date: runDate },
     timeoutMs: 180_000,
   })
   if (!res.ok) {
@@ -62,7 +64,7 @@ export async function runModelIcTrackerChain(env: Bindings) {
   try {
     const promoRes = await controllerFetch(env, '/model_pool/promote_check', {
       method: 'POST',
-      jsonBody: { apply: true, confirm: true },
+      jsonBody: { apply: false, confirm: false },
       timeoutMs: 60_000,
     })
     if (promoRes.ok) {
@@ -71,7 +73,7 @@ export async function runModelIcTrackerChain(env: Bindings) {
         .filter((a: any) => a.transition !== 'promote_blocked')
         .map((a: any) => `${a.model}:${a.transition}`)
         .join(',') || 'none'
-      stage4 = `applied=${promoteDecision.applied_count}/${promoteDecision.actions_count} [${transitions}]`
+      stage4 = `dry_run=${promoteDecision.actions_count} [${transitions}]`
     } else {
       stage4 = `chain failed HTTP ${promoRes.status}`
     }
@@ -104,12 +106,19 @@ export async function runModelIcTrackerChain(env: Bindings) {
   return `IC n_rows=${icData.n_rows_total} | ${computed} || Stage4 ${stage4} || ConfigEval ${configEval}`
 }
 
-export async function runModelIcRollingRefresh(env: Bindings) {
+export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) {
   requireController(env)
 
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
-    jsonBody: { lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true, append_history: false },
+    jsonBody: {
+      lookback_days: 7,
+      history_max: 26,
+      min_samples: 50,
+      update_pool: true,
+      append_history: false,
+      run_date: runDate || undefined,
+    },
     timeoutMs: 120_000,
   })
 
@@ -118,7 +127,7 @@ export async function runModelIcRollingRefresh(env: Bindings) {
     .map(([k, v]: any) => `${k}:${v.ic?.toFixed(3)}(${v.n_samples})`)
     .join(' ') || 'none'
 
-  return `rolling_ic n_rows=${icData.n_rows_total} | ${computed}`
+  return `rolling_ic run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
 }
 
 export async function runVerifyV2(env: Bindings, runDate?: string) {
@@ -141,4 +150,29 @@ export async function runVerifyV2(env: Bindings, runDate?: string) {
   }
 
   return `verified ${data.verified}/${data.pending} correct ${data.correct} pnl ${(data.total_pnl_pct * 100).toFixed(1)}% arf ${data.arf_updated}`
+}
+
+export async function runPaperActivePostmarketPromotion(env: Bindings, runDate?: string): Promise<string> {
+  requireController(env)
+
+  const res = await controllerFetch(env, '/paper_challenger/postmarket_report', {
+    method: 'POST',
+    jsonBody: { run_date: runDate || undefined },
+    timeoutMs: 60_000,
+  })
+  if (res.status === 404) {
+    return 'SKIP: paper-active postmarket controller route unavailable'
+  }
+  if (!res.ok) {
+    throw new Error(`Controller /paper_challenger/postmarket_report HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  }
+
+  const report = await res.json() as Record<string, unknown>
+  const persisted = await recordPaperActivePostmarketReport(env, report)
+  return [
+    `paper-active-postmarket run_date=${runDate ?? 'latest'}`,
+    `candidate_count=${Number(report.candidate_count ?? 0)}`,
+    `evaluated=${Number(report.evaluated_count ?? 0)}`,
+    `persisted candidates=${persisted.candidates} metrics=${persisted.dailyMetrics} audits=${persisted.auditEvents}`,
+  ].join(' ')
 }

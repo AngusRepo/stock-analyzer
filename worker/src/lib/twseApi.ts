@@ -41,6 +41,100 @@ async function fetchWithRetry(
 }
 
 const TWSE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+export const MIN_TWSE_BULK_PRICE_ROWS = 900
+export const MIN_TPEX_BULK_PRICE_ROWS = 700
+
+type TpexStockDayAllOptions = {
+  date?: string
+  minRows?: number
+  maxReadinessAttempts?: number
+  readinessDelayMs?: number
+  fetcher?: typeof fetchWithRetry
+  fallbackFetcher?: typeof fetchWithRetry
+}
+
+async function fetchTpexStockDayAllViaController(
+  date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<StockDayAllRow[]> {
+  if (!controllerUrl) return []
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+  const res = await fetch(`${controllerUrl}/tpex-prices`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ date }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) throw new Error(`Controller /tpex-prices HTTP ${res.status}`)
+  const data = await res.json() as any
+  const rows = Array.isArray(data?.prices) ? data.prices : []
+  return rows
+    .filter((r: any) => isCommonStockCode(String(r?.symbol ?? '')))
+    .map((r: any) => ({
+      symbol: String(r.symbol).trim(),
+      open: typeof r.open === 'number' ? r.open : null,
+      high: typeof r.high === 'number' ? r.high : null,
+      low: typeof r.low === 'number' ? r.low : null,
+      close: typeof r.close === 'number' ? r.close : null,
+      volume: typeof r.volume === 'number' ? r.volume : null,
+      avg_price: typeof r.avg_price === 'number' ? r.avg_price : null,
+    }))
+}
+
+async function fetchTwseStockDayAllViaController(
+  date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
+): Promise<{ reportDate: string | null; rows: StockDayAllRow[] }> {
+  if (!controllerUrl) return { reportDate: null, rows: [] }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
+  const res = await fetch(`${controllerUrl}/twse-prices`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ date }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) throw new Error(`Controller /twse-prices HTTP ${res.status}`)
+  const data = await res.json() as any
+  const rows = Array.isArray(data?.prices) ? data.prices : []
+  return {
+    reportDate: typeof data?.report_date === 'string' ? data.report_date : null,
+    rows: rows
+      .filter((r: any) => isCommonStockCode(String(r?.symbol ?? '')))
+      .map((r: any) => ({
+        symbol: String(r.symbol).trim(),
+        open: typeof r.open === 'number' ? r.open : null,
+        high: typeof r.high === 'number' ? r.high : null,
+        low: typeof r.low === 'number' ? r.low : null,
+        close: typeof r.close === 'number' ? r.close : null,
+        volume: typeof r.volume === 'number' ? r.volume : null,
+      })),
+  }
+}
+
+export function assertBulkPriceSourceReady(input: {
+  date: string
+  twseRows: number
+  tpexRows: number
+  twseOk: boolean
+  tpexOk: boolean
+}): void {
+  const problems: string[] = []
+  if (!input.twseOk) problems.push('TWSE source failed')
+  if (!input.tpexOk) problems.push('TPEX source failed')
+  if (input.twseRows < MIN_TWSE_BULK_PRICE_ROWS) {
+    problems.push(`TWSE price rows=${input.twseRows}/${MIN_TWSE_BULK_PRICE_ROWS}`)
+  }
+  if (input.tpexRows < MIN_TPEX_BULK_PRICE_ROWS) {
+    problems.push(`TPEX price rows=${input.tpexRows}/${MIN_TPEX_BULK_PRICE_ROWS}`)
+  }
+  if (problems.length > 0) {
+    throw new Error(`Bulk price source incomplete for ${input.date}: ${problems.join('; ')}`)
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -58,6 +152,11 @@ function rocDate(isoDate: string): string {
   return `${parseInt(y) - 1911}/${m}/${d}`
 }
 
+function rocCompactDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split('-')
+  return `${parseInt(y) - 1911}${m}${d}`
+}
+
 function isStockCode(s: string): boolean {
   return /^\d{4,6}$/.test(s.trim())
 }
@@ -71,6 +170,12 @@ function parseOpenApiArray(text: string): any[] {
   if (!normalized.startsWith('[')) return []
   const body = JSON.parse(normalized)
   return Array.isArray(body) ? body : []
+}
+
+function parseJsonObject(text: string): any {
+  const normalized = text.replace(/^\uFEFF/, '').trimStart()
+  if (!normalized.startsWith('{')) return {}
+  return JSON.parse(normalized)
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -951,16 +1056,94 @@ export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
     })
 }
 
-export async function fetchTpexStockDayAll(): Promise<StockDayAllRow[]> {
-  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
-  const res = await fetchWithRetry(url, {
+export function parseTpexHistoricalDailyQuoteRows(body: any): StockDayAllRow[] {
+  const tables = Array.isArray(body?.tables) ? body.tables : []
+  const rows = tables.flatMap((table: any) => Array.isArray(table?.data) ? table.data : [])
+  return rows
+    .filter((r: any[]) => Array.isArray(r) && isCommonStockCode(String(r[0] ?? '')))
+    .map((r: any[]) => {
+      const pf = (v: any) => v && v !== '--' ? parseFloat(String(v).replace(/,/g, '')) || null : null
+      return {
+        symbol: String(r[0] ?? '').trim(),
+        open: pf(r[4]),
+        high: pf(r[5]),
+        low: pf(r[6]),
+        close: pf(r[2]),
+        volume: r[8] ? parseTwNum(String(r[8])) : null,
+        avg_price: pf(r[7]),
+      }
+    })
+}
+
+function tpexLatestBodyDate(body: any[]): string | null {
+  const firstDated = body.find(row => typeof row?.Date === 'string' && /^\d{7}$/.test(row.Date))
+  return firstDated?.Date ?? null
+}
+
+async function fetchTpexDateSpecificStockDayAll(
+  date: string,
+  fetcher: typeof fetchWithRetry,
+): Promise<StockDayAllRow[]> {
+  const url = `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${date.replace(/-/g, '/')}`
+  const res = await fetcher(url, {
     headers: TWSE_HEADERS,
     signal: AbortSignal.timeout(30000),
-  }, { label: 'TPEX_DAILY_QUOTES' })
+  }, { label: 'TPEX_DAILY_QUOTES_DATE_SPECIFIC' })
   if (!res.ok) return []
-  const text = await res.text()
-  const body = parseOpenApiArray(text)
-  return parseTpexDailyQuoteRows(body)
+  const body = parseJsonObject(await res.text())
+  const reportDate = typeof body?.date === 'string' ? body.date : null
+  const requested = twseDate(date)
+  if (reportDate && reportDate !== requested) {
+    console.warn(`[TPEX_DAILY_QUOTES_DATE_SPECIFIC] stale response: requested ${requested}, got ${reportDate}`)
+    return []
+  }
+  return parseTpexHistoricalDailyQuoteRows(body)
+}
+
+export async function fetchTpexStockDayAll(options: TpexStockDayAllOptions = {}): Promise<StockDayAllRow[]> {
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
+  const minRows = options.minRows ?? MIN_TPEX_BULK_PRICE_ROWS
+  const maxAttempts = Math.max(1, options.maxReadinessAttempts ?? 4)
+  const delayMs = Math.max(0, options.readinessDelayMs ?? 15_000)
+  const fetcher = options.fetcher ?? fetchWithRetry
+  const fallbackFetcher = options.fallbackFetcher ?? fetcher
+  const expectedRocDate = options.date ? rocCompactDate(options.date) : null
+  let lastRows: StockDayAllRow[] = []
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetcher(url, {
+        headers: TWSE_HEADERS,
+        signal: AbortSignal.timeout(30000),
+      }, { label: 'TPEX_DAILY_QUOTES' })
+      if (!res.ok) break
+      const text = await res.text()
+      const body = parseOpenApiArray(text)
+      const bodyDate = tpexLatestBodyDate(body)
+      lastRows = parseTpexDailyQuoteRows(body)
+      if (expectedRocDate && bodyDate && bodyDate !== expectedRocDate) {
+        console.warn(`[TPEX_DAILY_QUOTES] latest feed stale: requested ${expectedRocDate}, got ${bodyDate}; switching to date-specific fallback`)
+        break
+      }
+      if (lastRows.length >= minRows) return lastRows
+      if (attempt < maxAttempts) {
+        console.warn(`[TPEX_DAILY_QUOTES] partial feed ${lastRows.length}/${minRows}, readiness retry ${attempt}/${maxAttempts}`)
+        await new Promise(r => setTimeout(r, delayMs))
+      }
+    } catch (e) {
+      console.warn(`[TPEX_DAILY_QUOTES] latest feed failed; switching to date-specific fallback: ${e instanceof Error ? e.message : String(e)}`)
+      break
+    }
+  }
+
+  if (options.date) {
+    const fallbackRows = await fetchTpexDateSpecificStockDayAll(options.date, fallbackFetcher)
+    if (fallbackRows.length >= minRows) return fallbackRows
+    console.warn(`[TPEX_DAILY_QUOTES_DATE_SPECIFIC] incomplete fallback ${fallbackRows.length}/${minRows} for ${options.date}`)
+    if (fallbackRows.length > lastRows.length) return fallbackRows
+  }
+
+  return lastRows
 }
 
 /** TPEX 興櫃每日行情（含均價 — 興櫃漲跌幅基準是前日均價，非收盤價）*/
@@ -997,10 +1180,54 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
 export async function bulkFetchAndStorePrices(
   db: D1Database,
   date: string,
+  controllerUrl?: string,
+  controllerSecret?: string,
 ): Promise<number> {
+  const fetchTwseRows = async (): Promise<{ reportDate: string | null; rows: StockDayAllRow[] }> => {
+    let direct: { reportDate: string | null; rows: StockDayAllRow[] } = { reportDate: null, rows: [] }
+    try {
+      direct = await fetchTwseStockDayAll(date)
+      if (direct.rows.length >= MIN_TWSE_BULK_PRICE_ROWS) return direct
+    } catch (e) {
+      console.warn('[BulkPrice] TWSE direct fetch failed before controller proxy:', e)
+    }
+
+    try {
+      const proxied = await fetchTwseStockDayAllViaController(date, controllerUrl, controllerSecret)
+      if (proxied.rows.length > direct.rows.length) {
+        console.warn(`[BulkPrice] TWSE controller proxy recovered ${proxied.rows.length} rows (direct=${direct.rows.length})`)
+        return proxied
+      }
+    } catch (e) {
+      console.warn('[BulkPrice] TWSE controller proxy failed:', e)
+    }
+    return direct
+  }
+
+  const fetchTpexRows = async (): Promise<StockDayAllRow[]> => {
+    let directRows: StockDayAllRow[] = []
+    try {
+      directRows = await fetchTpexStockDayAll({ date })
+      if (directRows.length >= MIN_TPEX_BULK_PRICE_ROWS) return directRows
+    } catch (e) {
+      console.warn('[BulkPrice] TPEX direct fetch failed before controller proxy:', e)
+    }
+
+    try {
+      const proxiedRows = await fetchTpexStockDayAllViaController(date, controllerUrl, controllerSecret)
+      if (proxiedRows.length > directRows.length) {
+        console.warn(`[BulkPrice] TPEX controller proxy recovered ${proxiedRows.length} rows (direct=${directRows.length})`)
+        return proxiedRows
+      }
+    } catch (e) {
+      console.warn('[BulkPrice] TPEX controller proxy failed:', e)
+    }
+    return directRows
+  }
+
   const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
-    fetchTwseStockDayAll(date),
-    fetchTpexStockDayAll(),
+    fetchTwseRows(),
+    fetchTpexRows(),
     fetchEmergingStockDayAll(),
   ])
 
@@ -1010,6 +1237,14 @@ export async function bulkFetchAndStorePrices(
   const twseRows = twseResult.status === 'fulfilled' ? twseResult.value.rows : []
   const twseReportDate = twseResult.status === 'fulfilled' ? twseResult.value.reportDate : null
   const effectiveDate = twseReportDate ?? date
+  const tpexQuoteRows = tpexRows.status === 'fulfilled' ? tpexRows.value : []
+  assertBulkPriceSourceReady({
+    date: effectiveDate,
+    twseRows: twseRows.length,
+    tpexRows: tpexQuoteRows.length,
+    twseOk: twseResult.status === 'fulfilled',
+    tpexOk: tpexRows.status === 'fulfilled',
+  })
   if (twseReportDate && twseReportDate !== date) {
     console.warn(
       `[BulkPrice] TWSE report date ${twseReportDate} ≠ requested ${date}; ` +
@@ -1019,7 +1254,7 @@ export async function bulkFetchAndStorePrices(
 
   const allRows: StockDayAllRow[] = [
     ...twseRows,
-    ...(tpexRows.status === 'fulfilled' ? tpexRows.value : []),
+    ...tpexQuoteRows,
     ...(emergingRows.status === 'fulfilled' ? emergingRows.value : []),
   ]
   if (twseResult.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseResult.reason)

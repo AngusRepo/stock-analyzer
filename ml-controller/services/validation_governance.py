@@ -78,6 +78,17 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
     return {}
 
 
+def _requires_promotion_grade_evidence(source: str, external_risk_required: bool) -> bool:
+    if not external_risk_required:
+        return False
+    normalized = str(source or "").lower()
+    return normalized in {
+        "promotion_gate",
+        "alpha_policy_latest_gate",
+        "alpha_policy_evidence_gate",
+    }
+
+
 def _pct(value: Any) -> str:
     return f"{_as_float(value) * 100:.1f}%"
 
@@ -635,13 +646,14 @@ def build_strategy_lab_record(
     }
 
 
-def _walk_forward_gate(walk_forward: dict[str, Any] | None) -> dict[str, Any]:
+def _walk_forward_gate(walk_forward: dict[str, Any] | None, *, required: bool) -> dict[str, Any]:
     if not walk_forward:
+        status = "FAIL" if required else "WARN"
         return _gate(
             "walk_forward",
-            True,
-            status="WARN",
-            severity="advisory",
+            False if required else True,
+            status=status,
+            severity="blocking" if required else "advisory",
             reason="walk_forward_evidence_not_attached_to_latest_gate",
             evidence={"required_before_final_promotion": True},
         )
@@ -651,6 +663,58 @@ def _walk_forward_gate(walk_forward: dict[str, Any] | None) -> dict[str, Any]:
         passed,
         reason="walk-forward must confirm OOS behavior across windows",
         evidence=walk_forward,
+    )
+
+
+def _regime_split_gate(
+    backtest: dict[str, Any],
+    *,
+    policy: dict[str, Any],
+    required: bool,
+) -> dict[str, Any]:
+    per_regime = backtest.get("per_regime") if isinstance(backtest.get("per_regime"), dict) else {}
+    min_regime_trades = _as_int(policy.get("min_regime_trades"), 10)
+    min_regime_return = _as_float(policy.get("min_regime_return"), -0.02)
+    min_regime_buckets = _as_int(policy.get("min_regime_buckets"), 2)
+    buckets: dict[str, dict[str, Any]] = {}
+    weak_regimes: list[str] = []
+    for regime, raw in per_regime.items():
+        if not isinstance(raw, dict):
+            continue
+        trades = _as_int(raw.get("trades") or raw.get("total_trades"), 0)
+        ret = _as_float(raw.get("return") or raw.get("total_return") or raw.get("oos_return"), 0.0)
+        if trades <= 0:
+            continue
+        buckets[str(regime)] = {"trades": trades, "return": ret}
+        if trades >= min_regime_trades and ret < min_regime_return:
+            weak_regimes.append(str(regime))
+
+    enough_buckets = len(buckets) >= min_regime_buckets
+    passed = enough_buckets and not weak_regimes
+    if not required and not per_regime:
+        return _gate(
+            "regime_split_validation",
+            True,
+            status="WARN",
+            severity="advisory",
+            reason="regime_split_evidence_not_attached_to_replay",
+            evidence={
+                "required_before_final_promotion": True,
+                "min_regime_buckets": min_regime_buckets,
+            },
+        )
+    return _gate(
+        "regime_split_validation",
+        passed,
+        reason="promotion-grade validation must include OOS evidence across multiple regimes",
+        evidence={
+            "regime_count": len(buckets),
+            "min_regime_buckets": min_regime_buckets,
+            "min_regime_trades": min_regime_trades,
+            "min_regime_return": min_regime_return,
+            "weak_regimes": weak_regimes,
+            "per_regime": buckets,
+        },
     )
 
 
@@ -666,6 +730,7 @@ def build_validation_packet(
     external_risk_required: bool = True,
 ) -> dict[str, Any]:
     p = _policy_dict(policy)
+    promotion_required = _requires_promotion_grade_evidence(source, external_risk_required)
     min_trades = _as_int(p.get("min_trades"), 60)
     min_sharpe = _as_float(p.get("min_sharpe"), 0.5)
     min_profit_factor = _as_float(p.get("min_profit_factor"), 1.05)
@@ -821,7 +886,8 @@ def build_validation_packet(
             )
         )
 
-    gates.append(_walk_forward_gate(walk_forward))
+    gates.append(_walk_forward_gate(walk_forward, required=promotion_required))
+    gates.append(_regime_split_gate(backtest, policy=p, required=promotion_required))
     gates.append(
         _gate(
             "slippage_fee_liquidity",

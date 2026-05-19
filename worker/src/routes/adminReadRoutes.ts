@@ -51,6 +51,66 @@ adminReadRoutes.get('/api/admin/data-quality/status', async (c) => {
   return c.json(await buildDataQualityReport(c.env, { date: c.req.query('date') }))
 })
 
+async function handleDatasetSnapshotList(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { listDatasetSnapshots } = await import('../lib/datasetSnapshots')
+  return c.json({
+    success: true,
+    snapshots: await listDatasetSnapshots(c.env, {
+      kind: c.req.query('kind'),
+      businessDate: c.req.query('date'),
+      accessTier: c.req.query('access_tier') as any,
+      limit: Number.parseInt(c.req.query('limit') ?? '50', 10),
+    }),
+  })
+}
+
+async function handleDatasetSnapshotManifest(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { getDatasetSnapshotManifest } = await import('../lib/datasetSnapshots')
+  const manifest = await getDatasetSnapshotManifest(c.env, c.req.param('id'))
+  if (!manifest) return c.json({ error: 'dataset snapshot not found' }, 404)
+  return c.json({ success: true, manifest })
+}
+
+async function handleDatasetSnapshotPreview(c: any) {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { readDatasetSnapshotPreview } = await import('../lib/datasetSnapshots')
+  const bytes = Number.parseInt(c.req.query('bytes') ?? `${128 * 1024}`, 10)
+  const preview = await readDatasetSnapshotPreview(c.env, c.req.param('id'), bytes)
+  const status = preview.found === false ? 404 : 200
+  return c.json({ success: status === 200, ...preview }, status as any)
+}
+
+adminReadRoutes.get('/api/admin/datasets/snapshots', handleDatasetSnapshotList)
+adminReadRoutes.get('/api/admin/datasets/snapshots/:id/manifest', handleDatasetSnapshotManifest)
+adminReadRoutes.get('/api/admin/datasets/snapshots/:id/preview', handleDatasetSnapshotPreview)
+adminReadRoutes.get('/api/datasets/snapshots', handleDatasetSnapshotList)
+adminReadRoutes.get('/api/datasets/snapshots/:id/manifest', handleDatasetSnapshotManifest)
+adminReadRoutes.get('/api/datasets/snapshots/:id/preview', handleDatasetSnapshotPreview)
+
+adminReadRoutes.get('/api/admin/datasets/retention-plan', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { D1_HOT_WINDOW_DAYS, buildDatasetRetentionPlan } = await import('../lib/datasetSnapshots')
+  const businessDate = c.req.query('date') || twToday()
+  const hotWindowDays = Number.parseInt(
+    c.req.query('hot_window_days') ?? c.req.query('hotWindowDays') ?? `${D1_HOT_WINDOW_DAYS}`,
+    10,
+  )
+  return c.json({
+    success: true,
+    plan: await buildDatasetRetentionPlan(c.env, { businessDate, hotWindowDays }),
+  })
+})
+
 adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
@@ -105,13 +165,18 @@ adminReadRoutes.get('/api/admin/observability/drilldown', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { buildLiveObservabilityEventReport } = await import('../lib/observabilityEvents')
+  const { buildLiveObservabilityEventReport, listObservabilityAuditEvents } = await import('../lib/observabilityEvents')
   const { buildObservabilityDrilldown } = await import('../lib/observabilityDrilldown')
+  const date = c.req.query('date')
   const report = await buildLiveObservabilityEventReport(c.env, {
-    date: c.req.query('date'),
+    date,
     live: c.req.query('live') === '1',
   })
-  return c.json(buildObservabilityDrilldown(report))
+  const auditRows = await listObservabilityAuditEvents(c.env, {
+    date: date ?? report.date,
+    limit: 300,
+  }).catch(() => [])
+  return c.json(buildObservabilityDrilldown(report, { auditRows }))
 })
 
 adminReadRoutes.get('/api/admin/ops/runbook', async (c) => {
@@ -134,16 +199,47 @@ adminReadRoutes.get('/api/admin/strategy/specs', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { listStrategySpecs } = await import('../lib/strategyLab')
+  const { listStrategySpecsForLearning } = await import('../lib/strategyLearning')
   const { validateStrategySpec } = await import('../lib/strategySpec')
   const { STRATEGY_OWNER_BOUNDARIES } = await import('../lib/strategyOwnerFreeze')
-  const specs = listStrategySpecs()
+  const { specs, source } = await listStrategySpecsForLearning(c.env.DB)
   return c.json({
     success: true,
     version: specs[0]?.version ?? 'strategy-spec-v1',
     mode: 'read_only',
+    source,
     specs: specs.map((spec) => ({ ...spec, validation: validateStrategySpec(spec) })),
     owner_boundaries: STRATEGY_OWNER_BOUNDARIES,
+  })
+})
+
+adminReadRoutes.get('/api/admin/strategy/learning', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const { buildStrategyLearningSummary } = await import('../lib/strategyLearning')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    ...(await buildStrategyLearningSummary(c.env.DB, date)),
+  })
+})
+
+adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const { buildStrategyLearningSummary, getLatestStrategyPolicyState } = await import('../lib/strategyLearning')
+  const summary = await buildStrategyLearningSummary(c.env.DB, date)
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    date,
+    latest: await getLatestStrategyPolicyState(c.env.DB),
+    preview: summary.policy_state_preview,
+    promotion_gate: summary.promotion_gate,
   })
 })
 
@@ -192,7 +288,19 @@ adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
   const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 100))
   const { listResearchExperiments, buildResearchReviewPacket } = await import('../lib/researchExperimentRegistry')
   const { buildResearchEvaluationPlan } = await import('../lib/researchEvaluationPlan')
+  const {
+    buildMetaLearningDecisionPacket,
+    buildMetaLearningEvidenceMatrix,
+    listMetaLearningTracks,
+    listMetaRewardLedgerRows,
+    listMetaShadowDecisionEvidence,
+  } = await import('../lib/metaLearningResearchTrack')
   const experiments = await listResearchExperiments(c.env.KV, limit)
+  const metaLearningTracks = listMetaLearningTracks(experiments)
+  const [rewardLedger, shadowDecisions] = await Promise.all([
+    listMetaRewardLedgerRows(c.env.DB),
+    listMetaShadowDecisionEvidence(c.env.DB),
+  ])
   return c.json({
     success: true,
     mode: 'read_only',
@@ -201,6 +309,9 @@ adminReadRoutes.get('/api/admin/research/experiments', async (c) => {
       review_packet: buildResearchReviewPacket(record),
       evaluation_plan: buildResearchEvaluationPlan(record),
     })),
+    meta_learning_tracks: metaLearningTracks,
+    meta_learning_evidence_matrix: buildMetaLearningEvidenceMatrix(metaLearningTracks, { rewardLedger, shadowDecisions }),
+    meta_learning_decision_packet: buildMetaLearningDecisionPacket(experiments),
   })
 })
 
@@ -233,6 +344,44 @@ adminReadRoutes.get('/api/admin/research/experiments/:id/evaluation-runs', async
     experiment_id: id,
     runs: await listResearchEvaluationRunReports(c.env.KV, id, limit),
   })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/patch-handoffs', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '10', 10) || 10, 50))
+  const { listResearchPatchHandoffs } = await import('../lib/researchPatchHandoff')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiment_id: id,
+    handoffs: await listResearchPatchHandoffs(c.env.KV, id, limit),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/experiments/:id/artifact-intents', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const id = c.req.param('id')
+  const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '10', 10) || 10, 50))
+  const { listResearchArtifactIntents } = await import('../lib/researchArtifactIntent')
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    experiment_id: id,
+    intents: await listResearchArtifactIntents(c.env.KV, id, limit),
+  })
+})
+
+adminReadRoutes.get('/api/admin/research/model-upgrade/status', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildModelUpgradeResearchStatus } = await import('../lib/modelUpgradeResearchRegistry')
+  return c.json(await buildModelUpgradeResearchStatus(c.env.KV))
 })
 
 adminReadRoutes.post('/api/admin/research/gate', async (c) => {

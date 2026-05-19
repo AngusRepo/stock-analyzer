@@ -28,8 +28,11 @@ def test_emerging_policy_is_research_only_but_ml_eligible():
 
 def test_segment_aliases_are_normalized():
     assert normalize_segment("TWSE") == "LISTED"
+    assert normalize_segment("sii") == "LISTED"
     assert normalize_segment("TPEX") == "OTC"
     assert normalize_segment("ESB") == "EMERGING"
+    assert normalize_segment("rotc") == "EMERGING"
+    assert normalize_segment("pub") == "UNKNOWN"
     assert normalize_segment("") == "UNKNOWN"
 
 

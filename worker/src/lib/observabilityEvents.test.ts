@@ -1,6 +1,7 @@
 import {
   buildEventsFromAdaptiveMeta,
   buildEventsFromDataQuality,
+  buildEventsFromGaOptimizer,
   buildEventsFromScheduler,
   buildEventsFromValidation,
   normalizeObservabilityAuditFilters,
@@ -41,6 +42,44 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
 }
 
 {
+  const events = buildEventsFromGaOptimizer({
+    generatedAt,
+    state: {
+      production_learning_loop: true,
+      mutates_trading_config: false,
+      updated_at: generatedAt,
+      status: 'shadow_config',
+      promotion: {
+        level: 'L2',
+        status: 'shadow_config',
+        nextLevel: 'L3',
+        approvalRequiredForNextLevel: true,
+        canRequestNextLevel: false,
+        missingEvidence: ['stale_snapshot'],
+      },
+      best: {
+        score: 1.2,
+        metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+        gate: { passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
+        candidate: { params: { alphaFramework: { riskOverlay: { highVolThreshold: 0.05 } } } },
+      },
+      history: [{ generation: 0, best_score: 1.0 }, { generation: 1, best_score: 1.2 }],
+    },
+  })
+
+  assert(events.length === 1, 'GA optimizer should emit one adaptive meta event')
+  assert(events[0].domain === 'adaptive_meta', 'GA optimizer belongs to adaptive meta owner')
+  assert(events[0].source === 'ga_optimizer', 'GA optimizer event source should be explicit')
+  assert(events[0].summary.includes('next=L3'), 'GA optimizer event should expose promotion ladder next step')
+  assert(events[0].summary.includes('ready_for_l3=yes'), 'GA optimizer event should expose L3 request readiness')
+  assert((events[0].evidence.promotion as any).level === 'L2', 'GA optimizer evidence should include promotion level')
+  assert((events[0].evidence.promotion as any).canRequestNextLevel === true, 'GA optimizer evidence should expose L3 approval request readiness')
+  assert((events[0].evidence.promotion as any).missingEvidence.length === 0, 'GA optimizer should recompute stale missing evidence from current gates')
+  assert((events[0].evidence.promotion as any).nextAction.includes('Ready to request Wei approval for L3'), 'GA optimizer should backfill concrete next action for older KV states')
+  assert((events[0].evidence as any).mutates_trading_config === false, 'GA learning must not mutate trading config')
+}
+
+{
   const events = buildEventsFromAdaptiveMeta({
     generatedAt,
     params: {
@@ -63,7 +102,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         group: 'pipeline_chain',
         lastStatus: 'failed',
         lastDuration: '12s',
-        lastRun: '4/30 17:30',
+        lastRun: '4/30 22:00',
         summary: 'callback timeout',
       },
     ],
@@ -79,7 +118,13 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   const events = buildEventsFromDataQuality({
     generatedAt,
     checks: [
-      { id: 'price_freshness', label: 'Price data', status: 'fail', summary: 'latest=2026-04-29 lag=1d' },
+      {
+        id: 'price_freshness',
+        label: 'Price data',
+        status: 'fail',
+        summary: 'latest=2026-04-29 lag=1d',
+        metrics: { latest_date: '2026-04-29', target_date: '2026-04-30' },
+      },
       { id: 'schema', label: 'Schema', status: 'ok', summary: 'ok' },
     ],
   })
@@ -87,6 +132,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events.length === 1, 'data quality should emit actionable non-ok checks only')
   assert(events[0].severity === 'error', 'failed data quality check should be error severity')
   assert(events[0].title === 'Price data', 'data quality event should preserve check label')
+  assert(events[0].ts === '2026-04-29T00:00:00.000Z', 'data quality event should use evidence time instead of page refresh time')
 }
 
 {

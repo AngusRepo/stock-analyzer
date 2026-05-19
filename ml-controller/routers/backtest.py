@@ -187,13 +187,20 @@ def post_alpha_evidence(req: AlphaEvidenceRequest = Body(...)):
     """Generate candidate-specific alpha evidence. Read-only: no D1/KV/promote writes."""
     logger.info("[AlphaEvidence] Running candidate-specific replay/MC/PBO")
     try:
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        baseline_config = req.baseline_config
+        if not baseline_config:
+            cfg_result = load_merged_trading_config_with_contract()
+            baseline_config = cfg_result.config
+            if cfg_result.contract.degraded:
+                logger.warning("[AlphaEvidence] trading:config degraded: %s", cfg_result.contract.to_dict())
         return {
             "status": "ok",
             **run_alpha_candidate_evidence(
                 req.candidate,
                 start_date=req.start_date,
                 end_date=req.end_date,
-                baseline_config=req.baseline_config,
+                baseline_config=baseline_config,
                 initial_capital=req.initial_capital,
                 mode=req.mode,
                 symbols=req.symbols,
@@ -238,10 +245,19 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
         f"symbols={len(req.symbols) if req.symbols else 'full'}"
     )
     try:
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        params = req.params
+        config_contract = None
+        if not params:
+            cfg_result = load_merged_trading_config_with_contract()
+            params = cfg_result.config
+            config_contract = cfg_result.contract.to_dict()
+            if cfg_result.contract.degraded:
+                logger.warning("[Replay] trading:config degraded: %s", config_contract)
         metrics = replay_period_loading(
             start_date=req.start_date,
             end_date=req.end_date,
-            params=req.params,
+            params=params,
             initial_capital=req.initial_capital,
             mode=req.mode,
             symbols=req.symbols,
@@ -307,6 +323,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             "mode": metrics.mode,
             "persist_result": persist_result,
             "strategy_replay_contract": strategy_replay_contract,
+            "trading_config_contract": config_contract,
             "strategy_lab_record": strategy_lab_record,
             "validation_packet": validation_packet,
             "metric_explanations": metric_explanations,
@@ -395,7 +412,7 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
       - dropped_samples: up to N symbol names per drop bucket
       - passed_samples: first N symbols that made it to `scored`
 
-    Expensive: loads BacktestDataset from D1 (same cost as /backtest/replay).
+    Expensive: loads BacktestDataset through the research data contract.
     """
     from datetime import date as _date, timedelta as _td
     try:
@@ -411,13 +428,21 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
     )
 
     try:
-        dataset = BacktestDataset.load_from_d1(
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        params = req.params
+        if not params:
+            cfg_result = load_merged_trading_config_with_contract()
+            params = cfg_result.config
+            if cfg_result.contract.degraded:
+                logger.warning("[Diagnose] trading:config degraded: %s", cfg_result.contract.to_dict())
+        dataset, data_access = BacktestDataset.load_for_research(
+            lane="backtest.diagnose",
             start_date=start_s,
             end_date=req.date,
             symbols=req.symbols,
         )
-        screener = ScreenerParams.from_trading_config(req.params)
-        ranking = RankingParams.from_trading_config(req.params)
+        screener = ScreenerParams.from_trading_config(params)
+        ranking = RankingParams.from_trading_config(params)
         result = diagnose_replay_for_date(
             dataset=dataset,
             date=req.date,
@@ -426,7 +451,7 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
             lookback_days=22,
             max_dropped_samples=req.max_dropped_samples,
         )
-        return {"status": "ok", **result}
+        return {"status": "ok", "data_access": data_access, **result}
     except Exception as e:
         logger.exception("[Diagnose] Failed")
         return {"status": "error", "error": str(e)}

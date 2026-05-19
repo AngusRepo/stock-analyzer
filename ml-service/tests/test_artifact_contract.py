@@ -89,6 +89,9 @@ def test_build_model_artifact_metadata_adds_serving_contract_fields():
     assert metadata["artifact_checksum"].startswith("sha256:")
     assert metadata["training_run_id"] == "train-20260429"
     assert metadata["feature_medians"] == {"rsi14": 50.0}
+    assert metadata["library_versions"]["sklearn"]
+    assert metadata["library_versions"]["numpy"]
+    assert metadata["library_versions"]["joblib"]
 
 
 def test_validate_serving_feature_compatibility_allows_median_backfill():

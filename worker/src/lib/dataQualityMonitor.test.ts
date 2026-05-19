@@ -9,10 +9,13 @@ import {
   buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
   buildBoardLaneContractCheck,
+  buildDatasetSnapshotManifestCheck,
+  buildRetrainFollowupClosureCheck,
   buildScreenerCandidateVolumeCheck,
   buildScreenerScoreDistributionCheck,
   buildSurfaceRoleConsistencyCheck,
   buildScreenerSeedQualityCheck,
+  buildThemeSignalCoverageCheck,
   daysBetweenDates,
   EXPECTED_V2_MODELS,
   resolveExpectedCompletedDataDate,
@@ -25,8 +28,108 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const check = buildThemeSignalCoverageCheck({
+    targetDate: '2026-05-15',
+    themeSignalTotal: 8,
+    themeSignalSources: 4,
+    stockThemeFeatureTotal: 24,
+    stockThemeFeatureSymbols: 12,
+    latestThemeSignalAt: '2026-05-15T18:00:00+08:00',
+    latestStockThemeFeatureAt: '2026-05-15T18:01:00+08:00',
+  })
+  assert(check.status === 'ok', 'theme signal runtime should pass when signals and stock-level features exist')
+  assert(check.metrics?.source_of_truth === 'theme_signals + stock_theme_features', 'theme signal runtime must declare source of truth')
+}
+
+{
+  const check = buildThemeSignalCoverageCheck({
+    targetDate: '2026-05-15',
+    themeSignalTotal: 0,
+    themeSignalSources: 0,
+    stockThemeFeatureTotal: 0,
+    stockThemeFeatureSymbols: 0,
+  })
+  assert(check.status === 'fail', 'theme signal runtime must fail when multi-source evidence is missing')
+}
+
+{
   assert(daysBetweenDates('2026-04-28', '2026-04-29') === 1, 'date lag should be calendar-day based')
   assert(daysBetweenDates(null, '2026-04-29') === null, 'missing latest date should return null')
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 1,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 1,
+    priceHistoryComputeSnapshot: 1,
+    pipelineReport: 1,
+    screenerReport: 1,
+    total: 5,
+  })
+  assert(check.status === 'ok', 'dataset manifest check should pass when D1/GCS/R2 ownership records are present')
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 1,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 0,
+    priceHistoryComputeSnapshot: 0,
+    pipelineReport: 0,
+    screenerReport: 0,
+    total: 3,
+  })
+  assert(check.status === 'warn', 'missing compute/report artifacts should warn without hiding D1 serving freshness')
+  assert(
+    check.summary.includes('object-store artifacts pending'),
+    'missing GCS/R2 artifacts should be described as pending when D1 serving manifests are ready',
+  )
+  assert(
+    Array.isArray(check.metrics?.pending_object_artifacts) &&
+      (check.metrics?.pending_object_artifacts as string[]).includes('backtest_dataset_compute'),
+    'snapshot check metrics should expose pending object artifact names',
+  )
+}
+
+{
+  const check = buildDatasetSnapshotManifestCheck({
+    targetDate: '2026-05-05',
+    priceHotWindow: 0,
+    technicalHotWindow: 1,
+    chipHotWindow: 1,
+    backtestComputeSnapshot: 1,
+    priceHistoryComputeSnapshot: 1,
+    pipelineReport: 1,
+    screenerReport: 1,
+    total: 4,
+  })
+  assert(check.status === 'fail', 'missing D1 hot-window manifests must fail Data Quality')
+}
+
+{
+  const check = buildRetrainFollowupClosureCheck({
+    awaiting: 1,
+    stale: 1,
+    oldestAt: '2026-05-02T20:09:50.877697Z',
+    latestAt: '2026-05-02T20:09:50.877697Z',
+  })
+  assert(check.status === 'fail', 'stale monthly retrain followup should fail data quality')
+  assert(check.summary.includes('orphaned'), 'stale followup summary should name the orphaned callback state')
+}
+
+{
+  const check = buildRetrainFollowupClosureCheck({
+    awaiting: 1,
+    stale: 0,
+    oldestAt: '2026-05-08T02:00:00.000Z',
+    latestAt: '2026-05-08T02:00:00.000Z',
+  })
+  assert(check.status === 'warn', 'fresh in-flight monthly retrain followup should warn, not fail')
 }
 
 void (async () => {
@@ -134,6 +237,21 @@ void (async () => {
 {
   const check = buildClassificationCoverageCheck({ total: 20, missingIndustryTags: 8 })
   assert(check.status === 'warn', 'high missing industry tag coverage should warn')
+}
+
+{
+  const check = buildClassificationCoverageCheck({
+    total: 64,
+    missingIndustryTags: 24,
+    tradableTotal: 40,
+    tradableMissingIndustryTags: 0,
+    researchTotal: 24,
+    researchMissingIndustryTags: 24,
+  })
+  assert(check.status === 'ok', 'research-only emerging taxonomy gaps should not block the tradable lane')
+  assert(check.summary.includes('tradable_industry_tags=40/40'), 'classification summary should expose tradable coverage')
+  assert(check.summary.includes('research_missing=24/24'), 'classification summary should expose research lane backlog')
+  assert(check.metrics?.status_scope === 'tradable_lane', 'classification severity should be scoped to tradable lane when available')
 }
 
 {

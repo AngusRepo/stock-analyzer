@@ -1,0 +1,244 @@
+{
+  "schema_version": "finlab-emerging-watchlist-manifest-v1",
+  "generated_at": "2026-05-15T18:13:36.829100+00:00",
+  "source_feature_lake_checksum": "sha256:b2cd1ac34a5edb2203d9c71cb7ee7d0ab8163cd5b3ad0d6cd24e99e5e0f59595",
+  "policy": {
+    "mode": "shadow_watchlist_only",
+    "pending_buy_enabled": false,
+    "execution_enabled": false,
+    "production_ml_training_enabled": false,
+    "production_screener_candidate_enabled": false,
+    "allowed_outputs": [
+      "watchlist",
+      "manual_review",
+      "context_only"
+    ],
+    "blocked_outputs": [
+      "pending_buy",
+      "execution",
+      "production_ml_training",
+      "direct_alpha_gate"
+    ],
+    "promotion_default": "no_direct_trading_or_ml_use"
+  },
+  "board_policy": {
+    "finlab_raw_market": "rotc",
+    "stockvision_market_segment": "EMERGING",
+    "tradability": "watchlist_only_no_pending_buy",
+    "security_master_dependency": "security_categories.market == rotc"
+  },
+  "source_contracts": [
+    {
+      "source_dataset": "rotc_price",
+      "dataset_lane": "emerging_price_diversity",
+      "source_family": "finlab/diversity/emerging_price_diversity/feature_lake",
+      "feature_namespace": "finlab_diversity_emerging_price_diversity",
+      "field_count": 10,
+      "usage": "liquidity_spread_context",
+      "normalized_period_key": "trade_date",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "raw_fields": [
+        "成交股數",
+        "成交金額",
+        "開盤價",
+        "收盤價",
+        "最高價",
+        "最低價",
+        "日均價",
+        "成交筆數",
+        "最後揭示買價",
+        "最後揭示賣價"
+      ],
+      "normalized_fields": [
+        "volume",
+        "turnover_value",
+        "open",
+        "close",
+        "high",
+        "low",
+        "average_price",
+        "trade_count",
+        "best_bid",
+        "best_ask",
+        "spread_pct"
+      ],
+      "required_checks": [
+        "rotc_market_lane",
+        "liquidity_bounds",
+        "no_pending_buy",
+        "watchlist_only",
+        "shadow_feature_only"
+      ],
+      "quality_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "liquidity_bounds",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "rotc_market_lane",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_pending_buy": false,
+      "eligible_for_execution": false,
+      "eligible_for_production_ml_training": false,
+      "watchlist_only": true
+    },
+    {
+      "source_dataset": "rotc_monthly_revenue",
+      "dataset_lane": "emerging_revenue_diversity",
+      "source_family": "finlab/diversity/emerging_revenue_diversity/feature_lake",
+      "feature_namespace": "finlab_diversity_emerging_revenue_diversity",
+      "field_count": 9,
+      "usage": "revenue_momentum_context",
+      "normalized_period_key": "revenue_month",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "raw_fields": [
+        "當月營收",
+        "上月營收",
+        "去年當月營收",
+        "上月比較增減(%)",
+        "去年同月增減(%)",
+        "當月累計營收",
+        "去年累計營收",
+        "前期比較增減(%)",
+        "備註"
+      ],
+      "normalized_fields": [
+        "monthly_revenue",
+        "previous_month_revenue",
+        "last_year_same_month_revenue",
+        "mom_pct",
+        "yoy_pct",
+        "ytd_revenue",
+        "last_year_ytd_revenue",
+        "ytd_yoy_pct",
+        "note"
+      ],
+      "required_checks": [
+        "publication_alignment",
+        "restatement_check",
+        "no_pending_buy",
+        "watchlist_only",
+        "shadow_feature_only"
+      ],
+      "quality_checks": [
+        "duplicate_rate",
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "publication_alignment",
+        "restatement_check",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_pending_buy": false,
+      "eligible_for_execution": false,
+      "eligible_for_production_ml_training": false,
+      "watchlist_only": true
+    },
+    {
+      "source_dataset": "rotc_broker_transactions",
+      "dataset_lane": "emerging_chip_diversity",
+      "source_family": "finlab/diversity/emerging_chip_diversity/feature_lake",
+      "feature_namespace": "finlab_diversity_emerging_chip_diversity",
+      "field_count": 1,
+      "usage": "broker_concentration_context",
+      "normalized_period_key": "trade_date",
+      "join_keys": [
+        "symbol",
+        "date"
+      ],
+      "raw_fields": [
+        "rotc_broker_transactions"
+      ],
+      "normalized_fields": [
+        "top_branch_buy_ratio",
+        "top_branch_sell_ratio",
+        "top_branch_net_ratio",
+        "broker_concentration_flag"
+      ],
+      "required_checks": [
+        "branch_concentration_bounds",
+        "emerging_symbol_coverage",
+        "no_pending_buy",
+        "watchlist_only",
+        "shadow_feature_only"
+      ],
+      "quality_checks": [
+        "branch_concentration_bounds",
+        "duplicate_rate",
+        "emerging_symbol_coverage",
+        "field_count_positive",
+        "freshness",
+        "no_pending_buy",
+        "null_rate",
+        "promotion_gate_status",
+        "provenance",
+        "schema_compatibility",
+        "schema_presence",
+        "shadow_feature_only",
+        "watchlist_only"
+      ],
+      "eligible_for_pending_buy": false,
+      "eligible_for_execution": false,
+      "eligible_for_production_ml_training": false,
+      "watchlist_only": true
+    }
+  ],
+  "derived_context": [
+    {
+      "name": "liquidity_spread_context",
+      "source_dataset": "rotc_price",
+      "signals": [
+        "turnover_value",
+        "trade_count",
+        "spread_pct"
+      ],
+      "use": "pre-trade liquidity warning and manual review context"
+    },
+    {
+      "name": "revenue_momentum_context",
+      "source_dataset": "rotc_monthly_revenue",
+      "signals": [
+        "monthly_revenue",
+        "mom_pct",
+        "yoy_pct",
+        "restatement_note"
+      ],
+      "use": "fundamental watchlist context only"
+    },
+    {
+      "name": "broker_concentration_context",
+      "source_dataset": "rotc_broker_transactions",
+      "signals": [
+        "top_branch_buy_ratio",
+        "top_branch_sell_ratio",
+        "top_branch_net_ratio"
+      ],
+      "use": "chip concentration warning, not a buy trigger"
+    }
+  ],
+  "summary": {
+    "source_count": 3,
+    "field_count_total": 20,
+    "watchlist_only_sources": 3
+  },
+  "checksum": "sha256:a61ff4a3eefe4f59be965853b6e8f89910ffa11d1e6b4bb4b4999f157fd2f4bd"
+}

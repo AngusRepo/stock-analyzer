@@ -10,9 +10,19 @@ import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAc
 
 const ACCOUNT_ID = 1
 
-export async function runDailySnapshot(env: Bindings): Promise<void> {
+export type DailySnapshotOptions = {
+  date?: string
+}
+
+function snapshotDate(raw?: string): string {
+  const value = String(raw ?? '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}): Promise<{ date: string }> {
   console.log('[Snapshot] Starting...')
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = snapshotDate(options.date)
 
   const updatedAcc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!updatedAcc) return
@@ -22,11 +32,19 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   ).bind(ACCOUNT_ID).all<any>()
 
   const finalSymbols = (finalPos ?? []).map((p: any) => p.symbol)
-  let finalPriceMap = await batchGetIntradayPrices(finalSymbols, {
+  const finalPriceMap = await batchGetIntradayPrices(finalSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
   })
-  if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices(env.DB, finalSymbols)
+  const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
+  if (missingFinalSymbols.length) {
+    const eodPrices = await batchGetLatestPrices(env.DB, missingFinalSymbols)
+    for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
+    console.log(
+      `[Snapshot] price coverage intraday=${finalPriceMap.size - eodPrices.size}/${finalSymbols.length} ` +
+      `eod_fallback=${eodPrices.size}/${missingFinalSymbols.length}`,
+    )
+  }
 
   let finalPosValue = 0
   for (const p of (finalPos ?? [])) {
@@ -54,8 +72,8 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   const twiiValue: number | null = twiiRow?.twii_close ?? null
 
   const { results: allSnapshots } = await env.DB.prepare(
-    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC',
-  ).bind(ACCOUNT_ID).all<any>()
+    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date ASC',
+  ).bind(ACCOUNT_ID, today).all<any>()
   let maxDrawdownToDate: number | null = null
   if (allSnapshots && allSnapshots.length > 0) {
     let peak = updatedAcc.initial_cash
@@ -75,10 +93,10 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
   let calmar: number | null = null
 
   const { results: recent30 } = await env.DB.prepare(
-    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? ORDER BY date DESC LIMIT 31',
-  ).bind(ACCOUNT_ID).all<any>()
-  if (recent30 && recent30.length >= 10) {
-    const values = recent30.map((s: any) => s.total_value as number).reverse()
+    'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date DESC LIMIT 30',
+  ).bind(ACCOUNT_ID, today).all<any>()
+  if (recent30 && recent30.length >= 9) {
+    const values = [...recent30.map((s: any) => s.total_value as number).reverse(), totalValue]
     const returns: number[] = []
     for (let i = 1; i < values.length; i += 1) {
       if (values[i - 1] > 0) returns.push((values[i] - values[i - 1]) / values[i - 1])
@@ -154,6 +172,8 @@ export async function runDailySnapshot(env: Bindings): Promise<void> {
     (env as any).DISCORD_WEBHOOK_URL,
     formatDailySummary(totalValue, pnlPct / 100, todayOrderCount?.cnt ?? 0, maxDrawdownToDate, sharpe30d),
   )
+
+  return { date: today }
 }
 
 export async function runPaperAutoTrade(env: Bindings): Promise<void> {

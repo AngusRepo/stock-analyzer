@@ -102,6 +102,58 @@ def _post(body: dict, timeout: float = 60.0) -> dict:
     raise last_error or RuntimeError("D1 request failed: exhausted retries")
 
 
+def _post_raw(body: dict, timeout: float = 60.0) -> dict:
+    """Internal: POST to D1 /raw endpoint.
+
+    /raw supports a true batch body and avoids the legacy per-statement HTTP
+    fallback when the Worker internal batch route is unavailable.
+    """
+    _check_env()
+    if httpx is None:
+        raise RuntimeError("D1 raw request failed: httpx not installed")
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
+        f"/d1/database/{CF_D1_DB_ID}/raw"
+    )
+    headers = {
+        "Authorization": f"Bearer {CF_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    last_error: RuntimeError | None = None
+    max_attempts = max(1, MAX_D1_RETRIES + 1)
+
+    for attempt in range(max_attempts):
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.RequestError as e:
+            last_error = RuntimeError(f"D1 raw request failed: network error: {e}")
+            if attempt < max_attempts - 1:
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error from e
+
+        if resp.status_code != 200:
+            last_error = RuntimeError(f"D1 raw request failed: HTTP {resp.status_code}: {resp.text[:300]}")
+            if _is_retryable_d1_response(resp.status_code, resp.text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 raw response attempt=%s status=%s", attempt + 1, resp.status_code)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+
+        data = resp.json()
+        if not data.get("success"):
+            error_text = str(data.get("errors", data))
+            last_error = RuntimeError(f"D1 raw request unsuccessful: {data.get('errors', data)}")
+            if _is_retryable_d1_response(resp.status_code, error_text) and attempt < max_attempts - 1:
+                logger.warning("[d1_client] retryable D1 raw payload error attempt=%s", attempt + 1)
+                _sleep_before_retry(attempt)
+                continue
+            raise last_error
+        return data
+
+    raise last_error or RuntimeError("D1 raw request failed: exhausted retries")
+
+
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
     """Read query — returns list of row dicts."""
     body: dict = {"sql": sql}
@@ -165,7 +217,12 @@ def batch_execute(
         try:
             return _worker_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
         except RuntimeError as e:
-            logger.warning("[d1_client] worker batch failed, falling back to REST loop: %s", e)
+            logger.warning("[d1_client] worker batch failed, falling back to D1 raw batch: %s", e)
+
+    try:
+        return _raw_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+    except RuntimeError as e:
+        logger.warning("[d1_client] D1 raw batch failed, falling back to REST loop: %s", e)
 
     success_count = 0
     error_count = 0
@@ -198,6 +255,72 @@ def batch_execute(
         "first_error": first_error,
         "partial_failure": error_count > 0 and success_count > 0,
         "mode": "rest_loop_fallback",
+    }
+
+
+def _raw_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    timeout: float = 30.0,
+    chunk_size: int = 250,
+) -> dict:
+    if not statements:
+        return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0, "mode": "d1_raw_batch"}
+
+    total = 0
+    success_count = 0
+    error_count = 0
+    changes_total = 0
+    first_error: str | None = None
+    rows_read_total = 0
+    rows_written_total = 0
+    sql_duration_ms_total = 0.0
+    chunk = max(1, min(int(chunk_size or 250), 500))
+
+    for i in range(0, len(statements), chunk):
+        part = statements[i:i + chunk]
+        data = _post_raw(
+            {
+                "batch": [
+                    {"sql": sql, "params": params or []}
+                    for sql, params in part
+                ]
+            },
+            timeout=timeout,
+        )
+        results = data.get("result") or []
+        total += len(part)
+        for idx, item in enumerate(results):
+            if item.get("success", True):
+                success_count += 1
+            else:
+                error_count += 1
+                if first_error is None:
+                    first_error = str(item)
+            meta = item.get("meta") or {}
+            changes_total += int(meta.get("changes") or 0)
+            rows_read_total += int(meta.get("rows_read") or 0)
+            rows_written_total += int(meta.get("rows_written") or 0)
+            timings = meta.get("timings") or {}
+            sql_duration_ms_total += float(timings.get("sql_duration_ms") or meta.get("duration") or 0)
+        if len(results) < len(part):
+            missing = len(part) - len(results)
+            error_count += missing
+            if first_error is None:
+                first_error = f"D1 raw batch returned {len(results)}/{len(part)} result items"
+
+    return {
+        "total": total,
+        "success_count": success_count,
+        "error_count": error_count,
+        "changes_total": changes_total,
+        "first_error": first_error,
+        "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "d1_raw_batch",
+        "chunk_size": chunk,
+        "chunk_count": (len(statements) + chunk - 1) // chunk,
+        "rows_read_total": rows_read_total,
+        "rows_written_total": rows_written_total,
+        "sql_duration_ms_total": round(sql_duration_ms_total, 3),
     }
 
 

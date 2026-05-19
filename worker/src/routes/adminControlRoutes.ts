@@ -4,6 +4,20 @@ import { requireAdminOrServiceToken } from '../lib/auth'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+const REPORT_ARTIFACT_TASKS = new Set([
+  'pipeline',
+  'backtest',
+  'weekly-optuna',
+  'optuna-queue',
+  'pbo',
+  'monte-carlo',
+  'alpha-quality',
+  'weekly-audit',
+  'lifecycle',
+  'monthly-optuna',
+  'monthly-retrain',
+])
+
 function requireServiceToken(c: any) {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
@@ -103,32 +117,86 @@ async function handleSchedulerCallback(c: any) {
   if (!isSchedulerStatus(body.status)) {
     return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
   }
+  const callbackRunDate = typeof body.run_date === 'string'
+    ? body.run_date
+    : typeof body.date === 'string'
+      ? body.date
+      : undefined
+  const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
 
   await logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,
     summary: String(body.summary ?? ''),
     duration_ms: Number(body.duration_ms ?? 0),
     error: body.error != null ? String(body.error) : undefined,
-    run_date: typeof body.run_date === 'string' ? body.run_date : typeof body.date === 'string' ? body.date : undefined,
+    run_id: callbackRunId,
+    run_date: callbackRunDate,
   })
+
+  if (
+    REPORT_ARTIFACT_TASKS.has(String(body.task)) &&
+    body.status === 'success' &&
+    callbackRunDate &&
+    callbackRunId
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { recordSchedulerRunReportArtifact } = await import('../lib/datasetSnapshots')
+        await recordSchedulerRunReportArtifact(c.env, {
+          task: String(body.task),
+          status: String(body.status),
+          businessDate: callbackRunDate,
+          runId: callbackRunId,
+          summary: String(body.summary ?? ''),
+          durationMs: Number(body.duration_ms ?? 0),
+          error: body.error != null ? String(body.error) : undefined,
+        })
+      } catch (e) {
+        console.warn('[scheduler-callback] R2 scheduler report artifact failed:', e)
+      }
+    })())
+  }
+
+  if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    try {
+      if (callbackRunDate) {
+        await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
+      }
+      if (body.status === 'success') {
+        const { runPostPipelineCallbackChain } = await import('../lib/postMarketChain')
+        await runPostPipelineCallbackChain(c.env, {
+          runDate: callbackRunDate,
+          upstreamRunId: callbackRunId,
+        })
+      }
+    } catch (e: any) {
+      await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+        status: 'error',
+        summary: e?.message ?? 'post-pipeline callback chain failed',
+        duration_ms: 0,
+        error: String(e),
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    }
+  }
 
   if (body.task === 'verify-v2' && body.status === 'success' && c.env.ML_CONTROLLER_URL) {
     c.executionCtx.waitUntil((async () => {
-      const t0 = Date.now()
       try {
-        const { runModelIcRollingRefresh } = await import('../lib/controllerWorkflows')
-        const summary = await runModelIcRollingRefresh(c.env)
-        await logSchedulerResult(c.env.KV, 'model-ic-tracker', {
-          status: summary.startsWith('rolling_ic failed') ? 'error' : 'success',
-          summary,
-          duration_ms: Date.now() - t0,
-        }, c.env as any)
+        const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')
+        await runPostVerifyCallbackChain(c.env, {
+          runDate: callbackRunDate,
+          upstreamRunId: callbackRunId,
+        })
       } catch (e: any) {
-        await logSchedulerResult(c.env.KV, 'model-ic-tracker', {
+        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
           status: 'error',
-          summary: e?.message ?? 'rolling_ic refresh failed',
-          duration_ms: Date.now() - t0,
+          summary: e?.message ?? 'post-verify callback chain failed',
+          duration_ms: 0,
           error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
         }, c.env as any)
       }
     })())

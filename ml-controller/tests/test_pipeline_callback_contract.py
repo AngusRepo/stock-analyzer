@@ -27,12 +27,28 @@ async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     await pipeline._emit_subtask_callbacks(
         "pipeline-v2-test",
-        {"metrics": {"predictions_written": 10, "recommendations_updated": 2}},
+        {"metrics": {"predictions_written": 10, "prediction_symbols": 2, "prediction_output_models": 5, "recommendations_updated": 2}},
         "success",
         None,
         1234,
         run_date="2026-05-04",
     )
 
-    assert {payload["task"] for payload in payloads} == {"screener", "ml-predict", "recommendation"}
+    assert {payload["task"] for payload in payloads} == {"ml-predict", "recommendation"}
     assert all(payload["run_date"] == "2026-05-04" for payload in payloads)
+    assert [p for p in payloads if p["task"] == "ml-predict"][0]["summary"] == "run_id=pipeline-v2-test symbols=2 rows=10 models=5"
+
+
+def test_pipeline_subtask_callbacks_do_not_overwrite_worker_owned_screener():
+    source = Path(pipeline.__file__).read_text(encoding="utf-8")
+
+    callback_body = source[source.index("subtasks = ["):source.index("async with httpx.AsyncClient")]
+    assert '"screener"' not in callback_body
+    assert "Screener is Worker-owned before" in source
+
+
+def test_pipeline_terminal_callback_has_longer_timeout():
+    source = Path(pipeline.__file__).read_text(encoding="utf-8")
+
+    assert 'timeout_s = 60.0 if payload.get("task") == "pipeline" else 15.0' in source
+    assert "httpx.AsyncClient(timeout=timeout_s)" in source

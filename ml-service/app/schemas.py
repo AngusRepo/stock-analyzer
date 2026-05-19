@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NightSessionData(BaseModel):
@@ -10,6 +10,8 @@ class NightSessionData(BaseModel):
 
 
 class PredictRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     stock_id: int
     symbol: str
     prices: list[dict]
@@ -26,6 +28,7 @@ class PredictRequest(BaseModel):
     barrier_params: dict = {}
     lifecycle_weights: dict[str, float] = {}
     weak_features: list[str] = []
+    stock_meta: dict = {}
     use_optuna: bool = False
     night_session: NightSessionData | None = None
     context: str = "scheduled_daily"

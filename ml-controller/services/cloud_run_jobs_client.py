@@ -124,7 +124,7 @@ class CloudRunJobsClient:
         """
         if not self._parent:
             raise RuntimeError(
-                "Cloud Run Job config missing. Set GCP_PROJECT_ID, GCP_REGION, and PIPELINE_JOB_NAME."
+                "Cloud Run Job config missing. Set GCP_PROJECT_ID, GCP_REGION, and a job name."
             )
 
         if reject_if_running:

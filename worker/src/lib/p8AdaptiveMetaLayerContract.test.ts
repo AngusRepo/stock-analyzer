@@ -14,7 +14,12 @@ function assert(condition: unknown, message: string): void {
 
 const normalized = normalizeAdaptiveParams({
   confidence_delta: 0.03,
+  threshold_components: {
+    effective_delta: -0.012,
+    formula: 'risk_penalty + model_quality_penalty + volatility_penalty - regime_opportunity_credit - trend_quality_credit',
+  },
   position_pct_delta: 0.01,
+  bandit_context: { reward_ledger: 'paper_orders.sell_5d', decision: 'reward_ledger_ok' },
   computed_at: '2026-05-05T01:00:00.000Z',
   version: 12,
   circuit: { drawdownHalt: 0.10 },
@@ -22,10 +27,12 @@ const normalized = normalizeAdaptiveParams({
 } as any, { source: 'ml-controller', fallback: false })
 
 assert(normalized.confidence_delta === 0.03, 'adaptive params must preserve allowed daily deltas')
+assert((normalized.threshold_components as any)?.effective_delta === -0.012, 'adaptive params must preserve threshold component audit bundle')
 assert(normalized.provenance.owner === 'ml-controller', 'adaptive params owner must be ml-controller')
 assert(normalized.provenance.source === 'ml-controller', 'adaptive params must record source')
 assert(normalized.provenance.update_frequency === 'daily_after_verify', 'adaptive params must expose update frequency')
 assert(normalized.provenance.fallback === false, 'controller adaptive params must not be marked fallback')
+assert(normalized.bandit_context?.reward_ledger === 'paper_orders.sell_5d', 'LinUCB protection must expose reward ledger provenance')
 assert(!Object.prototype.hasOwnProperty.call(normalized, 'circuit'), 'adaptive params must not override circuit breaker hard boundaries')
 assert(!Object.prototype.hasOwnProperty.call(normalized, 'alphaFramework'), 'adaptive params must not own alpha framework production config')
 
@@ -44,6 +51,7 @@ const resolved = resolveAdaptiveParamsForRegime({
   regime_overrides: {
     bull: {
       confidence_delta: -0.01,
+      threshold_components: { effective_delta: -0.018, formula: 'componentized' },
       screener: { ml_shortlist_delta: 5 },
     },
     volatile: {
@@ -54,6 +62,7 @@ const resolved = resolveAdaptiveParamsForRegime({
 }, 'bull_market')
 
 assert(resolved.confidence_delta === -0.01, 'bull regime must resolve its own adaptive confidence delta')
+assert((resolved.threshold_components as any)?.effective_delta === -0.018, 'regime override must preserve componentized threshold rationale')
 assert(resolved.screener?.ml_shortlist_delta === 5, 'regime override must support screener sizing deltas')
 assert(resolved.provenance.regime === 'bull', 'resolved adaptive params must record normalized regime')
 
@@ -79,7 +88,7 @@ assert(
   ADAPTIVE_META_LAYER_GOVERNANCE.meta_optimizers.includes('GAOptimizer'),
   'GAOptimizer must be declared as meta optimizer governance, not a predictor',
 )
-for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer']) {
+for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer', 'NeuralUCB', 'NeuralTS', 'OnlinePortfolioBandit', 'NeuCB']) {
   assert(
     typeof ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components[component] === 'string',
     `${component} must have an explicit P8 meta-layer role`,
@@ -118,4 +127,16 @@ void (async () => {
   const params = await getAdaptiveParamsForRegime(kv)
   assert(params.confidence_delta === 0.07, 'current regime metadata must drive adaptive threshold resolution')
   assert(params.bandit_max_mult === 1.5, 'current regime metadata must drive LinUCB protection resolution')
+
+  const brokenKv = {
+    put: async () => {},
+    get: async () => null,
+  } as unknown as KVNamespace
+  let threw = false
+  try {
+    await setAdaptiveParams(brokenKv, DEFAULT_ADAPTIVE_PARAMS, { source: 'ml-controller', fallback: false })
+  } catch (error: any) {
+    threw = String(error?.message ?? '').includes('KV write verification failed')
+  }
+  assert(threw, 'adaptive params write path must fail-close when KV does not persist ml:adaptive_params')
 })()

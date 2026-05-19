@@ -233,7 +233,12 @@ async def test_lineage_preserves_artifact_diff_metadata(monkeypatch):
     model = result["models"]["DLinear"]
     assert model["metadata"]["n_input_series"] == 128
     assert model["metadata"]["sequence_report"]["input_series"] == 128
+    assert model["challenger"]["lifecycle_diagnosis"]["status"] == "awaiting_live_shadow"
+    assert "verified outcomes" in model["challenger"]["lifecycle_diagnosis"]["reason"]
+    assert model["challenger"]["artifact_evidence"]["status"] == "ready"
     assert model["challenger"]["metadata"]["n_input_series"] == 140
     assert model["challenger"]["metadata"]["oos_ic"] == 0.08
+    assert model["challenger"]["artifact_evidence"]["oos_ic"] == 0.08
     assert model["challenger"]["metadata"]["daily_ic_count"] == 14
+    assert model["challenger"]["artifact_evidence"]["daily_ic_count"] == 14
     assert model["challenger"]["metadata"]["sequence_report"]["oos_windows"] == 130

@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from services import d1_client, kv_client
 from services.adaptive import resolve_adaptive_params_for_regime
+from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import policy_for_segment
 
 logger = logging.getLogger(__name__)
@@ -66,11 +67,10 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_current_regime_label() -> str | None:
-    meta = kv_client.get_json("ml:regime:meta", default={}) or {}
-    if isinstance(meta, dict) and meta.get("label"):
-        return str(meta["label"])
-    raw = kv_client.get("ml:regime")
-    return str(raw) if raw else None
+    contract = resolve_market_regime_contract(kv_client)
+    if contract.get("missing"):
+        return None
+    return str(contract.get("alpha_regime") or contract.get("label") or "") or None
 
 
 def load_effective_adaptive_params() -> dict:
@@ -142,8 +142,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     """
     # ── 1. Latest market_risk row ───────────────────────────────────────────
     risk_rows = d1_client.query(
-        "SELECT risk_level, risk_score, risk_summary "
-        "FROM market_risk ORDER BY date DESC LIMIT 1"
+        "SELECT date, risk_level, risk_score, risk_summary "
+        "FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1",
+        [run_date],
     )
     risk_row = risk_rows[0] if risk_rows else {}
 
@@ -151,7 +152,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     twii_rows = d1_client.query(
         "SELECT date, close FROM stock_prices "
         "WHERE stock_id=(SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1) "
-        "ORDER BY date DESC LIMIT 25"
+        "AND date <= ? ORDER BY date DESC LIMIT 25",
+        [run_date],
     )
     twii_arr = [r["close"] for r in reversed(twii_rows)]
     twii_1d = (twii_arr[-1] - twii_arr[-2]) / twii_arr[-2] if len(twii_arr) >= 2 else 0.0
@@ -173,7 +175,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close, "
         "       foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
         "       adl_value, adl_trend "
-        "FROM market_risk ORDER BY date ASC LIMIT 500"
+        "FROM market_risk WHERE date <= ? ORDER BY date ASC LIMIT 500",
+        [run_date],
     )
     adl_trend_map = {"up": 1.0, "flat": 0.0, "down": -1.0}
     for i, row in enumerate(history_rows):
@@ -197,7 +200,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     us_history_by_date: dict[str, dict] = {}
     us_rows = d1_client.query(
         "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
-        "FROM us_market_signals ORDER BY date ASC"
+        "FROM us_market_signals WHERE date <= ? ORDER BY date ASC",
+        [run_date],
     )
     for r in (us_rows or []):
         us_history_by_date[r["date"]] = {
@@ -214,7 +218,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     etf_rows = d1_client.query(
         "SELECT sp.date, sp.close FROM stock_prices sp "
         "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol = '0050' ORDER BY sp.date ASC LIMIT 800"
+        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date ASC LIMIT 800",
+        [run_date],
     )
 
     # 3c. ADL (Advance/Decline Line) — 每日上漲家數 - 下跌家數的累積
@@ -227,8 +232,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "  SELECT sp.date, sp.close, "
         "    LAG(sp.close) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) as prev_close "
         "  FROM stock_prices sp "
-        ") WHERE prev_close IS NOT NULL "
-        "GROUP BY date ORDER BY date ASC"
+        ") WHERE prev_close IS NOT NULL AND date <= ? "
+        "GROUP BY date ORDER BY date ASC",
+        [run_date],
     )
     # 累積 ADL + 5d trend + advance_ratio
     adl_by_date: dict[str, tuple[float, float]] = {}  # {date: (adl_value, adl_trend_numeric)}
@@ -262,8 +268,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "  COUNT(*) as total, "
         "  SUM(CASE WHEN sp.close >= sp.open * 0.9 AND sp.close <= sp.open * 0.905 THEN 1 ELSE 0 END) as limit_down_count "
         "FROM stock_prices sp "
-        "WHERE sp.date >= '2023-01-01' "
-        "GROUP BY sp.date ORDER BY sp.date ASC"
+        "WHERE sp.date >= '2023-01-01' AND sp.date <= ? "
+        "GROUP BY sp.date ORDER BY sp.date ASC",
+        [run_date],
     )
     breadth_by_date: dict[str, tuple[float, float]] = {}  # {date: (limit_down_count, limit_down_pct)}
     if breadth_rows:
@@ -380,7 +387,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     try:
         breadth_rows = d1_client.query(
             "SELECT date, advance_ratio, bull_alignment_pct "
-            "FROM market_breadth ORDER BY date DESC LIMIT 5"
+            "FROM market_breadth WHERE date <= ? ORDER BY date DESC LIMIT 5",
+            [run_date],
         )
     except RuntimeError as e:
         logger.warning("[payload_builder] market_breadth unavailable; degrading market_env: %s", e)
@@ -391,7 +399,11 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     adaptive_params = load_effective_adaptive_params()
 
     # ── 7. Trading config → barrier_params ──────────────────────────────────
-    trading_cfg = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    trading_cfg = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[payload_builder] trading:config degraded: %s", cfg_result.contract.to_dict())
     barrier_cfg = trading_cfg.get("barrier", {})
     barrier_params = {
         "upper_mult": barrier_cfg.get("upperMult"),
@@ -498,10 +510,18 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
 
 
 def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dict]]:
-    """chip_data uses symbol (not stock_id)."""
+    """Load chip rows with FinLab canonical data first and legacy chip_data fallback.
+
+    `chip_data` stores TWSE/TPEX institution flow by symbol. FinLab V4.1 adds
+    canonical tables where listed/OTC keeps institution nets and emerging stocks
+    expose ROTC broker proxy flow. The payload must carry that broker evidence
+    or recommendation reasons fall back to the old "institution balance" text.
+    """
     if not symbols:
         return {}
     placeholders = ",".join("?" * len(symbols))
+    grouped_by_date: dict[str, dict[str, dict]] = {s: {} for s in symbols}
+
     rows = d1_client.query(
         f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
         f"       margin_balance, short_balance "
@@ -511,21 +531,83 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
         list(symbols),
         timeout=60.0,
     )
-    grouped: dict[str, list[dict]] = {s: [] for s in symbols}
     for r in rows:
         sym = r["symbol"]
-        if sym in grouped:
-            grouped[sym].append({
+        if sym in grouped_by_date:
+            grouped_by_date[sym][r["date"]] = {
                 "date": r["date"],
                 "foreign_net": r.get("foreign_net"),
                 "trust_net": r.get("trust_net"),
                 "dealer_net": r.get("dealer_net"),
                 "margin_balance": r.get("margin_balance"),
                 "short_balance": r.get("short_balance"),
+                "chip_source": "legacy.chip_data",
+            }
+
+    try:
+        canonical_rows = d1_client.query(
+            f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
+            f"       margin_balance, short_balance, source, as_of_date "
+            f"FROM canonical_chip_daily "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"ORDER BY stock_id ASC, date ASC",
+            list(symbols),
+            timeout=60.0,
+        )
+        for r in canonical_rows:
+            sym = r["symbol"]
+            if sym not in grouped_by_date:
+                continue
+            current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
+            current.update({
+                "foreign_net": r.get("foreign_net"),
+                "trust_net": r.get("trust_net"),
+                "dealer_net": r.get("dealer_net"),
+                "margin_balance": r.get("margin_balance"),
+                "short_balance": r.get("short_balance"),
+                "chip_source": r.get("source") or "canonical_chip_daily",
+                "market_segment": r.get("market_segment"),
+                "as_of_date": r.get("as_of_date"),
             })
-    for sym in grouped:
-        if len(grouped[sym]) > limit:
-            grouped[sym] = grouped[sym][-limit:]
+            grouped_by_date[sym][r["date"]] = current
+    except Exception as exc:
+        logger.debug("[payload_builder] canonical_chip_daily unavailable, using legacy chip_data fallback: %s", exc)
+
+    try:
+        broker_rows = d1_client.query(
+            f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
+            f"       broker_count, concentration, source, as_of_date "
+            f"FROM canonical_broker_flow_daily "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"ORDER BY stock_id ASC, date ASC",
+            list(symbols),
+            timeout=60.0,
+        )
+        for r in broker_rows:
+            sym = r["symbol"]
+            if sym not in grouped_by_date:
+                continue
+            current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
+            net_shares = float(r.get("net_shares") or 0.0)
+            if str(current.get("market_segment") or r.get("market_segment") or "").upper() == "EMERGING":
+                current["dealer_net"] = net_shares
+            else:
+                current["dealer_net"] = float(current.get("dealer_net") or 0.0) + net_shares
+            current["broker_net_shares"] = float(current.get("broker_net_shares") or 0.0) + net_shares
+            current["broker_estimated_amount"] = float(current.get("broker_estimated_amount") or 0.0) + float(r.get("estimated_amount") or 0.0)
+            current["broker_count"] = r.get("broker_count")
+            current["broker_concentration"] = r.get("concentration")
+            current["chip_source"] = r.get("source") or "finlab.rotc_broker_transactions"
+            current["market_segment"] = r.get("market_segment") or "EMERGING"
+            current["as_of_date"] = r.get("as_of_date")
+            grouped_by_date[sym][r["date"]] = current
+    except Exception as exc:
+        logger.debug("[payload_builder] canonical_broker_flow_daily unavailable, using institution-only chip payload: %s", exc)
+
+    grouped: dict[str, list[dict]] = {}
+    for sym, by_date in grouped_by_date.items():
+        rows_for_symbol = sorted(by_date.values(), key=lambda row: str(row.get("date") or ""))
+        grouped[sym] = rows_for_symbol[-limit:] if len(rows_for_symbol) > limit else rows_for_symbol
     return grouped
 
 

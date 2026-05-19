@@ -1,0 +1,739 @@
+{
+  "schema_version": "finlab-adoption-plan-v1",
+  "generated_at": "2026-05-15T14:57:23.780329+00:00",
+  "producer_run_id": "finlab_adoption_plan",
+  "source_catalog": {
+    "generated_at": "2026-05-15T14:15:05.445029+00:00",
+    "finlab_sdk_version": "2.0.7",
+    "all_market_search_count": 2150,
+    "field_count": 2150
+  },
+  "policy": {
+    "production_contract": "current_106_features_remain_stable",
+    "parity_lane": "verify FinLab replacement against current TWSE/TPEX or existing StockVision fields",
+    "diversity_lane": "ingest useful FinLab-native datasets in shadow feature lake even without old equivalents",
+    "research_lane": "benchmark-only until explicit promotion gates pass",
+    "emerging_stock_rule": "watchlist_only; eligible_for_pending_buy=false",
+    "taxonomy_layers": [
+      "industry",
+      "industry_theme",
+      "subindustry",
+      "concept"
+    ]
+  },
+  "counts": {
+    "field_count": 2150,
+    "asset_count": 15,
+    "by_stage": {
+      "diversity": 8,
+      "parity": 5,
+      "research": 2
+    },
+    "fields_by_stage": {
+      "parity": 389,
+      "diversity": 701,
+      "research": 1321
+    },
+    "fields_by_dataset_lane": {
+      "daily_price": 121,
+      "revenue": 8,
+      "fundamental_factor_diversity": 213,
+      "research": 1319,
+      "chip_diversity": 53,
+      "regime_context": 118,
+      "emerging_revenue_diversity": 9,
+      "emerging_price_diversity": 10,
+      "global_context": 296,
+      "emerging_chip_diversity": 1,
+      "security_master": 1,
+      "taxonomy_expansion": 1
+    },
+    "fields_by_adoption_mode": {
+      "replace": 130,
+      "augment": 701,
+      "benchmark": 1319
+    }
+  },
+  "assets": [
+    {
+      "asset_key": "finlab/diversity/chip_diversity",
+      "stage": "diversity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 53,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "broker_transactions",
+        "etl",
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "adoption_priorities": [
+        "P0",
+        "P1"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "price_location, liquidity, crowding, extreme_value_winsorization",
+        "turnover, crowding, price_location_gate"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "sample_api_keys": [
+        "broker_transactions",
+        "etl:broker_transactions:top15_buy",
+        "etl:broker_transactions:top15_sell",
+        "etl:broker_transactions:buy_sell_ratio",
+        "etl:broker_transactions:balance_index",
+        "margin_transactions:融資買進",
+        "margin_transactions:融資賣出",
+        "margin_transactions:融資現金償還",
+        "margin_transactions:融資前日餘額",
+        "margin_transactions:融資今日餘額",
+        "margin_transactions:融資限額",
+        "margin_transactions:融券買進"
+      ],
+      "checksum": "sha256:3a70f1e2ef630108be1260cd75b77a045d6e2b4aa743a94a564455cd56bb4a4c"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_chip_diversity",
+      "stage": "diversity",
+      "dataset_lane": "emerging_chip_diversity",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_broker_transactions"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "emerging_symbol_coverage, branch_concentration_bounds"
+      ],
+      "stockvision_use": "emerging-stock broker flow proxy and concentration checks",
+      "sample_api_keys": [
+        "rotc_broker_transactions"
+      ],
+      "checksum": "sha256:e08717a2783a202c1dea04d5036c956b78324f1ba0e3ea6218e180743942f229"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_price_diversity",
+      "stage": "diversity",
+      "dataset_lane": "emerging_price_diversity",
+      "access_tier": "compute",
+      "field_count": 10,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_price"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "rotc_market_lane, liquidity_bounds, no_pending_buy"
+      ],
+      "stockvision_use": "emerging-stock price, liquidity and spread watchlist context",
+      "sample_api_keys": [
+        "rotc_price:成交股數",
+        "rotc_price:成交金額",
+        "rotc_price:開盤價",
+        "rotc_price:收盤價",
+        "rotc_price:最高價",
+        "rotc_price:最低價",
+        "rotc_price:日均價",
+        "rotc_price:成交筆數",
+        "rotc_price:最後揭示買價",
+        "rotc_price:最後揭示賣價"
+      ],
+      "checksum": "sha256:92414362c94687f0a0e36cea7ead3537e8cc513b780ceba769fc3455a8467f85"
+    },
+    {
+      "asset_key": "finlab/diversity/emerging_revenue_diversity",
+      "stage": "diversity",
+      "dataset_lane": "emerging_revenue_diversity",
+      "access_tier": "compute",
+      "field_count": 9,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "rotc_monthly_revenue"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "publication_alignment, restatement_check, no_pending_buy"
+      ],
+      "stockvision_use": "emerging-stock revenue momentum watchlist context",
+      "sample_api_keys": [
+        "rotc_monthly_revenue:當月營收",
+        "rotc_monthly_revenue:上月營收",
+        "rotc_monthly_revenue:去年當月營收",
+        "rotc_monthly_revenue:上月比較增減(%)",
+        "rotc_monthly_revenue:去年同月增減(%)",
+        "rotc_monthly_revenue:當月累計營收",
+        "rotc_monthly_revenue:去年累計營收",
+        "rotc_monthly_revenue:前期比較增減(%)",
+        "rotc_monthly_revenue:備註"
+      ],
+      "checksum": "sha256:7d174fc8cc1eb2e454752479b144f6d9f9babfba22ad906638aabd9f9b799a11"
+    },
+    {
+      "asset_key": "finlab/diversity/fundamental_factor_diversity",
+      "stage": "diversity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "report_date_availability, no_lookahead, sector_normalization"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "sample_api_keys": [
+        "fundamental_features:營業利益",
+        "fundamental_features:EBITDA",
+        "fundamental_features:營運現金流",
+        "fundamental_features:歸屬母公司淨利",
+        "fundamental_features:折舊",
+        "fundamental_features:流動資產",
+        "fundamental_features:流動負債",
+        "fundamental_features:取得不動產廠房及設備",
+        "fundamental_features:經常稅後淨利",
+        "fundamental_features:ROA稅後息前",
+        "fundamental_features:ROA綜合損益",
+        "fundamental_features:ROE稅後"
+      ],
+      "checksum": "sha256:7f4f4756cfe56ecc6b610fdead8dc89985be81c3a391192912acc9f805613e1f"
+    },
+    {
+      "asset_key": "finlab/diversity/global_context",
+      "stage": "diversity",
+      "dataset_lane": "global_context",
+      "access_tier": "compute",
+      "field_count": 296,
+      "markets": [
+        "tw",
+        "us"
+      ],
+      "namespaces": [
+        "us_analyst_consensus",
+        "us_balance_sheet",
+        "us_cash_flow",
+        "us_company_profile",
+        "us_dcf",
+        "us_earnings_surprises",
+        "us_fund_price",
+        "us_income_statement",
+        "us_index_constituents",
+        "us_key_metrics",
+        "us_price",
+        "us_price_target_summary",
+        "us_ratios",
+        "us_stock_rating",
+        "world_index"
+      ],
+      "adoption_priorities": [
+        "P0",
+        "P1"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "coverage, delay, holiday_calendar_alignment",
+        "coverage, delay, license, survivorship_check"
+      ],
+      "stockvision_use": "US leading, world index, morning setup and regime context",
+      "sample_api_keys": [
+        "world_index:open",
+        "world_index:high",
+        "world_index:low",
+        "world_index:close",
+        "world_index:adj_close",
+        "world_index:volume",
+        "us_analyst_consensus:strong_buy",
+        "us_analyst_consensus:buy",
+        "us_analyst_consensus:hold",
+        "us_analyst_consensus:sell",
+        "us_analyst_consensus:strong_sell",
+        "us_analyst_consensus:consensus"
+      ],
+      "checksum": "sha256:5344b8fabc1bdaf9a7d967a3e00c37ec48c0584148ddc0189e8dd0aa0fcfc404"
+    },
+    {
+      "asset_key": "finlab/diversity/regime_context",
+      "stage": "diversity",
+      "dataset_lane": "regime_context",
+      "access_tier": "compute",
+      "field_count": 118,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "futures_institutional_investors_trading_summary",
+        "futures_price",
+        "single_stock_futures_and_equity_options_underlying",
+        "tw_business_indicators",
+        "tw_business_indicators_details",
+        "tw_etf_basic_info",
+        "tw_etf_beneficiary_stats",
+        "tw_etf_dividend_events",
+        "tw_etf_nav_daily",
+        "tw_industry_nmi",
+        "tw_industry_pmi",
+        "tw_monetary_aggregates",
+        "tw_news_cnyes",
+        "tw_option_daily_delta",
+        "tw_option_daily_summary",
+        "tw_option_put_call_ratio",
+        "tw_option_recent_trades",
+        "tw_taifex_futures_large_trader",
+        "tw_taifex_option_institutional_breakdown",
+        "tw_taifex_option_large_trader",
+        "tw_taifex_option_liquidity",
+        "tw_total_nmi",
+        "tw_total_pmi"
+      ],
+      "adoption_priorities": [
+        "P1"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "freshness, low_frequency_alignment",
+        "market_level_only, no_direct_alpha_gate"
+      ],
+      "stockvision_use": "derivatives, macro, hedge pressure and low-frequency regime evidence",
+      "sample_api_keys": [
+        "futures_institutional_investors_trading_summary:多方交易口數",
+        "futures_institutional_investors_trading_summary:空方交易口數",
+        "futures_institutional_investors_trading_summary:多空交易口數淨額",
+        "futures_institutional_investors_trading_summary:多方未平倉口數",
+        "futures_institutional_investors_trading_summary:空方未平倉口數",
+        "futures_institutional_investors_trading_summary:多空未平倉口數淨額",
+        "futures_institutional_investors_trading_summary:多方交易契約金額(千元)",
+        "futures_institutional_investors_trading_summary:空方交易契約金額(千元)",
+        "futures_institutional_investors_trading_summary:多空交易契約金額淨額(千元)",
+        "futures_institutional_investors_trading_summary:多方未平倉契約金額(千元)",
+        "futures_institutional_investors_trading_summary:空方未平倉契約金額(千元)",
+        "futures_institutional_investors_trading_summary:多空未平倉契約金額淨額(千元)"
+      ],
+      "checksum": "sha256:c359c8cef79931c7edae06d76204d0379ab6e230e275f1e78cca6e63adbdb00b"
+    },
+    {
+      "asset_key": "finlab/diversity/taxonomy_expansion",
+      "stage": "diversity",
+      "dataset_lane": "taxonomy_expansion",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_industry_themes"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "alias_cleaning, duplicate_tag_rate, coverage_by_symbol"
+      ],
+      "stockvision_use": "industry_theme/subindustry labels and sector-flow taxonomy",
+      "sample_api_keys": [
+        "security_industry_themes"
+      ],
+      "checksum": "sha256:d1fad66d341858d2c84d7fc31caf1e310d64407ddf6ec1aa36fd8a7e1bcfee21"
+    },
+    {
+      "asset_key": "finlab/parity/chip_diversity",
+      "stage": "parity",
+      "dataset_lane": "chip_diversity",
+      "access_tier": "compute",
+      "field_count": 48,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "institutional_investors_trading_all_market_summary",
+        "institutional_investors_trading_summary",
+        "margin_balance",
+        "margin_short_sale_suspension",
+        "margin_transactions",
+        "security_lending",
+        "security_lending_sell"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "price_location, liquidity, crowding, extreme_value_winsorization"
+      ],
+      "stockvision_use": "institutional flow, margin/lending and broker concentration shadow features",
+      "sample_api_keys": [
+        "margin_transactions:融資買進",
+        "margin_transactions:融資賣出",
+        "margin_transactions:融資現金償還",
+        "margin_transactions:融資前日餘額",
+        "margin_transactions:融資今日餘額",
+        "margin_transactions:融資限額",
+        "margin_transactions:融券買進",
+        "margin_transactions:融券賣出",
+        "margin_transactions:融券現券償還",
+        "margin_transactions:融券前日餘額",
+        "margin_transactions:融券今日餘額",
+        "margin_transactions:融券限額"
+      ],
+      "checksum": "sha256:750b35d095f87e03c070f089f9bbf6d073ae8b620868d57faae65e7b0674a77b"
+    },
+    {
+      "asset_key": "finlab/parity/daily_price",
+      "stage": "parity",
+      "dataset_lane": "daily_price",
+      "access_tier": "compute",
+      "field_count": 119,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "etl",
+        "price",
+        "price_earning_ratio"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "replace"
+      ],
+      "quality_gates": [
+        "20_30_day_parity, split_adjustment, missing_rate"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "sample_api_keys": [
+        "price:成交股數",
+        "price:成交筆數",
+        "price:成交金額",
+        "price:收盤價",
+        "price:開盤價",
+        "price:最低價",
+        "price:最高價",
+        "price:最後揭示買價",
+        "price:最後揭示賣價",
+        "price:最後揭示買量",
+        "price:最後揭示賣量",
+        "etl:adj_open"
+      ],
+      "checksum": "sha256:1a320487313f5c14a7479c511ae7bc1b1361aaab31338ef423c013acc2c4f93d"
+    },
+    {
+      "asset_key": "finlab/parity/fundamental_factor_diversity",
+      "stage": "parity",
+      "dataset_lane": "fundamental_factor_diversity",
+      "access_tier": "compute",
+      "field_count": 213,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "financial_statement",
+        "financial_statements_upload_detail",
+        "fundamental_features"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "augment"
+      ],
+      "quality_gates": [
+        "report_date_availability, no_lookahead, sector_normalization"
+      ],
+      "stockvision_use": "quality, value, growth, profitability and balance-sheet factors",
+      "sample_api_keys": [
+        "fundamental_features:營業利益",
+        "fundamental_features:EBITDA",
+        "fundamental_features:營運現金流",
+        "fundamental_features:歸屬母公司淨利",
+        "fundamental_features:折舊",
+        "fundamental_features:流動資產",
+        "fundamental_features:流動負債",
+        "fundamental_features:取得不動產廠房及設備",
+        "fundamental_features:經常稅後淨利",
+        "fundamental_features:ROA稅後息前",
+        "fundamental_features:ROA綜合損益",
+        "fundamental_features:ROE稅後"
+      ],
+      "checksum": "sha256:62a2221341ea2687623854ff0f410fbcd05ea6266b940144d87d550042d466a1"
+    },
+    {
+      "asset_key": "finlab/parity/revenue",
+      "stage": "parity",
+      "dataset_lane": "revenue",
+      "access_tier": "compute",
+      "field_count": 8,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "monthly_revenue"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "replace"
+      ],
+      "quality_gates": [
+        "announcement_date_alignment, restatement_check"
+      ],
+      "stockvision_use": "monthly revenue parity and revenue momentum feature base",
+      "sample_api_keys": [
+        "monthly_revenue:當月營收",
+        "monthly_revenue:上月營收",
+        "monthly_revenue:去年當月營收",
+        "monthly_revenue:上月比較增減(%)",
+        "monthly_revenue:去年同月增減(%)",
+        "monthly_revenue:當月累計營收",
+        "monthly_revenue:去年累計營收",
+        "monthly_revenue:前期比較增減(%)"
+      ],
+      "checksum": "sha256:fbf3bac68f4223944c553b49df22589f66d9393014a0630a6b71c96d1ba01907"
+    },
+    {
+      "asset_key": "finlab/parity/security_master",
+      "stage": "parity",
+      "dataset_lane": "security_master",
+      "access_tier": "compute",
+      "field_count": 1,
+      "markets": [
+        "tw"
+      ],
+      "namespaces": [
+        "security_categories"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "replace"
+      ],
+      "quality_gates": [
+        "row_count, market_enum, known_symbol_checks"
+      ],
+      "stockvision_use": "primary security master, market lane, tradability route",
+      "sample_api_keys": [
+        "security_categories"
+      ],
+      "checksum": "sha256:c391bc30fe18de29f5cdcfa6c0c1d1b26e4532016ea7c6f8795fa7be24f18447"
+    },
+    {
+      "asset_key": "finlab/research/daily_price",
+      "stage": "research",
+      "dataset_lane": "daily_price",
+      "access_tier": "archive",
+      "field_count": 2,
+      "markets": [
+        "us"
+      ],
+      "namespaces": [
+        "etl"
+      ],
+      "adoption_priorities": [
+        "P0"
+      ],
+      "adoption_modes": [
+        "replace"
+      ],
+      "quality_gates": [
+        "20_30_day_parity, split_adjustment, missing_rate"
+      ],
+      "stockvision_use": "daily price parity against TWSE/TPEX and adjusted OHLCV feature base",
+      "sample_api_keys": [
+        "etl:us_liquid_stock_filter",
+        "etl:us_common_stock_filter"
+      ],
+      "checksum": "sha256:6484ba3cbb95950c88b880106ba9dcaf946be916def4246a354e2e3d2f08c2b3"
+    },
+    {
+      "asset_key": "finlab/research/research",
+      "stage": "research",
+      "dataset_lane": "research",
+      "access_tier": "archive",
+      "field_count": 1319,
+      "markets": [
+        "hk",
+        "jp",
+        "kr",
+        "tw",
+        "uk"
+      ],
+      "namespaces": [
+        "after_market_odd_lot_trade",
+        "benchmark_return",
+        "board_dividend_announcement",
+        "capital_reduction_otc",
+        "capital_reduction_tse",
+        "cb_converted_status",
+        "cb_price",
+        "cb_published_info",
+        "change_transaction",
+        "company_basic_info",
+        "company_main_business",
+        "day_trade_short_suspension",
+        "delisted_companies",
+        "delisted_companies_otc",
+        "delisted_companies_tse",
+        "disposal_information",
+        "dividend_announcement",
+        "dividend_otc",
+        "dividend_tse",
+        "etf_split",
+        "foreign_investors_shareholding",
+        "hk_analyst_consensus",
+        "hk_balance_sheet",
+        "hk_cash_flow",
+        "hk_company_profile",
+        "hk_dcf",
+        "hk_earnings_surprises",
+        "hk_fund_price",
+        "hk_income_statement",
+        "hk_key_metrics",
+        "hk_price",
+        "hk_ratios",
+        "hk_stock_rating",
+        "important_info_announcement",
+        "important_subsidiary",
+        "insider_shareholding_transfer_declaration",
+        "internal_equity_changes",
+        "internal_equity_insufficient",
+        "internal_equity_pledge",
+        "intraday_lending_fee",
+        "intraday_odd_lot_trade",
+        "intraday_trading",
+        "intraday_trading_stat",
+        "inventory",
+        "investors_conference",
+        "jp_analyst_consensus",
+        "jp_balance_sheet",
+        "jp_cash_flow",
+        "jp_company_profile",
+        "jp_dcf",
+        "jp_earnings_surprises",
+        "jp_fund_price",
+        "jp_income_statement",
+        "jp_key_metrics",
+        "jp_price",
+        "jp_ratios",
+        "jp_stock_rating",
+        "kr_analyst_consensus",
+        "kr_balance_sheet",
+        "kr_cash_flow",
+        "kr_company_profile",
+        "kr_dcf",
+        "kr_earnings_surprises",
+        "kr_fund_price",
+        "kr_income_statement",
+        "kr_key_metrics",
+        "kr_price",
+        "kr_ratios",
+        "kr_stock_rating",
+        "lawsuit_info",
+        "market_transaction_info",
+        "national_security_fund",
+        "oversea_investment",
+        "par_value_change_otc",
+        "par_value_change_tse",
+        "quality_factor_z_score",
+        "reference_price",
+        "shareholders_meeting",
+        "stock_index_price",
+        "stock_index_vol",
+        "taiex_total_index",
+        "trading_attention",
+        "treasury_stock",
+        "uk_analyst_consensus",
+        "uk_balance_sheet",
+        "uk_cash_flow",
+        "uk_company_profile",
+        "uk_dcf",
+        "uk_earnings_surprises",
+        "uk_fund_price",
+        "uk_income_statement",
+        "uk_key_metrics",
+        "uk_price",
+        "uk_ratios",
+        "uk_stock_rating"
+      ],
+      "adoption_priorities": [
+        "P2"
+      ],
+      "adoption_modes": [
+        "benchmark"
+      ],
+      "quality_gates": [
+        "manual_review",
+        "research_only"
+      ],
+      "stockvision_use": "non-core global datasets and benchmark-only research candidates",
+      "sample_api_keys": [
+        "benchmark_return:發行量加權股價報酬指數",
+        "inventory",
+        "internal_equity_changes:發行股數",
+        "internal_equity_changes:董監增加股數",
+        "internal_equity_changes:董監減少股數",
+        "internal_equity_changes:董監持有股數",
+        "internal_equity_changes:董監持有股數占比",
+        "internal_equity_changes:經理人持有股數",
+        "internal_equity_changes:百分之十以上大股東持有股數",
+        "internal_equity_changes:市場別",
+        "internal_equity_insufficient:發行股數",
+        "internal_equity_insufficient:全體董事(不包含獨立董事)應持有股數"
+      ],
+      "checksum": "sha256:212ac1fc6ff82db09213d2d3a415f20c43f85713401fbf3e3c849a379b71243b"
+    }
+  ],
+  "checksum": "sha256:45fa20963e3345f2df972b4139bde37d84f5dec09a3202e2f9f0f04ce4ff340f"
+}

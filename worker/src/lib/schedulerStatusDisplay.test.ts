@@ -1,4 +1,9 @@
-import { selectSchedulerDisplayLogs, type SchedulerDisplayLogCandidate } from './schedulerStatus'
+import {
+  getSchedulerScanDates,
+  resolveSchedulerLogStatus,
+  selectSchedulerDisplayLogs,
+  type SchedulerDisplayLogCandidate,
+} from './schedulerStatus'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -28,7 +33,50 @@ const logs: SchedulerDisplayLogCandidate[] = [
 ]
 
 {
+  const originalNow = Date.now
+  Date.now = () => Date.parse('2026-05-08T04:00:00.000Z')
+  try {
+    const dates = getSchedulerScanDates()
+    assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
+  } finally {
+    Date.now = originalNow
+  }
+}
+
+{
   const display = selectSchedulerDisplayLogs(logs)
   assert(display.lastAttempt?.timestamp === '2026-04-29T05:30:00.000Z', 'lastAttempt must show the newest cron attempt even when skipped')
   assert(display.lastEffective?.timestamp === '2026-04-28T02:10:00.000Z', 'lastEffective should preserve the latest non-skipped run')
+}
+
+{
+  const status = resolveSchedulerLogStatus(
+    {
+      task: 'evening-chain',
+      status: 'running',
+      summary: 'chain started',
+      duration_ms: 0,
+      timestamp: '2026-05-07T08:00:00.000Z',
+    },
+    { id: 'evening-chain', group: 'pipeline_chain' },
+    Date.parse('2026-05-07T10:00:00.000Z'),
+  )
+  assert(status.status === 'failed', 'stale running pipeline-chain log should render as failed instead of infinite running')
+  assert(status.staleRunning === true, 'stale running marker should be explicit')
+  assert(status.staleReason?.includes('no final callback'), 'stale running reason should tell the operator what is missing')
+}
+
+{
+  const status = resolveSchedulerLogStatus(
+    {
+      task: 'evening-chain',
+      status: 'running',
+      summary: 'chain started',
+      duration_ms: 0,
+      timestamp: '2026-05-07T08:00:00.000Z',
+    },
+    { id: 'evening-chain', group: 'pipeline_chain' },
+    Date.parse('2026-05-07T08:10:00.000Z'),
+  )
+  assert(status.status === 'running', 'fresh running job should remain running before SLA expires')
 }

@@ -22,6 +22,7 @@ import {
   runWeeklyMonteCarlo as runWeeklyMonteCarloWorkflow,
   runWeeklyPBO as runWeeklyPboWorkflow,
   runWeeklyAlphaQuality as runWeeklyAlphaQualityWorkflow,
+  runMonthlyOptunaResearch as runMonthlyOptunaResearchWorkflow,
   runOptunaQueueProcessor as runOptunaQueueProcessorWorkflow,
 } from './lib/controllerWorkflows'
 import { auth } from './routes/auth'
@@ -56,7 +57,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     setupMorningPendingBuys: () => setupMorningPendingBuys(c.env),
     runIntradayCheck: () => runIntradayCheck(c.env),
     runEODExit: () => runEODExit(c.env),
-    runDailySnapshot: () => runDailySnapshot(c.env),
+    runDailySnapshot: (runDate?: string) => runDailySnapshot(c.env, { date: runDate }),
     runMorningWarmup: () => runMorningWarmup(c.env),
     runWeeklyAudit: () => runWeeklyAuditWorkflow(c.env),
     runWeeklyBacktest: () => runWeeklyBacktestWorkflow(c.env),
@@ -64,7 +65,8 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyPBO: () => runWeeklyPboWorkflow(c.env),
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
     runWeeklyLifecycleCheck: () => runWeeklyLifecycleCheckWorkflow(c.env),
-    runWeeklyOptunaResearch: () => runWeeklyOptunaResearchWorkflow(c.env),
+    runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
+    runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
   }),
 })
@@ -142,6 +144,10 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    if ((env as any).ENABLE_CLOUDFLARE_CRON !== '1') {
+      console.warn(`[Cron] Cloudflare scheduled trigger ignored (${event.cron}); GCP Scheduler is the production owner.`)
+      return
+    }
     await handleScheduledCron(event, env, ctx)
   },
 

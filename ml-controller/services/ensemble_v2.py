@@ -19,7 +19,7 @@ def _rank_confidence(avg_rank: float) -> float:
     return round(0.5 + abs(avg_rank - 0.5), 4)
 
 
-def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tuple[float | None, str]:
+def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tuple[float | None, str, dict]:
     """Map ensemble rank to expected return only when verified calibration exists."""
     calibration = (ev2_cfg or {}).get("expectedReturnCalibration") or {}
     bins = calibration.get("bins") if isinstance(calibration, dict) else None
@@ -32,20 +32,33 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
                 low = float(row.get("rankLow", row.get("rank_low")))
                 high = float(row.get("rankHigh", row.get("rank_high")))
                 samples = int(row.get("samples") or 0)
-                mean_return = float(row.get("meanReturn", row.get("mean_return")))
+                mean_return = float(
+                    row.get("meanReturn", row.get("mean_return", row.get("medianReturn", row.get("median_return"))))
+                )
             except (TypeError, ValueError):
                 continue
             upper_ok = avg_rank <= high if high >= 1.0 else avg_rank < high
             if samples >= min_samples and avg_rank >= low and upper_ok:
-                return round(mean_return, 6), "calibrated_rank_bin"
-    return None, "uncalibrated_rank_score"
+                return round(mean_return, 6), "calibrated_rank_bin", {
+                    "forecast_calibration_method": calibration.get("method") or "empirical_rank_bins",
+                    "forecast_calibration_source": calibration.get("source"),
+                    "forecast_calibration_sample_count": calibration.get("sampleCount"),
+                    "forecast_calibration_bin_samples": samples,
+                    "forecast_calibration_bin": {"rankLow": low, "rankHigh": high},
+                }
+    return None, "uncalibrated_rank_score", {
+        "forecast_calibration_method": calibration.get("method") if isinstance(calibration, dict) else None,
+        "forecast_calibration_source": calibration.get("source") if isinstance(calibration, dict) else None,
+        "forecast_calibration_sample_count": calibration.get("sampleCount") if isinstance(calibration, dict) else None,
+    }
 
 
 def _forecast_fields(avg_rank: float, ev2_cfg: dict | None = None) -> dict:
-    forecast, source = _calibrated_forecast_pct(avg_rank, ev2_cfg)
+    forecast, source, meta = _calibrated_forecast_pct(avg_rank, ev2_cfg)
     return {
         "forecast_pct": forecast,
         "forecast_pct_source": source,
+        **meta,
     }
 
 
@@ -93,6 +106,7 @@ def attach_ensemble_v2(
     if not merged:
         return
 
+    observed_ic_models = set((ev2_cfg or {}).get("observedIcModels") or [])
     weights = {
         name: _compute_lifecycle_weight(
             model_status.get(name, "active"),
@@ -104,7 +118,7 @@ def attach_ensemble_v2(
     weight_total = sum(weights.values())
 
     if weight_total <= 0:
-        if not _has_observed_ic(merged, ic_weights):
+        if not (_has_observed_ic(merged, ic_weights) or (set(merged) & observed_ic_models)):
             weights = {
                 name: _cold_start_weight(model_status.get(name, "active"), degraded_dampening)
                 for name in merged
@@ -153,7 +167,7 @@ def attach_ensemble_v2(
             "weights": {k: round(v, 6) for k, v in weights.items()},
             "weight_total": 0.0,
             "reason": "no_positive_lifecycle_weight",
-            "weight_formula": "max(0,ic) * status_filter * dampening_if_degraded",
+            "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
         }
         return
 
@@ -183,6 +197,6 @@ def attach_ensemble_v2(
         "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
         "weights": {k: round(v, 6) for k, v in weights.items()},
         "weight_total": round(weight_total, 6),
-        "weight_formula": "max(0,ic) * status_filter * dampening_if_degraded",
+        "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
         **_forecast_fields(avg, ev2_cfg),
     }

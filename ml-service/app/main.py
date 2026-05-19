@@ -113,12 +113,40 @@ async def warmup(request: Request):
     return {"status": "warm", "elapsed_s": elapsed}
 
 
+@app.post("/breeze2/research-context")
+async def breeze2_research_context_endpoint(request: Request):
+    await verify_service_token(request)
+    payload = await request.json()
+    from .breeze2_context import build_breeze2_research_context
+
+    return build_breeze2_research_context({
+        **payload,
+        "allowed_use": "research_context_only",
+        "mutation_allowed": False,
+    })
+
+
 class FactorAuditRequest(BaseModel):
     prices: list[dict]
     indicators: list[dict] = []
     chips: list[dict] = []
     sentiment_scores: list[dict] = []
     market_env: dict | None = None
+
+
+class NeuralMetaBanditRequest(BaseModel):
+    policy_id: str = Field(..., pattern="^(NeuralUCB|NeuralTS)$")
+    contexts: list[list[float]]
+    arms: list[int]
+    rewards: list[float]
+    arm_names: list[str]
+    business_date: str
+    symbols: list[str]
+    baseline_actions: list[str]
+    epochs: int = Field(default=120, ge=1, le=2000)
+    hidden_dim: int = Field(default=32, ge=4, le=256)
+    learning_rate: float = Field(default=0.01, gt=0, le=1)
+    seed: int = Field(default=42, ge=0)
 
 
 @app.post("/factor-ic-audit")
@@ -160,6 +188,51 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
         "weak_count": len(weak),
         "weak_features": weak,
         "details": results,
+    }
+
+
+@app.post("/meta-learning/neural-shadow/train")
+async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, request: Request):
+    """Train NeuralUCB/NeuralTS shadow challenger and return evidence only."""
+    await verify_service_token(request)
+    from .neural_meta_bandit import (
+        NeuralMetaBanditConfig,
+        build_shadow_decisions,
+        train_neural_meta_bandit,
+    )
+
+    contexts = np.asarray(req.contexts, dtype="float32")
+    arms = np.asarray(req.arms, dtype=np.int64)
+    rewards = np.asarray(req.rewards, dtype="float32")
+    mode = "ts" if req.policy_id == "NeuralTS" else "ucb"
+    policy = train_neural_meta_bandit(
+        contexts,
+        arms,
+        rewards,
+        arm_names=req.arm_names,
+        config=NeuralMetaBanditConfig(
+            policy_id=req.policy_id,  # type: ignore[arg-type]
+            epochs=req.epochs,
+            hidden_dim=req.hidden_dim,
+            learning_rate=req.learning_rate,
+            seed=req.seed,
+        ),
+    )
+    decisions = build_shadow_decisions(
+        policy,
+        business_date=req.business_date,
+        symbols=req.symbols,
+        contexts=contexts[:len(req.symbols)],
+        baseline_actions=req.baseline_actions,
+        mode=mode,
+    )
+    return {
+        "success": True,
+        "mode": "shadow_evidence_only",
+        "policy_id": req.policy_id,
+        "training_report": policy.training_report.__dict__,
+        "shadow_decisions": decisions,
+        "production_effect": "none",
     }
 
 
@@ -318,11 +391,12 @@ def _deprecated_run_permutation_importance(n_repeats: int = 5, max_samples: int 
 
 
 
-    import time, io, json as _json, joblib
+    import time, io, json as _json
     from sklearn.metrics import accuracy_score
     t0 = time.time()
 
     from .model_store import _get_bucket
+    from .artifact_runtime_versions import load_joblib_with_version_warnings
     bucket = _get_bucket()
     if bucket is None:
         return {"error": "GCS_BUCKET_NAME not configured or bucket unavailable"}
@@ -379,7 +453,7 @@ def _deprecated_run_permutation_importance(n_repeats: int = 5, max_samples: int 
             buf = io.BytesIO()
             blob.download_to_file(buf)
             buf.seek(0)
-            models[name] = joblib.load(buf)
+            models[name] = load_joblib_with_version_warnings(buf, artifact_name=f"universal/{name}.joblib")
         except Exception as e:
             print(f"[PermImp] {name} load failed: {e}")
 

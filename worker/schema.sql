@@ -464,6 +464,189 @@ CREATE TABLE IF NOT EXISTS screener_funnel_items (
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run ON screener_funnel_items(run_id, stage, decision);
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_items(symbol, date DESC);
 
+CREATE TABLE IF NOT EXISTS dataset_snapshots (
+  snapshot_id     TEXT PRIMARY KEY,
+  kind            TEXT NOT NULL,
+  business_date   TEXT NOT NULL,
+  market_segment  TEXT,
+  schema_version  TEXT NOT NULL,
+  row_count       INTEGER NOT NULL DEFAULT 0,
+  checksum        TEXT NOT NULL,
+  primary_store   TEXT NOT NULL CHECK(primary_store IN ('d1','gcs','r2')),
+  access_tier     TEXT NOT NULL CHECK(access_tier IN ('serving','compute','report','preview','archive')),
+  gcs_uri         TEXT,
+  r2_key          TEXT,
+  producer_run_id TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'ready' CHECK(status IN ('pending','ready','failed','expired')),
+  metadata_json   TEXT,
+  created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_kind_date
+  ON dataset_snapshots(kind, business_date DESC, status);
+CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_access_date
+  ON dataset_snapshots(access_tier, business_date DESC, primary_store);
+CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_run
+  ON dataset_snapshots(producer_run_id, kind);
+
+CREATE TABLE IF NOT EXISTS model_artifact_registry (
+  artifact_id                 TEXT PRIMARY KEY,
+  model_name                  TEXT NOT NULL,
+  version                     TEXT NOT NULL,
+  candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','manual_hotfix','model_family_shadow','research_benchmark','unknown')),
+  state                       TEXT NOT NULL CHECK(state IN (
+    'registered',
+    'registration_failed',
+    'offline_failed',
+    'offline_passed_weak',
+    'offline_passed',
+    'offline_strong_pass',
+    'candidate_selected',
+    'shadowing',
+    'live_gate_passed',
+    'approval_required',
+    'approved',
+    'production',
+    'rejected',
+    'archived'
+  )),
+  artifact_path               TEXT,
+  metadata_path               TEXT,
+  training_run_id             TEXT,
+  training_manifest_path      TEXT,
+  trained_from_snapshot       TEXT,
+  evaluation_baseline_version TEXT,
+  final_compared_to           TEXT,
+  feature_policy_version      TEXT,
+  checksum                    TEXT,
+  source_run_date             TEXT,
+  is_monthly                  INTEGER NOT NULL DEFAULT 0,
+  offline_gate_status         TEXT NOT NULL DEFAULT 'not_evaluated',
+  offline_gate_decision       TEXT NOT NULL DEFAULT 'PENDING',
+  offline_gate_failed_gates   TEXT NOT NULL DEFAULT '[]',
+  offline_evidence_json       TEXT NOT NULL DEFAULT '{}',
+  live_gate_status            TEXT NOT NULL DEFAULT 'not_started',
+  live_evidence_json          TEXT NOT NULL DEFAULT '{}',
+  promotion_decision          TEXT NOT NULL DEFAULT 'not_evaluated',
+  approval_state              TEXT NOT NULL DEFAULT 'not_required',
+  created_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(model_name, version, candidate_type)
+);
+CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_model_state
+  ON model_artifact_registry(model_name, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_candidate_type
+  ON model_artifact_registry(candidate_type, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_run
+  ON model_artifact_registry(training_run_id, source_run_date);
+
+CREATE TABLE IF NOT EXISTS model_champion_pointers (
+  model_name                  TEXT PRIMARY KEY,
+  champion_version            TEXT NOT NULL,
+  champion_artifact_id        TEXT,
+  rollback_version            TEXT,
+  rollback_artifact_id        TEXT,
+  promoted_at                 TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  promotion_reason            TEXT,
+  promotion_evidence_json     TEXT NOT NULL DEFAULT '{}',
+  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
+  ON model_champion_pointers(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_spec_registry (
+  strategy_id              TEXT NOT NULL,
+  version                  TEXT NOT NULL,
+  name                     TEXT NOT NULL,
+  status                   TEXT NOT NULL CHECK(status IN ('research','shadow','candidate','active','retired')),
+  owner                    TEXT NOT NULL DEFAULT 'strategy',
+  alpha_bucket             TEXT NOT NULL,
+  supported_regimes_json   TEXT NOT NULL DEFAULT '[]',
+  thesis                   TEXT NOT NULL,
+  thresholds_json          TEXT NOT NULL DEFAULT '{}',
+  risk_notes_json          TEXT NOT NULL DEFAULT '[]',
+  source_refs_json         TEXT NOT NULL DEFAULT '[]',
+  created_by               TEXT NOT NULL DEFAULT 'p5_strategy_governance',
+  created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(strategy_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_status
+  ON strategy_spec_registry(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_bucket
+  ON strategy_spec_registry(alpha_bucket, status);
+
+CREATE TABLE IF NOT EXISTS strategy_decision_log (
+  decision_id              TEXT PRIMARY KEY,
+  date                     TEXT NOT NULL,
+  symbol                   TEXT NOT NULL,
+  name                     TEXT,
+  strategy_id              TEXT NOT NULL,
+  strategy_version         TEXT NOT NULL,
+  strategy_status          TEXT NOT NULL,
+  alpha_bucket             TEXT NOT NULL,
+  matched                  INTEGER NOT NULL DEFAULT 0,
+  match_score              REAL,
+  reason_code              TEXT NOT NULL,
+  context_json             TEXT NOT NULL DEFAULT '{}',
+  evidence_json            TEXT NOT NULL DEFAULT '{}',
+  created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(date, symbol, strategy_id, strategy_version)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_date
+  ON strategy_decision_log(date DESC, strategy_id, matched);
+CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_symbol
+  ON strategy_decision_log(symbol, date DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_status
+  ON strategy_decision_log(strategy_status, matched, date DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_reward_ledger (
+  reward_id                TEXT PRIMARY KEY,
+  strategy_id              TEXT NOT NULL,
+  strategy_version         TEXT NOT NULL,
+  strategy_status          TEXT NOT NULL,
+  alpha_bucket             TEXT NOT NULL,
+  date_start               TEXT,
+  date_end                 TEXT,
+  horizon_days             INTEGER NOT NULL DEFAULT 5,
+  samples                  INTEGER NOT NULL DEFAULT 0,
+  hit_rate                 REAL,
+  avg_return_pct           REAL,
+  reward_sum               REAL,
+  max_drawdown_pct         REAL,
+  coverage                 REAL,
+  market_segment           TEXT DEFAULT 'all',
+  regime                   TEXT DEFAULT 'all',
+  evidence_json            TEXT NOT NULL DEFAULT '{}',
+  updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(strategy_id, strategy_version, horizon_days, market_segment, regime)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_strategy
+  ON strategy_reward_ledger(strategy_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_status
+  ON strategy_reward_ledger(strategy_status, samples DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_policy_state (
+  policy_id                TEXT PRIMARY KEY,
+  version                  TEXT NOT NULL,
+  status                   TEXT NOT NULL CHECK(status IN ('shadow','candidate','active','retired')),
+  strategy_weights_json    TEXT NOT NULL DEFAULT '{}',
+  threshold_deltas_json    TEXT NOT NULL DEFAULT '{}',
+  evidence_json            TEXT NOT NULL DEFAULT '{}',
+  updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_locks (
+  lock_key   TEXT PRIMARY KEY,
+  owner      TEXT NOT NULL,
+  run_date   TEXT,
+  run_id     TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_locks_owner_date
+  ON scheduler_locks(owner, run_date, created_at DESC);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡
 -- 首次部署：wrangler d1 execute stockvision-db --remote --file=./worker/schema.sql

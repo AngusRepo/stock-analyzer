@@ -80,7 +80,8 @@ async def _callback_worker(
     if client is not None:
         await _post(client)
     else:
-        async with httpx.AsyncClient(timeout=15.0) as c:
+        timeout_s = 60.0 if payload.get("task") == "pipeline" else 15.0
+        async with httpx.AsyncClient(timeout=timeout_s) as c:
             await _post(c)
 
 
@@ -94,9 +95,9 @@ async def _emit_subtask_callbacks(
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
-    Dashboard reads scheduler:run:{task}:{date}; pipeline runs screener / ml-predict /
-    recommendation internally but only writes scheduler:run:pipeline. This reverse-
-    callback pattern keeps the UI tiles aligned with reality.
+    Dashboard reads scheduler:run:{task}:{date}. Screener is Worker-owned before
+    the pipeline trigger, so the pipeline callback must not overwrite screener
+    success/failure. Only ML predict and recommendation are pipeline-owned.
     """
     metrics: dict = {}
     if isinstance(result, dict):
@@ -104,11 +105,17 @@ async def _emit_subtask_callbacks(
 
     # Populated by node_write_d1 in graphs/daily_pipeline_v2.py.
     predictions_n = int(metrics.get("predictions_written", 0) or 0)
+    prediction_symbols = int(metrics.get("prediction_symbols", 0) or 0)
+    prediction_models = int(metrics.get("prediction_output_models", 0) or 0)
     recos_n = int(metrics.get("recommendations_updated", 0) or 0)
+    prediction_summary = (
+        f"run_id={run_id} symbols={prediction_symbols} rows={predictions_n} models={prediction_models}"
+        if prediction_symbols > 0
+        else f"run_id={run_id} predictions={predictions_n}"
+    )
 
     subtasks = [
-        ("screener", predictions_n > 0, f"run_id={run_id} predictions_written={predictions_n}"),
-        ("ml-predict", predictions_n > 0, f"run_id={run_id} predictions={predictions_n}"),
+        ("ml-predict", predictions_n > 0, prediction_summary),
         ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
     ]
 

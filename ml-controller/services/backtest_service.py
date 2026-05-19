@@ -24,11 +24,15 @@ import os
 import json
 import logging
 import statistics
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+import polars as pl
+from services.research_data_access import resolve_research_data_access
+from services.snapshot_parquet import read_snapshot_component
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,7 @@ TRAIL_MULT_3PCT = 2.5
 TRAIL_MULT_8PCT = 2.0
 MAX_OPEN_TRADES = 5
 STAKE_AMOUNT = 200_000
+BACKTEST_D1_READ_CHUNK_SIZE = max(10, min(int(os.environ.get("BACKTEST_D1_READ_CHUNK_SIZE", "80")), 200))
 TW_BUY_FEE = 0.001425       # 買入手續費 0.1425%
 TW_SELL_FEE = 0.004425       # 賣出手續費 0.1425% + 證交稅 0.3%
 
@@ -228,6 +233,121 @@ async def _d1_exec(client: httpx.AsyncClient, sql: str, params: list = None) -> 
 
 
 # ── Backtest Engine ───────────────────────────────────────────────────────────
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _snapshot_frame_with_stock_id(df: pl.DataFrame, stocks: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty() or "stock_id" in df.columns:
+        return df
+    if "symbol" not in df.columns or not {"id", "symbol"}.issubset(set(stocks.columns)):
+        raise RuntimeError("backtest_snapshot_stock_id_missing")
+    return df.join(
+        stocks.select([pl.col("id").alias("stock_id"), "symbol"]),
+        on="symbol",
+        how="inner",
+    )
+
+
+def _group_snapshot_rows_by_stock_id(df: pl.DataFrame) -> dict[int, list[dict]]:
+    grouped: dict[int, list[dict]] = defaultdict(list)
+    if df.is_empty():
+        return grouped
+    for row in df.sort(["stock_id", "date"] if "date" in df.columns else ["stock_id"]).to_dicts():
+        grouped[int(row["stock_id"])].append(row)
+    return grouped
+
+
+def _load_backtest_inputs_from_snapshot(manifest: dict) -> tuple[list[dict], dict[int, list[dict]], dict[int, list[dict]]]:
+    stocks_df = read_snapshot_component(manifest, "stocks")
+    prices_df = read_snapshot_component(manifest, "prices")
+    signals_df = read_snapshot_component(manifest, "signals", required=False)
+    if signals_df is None:
+        signals_df = read_snapshot_component(manifest, "predictions", required=False)
+    if stocks_df is None or stocks_df.is_empty() or prices_df is None or prices_df.is_empty():
+        raise RuntimeError("backtest_snapshot_stocks_or_prices_missing")
+    if signals_df is None or signals_df.is_empty():
+        raise RuntimeError("backtest_snapshot_signals_missing")
+
+    if {"delisted_date", "listed_date"}.issubset(set(stocks_df.columns)):
+        stocks_df = stocks_df.with_columns([
+            pl.col("listed_date").cast(pl.Utf8),
+            pl.col("delisted_date").cast(pl.Utf8),
+        ]).filter(
+            ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") >= "2023-01-01"))
+            & ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= datetime.now(timezone.utc).strftime("%Y-%m-%d")))
+        )
+    if not {"id", "symbol"}.issubset(set(stocks_df.columns)):
+        raise RuntimeError("backtest_snapshot_stocks_schema_invalid")
+
+    prices_df = _snapshot_frame_with_stock_id(prices_df, stocks_df)
+    signals_df = _snapshot_frame_with_stock_id(signals_df, stocks_df)
+    stocks = stocks_df.select([col for col in ["id", "symbol", "name"] if col in stocks_df.columns]).to_dicts()
+    return (
+        stocks,
+        _group_snapshot_rows_by_stock_id(prices_df),
+        _group_snapshot_rows_by_stock_id(signals_df),
+    )
+
+
+async def _bulk_load_prices_by_stock(
+    client: httpx.AsyncClient,
+    stock_ids: list[int],
+    *,
+    chunk_size: int = BACKTEST_D1_READ_CHUNK_SIZE,
+) -> tuple[dict[int, list[dict]], int]:
+    """Load OHLCV in stock-id chunks instead of one D1 query per stock."""
+    grouped: dict[int, list[dict]] = defaultdict(list)
+    query_count = 0
+    for ids in _chunks(stock_ids, chunk_size):
+        placeholders = ",".join(["?"] * len(ids))
+        rows = await _d1_query(
+            client,
+            f"""
+            SELECT stock_id, date, open, high, low, close, volume
+            FROM stock_prices
+            WHERE stock_id IN ({placeholders})
+            ORDER BY stock_id, date ASC
+            """,
+            ids,
+        )
+        query_count += 1
+        for row in rows:
+            grouped[int(row["stock_id"])].append(row)
+    return grouped, query_count
+
+
+async def _bulk_load_ensemble_signals_by_stock(
+    client: httpx.AsyncClient,
+    stock_ids: list[int],
+    *,
+    chunk_size: int = BACKTEST_D1_READ_CHUNK_SIZE,
+) -> tuple[dict[int, list[dict]], int]:
+    """Load recent ensemble predictions in stock-id chunks for research/backtest lanes."""
+    grouped: dict[int, list[dict]] = defaultdict(list)
+    query_count = 0
+    for ids in _chunks(stock_ids, chunk_size):
+        placeholders = ",".join(["?"] * len(ids))
+        rows = await _d1_query(
+            client,
+            f"""
+            SELECT stock_id, generated_at, trade_signal, direction_accuracy,
+                   entry_price, stop_loss, target1, target2, forecast_data
+            FROM predictions
+            WHERE stock_id IN ({placeholders})
+              AND model_name = 'ensemble'
+              AND generated_at >= date('now', '-730 days')
+            ORDER BY stock_id, generated_at
+            """,
+            ids,
+        )
+        query_count += 1
+        for row in rows:
+            grouped[int(row["stock_id"])].append(row)
+    return grouped, query_count
+
 
 def _tick_size(price: float) -> float:
     """Taiwan stock tick size by price level."""
@@ -472,21 +592,50 @@ async def run_full_backtest() -> dict:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
 
     async with httpx.AsyncClient() as client:
-        # ── Step 1: Fetch stocks (point-in-time tradable universe) ──
-        # D2 fix: aligned with backtest_engine._load_stocks — no in_current_watchlist filter.
-        # Include all non-delisted + delisted-after-2023 stocks (same as backtest_engine).
-        logger.info("[Backtest] Fetching tradable universe from D1...")
-        stocks = await _d1_query(client, """
-            SELECT DISTINCT s.id, s.symbol, s.name
-            FROM stocks s
-            WHERE (s.delisted_date IS NULL OR s.delisted_date >= '2023-01-01')
-              AND (s.listed_date IS NULL OR s.listed_date <= date('now'))
-        """)
+        backtest_start_date = "2023-01-01"
+        backtest_end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        data_access = resolve_research_data_access(
+            lane="backtest_service.run_full_backtest",
+            kind="backtest_dataset",
+            required_start_date=backtest_start_date,
+            required_end_date=backtest_end_date,
+        )
+        if data_access.source == "snapshot" and data_access.snapshot:
+            try:
+                stocks, prices_by_stock, signals_by_stock = _load_backtest_inputs_from_snapshot(data_access.snapshot)
+            except RuntimeError as exc:
+                return {
+                    "status": "error",
+                    "error": str(exc),
+                    "data_access": data_access.to_dict(),
+                }
+            price_query_count = 0
+            signal_query_count = 0
+        else:
+            # ── Step 1: Fetch stocks (point-in-time tradable universe) ──
+            # D2 fix: aligned with backtest_engine._load_stocks — no in_current_watchlist filter.
+            # Include all non-delisted + delisted-after-2023 stocks (same as backtest_engine).
+            logger.info("[Backtest] Fetching tradable universe from D1...")
+            stocks = await _d1_query(client, """
+                SELECT DISTINCT s.id, s.symbol, s.name
+                FROM stocks s
+                WHERE (s.delisted_date IS NULL OR s.delisted_date >= '2023-01-01')
+                  AND (s.listed_date IS NULL OR s.listed_date <= date('now'))
+            """)
 
-        if not stocks:
-            return {"error": "No stocks found in D1", "status": "failed"}
+            if not stocks:
+                return {"error": "No stocks found in D1", "status": "failed"}
 
-        logger.info(f"[Backtest] Found {len(stocks)} stocks")
+            logger.info(f"[Backtest] Found {len(stocks)} stocks")
+            stock_ids = [int(stock["id"]) for stock in stocks]
+            prices_by_stock, price_query_count = await _bulk_load_prices_by_stock(client, stock_ids)
+            signals_by_stock, signal_query_count = await _bulk_load_ensemble_signals_by_stock(client, stock_ids)
+        logger.info(
+            "[Backtest] Bulk loaded research data: price_groups=%s signal_groups=%s d1_queries=%s",
+            len(prices_by_stock),
+            len(signals_by_stock),
+            1 + price_query_count + signal_query_count,
+        )
 
         all_trades: list[dict] = []
         first_date = "9999-12-31"
@@ -498,29 +647,13 @@ async def run_full_backtest() -> dict:
             symbol = stock["symbol"]
             stock_id = stock["id"]
 
-            # Fetch OHLCV
-            prices = await _d1_query(
-                client,
-                "SELECT date, open, high, low, close, volume FROM stock_prices "
-                "WHERE stock_id = ? ORDER BY date ASC",
-                [stock_id],
-            )
+            prices = prices_by_stock.get(int(stock_id), [])
 
             if len(prices) < 30:
                 stocks_skipped += 1
                 continue
 
-            # Fetch ML signals (ensemble predictions, last 2 years)
-            raw_signals = await _d1_query(
-                client,
-                """SELECT generated_at, trade_signal, direction_accuracy,
-                          entry_price, stop_loss, target1, target2, forecast_data
-                   FROM predictions
-                   WHERE stock_id = ? AND model_name = 'ensemble'
-                     AND generated_at >= date('now', '-730 days')
-                   ORDER BY generated_at""",
-                [stock_id],
-            )
+            raw_signals = signals_by_stock.get(int(stock_id), [])
 
             # Parse signals
             signals = []
@@ -601,6 +734,9 @@ async def run_full_backtest() -> dict:
                 "cagr": result.cagr,
                 "stocks_processed": stocks_processed,
                 "stocks_skipped": stocks_skipped,
+                "data_access": data_access.to_dict(),
+                "d1_read_queries": 1 + price_query_count + signal_query_count,
+                "d1_read_chunk_size": BACKTEST_D1_READ_CHUNK_SIZE,
             },
         }, ensure_ascii=False)
 
@@ -643,6 +779,14 @@ async def run_full_backtest() -> dict:
             "expectancy": round(result.expectancy, 4),
             "cagr": round(result.cagr, 4) if result.cagr else None,
             "exit_distribution": exit_dist,
+            "data_access": {
+                **data_access.to_dict(),
+                "read_path": "snapshot" if data_access.source == "snapshot" else "d1_chunked_bulk_fallback",
+                "d1_read_queries": 1 + price_query_count + signal_query_count,
+                "d1_read_chunk_size": BACKTEST_D1_READ_CHUNK_SIZE,
+                "price_groups": len(prices_by_stock),
+                "signal_groups": len(signals_by_stock),
+            },
         }
         logger.info(f"[Backtest] Done: {summary}")
         return summary

@@ -25,6 +25,7 @@ from .artifact_contract import (
     now_utc_iso,
     validate_model_artifact_metadata,
 )
+from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
 from .model_store import _get_bucket, save_model
 from .training_policy import (
     TREE_MODEL_NAMES,
@@ -84,6 +85,70 @@ class UniversalTrainRequest(BaseModel):
     cpcv_min_train_groups: int | None = None
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
+    training_run_suffix: str | None = None
+
+
+def _ic_summary_value(metrics: dict) -> float | None:
+    value = metrics.get("ic")
+    if value is None:
+        value = metrics.get("oos_ic")
+    if value is None:
+        value = metrics.get("ic_4w_avg")
+    return value
+
+
+def _controller_callback_token() -> str:
+    return (
+        os.environ.get("ML_CONTROLLER_TOKEN")
+        or os.environ.get("INTERNAL_TOKEN")
+        or os.environ.get("ML_CONTROLLER_SECRET")
+        or os.environ.get("STOCKVISION_AUTH_TOKEN")
+        or ""
+    )
+
+
+def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | None]:
+    """Return stable manifest date bounds without NumPy string min/max.
+
+    NumPy 2.x does not support min/max reductions on string dtypes. Monthly
+    retrain uses this path after model training; failing here incorrectly marks
+    a successful train as an orchestrator error.
+    """
+
+    if dates is None or len(dates) == 0:
+        return None, None
+    values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
+    if not values:
+        return None, None
+    values.sort()
+    return values[0], values[-1]
+
+
+def _ftt_tensor_loader(
+    torch_module,
+    X: np.ndarray,
+    y: np.ndarray | None = None,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    pin_memory: bool,
+):
+    """Build an FT-Transformer DataLoader without per-batch NumPy conversion."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    x_tensor = torch_module.as_tensor(np.asarray(X, dtype=np.float32))
+    if y is None:
+        dataset = TensorDataset(x_tensor)
+    else:
+        y_tensor = torch_module.as_tensor(np.asarray(y, dtype=np.float32))
+        dataset = TensorDataset(x_tensor, y_tensor)
+    return DataLoader(
+        dataset,
+        batch_size=max(1, int(batch_size)),
+        shuffle=shuffle and len(dataset) > 0,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
 
 
 def normalize_universal_lifecycle_request(
@@ -173,14 +238,30 @@ def _register_challenger_safe(
     version: str,
     *,
     model_cpcv: dict | None = None,
+    feature_policy_version: str | None = None,
+    feature_policy: dict | None = None,
 ) -> dict:
     try:
         from .model_pool import register_challenger
 
         pool = register_challenger(model_name, version, save=True, model_cpcv=model_cpcv)
-        return {"status": "registered", "version": version, "pool_updated": bool(pool)}
+        return {
+            "status": "registered",
+            "version": version,
+            "pool_updated": bool(pool),
+            "model_cpcv": model_cpcv,
+            "feature_policy_version": feature_policy_version,
+            "feature_policy": feature_policy,
+        }
     except Exception as exc:
-        return {"status": "error", "version": version, "error": str(exc)}
+        return {
+            "status": "error",
+            "version": version,
+            "error": str(exc),
+            "model_cpcv": model_cpcv,
+            "feature_policy_version": feature_policy_version,
+            "feature_policy": feature_policy,
+        }
 
 
 def build_validation_split_metadata(
@@ -328,7 +409,7 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
     buf = io.BytesIO()
     blob.download_to_file(buf)
     buf.seek(0)
-    artifact = joblib_load(buf)
+    artifact = load_joblib_with_version_warnings(buf, artifact_name=path)
 
     metadata: dict = {}
     version = get_active_version(model_name, pool=pool)
@@ -336,6 +417,7 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
         meta_blob = bucket.blob(gcs_metadata_path_for(model_name, version))
         if meta_blob.exists():
             metadata = json.loads(meta_blob.download_as_text())
+            metadata["runtime_version_report"] = sklearn_version_report(metadata)
     return artifact, metadata
 
 
@@ -1009,15 +1091,32 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         def _run_ftt_training(batch_sz: int, grad_accum: int = 1) -> None:
             nonlocal best_val_ic, best_state, no_improve, _global_step, last_epoch
 
+            # CPU tensors are pinned only to feed CUDA with non-blocking copies;
+            # the model, forward/backward pass, and AMP stay on `device`.
+            pin_batches = device.type == "cuda"
+            train_loader = _ftt_tensor_loader(
+                torch,
+                Xt_trn,
+                yt_trn,
+                batch_size=batch_sz,
+                shuffle=True,
+                pin_memory=pin_batches,
+            )
+            val_loader = _ftt_tensor_loader(
+                torch,
+                Xt_val,
+                None,
+                batch_size=batch_sz,
+                shuffle=False,
+                pin_memory=pin_batches,
+            )
             for epoch in range(MAX_EPOCHS):
                 model_ftt.train()
-                perm = np.random.permutation(len(Xt_trn))
                 opt.zero_grad()
                 mini_step = 0
-                for s in range(0, len(Xt_trn), batch_sz):
-                    bi = perm[s:s + batch_sz]
-                    xb = torch.tensor(Xt_trn[bi], device=device)
-                    yb = torch.tensor(yt_trn[bi], device=device)
+                for xb_cpu, yb_cpu in train_loader:
+                    xb = xb_cpu.to(device, non_blocking=pin_batches)
+                    yb = yb_cpu.to(device, non_blocking=pin_batches)
                     with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
                         preds_amp = model_ftt(xb)
                     loss = crit(preds_amp.float(), yb.float()) / grad_accum
@@ -1037,8 +1136,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 model_ftt.eval()
                 with torch.no_grad():
                     val_preds = []
-                    for vs in range(0, len(Xt_val), batch_sz):
-                        xvb = torch.tensor(Xt_val[vs:vs + batch_sz], device=device)
+                    for (xvb_cpu,) in val_loader:
+                        xvb = xvb_cpu.to(device, non_blocking=pin_batches)
                         with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
                             val_preds.append(model_ftt(xvb).float().cpu().numpy())
                     val_preds_arr = np.concatenate(val_preds)
@@ -1465,12 +1564,18 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         for i in range(min(len(feature_names), len(prep_missingness_rates)))
     }
 
-    training_run_id = str(
+    base_training_run_id = str(
         req.output_model_version
         or f"{gcs_prefix}:{now_utc_iso().replace(':', '').replace('-', '')}"
     )
+    training_run_id = (
+        f"{base_training_run_id}-{req.training_run_suffix}"
+        if req.training_run_suffix
+        else base_training_run_id
+    )
     manifest_path = f"{gcs_prefix}/manifests/{training_run_id}.json"
     req_params = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    date_min, date_max = _date_min_max_for_manifest(dates_arr)
     manifest = build_training_run_manifest(
         run_id=training_run_id,
         model_names=list(trained_models.keys()),
@@ -1480,8 +1585,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "rows": int(len(X)),
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),
-            "date_min": str(dates_arr.astype(str).min()) if len(dates_arr) else None,
-            "date_max": str(dates_arr.astype(str).max()) if len(dates_arr) else None,
+            "date_min": date_min,
+            "date_max": date_max,
             "walk_forward": bool(walk_forward_mode),
             "validation_split": validation_split_metadata,
         },
@@ -1547,11 +1652,16 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     extra_metadata=model_extra_meta or None,
                 )
                 if req.register_challengers:
-                    challenger_registrations[model_name] = _register_challenger_safe(
+                    registration = _register_challenger_safe(
                         model_name,
                         req.output_model_version,
                         model_cpcv=model_cpcv_evidence_by_model.get(model_name),
+                        feature_policy_version=str(model_extra_meta.get("feature_policy_schema_version") or ""),
+                        feature_policy=model_extra_meta.get("feature_policy") if isinstance(model_extra_meta.get("feature_policy"), dict) else None,
                     )
+                    registration["training_run_id"] = training_run_id
+                    registration["training_manifest_path"] = manifest_path
+                    challenger_registrations[model_name] = registration
                 print(
                     f"[TrainUniversal] Saved {model_name} challenger to {model_path} "
                     f"(version={req.output_model_version})"
@@ -1604,14 +1714,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "feature_count": len(feature_names),
                 "elapsed_s": elapsed,
                 "circuit_breaker": circuit_breaker_triggered,
-                "ic_summary": {k: v.get("ic") for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
+                "ic_summary": {k: _ic_summary_value(v) for k, v in (ic_tracking or {}).items() if isinstance(v, dict)},
                 "candidate_version": req.output_model_version,
                 "training_run_id": training_run_id,
                 "training_manifest_path": manifest_path,
                 "challenger_registrations": challenger_registrations,
             }
             _headers = {"Content-Type": "application/json"}
-            _token = os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("INTERNAL_TOKEN")
+            _token = _controller_callback_token()
             if _token:
                 _headers["X-Service-Token"] = _token
             _resp = _httpx.post(

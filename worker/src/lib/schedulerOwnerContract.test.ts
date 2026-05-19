@@ -1,6 +1,4 @@
-const fs = require('fs')
-
-export {}
+import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -11,7 +9,21 @@ function hasTaskHandler(source: string, task: string): boolean {
 }
 
 const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
-assert(!wrangler.includes('[triggers]'), 'Cloudflare scheduled crons must stay disabled; GCP Scheduler is the only scheduler owner')
+const workerIndex = fs.readFileSync('src/index.ts', 'utf8')
+assert(
+  /\[triggers\]\s*crons\s*=\s*\[\]/s.test(wrangler),
+  'Cloudflare scheduled crons must be explicitly deployed as crons=[] so stale Worker cron triggers are cleared',
+)
+assert(
+  !/crons\s*=\s*\[\s*["']/.test(wrangler),
+  'Cloudflare Worker cron list must stay empty; GCP Scheduler is the only scheduler owner',
+)
+assert(
+  workerIndex.includes("ENABLE_CLOUDFLARE_CRON") &&
+    workerIndex.includes("GCP Scheduler is the production owner") &&
+    workerIndex.includes("return"),
+  'Worker scheduled() must fail-closed/no-op unless ENABLE_CLOUDFLARE_CRON=1; stale Cloudflare cron triggers cannot own production',
+)
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 assert(manifest.owner === 'gcp-scheduler', 'scheduler manifest must declare gcp-scheduler owner')
@@ -26,12 +38,8 @@ const tradingDayTasks = [
   'daily-snapshot',
   'evening-chain',
   'indicator-queue',
-  'ml-warmup',
-  'adapt',
-  'daily-report',
-  'obsidian-sync',
-  'regime-compute',
-  'verify-v2',
+  'post-pipeline-chain',
+  'post-verify-chain',
   'us-leading',
   'news-analyst',
   'morning-setup',
@@ -57,11 +65,32 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['evening-chain', 'ml-warmup', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
-for (const critical of ['evening-chain']) {
+for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
+  assert(
+    !manifest.jobs.some((job: any) => job.task === chained || job.id === chained),
+    `${chained} must be callback-driven, not a fixed-time Scheduler job`,
+  )
+}
+
+for (const critical of [
+  'evening-chain',
+  'rescore-10',
+  'rescore-11',
+  'rescore-12',
+  'rescore-1230',
+  'alpha-quality',
+  'sector-leaders',
+  'weekly-cleanup',
+  'weekly-backtest',
+  'weekly-optuna',
+  'monthly-optuna',
+  'monthly-retrain',
+  'optuna-queue',
+]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }
@@ -83,3 +112,11 @@ assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler 
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
 assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')
+assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
+assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')
+
+const cloudflareScheduleSync = fs.readFileSync('../scripts/sync_cloudflare_worker_schedules.ps1', 'utf8')
+assert(cloudflareScheduleSync.includes('/workers/scripts/$ScriptName/schedules'), 'Cloudflare Worker schedule sync must use the script schedules API')
+assert(cloudflareScheduleSync.includes('[switch]$Clear'), 'Cloudflare Worker schedule sync must require an explicit clear switch')
+assert(cloudflareScheduleSync.includes('$DryRun'), 'Cloudflare Worker schedule sync must support dry-run before mutating production schedules')
+assert(cloudflareScheduleSync.includes("-Body '[]'"), 'Cloudflare Worker schedule sync must clear stale Worker cron triggers with an empty schedule list')

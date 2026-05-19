@@ -1,6 +1,9 @@
+export type R2Bucket = any
+
 export type Bindings = {
   DB: D1Database
   KV: KVNamespace
+  ARTIFACTS?: R2Bucket
   JWT_SECRET: string
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
@@ -9,6 +12,7 @@ export type Bindings = {
   FINMIND_TOKEN: string
   ML_SERVICE_URL: string
   UPDATE_QUEUE: Queue<UpdateQueueMsg>
+  NEWS_QUEUE: Queue<UpdateQueueMsg>
   ML_QUEUE?:    Queue<any>       // Phase 4 移除（Phase 3 保留 UPDATE_QUEUE 使用）
   ENVIRONMENT: string
   // ML Controller (Cloud Run) — Phase 3 MVC
@@ -26,6 +30,8 @@ export type Bindings = {
   STOCKVISION_AUTH_TOKEN?: string
   // Discord Webhook URL（Paper Trading 事件推送）
   DISCORD_WEBHOOK_URL?: string
+  LINE_CHANNEL_ACCESS_TOKEN?: string
+  LINE_USER_ID?: string
   // 本地 Cloudflare Tunnel URL（Claude Opus proxy，Max Plan 免費呼叫）
   LOCAL_TUNNEL_URL?: string
   // Shioaji 即時報價 Proxy（Cloud Run）
@@ -234,7 +240,14 @@ export interface DbAlertRule {
 
 // ─── Queue Message Types ──────────────────────────────────────────────────────
 export interface UpdateQueueMsg {
-  type: 'update_batch' | 'finalize_update'
+  type: 'update_batch' | 'finalize_update' | 'post_screener_pipeline' | 'news_batch' | 'source_readiness_retry'
+  newsStocks?: Array<{
+    id: number
+    symbol: string
+    market?: string | null
+    name?: string | null
+    in_current_watchlist?: number | null
+  }>
   cursor: number      // 從哪個 stock_id 繼續；finalize_update 固定 0
   triggerTime: string // 原始觸發時間，防止跨天的 cursor 汙染
   runId?: string      // 同一次 queue fan-out 的識別碼

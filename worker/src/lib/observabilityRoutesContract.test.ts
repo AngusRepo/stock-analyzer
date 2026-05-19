@@ -20,6 +20,7 @@ assert(readRoutes.includes('requireAdminOrServiceToken'), 'OBS read routes must 
 assert(writeRoutes.includes('requireAdminOrServiceToken'), 'OBS snapshot route must require admin or service token')
 assert(eventsLib.includes('normalizeObservabilityAuditFilters'), 'OBS audit filters must be normalized through a whitelist')
 assert(readRoutes.includes('buildObservabilityDrilldown'), 'OBS drilldown route must use central drilldown builder')
+assert(readRoutes.includes('listObservabilityAuditEvents(c.env') && !readRoutes.includes('listObservabilityAuditEventsByIds'), 'OBS drilldown must load same-day audit rows so first_seen is not regenerated on every page open')
 assert(readRoutes.includes('buildOpsRunbook'), 'OPS runbook route must use central runbook builder')
 assert(readRoutes.includes('buildOpsResourceAudit'), 'OPS resource audit route must use central read-only audit builder')
 assert(!readRoutes.includes('severity: c.req.query(\'severity\') as any'), 'OBS audit severity must not be passed through as any')

@@ -77,6 +77,32 @@ class FakeStatement {
     if (sql.includes('feature_version')) {
       return { total: 250, missing_feature_version: 0, distinct_feature_versions: 1 } as T
     }
+    if (sql.includes('FROM dataset_snapshots')) {
+      return {
+        manifest_total: 7,
+        price_hot_window_manifest: 1,
+        technical_indicator_hot_window_manifest: 1,
+        chip_hot_window_manifest: 1,
+        backtest_compute_snapshot_manifest: 1,
+        price_history_compute_snapshot_manifest: 1,
+        pipeline_report_manifest: 1,
+        screener_report_manifest: 1,
+      } as T
+    }
+    if (sql.includes('FROM theme_signals')) {
+      return {
+        theme_signal_total: 8,
+        theme_signal_sources: 4,
+        theme_signal_latest_generated_at: '2026-04-30 18:00:00',
+      } as T
+    }
+    if (sql.includes('FROM stock_theme_features')) {
+      return {
+        stock_theme_feature_total: 24,
+        stock_theme_feature_symbols: 12,
+        stock_theme_feature_latest_generated_at: '2026-04-30 18:01:00',
+      } as T
+    }
     return {} as T
   }
 
@@ -320,6 +346,7 @@ void (async () => {
       const runBody = await runRes.json() as any
       assert(runBody.mode === 'dry_run_execution', 'research evaluation route should stay dry-run execution')
       assert(runBody.report.results.length === 3, 'research evaluation route should run safe plan steps')
+      assert(runBody.experiment.status === 'review_ready', 'successful research evaluation should move experiment metadata to review_ready')
       assert(calls.every((url) => url.includes('/dry-run') || url.includes('/backtest/replay')), 'research evaluation route must not call mutating controller endpoints')
 
       const historyRes = await adminReadRoutes.request(`/api/admin/research/experiments/${id}/evaluation-runs`, {
@@ -328,6 +355,47 @@ void (async () => {
       const historyBody = await historyRes.json() as any
       assert(historyBody.runs.length >= 1, 'research evaluation dry-run should persist a history entry')
       assert(historyBody.runs[0].experiment_id === id, 'evaluation history should be scoped to experiment id')
+      const refreshedListRes = await adminReadRoutes.request('/api/admin/research/experiments', {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const refreshedListBody = await refreshedListRes.json() as any
+      const refreshed = refreshedListBody.experiments.find((experiment: any) => experiment.id === id)
+      assert(refreshed?.status === 'review_ready', 'research experiment list should reflect review_ready after successful dry-run')
+      const approveRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${id}/status`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ status: 'approved_for_patch', reason: 'test-review' }),
+      }, env)
+      assert(approveRes.status === 200, 'research experiment status route should allow metadata-only approval')
+      const approveBody = await approveRes.json() as any
+      assert(approveBody.experiment.status === 'approved_for_patch', 'status route should update research experiment metadata')
+      assert(approveBody.production_effect === false, 'research status approval must not affect production')
+      const handoffRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${id}/patch-handoff`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ reviewer: 'Wei', reason: 'test-handoff', dry_run: true }),
+      }, env)
+      assert(handoffRes.status === 200, 'approved research experiment should create metadata-only patch handoff')
+      const handoffBody = await handoffRes.json() as any
+      assert(handoffBody.handoff.mode === 'metadata_only', 'patch handoff must be metadata only')
+      assert(handoffBody.handoff.can_write_model_artifact_registry === false, 'patch handoff must not write model_artifact_registry directly')
+      assert(handoffBody.production_effect === false, 'patch handoff must not affect production')
+      const handoffListRes = await adminReadRoutes.request(`/api/admin/research/experiments/${id}/patch-handoffs`, {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const handoffListBody = await handoffListRes.json() as any
+      assert(handoffListBody.handoffs.length >= 1, 'patch handoff should be listable')
+      const intentRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${id}/artifact-intent`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ reviewer: 'Wei', reason: 'test-intent', dry_run: true }),
+      }, env)
+      assert(intentRes.status === 409, 'strategy patch handoff should not create model_artifact_registry artifact intent')
+      const intentListRes = await adminReadRoutes.request(`/api/admin/research/experiments/${id}/artifact-intents`, {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const intentListBody = await intentListRes.json() as any
+      assert(intentListBody.intents.length === 0, 'strategy patch should not list model artifact intents')
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -345,6 +413,122 @@ void (async () => {
       body: JSON.stringify({ dry_run: false }),
     }, env)
     assert(runRes.status === 400, 'research evaluation route should reject dry_run=false')
+  }
+
+  {
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      calls.push(String(input))
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+      if (body.dry_run !== true || body.mutation_allowed !== false) {
+        throw new Error('model upgrade evaluation runner must force dry_run and mutation_allowed=false')
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        endpoint: new URL(String(input)).pathname,
+        candidate_id: body.candidate_id,
+        benchmark_report: {
+          oos_ic: 0.031,
+          pbo: 0.12,
+          cost_sensitivity: { status: 'ok' },
+          data_slice_report: { status: 'ok' },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    try {
+      const runRes = await adminWriteRoutes.request('/api/admin/research/model-upgrade/evaluation-run', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ dry_run: true, seed_missing: true, limit: 2 }),
+      }, env)
+      assert(runRes.status === 200, 'model upgrade evaluation route should run confirmed dry-run batch')
+      const runBody = await runRes.json() as any
+      assert(runBody.mode === 'dry_run_execution', 'model upgrade evaluation route should stay dry-run execution')
+      assert(runBody.production_effect === false, 'model upgrade evaluation route must not affect production')
+      assert(runBody.runs.length === 2, 'model upgrade evaluation route should run requested batch limit')
+      assert(runBody.runs.every((run: any) => run.verdict === 'ready_for_review'), 'model upgrade evaluation dry-runs should create review-ready evidence when safe steps pass')
+      assert(calls.every((url) => url.includes('/dry-run') || url.includes('/backtest/replay')), 'model upgrade evaluation route must call safe dry-run endpoints only')
+      const priorityRunRes = await adminWriteRoutes.request('/api/admin/research/model-upgrade/evaluation-run', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ dry_run: true, seed_missing: true, limit: 1 }),
+      }, env)
+      assert(priorityRunRes.status === 200, 'model upgrade evaluation route should support one-at-a-time dry-run progression')
+      const priorityRunBody = await priorityRunRes.json() as any
+      assert(priorityRunBody.runs.length === 1, 'one-at-a-time model upgrade dry-run should execute a single target')
+      assert(priorityRunBody.runs[0].candidate_id !== 'ResidualMLP', 'one-at-a-time route should advance pending candidates before rerunning prior needs-attention rows')
+      const statusRes = await adminReadRoutes.request('/api/admin/research/model-upgrade/status', {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const statusBody = await statusRes.json() as any
+      assert(statusBody.candidates.length >= 10, 'model upgrade status should include the full P7 track, not only shadow/benchmark candidates')
+      assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
+      assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')
+      const target = statusBody.candidates.find((row: any) => row.registry_status === 'ready_for_review' && row.requires_experiment_registry && row.latest_experiment_id)
+      assert(target, 'model upgrade status should expose a review-ready target experiment')
+      const approveRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${target.latest_experiment_id}/status`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ status: 'approved_for_patch', reason: 'model-upgrade-artifact-intent-test' }),
+      }, env)
+      assert(approveRes.status === 200, 'model upgrade experiment should allow metadata-only approval')
+      const handoffRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${target.latest_experiment_id}/patch-handoff`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ reviewer: 'Wei', reason: 'model-upgrade-handoff-test', dry_run: true }),
+      }, env)
+      assert(handoffRes.status === 200, 'model upgrade handoff should target model_artifact_registry metadata path')
+      const intentRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${target.latest_experiment_id}/artifact-intent`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({ reviewer: 'Wei', reason: 'model-upgrade-intent-test', dry_run: true }),
+      }, env)
+      assert(intentRes.status === 200, 'model upgrade approved experiment should create metadata-only artifact intent')
+      const intentBody = await intentRes.json() as any
+      assert(intentBody.intent.mode === 'metadata_only', 'model upgrade artifact intent must be metadata only')
+      assert(intentBody.intent.preflight.can_write_registry === false, 'artifact intent must not write model_artifact_registry directly')
+      assert(intentBody.intent.status === 'blocked_missing_artifact', 'artifact intent without artifact files should be blocked visibly')
+      const refreshedStatusRes = await adminReadRoutes.request('/api/admin/research/model-upgrade/status', {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const refreshedStatus = await refreshedStatusRes.json() as any
+      const refreshedRow = refreshedStatus.candidates.find((row: any) => row.latest_experiment_id === target.latest_experiment_id)
+      assert(refreshedRow.latest_patch_handoff_id, 'model upgrade status should surface latest patch handoff id')
+      assert(refreshedRow.latest_artifact_intent_status === 'blocked_missing_artifact', 'model upgrade status should surface latest artifact intent status')
+      assert(refreshedRow.registry_preflight_ready === false, 'missing artifact fields should keep registry preflight blocked')
+      assert(refreshedRow.artifact_intent_missing_fields.length >= 1, 'model upgrade status should surface missing artifact fields')
+      assert(refreshedRow.next_action === 'attach_artifact_checksum_manifest_feature_policy', 'model upgrade status should point to artifact metadata attachment')
+      const readyIntentRes = await adminWriteRoutes.request(`/api/admin/research/experiments/${target.latest_experiment_id}/artifact-intent`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer service-token', 'Content-Type': 'application/json', 'X-Confirm-Research': 'true' },
+        body: JSON.stringify({
+          model_name: target.candidate_id,
+          artifact_version: 'v-test-shadow',
+          artifact_path: 'gs://stockvision-models/research/residualmlp/model.pkl',
+          training_manifest_path: 'gs://stockvision-models/research/residualmlp/training_manifest.json',
+          feature_policy_version: 'model-feature-policy-v1',
+          checksum: 'sha256:test',
+          dry_run: true,
+        }),
+      }, env)
+      assert(readyIntentRes.status === 200, 'complete artifact metadata should create a preflight-ready intent')
+      const readyIntentBody = await readyIntentRes.json() as any
+      assert(readyIntentBody.intent.status === 'ready_for_registry_preflight', 'complete artifact intent should be ready for registry preflight')
+      const readyStatusRes = await adminReadRoutes.request('/api/admin/research/model-upgrade/status', {
+        headers: { Authorization: 'Bearer service-token' },
+      }, env)
+      const readyStatus = await readyStatusRes.json() as any
+      const readyRow = readyStatus.candidates.find((row: any) => row.latest_experiment_id === target.latest_experiment_id)
+      assert(readyRow.registry_preflight_ready === true, 'model upgrade status should surface registry preflight readiness')
+      assert(readyRow.next_action === 'manual_registry_owner_can_review_intent', 'ready intent should route to manual registry owner review')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   }
 })().catch((error) => {
   console.error(error)

@@ -10,7 +10,7 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { stocksApi, marketApi, systemApi, watchlistApi } from '@/lib/api'
+import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { usePWA } from '@/hooks/usePWA'
 import { Button } from '@/components/ui/button'
@@ -26,7 +26,6 @@ import {
   Star, ShieldCheck, Users } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import StockSearchCombobox, { type StockSelection } from '@/components/StockSearchCombobox'
-import StockPriceChart from '@/components/StockPriceChart'
 import TechnicalChart from '@/components/TechnicalChart'
 import ChipChart from '@/components/ChipChart'
 import MarginChart from '@/components/MarginChart'
@@ -37,6 +36,7 @@ import FactorAnalysis from '@/components/FactorAnalysis'
 import RiskMetricsPanel from '@/components/RiskMetricsPanel'
 import StockAIReport from '@/components/StockAIReport'
 import NewsPanel from '@/components/NewsPanel'
+import DashboardV4LightweightChart from '@/components/charts/DashboardV4LightweightChart'
 import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
@@ -497,7 +497,7 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
 // ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="min-h-full">
       <div className="w-full space-y-4 px-4 py-4">
 
         <MorningBriefingCard />
@@ -569,6 +569,17 @@ export default function Dashboard() {
     queryKey: ['stocks', activeStock?.id],
     queryFn: () => stocksApi.get(activeStock!.id),
     enabled: !!activeStock?.id,
+  })
+
+  const {
+    data: dashboardV4Chart,
+    isLoading: dashboardV4ChartLoading,
+    error: dashboardV4ChartError,
+  } = useQuery({
+    queryKey: ['dashboard-v4-chart', activeStock?.id],
+    queryFn: () => dashboardV4Api.stockChart(activeStock!.id, { days: 365 }),
+    enabled: !!activeStock?.id,
+    staleTime: 5 * 60 * 1000,
   })
 
   const addMutation = useMutation({
@@ -768,11 +779,12 @@ export default function Dashboard() {
 
                       {/* ── 圖表 Tab ─────────────────────────────────────── */}
                       <TabsContent value="chart" className="flex-1 overflow-y-auto p-4">
-                        <div className="max-w-4xl mx-auto space-y-4">
-                          <Card>
-                            <SectionTitle>價格走勢</SectionTitle>
-                            <StockPriceChart stockId={activeStock.id} />
-                          </Card>
+                        <div className="mx-auto max-w-7xl">
+                          <DashboardV4LightweightChart
+                            packet={dashboardV4Chart}
+                            loading={dashboardV4ChartLoading}
+                            error={dashboardV4ChartError}
+                          />
                         </div>
                       </TabsContent>
 

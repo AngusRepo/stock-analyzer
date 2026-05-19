@@ -66,14 +66,82 @@ def compute_confidence_delta(
 
     Paper.ts 端應用：effective = clip(baseline + delta, effective_clip_lo, effective_clip_hi)
     """
+    return compute_confidence_components(risk_score, accuracy_30d, L2_formula)["effective_delta"]
+
+
+def compute_confidence_components(
+    risk_score: float,
+    accuracy_30d: float,
+    L2_formula: dict | None = None,
+    *,
+    risk_level: str | None = None,
+    regime: str | None = None,
+    trend_quality: float | None = None,
+    volatility_score: float | None = None,
+    model_quality: float | None = None,
+) -> dict:
+    """Build an explainable adaptive threshold delta.
+
+    Positive components make the buy threshold more conservative. Credits lower
+    the threshold only when the market context is constructive. This avoids the
+    old single-delta behavior where bull markets still raised thresholds just
+    because risk_score was non-zero.
+    """
     L2 = L2_formula or {}
-    risk_mult    = float(L2.get("confidence_risk_mult", 0.15))
-    perf_mult    = float(L2.get("confidence_perf_mult", 0.20))
-    delta_lo     = float(L2.get("confidence_delta_clip_lo", -0.10))
-    delta_hi     = float(L2.get("confidence_delta_clip_hi", 0.20))
-    risk_adj = (risk_score / 100) * risk_mult
-    perf_adj = (0.6 - accuracy_30d) * perf_mult
-    return round(_clip(risk_adj + perf_adj, delta_lo, delta_hi), 4)
+    risk_mult = float(L2.get("confidence_risk_mult", 0.15))
+    perf_mult = float(L2.get("confidence_perf_mult", 0.20))
+    delta_lo = float(L2.get("confidence_delta_clip_lo", -0.10))
+    delta_hi = float(L2.get("confidence_delta_clip_hi", 0.20))
+    target_acc = float(L2.get("confidence_target_accuracy", 0.60))
+    opportunity_mult = float(L2.get("confidence_regime_opportunity_mult", 0.06))
+    trend_mult = float(L2.get("confidence_trend_quality_mult", 0.05))
+    volatility_mult = float(L2.get("confidence_volatility_mult", 0.04))
+    bear_volatile_penalty = float(L2.get("confidence_bear_volatile_penalty", 0.03))
+
+    risk_norm = _clip(float(risk_score) / 100.0, 0.0, 1.0)
+    quality = _clip(float(model_quality if model_quality is not None else accuracy_30d), 0.0, 1.0)
+    trend = _clip(float(trend_quality) if trend_quality is not None else max(0.0, 1.0 - risk_norm), 0.0, 1.0)
+    volatility = _clip(float(volatility_score) if volatility_score is not None else risk_norm, 0.0, 1.0)
+    normalized_regime = normalize_regime_label(regime)
+    risk_level_norm = str(risk_level or "").lower()
+
+    risk_penalty = risk_norm * risk_mult
+    model_quality_penalty = max(0.0, target_acc - quality) * perf_mult
+    volatility_penalty = volatility * volatility_mult if risk_level_norm in {"orange", "red", "black"} or volatility >= 0.55 else 0.0
+    if normalized_regime in {"bear", "volatile"}:
+        volatility_penalty += bear_volatile_penalty
+
+    constructive = normalized_regime == "bull" and volatility < 0.45 and quality >= max(0.50, target_acc - 0.08)
+    regime_opportunity_credit = opportunity_mult * (1.0 - volatility) if constructive else 0.0
+    trend_quality_credit = trend * trend_mult if constructive and trend >= 0.55 else 0.0
+
+    effective = (
+        risk_penalty
+        + model_quality_penalty
+        + volatility_penalty
+        - regime_opportunity_credit
+        - trend_quality_credit
+    )
+    effective_delta = round(_clip(effective, delta_lo, delta_hi), 4)
+    return {
+        "risk_penalty": round(risk_penalty, 4),
+        "model_quality_penalty": round(model_quality_penalty, 4),
+        "volatility_penalty": round(volatility_penalty, 4),
+        "regime_opportunity_credit": round(regime_opportunity_credit, 4),
+        "trend_quality_credit": round(trend_quality_credit, 4),
+        "effective_delta": effective_delta,
+        "inputs": {
+            "risk_score": round(float(risk_score), 4),
+            "risk_norm": round(risk_norm, 4),
+            "accuracy_30d": round(float(accuracy_30d), 4),
+            "model_quality": round(quality, 4),
+            "trend_quality": round(trend, 4),
+            "volatility_score": round(volatility, 4),
+            "regime": normalized_regime,
+            "risk_level": risk_level_norm or None,
+        },
+        "formula": "risk_penalty + model_quality_penalty + volatility_penalty - regime_opportunity_credit - trend_quality_credit",
+    }
 
 
 # ── 2. PF 品質權重自適應 ───────────────────────────────────────────────────────
@@ -150,12 +218,23 @@ def compute_bandit_protection(losses_5d: int, total_5d: int, L2_formula: dict | 
     mult_med    = float(L2.get("bandit_max_mult_med", 2.0))
     mult_low    = float(L2.get("bandit_max_mult_low", 2.5))
 
+    context = {
+        "losses_5d": int(losses_5d),
+        "total_5d": int(total_5d),
+        "loss_rate": round(losses_5d / total_5d, 4) if total_5d else None,
+        "thresholds": {"high": thresh_high, "medium": thresh_med},
+        "max_mults": {"high": mult_high, "medium": mult_med, "low": mult_low},
+        "reward_ledger": "paper_orders.sell_5d",
+    }
+
     if total_5d == 0:
-        return {"bandit_max_mult": mult_low, "bandit_force_explore": False}
+        return {"bandit_max_mult": mult_low, "bandit_force_explore": False, "bandit_context": {**context, "decision": "no_recent_reward_samples"}}
     loss_rate = losses_5d / total_5d
-    if loss_rate > thresh_high: return {"bandit_max_mult": mult_high, "bandit_force_explore": True}
-    if loss_rate > thresh_med:  return {"bandit_max_mult": mult_med,  "bandit_force_explore": False}
-    return {"bandit_max_mult": mult_low, "bandit_force_explore": False}
+    if loss_rate > thresh_high:
+        return {"bandit_max_mult": mult_high, "bandit_force_explore": True, "bandit_context": {**context, "decision": "high_recent_loss_rate_force_explore"}}
+    if loss_rate > thresh_med:
+        return {"bandit_max_mult": mult_med, "bandit_force_explore": False, "bandit_context": {**context, "decision": "medium_recent_loss_rate_cap_exposure"}}
+    return {"bandit_max_mult": mult_low, "bandit_force_explore": False, "bandit_context": {**context, "decision": "reward_ledger_ok"}}
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -164,6 +243,10 @@ def compute_regime_overrides(
     confidence_delta: float,
     bandit_max_mult: float,
     L2_formula: dict | None = None,
+    *,
+    risk_score: float | None = None,
+    accuracy_30d: float | None = None,
+    risk_level: str | None = None,
 ) -> dict[str, dict]:
     """Controller-owned per-regime adaptive deltas."""
     L2 = L2_formula or {}
@@ -179,13 +262,29 @@ def compute_regime_overrides(
         "volatile": float(L2.get("regime_bandit_max_mult_volatile", min(bandit_max_mult, 1.5))),
         "sideways": float(L2.get("regime_bandit_max_mult_sideways", min(bandit_max_mult, 2.2))),
     }
-    return {
-        regime: {
-            "confidence_delta": round(_clip(confidence_delta + shifts[regime], -0.10, 0.20), 4),
+    out: dict[str, dict] = {}
+    for regime in REGIME_KEYS:
+        component_bundle = None
+        if risk_score is not None and accuracy_30d is not None:
+            component_bundle = compute_confidence_components(
+                risk_score,
+                accuracy_30d,
+                L2,
+                risk_level=risk_level,
+                regime=regime,
+            )
+            delta = component_bundle["effective_delta"]
+        else:
+            delta = round(_clip(confidence_delta + shifts[regime], -0.10, 0.20), 4)
+        out[regime] = {
+            "confidence_delta": delta,
             "bandit_max_mult": round(_clip(bandit_caps[regime], 1.0, 2.5), 4),
         }
-        for regime in REGIME_KEYS
-    }
+        if component_bundle:
+            out[regime]["threshold_components"] = component_bundle
+        elif shifts.get(regime):
+            out[regime]["legacy_shift"] = round(shifts[regime], 4)
+    return out
 
 
 def normalize_regime_label(raw: object) -> str:
@@ -259,12 +358,26 @@ def compute_adaptive_params(
     L2 = L2_formula or {}
     baseline_buy = baseline_buy_signal_score if baseline_buy_signal_score is not None else 0.52
 
-    conf_delta      = compute_confidence_delta(risk_score, accuracy_30d, L2)
+    threshold_components = compute_confidence_components(
+        risk_score,
+        accuracy_30d,
+        L2,
+        risk_level=risk_level,
+        regime="unknown",
+    )
+    conf_delta      = threshold_components["effective_delta"]
     pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
     sl_tp_add       = compute_sltp_override(risk_level, L2)
     bandit          = compute_bandit_protection(losses_5d, total_5d, L2)
     computed_at     = _tw_now()
-    regime_overrides = compute_regime_overrides(conf_delta, bandit["bandit_max_mult"], L2)
+    regime_overrides = compute_regime_overrides(
+        conf_delta,
+        bandit["bandit_max_mult"],
+        L2,
+        risk_score=risk_score,
+        accuracy_30d=accuracy_30d,
+        risk_level=risk_level,
+    )
 
     # legacy backwards compat: 計算 effective absolute confidence threshold
     eff_lo = float(L2.get("confidence_effective_clip_lo", 0.45))
@@ -274,11 +387,13 @@ def compute_adaptive_params(
     return {
         # 新 schema (delta-based)
         "confidence_delta":      conf_delta,
+        "threshold_components":  threshold_components,
         "position_pct_delta":    0.0,  # Phase 補齊
         "sltp_add":              sl_tp_add,
         "pf_quality_mult":       pf_quality_mult,
         "bandit_max_mult":       bandit["bandit_max_mult"],
         "bandit_force_explore":  bandit["bandit_force_explore"],
+        "bandit_context":        bandit.get("bandit_context"),
         "computed_at":           computed_at,
         "market_risk_score":     risk_score,
         "recent_accuracy_30d":   round(accuracy_30d, 2),
@@ -301,6 +416,10 @@ def compute_adaptive_params(
                 "Conformal": "prediction uncertainty calibration and coverage guard",
                 "Stacking": "meta learner for ensemble blending after base-model predictions",
                 "GAOptimizer": "meta optimizer for ensemble weights, strategy params, and risk params",
+                "NeuralUCB": "shadow meta-router for nonlinear model-weight and threshold policy comparison",
+                "NeuralTS": "shadow Thompson sampler to audit NeuralUCB optimism before production consideration",
+                "OnlinePortfolioBandit": "research-layer allocation policy; waits for execution/slippage parity",
+                "NeuCB": "research-only neural contextual bandit benchmark until experiment registry evidence exists",
             },
             "immutable_risk_boundaries": [
                 "circuit",

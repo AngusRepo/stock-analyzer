@@ -12,6 +12,7 @@ from app.training_policy import (  # noqa: E402
     UniversalTrainingPolicy,
     build_model_feature_policy_metadata,
     build_group_train_payload,
+    build_tree_model_child_payloads,
     feature_policy_for_model,
     generated_model_pool_version,
     models_for_training_group,
@@ -20,6 +21,8 @@ from app.training_policy import (  # noqa: E402
     ValidationGovernancePolicy,
     training_group_feature_policy,
 )
+from app import universal_training  # noqa: E402
+from app import model_pool  # noqa: E402
 from app.universal_training import (  # noqa: E402
     UniversalTrainRequest,
     build_ft_model_cpcv_params,
@@ -37,6 +40,9 @@ def test_feature_selection_policy_keeps_current_defaults():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "signal_sanity_max_workers": 2,
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -45,6 +51,7 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
     monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_ALPHA", "0.02")
     monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_REQUIRED_POWER", "0.95")
     monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_ICIR_WEIGHT", "0.2")
+    monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_SIGNAL_SANITY_WORKERS", "3")
 
     policy = FeatureSelectionPolicy.from_env()
 
@@ -54,6 +61,9 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
         "required_power": 0.95,
         "icir_weight": 0.2,
         "permutation_mode": "within_date_sector",
+        "signal_sanity_max_workers": 3,
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -66,6 +76,9 @@ def test_feature_selection_policy_merges_payload_overrides():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "signal_sanity_max_workers": 2,
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -78,6 +91,9 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "required_power": 0.99,
         "icir_weight": 0.1,
         "permutation_mode": "within_date_sector",
+        "signal_sanity_max_workers": 2,
+        "target_permutation_max_workers": 2,
+        "k_sweep_n_jobs": 2,
     }
 
 
@@ -233,6 +249,17 @@ def test_universal_training_policy_keeps_current_defaults():
         "ftt_margin": 0.0,
         "output_model_version": "v-test",
         "register_challengers": False,
+        "model_cpcv_policy": {
+            "family_adapters": {
+                "FT-Transformer": {
+                    "enabled": True,
+                    "explicit_enable": True,
+                    "max_epochs": 3,
+                    "batch_size": 512,
+                    "seed": 42,
+                }
+            }
+        },
     }
 
 
@@ -321,6 +348,21 @@ def test_group_train_payload_enforces_tree_vs_ft_feature_policy():
     assert ftt_payload["feature_policy"]["feature_source"] == "feature_pool.ft_active"
 
 
+def test_tree_model_child_payloads_keep_tree_policy_and_unique_manifest_suffixes():
+    base = {"batch_count": 5, "skip_feature_pool": True, "output_model_version": "v20260518010101"}
+
+    payloads = build_tree_model_child_payloads(base)
+
+    assert list(payloads) == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+    for model_name, payload in payloads.items():
+        assert payload["models_filter"] == [model_name]
+        assert payload["skip_feature_pool"] is False
+        assert payload["feature_policy"]["feature_source"] == "feature_pool.tree_active"
+        assert payload["tree_split_parent_models"] == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+        assert payload["tree_split_model"] == model_name
+        assert payload["training_run_suffix"] == model_name.lower()
+
+
 def test_ft_transformer_filter_forces_full_feature_pool_defensively():
     assert should_force_full_feature_pool(["FT-Transformer"]) is True
     assert should_force_full_feature_pool(["XGBoost", "LightGBM"]) is False
@@ -369,3 +411,22 @@ def test_model_feature_policy_metadata_records_feature_count_and_evidence():
     assert meta["feature_policy"]["model"] == "FT-Transformer"
     assert meta["feature_policy"]["requires_schema_parity"] is True
     assert meta["selection_evidence"]["feature_pool_path"] == "universal/feature_pool.json"
+
+
+def test_register_challenger_safe_preserves_feature_policy_metadata(monkeypatch):
+    def fake_register_challenger(model_name, version, *, save, model_cpcv):
+        return {"model_name": model_name, "version": version, "save": save, "model_cpcv": model_cpcv}
+
+    monkeypatch.setattr(model_pool, "register_challenger", fake_register_challenger)
+
+    result = universal_training._register_challenger_safe(
+        "LightGBM",
+        "v20260517170259",
+        model_cpcv={"decision": "PASS"},
+        feature_policy_version="model-feature-policy-v1",
+        feature_policy={"model": "LightGBM", "feature_policy_type": "selected_tabular"},
+    )
+
+    assert result["status"] == "registered"
+    assert result["feature_policy_version"] == "model-feature-policy-v1"
+    assert result["feature_policy"]["feature_policy_type"] == "selected_tabular"

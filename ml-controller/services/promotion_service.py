@@ -41,6 +41,27 @@ def _first(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _attach_validation_packet(result: dict[str, Any], validation_packet: dict[str, Any]) -> dict[str, Any]:
+    result["validation_packet"] = validation_packet
+    if str(validation_packet.get("decision") or "").upper() == "PASS":
+        return result
+
+    packet_failed = [
+        f"validation_packet:{name}"
+        for name in (validation_packet.get("failed_gates") or ["unavailable"])
+    ]
+    failed = list(result.get("failed_gates") or [])
+    for name in packet_failed:
+        if name not in failed:
+            failed.append(name)
+    result.update({
+        "decision": "FAIL",
+        "passed": False,
+        "failed_gates": failed,
+    })
+    return result
+
+
 def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
     row = row or {}
     raw = _safe_json(row.get("raw_results"))
@@ -185,7 +206,7 @@ def evaluate_latest_promotion_gate(
         inputs["pbo"],
         policy=policy,
     )
-    result["validation_packet"] = build_validation_packet(
+    validation_packet = build_validation_packet(
         source="promotion_gate",
         backtest=inputs["backtest"],
         monte_carlo=inputs["monte_carlo"],
@@ -193,6 +214,7 @@ def evaluate_latest_promotion_gate(
         walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )
+    result = _attach_validation_packet(result, validation_packet)
     result["inputs"] = {
         "source": source,
         "pbo_source": inputs["pbo_source"],
@@ -257,7 +279,7 @@ def evaluate_latest_alpha_policy_gate(
         inputs["pbo"],
         policy=policy,
     )
-    result["validation_packet"] = build_validation_packet(
+    validation_packet = build_validation_packet(
         source="alpha_policy_latest_gate",
         backtest=inputs["backtest"],
         monte_carlo=inputs["monte_carlo"],
@@ -265,6 +287,7 @@ def evaluate_latest_alpha_policy_gate(
         walk_forward=inputs["backtest"].get("walk_forward") or None,
         policy=policy,
     )
+    result = _attach_validation_packet(result, validation_packet)
     result["inputs"] = {
         "source": source,
         "pbo_source": inputs["pbo_source"],
@@ -326,6 +349,11 @@ def evaluate_alpha_policy_evidence_gate(
         policy=policy,
     )
     merged_failed = [*failed, *(result.get("failed_gates") or [])]
+    if str(validation_packet.get("decision") or "").upper() != "PASS":
+        merged_failed.extend(
+            f"validation_packet:{name}"
+            for name in (validation_packet.get("failed_gates") or ["unavailable"])
+        )
     decision = "PASS" if not merged_failed else "FAIL"
     result.update({
         "decision": decision,

@@ -14,12 +14,17 @@ pytest-cache-files-*/
 *.pyc
 .modal.toml
 /tmp/
+.tmp/
+.bug-hunter/
+worker/.tmp/
 *.log
 scripts/data/
 scripts/backfill_output*
 frontend/dev-dist/
 ml-service/.test_tmp/
+ml-controller/.tmp/
 _external/
+screen_*.png
 
 # Local debug scratch files (underscore-prefix convention)
 _tmp_*
@@ -28,6 +33,9 @@ worker/_*.json
 osv-report*.json
 osv-report*.html
 STOCKVISION_DATA_QUALITY_MVP_V1.md
+data/tmp/
+data/finlab_remote_backfill/
+data/finlab_canonical_materialized/
 uiux_gemini_package_*/
 uiux_gemini_package_*.zip
 # Ad-hoc Chinese-named D1 exports that occasionally leak to repo root

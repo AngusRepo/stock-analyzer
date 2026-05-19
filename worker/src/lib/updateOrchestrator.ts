@@ -4,12 +4,18 @@ import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
+import { runRegimeCompute } from './controllerDailyWorkflows'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import { fetchPunishedStocks } from './twseApi'
 
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
+const INDICATOR_BATCH_CONCURRENCY = 4
+const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
+const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
+const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -26,9 +32,124 @@ function resolveUpdateDate(runDate?: string | null): string {
   return value
 }
 
+function isBulkPriceSourceNotReady(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\//i.test(message)
+}
+
+async function scheduleSourceReadinessRetry(
+  env: Bindings,
+  runDate: string,
+  attempt: number,
+  reason: string,
+): Promise<void> {
+  const safeAttempt = Math.max(1, Math.floor(attempt))
+  const summary = [
+    `source waiting for ${runDate}`,
+    `attempt=${safeAttempt}/${SOURCE_READINESS_RETRY_MAX_ATTEMPTS}`,
+    `retry_in=${SOURCE_READINESS_RETRY_DELAY_SECONDS}s`,
+    reason,
+  ].join('; ')
+
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'running',
+    summary,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `waiting for same-day TWSE/TPEX source before indicator queue; ${summary}`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+
+  if (safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS) {
+    await logSchedulerResult(env.KV, 'update', {
+      status: 'error',
+      summary: `source readiness timeout for ${runDate}; ${reason}`,
+      duration_ms: 0,
+      error: reason,
+      run_date: runDate,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `source readiness timeout before indicator queue for ${runDate}`,
+      duration_ms: 0,
+      error: reason,
+      run_date: runDate,
+    })
+    throw new Error(`source readiness timeout for ${runDate}: ${reason}`)
+  }
+
+  await env.UPDATE_QUEUE.send({
+    type: 'source_readiness_retry',
+    cursor: 0,
+    triggerTime: runDate,
+    attempt: safeAttempt + 1,
+  }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
+}
+
 type ProcessUpdateBatchDeps = {
   runMarketScreener: (env: Bindings, runDate?: string) => Promise<any>
   runMLAndRiskV2: (env: Bindings, runDate?: string) => Promise<string>
+}
+
+type UpdateStockRow = {
+  id: number
+  symbol: string
+  market?: string | null
+  name?: string | null
+  in_current_watchlist?: number | null
+}
+
+type PriceMetadata = {
+  count: number
+  latestDate: string | null
+}
+
+async function runBounded<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  const limit = Math.max(1, Math.floor(concurrency))
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++
+      await fn(items[index], index)
+    }
+  })
+  await Promise.all(workers)
+}
+
+async function loadPriceMetadataForBatch(
+  db: D1Database,
+  stockIds: number[],
+): Promise<Map<number, PriceMetadata>> {
+  const meta = new Map<number, PriceMetadata>()
+  const uniqueIds = [...new Set(stockIds.filter((id) => Number.isFinite(id)))]
+  for (const id of uniqueIds) meta.set(id, { count: 0, latestDate: null })
+  if (!uniqueIds.length) return meta
+
+  for (let i = 0; i < uniqueIds.length; i += 80) {
+    const chunk = uniqueIds.slice(i, i + 80)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT stock_id, COUNT(*) AS cnt, MAX(date) AS latest_date
+         FROM stock_prices
+        WHERE stock_id IN (${placeholders})
+        GROUP BY stock_id`,
+    ).bind(...chunk).all<{ stock_id: number; cnt: number; latest_date: string | null }>()
+    for (const row of results ?? []) {
+      meta.set(Number(row.stock_id), {
+        count: Number(row.cnt ?? 0),
+        latestDate: row.latest_date ?? null,
+      })
+    }
+  }
+  return meta
 }
 
 export async function runBulkFetch(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -42,9 +163,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   try {
     const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
+    const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
     const [{ chipCount, marginCount }, priceCount] = await Promise.all([
-      bulkFetchAndStoreChipData(env.DB, twDate, env.SHIOAJI_PROXY_URL, env.ML_CONTROLLER_SECRET),
-      bulkFetchAndStorePrices(env.DB, twDate),
+      bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
@@ -53,6 +175,28 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
+    const message = e instanceof Error ? e.message : String(e)
+    const sourceWaiting = isBulkPriceSourceNotReady(e)
+    const status = sourceWaiting ? 'running' : 'error'
+    const summary = sourceWaiting
+      ? `source waiting before bulk fetch can write same-day rows: ${message}`
+      : message
+    await logSchedulerResult(env.KV, 'update', {
+      status,
+      summary,
+      duration_ms: 0,
+      error: sourceWaiting ? undefined : String(e),
+      run_date: twDate,
+    }).catch((logError) => console.warn('[Cron] Bulk fetch update log failed:', logError))
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status,
+      summary: sourceWaiting
+        ? `waiting for same-day TWSE/TPEX source before indicator queue: ${message}`
+        : `bulk fetch failed before indicator queue: ${message}`,
+      duration_ms: 0,
+      error: sourceWaiting ? undefined : String(e),
+      run_date: twDate,
+    }).catch((logError) => console.warn('[Cron] Bulk fetch evening-chain log failed:', logError))
     throw e
   }
 }
@@ -101,8 +245,9 @@ async function finalizeUpdateChain(
   shardCount: number,
 ): Promise<void> {
   const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
-  if (await env.KV.get(finalKey)) {
-    console.log(`[Queue] Finalize already completed for ${triggerTime} ${runId}`)
+  const acquired = await acquireFinalizeLock(env, triggerTime, runId)
+  if (!acquired) {
+    console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
     return
   }
   await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
@@ -114,6 +259,23 @@ async function finalizeUpdateChain(
     duration_ms: 0,
     run_date: triggerTime,
   })
+  try {
+    const { recordD1HotWindowDatasetManifests } = await import('./datasetSnapshots')
+    const manifests = await recordD1HotWindowDatasetManifests(env, triggerTime, runId)
+    const summary = manifests
+      .map((m) => `${m.kind}:${m.latest_date ?? 'none'}:${m.row_count}`)
+      .join(' ')
+    console.log(`[Queue] D1 hot-window dataset manifests: ${summary}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'data-quality', {
+      status: 'error',
+      summary: `dataset manifest write failed for ${triggerTime}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Dataset manifest write failed:', e)
+  }
   await checkAlerts(env)
 
   try {
@@ -127,8 +289,27 @@ async function finalizeUpdateChain(
       duration_ms: 0,
       run_date: triggerTime,
     })
+    try {
+      const { recordSchedulerRunReportArtifact } = await import('./datasetSnapshots')
+      await recordSchedulerRunReportArtifact(env, {
+        task: 'screener',
+        status: classifySchedulerSummary(screenerSummary),
+        businessDate: triggerTime,
+        runId,
+        summary: screenerSummary,
+      })
+    } catch (e) {
+      console.warn('[Queue] Screener R2 report artifact failed:', e)
+    }
     console.log(`[Queue] Event-driven: screener completed for ${triggerTime}`)
   } catch (e) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: screener failed for ${triggerTime}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
     await logSchedulerResult(env.KV, 'screener', {
       status: 'error',
       summary: e instanceof Error ? e.message : String(e),
@@ -140,16 +321,138 @@ async function finalizeUpdateChain(
     return
   }
 
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `event-driven chain queued post-screener continuation for ${triggerTime}; run_id=${runId}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await env.UPDATE_QUEUE.send({
+    type: 'post_screener_pipeline',
+    cursor: 0,
+    triggerTime,
+    runId,
+    shardCount,
+    attempt: 1,
+  })
+}
+
+async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {
+  const lockKey = `indicator-finalize:${triggerTime}:${runId}`
+  const now = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + 7 * 86400 * 1000).toISOString()
+  try {
+    const result = await env.DB.prepare(`
+      INSERT OR IGNORE INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
+      VALUES (?, 'indicator_finalize', ?, ?, ?, ?)
+    `).bind(lockKey, triggerTime, runId, now, expiresAt).run()
+    const changes = Number(result.meta?.changes ?? 0)
+    return changes > 0
+  } catch (error) {
+    // Fail closed: without an atomic lock, multiple finalizers can advance the same chain.
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: finalize lock unavailable for ${triggerTime}`,
+      duration_ms: 0,
+      error: error instanceof Error ? error.message : String(error),
+      run_date: triggerTime,
+    })
+    throw error
+  }
+}
+
+async function continuePostScreenerPipeline(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId?: string,
+): Promise<void> {
+  await logSchedulerResult(env.KV, 'regime-compute', {
+    status: 'running',
+    summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+
+  try {
+    const startedAt = Date.now()
+    const regimeSummary = String(await runRegimeCompute(env, triggerTime))
+    const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: regimeStatus,
+      summary: `pre-pipeline ${regimeSummary}`,
+      duration_ms: Date.now() - startedAt,
+      run_date: triggerTime,
+    })
+    if (regimeStatus !== 'success') {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      return
+    }
+    console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
+  } catch (e) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: 'error',
+      summary: e instanceof Error ? e.message : String(e),
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven regime-compute failed:', e)
+    return
+  }
+
   try {
     const summary = await deps.runMLAndRiskV2(env, triggerTime)
+    if (summary.trim().toUpperCase().startsWith('LOCKED')) {
+      const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
+      await logSchedulerResult(env.KV, 'pipeline', {
+        status: 'triggered',
+        summary: lockedSummary,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'triggered',
+        summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${lockedSummary}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      console.log(`[Queue] Event-driven: ${lockedSummary}`)
+      return
+    }
     await logSchedulerResult(env.KV, 'pipeline', {
       status: classifySchedulerSummary(summary),
       summary,
       duration_ms: 0,
       run_date: triggerTime,
     })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'success',
+      summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${summary}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
     console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
   } catch (e) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: pipeline trigger failed for ${triggerTime}`,
+      duration_ms: 0,
+      error: String(e),
+      run_date: triggerTime,
+    })
     await logSchedulerResult(env.KV, 'pipeline', {
       status: 'error',
       summary: e instanceof Error ? e.message : String(e),
@@ -199,9 +502,18 @@ async function markShardComplete(
 }
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
-  const bulkSummary = await runBulkFetch(env, force, runDate)
-  await runQueueUpdate(env, runDate, force)
-  return bulkSummary
+  const twDate = resolveUpdateDate(runDate)
+  let bulkSummary: string
+  try {
+    bulkSummary = await runBulkFetch(env, force, twDate)
+  } catch (e) {
+    if (!isBulkPriceSourceNotReady(e)) throw e
+    const message = e instanceof Error ? e.message : String(e)
+    await scheduleSourceReadinessRetry(env, twDate, 1, message)
+    return `source waiting; queued same-day market data retry for ${twDate}; ${message}`
+  }
+  await runQueueUpdate(env, twDate, force)
+  return `triggered evening-chain: ${bulkSummary}; indicator queue accepted`
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
@@ -405,6 +717,17 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
     } catch (e) {
       console.warn('[Wave2] Attention stocks proxy failed:', e)
     }
+
+    try {
+      const punishedSymbols = await fetchPunishedStocks()
+      if (punishedSymbols.length) {
+        await env.KV.put('market:punished_stocks', JSON.stringify(punishedSymbols), { expirationTtl: 86400 })
+        await env.KV.put('market:punished_stocks:checked_at', new Date().toISOString(), { expirationTtl: 86400 })
+        console.log(`[Wave2] Punished stocks (TWSE): ${punishedSymbols.length} symbols`)
+      }
+    } catch (e) {
+      console.warn('[Wave2] Punished stocks fetch failed:', e)
+    }
   }
 }
 
@@ -413,6 +736,51 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'source_readiness_retry') {
+    const triggerTime = msg.triggerTime
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid source readiness retry date ${triggerTime}, skipping.`)
+      return
+    }
+
+    try {
+      const bulkSummary = await runBulkFetch(env, false, triggerTime)
+      await runQueueUpdate(env, triggerTime, false)
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `source became ready for ${triggerTime}; ${bulkSummary}; indicator queue accepted`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+    } catch (e) {
+      if (!isBulkPriceSourceNotReady(e)) throw e
+      const message = e instanceof Error ? e.message : String(e)
+      await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
+    }
+    return
+  }
+
+  if (msg.type === 'news_batch') {
+    const stocks = (msg.newsStocks ?? []).filter((stock) => stock?.id && stock?.symbol)
+    if (!stocks.length) {
+      console.log(`[Queue] News batch empty for ${msg.triggerTime}, skipping.`)
+      return
+    }
+
+    let crawled = 0
+    await runBounded(stocks, NEWS_BATCH_CONCURRENCY, async (stock) => {
+      try {
+        await crawlAndStoreNews(env.DB, stock)
+        crawled++
+      } catch (e) {
+        console.warn(`[Queue] News crawl failed ${stock.symbol}:`, e)
+      }
+    })
+    console.log(`[Queue] News batch complete: ${crawled}/${stocks.length} stocks for ${msg.triggerTime}`)
+    return
+  }
+
   if (msg.type === 'finalize_update') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `${triggerTime}-single`
@@ -450,6 +818,17 @@ export async function processUpdateBatch(
     throw new Error(`indicator queue finalize timed out for ${triggerTime}; run_id=${runId}; done=${doneCount}/${shardCount}`)
   }
 
+  if (msg.type === 'post_screener_pipeline') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `${triggerTime}-post-screener`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-screener continuation date ${triggerTime}, skipping.`)
+      return
+    }
+    await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    return
+  }
+
   const { cursor, triggerTime } = msg
   const shardIndex = Number.isFinite(msg.shardIndex) ? Number(msg.shardIndex) : 0
   const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
@@ -479,29 +858,47 @@ export async function processUpdateBatch(
 
   console.log(`[Queue] Update batch: ${currentBatch.length} stocks (cursor=${cursor}, shard=${shardIndex + 1}/${shardCount}, hasMore=${hasMore})`)
 
-  for (const stock of currentBatch) {
-    try {
-      const priceCount = await env.DB.prepare(
-        'SELECT COUNT(*) as cnt FROM stock_prices WHERE stock_id=?',
-      ).bind(stock.id).first<{ cnt: number }>()
+  const priceMetaByStockId = await loadPriceMetadataForBatch(
+    env.DB,
+    currentBatch.map((stock) => Number(stock.id)),
+  )
+  const watchlistNewsStocks: UpdateStockRow[] = []
 
-      if ((priceCount?.cnt ?? 0) < 20 && Number(stock.in_current_watchlist ?? 0) === 1) {
+  await runBounded(currentBatch, INDICATOR_BATCH_CONCURRENCY, async (stock) => {
+    try {
+      const priceMeta = priceMetaByStockId.get(Number(stock.id))
+
+      if ((priceMeta?.count ?? 0) < 20 && Number(stock.in_current_watchlist ?? 0) === 1) {
         await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
       }
 
       await computeAndStoreIndicators(env.DB, stock.id)
       if (Number(stock.in_current_watchlist ?? 0) === 1) {
-        await crawlAndStoreNews(env.DB, stock)
-        await new Promise((resolve) => setTimeout(resolve, 300))
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 25))
+        watchlistNewsStocks.push({
+          id: stock.id,
+          symbol: stock.symbol,
+          market: stock.market ?? null,
+          name: stock.name ?? null,
+          in_current_watchlist: stock.in_current_watchlist ?? null,
+        })
       }
     } catch (e) {
       console.error(`[Queue] Failed ${stock.symbol}:`, e)
     }
-  }
+  })
 
   const lastId = currentBatch[currentBatch.length - 1].id
+
+  if (watchlistNewsStocks.length) {
+    await env.NEWS_QUEUE.send({
+      type: 'news_batch',
+      cursor: lastId,
+      triggerTime,
+      runId: msg.runId,
+      newsStocks: watchlistNewsStocks,
+    })
+    console.log(`[Queue] News batch queued: ${watchlistNewsStocks.length} watchlist stocks (shard=${shardIndex + 1}/${shardCount})`)
+  }
 
   if (hasMore) {
     await env.UPDATE_QUEUE.send({

@@ -325,8 +325,9 @@ export async function calcMarketRisk(
   controllerUrl?: string,
   controllerSecret?: string,
   geminiKey?: string,
+  runDate?: string,
 ): Promise<MarketRiskResult> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   _marginCache = null  // 清除快取
 
   // 平行抓所有資料（Phase 2: 加入 ADL + 融資維持率 + 多空排列）

@@ -1,82 +1,1084 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import {
   strategyLabApi,
-  type StrategyDryRunResponse,
-  type StrategySpecsResponse,
-  type StrategySpec,
-  type ResearchExperimentsResponse,
-  type ResearchGateResponse,
+  type ModelUpgradeResearchStatusResponse,
+  type ModelUpgradeResearchStatusRow,
   type ResearchEvaluationRunResponse,
   type ResearchEvaluationRunsResponse,
+  type ResearchExperimentsResponse,
+  type ResearchGateResponse,
+  type StrategyDryRunResponse,
+  type StrategyLearningResponse,
+  type StrategyPromotionGate,
+  type StrategySpec,
+  type StrategySpecsResponse,
 } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { FlaskConical, GitBranch, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
+import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTimeline'
 
-function statusClass(status?: string) {
-  if (status === 'active' || status === 'candidate') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20'
-  if (status === 'shadow' || status === 'research') return 'bg-sky-500/15 text-sky-300 border-sky-500/20'
-  if (status === 'retired') return 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40'
-  return 'bg-amber-500/15 text-amber-300 border-amber-500/20'
+type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
+type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
+type RegistrySelection =
+  | { kind: 'experiment'; id: string }
+  | { kind: 'model_upgrade'; id: string }
+  | { kind: 'meta_track'; id: string }
+  | null
+type ArtifactIntentDraft = {
+  model_name: string
+  artifact_version: string
+  artifact_path: string
+  metadata_path: string
+  training_manifest_path: string
+  feature_policy_version: string
+  checksum: string
 }
 
-function percent(value: number) {
-  return `${Math.round(value * 1000) / 10}%`
+const EMPTY_ARTIFACT_INTENT_DRAFT: ArtifactIntentDraft = {
+  model_name: '',
+  artifact_version: '',
+  artifact_path: '',
+  metadata_path: '',
+  training_manifest_path: '',
+  feature_policy_version: '',
+  checksum: '',
+}
+
+const ARTIFACT_INTENT_FIELDS: Array<{ key: keyof ArtifactIntentDraft; label: string; placeholder: string; required?: boolean }> = [
+  { key: 'model_name', label: 'model name', placeholder: 'ResidualMLP / GNN' },
+  { key: 'artifact_version', label: 'artifact version', placeholder: 'v20260519-shadow-a' },
+  { key: 'artifact_path', label: 'artifact path', placeholder: 'gs://stockvision-models/...' , required: true },
+  { key: 'training_manifest_path', label: 'training manifest', placeholder: 'gs://.../training_manifest.json', required: true },
+  { key: 'feature_policy_version', label: 'feature policy', placeholder: 'model-feature-policy-v1', required: true },
+  { key: 'checksum', label: 'checksum', placeholder: 'sha256:...', required: true },
+  { key: 'metadata_path', label: 'metadata path', placeholder: 'gs://.../metadata.json' },
+]
+
+function statusClass(status?: string) {
+  if (status === 'active' || status === 'candidate') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (status === 'shadow' || status === 'research') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (status === 'retired') return 'border-zinc-600/50 bg-zinc-700/30 text-zinc-300'
+  return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+}
+
+function gateClass(decision?: string) {
+  if (decision === 'ALLOW') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (decision === 'REQUIRE_APPROVAL') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+  return 'border-red-500/30 bg-red-500/15 text-red-200'
+}
+
+function strategyGateClass(decision?: StrategyPromotionGate['decision']) {
+  if (decision === 'candidate_ready') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (decision === 'active_monitor') return 'border-cyan-500/25 bg-cyan-500/15 text-cyan-200'
+  return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+}
+
+function pct(value?: number | null) {
+  if (value == null || !Number.isFinite(Number(value))) return '-'
+  return `${(Number(value) * 100).toFixed(1)}%`
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
-function SpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: StrategyDryRunResponse['results'][number] }) {
-  const thresholdText = Object.entries(spec.thresholds ?? {})
-    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : String(value)}`)
-    .join(' / ')
+function splitCsv(value: string) {
+  return value.split(',').map((part) => part.trim()).filter(Boolean)
+}
+
+function compactEvidenceLabel(value: string) {
+  return value
+    .replace('status_must_enter_shadow_before_promotion', '需先進 shadow')
+    .replace('avg_return_not_positive', '平均報酬未轉正')
+    .replace('decisions_lt_', '決策數不足 ')
+    .replace('match_rate_lt_', '命中覆蓋不足 ')
+    .replace('samples_lt_', '樣本不足 ')
+    .replace('hit_rate_lt_', '勝率不足 ')
+    .replace('max_drawdown_lt_', 'MDD 超限 ')
+}
+
+function modelUpgradeStatusTone(status?: ModelUpgradeResearchStatusRow['registry_status']) {
+  if (status === 'track_only') return 'border-sky-500/25 bg-sky-500/10 text-sky-200'
+  if (status === 'approved_for_patch') return 'border-violet-500/25 bg-violet-500/15 text-violet-100'
+  if (status === 'ready_for_review') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (status === 'evaluation_pending') return 'border-cyan-500/25 bg-cyan-500/15 text-cyan-200'
+  if (status === 'needs_attention') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+  if (status === 'rejected') return 'border-zinc-600/50 bg-zinc-700/30 text-zinc-300'
+  return 'border-red-500/30 bg-red-500/15 text-red-200'
+}
+
+function artifactIntentTone(status?: ModelUpgradeResearchStatusRow['latest_artifact_intent_status'] | null) {
+  if (status === 'ready_for_registry_preflight') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (status === 'blocked_missing_artifact') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+  return 'border-slate-700 bg-slate-900/80 text-slate-300'
+}
+
+function experimentIdForCandidate(experimentIds: string[], candidateId: string) {
+  const needle = candidateId.toLowerCase()
+  return experimentIds.find((id) => id.toLowerCase().includes(needle)) ?? null
+}
+
+function applyModelUpgradeSeedFeedback(
+  status: ModelUpgradeResearchStatusResponse | null,
+  experimentIds: string[],
+): ModelUpgradeResearchStatusResponse | null {
+  if (!status || experimentIds.length === 0) return status
+  return {
+    ...status,
+    candidates: status.candidates.map((row) => {
+      if (!row.requires_experiment_registry || row.registry_status !== 'experiment_missing') return row
+      const experimentId = experimentIdForCandidate(experimentIds, row.candidate_id)
+      if (!experimentId) return row
+      return {
+        ...row,
+        registry_status: 'evaluation_pending',
+        registered_experiment_ids: [experimentId, ...row.registered_experiment_ids.filter((id) => id !== experimentId)].slice(0, 5),
+        latest_experiment_id: experimentId,
+        latest_experiment_status: row.stage === 'shadow_challenger' ? 'running' : 'queued',
+        next_action: 'run_strategy_lab_dry_run_evaluation_plan',
+        missing_evidence: ['evaluation_run_missing'],
+      }
+    }),
+  }
+}
+
+function shortIdentifier(value?: string | null) {
+  if (!value) return '-'
+  return value.length > 46 ? `${value.slice(0, 28)}...${value.slice(-10)}` : value
+}
+
+function trimDraft(draft: ArtifactIntentDraft) {
+  return Object.fromEntries(
+    Object.entries(draft).map(([key, value]) => [key, value.trim() || undefined]),
+  ) as Partial<ArtifactIntentDraft>
+}
+
+function StrategySpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: StrategyDryRunResponse['results'][number] }) {
+  const thresholds = Object.entries(spec.thresholds ?? {}).slice(0, 5)
+  return (
+    <div className="rounded-2xl border border-slate-700/70 bg-slate-950/55 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-slate-100">{spec.name}</span>
+            <Badge variant="outline" className={statusClass(spec.status)}>{spec.status}</Badge>
+            <Badge variant="outline" className="border-cyan-500/20 bg-cyan-500/10 text-cyan-200">{spec.alphaBucket}</Badge>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">{spec.id} / {spec.version}</div>
+        </div>
+        <Badge variant="outline" className={spec.validation.ok ? 'border-emerald-500/25 text-emerald-300' : 'border-red-500/30 text-red-300'}>
+          {spec.validation.ok ? 'contract ok' : 'contract fail'}
+        </Badge>
+      </div>
+
+      <p className="mt-3 text-sm leading-relaxed text-slate-300">{spec.thesis}</p>
+
+      <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">Dry-run 命中數</div>
+          <div className="mt-1 text-lg font-semibold text-slate-100">{dryRun ? `${dryRun.matched}/${dryRun.sampleSize}` : '-'}</div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">命中率</div>
+          <div className="mt-1 text-lg font-semibold text-cyan-200">{pct(dryRun?.matchRate)}</div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-slate-500">Regime</div>
+          <div className="mt-1 text-sm font-semibold text-slate-100">{spec.supportedRegimes.join(' / ')}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Why it matters</div>
+        <div className="flex flex-wrap gap-2">
+          {thresholds.map(([key, value]) => (
+            <Badge key={key} variant="outline" className="border-slate-700 text-slate-300">
+              {key}: {Array.isArray(value) ? value.join(',') : String(value)}
+            </Badge>
+          ))}
+          {thresholds.length === 0 && <span className="text-xs text-slate-500">No explicit threshold.</span>}
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1 text-xs text-slate-400">
+        {spec.riskNotes.slice(0, 3).map((note) => <div key={note}>Risk note: {note}</div>)}
+        {!spec.validation.ok && <div className="text-red-300">Contract errors: {spec.validation.errors.join(', ')}</div>}
+      </div>
+    </div>
+  )
+}
+
+function ModelUpgradeLaunchpad({
+  status,
+  busy,
+  actionResult,
+  actionError,
+  selectedId,
+  onSeedRegistry,
+  onRunEvaluations,
+  onSelectRow,
+}: {
+  status: ModelUpgradeResearchStatusResponse | null
+  busy: string | null
+  actionResult: string | null
+  actionError: string | null
+  selectedId?: string | null
+  onSeedRegistry: () => void
+  onRunEvaluations: () => void
+  onSelectRow: (row: ModelUpgradeResearchStatusRow) => void
+}) {
+  const rows = status?.candidates ?? []
+  const registryRows = rows.filter((row) => row.requires_experiment_registry)
+  const trackOnlyRows = rows.filter((row) => !row.requires_experiment_registry)
+  const isModelUpgradeBusy = busy === 'model-upgrade-seed' || busy === 'model-upgrade-evaluation'
+  const counts = registryRows.reduce(
+    (acc, row) => {
+      acc[row.registry_status] = (acc[row.registry_status] ?? 0) + 1
+      return acc
+    },
+    {} as Record<string, number>,
+  )
+  return (
+    <Card className="border-slate-800 bg-slate-950/70">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2">
+            <GitBranch className="h-4 w-4 text-cyan-300" /> Model Upgrade Launchpad
+          </span>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={isModelUpgradeBusy} onClick={onSeedRegistry}>
+              {busy === 'model-upgrade-seed' ? '建立中...' : 'Seed missing experiments'}
+            </Button>
+            <Button size="sm" variant="outline" disabled={isModelUpgradeBusy} onClick={onRunEvaluations}>
+              {busy === 'model-upgrade-evaluation'
+                ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                : <PlayCircle className="mr-1 h-3.5 w-3.5" />}
+              {busy === 'model-upgrade-evaluation' ? '驗證中...' : 'Run next dry-run'}
+            </Button>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isModelUpgradeBusy && (
+          <div aria-live="polite" className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
+            {busy === 'model-upgrade-seed'
+              ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與右側 Registry Inspector。'
+              : '正在執行 shadow/benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
+          </div>
+        )}
+        {actionResult && (
+          <div aria-live="polite" className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-100">
+            {actionResult}
+          </div>
+        )}
+        {actionError && (
+          <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-100">
+            <div>{actionError}</div>
+            <div className="mt-1 text-red-100/75">
+              若出現 Unauthorized，代表目前瀏覽器 session 沒有 admin/service token；重新登入後再按一次。
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+          <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+            <div className="text-slate-500">research tracks</div>
+            <div className="mt-1 text-xl font-semibold text-slate-100">{registryRows.length}</div>
+          </div>
+          <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3">
+            <div className="text-slate-400">missing</div>
+            <div className="mt-1 text-xl font-semibold text-red-100">{counts.experiment_missing ?? 0}</div>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+            <div className="text-slate-400">pending</div>
+            <div className="mt-1 text-xl font-semibold text-cyan-100">{counts.evaluation_pending ?? 0}</div>
+          </div>
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+            <div className="text-slate-400">review ready</div>
+            <div className="mt-1 text-xl font-semibold text-emerald-100">{counts.ready_for_review ?? 0}</div>
+          </div>
+          <div className="rounded-xl border border-violet-500/20 bg-violet-500/10 p-3">
+            <div className="text-slate-400">governance elsewhere</div>
+            <div className="mt-1 text-xl font-semibold text-violet-100">{trackOnlyRows.length}</div>
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
+          這裡只列需要 Strategy Lab experiment registry 的模型研究項目。Dry-run 每次只跑下一個 pending experiment，避免 backtest / walk-forward / verify / benchmark 整批 sequential timeout。
+        </div>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
+          {registryRows.map((row) => (
+            <div
+              key={row.candidate_id}
+              className={`rounded-2xl border bg-black/20 p-3 text-xs transition hover:border-cyan-400/50 ${
+                selectedId === row.candidate_id ? 'border-cyan-400/60 shadow-[0_0_0_1px_rgba(34,211,238,0.25)]' : 'border-slate-800'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-semibold text-slate-100">{row.candidate_id}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">{row.stage}</div>
+                </div>
+                <Badge variant="outline" className={modelUpgradeStatusTone(row.registry_status)}>
+                  {row.registry_status}
+                </Badge>
+              </div>
+              <div className="mt-3 text-slate-400">{row.family}</div>
+              <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2 text-[11px] leading-5 text-slate-400">
+                <div>registry mode: experiment required</div>
+                <div>experiment: {row.latest_experiment_id ?? '-'}</div>
+                <div>evaluation: {row.latest_evaluation_verdict ?? '-'}</div>
+                <div>vote: {String(row.can_vote)} / predict: {String(row.can_predict)}</div>
+                <div>handoff: {shortIdentifier(row.latest_patch_handoff_id)}</div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span>artifact intent:</span>
+                  <Badge variant="outline" className={artifactIntentTone(row.latest_artifact_intent_status)}>
+                    {row.latest_artifact_intent_status ?? 'none'}
+                  </Badge>
+                </div>
+                <div>registry preflight: {row.registry_preflight_ready ? 'ready' : 'blocked'}</div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {row.missing_evidence.slice(0, 3).map((item) => (
+                  <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+                    {item}
+                  </Badge>
+                ))}
+                {!row.missing_evidence.length && (
+                  <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
+                    evidence ready
+                  </Badge>
+                )}
+                {row.artifact_intent_missing_fields.slice(0, 3).map((field) => (
+                  <Badge key={`artifact-${field}`} variant="outline" className="border-orange-500/25 bg-orange-500/10 text-orange-200">
+                    missing {field}
+                  </Badge>
+                ))}
+              </div>
+              <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => onSelectRow(row)}>
+                Inspect registry evidence
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
+          這裡只建立 Strategy Lab experiment 與 evaluation packet。ResidualMLP/GNN 是 shadow challenger，TabM/iTransformer/TimesFM 是 benchmark-only；兩者都不會進 production vote，通過 review 後才可能進下一層 promotion gate。
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function StrategyLearningPanel({
+  learning,
+  busy,
+  onMaterialize,
+  onRefreshRewards,
+  onRefreshPolicy,
+}: {
+  learning: StrategyLearningResponse | null
+  busy: string | null
+  onMaterialize: () => void
+  onRefreshRewards: () => void
+  onRefreshPolicy: () => void
+}) {
+  const rows = learning?.specs ?? []
+  const gateById = new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate]))
+  const policy = learning?.policy_state_preview
+  const policyWeights = Object.entries(policy?.strategy_weights ?? {})
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 5)
+  const policyWeightById = new Map(Object.entries(policy?.strategy_weights ?? {}))
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.decisions += row.learning.decisions
+      acc.samples += row.learning.samples
+      if (row.learning.hit_rate != null) {
+        acc.hitRateSum += Number(row.learning.hit_rate)
+        acc.hitRateCount += 1
+      }
+      return acc
+    },
+    { decisions: 0, samples: 0, hitRateSum: 0, hitRateCount: 0 },
+  )
+  const avgHitRate = totals.hitRateCount ? totals.hitRateSum / totals.hitRateCount : null
+  return (
+    <Card className="border-slate-800 bg-slate-950/70">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-emerald-300" /> Learning + Reward Ledger
+          </span>
+          <span className="text-[11px] font-normal text-slate-500">
+            {learning?.date ?? '-'} / {learning?.spec_source ?? 'default_fallback'}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-4">
+          <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+            <div className="text-slate-500">Decision rows</div>
+            <div className="mt-1 text-xl font-semibold text-slate-100">{totals.decisions}</div>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+            <div className="text-slate-500">Reward samples</div>
+            <div className="mt-1 text-xl font-semibold text-emerald-200">{totals.samples}</div>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+            <div className="text-slate-400">Avg hit rate</div>
+            <div className="mt-1 text-xl font-semibold text-cyan-100">{pct(avgHitRate)}</div>
+            <div className="mt-1 text-[11px] text-cyan-100/70">reward ledger only</div>
+          </div>
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+            <div className="text-slate-400">Adaptive policy</div>
+            <div className="mt-1 text-xl font-semibold text-emerald-100">{policy?.status ?? 'shadow'}</div>
+            <div className="mt-1 text-[11px] text-emerald-200/80">
+              eligible {policy?.evidence?.eligible_strategy_count ?? 0} / production effect false
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-cyan-500/15 bg-cyan-500/5 p-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold text-cyan-100">
+                <ShieldCheck className="h-4 w-4" /> Adaptive Policy Shadow State
+              </div>
+              <div className="mt-1 text-slate-400">
+                reward ledger 只產生策略權重與門檻 delta 建議；不改 production strategy，不改 model vote，不下單。
+              </div>
+            </div>
+            <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+              Wei approval required to activate
+            </Badge>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[0.8fr_1.2fr]">
+            <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">policy id</div>
+              <div className="mt-1 break-all font-semibold text-slate-100">{policy?.policy_id ?? '-'}</div>
+              <div className="mt-2 text-slate-500">updated {policy?.updated_at ?? '-'}</div>
+            </div>
+            <div className="space-y-2">
+              {policyWeights.map(([strategyId, weight]) => (
+                <div key={strategyId}>
+                  <div className="flex justify-between gap-3 text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                    <span className="truncate">{strategyId}</span><span>{pct(Number(weight))}</span>
+                  </div>
+                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200" style={{ width: `${Math.max(0, Math.min(100, Number(weight) * 100))}%` }} />
+                  </div>
+                </div>
+              ))}
+              {!policyWeights.length && <div className="rounded-xl border border-dashed border-slate-700 p-3 text-slate-500">reward evidence 尚不足，policy weight 暫不給建議。</div>}
+            </div>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black/20">
+          <div className="grid grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <div>Strategy</div>
+            <div>Outcomes</div>
+            <div>Reward</div>
+            <div>Policy weight</div>
+            <div>Promotion gate</div>
+          </div>
+          <div className="divide-y divide-slate-900">
+            {rows.map((row) => {
+              const gate = gateById.get(`${row.id}:${row.version}`)
+              const weight = Number(policyWeightById.get(row.id) ?? 0)
+              return (
+                <div key={`${row.id}:${row.version}`} className="grid grid-cols-1 gap-3 px-4 py-3 text-xs xl:grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-slate-100">{row.name}</div>
+                      <Badge variant="outline" className={statusClass(row.learning.status)}>{row.learning.status}</Badge>
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-slate-500">{row.id}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 xl:block xl:space-y-1">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
+                      <span className="text-slate-500">decisions </span><span className="text-slate-200">{row.learning.decisions}</span>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
+                      <span className="text-slate-500">samples </span><span className="text-slate-200">{row.learning.samples}</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 xl:block xl:space-y-1">
+                    <div><span className="text-slate-500">hit </span><span className="text-cyan-200">{pct(row.learning.hit_rate)}</span></div>
+                    <div><span className="text-slate-500">avg </span><span className={Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>{pct(row.learning.avg_return_pct)}</span></div>
+                    <div><span className="text-slate-500">MDD </span><span className="text-amber-200">{pct(row.learning.max_drawdown_pct)}</span></div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                      <span>shadow</span><span>{pct(weight)}</span>
+                    </div>
+                    <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
+                      <div className="h-full bg-gradient-to-r from-emerald-300 to-cyan-300" style={{ width: `${Math.max(0, Math.min(100, weight * 100))}%` }} />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {gate && <Badge variant="outline" className={strategyGateClass(gate.decision)}>{gate.decision}</Badge>}
+                      {gate?.requires_wei_approval && (
+                        <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">Wei approval</Badge>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(gate?.missing_evidence ?? []).slice(0, 3).map((item) => (
+                        <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+                          {compactEvidenceLabel(item)}
+                        </Badge>
+                      ))}
+                      {gate && gate.missing_evidence.length === 0 && (
+                        <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
+                          evidence ready
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            {!rows.length && (
+              <div className="px-4 py-6 text-sm text-slate-500">
+                尚無 reward ledger。先 materialize decision log，等 verify / paper outcome 回灌後才會形成學習曲線。
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={busy === 'strategy-decision-log'} onClick={onMaterialize}>
+            {busy === 'strategy-decision-log' ? '寫入中...' : 'Materialize decision log'}
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy === 'strategy-reward-ledger'} onClick={onRefreshRewards}>
+            {busy === 'strategy-reward-ledger' ? '刷新中...' : 'Refresh reward ledger'}
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy === 'strategy-policy-state'} onClick={onRefreshPolicy}>
+            {busy === 'strategy-policy-state' ? '更新中...' : 'Refresh adaptive policy shadow'}
+          </Button>
+        </div>
+        <p className="text-[11px] leading-5 text-slate-500">
+          這裡是策略自己的學習曲線：decision log 記錄每天每檔是否命中策略；reward ledger 在 verify/paper outcome 後回灌報酬。Adaptive 只能學策略權重與門檻 delta，不直接改 production strategy。
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function metaStageClass(stage: string) {
+  if (stage === 'production_baseline') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
+  if (stage === 'shadow_challenger') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (stage === 'strategy_research') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
+  return 'border-slate-600/50 bg-slate-800/40 text-slate-300'
+}
+
+function decisionZhClean(status: string) {
+  const map: Record<string, string> = {
+    production_baseline_needs_evidence: 'Production baseline 需要補 evidence',
+    run_shadow: '執行 shadow 驗證',
+    needs_experiment_registry: '需要 experiment registry',
+    research_only: '研究層，不影響 production',
+  }
+  return map[status] ?? status
+}
+
+function evidenceTone(status?: string) {
+  if (status === 'ready') return 'border-emerald-500/25 text-emerald-300'
+  if (status === 'partial') return 'border-sky-500/25 text-sky-200'
+  if (status === 'not_applicable') return 'border-slate-700 text-slate-400'
+  return 'border-red-500/30 text-red-200'
+}
+
+function evidenceLabel(status?: string) {
+  if (status === 'ready') return 'ready'
+  if (status === 'partial') return 'partial'
+  if (status === 'missing') return 'missing'
+  if (status === 'not_applicable') return 'n/a'
+  return status ?? 'missing'
+}
+
+function MetaLearningDecisionDesk({
+  tracks,
+  matrix,
+  actionBusy,
+  selectedTrackId,
+  onCreateTrackExperiment,
+  onRefreshLinucb,
+  onRunNeuralShadow,
+  onSelectTrack,
+  actionResult,
+}: {
+  tracks: MetaLearningTrack[]
+  matrix: MetaLearningEvidenceRow[]
+  actionBusy: string | null
+  selectedTrackId?: string | null
+  onCreateTrackExperiment: (track: MetaLearningTrack) => void
+  onRefreshLinucb: () => void
+  onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS') => void
+  onSelectTrack: (track: MetaLearningTrack) => void
+  actionResult: string | null
+}) {
+  const visible = tracks.length ? tracks : []
+  const matrixById = new Map(matrix.map((row) => [row.id, row]))
+  return (
+    <Card className="border-slate-800 bg-slate-950/70">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <BrainCircuit className="h-4 w-4 text-cyan-300" /> Meta Learning Decision Desk
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {actionResult && (
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
+            {actionResult}
+          </div>
+        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          {visible.map((track) => (
+            <div
+              key={track.id}
+              className={`rounded-2xl border bg-black/20 p-4 transition hover:border-cyan-400/50 ${
+                selectedTrackId === track.id ? 'border-cyan-400/60 shadow-[0_0_0_1px_rgba(34,211,238,0.25)]' : 'border-slate-800'
+              }`}
+            >
+              {(() => {
+                const evidence = matrixById.get(track.id)
+                return (
+                  <>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="font-semibold text-slate-100">{track.id}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">{track.learning_targets.slice(0, 3).join(' / ')}</div>
+                </div>
+                <Badge variant="outline" className={metaStageClass(track.stage)}>{track.stage}</Badge>
+              </div>
+              <p className="mt-3 text-sm leading-relaxed text-slate-300">{track.role}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Badge variant="outline" className={track.can_influence_production ? 'border-emerald-500/25 text-emerald-300' : 'border-slate-700 text-slate-400'}>
+                  {track.can_influence_production ? 'production baseline' : 'no production effect'}
+                </Badge>
+                <Badge variant="outline" className={evidence?.evidence_status === 'ready' ? 'border-emerald-500/25 text-emerald-300' : evidence?.evidence_status === 'partial' ? 'border-sky-500/25 text-sky-200' : 'border-red-500/30 text-red-200'}>
+                  evidence {evidence?.evidence_status ?? 'missing'}
+                </Badge>
+                <Badge variant="outline" className="border-amber-500/25 text-amber-200">{decisionZhClean(track.decision_queue_status)}</Badge>
+                <Badge variant="outline" className="border-cyan-500/20 text-cyan-200">
+                  samples {evidence?.samples ?? 0}
+                </Badge>
+              </div>
+              <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+                下一步：{evidence?.next_action ?? track.next_action}
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2">
+                  <div className="text-slate-500">Reward ledger</div>
+                  <div className={evidenceTone(evidence?.reward_ledger_status)}>{evidenceLabel(evidence?.reward_ledger_status)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2">
+                  <div className="text-slate-500">Shadow</div>
+                  <div className={evidenceTone(evidence?.shadow_status)}>{evidenceLabel(evidence?.shadow_status)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2">
+                  <div className="text-slate-500">Registry</div>
+                  <div className={track.registered_experiment_ids.length ? 'text-emerald-300' : 'text-amber-200'}>{track.registered_experiment_ids.length} 筆</div>
+                </div>
+              </div>
+              <div className="mt-3 rounded-xl border border-cyan-500/15 bg-cyan-500/5 p-3 text-xs leading-5 text-slate-300">
+                <div className="font-semibold text-cyan-200">建議研究模板</div>
+                <div className="mt-1 text-slate-400">{track.experiment_template.hypothesis}</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {track.experiment_template.metrics.slice(0, 5).map((metric) => (
+                    <Badge key={metric} variant="outline" className="border-cyan-500/20 text-cyan-200">{metric}</Badge>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => onSelectTrack(track)}>
+                    Inspect registry evidence
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={actionBusy === `experiment:${track.id}`} onClick={() => onCreateTrackExperiment(track)}>
+                    {actionBusy === `experiment:${track.id}` ? '建立中...' : '建立研究實驗'}
+                  </Button>
+                  {track.id === 'LinUCB' && (
+                    <Button size="sm" variant="outline" disabled={actionBusy === 'linucb-ledger'} onClick={onRefreshLinucb}>
+                      {actionBusy === 'linucb-ledger' ? '刷新中...' : '刷新 Reward Ledger'}
+                    </Button>
+                  )}
+                  {(track.id === 'NeuralUCB' || track.id === 'NeuralTS') && (
+                    <Button size="sm" className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" disabled={actionBusy === `shadow:${track.id}`} onClick={() => onRunNeuralShadow(track.id as 'NeuralUCB' | 'NeuralTS')}>
+                      {actionBusy === `shadow:${track.id}` ? '執行中...' : '執行 Shadow 驗證'}
+                    </Button>
+                  )}
+                </div>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                  建立研究實驗只寫入 hypothesis / dataset / metrics / gate 規格；Shadow 驗證才會用既有資料跑反事實決策並產出 reward evidence。只有 NeuralUCB / NeuralTS 是 live meta-router shadow，所以才有 Shadow 按鈕。
+                </p>
+              </div>
+                  </>
+                )
+              })()}
+            </div>
+          ))}
+          {!visible.length && (
+            <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
+              尚未取得 meta learning tracks；請確認 NeuralUCB / NeuralTS / Portfolio Bandit / NeuCB 的 research registry 是否已建立。
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-black/20 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            <Activity className="h-4 w-4 text-emerald-300" /> Evidence Matrix
+          </div>
+          {visible.length ? (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                  <tr>
+                    <th className="border-b border-slate-800 py-2 pr-3">Track</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Evidence required</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Registry</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Decision</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((track) => {
+                    const evidence = matrixById.get(track.id)
+                    return (
+                    <tr key={track.id} className="align-top">
+                      <td className="border-b border-slate-900 py-3 pr-3 font-semibold text-slate-100">{track.id}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-400">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'} / latest {evidence?.latest_evidence_at ?? '-'}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</td>
+                    </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-dashed border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              Meta learning evidence 尚未回傳；這裡只保留 research gate 說明，不渲染空表格。
+            </div>
+          )}
+          <p className="mt-3 text-xs leading-5 text-slate-500">
+            這裡是 research gate，不會直接 promote production。OOS IC、CPCV/PBO、DSR、turnover、slippage、T+1/T+5/T+10 都要先寫入 evaluation registry。
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RegistryInspectorPanel({
+  experiments,
+  modelUpgradeRows,
+  metaTracks,
+  metaMatrix,
+  selected,
+  actionBusy,
+  runningExperimentId,
+  runErrors,
+  runResults,
+  runHistory,
+  artifactIntentDraftFor,
+  updateArtifactIntentDraft,
+  onSelect,
+  onUpdateExperimentStatus,
+  onCreatePatchHandoff,
+  onCreateArtifactIntent,
+  onRunEvaluationPlan,
+}: {
+  experiments: ResearchExperimentsResponse['experiments']
+  modelUpgradeRows: ModelUpgradeResearchStatusRow[]
+  metaTracks: MetaLearningTrack[]
+  metaMatrix: MetaLearningEvidenceRow[]
+  selected: RegistrySelection
+  actionBusy: string | null
+  runningExperimentId: string | null
+  runErrors: Record<string, string>
+  runResults: Record<string, ResearchEvaluationRunResponse>
+  runHistory: Record<string, ResearchEvaluationRunsResponse>
+  artifactIntentDraftFor: (id: string) => ArtifactIntentDraft
+  updateArtifactIntentDraft: (id: string, field: keyof ArtifactIntentDraft, value: string) => void
+  onSelect: (selection: RegistrySelection) => void
+  onUpdateExperimentStatus: (id: string, status: 'approved_for_patch' | 'rejected') => void
+  onCreatePatchHandoff: (id: string) => void
+  onCreateArtifactIntent: (id: string) => void
+  onRunEvaluationPlan: (id: string) => void
+}) {
+  const selectedExperiment = selected?.kind === 'experiment'
+    ? experiments.find((experiment) => experiment.id === selected.id)
+    : null
+  const selectedModelUpgrade = selected?.kind === 'model_upgrade'
+    ? modelUpgradeRows.find((row) => row.candidate_id === selected.id)
+    : selectedExperiment
+      ? modelUpgradeRows.find((row) => row.latest_experiment_id === selectedExperiment.id)
+      : null
+  const selectedMetaTrack = selected?.kind === 'meta_track'
+    ? metaTracks.find((track) => track.id === selected.id)
+    : null
+  const selectedMetaEvidence = selectedMetaTrack
+    ? metaMatrix.find((row) => row.id === selectedMetaTrack.id)
+    : null
+  const showModelArtifactIntent = selectedExperiment?.status === 'approved_for_patch' && Boolean(selectedModelUpgrade)
+  const showStrategyPatchOnly = selectedExperiment?.status === 'approved_for_patch' && !selectedModelUpgrade
 
   return (
-    <Card className="border-border/80 bg-card/95">
-      <CardContent className="space-y-3 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">{spec.name}</span>
-              <Badge variant="outline" className={statusClass(spec.status)}>{spec.status}</Badge>
-              <Badge variant="outline" className="border-cyan-500/20 bg-cyan-500/10 text-cyan-200">{spec.alphaBucket}</Badge>
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">{spec.id} · {spec.version}</div>
-          </div>
-          <Badge variant="outline" className={spec.validation.ok ? 'border-emerald-500/20 text-emerald-300' : 'border-red-500/30 text-red-300'}>
-            {spec.validation.ok ? 'contract ok' : 'contract fail'}
+    <Card className="sticky top-4 border-slate-800 bg-slate-950/80">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2">
+            <PlayCircle className="h-4 w-4 text-emerald-300" /> Registry / Evidence Inspector
+          </span>
+          <Badge variant="outline" className="border-slate-700 text-slate-400">
+            ledger view
           </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Select evidence source</div>
+          <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+            {metaTracks.slice(0, 5).map((track) => (
+              <button
+                key={track.id}
+                type="button"
+                onClick={() => onSelect({ kind: 'meta_track', id: track.id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'meta_track' && selected.id === track.id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="font-semibold text-slate-100">{track.id}</div>
+                <div className="mt-1 text-slate-500">{decisionZhClean(track.decision_queue_status)}</div>
+              </button>
+            ))}
+            {modelUpgradeRows.filter((row) => row.requires_experiment_registry).map((row) => (
+              <button
+                key={row.candidate_id}
+                type="button"
+                onClick={() => onSelect({ kind: 'model_upgrade', id: row.candidate_id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'model_upgrade' && selected.id === row.candidate_id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-100">{row.candidate_id}</span>
+                  <Badge variant="outline" className={modelUpgradeStatusTone(row.registry_status)}>{row.registry_status}</Badge>
+                </div>
+                <div className="mt-1 text-slate-500">{row.stage} / {row.latest_experiment_id ?? 'no experiment'}</div>
+              </button>
+            ))}
+            {experiments.slice(0, 8).map((experiment) => (
+              <button
+                key={experiment.id}
+                type="button"
+                onClick={() => onSelect({ kind: 'experiment', id: experiment.id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'experiment' && selected.id === experiment.id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-semibold text-slate-100">{experiment.id}</span>
+                  <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
+                </div>
+                <div className="mt-1 truncate text-slate-500">{experiment.hypothesis}</div>
+              </button>
+            ))}
+          </div>
         </div>
 
-        <p className="text-sm leading-relaxed text-muted-foreground">{spec.thesis}</p>
-        <div className="rounded-lg border border-border bg-background/60 p-3 text-xs text-muted-foreground">
-          <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground/70">Thresholds</div>
-          <div className="mt-1 break-words">{thresholdText || '未設定'}</div>
-        </div>
+        {!selected && (
+          <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400">
+            先從左側 Action Lanes 選擇 Meta track、Model challenger，或從上方 ledger list 選一筆 experiment；這裡只顯示該項目的 registry details、history、approval 與下一步。
+          </div>
+        )}
 
-        <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">Regimes</div>
-            <div className="mt-1 font-medium">{spec.supportedRegimes.join(' / ')}</div>
+        {selectedMetaTrack && (
+          <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-cyan-100">{selectedMetaTrack.id}</div>
+                <div className="mt-1 text-xs text-slate-500">{selectedMetaTrack.stage}</div>
+              </div>
+              <Badge variant="outline" className={metaStageClass(selectedMetaTrack.stage)}>{selectedMetaTrack.stage}</Badge>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedMetaTrack.role}</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                <div className="text-slate-500">Reward ledger</div>
+                <div className={evidenceTone(selectedMetaEvidence?.reward_ledger_status)}>{evidenceLabel(selectedMetaEvidence?.reward_ledger_status)}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                <div className="text-slate-500">Shadow</div>
+                <div className={evidenceTone(selectedMetaEvidence?.shadow_status)}>{evidenceLabel(selectedMetaEvidence?.shadow_status)}</div>
+              </div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              下一步：{selectedMetaEvidence?.next_action ?? selectedMetaTrack.next_action}
+            </div>
           </div>
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">Dry-run 命中</div>
-            <div className="mt-1 font-medium">{dryRun ? `${dryRun.matched}/${dryRun.sampleSize}` : '-'}</div>
-          </div>
-          <div className="rounded-lg border border-border/80 p-3">
-            <div className="text-muted-foreground">命中率</div>
-            <div className="mt-1 font-medium">{dryRun ? percent(dryRun.matchRate) : '-'}</div>
-          </div>
-        </div>
+        )}
 
-        <div className="space-y-1 text-xs text-muted-foreground">
-          {spec.riskNotes.map((note) => <div key={note}>風險註記：{note}</div>)}
-          {!spec.validation.ok && <div className="text-red-300">Contract errors: {spec.validation.errors.join(', ')}</div>}
-        </div>
+        {selectedModelUpgrade && !selectedExperiment && (
+          <div className="rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-violet-100">{selectedModelUpgrade.candidate_id}</div>
+                <div className="mt-1 text-xs text-slate-500">{selectedModelUpgrade.stage} / {selectedModelUpgrade.family}</div>
+              </div>
+              <Badge variant="outline" className={modelUpgradeStatusTone(selectedModelUpgrade.registry_status)}>
+                {selectedModelUpgrade.registry_status}
+              </Badge>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">experiment: {selectedModelUpgrade.latest_experiment_id ?? '-'}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">evaluation: {selectedModelUpgrade.latest_evaluation_verdict ?? '-'}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">can predict: {String(selectedModelUpgrade.can_predict)}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">can vote: {String(selectedModelUpgrade.can_vote)}</div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              下一步：{selectedModelUpgrade.next_action}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {selectedModelUpgrade.missing_evidence.map((item) => (
+                <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+                  {item}
+                </Badge>
+              ))}
+              {!selectedModelUpgrade.missing_evidence.length && (
+                <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
+                  evidence ready
+                </Badge>
+              )}
+            </div>
+          </div>
+        )}
+
+        {selectedExperiment && (
+          <div className="rounded-2xl border border-slate-800 bg-black/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-semibold text-slate-100">{selectedExperiment.id}</div>
+                <div className="mt-1 text-xs text-slate-500">updated {selectedExperiment.updated_at}</div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Badge variant="outline" className={statusClass(selectedExperiment.status)}>{selectedExperiment.status}</Badge>
+                {selectedExperiment.status === 'review_ready' && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
+                    >
+                      Approve for patch
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
+                    >
+                      Reject
+                    </Button>
+                  </>
+                )}
+                {selectedExperiment.status === 'approved_for_patch' && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy === `patch-handoff:${selectedExperiment.id}`}
+                      onClick={() => onCreatePatchHandoff(selectedExperiment.id)}
+                    >
+                      {actionBusy === `patch-handoff:${selectedExperiment.id}` ? 'Generating...' : 'Generate patch handoff'}
+                    </Button>
+                    {selectedModelUpgrade && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy === `artifact-intent:${selectedExperiment.id}`}
+                        onClick={() => onCreateArtifactIntent(selectedExperiment.id)}
+                      >
+                        {actionBusy === `artifact-intent:${selectedExperiment.id}` ? 'Checking...' : 'Artifact intent'}
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedExperiment.hypothesis}</p>
+            {showStrategyPatchOnly && (
+              <div className="mt-3 rounded-2xl border border-sky-500/20 bg-sky-500/[0.04] p-3 text-xs leading-5 text-sky-100">
+                <div className="font-semibold">Strategy patch handoff only</div>
+                <div className="mt-1 text-sky-100/80">
+                  這不是 Model Upgrade experiment，所以不會建立 model_artifact_registry intent。下一步是產生 patch handoff，進 strategy spec / runtime patch review。
+                </div>
+              </div>
+            )}
+            {showModelArtifactIntent && (
+              <div className="mt-3 rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-3">
+                <div className="text-xs font-semibold text-violet-100">Artifact preflight metadata</div>
+                <div className="mt-1 text-[11px] leading-5 text-slate-400">
+                  填入 artifact_path、manifest、feature policy、checksum 後，Artifact intent 會轉成 registry preflight ready；仍不會寫 model_artifact_registry。
+                </div>
+                <div className="mt-1 text-[11px] leading-5 text-violet-200/80">
+                  {selectedModelUpgrade?.candidate_id ?? 'model-upgrade'} / {selectedModelUpgrade?.latest_artifact_intent_status ?? 'intent none'} / next {selectedModelUpgrade?.next_action ?? '-'}
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {ARTIFACT_INTENT_FIELDS.map((field) => (
+                    <label key={`${selectedExperiment.id}-${field.key}`} className="text-[11px] text-slate-500">
+                      <span className="mb-1 block uppercase tracking-[0.12em]">
+                        {field.label}{field.required ? ' *' : ''}
+                      </span>
+                      <input
+                        value={artifactIntentDraftFor(selectedExperiment.id)[field.key]}
+                        onChange={(event) => updateArtifactIntentDraft(selectedExperiment.id, field.key, event.target.value)}
+                        className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-xs text-slate-100 outline-none focus:border-violet-400/50"
+                        placeholder={field.placeholder}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 p-3">Specs: {selectedExperiment.strategy_spec_ids.join(' / ') || 'none'}</div>
+              <div className="rounded-xl border border-slate-800 p-3">Metrics: {selectedExperiment.metrics.join(' / ') || 'none'}</div>
+              <div className="rounded-xl border border-slate-800 p-3">Can deploy: {String(selectedExperiment.approval_gate.can_deploy)}</div>
+            </div>
+            {selectedExperiment.evaluation_plan && (
+              <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-cyan-200">Evaluation plan: {selectedExperiment.evaluation_plan.mode}</div>
+                  <Button size="sm" variant="outline" disabled={runningExperimentId === selectedExperiment.id} onClick={() => onRunEvaluationPlan(selectedExperiment.id)}>
+                    {runningExperimentId === selectedExperiment.id ? 'Running...' : 'Run dry-run plan'}
+                  </Button>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {selectedExperiment.evaluation_plan.steps.map((step: any) => (
+                    <div key={step.id} className="rounded-lg border border-slate-800 bg-black/20 p-2 text-[11px]">
+                      <div className="font-semibold text-slate-200">{step.kind}</div>
+                      <div className="mt-1 text-slate-500">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
+                      <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
+                        {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {runErrors[selectedExperiment.id] && <div className="mt-2 text-xs text-red-300">{runErrors[selectedExperiment.id]}</div>}
+                {runResults[selectedExperiment.id] && (
+                  <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
+                    {runResults[selectedExperiment.id].report.review_packet}
+                  </pre>
+                )}
+                {runHistory[selectedExperiment.id]?.runs?.[0] && (
+                  <div className="mt-2 text-xs text-slate-500">
+                    latest dry-run: {runHistory[selectedExperiment.id].runs[0].created_at} / {runHistory[selectedExperiment.id].runs[0].verdict}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -85,7 +1087,9 @@ function SpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: StrategyDryRu
 export default function StrategyLabPage() {
   const [specs, setSpecs] = useState<StrategySpecsResponse | null>(null)
   const [dryRun, setDryRun] = useState<StrategyDryRunResponse | null>(null)
+  const [strategyLearning, setStrategyLearning] = useState<StrategyLearningResponse | null>(null)
   const [experiments, setExperiments] = useState<ResearchExperimentsResponse | null>(null)
+  const [modelUpgradeStatus, setModelUpgradeStatus] = useState<ModelUpgradeResearchStatusResponse | null>(null)
   const [researchGates, setResearchGates] = useState<ResearchGateResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -97,18 +1101,41 @@ export default function StrategyLabPage() {
   const [draftResult, setDraftResult] = useState<string | null>(null)
   const [draftError, setDraftError] = useState<string | null>(null)
   const [draftSaving, setDraftSaving] = useState(false)
+  const [draftPersisting, setDraftPersisting] = useState(false)
   const [runningExperimentId, setRunningExperimentId] = useState<string | null>(null)
+  const [metaActionBusy, setMetaActionBusy] = useState<string | null>(null)
+  const [metaActionResult, setMetaActionResult] = useState<string | null>(null)
+  const [modelUpgradeActionResult, setModelUpgradeActionResult] = useState<string | null>(null)
+  const [modelUpgradeActionError, setModelUpgradeActionError] = useState<string | null>(null)
+  const [registrySelection, setRegistrySelection] = useState<RegistrySelection>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
+  const [artifactIntentDrafts, setArtifactIntentDrafts] = useState<Record<string, ArtifactIntentDraft>>({})
+
+  function artifactIntentDraftFor(id: string): ArtifactIntentDraft {
+    return artifactIntentDrafts[id] ?? EMPTY_ARTIFACT_INTENT_DRAFT
+  }
+
+  function updateArtifactIntentDraft(id: string, field: keyof ArtifactIntentDraft, value: string) {
+    setArtifactIntentDrafts((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] ?? EMPTY_ARTIFACT_INTENT_DRAFT),
+        [field]: value,
+      },
+    }))
+  }
 
   async function load() {
     try {
       setError(null)
-      const [specResponse, dryRunResponse, experimentResponse, ...gateResponses] = await Promise.all([
+      const [specResponse, dryRunResponse, learningResponse, experimentResponse, modelUpgradeResponse, ...gateResponses] = await Promise.all([
         strategyLabApi.specs(),
         strategyLabApi.dryRun(),
+        strategyLabApi.learning(),
         strategyLabApi.experiments(),
+        strategyLabApi.modelUpgradeStatus(),
         strategyLabApi.gate('generate_hypothesis'),
         strategyLabApi.gate('request_backtest_dry_run', { dryRun: true }),
         strategyLabApi.gate('generate_patch'),
@@ -117,10 +1144,12 @@ export default function StrategyLabPage() {
       ])
       setSpecs(specResponse)
       setDryRun(dryRunResponse)
+      setStrategyLearning(learningResponse)
       setExperiments(experimentResponse)
+      setModelUpgradeStatus(modelUpgradeResponse)
       setResearchGates(gateResponses)
     } catch (e: unknown) {
-      setError(getErrorMessage(e, '策略實驗室載入失敗'))
+      setError(getErrorMessage(e, 'Strategy Lab API 載入失敗'))
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -135,9 +1164,31 @@ export default function StrategyLabPage() {
     return new Map((dryRun?.results ?? []).map((result) => [result.specId, result]))
   }, [dryRun])
 
-  function splitCsv(value: string) {
-    return value.split(',').map((part) => part.trim()).filter(Boolean)
-  }
+  const stats = useMemo(() => {
+    const strategyCount = specs?.specs.length ?? 0
+    const safeGateCount = researchGates.filter((gate) => gate.gate.decision === 'ALLOW').length
+    const blockedGateCount = researchGates.filter((gate) => gate.gate.decision === 'BLOCK').length
+    const dryRunMatches = dryRun?.results.reduce((sum, item) => sum + item.matched, 0) ?? 0
+    return { strategyCount, safeGateCount, blockedGateCount, dryRunMatches }
+  }, [dryRun, researchGates, specs])
+
+  useEffect(() => {
+    if (registrySelection) return
+    const firstPendingModel = (modelUpgradeStatus?.candidates ?? []).find((row) => row.requires_experiment_registry)
+    if (firstPendingModel) {
+      setRegistrySelection({ kind: 'model_upgrade', id: firstPendingModel.candidate_id })
+      return
+    }
+    const firstMetaTrack = experiments?.meta_learning_tracks?.[0]
+    if (firstMetaTrack) {
+      setRegistrySelection({ kind: 'meta_track', id: firstMetaTrack.id })
+      return
+    }
+    const firstExperiment = experiments?.experiments?.[0]
+    if (firstExperiment) {
+      setRegistrySelection({ kind: 'experiment', id: firstExperiment.id })
+    }
+  }, [experiments, modelUpgradeStatus, registrySelection])
 
   async function previewExperiment() {
     try {
@@ -153,9 +1204,240 @@ export default function StrategyLabPage() {
       })
       setDraftResult(res.review_packet)
     } catch (e: unknown) {
-      setDraftError(getErrorMessage(e, 'preview failed'))
+      setDraftError(getErrorMessage(e, 'review packet preview failed'))
     } finally {
       setDraftSaving(false)
+    }
+  }
+
+  async function persistDraftExperiment() {
+    try {
+      setDraftPersisting(true)
+      setDraftError(null)
+      const res = await strategyLabApi.createExperiment({
+        hypothesis: draftHypothesis,
+        strategySpecIds: splitCsv(draftSpecIds),
+        metrics: splitCsv(draftMetrics),
+        followUp: splitCsv(draftFollowUp),
+        sourceRefs: ['strategy-lab-ui'],
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      setMetaActionResult(`研究實驗已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'experiment registry write failed'))
+    } finally {
+      setDraftPersisting(false)
+    }
+  }
+
+  async function createModelBenchmarkExperiment() {
+    try {
+      setDraftPersisting(true)
+      setDraftError(null)
+      const today = new Date().toISOString().slice(0, 10)
+      const res = await strategyLabApi.createExperiment({
+        id: `model-family-benchmark-${today.replace(/-/g, '')}`,
+        hypothesis: 'model_benchmark：評估 TabM、iTransformer、TimesFM 是否值得從 benchmark-only 升級成 shadow challenger，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
+        strategySpecIds: ['model_family_benchmark_v1'],
+        metrics: ['oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report', 'latency_cost'],
+        followUp: ['run model_benchmark dry-run', 'inspect benchmark report', 'decide promote to shadow challenger or reject'],
+        sourceRefs: ['strategy-lab-ui', 'model-upgrade-track'],
+        dataSlice: {
+          benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+          start_date: '2026-04-01',
+          end_date: today,
+          market_lanes: ['listed', 'otc', 'emerging'],
+        },
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      setMetaActionResult(`Model Benchmark 已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'model benchmark experiment write failed'))
+    } finally {
+      setDraftPersisting(false)
+    }
+  }
+
+  async function seedModelUpgradeRegistry() {
+    try {
+      setMetaActionBusy('model-upgrade-seed')
+      setDraftError(null)
+      setModelUpgradeActionError(null)
+      setModelUpgradeActionResult('正在建立 Strategy Lab experiment registry metadata...')
+      const res = await strategyLabApi.seedModelUpgradeRegistry({ dry_run: false, confirm: true })
+      const seededIds = [...(res.created ?? []), ...(res.existing ?? [])].filter((id): id is string => typeof id === 'string')
+      const message = `Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。KV list 可能短暫延遲，畫面已先標為 evaluation_pending。`
+      setMetaActionResult(message)
+      setModelUpgradeActionResult(message)
+      const firstSeeded = seededIds[0]
+      if (firstSeeded) {
+        const seededRow = modelUpgradeStatus?.candidates.find((row) => row.latest_experiment_id === firstSeeded)
+        setRegistrySelection(seededRow ? { kind: 'model_upgrade', id: seededRow.candidate_id } : { kind: 'experiment', id: firstSeeded })
+      }
+      setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
+      await load()
+      setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
+    } catch (e: unknown) {
+      const message = getErrorMessage(e, 'model upgrade registry seed failed')
+      setDraftError(message)
+      setModelUpgradeActionError(message)
+      setModelUpgradeActionResult(null)
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function runModelUpgradeEvaluations() {
+    try {
+      const nextTarget = modelUpgradeStatus?.candidates.find((row) => row.requires_experiment_registry && row.registry_status === 'evaluation_pending')
+        ?? modelUpgradeStatus?.candidates.find((row) => row.requires_experiment_registry && row.registry_status === 'needs_attention')
+      if (!nextTarget) {
+        setModelUpgradeActionError(null)
+        setModelUpgradeActionResult('目前沒有 pending / needs_attention 的 model upgrade experiment 可跑。')
+        return
+      }
+      setMetaActionBusy('model-upgrade-evaluation')
+      setDraftError(null)
+      setModelUpgradeActionError(null)
+      setModelUpgradeActionResult(`正在執行下一個 model upgrade dry-run evaluation：${nextTarget.candidate_id}`)
+      const res = await strategyLabApi.runModelUpgradeEvaluations({
+        candidate_ids: [nextTarget.candidate_id],
+        dry_run: true,
+        seed_missing: true,
+        include_ready: false,
+        limit: 1,
+        confirm: true,
+      })
+      const ready = res.runs.filter((run) => run.verdict === 'ready_for_review').length
+      const attention = res.runs.filter((run) => run.verdict !== 'ready_for_review').length
+      const message = `Model upgrade dry-run 完成：target=${nextTarget.candidate_id}，runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。若仍有 pending，請再按一次跑下一筆。`
+      setMetaActionResult(message)
+      setModelUpgradeActionResult(message)
+      setRegistrySelection({ kind: 'model_upgrade', id: nextTarget.candidate_id })
+      if (res.status) setModelUpgradeStatus(res.status)
+      await load()
+    } catch (e: unknown) {
+      const message = getErrorMessage(e, 'model upgrade dry-run evaluation failed')
+      setDraftError(message)
+      setModelUpgradeActionError(message)
+      setModelUpgradeActionResult(null)
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function createMetaLearningExperiment(track: MetaLearningTrack) {
+    try {
+      setMetaActionBusy(`experiment:${track.id}`)
+      setDraftError(null)
+      const today = new Date().toISOString().slice(0, 10)
+      const id = `${track.id.toLowerCase()}-${today.replace(/-/g, '')}`
+      const template = track.experiment_template
+      const res = await strategyLabApi.createExperiment({
+        id,
+        hypothesis: template.hypothesis,
+        strategySpecIds: template.strategySpecIds,
+        metrics: template.metrics,
+        followUp: template.followUp,
+        sourceRefs: [...template.sourceRefs, 'strategy-lab-meta-learning-desk'],
+        dataSlice: {
+          track_id: track.id,
+          stage: track.stage,
+          learning_targets: track.learning_targets,
+          start_date: '2026-04-01',
+          end_date: today,
+        },
+        status: 'queued',
+        dry_run: false,
+        confirm: true,
+      })
+      setDraftResult(res.review_packet)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, `${track.id} experiment write failed`))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function refreshLinucbLedger() {
+    try {
+      setMetaActionBusy('linucb-ledger')
+      setDraftError(null)
+      const res = await strategyLabApi.refreshLinucbRewardLedger({ limit: 5000, dry_run: false, confirm: true })
+      setMetaActionResult(`LinUCB reward ledger 已刷新：samples=${res.samples ?? res.source_rows ?? '-'}，arms=${res.arms ?? '-'}。`)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'LinUCB reward ledger refresh failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function runNeuralShadow(policyId: 'NeuralUCB' | 'NeuralTS') {
+    try {
+      setMetaActionBusy(`shadow:${policyId}`)
+      setDraftError(null)
+      const res = await strategyLabApi.runNeuralShadow({ policy_id: policyId, limit: 5000, dry_run: false, confirm: true })
+      setMetaActionResult(`${policyId} shadow 驗證完成：mode=${res.mode ?? '-'}，success=${String(res.success)}，source_rows=${res.source_rows ?? 0}，training_samples=${res.training_samples ?? 0}，persisted_rows=${res.persisted_rows ?? 0}。`)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, `${policyId} shadow run failed`))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function materializeStrategyDecisionLog() {
+    try {
+      setMetaActionBusy('strategy-decision-log')
+      setDraftError(null)
+      const res = await strategyLabApi.materializeDecisionLog({ limit: 500, dry_run: false, confirm: true })
+      setMetaActionResult(`Strategy decision log 已寫入：candidates=${res.candidate_count ?? 0}，decision_rows=${res.persisted_rows ?? 0}。`)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'strategy decision log materialization failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function refreshStrategyRewardLedger() {
+    try {
+      setMetaActionBusy('strategy-reward-ledger')
+      setDraftError(null)
+      const res = await strategyLabApi.refreshStrategyRewardLedger({ limit: 5000, dry_run: false, confirm: true })
+      setMetaActionResult(`Strategy reward ledger 已刷新：source_rows=${res.source_rows ?? 0}，ledger_rows=${res.persisted_rows ?? 0}。`)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'strategy reward ledger refresh failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function refreshStrategyPolicyState() {
+    try {
+      setMetaActionBusy('strategy-policy-state')
+      setDraftError(null)
+      const res = await strategyLabApi.refreshStrategyPolicyState({ dry_run: false, confirm: true })
+      setMetaActionResult(`Adaptive strategy policy shadow 已更新：eligible=${res.policy_state?.evidence?.eligible_strategy_count ?? 0}，persisted=${res.persisted_rows ?? 0}，production_effect=false。`)
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'strategy adaptive policy refresh failed'))
+    } finally {
+      setMetaActionBusy(null)
     }
   }
 
@@ -165,8 +1447,10 @@ export default function StrategyLabPage() {
       setRunErrors((prev) => ({ ...prev, [id]: '' }))
       const result = await strategyLabApi.runEvaluationPlan(id)
       setRunResults((prev) => ({ ...prev, [id]: result }))
+      setRegistrySelection({ kind: 'experiment', id })
       const history = await strategyLabApi.evaluationRuns(id)
       setRunHistory((prev) => ({ ...prev, [id]: history }))
+      await load()
     } catch (e: unknown) {
       setRunErrors((prev) => ({ ...prev, [id]: getErrorMessage(e, 'evaluation dry-run failed') }))
     } finally {
@@ -174,11 +1458,75 @@ export default function StrategyLabPage() {
     }
   }
 
+  async function updateExperimentStatus(id: string, status: 'approved_for_patch' | 'rejected') {
+    try {
+      setMetaActionBusy(`experiment-status:${id}:${status}`)
+      setDraftError(null)
+      const res = await strategyLabApi.updateExperimentStatus(id, {
+        status,
+        reason: 'strategy-lab-ui-review',
+        confirm: true,
+      })
+      setMetaActionResult(`Experiment ${id} 已更新為 ${res.experiment.status}；production_effect=false。`)
+      setRegistrySelection({ kind: 'experiment', id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'experiment status update failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function createPatchHandoff(id: string) {
+    try {
+      setMetaActionBusy(`patch-handoff:${id}`)
+      setDraftError(null)
+      const res = await strategyLabApi.createPatchHandoff(id, {
+        reviewer: 'Wei',
+        reason: 'strategy-lab-approved-for-patch',
+        dry_run: true,
+        confirm: true,
+      })
+      const bridge = res.handoff.artifact_bridge
+      setMetaActionResult(`Patch handoff 已建立：${bridge.candidate_type} -> ${bridge.target_registry}，candidate=${bridge.candidate_ids.join(', ') || '-'}；production_effect=false。`)
+      setRegistrySelection({ kind: 'experiment', id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'patch handoff generation failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
+  async function createArtifactIntent(id: string) {
+    try {
+      setMetaActionBusy(`artifact-intent:${id}`)
+      setDraftError(null)
+      const draft = trimDraft(artifactIntentDraftFor(id))
+      const res = await strategyLabApi.createArtifactIntent(id, {
+        ...draft,
+        reviewer: 'Wei',
+        reason: 'strategy-lab-artifact-registration-preflight',
+        dry_run: true,
+        confirm: true,
+      })
+      const candidate = res.intent.registry_candidate
+      const missing = res.intent.preflight.missing_fields.join(', ') || 'none'
+      setMetaActionResult(`Artifact intent 已建立：${candidate.artifact_id}，status=${res.intent.status}，missing=${missing}；model_artifact_registry 未寫入。`)
+      setRegistrySelection({ kind: 'experiment', id })
+      await load()
+    } catch (e: unknown) {
+      setDraftError(getErrorMessage(e, 'artifact intent generation failed'))
+    } finally {
+      setMetaActionBusy(null)
+    }
+  }
+
   if (loading) {
     return (
       <AppShell>
-        <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> 載入策略實驗室...
+        <div className="flex items-center gap-2 p-6 text-sm text-slate-400">
+          <Loader2 className="h-4 w-4 animate-spin" /> Strategy Lab 載入中...
         </div>
       </AppShell>
     )
@@ -186,265 +1534,201 @@ export default function StrategyLabPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6 p-4 lg:p-6">
-        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)]">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Research room</p>
-            <h1 className="mt-1 flex items-center gap-2 text-xl font-bold text-[#fff7e8]">
-              <FlaskConical className="h-5 w-5 text-[#d6a85f]" /> 策略實驗室
-            </h1>
-            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-[#b9b1a1]">
-              在這裡先把策略假設、門檻與風險寫清楚；它只能產生研究證據，不會直接觸發 pending buy、成交或模型 promote。
-            </p>
-          </div>
-          <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { setRefreshing(true); load() }}>
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
-          </Button>
+      <div className="space-y-5 p-4 lg:p-6">
+        <div className="rounded-3xl border border-amber-500/20 bg-[radial-gradient(circle_at_18%_20%,rgba(245,158,11,0.18),transparent_28%),linear-gradient(135deg,#151714,#0b0f14_62%,#17110a)] p-5 shadow-[0_24px_90px_rgba(0,0,0,0.28)]">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-amber-300">Research Mission Control</p>
+              <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-amber-50">
+                <FlaskConical className="h-5 w-5 text-amber-300" /> 策略研究室
+              </h1>
+              <p className="mt-2 max-w-4xl text-sm leading-relaxed text-slate-300">
+                研究室只產生假說、dry-run review packet 與 evidence，不直接 retrain、promote 或 deploy。所有候選策略都要先通過 gate。
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="rounded-full border-amber-400/30 text-amber-200" onClick={() => { setRefreshing(true); load() }}>
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
+            </Button>
           </div>
         </div>
+
+        <StrategyExperimentTimeline
+          specs={specs?.specs ?? []}
+          dryRun={dryRun}
+          experiments={experiments?.experiments ?? []}
+        />
 
         {error && (
           <Card className="border-red-500/30">
-            <CardContent className="p-4 text-sm text-red-300">策略實驗室 API 載入失敗：{error}</CardContent>
+            <CardContent className="p-4 text-sm text-red-300">{error}</CardContent>
           </Card>
         )}
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Mode</div>
-              <div className="mt-2"><Badge variant="outline" className="border-sky-500/20 text-sky-300">{specs?.mode ?? 'read_only'}</Badge></div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Specs</div>
-              <div className="mt-2 text-lg font-bold">{specs?.specs.length ?? 0}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Dry-run Sample</div>
-              <div className="mt-2 text-lg font-bold">{dryRun?.candidate_count ?? 0}</div>
-              <div className="text-xs text-muted-foreground">{dryRun?.source ?? '-'}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Owner Freeze</div>
-              <div className="mt-2 flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-emerald-300" />
-                <span className="text-lg font-bold">{specs?.owner_boundaries.length ?? 0}</span>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Research Registry</div>
-              <div className="mt-2 text-lg font-bold">{experiments?.experiments.length ?? 0}</div>
-              <div className="text-xs text-muted-foreground">{experiments?.mode ?? 'read_only'}</div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <GitBranch className="h-4 w-4 text-emerald-300" /> Owner Freeze 邊界
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {(specs?.owner_boundaries ?? []).map((boundary) => (
-              <div key={boundary.owner} className="rounded-lg border border-border bg-background/50 p-3 text-xs">
-                <div className="font-semibold">{boundary.owner}</div>
-                <div className="mt-2 text-emerald-300">Owns: {boundary.owns.join(' / ')}</div>
-                <div className="mt-1 text-red-300/80">Forbidden: {boundary.forbidden.join(' / ')}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <ShieldCheck className="h-4 w-4 text-emerald-300" /> Research Intern Gate
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {researchGates.map(({ gate }) => (
-              <div key={gate.action} className="rounded-lg border border-border bg-background/50 p-3 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{gate.action}</span>
-                  <Badge
-                    variant="outline"
-                    className={
-                      gate.decision === 'ALLOW'
-                        ? 'border-emerald-500/20 text-emerald-300'
-                        : gate.decision === 'REQUIRE_APPROVAL'
-                          ? 'border-amber-500/20 text-amber-300'
-                          : 'border-red-500/30 text-red-300'
-                    }
-                  >
-                    {gate.decision}
-                  </Badge>
-                </div>
-                <div className="mt-2 text-muted-foreground">{gate.reason}</div>
-                <div className="mt-2 text-emerald-300/80">Next: {gate.allowed_next_steps.join(' / ')}</div>
-                <div className="mt-1 text-red-300/70">Blocked: {gate.blocked_capabilities.join(' / ')}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {(specs?.specs ?? []).map((spec) => (
-            <SpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {[
+            ['策略規格', stats.strategyCount, specs?.version ?? 'strategy-spec-v1'],
+            ['Dry-run 命中', stats.dryRunMatches, dryRun?.source ?? '-'],
+            ['研究實驗', experiments?.experiments.length ?? 0, experiments?.mode ?? 'read_only'],
+            ['允許 Gate', stats.safeGateCount, 'hypothesis / dry-run'],
+            ['阻擋 Gate', stats.blockedGateCount, 'deploy / trade'],
+          ].map(([label, value, hint]) => (
+            <Card key={label as string} className="border-slate-800 bg-slate-950/70">
+              <CardContent className="p-4">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
+                <div className="mt-2 text-2xl font-bold text-slate-100">{value}</div>
+                <div className="mt-1 truncate text-xs text-slate-500">{hint}</div>
+              </CardContent>
+            </Card>
           ))}
         </div>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <FlaskConical className="h-4 w-4 text-cyan-300" /> Research Experiments
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-4">
-              <div className="text-sm font-semibold">Create Research Experiment</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                這裡只建立 dry-run review packet，不會 retrain、promote、deploy 或交易；正式登錄仍需後端 confirm header。
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300">Action Lanes</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                左側是可執行操作；右側 inspector 是該操作對應的 registry evidence 與下一步。
               </div>
-              <div className="mt-3 grid grid-cols-1 gap-3">
+            </div>
+            <MetaLearningDecisionDesk
+              tracks={experiments?.meta_learning_tracks ?? []}
+              matrix={experiments?.meta_learning_evidence_matrix ?? []}
+              actionBusy={metaActionBusy}
+              selectedTrackId={registrySelection?.kind === 'meta_track' ? registrySelection.id : null}
+              onCreateTrackExperiment={createMetaLearningExperiment}
+              onRefreshLinucb={refreshLinucbLedger}
+              onRunNeuralShadow={runNeuralShadow}
+              onSelectTrack={(track) => setRegistrySelection({ kind: 'meta_track', id: track.id })}
+              actionResult={metaActionResult}
+            />
+
+            <ModelUpgradeLaunchpad
+              status={modelUpgradeStatus}
+              busy={metaActionBusy}
+              actionResult={modelUpgradeActionResult}
+              actionError={modelUpgradeActionError}
+              selectedId={registrySelection?.kind === 'model_upgrade' ? registrySelection.id : null}
+              onSeedRegistry={seedModelUpgradeRegistry}
+              onRunEvaluations={runModelUpgradeEvaluations}
+              onSelectRow={(row) => setRegistrySelection({ kind: 'model_upgrade', id: row.candidate_id })}
+            />
+
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <ShieldCheck className="h-4 w-4 text-emerald-300" /> Research Intern Gate
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {researchGates.map(({ gate }) => (
+                  <div key={gate.action} className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-100">{gate.action}</span>
+                      <Badge variant="outline" className={gateClass(gate.decision)}>{gate.decision}</Badge>
+                    </div>
+                    <div className="mt-2 text-xs leading-relaxed text-slate-400">{gate.reason}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <TestTube2 className="h-4 w-4 text-amber-300" /> 建立研究假說
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
                 <textarea
                   value={draftHypothesis}
                   onChange={(event) => setDraftHypothesis(event.target.value)}
-                  placeholder="例如：突破/波動擴張 bucket 在多頭 regime 是否能提高 walk-forward Sharpe 並降低 PBO?"
-                  className="min-h-20 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
+                  placeholder="描述假說，例如：breakout bucket 在 bull + liquidity normal regime 是否能提升 T+5 hit rate，且不增加 MDD?"
+                  className="min-h-24 w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50"
                 />
-                <input
-                  value={draftSpecIds}
-                  onChange={(event) => setDraftSpecIds(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="strategy spec ids, comma-separated"
-                />
-                <input
-                  value={draftMetrics}
-                  onChange={(event) => setDraftMetrics(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="metrics, comma-separated"
-                />
-                <input
-                  value={draftFollowUp}
-                  onChange={(event) => setDraftFollowUp(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500/50"
-                  placeholder="follow-up, comma-separated"
-                />
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button size="sm" variant="outline" disabled={draftSaving || draftHypothesis.trim().length < 12} onClick={previewExperiment}>
-                  {draftSaving ? 'Previewing...' : 'Dry-run Review Packet'}
-                </Button>
-                {draftError && <span className="text-xs text-red-300">{draftError}</span>}
-              </div>
-              {draftResult && (
-                <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-border bg-black/20 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                  {draftResult}
-                </pre>
-              )}
-            </div>
-
-            {(experiments?.experiments ?? []).length > 0 ? (
-              experiments!.experiments.map((experiment) => (
-                <div key={experiment.id} className="rounded-lg border border-border bg-background/50 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-semibold">{experiment.id}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">{experiment.updated_at}</div>
-                    </div>
-                    <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
-                  </div>
-                  <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{experiment.hypothesis}</p>
-                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-                    <div className="rounded-md border border-border/80 p-2">Specs: {experiment.strategy_spec_ids.join(' / ') || 'none'}</div>
-                    <div className="rounded-md border border-border/80 p-2">Metrics: {experiment.metrics.join(' / ') || 'none'}</div>
-                    <div className="rounded-md border border-border/80 p-2">Can deploy: {String(experiment.approval_gate.can_deploy)}</div>
-                  </div>
-                  {experiment.review_packet && (
-                    <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-border bg-black/20 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                      {experiment.review_packet}
-                    </pre>
-                  )}
-                  {experiment.evaluation_plan && (
-                    <div className="mt-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs font-semibold text-cyan-200">Evaluation Plan: {experiment.evaluation_plan.mode}</div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={runningExperimentId === experiment.id}
-                          onClick={() => runEvaluationPlan(experiment.id)}
-                        >
-                          {runningExperimentId === experiment.id ? 'Running...' : 'Run Dry-run Plan'}
-                        </Button>
-                      </div>
-                      {experiment.evaluation_plan.warnings.length > 0 && (
-                        <div className="mt-1 text-xs text-amber-300">Warnings: {experiment.evaluation_plan.warnings.join(' / ')}</div>
-                      )}
-                      <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                        {experiment.evaluation_plan.steps.map((step) => (
-                          <div key={step.id} className="rounded-md border border-border/80 bg-background/50 p-2 text-[11px]">
-                            <div className="font-semibold">{step.kind}</div>
-                            <div className="mt-1 text-muted-foreground">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
-                            <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
-                              {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
-                            </div>
-                            <div className="mt-1 text-red-300/80">mutation_allowed={String(step.mutation_allowed)}</div>
-                            {step.block_reason && <div className="mt-1 text-amber-300/80">{step.block_reason}</div>}
-                          </div>
-                        ))}
-                      </div>
-                      {runErrors[experiment.id] && (
-                        <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
-                          {runErrors[experiment.id]}
-                        </div>
-                      )}
-                      {runResults[experiment.id] && (
-                        <div className="mt-3 rounded-md border border-border/80 bg-background/50 p-2 text-xs">
-                          <div className="font-semibold text-emerald-300">
-                            Dry-run result: {runResults[experiment.id].report.verdict}
-                          </div>
-                          <pre className="mt-2 whitespace-pre-wrap rounded border border-border/70 bg-black/20 p-2 text-[11px] leading-relaxed text-muted-foreground">
-                            {runResults[experiment.id].report.review_packet}
-                          </pre>
-                          <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                            {runResults[experiment.id].report.results.map((result) => (
-                              <div key={result.step_id} className="rounded border border-border/70 p-2">
-                                <div className="font-medium">{result.kind}: {result.status}</div>
-                                <div className="mt-1 text-muted-foreground">{result.endpoint ?? '-'}</div>
-                                {result.reason && <div className="mt-1 text-amber-300">{result.reason}</div>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {runHistory[experiment.id]?.runs?.[0] && (
-                        <div className="mt-3 rounded-md border border-border/80 bg-background/40 p-2 text-xs text-muted-foreground">
-                          最近一次 dry-run history：{runHistory[experiment.id].runs[0].created_at} ·
-                          {runHistory[experiment.id].runs[0].results.map((result) => `${result.kind}:${result.status}`).join(' / ')}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                <input value={draftSpecIds} onChange={(event) => setDraftSpecIds(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="strategy spec ids" />
+                <input value={draftMetrics} onChange={(event) => setDraftMetrics(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="metrics" />
+                <input value={draftFollowUp} onChange={(event) => setDraftFollowUp(event.target.value)} className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-400/50" placeholder="follow-up" />
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" disabled={draftSaving || draftHypothesis.trim().length < 12} onClick={previewExperiment}>
+                    {draftSaving ? 'Previewing...' : '產生 Dry-run Review Packet'}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={draftPersisting || draftHypothesis.trim().length < 12} onClick={persistDraftExperiment}>
+                    {draftPersisting ? 'Saving...' : '寫入 Registry'}
+                  </Button>
+                  <Button size="sm" className="bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={draftPersisting} onClick={createModelBenchmarkExperiment}>
+                    建立 Model Benchmark
+                  </Button>
                 </div>
-              ))
-            ) : (
-              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                目前沒有登錄的 research experiment。P5 的設計是先沉澱 hypothesis / metrics / review packet，再決定是否產生 patch 或 backtest，不直接碰 production。
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
+                  觸發順序：先寫入 experiment registry，下面卡片會出現 evaluation plan，再按 Run dry-run plan；model_benchmark step 會呼叫 /research/model-benchmark/dry-run，不是 Scheduler job。
+                </div>
+                {draftError && <div className="text-xs text-red-300">{draftError}</div>}
+                {draftResult && (
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
+                    {draftResult}
+                  </pre>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <RegistryInspectorPanel
+            experiments={experiments?.experiments ?? []}
+            modelUpgradeRows={modelUpgradeStatus?.candidates ?? []}
+            metaTracks={experiments?.meta_learning_tracks ?? []}
+            metaMatrix={experiments?.meta_learning_evidence_matrix ?? []}
+            selected={registrySelection}
+            actionBusy={metaActionBusy}
+            runningExperimentId={runningExperimentId}
+            runErrors={runErrors}
+            runResults={runResults}
+            runHistory={runHistory}
+            artifactIntentDraftFor={artifactIntentDraftFor}
+            updateArtifactIntentDraft={updateArtifactIntentDraft}
+            onSelect={setRegistrySelection}
+            onUpdateExperimentStatus={updateExperimentStatus}
+            onCreatePatchHandoff={createPatchHandoff}
+            onCreateArtifactIntent={createArtifactIntent}
+            onRunEvaluationPlan={runEvaluationPlan}
+          />
+        </div>
+
+        <div className="rounded-3xl border border-slate-800 bg-slate-950/50 p-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Strategy Ops</div>
+              <div className="mt-1 text-sm font-semibold text-slate-100">Pre-trade Spec + Dry-run / Post-trade Learning + Reward</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                左欄只看策略定義與當日候選池命中；右欄只看後驗 reward、promotion gate 與 adaptive shadow 權重。
+              </p>
+            </div>
+            <Badge variant="outline" className="border-emerald-500/25 text-emerald-200">
+              lifecycle view
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1fr]">
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <GitBranch className="h-4 w-4 text-cyan-300" /> Pre-trade Spec + Dry-run
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 gap-3">
+                {(specs?.specs ?? []).map((spec) => (
+                  <StrategySpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
+                ))}
+              </CardContent>
+            </Card>
+            <StrategyLearningPanel
+              learning={strategyLearning}
+              busy={metaActionBusy}
+              onMaterialize={materializeStrategyDecisionLog}
+              onRefreshRewards={refreshStrategyRewardLedger}
+              onRefreshPolicy={refreshStrategyPolicyState}
+            />
+          </div>
+        </div>
+
       </div>
     </AppShell>
   )

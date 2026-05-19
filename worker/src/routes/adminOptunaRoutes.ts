@@ -1,9 +1,99 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
-import { requireServiceToken } from '../lib/auth'
+import { requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { evaluateGaPromotion, formatGaPromotionNotification } from '../lib/gaPromotion'
+import { sendOperatorNotification } from '../lib/notify'
+import {
+  LEGACY_REGIME_KEY,
+  LEGACY_REGIME_META_KEY,
+  MARKET_REGIME_STATE_KEY,
+  buildMarketRegimeState,
+  persistMarketRegimeState,
+} from '../lib/marketRegimeState'
 import type { Bindings, Variables } from '../types'
 
 export const adminOptunaRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+adminOptunaRoutes.post('/api/admin/ga-promotion/review', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => null)
+  const action = String(body?.action ?? '').toLowerCase()
+  const level = String(body?.level ?? 'L3').toUpperCase()
+  if (!['request', 'approve', 'reject'].includes(action)) {
+    return c.json({ error: "action must be 'request', 'approve', or 'reject'" }, 400)
+  }
+  if (!['L3', 'L4'].includes(level)) {
+    return c.json({ error: 'level must be L3 or L4' }, 400)
+  }
+
+  const latestKey = 'optimizer:ga:latest'
+  const previousRaw = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
+  if (!previousRaw) return c.json({ error: 'optimizer:ga:latest missing' }, 404)
+
+  const now = new Date().toISOString()
+  const promotionPatch: Record<string, unknown> = {
+    ...((previousRaw as any).promotion ?? {}),
+    requested_level: level,
+    reviewed_at: now,
+    reviewed_by: body?.reviewed_by ?? body?.approved_by ?? 'Wei',
+    review_action: action,
+    review_reason: body?.reason ?? null,
+  }
+  if (action === 'approve') {
+    promotionPatch.approved_level = level
+    promotionPatch.approved_at = now
+  }
+  if (action === 'reject') {
+    promotionPatch.requested_level = null
+    promotionPatch.rejected_level = level
+    promotionPatch.rejected_at = now
+    promotionPatch.approved_level = null
+  }
+
+  const nextState: Record<string, any> = {
+    ...(previousRaw as Record<string, unknown>),
+    promotion: promotionPatch,
+    updated_at: now,
+    production_learning_loop: true,
+    mutates_trading_config: false,
+  }
+  const promotion = evaluateGaPromotion(nextState as Record<string, any>, previousRaw)
+  nextState.status = promotion.status
+  nextState.promotion = {
+    ...promotionPatch,
+    ...promotion,
+    evaluated_at: now,
+    previous_level: previousRaw?.promotion?.level ?? null,
+    trading_config_unchanged: true,
+  }
+
+  const auditKey = `optimizer:ga:review:${twToday()}:${Date.now()}`
+  await c.env.KV.put(latestKey, JSON.stringify(nextState))
+  await c.env.KV.put(auditKey, JSON.stringify({
+    source: 'ga_optimizer',
+    action,
+    level,
+    reviewer: nextState.promotion.reviewed_by,
+    reason: body?.reason ?? null,
+    promotion,
+    latest_key: latestKey,
+    reviewed_at: now,
+    trading_config_unchanged: true,
+  }), { expirationTtl: 180 * 86400 })
+
+  return c.json({
+    success: true,
+    source: 'ga_optimizer',
+    action,
+    level,
+    updatedKeys: [latestKey, auditKey],
+    promotion: nextState.promotion,
+    mutates_trading_config: false,
+    message: 'GA promotion review recorded; trading:config remains unchanged.',
+  })
+})
 
 adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
   const authError = await requireServiceToken(c)
@@ -220,36 +310,68 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       }, 501)
     case 'ga_optimizer': {
       const now = new Date().toISOString()
+      const previousRaw = await c.env.KV.get('optimizer:ga:latest', 'json').catch(() => null) as any
       const learningState = {
         ...(params && typeof params === 'object' ? params : {}),
         source: 'ga_optimizer',
         optimizer: params?.optimizer ?? 'GAOptimizer',
         status: params?.status ?? 'learning',
+        production_learning_loop: true,
+        mutates_trading_config: false,
         updated_at: now,
         meta: meta ?? null,
+      }
+      const promotion = evaluateGaPromotion(learningState, previousRaw)
+      learningState.status = promotion.status
+      learningState.promotion = {
+        ...((learningState as any).promotion ?? {}),
+        ...promotion,
+        evaluated_at: now,
+        previous_level: previousRaw?.promotion?.level ?? null,
+        trading_config_unchanged: true,
       }
       const latestKey = 'optimizer:ga:latest'
       const historyKey = `optimizer:ga:history:${twToday()}:${Date.now()}`
       const auditKey = `audit:optuna-push:ga_optimizer:${twToday()}`
+      const promotionKey = `optimizer:ga:promotion:${twToday()}:${Date.now()}`
 
       await c.env.KV.put(latestKey, JSON.stringify(learningState))
       await c.env.KV.put(historyKey, JSON.stringify(learningState), { expirationTtl: 90 * 86400 })
+      await c.env.KV.put(promotionKey, JSON.stringify({
+        source: 'ga_optimizer',
+        latest_key: latestKey,
+        history_key: historyKey,
+        decision: promotion,
+        best_score: learningState.best?.score ?? meta?.best_score ?? null,
+        pushed_at: now,
+      }), { expirationTtl: 180 * 86400 })
       await c.env.KV.put(auditKey, JSON.stringify({
-        target: 'meta_optimizer_learning_state',
+        target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
         meta: meta ?? null,
         latest_key: latestKey,
         history_key: historyKey,
+        promotion_key: promotionKey,
+        promotion,
         pushed_at: now,
       }), { expirationTtl: 30 * 86400 })
 
+      const shouldNotify = promotion.autoPromoted ||
+        promotion.approvalRequiredForNextLevel ||
+        previousRaw?.promotion?.level !== promotion.level
+      const notificationChannel = shouldNotify
+        ? await sendOperatorNotification(c.env, formatGaPromotionNotification(learningState, promotion))
+        : 'not_sent:no_channel_configured'
+
       return c.json({
         success: true,
-        target: 'meta_optimizer_learning_state',
+        target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
-        updatedKeys: [latestKey, historyKey],
+        updatedKeys: [latestKey, historyKey, promotionKey],
         audit_key: auditKey,
-        message: 'GAOptimizer learning state updated; trading:config unchanged.',
+        promotion,
+        notification_channel: notificationChannel,
+        message: 'GAOptimizer production learning state updated; trading:config unchanged until gated promotion approval.',
       })
     }
     case 'l2_sensitivity': {
@@ -274,22 +396,19 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         }, 400)
       }
 
-      await c.env.KV.put('ml:regime', label, { expirationTtl: 2 * 86400 })
-      await c.env.KV.put('ml:regime:meta', JSON.stringify({
+      const state = buildMarketRegimeState({
         label,
-        regime_index: Number(params.regime_index ?? 2),
-        hmm_state: Number(params.hmm_state ?? -1),
-        label_zh: String(params.label_zh ?? ''),
-        regime_surface: params.regime_surface ?? params.regime_probabilities ?? params.probabilities ?? {},
-        consensus_threshold: Number(params.consensus_threshold ?? 0.60),
-        weight_multipliers: params.weight_multipliers ?? {},
-        pushed_at: new Date().toISOString(),
-      }), { expirationTtl: 2 * 86400 })
+        runDate: typeof meta?.run_date === 'string' ? meta.run_date : null,
+        computedAt: typeof meta?.computed_at === 'string' ? meta.computed_at : null,
+        params,
+      })
+      await persistMarketRegimeState(c.env.KV, state)
 
       const auditKey = `audit:optuna-push:regime:${twToday()}`
       await c.env.KV.put(auditKey, JSON.stringify({
         source: 'regime',
         params,
+        market_regime_state: state,
         meta: meta ?? null,
         pushed_at: new Date().toISOString(),
       }), { expirationTtl: 30 * 86400 })
@@ -298,7 +417,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         success: true,
         source: 'regime',
         regime: label,
-        updatedKeys: ['ml:regime', 'ml:regime:meta'],
+        updatedKeys: [MARKET_REGIME_STATE_KEY, LEGACY_REGIME_KEY, LEGACY_REGIME_META_KEY],
       })
     }
     default:

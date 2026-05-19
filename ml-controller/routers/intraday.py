@@ -33,7 +33,6 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 
 from services.d1_client import query as d1_query
-from services.kv_client import get_json as kv_get_json
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/intraday", tags=["intraday"])
@@ -84,7 +83,11 @@ _INTRADAY_DEFAULTS = {
 
 def _get_intraday_config() -> dict:
     """Read trading:config.intraday with defaults."""
-    tc = kv_get_json("trading:config", default={})
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    tc = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[intraday] trading:config degraded: %s", cfg_result.contract.to_dict())
     intraday = tc.get("intraday", {})
     return {k: intraday.get(k, v) for k, v in _INTRADAY_DEFAULTS.items()}
 

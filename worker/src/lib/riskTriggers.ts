@@ -5,8 +5,8 @@
  * pending_optuna_queue. Each is idempotent same-day via optunaQueue.ts key
  * generation (reason:YYYY-MM-DD).
  *
- *   T1.2 detectRegimeShift   — called from regime-compute cron, reads KV
- *                              ml:regime before compute + compares new label
+ *   T1.2 detectRegimeShift   — called from regime-compute cron, reads
+ *                              market_regime_state before compute + compares new label
  *   T1.3 checkRollingSharpe  — called from daily-report cron, queries
  *                              paper_daily_snapshots.sharpe_30d latest vs
  *                              KV trading:config.risk.sharpe_rolling_threshold
@@ -31,7 +31,7 @@ const DEFAULT_DD_SPIKE_THRESHOLD = 0.08  // single-day drawdown alert (8%)
 
 /**
  * T1.2: detect HMM regime label change (today vs prev KV value). Must be
- * called BEFORE the /regime/compute call overwrites ml:regime. Caller passes
+ * called BEFORE the /regime/compute call overwrites market_regime_state. Caller passes
  * the new label post-compute for comparison.
  *
  * @returns summary string for scheduler run logs (e.g. "shift:sideways→volatile" / "same")

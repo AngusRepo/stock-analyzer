@@ -290,6 +290,47 @@ async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_promote_check_apply_rejects_disabled_promotion_governance(monkeypatch):
+    challenger = {
+        "version": "v2",
+        "gcs_path": "universal/xgboost/v2.joblib",
+        "shadow_since": "2026-01-01",
+        "weekly_ic": [0.04, 0.05, 0.04, 0.05],
+        "ic_4w_avg": 0.045,
+        "consecutive_negative_weeks": 0,
+        "model_cpcv": {
+            "decision": "PASS",
+            "method": "purged_cpcv_rank_ic",
+            "failed_gates": [],
+            "folds": 15,
+            "oos_ic_mean": 0.03,
+        },
+    }
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
+            "CatBoost": _entry(),
+            "ExtraTrees": _entry(),
+        },
+    }
+    _install_fake_gcs(monkeypatch, pool)
+
+    with pytest.raises(HTTPException) as exc:
+        await model_pool.promote_check(
+            model_pool.PromoteCheckRequest(
+                apply=True,
+                confirm=True,
+                require_promotion_gate=False,
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "cannot disable production promotion governance" in exc.value.detail
+    assert "promotion_gate" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
     challenger = {
         "version": "v2",
@@ -318,7 +359,6 @@ async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
 
     import services.shadow_ab_service as shadow_ab_service
     import services.paper_order_ab_service as paper_order_ab_service
-
     monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {
         "XGBoost": {"decision": "PASS", "failed_gates": [], "samples": 80}
     })
@@ -365,6 +405,7 @@ async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypa
 
     import services.shadow_ab_service as shadow_ab_service
     import services.paper_order_ab_service as paper_order_ab_service
+    import services.promotion_service as promotion_service
 
     monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {
         "XGBoost": {"decision": "PASS", "failed_gates": [], "samples": 80}
@@ -372,9 +413,16 @@ async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypa
     monkeypatch.setattr(paper_order_ab_service, "load_paper_order_ab_by_model", lambda lookback_days=90: {
         "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
     })
+    monkeypatch.setattr(promotion_service, "evaluate_latest_promotion_gate", lambda source="backtest", pbo_source=None: {
+        "decision": "PASS",
+        "passed": True,
+        "failed_gates": [],
+        "warnings": [],
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+    })
 
     result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(apply=True, confirm=True, require_promotion_gate=False)
+        model_pool.PromoteCheckRequest(apply=True, confirm=True)
     )
 
     assert result["applied_count"] == 1

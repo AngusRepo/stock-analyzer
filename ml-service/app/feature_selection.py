@@ -18,6 +18,9 @@ References:
 import time
 import json
 import io
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from typing import Optional
 from scipy import stats
@@ -27,6 +30,87 @@ from sklearn.metrics import silhouette_score
 
 from app.model_store import _get_bucket
 from app.purged_cv import dynamic_embargo_days
+
+
+FEATURE_SELECTION_CACHE_SCHEMA_VERSION = "feature-selection-cache-v1"
+
+
+def _bounded_parallel_workers(value: object, *, default: int = 1, hard_cap: int = 4) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, hard_cap))
+
+
+def _blob_identity(blob) -> dict:
+    return {
+        "name": str(getattr(blob, "name", "")),
+        "generation": str(getattr(blob, "generation", "") or ""),
+        "size": int(getattr(blob, "size", 0) or 0),
+        "crc32c": str(getattr(blob, "crc32c", "") or ""),
+        "md5_hash": str(getattr(blob, "md5_hash", "") or ""),
+    }
+
+
+def build_feature_selection_cache_key(
+    *,
+    prep_blobs: list,
+    feature_blob,
+    feature_names: list[str],
+    selection_params: dict,
+    train_end_date: str | None,
+    gcs_prefix: str | None,
+) -> str:
+    """Exact-cache key for monthly feature selection evidence."""
+
+    payload = {
+        "schema_version": FEATURE_SELECTION_CACHE_SCHEMA_VERSION,
+        "prep_blobs": [_blob_identity(blob) for blob in prep_blobs],
+        "feature_blob": _blob_identity(feature_blob),
+        "feature_names_sha256": hashlib.sha256(
+            json.dumps(list(feature_names), ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "selection_params": selection_params,
+        "train_end_date": train_end_date,
+        "gcs_prefix": gcs_prefix or "universal",
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _feature_selection_cache_path(cache_key: str) -> str:
+    return f"universal/feature_selection_cache/{cache_key}.json"
+
+
+def load_feature_selection_cache(bucket, cache_key: str) -> dict | None:
+    try:
+        blob = bucket.blob(_feature_selection_cache_path(cache_key))
+        if not blob.exists():
+            return None
+        payload = json.loads(blob.download_as_text())
+        if payload.get("schema_version") != FEATURE_SELECTION_CACHE_SCHEMA_VERSION:
+            return None
+        if payload.get("cache_key") != cache_key:
+            return None
+        result = payload.get("result")
+        return result if isinstance(result, dict) else None
+    except Exception as exc:
+        print(f"[FeatureSelection] Evidence cache read skipped: {exc}")
+        return None
+
+
+def save_feature_selection_cache(bucket, cache_key: str, result: dict) -> None:
+    payload = {
+        "schema_version": FEATURE_SELECTION_CACHE_SCHEMA_VERSION,
+        "cache_key": cache_key,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "result": result,
+    }
+    bucket.blob(_feature_selection_cache_path(cache_key)).upload_from_string(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        content_type="application/json",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -134,7 +218,8 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
 
 def _train_lgbm_regression(X_train: np.ndarray, y_train: np.ndarray,
                            X_val: np.ndarray, y_val: np.ndarray,
-                           seed: int = 42) -> "lightgbm.Booster":
+                           seed: int = 42,
+                           lightgbm_n_jobs: int = -1) -> "lightgbm.Booster":
     """Train a LightGBM regressor (GPU if available) and return Booster."""
     import lightgbm as lgb
 
@@ -148,7 +233,7 @@ def _train_lgbm_regression(X_train: np.ndarray, y_train: np.ndarray,
         "colsample_bytree": 0.8,
         "seed": seed,
         "verbose": -1,
-        "n_jobs": -1,
+        "n_jobs": int(lightgbm_n_jobs),
     }
     # LightGBM: CPU mode (GPU needs source rebuild with USE_CUDA=ON, deferred)
     # See memory/feedback_lightgbm_gpu_modal.md
@@ -211,6 +296,7 @@ def target_permutation(
     dates_train: np.ndarray | None = None,
     sectors_train: np.ndarray | None = None,
     permutation_mode: str = "within_date",
+    max_parallel_workers: int = 1,
 ) -> dict:
     """Target Permutation feature selection.
 
@@ -238,6 +324,7 @@ def target_permutation(
     """
     t0 = time.time()
     n_features = len(feature_names)
+    max_workers = _bounded_parallel_workers(max_parallel_workers, default=1, hard_cap=4)
     rng = np.random.RandomState(42)
 
     # ── Real model ───────────────────────────────────────────────────────────
@@ -256,7 +343,58 @@ def target_permutation(
     null_importances = []
     actual_rounds = 0
 
-    for perm_i in range(max_permutations):
+    if max_workers > 1:
+        def _run_parallel_round(perm_i: int) -> tuple[int, np.ndarray]:
+            local_rng = np.random.RandomState(42 + perm_i + 1)
+            y_shuffled = _permuted_target(
+                y_train,
+                rng=local_rng,
+                dates=dates_train,
+                sectors=sectors_train,
+                mode=permutation_mode,
+            )
+            cpu_count = os.cpu_count() or max_workers
+            per_model_jobs = max(1, cpu_count // max_workers)
+            null_model = _train_lgbm_regression(
+                X_train,
+                y_shuffled,
+                X_val,
+                y_val,
+                seed=42 + perm_i + 1,
+                lightgbm_n_jobs=per_model_jobs,
+            )
+            null_imp = null_model.feature_importance(importance_type="gain").astype(np.float64)
+            null_sum = null_imp.sum()
+            if null_sum > 0:
+                null_imp = null_imp / null_sum
+            else:
+                null_imp = np.ones(n_features) / n_features
+            return perm_i, null_imp
+
+        perm_i = 0
+        while perm_i < max_permutations:
+            chunk_end = min(max_permutations, perm_i + max(ks_check_interval, max_workers))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                chunk = list(executor.map(_run_parallel_round, range(perm_i, chunk_end)))
+            null_importances.extend(imp for _, imp in sorted(chunk, key=lambda row: row[0]))
+            actual_rounds = chunk_end
+            perm_i = chunk_end
+
+            if actual_rounds >= 50 and actual_rounds % ks_check_interval == 0:
+                null_arr = np.array(null_importances)
+                half = actual_rounds // 2
+                first_means = null_arr[:half].mean(axis=0)
+                second_means = null_arr[half:].mean(axis=0)
+                ks_stat, ks_p = stats.ks_2samp(first_means, second_means)
+                if ks_p > ks_alpha:
+                    print(f"[TargetPerm] K-S converged at round {actual_rounds}: "
+                          f"stat={ks_stat:.4f}, p={ks_p:.4f} > {ks_alpha}")
+                    break
+            if actual_rounds % 20 == 0:
+                elapsed = round(time.time() - t0, 1)
+                print(f"[TargetPerm] Round {actual_rounds}/{max_permutations} ({elapsed}s)")
+
+    for perm_i in range(max_permutations if max_workers <= 1 else 0):
         y_shuffled = _permuted_target(
             y_train,
             rng=rng,
@@ -330,6 +468,7 @@ def target_permutation(
         "per_feature": per_feature,
         "elapsed_s": elapsed,
         "permutation_mode": permutation_mode,
+        "max_parallel_workers": max_workers,
         "sector_aware": bool(
             str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
             and sectors_train is not None
@@ -350,6 +489,7 @@ def signal_sanity_gate(
     dates_train: np.ndarray | None = None,
     sectors_train: np.ndarray | None = None,
     permutation_mode: str = "within_date",
+    max_parallel_workers: int = 1,
 ) -> dict:
     """Signal sanity gate: 30 Y-shuffle permutations on validation IC.
 
@@ -361,6 +501,7 @@ def signal_sanity_gate(
     """
     from scipy.stats import spearmanr
     t0 = time.time()
+    max_workers = _bounded_parallel_workers(max_parallel_workers, default=1, hard_cap=4)
 
     # Real model IC on validation
     real_model = _train_lgbm_regression(X_train, y_train, X_val, y_val, seed=42)
@@ -373,22 +514,41 @@ def signal_sanity_gate(
 
     # Null distribution: shuffle Y, retrain, compute IC
     rng = np.random.RandomState(99)
-    null_ics = []
-    for i in range(n_permutations):
-        y_shuf = _permuted_target(
+    shuffled_targets = [
+        _permuted_target(
             y_train,
             rng=rng,
             dates=dates_train,
             sectors=sectors_train,
             mode=permutation_mode,
         )
-        null_model = _train_lgbm_regression(X_train, y_shuf, X_val, y_val, seed=100 + i)
+        for _ in range(n_permutations)
+    ]
+
+    def _run_null_round(task: tuple[int, np.ndarray]) -> tuple[int, float]:
+        i, y_shuf = task
+        per_model_jobs = max(1, (os.cpu_count() or max_workers) // max_workers)
+        null_model = _train_lgbm_regression(
+            X_train,
+            y_shuf,
+            X_val,
+            y_val,
+            seed=100 + i,
+            lightgbm_n_jobs=per_model_jobs,
+        )
         null_preds = null_model.predict(X_val)
         if np.std(null_preds) < 1e-10:
-            null_ics.append(0.0)
-        else:
-            rho, _ = spearmanr(null_preds, y_val)
-            null_ics.append(float(rho) if not np.isnan(rho) else 0.0)
+            return i, 0.0
+        rho, _ = spearmanr(null_preds, y_val)
+        return i, float(rho) if not np.isnan(rho) else 0.0
+
+    tasks = list(enumerate(shuffled_targets))
+    if max_workers > 1 and len(tasks) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            null_results = list(executor.map(_run_null_round, tasks))
+    else:
+        null_results = [_run_null_round(task) for task in tasks]
+    null_ics = [ic for _, ic in sorted(null_results, key=lambda row: row[0])]
 
     null_arr = np.array(null_ics)
     # Empirical p-value: fraction of null ICs >= real IC
@@ -408,6 +568,7 @@ def signal_sanity_gate(
         "n_permutations": n_permutations,
         "elapsed_s": elapsed,
         "permutation_mode": permutation_mode,
+        "max_parallel_workers": max_workers,
         "sector_aware": bool(
             str(permutation_mode).lower() in {"within_date_sector", "within_sector_date"}
             and sectors_train is not None
@@ -683,6 +844,7 @@ def optuna_k_sweep(
     feature_names: list[str],
     n_trials: int = 150,        # 2026-04-17: 50→150 (NSGAII 2-objective Pareto 建議 150-200)
     score_key: str = "score",
+    n_jobs: int = 1,
     min_k: int = 20,            # 2026-04-17: MIN_K guard（共線性保護，少於 20 稀釋 ensemble diversity）
 ) -> dict:
     """Optuna K sweep: multi-objective Pareto (maximize IC, minimize K).
@@ -704,6 +866,7 @@ def optuna_k_sweep(
          "best_k": int, "best_ic": float, "sweep_results": [(k, ic), ...]}
     """
     import optuna
+    from threading import Lock
     from scipy.stats import spearmanr
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -714,6 +877,9 @@ def optuna_k_sweep(
     sorted_names = [n for n, _ in sorted_features]
     name_to_idx = {n: i for i, n in enumerate(feature_names)}
     n_max = len(sorted_names)
+    objective_cache: dict[int, tuple[float, int]] = {}
+    objective_cache_lock = Lock()
+    objective_cache_hits = 0
 
     if n_max < 5:
         return {
@@ -724,15 +890,32 @@ def optuna_k_sweep(
         }
 
     def objective(trial):
+        nonlocal objective_cache_hits
         k = trial.suggest_int("k", 5, n_max)
+        with objective_cache_lock:
+            cached = objective_cache.get(k)
+            if cached is not None:
+                objective_cache_hits += 1
+                return cached
         top_k = sorted_names[:k]
         indices = [name_to_idx[n] for n in top_k if n in name_to_idx]
         if len(indices) < 5:
-            return 0.0, k  # (IC, K) — Pareto: maximize IC, minimize K
+            result = (0.0, k)
+            with objective_cache_lock:
+                objective_cache.setdefault(k, result)
+            return result
         Xtr = X_train[:, indices]
         Xvl = X_val[:, indices]
         try:
-            booster = _train_lgbm_regression(Xtr, y_train, Xvl, y_val, seed=42)
+            per_trial_jobs = max(1, (os.cpu_count() or 1) // max(1, optuna_n_jobs))
+            booster = _train_lgbm_regression(
+                Xtr,
+                y_train,
+                Xvl,
+                y_val,
+                seed=42,
+                lightgbm_n_jobs=per_trial_jobs,
+            )
             preds = booster.predict(Xvl)
             if np.std(preds) < 1e-10 or np.std(y_val) < 1e-10:
                 ic = 0.0
@@ -741,7 +924,10 @@ def optuna_k_sweep(
                 ic = float(rho) if not np.isnan(rho) else 0.0
         except Exception:
             ic = 0.0
-        return ic, k  # Pareto: (maximize IC, minimize K)
+        result = (ic, k)
+        with objective_cache_lock:
+            objective_cache.setdefault(k, result)
+        return result
 
     # Multi-objective study: maximize IC, minimize K
     # NSGAIISampler required — TPESampler does not support multi-objective
@@ -749,7 +935,8 @@ def optuna_k_sweep(
         directions=["maximize", "minimize"],
         sampler=optuna.samplers.NSGAIISampler(seed=42),
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    optuna_n_jobs = _bounded_parallel_workers(n_jobs, default=1, hard_cap=4)
+    study.optimize(objective, n_trials=n_trials, n_jobs=optuna_n_jobs, show_progress_bar=False)
 
     # Collect all (k, ic) pairs from all trials
     sweep_results = []
@@ -834,6 +1021,11 @@ def optuna_k_sweep(
         "reserve": reserve,
         "best_k": best_k,
         "best_ic": round(float(best_ic), 6),
+        "n_jobs": optuna_n_jobs,
+        "n_trials": int(n_trials),
+        "actual_trials": len(study.trials),
+        "unique_k_evaluated": len(objective_cache),
+        "objective_cache_hits": int(objective_cache_hits),
         "sweep_results": sweep_results,   # all trial (k, ic) pairs sorted by k
         "pareto_front": pareto_front,     # Pareto-optimal trials only
     }
@@ -842,6 +1034,23 @@ def optuna_k_sweep(
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 5: Diversity Guard (P4 — interface defined here, full logic in P4)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _k_sweep_summary(k_sweep_result: dict) -> dict:
+    """Keep compact K-sweep scope fields for orchestration telemetry."""
+    keys = (
+        "best_k",
+        "best_ic",
+        "n_trials",
+        "actual_trials",
+        "unique_k_evaluated",
+        "objective_cache_hits",
+    )
+    return {
+        key: k_sweep_result.get(key)
+        for key in keys
+        if k_sweep_result.get(key) is not None
+    }
+
 
 def diversity_guard(
     active: list[str],
@@ -1029,12 +1238,32 @@ def run_feature_selection_pipeline(
     from .training_policy import FeatureSelectionPolicy
 
     selection_params = FeatureSelectionPolicy.from_env().to_selection_params(
-        {"max_rounds": max_rounds, "alpha": alpha, "icir_weight": icir_weight}
+        {
+            **_kwargs,
+            "max_rounds": max_rounds,
+            "alpha": alpha,
+            "icir_weight": icir_weight,
+        }
     )
     max_rounds = int(selection_params["max_rounds"])
     alpha = float(selection_params["alpha"])
     icir_weight = float(selection_params["icir_weight"])
     permutation_mode = str(selection_params["permutation_mode"])
+    target_perm_workers = _bounded_parallel_workers(
+        selection_params.get("target_permutation_max_workers"),
+        default=2,
+        hard_cap=4,
+    )
+    signal_sanity_workers = _bounded_parallel_workers(
+        selection_params.get("signal_sanity_max_workers"),
+        default=2,
+        hard_cap=4,
+    )
+    k_sweep_n_jobs = _bounded_parallel_workers(
+        selection_params.get("k_sweep_n_jobs"),
+        default=2,
+        hard_cap=4,
+    )
 
     bucket = _get_bucket()
     if bucket is None:
@@ -1047,6 +1276,34 @@ def run_feature_selection_pipeline(
     )
     if not prep_blobs:
         return {"error": "No prep data in GCS. Run retrain first."}
+
+    # Feature names + exact evidence cache. A cache hit means the GCS prep
+    # objects, feature schema, and selection policy are byte-for-byte the same.
+    fn_blob = bucket.blob("universal/prep/feature_names.json")
+    feature_names = json.loads(fn_blob.download_as_text())
+    cache_key = build_feature_selection_cache_key(
+        prep_blobs=prep_blobs,
+        feature_blob=fn_blob,
+        feature_names=feature_names,
+        selection_params=selection_params,
+        train_end_date=train_end_date,
+        gcs_prefix=gcs_prefix,
+    )
+    cached = load_feature_selection_cache(bucket, cache_key)
+    if cached is not None:
+        print(f"[FeatureSelection] Evidence cache HIT key={cache_key[:12]}")
+        pool = cached.get("feature_pool")
+        if isinstance(pool, dict) and not dry_run:
+            save_feature_pool(pool, gcs_prefix=gcs_prefix)
+        cached = dict(cached)
+        cached["cache"] = {
+            "hit": True,
+            "key": cache_key,
+            "path": _feature_selection_cache_path(cache_key),
+            "source_elapsed_s": cached.get("elapsed_s"),
+        }
+        cached["elapsed_s"] = round(time.time() - t0, 1)
+        return cached
 
     all_X, all_y, all_dates, all_sectors = [], [], [], []
     sector_blob_count = 0
@@ -1066,9 +1323,6 @@ def run_feature_selection_pipeline(
     dates = np.concatenate(all_dates)
     sectors = np.concatenate(all_sectors) if sector_blob_count == len(prep_blobs) else None
 
-    # Feature names
-    fn_blob = bucket.blob("universal/prep/feature_names.json")
-    feature_names = json.loads(fn_blob.download_as_text())
     print(f"[FeatureSelection] Loaded {len(X)} samples, {len(feature_names)} features")
 
     # ── 1b. Walk-forward date-range filter (zero look-ahead) ─────────────────
@@ -1137,6 +1391,7 @@ def run_feature_selection_pipeline(
         dates_train=dates_train,
         sectors_train=sectors_train,
         permutation_mode=permutation_mode,
+        max_parallel_workers=signal_sanity_workers,
     )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
@@ -1160,6 +1415,7 @@ def run_feature_selection_pipeline(
         dates_train=dates_train,
         sectors_train=sectors_train,
         permutation_mode=permutation_mode,
+        max_parallel_workers=target_perm_workers,
     )
 
     if "error" in tp_result:
@@ -1196,6 +1452,7 @@ def run_feature_selection_pipeline(
         k_sweep_result = optuna_k_sweep(
             combined_scores, X_train, y_train, X_val, y_val,
             feature_names=feature_names,  # n_trials/min_k 走 function 預設 (150/20)
+            n_jobs=k_sweep_n_jobs,
         )
         print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
               f"best_ic={k_sweep_result.get('best_ic')}")
@@ -1227,6 +1484,7 @@ def run_feature_selection_pipeline(
             "elapsed_s": tp_result["elapsed_s"],
             "permutation_mode": tp_result.get("permutation_mode"),
             "sector_aware": tp_result.get("sector_aware"),
+            "max_parallel_workers": tp_result.get("max_parallel_workers"),
         },
         ic_results=ic_results,
         gate_result=gate_result,
@@ -1276,7 +1534,7 @@ def run_feature_selection_pipeline(
     print(f"\n[FeatureSelection] === PIPELINE COMPLETE ({elapsed}s) ===")
     print(f"[FeatureSelection] Active: {len(active_final)}, Reserve: {len(reserve_final)}")
 
-    return {
+    final_result = {
         "feature_pool": pool,
         "cluster": {k: v for k, v in cluster_result.items() if k != "groups"},
         "target_permutation": {
@@ -1297,15 +1555,24 @@ def run_feature_selection_pipeline(
             "used_for_selection": False,
         },
         "signal_gate": gate_result,
-        "k_sweep": {
-            "best_k": k_sweep_result.get("best_k"),
-            "best_ic": k_sweep_result.get("best_ic"),
-        },
+        "k_sweep": _k_sweep_summary(k_sweep_result),
         "feature_governance": {
             "mutual_information": {k: v for k, v in mi_result.items() if k != "per_feature"},
             "stability_selection": {k: v for k, v in stability_result.items() if k != "per_feature"},
             "cur": {k: v for k, v in cur_result.items() if k != "per_feature"},
         },
         "shap_comparison": shap_overlap,
+        "cache": {
+            "hit": False,
+            "key": cache_key,
+            "path": _feature_selection_cache_path(cache_key),
+        },
         "elapsed_s": elapsed,
     }
+    if not dry_run:
+        try:
+            save_feature_selection_cache(bucket, cache_key, final_result)
+            print(f"[FeatureSelection] Evidence cache saved key={cache_key[:12]}")
+        except Exception as exc:
+            print(f"[FeatureSelection] Evidence cache save skipped: {exc}")
+    return final_result

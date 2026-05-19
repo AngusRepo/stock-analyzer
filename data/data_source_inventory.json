@@ -1,0 +1,73 @@
+{
+  "schema_version": "stockvision-v4-1-data-source-inventory-v1",
+  "canonical_key": ["stock_id", "date", "market_segment", "dataset", "field", "as_of_date", "source"],
+  "generated_at": "2026-05-17T00:00:00+08:00",
+  "policy": {
+    "primary_structured_daily_source": "finlab",
+    "official_audit_fallback": ["twse", "tpex"],
+    "intraday_quote_owner": "shioaji_proxy",
+    "evidence_sources_do_not_directly_trade": true
+  },
+  "sources": [
+    {
+      "source": "finlab",
+      "role": "prod_primary_structured_daily_after_backfill",
+      "datasets": ["security_master", "daily_price", "chip_flow", "broker_flow", "margin", "revenue", "fundamental", "taxonomy", "macro", "world_index", "rotc_price", "rotc_broker_transactions"],
+      "known_gap_closed_by_source": ["rotc", "broker_flow", "institutional_flow", "taxonomy", "macro_global_context"],
+      "write_target": ["raw parquet GCS/R2", "canonical_* D1 tables after diff gate"],
+      "lineage_required": true
+    },
+    {
+      "source": "twse",
+      "role": "official_audit_fallback",
+      "datasets": ["listed_price", "listed_chip", "official_announcements"],
+      "known_gap": ["rotc_chip", "broker_flow_depth", "taxonomy_depth"],
+      "write_target": ["source_diff_report", "audit evidence only"],
+      "lineage_required": true
+    },
+    {
+      "source": "tpex",
+      "role": "official_audit_fallback",
+      "datasets": ["otc_price", "rotc_reference", "official_announcements"],
+      "known_gap": ["rotc_chip_depth", "broker_flow_depth"],
+      "write_target": ["source_diff_report", "audit evidence only"],
+      "lineage_required": true
+    },
+    {
+      "source": "ptt",
+      "role": "retail_heat",
+      "datasets": ["buzz_items"],
+      "write_target": ["theme_signals"],
+      "lineage_required": true
+    },
+    {
+      "source": "anue",
+      "role": "taiwan_news_heat",
+      "datasets": ["news_items"],
+      "write_target": ["theme_signals"],
+      "lineage_required": true
+    },
+    {
+      "source": "official_rss",
+      "role": "authoritative_fact_support",
+      "datasets": ["twse_rss", "tpex_rss", "fsc_rss", "moea_rss"],
+      "write_target": ["external_evidence_items", "theme_signals"],
+      "lineage_required": true
+    },
+    {
+      "source": "company_ir_rss",
+      "role": "disabled_pending_curated_allowlist",
+      "datasets": ["company_ir_allowlist", "newsroom_allowlist"],
+      "write_target": ["manual_review_evidence_after_allowlist_only"],
+      "lineage_required": true
+    },
+    {
+      "source": "gdelt_events",
+      "role": "formal_shadow_global_event_pressure",
+      "datasets": ["doc_events", "tone", "themes", "urls"],
+      "write_target": ["external_evidence_items", "global_event_pressure_shadow"],
+      "ranking_effect": "none_until_promoted",
+      "lineage_required": true
+    }
+  ]
+}

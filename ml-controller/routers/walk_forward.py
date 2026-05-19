@@ -45,7 +45,8 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
     )
     if not symbols:
         raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
-    dataset = BacktestDataset.load_from_d1(
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="walk_forward.dry_run",
         start_date=req.start_date, end_date=req.end_date, symbols=symbols,
     )
     run = await run_walk_forward(
@@ -64,6 +65,7 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         "windows_count": len(run.windows),
         "planned_retrains": run.aggregate.get("planned_retrains"),
         "estimated_gpu_wall_clock_hours": run.aggregate.get("estimated_gpu_wall_clock_hours"),
+        "data_access": data_access,
         "windows": [
             {
                 "window_id": w.window_id,
@@ -109,7 +111,8 @@ async def walk_forward_run(req: WalkForwardRequest):
     )
     if not symbols:
         raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
-    dataset = BacktestDataset.load_from_d1(
+    dataset, data_access = BacktestDataset.load_for_research(
+        lane="walk_forward.run",
         start_date=req.start_date, end_date=req.end_date, symbols=symbols,
     )
 
@@ -172,6 +175,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         "fn_call_id": fn_call_id,
         "windows_planned": len(windows),
         "models": req.models or MODELS_ALL,
+        "data_access": data_access,
         "gcs_result_path": f"walk_forward/runs/{req.start_date}_{req.end_date}.json",
         "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",
         "poll_hint": (

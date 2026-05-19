@@ -62,6 +62,23 @@ def test_iid_shuffle_remains_available_for_legacy_comparison():
     assert len(result.mdds_sorted) == 10
 
 
+def test_low_sample_tail_risk_is_marked_as_caution_not_strategy_failure():
+    returns = [0.03, -0.02, -0.01, 0.04, -0.03, 0.02, 0.01, -0.04, 0.02, -0.03, 0.01, -0.02, 0.03]
+
+    result = _run_monte_carlo(
+        returns,
+        n_simulations=20,
+        seed=13,
+        method="block_bootstrap",
+        block_size=3,
+    )
+
+    assert result.tail_risk_status == "LOW_SAMPLE_TAIL_RISK"
+    assert result.min_full_tail_risk_trades == 30
+    assert "LOW_SAMPLE_TAIL_RISK" in result.verdict_reason
+    assert result.go_live_verdict in {"PASS", "CAUTION"}
+
+
 def test_regime_block_bootstrap_records_regime_counts():
     returns = [0.03, -0.02, -0.01, 0.04, -0.03, 0.02, 0.01, -0.04]
     regimes = ["green", "green", "yellow", "yellow", "red", "red", "green", "green"]

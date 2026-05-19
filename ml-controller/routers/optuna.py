@@ -17,14 +17,18 @@ optuna.py — Optuna 自動化 endpoint (Cloud Run 版)
 GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑（不再 call Modal）
 """
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 
+from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 from services.d1_client import query as d1_query
 from services.alpha_quality_policy import alpha_quality_policy
 from services.alpha_policy_search import build_alpha_policy_candidate, load_alpha_outcome_rows
@@ -32,7 +36,8 @@ from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer a
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
-from services.worker_config_client import load_active_trading_config
+from services.research_data_access import ResearchDataMode, resolve_research_data_access
+from services.snapshot_parquet import read_snapshot_component
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
 _SCRIPTS_DIR = Path(__file__).parent.parent / "optuna_scripts"
@@ -41,12 +46,17 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/optuna", tags=["optuna"])
+OPTUNA_D1_READ_CHUNK_SIZE = 80
+OPTUNA_JOB_NAME = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep").strip() or "optuna-research-sweep"
+_optuna_jobs_client = CloudRunJobsClient(job_name=OPTUNA_JOB_NAME)
 
 
 class OptunaReq(BaseModel):
     n_trials: int = 200
     push_kv: bool = True
     dry_run: bool = False
+    cadence: str | None = None
+    research_data_source: ResearchDataMode | None = None
     # Sprint 5.1: sltp-specific (ignored by other sources)
     subset_size: int = 250
     start_date: str | None = None  # defaults to end_date - 90 days
@@ -72,8 +82,30 @@ class GAOptimizerReq(BaseModel):
     dry_run: bool = False
 
 
+class OptunaResearchSweepReq(BaseModel):
+    cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
+    n_trials: int = Field(default=200, ge=1, le=1000)
+    subset_size: int = Field(default=1000, ge=50, le=5000)
+    max_parallel_sources: int = Field(default=3, ge=1, le=6)
+    ga_population_size: int = Field(default=24, ge=6, le=200)
+    ga_generations: int = Field(default=8, ge=1, le=50)
+    research_data_source: ResearchDataMode | None = "snapshot"
+    run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    push_kv: bool = True
+    dry_run: bool = False
+
+
 def _push_live(req) -> bool:
     return bool(req.push_kv and not req.dry_run)
+
+
+def _research_data_mode_for_request(req) -> ResearchDataMode | None:
+    if getattr(req, "research_data_source", None):
+        return req.research_data_source
+    cadence = str(getattr(req, "cadence", "") or "").strip().lower()
+    if cadence in {"weekly", "monthly"}:
+        return "snapshot"
+    return None
 
 
 def _contract_meta(
@@ -104,8 +136,22 @@ def _contract_meta(
 # ─── Helpers: D1 loaders ─────────────────────────────────────────────────────
 
 
-def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) -> list[dict]:
+def _load_top_active_stocks_with_prices(
+    min_rows: int = 200,
+    top_n: int = 10,
+    *,
+    mode: ResearchDataMode | None = None,
+) -> list[dict]:
     """For barrier search — D10 fix: use tradable universe, not just watchlist."""
+    data_access = resolve_research_data_access(lane="optuna.barrier", kind="price_history", mode=mode)
+    if data_access.source == "snapshot":
+        if not data_access.snapshot:
+            raise RuntimeError(f"price_snapshot_missing:{data_access.to_dict()}")
+        return _load_top_active_stocks_with_prices_from_snapshot(
+            data_access.snapshot,
+            min_rows=min_rows,
+            top_n=top_n,
+        )
     stocks = d1_query("""
         SELECT s.id, s.symbol, COUNT(*) as cnt
         FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
@@ -115,15 +161,160 @@ def _load_top_active_stocks_with_prices(min_rows: int = 200, top_n: int = 10) ->
     """, [min_rows, top_n])
     if not stocks:
         return []
+    price_rows = _load_price_rows_by_stock_ids([int(s["id"]) for s in stocks])
     out = []
     for s in stocks:
-        rows = d1_query(
-            "SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = ? ORDER BY date ASC",
-            [s["id"]],
-        )
+        rows = price_rows.get(int(s["id"]), [])
         if len(rows) >= min_rows:
             out.append({"symbol": s["symbol"], "rows": rows})
     return out
+
+
+def _prices_with_symbol_from_snapshot(manifest: dict[str, Any]) -> pl.DataFrame:
+    prices = read_snapshot_component(manifest, "prices")
+    if prices is None or prices.is_empty():
+        return pl.DataFrame()
+
+    stocks = read_snapshot_component(manifest, "stocks", required=False)
+    if "symbol" not in prices.columns and stocks is not None and not stocks.is_empty():
+        if {"id", "symbol"}.issubset(set(stocks.columns)) and "stock_id" in prices.columns:
+            prices = prices.join(
+                stocks.select([pl.col("id").alias("stock_id"), "symbol"]),
+                on="stock_id",
+                how="inner",
+            )
+    if "symbol" not in prices.columns:
+        raise RuntimeError("price_snapshot_symbol_missing")
+    if stocks is not None and not stocks.is_empty() and {"symbol", "delisted_date"}.issubset(set(stocks.columns)):
+        active_symbols = (
+            stocks
+            .filter(pl.col("delisted_date").is_null())
+            .get_column("symbol")
+            .to_list()
+        )
+        prices = prices.filter(pl.col("symbol").is_in(set(active_symbols)))
+    return prices.with_columns(pl.col("date").cast(pl.Utf8)).sort(["symbol", "date"])
+
+
+def _load_top_active_stocks_with_prices_from_snapshot(
+    manifest: dict[str, Any],
+    *,
+    min_rows: int,
+    top_n: int,
+) -> list[dict]:
+    prices = _prices_with_symbol_from_snapshot(manifest)
+    if prices.is_empty():
+        return []
+    counts = (
+        prices
+        .group_by("symbol")
+        .len()
+        .rename({"len": "cnt"})
+        .filter(pl.col("cnt") >= min_rows)
+        .sort("cnt", descending=True)
+        .head(top_n)
+    )
+    out: list[dict] = []
+    for symbol in counts.get_column("symbol").to_list():
+        rows = (
+            prices
+            .filter(pl.col("symbol") == symbol)
+            .select([col for col in ["date", "open", "high", "low", "close", "volume"] if col in prices.columns])
+            .to_dicts()
+        )
+        if len(rows) >= min_rows:
+            out.append({"symbol": symbol, "rows": rows})
+    return out
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _load_price_rows_by_stock_ids(stock_ids: list[int], limit_per_stock: int | None = None) -> dict[int, list[dict]]:
+    """Load stock price rows in D1 chunks for Optuna sandbox loaders."""
+    grouped: dict[int, list[dict]] = {int(stock_id): [] for stock_id in stock_ids}
+    if not stock_ids:
+        return grouped
+    for ids in _chunks(stock_ids, OPTUNA_D1_READ_CHUNK_SIZE):
+        placeholders = ",".join(["?"] * len(ids))
+        limit_clause = ""
+        params: list[Any] = list(ids)
+        if limit_per_stock is not None:
+            # SQLite window function keeps one query per chunk while preserving per-stock caps.
+            limit_clause = "WHERE rn <= ?"
+            params.append(int(limit_per_stock))
+        rows = d1_query(
+            f"""
+            SELECT stock_id, date, open, high, low, close, volume
+            FROM (
+              SELECT stock_id, date, open, high, low, close, volume,
+                     ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date ASC) AS rn
+              FROM stock_prices
+              WHERE stock_id IN ({placeholders})
+            )
+            {limit_clause}
+            ORDER BY stock_id, date ASC
+            """,
+            params,
+        )
+        for row in rows:
+            grouped.setdefault(int(row["stock_id"]), []).append(row)
+    return grouped
+
+
+def _optuna_data_access_meta(
+    lane: str,
+    kind: str,
+    *,
+    mode: ResearchDataMode | None = None,
+) -> dict[str, Any]:
+    return resolve_research_data_access(lane=lane, kind=kind, mode=mode).to_dict()
+
+
+def _load_rrg_inputs_from_snapshot(
+    manifest: dict[str, Any],
+    *,
+    twii_limit: int,
+    min_twii_rows: int,
+    min_stock_rows: int,
+    top_stock_count: int,
+    stock_price_limit: int,
+) -> tuple[list[float], dict[str, list[float]]]:
+    market_risk = read_snapshot_component(manifest, "market_risk", required=False)
+    if market_risk is None or market_risk.is_empty() or "twii_close" not in market_risk.columns:
+        raise HTTPException(400, "Snapshot missing market_risk.twii_close for RRG benchmark")
+    twii_rows = market_risk.sort("date").tail(twii_limit).to_dicts()
+    if len(twii_rows) < min_twii_rows:
+        raise HTTPException(400, f"Insufficient TWII benchmark in snapshot: {len(twii_rows)}")
+    closes = [float(r["twii_close"]) for r in twii_rows]
+    benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+    prices = _prices_with_symbol_from_snapshot(manifest)
+    counts = (
+        prices
+        .group_by("symbol")
+        .len()
+        .rename({"len": "cnt"})
+        .filter(pl.col("cnt") >= min_stock_rows)
+        .sort("cnt", descending=True)
+        .head(top_stock_count)
+    )
+    prices_by_stock: dict[str, list[float]] = {}
+    for symbol in counts.get_column("symbol").to_list():
+        closes = (
+            prices
+            .filter(pl.col("symbol") == symbol)
+            .sort("date")
+            .tail(stock_price_limit)
+            .get_column("close")
+            .cast(pl.Float64)
+            .to_list()
+        )
+        if len(closes) >= min_stock_rows:
+            prices_by_stock[symbol] = closes
+    return benchmark_returns, prices_by_stock
 
 
 def _load_paper_orders(limit: int = 500) -> list[dict]:
@@ -176,9 +367,11 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_barrier import failed: {e}")
 
     policy = OptunaRoutePolicy.from_env()
+    data_mode = _research_data_mode_for_request(req)
     stocks_data = _load_top_active_stocks_with_prices(
         min_rows=policy.barrier_min_price_rows,
         top_n=policy.barrier_top_n,
+        mode=data_mode,
     )
     if not stocks_data:
         raise HTTPException(400, f"No active stocks with >= {policy.barrier_min_price_rows} price rows")
@@ -204,6 +397,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
                 "best_score": result.get("best_score"),
                 "stock_count": len(all_data),
                 "policy": policy.to_dict(),
+                "data_access": _optuna_data_access_meta("optuna.barrier", "price_history", mode=data_mode),
             },
         )
 
@@ -227,6 +421,7 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
         "best_score": result.get("best_score"),
         "n_trials": req.n_trials,
         "push": push_response,
+        "data_access": _optuna_data_access_meta("optuna.barrier", "price_history", mode=data_mode),
         "contract": contract,
     }
 
@@ -294,15 +489,17 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         raise HTTPException(500, f"optuna_sltp import failed: {e}")
 
     # Sprint 5.1: 讀當前 trading:config 當 baseline (其他 section 鎖定，只搜 sltp/exit)
-    from services.kv_client import get_json as kv_get_json
-    baseline_params = kv_get_json("trading:config", default=None)
-    if baseline_params is None:
-        logger.warning("[Optuna/sltp] trading:config KV missing, using script defaults")
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_params = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/sltp] trading:config degraded: %s", cfg_result.contract.to_dict())
 
     logger.info(
         f"[Optuna/sltp] Sprint 5.1 run: n_trials={req.n_trials} "
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
+    data_mode = _research_data_mode_for_request(req)
     try:
         result = run_search(
             n_trials=req.n_trials,
@@ -310,6 +507,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
             start_date=req.start_date,
             end_date=req.end_date,
             baseline_params=baseline_params,
+            data_mode=data_mode,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"Optuna sltp failed: {e}")
@@ -324,6 +522,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
                 "subset_size": result.get("subset_size"),
                 "date_window": result.get("date_window"),
                 "data_source": result.get("data_source"),
+                "data_access": result.get("data_access"),
                 "mode": result.get("mode"),
                 "best_sharpe": result.get("best_sharpe"),
                 "best_max_dd": result.get("best_max_dd"),
@@ -359,6 +558,7 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
+        "data_access": result.get("data_access"),
         "realism_note": result.get("realism_note"),
         "contract": contract,
     }
@@ -382,15 +582,17 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
     except ImportError as e:
         raise HTTPException(500, f"optuna_screener import failed: {e}")
 
-    from services.kv_client import get_json as kv_get_json
-    baseline_params = kv_get_json("trading:config", default=None)
-    if baseline_params is None:
-        logger.warning("[Optuna/screener] trading:config KV missing, using script defaults")
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_params = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/screener] trading:config degraded: %s", cfg_result.contract.to_dict())
 
     logger.info(
         f"[Optuna/screener] Sprint 5.2 run: n_trials={req.n_trials} "
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
+    data_mode = _research_data_mode_for_request(req)
     try:
         result = run_search(
             n_trials=req.n_trials,
@@ -398,6 +600,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
             start_date=req.start_date,
             end_date=req.end_date,
             baseline_params=baseline_params,
+            data_mode=data_mode,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"Optuna screener failed: {e}")
@@ -418,6 +621,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
                 "subset_size": result.get("subset_size"),
                 "date_window": result.get("date_window"),
                 "data_source": result.get("data_source"),
+                "data_access": result.get("data_access"),
                 "mode": result.get("mode"),
                 "best_sharpe": result.get("best_sharpe"),
                 "best_max_dd": result.get("best_max_dd"),
@@ -461,6 +665,7 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         "subset_size": result.get("subset_size"),
         "date_window": result.get("date_window"),
         "mode": result.get("mode"),
+        "data_access": result.get("data_access"),
         "realism_note": result.get("realism_note"),
         "contract": contract,
     }
@@ -555,29 +760,45 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 
     # Benchmark from market_risk.twii_close
     policy = OptunaRoutePolicy.from_env()
-    twii_rows = _load_twii_history(limit=policy.rrg_twii_limit)
-    if len(twii_rows) < policy.rrg_min_twii_rows:
-        raise HTTPException(400, f"Insufficient TWII benchmark: {len(twii_rows)}")
-
-    closes = [float(r["twii_close"]) for r in twii_rows]
-    benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
-
-    # Top 10 stocks by price count
-    top_stocks = d1_query("""
-        SELECT s.id, s.symbol, COUNT(*) as cnt
-        FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
-        WHERE s.delisted_date IS NULL
-        GROUP BY s.id HAVING cnt >= ?
-        ORDER BY cnt DESC LIMIT ?
-    """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
-    prices_by_stock: dict[str, list[float]] = {}
-    for s in top_stocks:
-        rows = d1_query(
-            "SELECT close FROM stock_prices WHERE stock_id = ? ORDER BY date ASC LIMIT ?",
-            [s["id"], policy.rrg_stock_price_limit],
+    data_access_decision = resolve_research_data_access(
+        lane="optuna.rrg",
+        kind="price_history",
+        mode=_research_data_mode_for_request(req),
+    )
+    data_access = data_access_decision.to_dict()
+    if data_access_decision.source == "snapshot" and data_access_decision.snapshot:
+        benchmark_returns, prices_by_stock = _load_rrg_inputs_from_snapshot(
+            data_access_decision.snapshot,
+            twii_limit=policy.rrg_twii_limit,
+            min_twii_rows=policy.rrg_min_twii_rows,
+            min_stock_rows=policy.rrg_top_stock_min_rows,
+            top_stock_count=policy.rrg_top_stock_count,
+            stock_price_limit=policy.rrg_stock_price_limit,
         )
-        if len(rows) >= policy.rrg_top_stock_min_rows:
-            prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
+    else:
+        twii_rows = _load_twii_history(limit=policy.rrg_twii_limit)
+        if len(twii_rows) < policy.rrg_min_twii_rows:
+            raise HTTPException(400, f"Insufficient TWII benchmark: {len(twii_rows)}")
+
+        closes = [float(r["twii_close"]) for r in twii_rows]
+        benchmark_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+        top_stocks = d1_query("""
+            SELECT s.id, s.symbol, COUNT(*) as cnt
+            FROM stocks s JOIN stock_prices sp ON sp.stock_id = s.id
+            WHERE s.delisted_date IS NULL
+            GROUP BY s.id HAVING cnt >= ?
+            ORDER BY cnt DESC LIMIT ?
+        """, [policy.rrg_top_stock_min_rows, policy.rrg_top_stock_count])
+        prices_by_stock = {}
+        stock_price_rows = _load_price_rows_by_stock_ids(
+            [int(s["id"]) for s in top_stocks],
+            limit_per_stock=policy.rrg_stock_price_limit,
+        )
+        for s in top_stocks:
+            rows = stock_price_rows.get(int(s["id"]), [])
+            if len(rows) >= policy.rrg_top_stock_min_rows:
+                prices_by_stock[s["symbol"]] = [float(r["close"]) for r in rows]
 
     if not prices_by_stock:
         raise HTTPException(400, "No top stocks with sufficient prices")
@@ -590,11 +811,11 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
     if req.push_kv and not req.dry_run and best:
         push_response = push_optuna_result(
             source="rrg", params=best,
-            meta={"n_stocks": len(prices_by_stock), "policy": policy.to_dict()},
+            meta={"n_stocks": len(prices_by_stock), "policy": policy.to_dict(), "data_access": data_access},
         )
 
     return {"status": "completed", "source": "rrg", "best_params": best,
-            "push": push_response}
+            "push": push_response, "data_access": data_access}
 
 
 # ─── /optuna/feature_window ──────────────────────────────────────────────────
@@ -602,7 +823,11 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
 @router.post("/alpha_framework")
 def run_alpha_framework(req: AlphaFrameworkOptunaReq = Body(default=AlphaFrameworkOptunaReq())):
     """Alpha framework posterior search from verified alpha_context outcomes."""
-    policy = alpha_quality_policy(load_active_trading_config())
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/alpha_framework] trading:config degraded: %s", cfg_result.contract.to_dict())
+    policy = alpha_quality_policy(cfg_result.config)
     quality_policy = policy.to_dict()
     limit = max(100, min(int(req.subset_size or policy.outcome_limit), 5000))
     rows = load_alpha_outcome_rows(limit=limit)
@@ -676,9 +901,9 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
     """GA meta optimizer direct learning endpoint."""
     contract = _contract_meta(
         source="ga_optimizer",
-        scope="meta_optimizer_learning",
+        scope="production_meta_optimizer_learning",
         sample_scope="generated_policy_population_plus_gate_metrics",
-        applies_to_production=False,
+        applies_to_production="learning_state_only_until_gated_promotion",
         push_target="worker_kv_ga_optimizer_state",
         effective_fields=[
             "alphaFramework.allocation.weights",
@@ -687,7 +912,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
         ],
         notes=[
             "GAOptimizer evolves meta policy parameters; it is not a stock prediction model.",
-            "This endpoint persists learning state directly; applying learned params to trading config is a separate gated action.",
+            "This endpoint persists production learning state directly; trading:config changes require promotion gates and Wei approval at L3/L4.",
         ],
     )
     result = run_ga_optimizer_service(
@@ -720,14 +945,14 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             params=learning_state,
             meta={
                 "status": "completed",
-                "target": "meta_optimizer_learning_state",
+                "target": "production_meta_optimizer_learning_state",
                 "optimizer": "GAOptimizer",
                 "population_size": result.get("population_size"),
                 "generations": result.get("generations"),
                 "best_score": (result.get("best") or {}).get("score"),
                 "gate": (result.get("best") or {}).get("gate"),
                 "plateau": (result.get("best") or {}).get("plateau"),
-                "note": "GA meta optimizer learning state; does not mutate trading:config",
+                "note": "GA production meta optimizer learning state; does not mutate trading:config without gated promotion",
             },
         )
 
@@ -738,6 +963,175 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
         "learning_state": learning_state,
         "push": push_response,
         "contract": contract,
+    }
+
+
+def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
+    try:
+        result = runner()
+        if isinstance(result, dict) and result.get("status") in {"skipped", "insufficient_data"}:
+            summary = f"{source}:SKIPPED_NOT_READY({str(result.get('reason') or result.get('status'))[:140]})"
+            return {"source": source, "status": "skipped", "summary": summary}
+        return {
+            "source": source,
+            "status": "success",
+            "summary": f"{source}:OK",
+            "contract": result.get("contract") if isinstance(result, dict) else None,
+            "push": result.get("push") if isinstance(result, dict) else None,
+        }
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if exc.status_code == 400 and any(token in detail.lower() for token in ("insufficient", "no top stocks", "benchmark")):
+            return {
+                "source": source,
+                "status": "skipped",
+                "summary": f"{source}:SKIPPED_NOT_READY({detail[:140]})",
+            }
+        return {
+            "source": source,
+            "status": "error",
+            "summary": f"{source}:HTTP{exc.status_code}({detail[:180]})",
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Optuna/research_sweep] %s failed", source)
+        return {
+            "source": source,
+            "status": "error",
+            "summary": f"{source}:ERROR({type(exc).__name__}: {str(exc)[:180]})",
+        }
+
+
+def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
+    """Controller-owned weekly/monthly Optuna sweep with per-route evidence.
+
+    This is intentionally an internal execution function. Production triggers
+    must go through /research_sweep/run so Cloud Run Job owns the long lifecycle
+    and Worker only receives final callback status.
+    """
+    common = {
+        "cadence": req.cadence,
+        "n_trials": req.n_trials,
+        "push_kv": req.push_kv,
+        "dry_run": req.dry_run,
+        "research_data_source": req.research_data_source,
+    }
+    sweep_plan: list[tuple[str, Any]] = [
+        ("barrier", lambda: run_barrier(OptunaReq(**common))),
+        ("signal", lambda: run_signal(OptunaReq(**common))),
+        ("sltp", lambda: run_sltp(OptunaReq(**common, subset_size=req.subset_size))),
+        ("screener", lambda: run_screener(OptunaReq(**common, subset_size=req.subset_size))),
+        ("conformal", lambda: run_conformal(OptunaReq(**common))),
+        ("risk_params", lambda: run_risk_params(OptunaReq(**common))),
+        ("rrg", lambda: run_rrg(OptunaReq(**common))),
+        (
+            "alpha_framework",
+            lambda: run_alpha_framework(
+                AlphaFrameworkOptunaReq(
+                    n_trials=req.n_trials,
+                    push_kv=req.push_kv,
+                    dry_run=req.dry_run,
+                    subset_size=req.subset_size,
+                )
+            ),
+        ),
+        (
+            "ga_optimizer",
+            lambda: run_ga_optimizer(
+                GAOptimizerReq(
+                    population_size=req.ga_population_size,
+                    generations=req.ga_generations,
+                    push_kv=req.push_kv,
+                    dry_run=req.dry_run,
+                )
+            ),
+        ),
+    ]
+
+    max_workers = min(req.max_parallel_sources, len(sweep_plan))
+    ordered_results: list[dict[str, Any] | None] = [None] * len(sweep_plan)
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"optuna-{req.cadence}") as executor:
+        futures = {
+            executor.submit(_run_optuna_sweep_source, source, runner): idx
+            for idx, (source, runner) in enumerate(sweep_plan)
+        }
+        for future in as_completed(futures):
+            ordered_results[futures[future]] = future.result()
+
+    results = [item for item in ordered_results if item is not None]
+    failures = [item["summary"] for item in results if item.get("status") == "error"]
+    return {
+        "status": "error" if failures else "completed",
+        "cadence": req.cadence,
+        "max_parallel_sources": max_workers,
+        "summary": ", ".join(item["summary"] for item in results),
+        "results": results,
+        "failures": failures,
+        "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
+    }
+
+
+@router.post("/research_sweep")
+def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
+    """Debug-only synchronous sweep endpoint.
+
+    Keep the route for local diagnostics, but fail closed by default so manual
+    or legacy production callers cannot accidentally recreate Cloudflare 524.
+    """
+    if os.environ.get("OPTUNA_ALLOW_SYNC_SWEEP") != "1":
+        raise HTTPException(
+            status_code=409,
+            detail="Synchronous Optuna research sweep is disabled; trigger /optuna/research_sweep/run so Cloud Run Job can callback final status.",
+        )
+    return execute_research_sweep(req)
+
+
+@router.post("/research_sweep/run")
+def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
+    """Trigger the long-running Optuna research sweep as a Cloud Run Job.
+
+    Worker and Cloud Scheduler must not wait for the full 9-source research
+    sweep over HTTP. The Job owns the long lifecycle and callbacks Worker with
+    the final weekly-optuna/monthly-optuna status.
+    """
+    env_overrides = {
+        "OPTUNA_CADENCE": req.cadence,
+        "OPTUNA_N_TRIALS": str(req.n_trials),
+        "OPTUNA_SUBSET_SIZE": str(req.subset_size),
+        "OPTUNA_MAX_PARALLEL_SOURCES": str(req.max_parallel_sources),
+        "OPTUNA_GA_POPULATION_SIZE": str(req.ga_population_size),
+        "OPTUNA_GA_GENERATIONS": str(req.ga_generations),
+        "OPTUNA_RESEARCH_DATA_SOURCE": str(req.research_data_source or "snapshot"),
+        "OPTUNA_PUSH_KV": "1" if req.push_kv else "0",
+        "OPTUNA_DRY_RUN": "1" if req.dry_run else "0",
+    }
+    if req.run_date:
+        env_overrides["OPTUNA_RUN_DATE"] = req.run_date
+    try:
+        execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"{OPTUNA_JOB_NAME} already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "cadence": req.cadence,
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[Optuna/research_sweep/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run Optuna Job trigger failed: {type(e).__name__}: {e}",
+        ) from e
+
+    return {
+        "status": "triggered",
+        "job": OPTUNA_JOB_NAME,
+        "cadence": req.cadence,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "message": "optuna research Job triggered; callback expected",
     }
 
 
@@ -831,7 +1225,11 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     from datetime import datetime, timezone, timedelta
     TW = timezone(timedelta(hours=8))
 
-    baseline_config = kv_client.get_json("trading:config", default={}) or {}
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    cfg_result = load_merged_trading_config_with_contract()
+    baseline_config = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Optuna/l2_sensitivity] trading:config degraded: %s", cfg_result.contract.to_dict())
     kv_space = (baseline_config.get("optuna_l2") or {}).get("search_space")
     search_space = (kv_space or {}).get("dims") if isinstance(kv_space, dict) else None
     used_source = "KV" if search_space else "DEFAULT_SEARCH_SPACE"
@@ -964,6 +1362,8 @@ class PerRegimeReq(BaseModel):
     n_trials: int = Field(default=50, ge=5, le=500)
     subset_size: int = Field(default=400, ge=50, le=2000)
     window_days: int = Field(default=365, ge=90, le=730)
+    cadence: str | None = None
+    research_data_source: ResearchDataMode | None = None
     push_kv: bool = Field(default=False,
                           description="If true, push winning params to KV via "
                                       "writeSandbox (secure-by-default through T3.3).")
@@ -1008,6 +1408,7 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
             n_trials=req.n_trials,
             subset_size=req.subset_size,
             window_days=req.window_days,
+            data_mode=_research_data_mode_for_request(req),
             push_kv=req.push_kv and not req.dry_run,
         )
     except RuntimeError as e:

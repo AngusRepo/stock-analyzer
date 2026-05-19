@@ -1,4 +1,4 @@
-import { parseTpexChipRows, parseTpexDailyQuoteRows, parseTwseChipRows } from './twseApi'
+import { fetchTpexStockDayAll, parseTpexChipRows, parseTpexDailyQuoteRows, parseTpexHistoricalDailyQuoteRows, parseTwseChipRows } from './twseApi'
 import { readFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
@@ -76,6 +76,23 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const rows = parseTpexHistoricalDailyQuoteRows({
+    date: '20260512',
+    tables: [{
+      data: [
+        ['006201', '元大富櫃50', '48.65', '+0.94', '48.80', '49.11', '48.28', '48.62', '568,588'],
+        ['7584', '樂意', '101.50', '+1.50', '100.00', '102.00', '99.00', '100.80', '42,000'],
+      ],
+    }],
+  })
+
+  assert(rows.length === 1, 'TPEX historical parser should keep only 4-digit common stocks')
+  assert(rows[0]?.symbol === '7584', 'TPEX historical parser should keep common stock symbol')
+  assert(rows[0]?.close === 101.5, 'TPEX historical parser should parse close price')
+  assert(rows[0]?.avg_price === 100.8, 'TPEX historical parser should parse average price')
+}
+
+{
   const rows = parseTpexDailyQuoteRows([
     {
       Date: '1150430',
@@ -110,3 +127,126 @@ function assert(condition: unknown, message: string): void {
   assert(rows[0]?.symbol === '7584', 'TPEX parser should keep the common-stock symbol')
   assert(rows[0]?.close === 32.6, 'TPEX parser should parse close price')
 }
+
+void (async () => {
+  let attempts = 0
+  const partial = [{ Date: '1150507', SecuritiesCompanyCode: '1563', Open: '43', High: '44', Low: '42', Close: '43.55', TradingShares: '1,870,291' }]
+  const full = Array.from({ length: 701 }, (_, idx) => ({
+    Date: '1150507',
+    SecuritiesCompanyCode: String(3000 + idx),
+    Open: '10.0',
+    High: '10.5',
+    Low: '9.8',
+    Close: '10.2',
+    TradingShares: '1,000',
+  }))
+  const makeResponse = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  }) as Response
+
+  const rows = await fetchTpexStockDayAll({
+    minRows: 700,
+    maxReadinessAttempts: 2,
+    readinessDelayMs: 0,
+    fetcher: async () => {
+      attempts += 1
+      return makeResponse(attempts === 1 ? partial : full)
+    },
+  })
+
+  assert(attempts === 2, 'TPEX quote fetch should retry an incomplete partial feed before returning')
+  assert(rows.length === 701, 'TPEX quote fetch should return the complete feed after readiness retry')
+})()
+
+void (async () => {
+  const latest = Array.from({ length: 701 }, (_, idx) => ({
+    Date: '1150507',
+    SecuritiesCompanyCode: String(3000 + idx),
+    Open: '10.0',
+    High: '10.5',
+    Low: '9.8',
+    Close: '10.2',
+    TradingShares: '1,000',
+  }))
+  const fallbackRows = Array.from({ length: 701 }, (_, idx) => [
+    String(3000 + idx),
+    `Stock ${idx}`,
+    '12.2',
+    '+0.1',
+    '12.0',
+    '12.5',
+    '11.8',
+    '12.1',
+    '1,000',
+  ])
+  let latestCalls = 0
+  let fallbackCalls = 0
+  const makeResponse = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  }) as Response
+
+  const rows = await fetchTpexStockDayAll({
+    date: '2026-05-12',
+    minRows: 700,
+    maxReadinessAttempts: 1,
+    readinessDelayMs: 0,
+    fetcher: async () => {
+      latestCalls += 1
+      return makeResponse(latest)
+    },
+    fallbackFetcher: async () => {
+      fallbackCalls += 1
+      return makeResponse({ date: '20260512', tables: [{ data: fallbackRows }] })
+    },
+  })
+
+  assert(latestCalls === 1, 'TPEX latest should be attempted first')
+  assert(fallbackCalls === 1, 'TPEX date-specific fallback should run when latest date is stale')
+  assert(rows.length === 701, 'TPEX date-specific fallback should return complete requested-date rows')
+  assert(rows[0]?.close === 12.2, 'TPEX fallback rows should replace stale latest rows')
+})()
+
+void (async () => {
+  const fallbackRows = Array.from({ length: 701 }, (_, idx) => [
+    String(3000 + idx),
+    `Stock ${idx}`,
+    '22.2',
+    '+0.1',
+    '22.0',
+    '22.5',
+    '21.8',
+    '22.1',
+    '1,000',
+  ])
+  let latestCalls = 0
+  let fallbackCalls = 0
+  const makeResponse = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  }) as Response
+
+  const rows = await fetchTpexStockDayAll({
+    date: '2026-05-13',
+    minRows: 700,
+    maxReadinessAttempts: 1,
+    readinessDelayMs: 0,
+    fetcher: async () => {
+      latestCalls += 1
+      throw new Error('Too many redirects to /errors')
+    },
+    fallbackFetcher: async () => {
+      fallbackCalls += 1
+      return makeResponse({ date: '20260513', tables: [{ data: fallbackRows }] })
+    },
+  })
+
+  assert(latestCalls === 1, 'TPEX latest should be attempted before fallback even when it throws')
+  assert(fallbackCalls === 1, 'TPEX date-specific fallback should run when latest OpenAPI redirects/errors in Worker')
+  assert(rows.length === 701, 'TPEX fallback should recover complete requested-date rows after latest feed exception')
+  assert(rows[0]?.close === 22.2, 'TPEX fallback rows should be parsed after latest feed exception')
+})()

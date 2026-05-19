@@ -1,5 +1,7 @@
 param(
   [switch]$SkipFrontendBuild,
+  [switch]$SkipBugHunter,
+  [int]$BugHunterMaxAgeHours = 48,
   [switch]$LiveSmoke,
   [string]$ApiBase = $env:STOCKVISION_API_BASE,
   [string]$AuthToken = $env:STOCKVISION_AUTH_TOKEN
@@ -58,7 +60,7 @@ if (-not (Test-Path $ControllerPython)) {
   throw "ml-controller venv python not found: $ControllerPython"
 }
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py -q
+& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 
@@ -79,6 +81,10 @@ Pop-Location
 Write-Host '[P9 gate] P12 secret scan'
 & (Join-Path $PSScriptRoot 'p12_secret_scan.ps1') -Root $Root
 if ($LASTEXITCODE -ne 0) { throw "P12 secret scan failed" }
+
+Write-Host '[P9 gate] Bug Hunter CPD gate'
+& (Join-Path $PSScriptRoot 'bug_hunter_cpd_gate.ps1') -Root $Root -MaxAgeHours $BugHunterMaxAgeHours -Skip:$SkipBugHunter
+if ($LASTEXITCODE -ne 0) { throw "Bug Hunter CPD gate failed" }
 
 if ($LiveSmoke) {
   Write-Host '[P9 gate] live smoke'

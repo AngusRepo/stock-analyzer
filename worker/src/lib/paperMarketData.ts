@@ -1,4 +1,5 @@
 import { getExitMultiplier, getExitOrder, type MarketRegime } from './dynamicExitPriority'
+import { readCurrentRegimeFamily } from './marketRegimeState'
 
 export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promise<string> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -22,13 +23,7 @@ export async function getPrevTradingDay(db: D1Database, kv?: KVNamespace): Promi
 }
 
 export async function getCurrentRegime(kv: KVNamespace): Promise<MarketRegime | null> {
-  const raw = await kv.get('ml:regime')
-  if (!raw) return null
-  const lower = raw.toLowerCase()
-  if (lower.startsWith('bull')) return 'bull'
-  if (lower.startsWith('bear')) return 'bear'
-  if (lower.startsWith('volatile')) return 'volatile'
-  return 'sideways'
+  return await readCurrentRegimeFamily(kv)
 }
 
 export function logRegimeShadow(

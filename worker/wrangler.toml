@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-07-01"
 compatibility_flags = ["nodejs_compat"]
 
+[triggers]
+crons = []
+
 [[d1_databases]]
 binding = "DB"
 database_name = "stockvision-db"
@@ -13,9 +16,18 @@ binding = "KV"
 id = "39dcebcf5b6848c98f269ef9a48dc3f8"
 preview_id = "9d648bfede1246be8cdbfdafa6b7e6f4"
 
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "stockvision-artifacts"
+preview_bucket_name = "stockvision-artifacts-preview"
+
 [[queues.producers]]
 binding = "UPDATE_QUEUE"
 queue = "stockvision-update-queue"
+
+[[queues.producers]]
+binding = "NEWS_QUEUE"
+queue = "stockvision-news-queue"
 
 [[queues.consumers]]
 queue = "stockvision-update-queue"
@@ -23,6 +35,13 @@ max_batch_size = 4
 max_batch_timeout = 10
 max_retries = 2
 dead_letter_queue = "stockvision-update-queue-dlq"
+
+[[queues.consumers]]
+queue = "stockvision-news-queue"
+max_batch_size = 2
+max_batch_timeout = 10
+max_retries = 2
+dead_letter_queue = "stockvision-news-queue-dlq"
 
 [ai]
 binding = "AI"

@@ -13,7 +13,7 @@
 
 import { Hono, type Context } from 'hono'
 import { verifyJWT }  from '../lib/auth'
-import { getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
+import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
 import {
   batchGetATR,
   getLatestPrice,
@@ -556,7 +556,7 @@ paper.post('/buy', async (c) => {
   const name        = await getStockName(c.env.DB, symbol)
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const atr14 = (await batchGetATR(c.env.DB, [symbol])).get(symbol) ?? price * cfg.exit.fallbackAtrPct
-  const regimeLabel = await c.env.KV.get('ml:regime')
+  const regimeLabel = await getCurrentSltpRegime(c.env.KV)
   const sltp = resolveSltpForRegime(cfg, regimeLabel)
   const volPct = atr14 / price
   const volLow = sltp?.volThresholdLow ?? 0.015
@@ -815,8 +815,9 @@ paper.post('/sell', async (c) => {
 // POST /api/paper/snapshot — cron-facing snapshot writer.
 
 paper.post('/snapshot', async (c) => {
-  const today      = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  await runDailySnapshot(c.env)
+  const requestedDate = c.req.query('date') || undefined
+  const result = await runDailySnapshot(c.env, { date: requestedDate })
+  const today = result.date
   const snapshot = await c.env.DB.prepare(
     `SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value,
             max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr

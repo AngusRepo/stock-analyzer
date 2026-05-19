@@ -9,7 +9,15 @@ interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
 }
 
-const SYNC_REQUIRED_TASKS = new Set(['evening-chain', 'update', 'pipeline'])
+const SYNC_REQUIRED_TASKS = new Set([
+  'evening-chain',
+  'update', 'pipeline',
+  'intraday-rescore',
+  'alpha-quality', 'sector-leaders', 'optuna-queue',
+  'weekly-cleanup', 'weekly-backtest',
+  'weekly-optuna', 'monthly-optuna', 'weekly-drift-retrain',
+  'monthly-retrain',
+])
 
 function buildRunId(task: string): string {
   const suffix = Math.random().toString(36).slice(2, 10)
@@ -31,9 +39,7 @@ async function putRunLog(
       ...payload,
     }),
     { expirationTtl: 7 * 86400 },
-  ).catch((error) => {
-    console.warn(`[AdminTrigger] run log write failed task=${task} run_id=${runId}:`, error)
-  })
+  )
 }
 
 export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
@@ -95,10 +101,14 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'pbo',
       'alpha-quality',
       'weekly-optuna',
+      'weekly-drift-retrain',
       'monthly-optuna',
       'weekly-cleanup',
       'optuna-queue',
       'retrain',
+      'monthly-retrain',
+      'neural-ucb-shadow',
+      'neural-ts-shadow',
     ])
 
     if (longRunning.has(task) && !syncMode) {
@@ -108,7 +118,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         status: 'running',
         summary: `started (background) run_id=${runId}`,
         duration_ms: 0,
+        run_id: runId,
         run_date: requestedRunDate,
+        strict: true,
       })
       await putRunLog(c.env.KV, task, runId, {
         status: 'running',
@@ -124,6 +136,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
             status: classifySchedulerSummary(summary),
             summary,
             duration_ms: Date.now() - t0,
+            run_id: runId,
             run_date: requestedRunDate,
           })
           await putRunLog(c.env.KV, task, runId, {
@@ -140,6 +153,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
               status: 'error',
               summary: e?.message ?? 'Unknown error',
               duration_ms: Date.now() - t0,
+              run_id: runId,
               error: String(e),
               run_date: requestedRunDate,
             },

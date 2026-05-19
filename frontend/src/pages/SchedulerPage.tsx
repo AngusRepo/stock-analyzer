@@ -1,16 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
+import { Activity, AlertTriangle, ArrowRight, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import SchedulerCadenceChart from '@/components/charts/SchedulerCadenceChart'
 import { schedulerApi, type SchedulerJob } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  CheckCircle2,
-  Clock,
-  RefreshCw,
-  TimerReset,
-} from 'lucide-react'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -23,37 +16,59 @@ function statusTone(status?: string): WorkstationTone {
   if (status === 'success') return 'ok'
   if (status === 'failed') return 'error'
   if (status === 'running') return 'warn'
-  if (status === 'skip' || status === 'skipped') return 'neutral'
+  if (status === 'waiting') return 'info'
+  if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
   return 'neutral'
 }
 
 function suspiciousDuration(job: SchedulerJob) {
-  return job.lastDuration === '<1s' || job.lastDuration === '--' || job.lastDuration === 'N/A'
+  if (job.lastStatus === 'waiting' || job.lastStatus === 'sleep' || job.lastStatus === 'skip') return false
+  return job.durationConcern === 'suspicious_short' || job.lastDuration === '--' || job.lastDuration === 'N/A'
 }
 
-function JobRow({ job }: { job: SchedulerJob }) {
+function statusLabel(status?: string) {
+  if (status === 'waiting') return 'WAITING'
+  if (status === 'sleep') return 'NOT TODAY'
+  if (status === 'skip') return 'SKIPPED'
+  return status || 'unknown'
+}
+
+function consolidationTone(job: SchedulerJob): WorkstationTone {
+  const kind = job.consolidation?.consolidationClass
+  if (kind === 'keep_scheduler') return 'ok'
+  if (kind === 'disable_candidate') return 'error'
+  if (kind === 'manual_maintenance_candidate') return 'warn'
+  if (kind === 'merge_into_chain' || kind === 'downstream_evidence') return 'info'
+  return 'neutral'
+}
+
+function consolidationLabel(job: SchedulerJob) {
+  const kind = job.consolidation?.consolidationClass
+  if (kind === 'keep_scheduler') return 'KEEP'
+  if (kind === 'merge_into_chain') return 'MERGE'
+  if (kind === 'downstream_evidence') return 'EVIDENCE'
+  if (kind === 'manual_maintenance_candidate') return 'MANUAL'
+  if (kind === 'disable_candidate') return 'DISABLE?'
+  return 'UNCLASSIFIED'
+}
+
+function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip'> }) {
+  const items = history.length ? history : ['skip', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip']
   return (
-    <div className="grid h-[64px] grid-cols-[1fr_92px_82px_92px] items-center gap-2 border-b border-[#263247] px-3 font-mono text-[11px]">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="truncate text-slate-100">{job.name}</p>
-          {suspiciousDuration(job) && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
-        </div>
-        <p className="truncate text-[#70809b]">{job.summary || job.schedule}</p>
-      </div>
-      <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus || 'unknown'}</WorkstationPill>
-      <span className={suspiciousDuration(job) ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
-      <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
+    <div className="flex gap-1" aria-label="7 day scheduler status">
+      {items.map((status, index) => (
+        <span
+          key={`${status}-${index}`}
+          className={`h-2 flex-1 rounded-full ${
+            status === 'success' ? 'bg-emerald-400' : status === 'failed' ? 'bg-rose-400' : 'bg-slate-700'
+          }`}
+        />
+      ))}
     </div>
   )
 }
 
-function MetricCell({
-  label,
-  value,
-  tone = 'neutral',
-  detail,
-}: {
+function MetricCell({ label, value, tone = 'neutral', detail }: {
   label: string
   value: string
   tone?: WorkstationTone
@@ -61,37 +76,105 @@ function MetricCell({
 }) {
   return (
     <div className="border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
-      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
+        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
+      </div>
       <p className={`mt-2 font-mono text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
         {value}
       </p>
-      {detail && <p className="mt-1 text-xs text-slate-500">{detail}</p>}
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full ${tone === 'ok' ? 'bg-emerald-400' : tone === 'warn' ? 'bg-amber-400' : tone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} style={{ width: tone === 'error' ? '100%' : tone === 'warn' ? '64%' : '92%' }} />
+      </div>
+      {detail && <p className="mt-1 truncate text-xs text-slate-500">{detail}</p>}
+    </div>
+  )
+}
+
+function JobRow({ job }: { job: SchedulerJob }) {
+  const suspicious = suspiciousDuration(job)
+  const consolidation = job.consolidation
+  return (
+    <div className="grid min-h-[92px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px]">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+          <WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill>
+          <p className="truncate text-slate-100">{job.name}</p>
+          {suspicious && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
+        </div>
+        <p className="mt-1 truncate text-[#70809b]">{job.group} / {job.summary || job.schedule}</p>
+        {consolidation && (
+          <p className="mt-1 truncate text-[#8a92a6]">
+            {consolidation.replacementOwner
+              ? `建議：${consolidation.replacementOwner}`
+              : consolidation.recommendation}
+          </p>
+        )}
+        <div className="mt-2 max-w-[220px]">
+          <HistoryStrip history={job.history7d ?? []} />
+        </div>
+      </div>
+      <span className={suspicious ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
+      <span className="truncate text-[#8a92a6]">{job.rate7d || '-'}</span>
+      <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
     </div>
   )
 }
 
 function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
-  const pipelineJobs = jobs.filter((job) => job.group === 'pipeline_chain').slice(0, 7)
-  if (!pipelineJobs.length) {
-    return <div className="p-4 text-sm text-slate-500">沒有 pipeline chain job payload。</div>
+  const byId = new Map(jobs.filter((job) => job.group === 'pipeline_chain').map((job) => [job.id, job]))
+  const root = byId.get('evening-chain')
+  const chainIds = ['update', 'indicator-queue', 'screener', 'pipeline', 'ml-predict', 'recommendation']
+  const pipelineJobs = chainIds.map((id) => byId.get(id)).filter((job): job is SchedulerJob => Boolean(job))
+  if (!root && !pipelineJobs.length) {
+    return <div className="p-4 text-sm text-slate-500">目前沒有 pipeline chain job payload。</div>
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 p-4">
+    <div className="space-y-3 p-4">
+      {root && (
+        <div className={`rounded-xl border px-3 py-2 ${
+          root.lastStatus === 'success' ? 'border-emerald-400/35 bg-emerald-400/[0.06]' :
+          root.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
+          root.lastStatus === 'running' ? 'border-amber-400/35 bg-amber-400/[0.06]' :
+          root.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
+            'border-[#263247] bg-[#05070c]'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">Evening Chain Root</p>
+              <p className="mt-1 text-[11px] text-[#8a92a6]">Data update → Indicator Queue → Screener → Pipeline → ML Predict → Recommendation</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <WorkstationPill tone={statusTone(root.lastStatus)}>{statusLabel(root.lastStatus)}</WorkstationPill>
+              <span className="font-mono text-[11px] text-[#8a92a6]">{root.lastDuration || '-'}</span>
+            </div>
+          </div>
+          <div className="mt-2 max-w-[360px]">
+            <HistoryStrip history={root.history7d ?? []} />
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
       {pipelineJobs.map((job, index) => (
         <div key={job.id} className="flex items-center gap-2">
-          <div className={`min-w-[116px] border px-3 py-2 ${
+          <div className={`min-w-[116px] rounded-xl border px-3 py-2 ${
             job.lastStatus === 'success' ? 'border-emerald-400/35 bg-emerald-400/[0.06]' :
             job.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
+            job.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
               'border-[#263247] bg-[#05070c]'
           }`}
           >
             <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
             <p className="mt-1 text-[10px] text-[#8a92a6]">{job.lastDuration || '-'}</p>
+            <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+            <HistoryStrip history={job.history7d ?? []} />
           </div>
           {index < pipelineJobs.length - 1 && <ArrowRight className="h-3.5 w-3.5 text-amber-300" />}
         </div>
       ))}
+      </div>
     </div>
   )
 }
@@ -121,20 +204,24 @@ export default function SchedulerPage() {
     <AppShell>
       <div className="space-y-4 p-4 lg:p-5">
         <WorkstationPageTitle
-          kicker="Schedule rhythm"
-          title="Scheduler Drilldown / 排程深入追查"
-          description="用一頁看今天的排程是否照節奏走：執行狀態、callback、耗時異常與依賴鏈都集中在這裡。資料品質與成本細節留在各自頁面。"
+          kicker="Scheduler"
+          title="Scheduler Drilldown / 排程追蹤"
+          description="用 SLO、7 日狀態條、duration 與 next run 判斷：排程有沒有跑、是不是假成功、下一個卡點在哪。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">回系統健康</a>
-              <a href="/data-quality" className="rounded-full border border-[#3a3125] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b1a1]">資料品質</a>
+              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">
+                OBS <ExternalLink className="h-3 w-3" />
+              </a>
+              <a href="/data-quality" className="inline-flex items-center gap-1 rounded-full border border-[#3a3125] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b1a1]">
+                Data Quality <ExternalLink className="h-3 w-3" />
+              </a>
               <button
                 type="button"
                 onClick={() => void scheduler.refetch()}
                 className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
               >
                 <RefreshCw className={`h-3 w-3 ${scheduler.isFetching ? 'animate-spin' : ''}`} />
-                更新
+                Refresh
               </button>
             </div>
           }
@@ -147,70 +234,69 @@ export default function SchedulerPage() {
         )}
 
         <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#3a3125] bg-[#3a3125] md:grid-cols-5">
-          <MetricCell label="排程數" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
-          <MetricCell label="7日成功率" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
-          <MetricCell label="24h 失敗" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
-          <MetricCell label="下一個排程" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
-          <MetricCell label="Pipeline 上次耗時" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
+          <MetricCell label="Jobs" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
+          <MetricCell label="7d SLO" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
+          <MetricCell label="24h Failed" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
+          <MetricCell label="Next Job" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
+          <MetricCell label="Pipeline" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
         </section>
 
-        <WorkstationPanel title="每日流程圖" kicker="dependency chain">
+        <SchedulerCadenceChart
+          status={scheduler.data}
+          loading={scheduler.isLoading}
+          error={scheduler.error}
+        />
+
+        <WorkstationPanel title="Daily Pipeline Chain / 每日流程鏈" kicker="dependency chain">
           <PipelineDag jobs={jobs} />
         </WorkstationPanel>
 
         <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
-          <WorkstationPanel title="排程執行表" kicker="run state, callback, duration">
+          <WorkstationPanel title="Scheduler Runs / 排程執行" kicker="run state, callback, duration">
             <VirtualizedList
               items={jobs}
               height={520}
-              itemHeight={64}
+              itemHeight={92}
               getKey={(job) => job.id}
               renderItem={(job) => <JobRow job={job} />}
               empty={<div className="p-4 text-sm text-slate-500">尚未取得 scheduler jobs。</div>}
             />
           </WorkstationPanel>
 
-          <div className="space-y-4">
-            <WorkstationPanel title="需要注意的排程" kicker="failed or suspicious duration">
-              <div className="space-y-2 p-3">
-                {suspiciousJobs.slice(0, 8).map((job) => (
-                  <div key={job.id} className="border border-[#263247] bg-[#05070c] p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
-                        <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
-                      </div>
-                      <WorkstationPill tone={statusTone(job.lastStatus)}>{job.lastStatus}</WorkstationPill>
+          <WorkstationPanel title="Needs Attention / 優先處理" kicker="failed or suspicious duration">
+            <div className="space-y-2 p-3">
+              {suspiciousJobs.slice(0, 8).map((job) => (
+                <div key={job.id} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
+                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
+                      {job.consolidation && (
+                        <p className="mt-1 text-xs leading-5 text-[#70809b]">
+                          Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}
+                        </p>
+                      )}
                     </div>
-                    <p className="mt-2 font-mono text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
+                    <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>
-                ))}
-                {!suspiciousJobs.length && (
-                  <div className="flex items-start gap-2 border border-emerald-400/20 bg-emerald-400/[0.05] p-3 text-sm text-emerald-300">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4" />
-                    沒有 failed 或 suspicious duration job。
-                  </div>
-                )}
+                  <p className="mt-2 font-mono text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
+                </div>
+              ))}
+              {!suspiciousJobs.length && (
+                <div className="flex items-start gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.05] p-3 text-sm text-emerald-300">
+                  <Activity className="mt-0.5 h-4 w-4" />
+                  目前沒有 failed 或 suspicious duration job。
+                </div>
+              )}
+              <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-slate-400">
+                <div className="mb-2 flex items-center gap-2 text-sky-300">
+                  <Clock className="h-4 w-4" />
+                  Reading rule
+                </div>
+                <span className="font-mono">&lt;1s</span>、<span className="font-mono">--</span>、<span className="font-mono">N/A</span> 代表需要追 callback / queue / run log，不應直接視為成功。
               </div>
-            </WorkstationPanel>
-
-            <WorkstationPanel title="排程規則備註" kicker="what this page owns">
-              <div className="space-y-3 p-3 text-xs leading-5 text-[#8a92a6]">
-                <div className="flex gap-2">
-                  <Clock className="mt-0.5 h-4 w-4 text-sky-300" />
-                  <span>下一次執行時間必須吃交易日曆與 holiday gate，不用 Data Quality 狀態推論。</span>
-                </div>
-                <div className="flex gap-2">
-                  <TimerReset className="mt-0.5 h-4 w-4 text-amber-300" />
-                  <span>`&lt;1s`、`--`、`N/A` 是 run/callback 可觀測性問題，先查 run_id 與 final callback。</span>
-                </div>
-                <div className="flex gap-2">
-                  <Activity className="mt-0.5 h-4 w-4 text-emerald-300" />
-                  <span>資料 freshness、schema、parity 已移到 OBS/Data Quality；本頁不重複抓它們。</span>
-                </div>
-              </div>
-            </WorkstationPanel>
-          </div>
+            </div>
+          </WorkstationPanel>
         </section>
       </div>
     </AppShell>

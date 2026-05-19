@@ -1,5 +1,5 @@
-const fs = require('fs')
-const path = require('path')
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 
 export {}
 
@@ -19,21 +19,21 @@ assert(appShell.includes("href: '/model-pool'"), 'Model Pool must remain a speci
 assert(!appShell.includes("href: '/scheduler'"), 'Scheduler must be removed from primary sidebar and become an OBS drilldown')
 assert(!appShell.includes("href: '/data-quality'"), 'Data Quality must be removed from primary sidebar and become an OBS drilldown')
 
-assert(obs.includes('Incident Inbox'), 'OBS must prioritize an incident inbox instead of duplicated summary pages')
-assert(obs.includes('Selected Incident Detail'), 'OBS must expose a selected incident detail pane')
+assert(!obs.includes('Incident Inbox'), 'OBS must not render the old incident inbox; root cause belongs on scheduler rows')
+assert(!obs.includes('Selected Incident Detail'), 'OBS must not render the old selected incident detail pane')
 assert(obs.includes('Dependency Map'), 'OBS must expose a dependency map for ownership and blast radius')
-assert(obs.includes('Reliability Map / 可靠度地圖'), 'OBS must include a visual reliability map, not only metric boxes')
+assert(!obs.includes('Reliability Map'), 'OBS must not render the low-signal reliability map')
 assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
-assert(obs.includes('查看 / Open'), 'Incident inbox open action must have explicit visible feedback')
-assert(obs.includes('first_seen') && obs.includes('last_seen'), 'Incident records must expose first/last seen timestamps')
-assert(obs.includes('formatObsTime') && obs.includes('incidentTiming'), 'OBS must format incident timing in the UI')
+assert(obs.includes('狀態紀錄：'), 'OBS scheduler rows must expose normal status logs separately from root cause')
+assert(obs.includes('發生 {job.lastRun') || obs.includes('發生 '), 'Scheduler rows must expose occurrence time')
+assert(obs.includes('schedulerHasRootCause') && obs.includes('Root cause：') && obs.includes('可能影響：'), 'OBS scheduler rows must expose root cause and impact only for abnormal jobs')
 assert(!obs.includes('setActiveTab'), 'OBS must not expose fake tabs when Scheduler and Data Quality are both visible')
-assert(obs.includes('aria-pressed'), 'Incident selection must expose selected state for accessibility')
+assert(obs.includes('SchedulerExecutionMap'), 'OBS must show chain progress instead of an incident selector')
 assert(obs.includes('Scheduler Runs'), 'OBS must include Scheduler as a compact drilldown panel')
 assert(obs.includes('Data Quality'), 'OBS must include Data Quality as a compact drilldown panel')
 assert(!obs.includes('Model Health Snapshot'), 'OBS must not duplicate Model Pool health when the dedicated page owns it')
 assert(!obs.includes('Cost / Resource'), 'OBS must not render low-signal resource blocks without actionable data')
-assert(obs.includes('No active incidents'), 'OBS empty state must be useful when data is sparse')
+assert(obs.includes('目前沒有 scheduler payload'), 'OBS scheduler empty state must be useful when data is sparse')
 assert(obs.includes('Data Quality / 資料品質'), 'OBS labels should be bilingual for readability')
 assert(obs.includes('/scheduler') && obs.includes('/data-quality'), 'OBS must keep deep links to specialist routes')
 

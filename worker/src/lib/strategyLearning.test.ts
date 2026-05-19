@@ -20,6 +20,7 @@ function assert(condition: unknown, message: string): void {
   assert(restored.id === spec.id, 'registry conversion should preserve strategy id')
   assert(restored.name === spec.name, 'registry conversion should preserve strategy display name')
   assert(restored.status === spec.status, 'registry conversion should preserve status')
+  assert(restored.candidatePolicy?.poolQuota === spec.candidatePolicy?.poolQuota, 'registry conversion should restore candidate-pool policy for default specs')
 }
 
 {
@@ -98,6 +99,9 @@ function assert(condition: unknown, message: string): void {
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'candidate_ready', 'strong strategy evidence should be candidate-ready')
   assert(gate[0].requires_wei_approval === true, 'strategy promotion should require Wei approval')
+  assert(gate[0].current_stage === 'L1_shadow', 'shadow strategy should be L1')
+  assert(gate[0].recommended_stage === 'L2_paper_active', 'ready shadow strategy should advance to L2 paper-active')
+  assert(gate[0].l3_requires_wei_approval === false, 'L2 paper-active does not equal production allocation')
   assert(gate[0].production_effect === false, 'strategy gate must not mutate production')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
@@ -131,6 +135,35 @@ function assert(condition: unknown, message: string): void {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'not_ready', 'weak evidence should not be ready for strategy promotion')
+  assert(gate[0].recommended_stage === 'L1_shadow', 'weak shadow evidence should stay at L1')
   assert(gate[0].missing_evidence.includes('samples_lt_30'), 'gate should expose sample shortage')
   assert(gate[0].missing_evidence.includes('avg_return_not_positive'), 'gate should expose weak reward evidence')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'candidate' as const }
+  const summary = {
+    version: 'strategy-learning-v1',
+    date: '2026-05-19',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: {
+        decisions: 80,
+        matched: 24,
+        match_rate: 0.3,
+        samples: 45,
+        hit_rate: 0.62,
+        avg_return_pct: 0.018,
+        max_drawdown_pct: -0.03,
+        status: 'learning',
+      },
+    }],
+    promotion_gate: [],
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].recommended_stage === 'L3_production_allocation', 'ready candidate strategy should request L3')
+  assert(gate[0].l3_requires_wei_approval === true, 'L3 production allocation must require Wei approval')
+  assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
 }

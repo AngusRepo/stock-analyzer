@@ -587,9 +587,12 @@ export type StrategyPromotionGate = {
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
+  current_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
+  recommended_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
   decision: 'not_ready' | 'candidate_ready' | 'active_monitor'
   recommended_next_status: 'shadow' | 'candidate' | 'active'
   requires_wei_approval: boolean
+  l3_requires_wei_approval?: boolean
   production_effect: false
   missing_evidence: string[]
   evidence: {
@@ -928,7 +931,7 @@ export const strategyLabApi = {
     { ...body, dry_run: body?.dry_run ?? true, seed_missing: body?.seed_missing ?? true },
     body?.confirm !== false ? { 'X-Confirm-Research': 'true' } : undefined,
   ),
-  updateExperimentStatus: (id: string, body: { status: 'running' | 'review_ready' | 'approved_for_patch' | 'rejected' | 'archived'; reason?: string; confirm?: boolean }) => req<{ success: boolean; mode: 'metadata_only'; experiment: ResearchExperiment; production_effect: false; blocked_capabilities: string[] }>(
+  updateExperimentStatus: (id: string, body: { status: 'running' | 'review_ready' | 'approved_for_shadow' | 'needs_more_evidence' | 'paper_active_requested' | 'approved_for_patch' | 'rejected' | 'archived'; reason?: string; confirm?: boolean }) => req<{ success: boolean; mode: 'metadata_only'; experiment: ResearchExperiment; production_effect: false; blocked_capabilities: string[] }>(
     'POST',
     `/admin/research/experiments/${encodeURIComponent(id)}/status`,
     { status: body.status, reason: body.reason },

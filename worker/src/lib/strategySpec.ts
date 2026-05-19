@@ -27,6 +27,13 @@ export interface StrategySpecThresholds {
   excludeIndustries?: string[]
 }
 
+export interface StrategySpecCandidatePolicy {
+  poolQuota?: number
+  costBudget?: number
+  evidenceRequirements?: string[]
+  maxMlShare?: number
+}
+
 export interface StrategySpec {
   id: string
   version: string
@@ -37,6 +44,7 @@ export interface StrategySpec {
   supportedRegimes: AlphaFrameworkRegime[]
   thesis: string
   thresholds: StrategySpecThresholds
+  candidatePolicy?: StrategySpecCandidatePolicy
   riskNotes: string[]
   createdBy: 'p5_strategy_governance'
 }
@@ -179,6 +187,7 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     supportedRegimes: ['bull', 'sideways'],
     thesis: '技術與動能同時達標，適合交給 ML 與 debate 做下一層確認。',
     thresholds: { minSeedScore: 58, minTechScore: 18, minMomentumScore: 6, minPrice: 10 },
+    candidatePolicy: { poolQuota: 14, costBudget: 18, evidenceRequirements: ['price', 'technical', 'momentum'] },
     riskNotes: ['避免在高位急拉後直接追價；實際入場仍交由 execution gate 判斷。'],
     createdBy: 'p5_strategy_governance',
   },
@@ -192,6 +201,7 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     supportedRegimes: ['bull', 'volatile'],
     thesis: '技術分與短線動能較強，適合作為突破候選，但必須保留波動與流動性風控。',
     thresholds: { minSeedScore: 62, minTechScore: 20, minMomentumScore: 8, minPrice: 10 },
+    candidatePolicy: { poolQuota: 12, costBudget: 16, evidenceRequirements: ['price', 'volume', 'technical'] },
     riskNotes: ['突破策略的失敗成本較高，不能把 spec match 直接當買進訊號。'],
     createdBy: 'p5_strategy_governance',
   },
@@ -205,6 +215,7 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     supportedRegimes: ['bull', 'sideways', 'bear'],
     thesis: '籌碼分穩定且基本技術條件不差，偏向低追價壓力的候選。',
     thresholds: { minSeedScore: 54, minChipScore: 20, minTechScore: 12, minPrice: 10 },
+    candidatePolicy: { poolQuota: 16, costBudget: 20, evidenceRequirements: ['price', 'chip_or_flow', 'risk'] },
     riskNotes: ['防守型種子仍需確認沒有資料 stale、流動性過薄或大盤風險。'],
     createdBy: 'p5_strategy_governance',
   },

@@ -17,6 +17,7 @@ const tradingRestrictions = fs.readFileSync('src/lib/tradingRestrictions.ts', 'u
 const schema = fs.readFileSync('schema.sql', 'utf8')
 const screenerFunnelMigration = fs.readFileSync('migration_screener_funnel.sql', 'utf8')
 const screenerStrategyConsumer = fs.readFileSync('src/lib/screenerStrategyConsumer.ts', 'utf8')
+const strategyCandidatePool = fs.readFileSync('src/lib/strategyCandidatePool.ts', 'utf8')
 const strategySpec = fs.readFileSync('src/lib/strategySpec.ts', 'utf8')
 const strategyOwnerFreeze = fs.readFileSync('src/lib/strategyOwnerFreeze.ts', 'utf8')
 const strategyLab = fs.readFileSync('src/lib/strategyLab.ts', 'utf8')
@@ -107,6 +108,13 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
 
 {
   assert(marketScreener.includes("from './screenerStrategyConsumer'"), 'marketScreener should consume strategy specs through the screener strategy consumer')
+  assert(marketScreener.includes("import('./strategyCandidatePool')"), 'marketScreener should use strategy-first candidate pools before ML shortlist selection')
+  assert(marketScreener.includes('strategyCandidatePool'), 'screener funnel metadata should include strategy candidate pool telemetry')
+  assert(strategyCandidatePool.includes('baseTotalBudget: 64'), 'strategy candidate pool should keep 64 as the base ML allocation budget')
+  assert(strategyCandidatePool.includes('normalTotalCap: 96'), 'strategy candidate pool should expose adaptive 96 normal cap')
+  assert(strategyCandidatePool.includes('lowLoadTotalCap: 128'), 'strategy candidate pool should expose adaptive 128 low-load cap')
+  assert(strategyCandidatePool.includes('hardTotalCap: 160'), 'strategy candidate pool should expose hard 160 cap')
+  assert(strategyCandidatePool.includes('researchOnlyQueue'), 'strategy candidate pool should route overflow into research-only queue instead of silently dropping')
   assert(screenerStrategyConsumer.includes("from './strategySpec'"), 'screener strategy consumer should read the strategy spec contract')
   assert(screenerStrategyConsumer.includes("from './strategyOwnerFreeze'"), 'screener strategy consumer should enforce owner freeze')
   assert(strategyOwnerFreeze.includes('STRATEGY_OWNER_BOUNDARIES'), 'owner freeze must be explicit and testable')

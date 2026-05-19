@@ -36,6 +36,21 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const result = evaluateResearchInternGate({ action: 'approve_shadow' })
+  assert(result.decision === 'REQUIRE_APPROVAL', 'approve-shadow should require reviewer approval')
+  assert(result.allowed_next_steps.includes('request_human_review'), 'approve-shadow should expose human review next step')
+}
+
+{
+  const result = evaluateResearchInternGate({
+    action: 'promote_paper_active',
+    approval: { approved: true, reviewer: 'wei', scope: 'paper-active only' },
+  })
+  assert(result.decision === 'ALLOW', 'reviewed paper-active promotion request should be allowed as metadata')
+  assert(result.blocked_capabilities.includes('production deploy'), 'paper-active metadata still blocks deploy')
+}
+
+{
   const result = evaluateResearchInternGate({
     action: 'generate_patch',
     approval: { approved: true, reviewer: 'wei', scope: 'local patch only' },

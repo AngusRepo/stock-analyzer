@@ -27,6 +27,15 @@ type RegistrySelection =
   | { kind: 'model_upgrade'; id: string }
   | { kind: 'meta_track'; id: string }
   | null
+type ResearchExperimentStatusAction =
+  | 'running'
+  | 'review_ready'
+  | 'approved_for_shadow'
+  | 'needs_more_evidence'
+  | 'paper_active_requested'
+  | 'approved_for_patch'
+  | 'rejected'
+  | 'archived'
 type ArtifactIntentDraft = {
   model_name: string
   artifact_version: string
@@ -60,6 +69,11 @@ const ARTIFACT_INTENT_FIELDS: Array<{ key: keyof ArtifactIntentDraft; label: str
 function statusClass(status?: string) {
   if (status === 'active' || status === 'candidate') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
   if (status === 'shadow' || status === 'research') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (status === 'approved_for_shadow') return 'border-cyan-500/25 bg-cyan-500/15 text-cyan-100'
+  if (status === 'paper_active_requested') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-100'
+  if (status === 'needs_more_evidence') return 'border-amber-500/25 bg-amber-500/15 text-amber-100'
+  if (status === 'approved_for_patch') return 'border-violet-500/25 bg-violet-500/15 text-violet-100'
+  if (status === 'rejected' || status === 'archived') return 'border-zinc-600/50 bg-zinc-700/30 text-zinc-300'
   if (status === 'retired') return 'border-zinc-600/50 bg-zinc-700/30 text-zinc-300'
   return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
 }
@@ -516,10 +530,18 @@ function StrategyLearningPanel({
                     </div>
                   </div>
                   <div>
+                    {gate && (
+                      <div className="mb-2 rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
+                        {gate.current_stage ?? 'L0_hypothesis'}{' -> '}{gate.recommended_stage ?? gate.recommended_next_status}
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-1.5">
                       {gate && <Badge variant="outline" className={strategyGateClass(gate.decision)}>{gate.decision}</Badge>}
                       {gate?.requires_wei_approval && (
                         <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">Wei approval</Badge>
+                      )}
+                      {gate?.l3_requires_wei_approval && (
+                        <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-red-200">L3 needs Wei</Badge>
                       )}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -799,7 +821,7 @@ function RegistryInspectorPanel({
   artifactIntentDraftFor: (id: string) => ArtifactIntentDraft
   updateArtifactIntentDraft: (id: string, field: keyof ArtifactIntentDraft, value: string) => void
   onSelect: (selection: RegistrySelection) => void
-  onUpdateExperimentStatus: (id: string, status: 'approved_for_patch' | 'rejected') => void
+  onUpdateExperimentStatus: (id: string, status: ResearchExperimentStatusAction) => void
   onCreatePatchHandoff: (id: string) => void
   onCreateArtifactIntent: (id: string) => void
   onRunEvaluationPlan: (id: string) => void
@@ -961,25 +983,65 @@ function RegistryInspectorPanel({
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <Badge variant="outline" className={statusClass(selectedExperiment.status)}>{selectedExperiment.status}</Badge>
+                {!['approved_for_shadow', 'paper_active_requested', 'rejected', 'archived'].includes(selectedExperiment.status) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_shadow')}
+                  >
+                    Approve shadow
+                  </Button>
+                )}
+                {selectedExperiment.status !== 'needs_more_evidence' && !['rejected', 'archived'].includes(selectedExperiment.status) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'needs_more_evidence')}
+                  >
+                    Request evidence
+                  </Button>
+                )}
+                {['approved_for_shadow', 'review_ready', 'approved_for_patch'].includes(selectedExperiment.status) && (
+                  <Button
+                    size="sm"
+                    className="bg-emerald-400 text-slate-950 hover:bg-emerald-300"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'paper_active_requested')}
+                  >
+                    Promote paper-active
+                  </Button>
+                )}
                 {selectedExperiment.status === 'review_ready' && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
-                    >
-                      Approve for patch
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
-                    >
-                      Reject
-                    </Button>
-                  </>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
+                  >
+                    Approve patch handoff
+                  </Button>
+                )}
+                {!['rejected', 'archived'].includes(selectedExperiment.status) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
+                  >
+                    Reject
+                  </Button>
+                )}
+                {selectedExperiment.status !== 'archived' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'archived')}
+                  >
+                    Archive
+                  </Button>
                 )}
                 {selectedExperiment.status === 'approved_for_patch' && (
                   <>
@@ -1006,6 +1068,30 @@ function RegistryInspectorPanel({
               </div>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedExperiment.hypothesis}</p>
+            <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-2">
+              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-3">
+                <div className="font-semibold text-cyan-100">Gate evidence</div>
+                <div className="mt-1 text-slate-400">
+                  current: {selectedExperiment.status} / metrics {selectedExperiment.metrics.join(' / ') || 'missing'} / specs {selectedExperiment.strategy_spec_ids.join(' / ') || 'missing'}
+                </div>
+                <div className="mt-1 text-slate-500">
+                  missing: {selectedExperiment.metrics.length ? 'dry-run result, reward evidence, approval history' : 'metrics, dry-run result, reward evidence'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-3">
+                <div className="font-semibold text-emerald-100">Next action / workflow</div>
+                <div className="mt-1 text-slate-400">
+                  {selectedExperiment.status === 'approved_for_shadow'
+                    ? 'run shadow validation and write reward ledger'
+                    : selectedExperiment.status === 'paper_active_requested'
+                      ? 'manual review before paper-active allocation'
+                      : selectedExperiment.status === 'needs_more_evidence'
+                        ? 'run dry-run plan or request more evidence'
+                        : 'approve shadow, request evidence, or reject'}
+                </div>
+                <div className="mt-1 text-slate-500">affects: strategy candidate pool, Strategy Lab ledger, paper-active gate; production trading remains false</div>
+              </div>
+            </div>
             {showStrategyPatchOnly && (
               <div className="mt-3 rounded-2xl border border-sky-500/20 bg-sky-500/[0.04] p-3 text-xs leading-5 text-sky-100">
                 <div className="font-semibold">Strategy patch handoff only</div>
@@ -1138,6 +1224,9 @@ export default function StrategyLabPage() {
         strategyLabApi.modelUpgradeStatus(),
         strategyLabApi.gate('generate_hypothesis'),
         strategyLabApi.gate('request_backtest_dry_run', { dryRun: true }),
+        strategyLabApi.gate('approve_shadow'),
+        strategyLabApi.gate('promote_paper_active'),
+        strategyLabApi.gate('request_more_evidence'),
         strategyLabApi.gate('generate_patch'),
         strategyLabApi.gate('deploy_prod'),
         strategyLabApi.gate('place_trade'),
@@ -1458,7 +1547,7 @@ export default function StrategyLabPage() {
     }
   }
 
-  async function updateExperimentStatus(id: string, status: 'approved_for_patch' | 'rejected') {
+  async function updateExperimentStatus(id: string, status: ResearchExperimentStatusAction) {
     try {
       setMetaActionBusy(`experiment-status:${id}:${status}`)
       setDraftError(null)

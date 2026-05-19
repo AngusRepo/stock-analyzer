@@ -182,7 +182,16 @@ adminWriteRoutes.post('/api/admin/research/experiments/:id/status', async (c) =>
     reason?: string
   }
   const body = await c.req.json<Body>().catch(() => ({} as Body))
-  const allowed = new Set(['running', 'review_ready', 'approved_for_patch', 'rejected', 'archived'])
+  const allowed = new Set([
+    'running',
+    'review_ready',
+    'approved_for_shadow',
+    'needs_more_evidence',
+    'paper_active_requested',
+    'approved_for_patch',
+    'rejected',
+    'archived',
+  ])
   const status = String(body.status ?? '').trim()
   if (!allowed.has(status)) {
     return c.json({
@@ -201,7 +210,7 @@ adminWriteRoutes.post('/api/admin/research/experiments/:id/status', async (c) =>
   const experiment = await updateResearchExperimentStatus(
     c.env.KV,
     c.req.param('id'),
-    status as 'running' | 'review_ready' | 'approved_for_patch' | 'rejected' | 'archived',
+    status as 'running' | 'review_ready' | 'approved_for_shadow' | 'needs_more_evidence' | 'paper_active_requested' | 'approved_for_patch' | 'rejected' | 'archived',
   )
   if (!experiment) return c.json({ error: 'research experiment not found' }, 404)
   return c.json({

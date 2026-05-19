@@ -22,9 +22,18 @@ export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateIn
   const assessment = assessCandidateAgainstStrategySpecs(candidate, specs)
   return {
     ...candidate,
-    strategy_matches: assessment.matches,
-    strategy_tags: assessment.tags,
-    strategy_watch_points: assessment.watchPoints,
+    strategy_matches: [
+      ...((candidate as StrategyAnnotatedCandidate).strategy_matches ?? []),
+      ...assessment.matches,
+    ],
+    strategy_tags: [...new Set([
+      ...((candidate as StrategyAnnotatedCandidate).strategy_tags ?? []),
+      ...assessment.tags,
+    ])],
+    strategy_watch_points: [...new Set([
+      ...((candidate as StrategyAnnotatedCandidate).strategy_watch_points ?? []),
+      ...assessment.watchPoints,
+    ])],
   }
 }
 

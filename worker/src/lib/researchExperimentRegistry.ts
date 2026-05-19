@@ -3,7 +3,17 @@ import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 export const RESEARCH_EXPERIMENT_PREFIX = 'research:experiments:'
 export const RESEARCH_REGISTRY_VERSION = 'research-registry-v1'
 
-export type ResearchExperimentStatus = 'draft' | 'queued' | 'running' | 'review_ready' | 'approved_for_patch' | 'rejected' | 'archived'
+export type ResearchExperimentStatus =
+  | 'draft'
+  | 'queued'
+  | 'running'
+  | 'review_ready'
+  | 'approved_for_shadow'
+  | 'needs_more_evidence'
+  | 'paper_active_requested'
+  | 'approved_for_patch'
+  | 'rejected'
+  | 'archived'
 
 export interface ResearchExperimentInput {
   id?: string
@@ -81,7 +91,18 @@ export function normalizeResearchExperimentInput(
   if (hypothesis.length < 12) errors.push('hypothesis_too_short')
 
   const requestedStatus = cleanText(input.status) as ResearchExperimentStatus
-  const allowedStatus: ResearchExperimentStatus[] = ['draft', 'queued', 'running', 'review_ready', 'approved_for_patch', 'rejected', 'archived']
+  const allowedStatus: ResearchExperimentStatus[] = [
+    'draft',
+    'queued',
+    'running',
+    'review_ready',
+    'approved_for_shadow',
+    'needs_more_evidence',
+    'paper_active_requested',
+    'approved_for_patch',
+    'rejected',
+    'archived',
+  ]
   const status = allowedStatus.includes(requestedStatus) ? requestedStatus : 'draft'
 
   const record: ResearchExperimentRecord | null = hypothesis

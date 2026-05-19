@@ -9,6 +9,10 @@ export type ResearchInternAction =
   | 'request_verify_dry_run'
   | 'request_model_benchmark_dry_run'
   | 'generate_review_packet'
+  | 'approve_shadow'
+  | 'request_more_evidence'
+  | 'promote_paper_active'
+  | 'archive_experiment'
   | 'generate_patch'
   | 'retrain_prod'
   | 'promote_model'
@@ -45,7 +49,11 @@ const SAFE_ACTIONS = new Set<ResearchInternAction>([
   'request_verify_dry_run',
   'request_model_benchmark_dry_run',
   'generate_review_packet',
+  'request_more_evidence',
+  'archive_experiment',
 ])
+
+const APPROVAL_ACTIONS = new Set<ResearchInternAction>(['approve_shadow', 'promote_paper_active'])
 
 const PATCH_ACTIONS = new Set<ResearchInternAction>(['generate_patch'])
 
@@ -66,7 +74,7 @@ const BLOCKED_CAPABILITIES = [
 
 function normalizeAction(action: string): ResearchInternAction | null {
   const normalized = action.trim().toLowerCase().replace(/[-\s]+/g, '_')
-  const all = [...SAFE_ACTIONS, ...PATCH_ACTIONS, ...FORBIDDEN_ACTIONS]
+  const all = [...SAFE_ACTIONS, ...APPROVAL_ACTIONS, ...PATCH_ACTIONS, ...FORBIDDEN_ACTIONS]
   return all.includes(normalized as ResearchInternAction) ? normalized as ResearchInternAction : null
 }
 
@@ -92,6 +100,19 @@ export function evaluateResearchInternGate(request: ResearchInternGateRequest): 
       action,
       reason: 'research_intern_never_mutates_production_or_trading_state',
       allowed_next_steps: ['generate_review_packet', 'request_backtest_dry_run', 'request_walk_forward_dry_run'],
+      blocked_capabilities: BLOCKED_CAPABILITIES,
+    }
+  }
+
+  if (APPROVAL_ACTIONS.has(action)) {
+    const approved = request.approval?.approved === true && Boolean(request.approval?.reviewer)
+    return {
+      decision: approved ? 'ALLOW' : 'REQUIRE_APPROVAL',
+      action,
+      reason: approved ? 'human_approved_strategy_learning_state_change' : 'strategy_learning_state_change_requires_human_reviewer',
+      allowed_next_steps: approved
+        ? ['update_experiment_registry_status', 'refresh_strategy_learning_summary']
+        : ['request_human_review', 'generate_review_packet'],
       blocked_capabilities: BLOCKED_CAPABILITIES,
     }
   }

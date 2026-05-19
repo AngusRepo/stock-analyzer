@@ -11,6 +11,8 @@ function assert(condition: unknown, message: string): void {
   for (const spec of DEFAULT_STRATEGY_SPECS) {
     const validation = validateStrategySpec(spec)
     assert(validation.ok, `${spec.id} should be valid: ${validation.errors.join(',')}`)
+    assert(spec.candidatePolicy?.poolQuota != null, `${spec.id} should define strategy-first pool quota`)
+    assert((spec.candidatePolicy?.evidenceRequirements ?? []).length > 0, `${spec.id} should define evidence requirements`)
   }
 }
 

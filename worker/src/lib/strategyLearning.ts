@@ -79,15 +79,23 @@ export interface StrategyRewardLedgerRow {
 }
 
 export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor'
+export type StrategyLearningStage =
+  | 'L0_hypothesis'
+  | 'L1_shadow'
+  | 'L2_paper_active'
+  | 'L3_production_allocation'
 
 export interface StrategyPromotionGateRow {
   strategy_id: string
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
+  current_stage: StrategyLearningStage
+  recommended_stage: StrategyLearningStage
   decision: StrategyPromotionDecision
   recommended_next_status: 'shadow' | 'candidate' | 'active'
   requires_wei_approval: boolean
+  l3_requires_wei_approval: boolean
   production_effect: false
   missing_evidence: string[]
   evidence: {
@@ -151,6 +159,13 @@ const PROMOTION_MIN_SAMPLES = 30
 const PROMOTION_MIN_HIT_RATE = 0.52
 const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
+
+function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
+  if (status === 'active') return 'L3_production_allocation'
+  if (status === 'candidate') return 'L2_paper_active'
+  if (status === 'shadow') return 'L1_shadow'
+  return 'L0_hypothesis'
+}
 
 const SCHEMA_DDL = [
   `CREATE TABLE IF NOT EXISTS strategy_spec_registry (
@@ -290,6 +305,7 @@ export function strategySpecToRegistryRow(spec: StrategySpec, nowIso = new Date(
 }
 
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
+  const defaultSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === row.strategy_id)
   return {
     id: row.strategy_id,
     version: row.version,
@@ -300,6 +316,7 @@ export function registryRowToStrategySpec(row: StrategySpecRegistryRow): Strateg
     supportedRegimes: parseJson(row.supported_regimes_json, []) as StrategySpec['supportedRegimes'],
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
+    candidatePolicy: defaultSpec?.candidatePolicy,
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
   }
@@ -771,6 +788,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
 
     const activeMonitor = spec.status === 'active'
     const ready = !activeMonitor && missing.length === 0
+    const currentStage = stageForStrategyStatus(spec.status)
     const recommendedNextStatus = activeMonitor
       ? 'active'
       : ready && spec.status === 'candidate'
@@ -779,18 +797,30 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
           ? 'candidate'
           : spec.status === 'research'
             ? 'shadow'
-            : spec.status === 'candidate'
-              ? 'candidate'
-              : 'shadow'
+          : spec.status === 'candidate'
+            ? 'candidate'
+            : 'shadow'
+    const recommendedStage = activeMonitor
+      ? 'L3_production_allocation'
+      : ready && spec.status === 'candidate'
+        ? 'L3_production_allocation'
+        : ready
+          ? 'L2_paper_active'
+          : spec.status === 'research'
+            ? 'L1_shadow'
+            : currentStage
 
     return {
       strategy_id: spec.id,
       strategy_version: spec.version,
       strategy_status: spec.status,
       alpha_bucket: spec.alphaBucket,
+      current_stage: currentStage,
+      recommended_stage: recommendedStage,
       decision: activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
       recommended_next_status: recommendedNextStatus,
       requires_wei_approval: !activeMonitor,
+      l3_requires_wei_approval: recommendedStage === 'L3_production_allocation' && !activeMonitor,
       production_effect: false,
       missing_evidence: activeMonitor ? [] : missing,
       evidence,

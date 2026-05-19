@@ -1807,9 +1807,90 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N 截斷
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
-  const finalCandidates = dedupeScreenerCandidatesBySymbol(
+  let strategySelectionTelemetry: Record<string, unknown> | null = null
+  let finalCandidates = dedupeScreenerCandidatesBySymbol(
     annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
   )
+  try {
+    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { planStrategyFirstCandidateSelection }] = await Promise.all([
+      import('./strategyLearning'),
+      import('./strategyCandidatePool'),
+    ])
+    const [{ specs, source }, policyState] = await Promise.all([
+      listStrategySpecsForLearning(env.DB),
+      getLatestStrategyPolicyState(env.DB).catch(() => null),
+    ])
+    const strategySelection = planStrategyFirstCandidateSelection(
+      afterIndustryLimit as any,
+      specs,
+      {
+        regime: (adaptiveParams as any)?.provenance?.regime ?? null,
+        strategyWeights: policyState?.strategy_weights ?? undefined,
+        mlQueueCapOverride: maxCandidates,
+      },
+    )
+    const selectedSymbols = new Set(strategySelection.mlQueue.map((candidate) => String(candidate.symbol || '').trim()))
+    const topUpCandidates = afterIndustryLimit
+      .filter((candidate) => !selectedSymbols.has(String(candidate.symbol || '').trim()))
+      .slice(0, Math.max(0, maxCandidates - strategySelection.mlQueue.length))
+      .map((candidate, index) => ({
+        ...candidate,
+        strategy_pool_decision: 'ml_queue',
+        strategy_pool_reason: 'score_fallback_top_up',
+        strategy_pool_rank: strategySelection.mlQueue.length + index + 1,
+        strategy_pool_ids: ['score_fallback'],
+        strategy_watch_points: [
+          ...((candidate as any).strategy_watch_points ?? []),
+          'strategy_pool:score_fallback_top_up',
+        ],
+      }))
+    finalCandidates = dedupeScreenerCandidatesBySymbol(
+      annotateCandidatesWithStrategySpecs([
+        ...(strategySelection.mlQueue as any[]),
+        ...(topUpCandidates as any[]),
+      ] as ScreenerCandidate[]),
+    )
+    strategySelectionTelemetry = {
+      version: strategySelection.version,
+      spec_source: source,
+      capacity: strategySelection.capacity,
+      telemetry: strategySelection.telemetry,
+      top_up_count: topUpCandidates.length,
+      pool_status: strategySelection.pools.map((pool) => ({
+        strategy_id: pool.strategy_id,
+        status: pool.status,
+        quota: pool.quota,
+        candidates: pool.candidates.length,
+        regime_scope: pool.regime_scope,
+        missing_evidence: pool.missing_evidence,
+      })),
+    }
+    debugLog.push(
+      `[Step 5] strategy_pool=${strategySelection.version} source=${source} ` +
+      `ml=${strategySelection.mlQueue.length}+topup=${topUpCandidates.length}/${maxCandidates} ` +
+      `research_only=${strategySelection.researchOnlyQueue.length} overflow=${strategySelection.telemetry.overflow_count} ` +
+      `cap=${strategySelection.capacity.mlQueueCap}/${strategySelection.capacity.totalCap} mode=${strategySelection.capacity.mode}`,
+    )
+    const researchOnlyAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelection.researchOnlyQueue.length)
+    for (const entry of strategySelection.researchOnlyQueue.slice(0, researchOnlyAuditLimit)) {
+      pushFunnelItem(funnelItems, {
+        symbol: String(entry.symbol || ''),
+        name: entry.name,
+        stage: 'strategy_pool_research_only',
+        decision: 'observe',
+        reasonCode: String(entry.strategy_pool_reason ?? 'research_only_queue'),
+        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
+        rank: entry.strategy_pool_rank ?? null,
+        evidence: {
+          strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_pool_score: entry.strategy_pool_score ?? null,
+          market_segment: entry.market_segment ?? null,
+        },
+      })
+    }
+  } catch (e) {
+    debugLog.push(`[Step 5] strategy_pool fallback to score top ${maxCandidates}: ${String(e)}`)
+  }
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
 
@@ -1964,6 +2045,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         newMoney: flag?.newMoney ?? false,
         freq20d: flag?.freq20d ?? 0,
         strategy_tags: sc.strategy_tags ?? [],
+        strategy_pool_ids: sc.strategy_pool_ids ?? [],
+        strategy_pool_score: sc.strategy_pool_score ?? null,
+        strategy_pool_reason: sc.strategy_pool_reason ?? null,
       },
     })
   })
@@ -2243,6 +2327,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         candidatePoolSize: screenerPolicy.sizing.candidatePoolSize,
         mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
         emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
+        strategyCandidatePool: strategySelectionTelemetry,
         restrictedCount: punishedSet.size,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
       },

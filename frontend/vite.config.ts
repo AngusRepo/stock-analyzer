@@ -31,7 +31,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      devOptions: { enabled: true },
+      devOptions: { enabled: process.env.VITE_PWA_DEV === '1' },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // 2026-04-21 fix: without these flags new sw waits for all tabs to

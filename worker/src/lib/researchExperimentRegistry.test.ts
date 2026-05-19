@@ -51,6 +51,21 @@ void (async () => {
   const records = await listResearchExperiments(kv as unknown as KVNamespace)
   assert(records.length === 1, 'registry should list persisted research experiments')
   assert(records[0].id === normalized.record!.id, 'registry should preserve experiment id')
+  const shadowNormalized = normalizeResearchExperimentInput({
+    hypothesis: 'strategy shadow approval metadata should be a first class registry state',
+    status: 'approved_for_shadow',
+  }, '2026-05-19T00:00:00.000Z')
+  assert(shadowNormalized.record?.status === 'approved_for_shadow', 'registry should support approve-shadow state')
+  const evidenceNormalized = normalizeResearchExperimentInput({
+    hypothesis: 'strategy needs more evidence metadata should be a first class registry state',
+    status: 'needs_more_evidence',
+  }, '2026-05-19T00:00:00.000Z')
+  assert(evidenceNormalized.record?.status === 'needs_more_evidence', 'registry should support request-more-evidence state')
+  const paperActiveNormalized = normalizeResearchExperimentInput({
+    hypothesis: 'strategy paper active request should be a reviewable registry state',
+    status: 'paper_active_requested',
+  }, '2026-05-19T00:00:00.000Z')
+  assert(paperActiveNormalized.record?.status === 'paper_active_requested', 'registry should support paper-active request state')
 
   let threw = false
   try {

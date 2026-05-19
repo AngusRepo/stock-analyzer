@@ -12,6 +12,7 @@ const modelChartPath = path.join(root, 'src', 'components', 'charts', 'ModelPool
 const strategyChartPath = path.join(root, 'src', 'components', 'charts', 'StrategyExperimentTimeline.tsx')
 const modelPoolPagePath = path.join(root, 'src', 'pages', 'ModelPoolPage.tsx')
 const strategyLabPagePath = path.join(root, 'src', 'pages', 'StrategyLabPage.tsx')
+const viteConfigPath = path.join(root, 'vite.config.ts')
 
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
   dependencies?: Record<string, string>
@@ -55,6 +56,7 @@ assert(modelPoolPage.includes('effectiveVoteWeight'), 'Model health matrix shoul
 assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix should not show unlabeled mini bar charts inside model cards')
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
+const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
 assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')
 assert(strategyLabPage.includes('Action Lanes'), 'Strategy Lab should group actionable controls into a left-side action lane')
 assert(strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should inspect registry evidence in the right-side inspector')
@@ -62,6 +64,10 @@ assert(strategyLabPage.includes('Strategy Ops'), 'Strategy Lab should merge spec
 assert(strategyLabPage.includes('Pre-trade Spec + Dry-run / Post-trade Learning + Reward'), 'Strategy Ops should label ex-ante and ex-post strategy evidence together')
 assert(strategyLabPage.includes('Learning + Reward Ledger'), 'Strategy learning panel should focus on reward ledger evidence instead of repeating spec cards')
 assert(strategyLabPage.includes('reward ledger only'), 'Strategy learning KPIs should distinguish post-trade reward evidence from dry-run match evidence')
+assert(strategyLabPage.includes('Approve shadow'), 'Research Intern Gate UX should expose approve-shadow review action')
+assert(strategyLabPage.includes('Request evidence'), 'Research Intern Gate UX should expose request-more-evidence action')
+assert(strategyLabPage.includes('Promote paper-active'), 'Research Intern Gate UX should expose paper-active promotion request')
+assert(strategyLabPage.includes('L3 needs Wei'), 'Strategy learning lifecycle should make L3 Wei approval visible')
 assert(!strategyLabPage.includes('/> Experiment Registry'), 'Strategy Lab should not render a duplicate full-width Experiment Registry panel')
 assert(strategyLabPage.includes('actionResult: string | null'), 'ModelUpgradeLaunchpad should receive scoped action feedback props')
 assert(strategyLabPage.includes('actionError: string | null'), 'ModelUpgradeLaunchpad should receive scoped action error props')
@@ -78,4 +84,8 @@ assert(strategyLabPage.includes("setRegistrySelection({ kind: 'experiment'"), 'E
 assert(
   strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
   'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',
+)
+assert(
+  viteConfig.includes("devOptions: { enabled: process.env.VITE_PWA_DEV === '1' }"),
+  'Vite PWA dev service worker should be opt-in so local Strategy Lab is not blocked by a missing dev-dist/sw.js overlay',
 )

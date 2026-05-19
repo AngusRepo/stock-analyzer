@@ -39,6 +39,8 @@ freqtrade/
 shioaji-proxy/
 infra/
 scripts/
+!ml-service/scripts/
+!ml-service/scripts/**
 screen_*.png
 /*.json
 data/*

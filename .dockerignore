@@ -47,6 +47,8 @@ memory/
 docs/
 notebooks/
 scripts/
+!ml-service/scripts/
+!ml-service/scripts/**
 screen_*.png
 /*.json
 *.md

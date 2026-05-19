@@ -655,10 +655,14 @@ if [ "$WITH_MODAL" = "1" ]; then
     exit 6
   fi
   # Parse duration from response — surface parse failure instead of silent '?'
-  MODAL_DURATION=$("$PYTHON_BIN" -c "
-import json, sys
+  MODAL_RESP_FILE_PY="$MODAL_RESP_FILE"
+  if command -v cygpath >/dev/null 2>&1; then
+    MODAL_RESP_FILE_PY=$(cygpath -w "$MODAL_RESP_FILE")
+  fi
+  MODAL_DURATION=$(MODAL_RESP_FILE_PY="$MODAL_RESP_FILE_PY" "$PYTHON_BIN" -c "
+import json, os, sys
 try:
-    with open('$MODAL_RESP_FILE', encoding='utf-8') as f:
+    with open(os.environ['MODAL_RESP_FILE_PY'], encoding='utf-8') as f:
         d = json.load(f)
     v = d.get('duration_sec')
     print(f'{v:.1f}' if isinstance(v, (int, float)) else str(v))

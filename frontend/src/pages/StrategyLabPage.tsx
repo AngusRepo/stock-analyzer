@@ -111,6 +111,35 @@ function artifactIntentTone(status?: ModelUpgradeResearchStatusRow['latest_artif
   return 'border-slate-700 bg-slate-900/80 text-slate-300'
 }
 
+function experimentIdForCandidate(experimentIds: string[], candidateId: string) {
+  const needle = candidateId.toLowerCase()
+  return experimentIds.find((id) => id.toLowerCase().includes(needle)) ?? null
+}
+
+function applyModelUpgradeSeedFeedback(
+  status: ModelUpgradeResearchStatusResponse | null,
+  experimentIds: string[],
+): ModelUpgradeResearchStatusResponse | null {
+  if (!status || experimentIds.length === 0) return status
+  return {
+    ...status,
+    candidates: status.candidates.map((row) => {
+      if (!row.requires_experiment_registry || row.registry_status !== 'experiment_missing') return row
+      const experimentId = experimentIdForCandidate(experimentIds, row.candidate_id)
+      if (!experimentId) return row
+      return {
+        ...row,
+        registry_status: 'evaluation_pending',
+        registered_experiment_ids: [experimentId, ...row.registered_experiment_ids.filter((id) => id !== experimentId)].slice(0, 5),
+        latest_experiment_id: experimentId,
+        latest_experiment_status: row.stage === 'shadow_challenger' ? 'running' : 'queued',
+        next_action: 'run_strategy_lab_dry_run_evaluation_plan',
+        missing_evidence: ['evaluation_run_missing'],
+      }
+    }),
+  }
+}
+
 function shortIdentifier(value?: string | null) {
   if (!value) return '-'
   return value.length > 46 ? `${value.slice(0, 28)}...${value.slice(-10)}` : value
@@ -871,10 +900,13 @@ export default function StrategyLabPage() {
       setModelUpgradeActionError(null)
       setModelUpgradeActionResult('正在建立 Strategy Lab experiment registry metadata...')
       const res = await strategyLabApi.seedModelUpgradeRegistry({ dry_run: false, confirm: true })
-      const message = `Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。`
+      const seededIds = [...(res.created ?? []), ...(res.existing ?? [])].filter((id): id is string => typeof id === 'string')
+      const message = `Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。KV list 可能短暫延遲，畫面已先標為 evaluation_pending。`
       setMetaActionResult(message)
       setModelUpgradeActionResult(message)
+      setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
       await load()
+      setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
     } catch (e: unknown) {
       const message = getErrorMessage(e, 'model upgrade registry seed failed')
       setDraftError(message)

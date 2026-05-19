@@ -99,9 +99,12 @@ adminReadRoutes.get('/api/admin/datasets/retention-plan', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { buildDatasetRetentionPlan } = await import('../lib/datasetSnapshots')
+  const { D1_HOT_WINDOW_DAYS, buildDatasetRetentionPlan } = await import('../lib/datasetSnapshots')
   const businessDate = c.req.query('date') || twToday()
-  const hotWindowDays = Number.parseInt(c.req.query('hot_window_days') ?? '252', 10)
+  const hotWindowDays = Number.parseInt(
+    c.req.query('hot_window_days') ?? c.req.query('hotWindowDays') ?? `${D1_HOT_WINDOW_DAYS}`,
+    10,
+  )
   return c.json({
     success: true,
     plan: await buildDatasetRetentionPlan(c.env, { businessDate, hotWindowDays }),

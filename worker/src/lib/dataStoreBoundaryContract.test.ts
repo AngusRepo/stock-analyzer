@@ -103,6 +103,13 @@ assert(
 )
 
 assert(
+  adminReadRoutes.includes('D1_HOT_WINDOW_DAYS') &&
+    adminReadRoutes.includes("c.req.query('hot_window_days')") &&
+    adminReadRoutes.includes("c.req.query('hotWindowDays')"),
+  'retention-plan route must default to the approved D1 hot window and accept both snake/camel query names',
+)
+
+assert(
   datasetSnapshots.includes('buildDatasetRetentionPlan') &&
     datasetSnapshots.includes('dry_run') &&
     datasetSnapshots.includes('cold_rows'),

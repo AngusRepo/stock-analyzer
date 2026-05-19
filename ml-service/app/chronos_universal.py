@@ -54,7 +54,7 @@ def _get_pipeline(model_id: str = _DEFAULT_MODEL_ID):
     pipeline = Chronos2Pipeline.from_pretrained(
         model_id,
         device_map="cpu",
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
     logger.info("[ChronosUniversal] Pipeline ready: %s", model_id)
     return pipeline

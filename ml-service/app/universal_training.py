@@ -25,6 +25,7 @@ from .artifact_contract import (
     now_utc_iso,
     validate_model_artifact_metadata,
 )
+from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
 from .model_store import _get_bucket, save_model
 from .training_policy import (
     TREE_MODEL_NAMES,
@@ -408,7 +409,7 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
     buf = io.BytesIO()
     blob.download_to_file(buf)
     buf.seek(0)
-    artifact = joblib_load(buf)
+    artifact = load_joblib_with_version_warnings(buf, artifact_name=path)
 
     metadata: dict = {}
     version = get_active_version(model_name, pool=pool)
@@ -416,6 +417,7 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
         meta_blob = bucket.blob(gcs_metadata_path_for(model_name, version))
         if meta_blob.exists():
             metadata = json.loads(meta_blob.download_as_text())
+            metadata["runtime_version_report"] = sklearn_version_report(metadata)
     return artifact, metadata
 
 

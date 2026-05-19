@@ -93,7 +93,7 @@ def _fallback_model(name: str, prices: np.ndarray, horizon: int, reason: str) ->
     dates     = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points([last] * horizon, std, dates)
     print(f"[{name}] fallback due to: {reason}")
-    return ModelPrediction(
+    pred = ModelPrediction(
         model_name=name,
         direction="up",
         confidence=0.35,       # ????????fallback ???????????? real models
@@ -101,6 +101,10 @@ def _fallback_model(name: str, prices: np.ndarray, horizon: int, reason: str) ->
         forecasts=forecasts,
         direction_accuracy=0.5,
     )
+    setattr(pred, "degraded", True)
+    setattr(pred, "fallback_reason", reason)
+    setattr(pred, "diagnostics", {"fallback_type": "flat", "reason": reason})
+    return pred
 
 
 # ?????? Model 1: Kalman Filter????????????????????????????????????????????????????????????????????????????
@@ -291,7 +295,7 @@ def run_markov_switching(
     switching_vol = bool(hp.get("switching_vol", True))
 
     if len(prices) < 60:
-        return _fallback_model(MODEL_NAME, prices, horizon, "insufficient data")
+        return _fallback_model(MODEL_NAME, prices, horizon, "insufficient_data")
 
     def _params_to_dict(res) -> dict[str, float]:
         params = getattr(res, "params", None)
@@ -410,7 +414,10 @@ def run_markov_switching(
 
     except Exception as e:
         # Fallback: simple momentum model??/10/20 ?????????
-        return _fallback_momentum(prices, horizon, stock_id, str(e))
+        reason = str(e).strip() or type(e).__name__
+        if "SVD did not converge" in reason:
+            reason = "svd_not_converged"
+        return _fallback_momentum(prices, horizon, stock_id, reason)
 
 
 def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: str) -> ModelPrediction:
@@ -437,7 +444,7 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
     print(f"[{MODEL_NAME}] fallback momentum due to: {reason}")
-    return ModelPrediction(
+    pred = ModelPrediction(
         model_name=MODEL_NAME,
         direction="up" if is_up else "down",
         confidence=round(min(0.65, max(0.35, 0.5 + abs(weighted_mom) * 3)), 3),
@@ -445,6 +452,10 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
         forecasts=forecasts,
         direction_accuracy=0.5,
     )
+    setattr(pred, "degraded", True)
+    setattr(pred, "fallback_reason", reason)
+    setattr(pred, "diagnostics", {"fallback_type": "momentum", "reason": reason})
+    return pred
 
 
 # ?????? Model 4: PatchTST??atch ?????+ Ridge ??????????????????????????????????????????????????????????????

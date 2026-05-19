@@ -12,6 +12,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .artifact_runtime_versions import runtime_library_versions
+
 
 ARTIFACT_SCHEMA_VERSION = "model-artifact-v2"
 TRAINING_MANIFEST_SCHEMA_VERSION = "training-run-manifest-v1"
@@ -198,6 +200,7 @@ def build_model_artifact_metadata(
         "gcs_prefix": gcs_prefix,
         "artifact_checksum": stable_sha256(artifact_payload),
         "training_run_id": training_run_id,
+        "library_versions": runtime_library_versions(),
     }
     if extra_metadata:
         meta.update(extra_metadata)

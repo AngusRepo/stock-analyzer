@@ -40,7 +40,9 @@ def test_state_space_overlays_batch_predict_combines_models(monkeypatch):
     assert result["n_input"] == 2
     assert result["models"] == ["KalmanFilter", "MarkovSwitching"]
     assert result["overlays"]["KalmanFilter"]["n_success"] == 2
+    assert result["overlays"]["KalmanFilter"]["n_fallback"] == 0
     assert result["overlays"]["MarkovSwitching"]["n_success"] == 2
+    assert result["overlays"]["MarkovSwitching"]["n_fallback"] == 0
     assert result["metrics"]["KalmanFilter"]["elapsed_s"] >= 0
     assert result["metrics"]["MarkovSwitching"]["elapsed_s"] >= 0
 
@@ -172,4 +174,33 @@ def test_state_space_batch_marks_insufficient_rows_without_calling_runner(monkey
         series_list=[{"symbol": "too-short", "prices": [1.0] * 10}],
     )
 
-    assert result == [{"symbol": "too-short", "error": "insufficient data (10 < 30)"}]
+    assert result == [{"symbol": "too-short", "error": "insufficient data (10 < 60)"}]
+
+
+def test_state_space_batch_surfaces_markov_fallback_reason(monkeypatch):
+    from app import models
+
+    monkeypatch.setattr(state_space_universal, "_load_hyperparams", lambda *_: {})
+
+    def fallback_runner(prices, horizon=5, stock_id=0, hyperparams=None):
+        pred = models.ModelPrediction(
+            model_name="MarkovSwitching",
+            direction="up",
+            confidence=0.5,
+            forecast_pct=0.0,
+        )
+        setattr(pred, "degraded", True)
+        setattr(pred, "fallback_reason", "svd_not_converged")
+        setattr(pred, "diagnostics", {"fallback_type": "momentum"})
+        return pred
+
+    monkeypatch.setattr(models, "run_markov_switching", fallback_runner)
+
+    result = state_space_universal.state_space_batch_predict(
+        model_name="MarkovSwitching",
+        series_list=[{"symbol": "2330", "prices": [1.0] * 60}],
+    )
+
+    assert result[0]["degraded"] is True
+    assert result[0]["fallback_reason"] == "svd_not_converged"
+    assert result[0]["diagnostics"]["fallback_type"] == "momentum"

@@ -22,6 +22,11 @@ import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTi
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
+type RegistrySelection =
+  | { kind: 'experiment'; id: string }
+  | { kind: 'model_upgrade'; id: string }
+  | { kind: 'meta_track'; id: string }
+  | null
 type ArtifactIntentDraft = {
   model_name: string
   artifact_version: string
@@ -211,15 +216,19 @@ function ModelUpgradeLaunchpad({
   busy,
   actionResult,
   actionError,
+  selectedId,
   onSeedRegistry,
   onRunEvaluations,
+  onSelectRow,
 }: {
   status: ModelUpgradeResearchStatusResponse | null
   busy: string | null
   actionResult: string | null
   actionError: string | null
+  selectedId?: string | null
   onSeedRegistry: () => void
   onRunEvaluations: () => void
+  onSelectRow: (row: ModelUpgradeResearchStatusRow) => void
 }) {
   const rows = status?.candidates ?? []
   const registryRows = rows.filter((row) => row.requires_experiment_registry)
@@ -256,7 +265,7 @@ function ModelUpgradeLaunchpad({
         {isModelUpgradeBusy && (
           <div aria-live="polite" className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
             {busy === 'model-upgrade-seed'
-              ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與下方 Experiment Registry。'
+              ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與右側 Registry Inspector。'
               : '正在執行 shadow/benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
           </div>
         )}
@@ -300,7 +309,12 @@ function ModelUpgradeLaunchpad({
         </div>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
           {registryRows.map((row) => (
-            <div key={row.candidate_id} className="rounded-2xl border border-slate-800 bg-black/20 p-3 text-xs">
+            <div
+              key={row.candidate_id}
+              className={`rounded-2xl border bg-black/20 p-3 text-xs transition hover:border-cyan-400/50 ${
+                selectedId === row.candidate_id ? 'border-cyan-400/60 shadow-[0_0_0_1px_rgba(34,211,238,0.25)]' : 'border-slate-800'
+              }`}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="font-semibold text-slate-100">{row.candidate_id}</div>
@@ -342,6 +356,9 @@ function ModelUpgradeLaunchpad({
                   </Badge>
                 ))}
               </div>
+              <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => onSelectRow(row)}>
+                Inspect registry evidence
+              </Button>
             </div>
           ))}
         </div>
@@ -574,17 +591,21 @@ function MetaLearningDecisionDesk({
   tracks,
   matrix,
   actionBusy,
+  selectedTrackId,
   onCreateTrackExperiment,
   onRefreshLinucb,
   onRunNeuralShadow,
+  onSelectTrack,
   actionResult,
 }: {
   tracks: MetaLearningTrack[]
   matrix: MetaLearningEvidenceRow[]
   actionBusy: string | null
+  selectedTrackId?: string | null
   onCreateTrackExperiment: (track: MetaLearningTrack) => void
   onRefreshLinucb: () => void
   onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS') => void
+  onSelectTrack: (track: MetaLearningTrack) => void
   actionResult: string | null
 }) {
   const visible = tracks.length ? tracks : []
@@ -596,15 +617,20 @@ function MetaLearningDecisionDesk({
           <BrainCircuit className="h-4 w-4 text-cyan-300" /> Meta Learning Decision Desk
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+      <CardContent className="space-y-3">
         {actionResult && (
-          <div className="xl:col-span-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
             {actionResult}
           </div>
         )}
         <div className="grid gap-3 md:grid-cols-2">
           {visible.map((track) => (
-            <div key={track.id} className="rounded-2xl border border-slate-800 bg-black/20 p-4">
+            <div
+              key={track.id}
+              className={`rounded-2xl border bg-black/20 p-4 transition hover:border-cyan-400/50 ${
+                selectedTrackId === track.id ? 'border-cyan-400/60 shadow-[0_0_0_1px_rgba(34,211,238,0.25)]' : 'border-slate-800'
+              }`}
+            >
               {(() => {
                 const evidence = matrixById.get(track.id)
                 return (
@@ -655,6 +681,9 @@ function MetaLearningDecisionDesk({
                   ))}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => onSelectTrack(track)}>
+                    Inspect registry evidence
+                  </Button>
                   <Button size="sm" variant="outline" disabled={actionBusy === `experiment:${track.id}`} onClick={() => onCreateTrackExperiment(track)}>
                     {actionBusy === `experiment:${track.id}` ? '建立中...' : '建立研究實驗'}
                   </Button>
@@ -689,35 +718,358 @@ function MetaLearningDecisionDesk({
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
             <Activity className="h-4 w-4 text-emerald-300" /> Evidence Matrix
           </div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-xs">
-              <thead className="text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                <tr>
-                  <th className="border-b border-slate-800 py-2 pr-3">Track</th>
-                  <th className="border-b border-slate-800 py-2 pr-3">Evidence required</th>
-                  <th className="border-b border-slate-800 py-2 pr-3">Registry</th>
-                  <th className="border-b border-slate-800 py-2 pr-3">Decision</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((track) => {
-                  const evidence = matrixById.get(track.id)
-                  return (
-                  <tr key={track.id} className="align-top">
-                    <td className="border-b border-slate-900 py-3 pr-3 font-semibold text-slate-100">{track.id}</td>
-                    <td className="border-b border-slate-900 py-3 pr-3 text-slate-400">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</td>
-                    <td className="border-b border-slate-900 py-3 pr-3 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'} / latest {evidence?.latest_evidence_at ?? '-'}</td>
-                    <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</td>
+          {visible.length ? (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                  <tr>
+                    <th className="border-b border-slate-800 py-2 pr-3">Track</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Evidence required</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Registry</th>
+                    <th className="border-b border-slate-800 py-2 pr-3">Decision</th>
                   </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {visible.map((track) => {
+                    const evidence = matrixById.get(track.id)
+                    return (
+                    <tr key={track.id} className="align-top">
+                      <td className="border-b border-slate-900 py-3 pr-3 font-semibold text-slate-100">{track.id}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-400">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'} / latest {evidence?.latest_evidence_at ?? '-'}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</td>
+                    </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-dashed border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              Meta learning evidence 尚未回傳；這裡只保留 research gate 說明，不渲染空表格。
+            </div>
+          )}
           <p className="mt-3 text-xs leading-5 text-slate-500">
             這裡是 research gate，不會直接 promote production。OOS IC、CPCV/PBO、DSR、turnover、slippage、T+1/T+5/T+10 都要先寫入 evaluation registry。
           </p>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RegistryInspectorPanel({
+  experiments,
+  modelUpgradeRows,
+  metaTracks,
+  metaMatrix,
+  selected,
+  actionBusy,
+  runningExperimentId,
+  runErrors,
+  runResults,
+  runHistory,
+  artifactIntentDraftFor,
+  updateArtifactIntentDraft,
+  onSelect,
+  onUpdateExperimentStatus,
+  onCreatePatchHandoff,
+  onCreateArtifactIntent,
+  onRunEvaluationPlan,
+}: {
+  experiments: ResearchExperimentsResponse['experiments']
+  modelUpgradeRows: ModelUpgradeResearchStatusRow[]
+  metaTracks: MetaLearningTrack[]
+  metaMatrix: MetaLearningEvidenceRow[]
+  selected: RegistrySelection
+  actionBusy: string | null
+  runningExperimentId: string | null
+  runErrors: Record<string, string>
+  runResults: Record<string, ResearchEvaluationRunResponse>
+  runHistory: Record<string, ResearchEvaluationRunsResponse>
+  artifactIntentDraftFor: (id: string) => ArtifactIntentDraft
+  updateArtifactIntentDraft: (id: string, field: keyof ArtifactIntentDraft, value: string) => void
+  onSelect: (selection: RegistrySelection) => void
+  onUpdateExperimentStatus: (id: string, status: 'approved_for_patch' | 'rejected') => void
+  onCreatePatchHandoff: (id: string) => void
+  onCreateArtifactIntent: (id: string) => void
+  onRunEvaluationPlan: (id: string) => void
+}) {
+  const selectedExperiment = selected?.kind === 'experiment'
+    ? experiments.find((experiment) => experiment.id === selected.id)
+    : null
+  const selectedModelUpgrade = selected?.kind === 'model_upgrade'
+    ? modelUpgradeRows.find((row) => row.candidate_id === selected.id)
+    : selectedExperiment
+      ? modelUpgradeRows.find((row) => row.latest_experiment_id === selectedExperiment.id)
+      : null
+  const selectedMetaTrack = selected?.kind === 'meta_track'
+    ? metaTracks.find((track) => track.id === selected.id)
+    : null
+  const selectedMetaEvidence = selectedMetaTrack
+    ? metaMatrix.find((row) => row.id === selectedMetaTrack.id)
+    : null
+  const showModelArtifactIntent = selectedExperiment?.status === 'approved_for_patch' && Boolean(selectedModelUpgrade)
+  const showStrategyPatchOnly = selectedExperiment?.status === 'approved_for_patch' && !selectedModelUpgrade
+
+  return (
+    <Card className="sticky top-4 border-slate-800 bg-slate-950/80">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2">
+            <PlayCircle className="h-4 w-4 text-emerald-300" /> Registry / Evidence Inspector
+          </span>
+          <Badge variant="outline" className="border-slate-700 text-slate-400">
+            ledger view
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Select evidence source</div>
+          <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+            {metaTracks.slice(0, 5).map((track) => (
+              <button
+                key={track.id}
+                type="button"
+                onClick={() => onSelect({ kind: 'meta_track', id: track.id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'meta_track' && selected.id === track.id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="font-semibold text-slate-100">{track.id}</div>
+                <div className="mt-1 text-slate-500">{decisionZhClean(track.decision_queue_status)}</div>
+              </button>
+            ))}
+            {modelUpgradeRows.filter((row) => row.requires_experiment_registry).map((row) => (
+              <button
+                key={row.candidate_id}
+                type="button"
+                onClick={() => onSelect({ kind: 'model_upgrade', id: row.candidate_id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'model_upgrade' && selected.id === row.candidate_id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-100">{row.candidate_id}</span>
+                  <Badge variant="outline" className={modelUpgradeStatusTone(row.registry_status)}>{row.registry_status}</Badge>
+                </div>
+                <div className="mt-1 text-slate-500">{row.stage} / {row.latest_experiment_id ?? 'no experiment'}</div>
+              </button>
+            ))}
+            {experiments.slice(0, 8).map((experiment) => (
+              <button
+                key={experiment.id}
+                type="button"
+                onClick={() => onSelect({ kind: 'experiment', id: experiment.id })}
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition hover:border-cyan-400/50 ${
+                  selected?.kind === 'experiment' && selected.id === experiment.id ? 'border-cyan-400/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-semibold text-slate-100">{experiment.id}</span>
+                  <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
+                </div>
+                <div className="mt-1 truncate text-slate-500">{experiment.hypothesis}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {!selected && (
+          <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400">
+            先從左側 Action Lanes 選擇 Meta track、Model challenger，或從上方 ledger list 選一筆 experiment；這裡只顯示該項目的 registry details、history、approval 與下一步。
+          </div>
+        )}
+
+        {selectedMetaTrack && (
+          <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-cyan-100">{selectedMetaTrack.id}</div>
+                <div className="mt-1 text-xs text-slate-500">{selectedMetaTrack.stage}</div>
+              </div>
+              <Badge variant="outline" className={metaStageClass(selectedMetaTrack.stage)}>{selectedMetaTrack.stage}</Badge>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedMetaTrack.role}</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                <div className="text-slate-500">Reward ledger</div>
+                <div className={evidenceTone(selectedMetaEvidence?.reward_ledger_status)}>{evidenceLabel(selectedMetaEvidence?.reward_ledger_status)}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                <div className="text-slate-500">Shadow</div>
+                <div className={evidenceTone(selectedMetaEvidence?.shadow_status)}>{evidenceLabel(selectedMetaEvidence?.shadow_status)}</div>
+              </div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              下一步：{selectedMetaEvidence?.next_action ?? selectedMetaTrack.next_action}
+            </div>
+          </div>
+        )}
+
+        {selectedModelUpgrade && !selectedExperiment && (
+          <div className="rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-violet-100">{selectedModelUpgrade.candidate_id}</div>
+                <div className="mt-1 text-xs text-slate-500">{selectedModelUpgrade.stage} / {selectedModelUpgrade.family}</div>
+              </div>
+              <Badge variant="outline" className={modelUpgradeStatusTone(selectedModelUpgrade.registry_status)}>
+                {selectedModelUpgrade.registry_status}
+              </Badge>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">experiment: {selectedModelUpgrade.latest_experiment_id ?? '-'}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">evaluation: {selectedModelUpgrade.latest_evaluation_verdict ?? '-'}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">can predict: {String(selectedModelUpgrade.can_predict)}</div>
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">can vote: {String(selectedModelUpgrade.can_vote)}</div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              下一步：{selectedModelUpgrade.next_action}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {selectedModelUpgrade.missing_evidence.map((item) => (
+                <Badge key={item} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
+                  {item}
+                </Badge>
+              ))}
+              {!selectedModelUpgrade.missing_evidence.length && (
+                <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-200">
+                  evidence ready
+                </Badge>
+              )}
+            </div>
+          </div>
+        )}
+
+        {selectedExperiment && (
+          <div className="rounded-2xl border border-slate-800 bg-black/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-semibold text-slate-100">{selectedExperiment.id}</div>
+                <div className="mt-1 text-xs text-slate-500">updated {selectedExperiment.updated_at}</div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Badge variant="outline" className={statusClass(selectedExperiment.status)}>{selectedExperiment.status}</Badge>
+                {selectedExperiment.status === 'review_ready' && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
+                    >
+                      Approve for patch
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                      onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
+                    >
+                      Reject
+                    </Button>
+                  </>
+                )}
+                {selectedExperiment.status === 'approved_for_patch' && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy === `patch-handoff:${selectedExperiment.id}`}
+                      onClick={() => onCreatePatchHandoff(selectedExperiment.id)}
+                    >
+                      {actionBusy === `patch-handoff:${selectedExperiment.id}` ? 'Generating...' : 'Generate patch handoff'}
+                    </Button>
+                    {selectedModelUpgrade && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy === `artifact-intent:${selectedExperiment.id}`}
+                        onClick={() => onCreateArtifactIntent(selectedExperiment.id)}
+                      >
+                        {actionBusy === `artifact-intent:${selectedExperiment.id}` ? 'Checking...' : 'Artifact intent'}
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedExperiment.hypothesis}</p>
+            {showStrategyPatchOnly && (
+              <div className="mt-3 rounded-2xl border border-sky-500/20 bg-sky-500/[0.04] p-3 text-xs leading-5 text-sky-100">
+                <div className="font-semibold">Strategy patch handoff only</div>
+                <div className="mt-1 text-sky-100/80">
+                  這不是 Model Upgrade experiment，所以不會建立 model_artifact_registry intent。下一步是產生 patch handoff，進 strategy spec / runtime patch review。
+                </div>
+              </div>
+            )}
+            {showModelArtifactIntent && (
+              <div className="mt-3 rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-3">
+                <div className="text-xs font-semibold text-violet-100">Artifact preflight metadata</div>
+                <div className="mt-1 text-[11px] leading-5 text-slate-400">
+                  填入 artifact_path、manifest、feature policy、checksum 後，Artifact intent 會轉成 registry preflight ready；仍不會寫 model_artifact_registry。
+                </div>
+                <div className="mt-1 text-[11px] leading-5 text-violet-200/80">
+                  {selectedModelUpgrade?.candidate_id ?? 'model-upgrade'} / {selectedModelUpgrade?.latest_artifact_intent_status ?? 'intent none'} / next {selectedModelUpgrade?.next_action ?? '-'}
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {ARTIFACT_INTENT_FIELDS.map((field) => (
+                    <label key={`${selectedExperiment.id}-${field.key}`} className="text-[11px] text-slate-500">
+                      <span className="mb-1 block uppercase tracking-[0.12em]">
+                        {field.label}{field.required ? ' *' : ''}
+                      </span>
+                      <input
+                        value={artifactIntentDraftFor(selectedExperiment.id)[field.key]}
+                        onChange={(event) => updateArtifactIntentDraft(selectedExperiment.id, field.key, event.target.value)}
+                        className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-xs text-slate-100 outline-none focus:border-violet-400/50"
+                        placeholder={field.placeholder}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 p-3">Specs: {selectedExperiment.strategy_spec_ids.join(' / ') || 'none'}</div>
+              <div className="rounded-xl border border-slate-800 p-3">Metrics: {selectedExperiment.metrics.join(' / ') || 'none'}</div>
+              <div className="rounded-xl border border-slate-800 p-3">Can deploy: {String(selectedExperiment.approval_gate.can_deploy)}</div>
+            </div>
+            {selectedExperiment.evaluation_plan && (
+              <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-cyan-200">Evaluation plan: {selectedExperiment.evaluation_plan.mode}</div>
+                  <Button size="sm" variant="outline" disabled={runningExperimentId === selectedExperiment.id} onClick={() => onRunEvaluationPlan(selectedExperiment.id)}>
+                    {runningExperimentId === selectedExperiment.id ? 'Running...' : 'Run dry-run plan'}
+                  </Button>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {selectedExperiment.evaluation_plan.steps.map((step: any) => (
+                    <div key={step.id} className="rounded-lg border border-slate-800 bg-black/20 p-2 text-[11px]">
+                      <div className="font-semibold text-slate-200">{step.kind}</div>
+                      <div className="mt-1 text-slate-500">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
+                      <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
+                        {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {runErrors[selectedExperiment.id] && <div className="mt-2 text-xs text-red-300">{runErrors[selectedExperiment.id]}</div>}
+                {runResults[selectedExperiment.id] && (
+                  <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
+                    {runResults[selectedExperiment.id].report.review_packet}
+                  </pre>
+                )}
+                {runHistory[selectedExperiment.id]?.runs?.[0] && (
+                  <div className="mt-2 text-xs text-slate-500">
+                    latest dry-run: {runHistory[selectedExperiment.id].runs[0].created_at} / {runHistory[selectedExperiment.id].runs[0].verdict}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -746,6 +1098,7 @@ export default function StrategyLabPage() {
   const [metaActionResult, setMetaActionResult] = useState<string | null>(null)
   const [modelUpgradeActionResult, setModelUpgradeActionResult] = useState<string | null>(null)
   const [modelUpgradeActionError, setModelUpgradeActionError] = useState<string | null>(null)
+  const [registrySelection, setRegistrySelection] = useState<RegistrySelection>(null)
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -810,12 +1163,23 @@ export default function StrategyLabPage() {
     return { strategyCount, safeGateCount, blockedGateCount, dryRunMatches }
   }, [dryRun, researchGates, specs])
 
-  const modelUpgradeRowByExperimentId = useMemo(() => {
-    const entries = (modelUpgradeStatus?.candidates ?? [])
-      .filter((row) => row.latest_experiment_id)
-      .map((row) => [row.latest_experiment_id as string, row] as const)
-    return new Map(entries)
-  }, [modelUpgradeStatus])
+  useEffect(() => {
+    if (registrySelection) return
+    const firstPendingModel = (modelUpgradeStatus?.candidates ?? []).find((row) => row.requires_experiment_registry)
+    if (firstPendingModel) {
+      setRegistrySelection({ kind: 'model_upgrade', id: firstPendingModel.candidate_id })
+      return
+    }
+    const firstMetaTrack = experiments?.meta_learning_tracks?.[0]
+    if (firstMetaTrack) {
+      setRegistrySelection({ kind: 'meta_track', id: firstMetaTrack.id })
+      return
+    }
+    const firstExperiment = experiments?.experiments?.[0]
+    if (firstExperiment) {
+      setRegistrySelection({ kind: 'experiment', id: firstExperiment.id })
+    }
+  }, [experiments, modelUpgradeStatus, registrySelection])
 
   async function previewExperiment() {
     try {
@@ -853,6 +1217,7 @@ export default function StrategyLabPage() {
       })
       setDraftResult(res.review_packet)
       setMetaActionResult(`研究實驗已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'experiment registry write failed'))
@@ -885,6 +1250,7 @@ export default function StrategyLabPage() {
       })
       setDraftResult(res.review_packet)
       setMetaActionResult(`Model Benchmark 已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'model benchmark experiment write failed'))
@@ -904,6 +1270,11 @@ export default function StrategyLabPage() {
       const message = `Model upgrade registry 已建立：created=${res.created?.length ?? 0}，existing=${res.existing?.length ?? 0}；下一步跑各 experiment 的 dry-run evaluation plan。KV list 可能短暫延遲，畫面已先標為 evaluation_pending。`
       setMetaActionResult(message)
       setModelUpgradeActionResult(message)
+      const firstSeeded = seededIds[0]
+      if (firstSeeded) {
+        const seededRow = modelUpgradeStatus?.candidates.find((row) => row.latest_experiment_id === firstSeeded)
+        setRegistrySelection(seededRow ? { kind: 'model_upgrade', id: seededRow.candidate_id } : { kind: 'experiment', id: firstSeeded })
+      }
       setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
       await load()
       setModelUpgradeStatus((prev) => applyModelUpgradeSeedFeedback(prev, seededIds))
@@ -943,6 +1314,7 @@ export default function StrategyLabPage() {
       const message = `Model upgrade dry-run 完成：target=${nextTarget.candidate_id}，runs=${res.runs.length}，review_ready=${ready}，needs_attention=${attention}，production_effect=false。若仍有 pending，請再按一次跑下一筆。`
       setMetaActionResult(message)
       setModelUpgradeActionResult(message)
+      setRegistrySelection({ kind: 'model_upgrade', id: nextTarget.candidate_id })
       if (res.status) setModelUpgradeStatus(res.status)
       await load()
     } catch (e: unknown) {
@@ -981,6 +1353,7 @@ export default function StrategyLabPage() {
         confirm: true,
       })
       setDraftResult(res.review_packet)
+      setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, `${track.id} experiment write failed`))
@@ -1065,6 +1438,7 @@ export default function StrategyLabPage() {
       setRunErrors((prev) => ({ ...prev, [id]: '' }))
       const result = await strategyLabApi.runEvaluationPlan(id)
       setRunResults((prev) => ({ ...prev, [id]: result }))
+      setRegistrySelection({ kind: 'experiment', id })
       const history = await strategyLabApi.evaluationRuns(id)
       setRunHistory((prev) => ({ ...prev, [id]: history }))
       await load()
@@ -1085,6 +1459,7 @@ export default function StrategyLabPage() {
         confirm: true,
       })
       setMetaActionResult(`Experiment ${id} 已更新為 ${res.experiment.status}；production_effect=false。`)
+      setRegistrySelection({ kind: 'experiment', id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'experiment status update failed'))
@@ -1105,6 +1480,7 @@ export default function StrategyLabPage() {
       })
       const bridge = res.handoff.artifact_bridge
       setMetaActionResult(`Patch handoff 已建立：${bridge.candidate_type} -> ${bridge.target_registry}，candidate=${bridge.candidate_ids.join(', ') || '-'}；production_effect=false。`)
+      setRegistrySelection({ kind: 'experiment', id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'patch handoff generation failed'))
@@ -1128,6 +1504,7 @@ export default function StrategyLabPage() {
       const candidate = res.intent.registry_candidate
       const missing = res.intent.preflight.missing_fields.join(', ') || 'none'
       setMetaActionResult(`Artifact intent 已建立：${candidate.artifact_id}，status=${res.intent.status}，missing=${missing}；model_artifact_registry 未寫入。`)
+      setRegistrySelection({ kind: 'experiment', id })
       await load()
     } catch (e: unknown) {
       setDraftError(getErrorMessage(e, 'artifact intent generation failed'))
@@ -1196,48 +1573,37 @@ export default function StrategyLabPage() {
           ))}
         </div>
 
-        <MetaLearningDecisionDesk
-          tracks={experiments?.meta_learning_tracks ?? []}
-          matrix={experiments?.meta_learning_evidence_matrix ?? []}
-          actionBusy={metaActionBusy}
-          onCreateTrackExperiment={createMetaLearningExperiment}
-          onRefreshLinucb={refreshLinucbLedger}
-          onRunNeuralShadow={runNeuralShadow}
-          actionResult={metaActionResult}
-        />
-
-        <ModelUpgradeLaunchpad
-          status={modelUpgradeStatus}
-          busy={metaActionBusy}
-          actionResult={modelUpgradeActionResult}
-          actionError={modelUpgradeActionError}
-          onSeedRegistry={seedModelUpgradeRegistry}
-          onRunEvaluations={runModelUpgradeEvaluations}
-        />
-
-        <StrategyLearningPanel
-          learning={strategyLearning}
-          busy={metaActionBusy}
-          onMaterialize={materializeStrategyDecisionLog}
-          onRefreshRewards={refreshStrategyRewardLedger}
-          onRefreshPolicy={refreshStrategyPolicyState}
-        />
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-          <Card className="border-slate-800 bg-slate-950/70">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <GitBranch className="h-4 w-4 text-cyan-300" /> 策略規格與 dry-run
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 gap-3 2xl:grid-cols-2">
-              {(specs?.specs ?? []).map((spec) => (
-                <StrategySpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
-              ))}
-            </CardContent>
-          </Card>
-
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
           <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300">Action Lanes</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                左側是可執行操作；右側 inspector 是該操作對應的 registry evidence 與下一步。
+              </div>
+            </div>
+            <MetaLearningDecisionDesk
+              tracks={experiments?.meta_learning_tracks ?? []}
+              matrix={experiments?.meta_learning_evidence_matrix ?? []}
+              actionBusy={metaActionBusy}
+              selectedTrackId={registrySelection?.kind === 'meta_track' ? registrySelection.id : null}
+              onCreateTrackExperiment={createMetaLearningExperiment}
+              onRefreshLinucb={refreshLinucbLedger}
+              onRunNeuralShadow={runNeuralShadow}
+              onSelectTrack={(track) => setRegistrySelection({ kind: 'meta_track', id: track.id })}
+              actionResult={metaActionResult}
+            />
+
+            <ModelUpgradeLaunchpad
+              status={modelUpgradeStatus}
+              busy={metaActionBusy}
+              actionResult={modelUpgradeActionResult}
+              actionError={modelUpgradeActionError}
+              selectedId={registrySelection?.kind === 'model_upgrade' ? registrySelection.id : null}
+              onSeedRegistry={seedModelUpgradeRegistry}
+              onRunEvaluations={runModelUpgradeEvaluations}
+              onSelectRow={(row) => setRegistrySelection({ kind: 'model_upgrade', id: row.candidate_id })}
+            />
+
             <Card className="border-slate-800 bg-slate-950/70">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-sm">
@@ -1296,162 +1662,61 @@ export default function StrategyLabPage() {
               </CardContent>
             </Card>
           </div>
+
+          <RegistryInspectorPanel
+            experiments={experiments?.experiments ?? []}
+            modelUpgradeRows={modelUpgradeStatus?.candidates ?? []}
+            metaTracks={experiments?.meta_learning_tracks ?? []}
+            metaMatrix={experiments?.meta_learning_evidence_matrix ?? []}
+            selected={registrySelection}
+            actionBusy={metaActionBusy}
+            runningExperimentId={runningExperimentId}
+            runErrors={runErrors}
+            runResults={runResults}
+            runHistory={runHistory}
+            artifactIntentDraftFor={artifactIntentDraftFor}
+            updateArtifactIntentDraft={updateArtifactIntentDraft}
+            onSelect={setRegistrySelection}
+            onUpdateExperimentStatus={updateExperimentStatus}
+            onCreatePatchHandoff={createPatchHandoff}
+            onCreateArtifactIntent={createArtifactIntent}
+            onRunEvaluationPlan={runEvaluationPlan}
+          />
         </div>
 
-        <Card className="border-slate-800 bg-slate-950/70">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <PlayCircle className="h-4 w-4 text-emerald-300" /> Experiment Registry
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(experiments?.experiments ?? []).length === 0 && (
-              <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
-                尚未建立研究實驗。請先產生 dry-run review packet，通過 research gate 後再安排 backtest / walk-forward / PBO。
-              </div>
-            )}
-            {(experiments?.experiments ?? []).map((experiment) => {
-              const modelUpgradeRow = modelUpgradeRowByExperimentId.get(experiment.id)
-              const isModelUpgradeExperiment = Boolean(modelUpgradeRow)
-              const showModelArtifactIntent = experiment.status === 'approved_for_patch' && isModelUpgradeExperiment
-              const showStrategyPatchOnly = experiment.status === 'approved_for_patch' && !isModelUpgradeExperiment
-              return (
-              <div key={experiment.id} className="rounded-2xl border border-slate-800 bg-black/20 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-slate-100">{experiment.id}</div>
-                    <div className="mt-1 text-xs text-slate-500">updated {experiment.updated_at}</div>
-                  </div>
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Badge variant="outline" className={statusClass(experiment.status)}>{experiment.status}</Badge>
-                    {experiment.status === 'review_ready' && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={metaActionBusy?.startsWith(`experiment-status:${experiment.id}`)}
-                          onClick={() => updateExperimentStatus(experiment.id, 'approved_for_patch')}
-                        >
-                          Approve for patch
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={metaActionBusy?.startsWith(`experiment-status:${experiment.id}`)}
-                          onClick={() => updateExperimentStatus(experiment.id, 'rejected')}
-                        >
-                          Reject
-                        </Button>
-                      </>
-                    )}
-                    {experiment.status === 'approved_for_patch' && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={metaActionBusy === `patch-handoff:${experiment.id}`}
-                          onClick={() => createPatchHandoff(experiment.id)}
-                        >
-                          {metaActionBusy === `patch-handoff:${experiment.id}` ? 'Generating...' : 'Generate patch handoff'}
-                        </Button>
-                        {isModelUpgradeExperiment && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={metaActionBusy === `artifact-intent:${experiment.id}`}
-                            onClick={() => createArtifactIntent(experiment.id)}
-                          >
-                            {metaActionBusy === `artifact-intent:${experiment.id}` ? 'Checking...' : 'Artifact intent'}
-                          </Button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-                <p className="mt-3 text-sm leading-relaxed text-slate-300">{experiment.hypothesis}</p>
-                {showStrategyPatchOnly && (
-                  <div className="mt-3 rounded-2xl border border-sky-500/20 bg-sky-500/[0.04] p-3 text-xs leading-5 text-sky-100">
-                    <div className="font-semibold">Strategy patch handoff only</div>
-                    <div className="mt-1 text-sky-100/80">
-                      這不是 Model Upgrade experiment，所以不會建立 model_artifact_registry intent。下一步是產生 patch handoff，進 strategy spec / runtime patch review。
-                    </div>
-                  </div>
-                )}
-                {showModelArtifactIntent && (
-                  <div className="mt-3 rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-semibold text-violet-100">Artifact preflight metadata</div>
-                        <div className="mt-1 text-[11px] leading-5 text-slate-400">
-                          填入 artifact_path、manifest、feature policy、checksum 後，Artifact intent 會轉成 registry preflight ready；仍不會寫 model_artifact_registry。
-                        </div>
-                        <div className="mt-1 text-[11px] leading-5 text-violet-200/80">
-                          {modelUpgradeRow?.candidate_id ?? 'model-upgrade'} / {modelUpgradeRow?.latest_artifact_intent_status ?? 'intent none'} / next {modelUpgradeRow?.next_action ?? '-'}
-                        </div>
-                      </div>
-                      <Badge variant="outline" className="border-violet-500/25 bg-violet-500/10 text-violet-200">
-                        metadata-only
-                      </Badge>
-                    </div>
-                    <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-                      {ARTIFACT_INTENT_FIELDS.map((field) => (
-                        <label key={`${experiment.id}-${field.key}`} className="text-[11px] text-slate-500">
-                          <span className="mb-1 block uppercase tracking-[0.12em]">
-                            {field.label}{field.required ? ' *' : ''}
-                          </span>
-                          <input
-                            value={artifactIntentDraftFor(experiment.id)[field.key]}
-                            onChange={(event) => updateArtifactIntentDraft(experiment.id, field.key, event.target.value)}
-                            className="w-full rounded-xl border border-slate-800 bg-black/30 px-3 py-2 text-xs text-slate-100 outline-none focus:border-violet-400/50"
-                            placeholder={field.placeholder}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-                  <div className="rounded-xl border border-slate-800 p-3">Specs: {experiment.strategy_spec_ids.join(' / ') || 'none'}</div>
-                  <div className="rounded-xl border border-slate-800 p-3">Metrics: {experiment.metrics.join(' / ') || 'none'}</div>
-                  <div className="rounded-xl border border-slate-800 p-3">Can deploy: {String(experiment.approval_gate.can_deploy)}</div>
-                </div>
-                {experiment.evaluation_plan && (
-                  <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-xs font-semibold text-cyan-200">Evaluation plan: {experiment.evaluation_plan.mode}</div>
-                      <Button size="sm" variant="outline" disabled={runningExperimentId === experiment.id} onClick={() => runEvaluationPlan(experiment.id)}>
-                        {runningExperimentId === experiment.id ? 'Running...' : 'Run dry-run plan'}
-                      </Button>
-                    </div>
-                    <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                      {experiment.evaluation_plan.steps.map((step: any) => (
-                        <div key={step.id} className="rounded-lg border border-slate-800 bg-black/20 p-2 text-[11px]">
-                          <div className="font-semibold text-slate-200">{step.kind}</div>
-                          <div className="mt-1 text-slate-500">{step.controller_endpoint ?? 'blocked: no safe endpoint'}</div>
-                          <div className={step.execution_ready ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
-                            {step.execution_ready ? 'safe dry-run endpoint' : 'blocked until dry-run endpoint exists'}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {runErrors[experiment.id] && <div className="mt-2 text-xs text-red-300">{runErrors[experiment.id]}</div>}
-                    {runResults[experiment.id] && (
-                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-black/25 p-3 text-[11px] leading-relaxed text-slate-400">
-                        {runResults[experiment.id].report.review_packet}
-                      </pre>
-                    )}
-                    {runHistory[experiment.id]?.runs?.[0] && (
-                      <div className="mt-2 text-xs text-slate-500">
-                        latest dry-run: {runHistory[experiment.id].runs[0].created_at} / {runHistory[experiment.id].runs[0].verdict}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              )
-            })}
-          </CardContent>
-        </Card>
+        <div className="rounded-3xl border border-slate-800 bg-slate-950/50 p-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Strategy Ops</div>
+              <div className="mt-1 text-sm font-semibold text-slate-100">Spec + Dry-run / Learning + Reward</div>
+            </div>
+            <Badge variant="outline" className="border-emerald-500/25 text-emerald-200">
+              lifecycle view
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1fr]">
+            <Card className="border-slate-800 bg-slate-950/70">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <GitBranch className="h-4 w-4 text-cyan-300" /> Spec + Dry-run
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 gap-3">
+                {(specs?.specs ?? []).map((spec) => (
+                  <StrategySpecCard key={spec.id} spec={spec} dryRun={dryRunBySpec.get(spec.id)} />
+                ))}
+              </CardContent>
+            </Card>
+            <StrategyLearningPanel
+              learning={strategyLearning}
+              busy={metaActionBusy}
+              onMaterialize={materializeStrategyDecisionLog}
+              onRefreshRewards={refreshStrategyRewardLedger}
+              onRefreshPolicy={refreshStrategyPolicyState}
+            />
+          </div>
+        </div>
+
       </div>
     </AppShell>
   )

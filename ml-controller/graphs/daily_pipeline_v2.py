@@ -402,11 +402,22 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch failed: {raw}")
             return out
         if isinstance(raw, dict) and not raw.get("error"):
+            fallback_count = 0
+            fallback_reasons: dict[str, int] = {}
             for r in raw.get("results") or []:
                 sym = r.get("symbol")
                 if sym and not r.get("error"):
                     out[sym] = r
-            logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded")
+                    reason = r.get("fallback_reason")
+                    if r.get("degraded") or reason:
+                        fallback_count += 1
+                        if reason:
+                            fallback_reasons[str(reason)] = fallback_reasons.get(str(reason), 0) + 1
+            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded fallback={fallback_count}"
+            if fallback_count:
+                logger.warning(f"{log_msg} reasons={fallback_reasons}")
+            else:
+                logger.info(log_msg)
         elif isinstance(raw, dict) and raw.get("results") == []:
             logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
         else:

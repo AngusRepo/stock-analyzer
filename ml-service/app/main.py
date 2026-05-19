@@ -391,11 +391,12 @@ def _deprecated_run_permutation_importance(n_repeats: int = 5, max_samples: int 
 
 
 
-    import time, io, json as _json, joblib
+    import time, io, json as _json
     from sklearn.metrics import accuracy_score
     t0 = time.time()
 
     from .model_store import _get_bucket
+    from .artifact_runtime_versions import load_joblib_with_version_warnings
     bucket = _get_bucket()
     if bucket is None:
         return {"error": "GCS_BUCKET_NAME not configured or bucket unavailable"}
@@ -452,7 +453,7 @@ def _deprecated_run_permutation_importance(n_repeats: int = 5, max_samples: int 
             buf = io.BytesIO()
             blob.download_to_file(buf)
             buf.seek(0)
-            models[name] = joblib.load(buf)
+            models[name] = load_joblib_with_version_warnings(buf, artifact_name=f"universal/{name}.joblib")
         except Exception as e:
             print(f"[PermImp] {name} load failed: {e}")
 

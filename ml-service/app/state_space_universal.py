@@ -34,10 +34,11 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Min context for state-space (Kalman handles short series gracefully but
-# Markov-Switching needs ~30+ obs to estimate regime params).
+# Markov-Switching runner requires 60 prices before fitting; keep the batch
+# gate aligned so insufficient series are not logged as fallback successes.
 _MIN_CONTEXT = {
     "KalmanFilter":    10,
-    "MarkovSwitching": 30,
+    "MarkovSwitching": 60,
 }
 
 _DEFAULT_MAX_WORKERS = {
@@ -79,6 +80,9 @@ def _to_dict_shape(result, model_name: str, symbol: str, version: str) -> dict:
         "direction": direction,
         "model_version": version,
         "n_used": int(getattr(result, "_n_used", 0)) if hasattr(result, "_n_used") else None,
+        "degraded": bool(getattr(result, "degraded", False)),
+        "fallback_reason": getattr(result, "fallback_reason", None),
+        "diagnostics": getattr(result, "diagnostics", None),
     }
 
 
@@ -208,6 +212,8 @@ def _state_space_row_signature(row: dict) -> dict:
         "direction",
         "model_version",
         "n_used",
+        "degraded",
+        "fallback_reason",
         "error",
     )
     return {key: row.get(key) for key in keys if key in row}
@@ -296,16 +302,26 @@ def state_space_overlays_batch_predict(
         )
         elapsed_s = round(time.time() - t0, 3)
         n_success = sum(1 for row in results if not row.get("error"))
+        n_fallback = sum(1 for row in results if row.get("degraded") or row.get("fallback_reason"))
+        n_error = sum(1 for row in results if row.get("error"))
         overlays[model_name] = {
             "results": results,
             "n_input": len(series_list),
             "n_success": n_success,
+            "n_fallback": n_fallback,
+            "n_error": n_error,
             "version": version,
         }
         metrics[model_name] = {
             "elapsed_s": elapsed_s,
             "n_input": len(series_list),
             "n_success": n_success,
+            "n_fallback": n_fallback,
+            "n_error": n_error,
+            "fallback_reasons": {
+                str(reason): sum(1 for row in results if row.get("fallback_reason") == reason)
+                for reason in sorted({row.get("fallback_reason") for row in results if row.get("fallback_reason")})
+            },
         }
 
     return {

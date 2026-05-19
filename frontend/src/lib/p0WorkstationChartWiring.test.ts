@@ -1,4 +1,4 @@
-import * as fs from 'node:fs'
+﻿import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 function assert(condition: unknown, message: string): void {
@@ -56,6 +56,11 @@ assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix sho
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')
+assert(strategyLabPage.includes('Action Lanes'), 'Strategy Lab should group actionable controls into a left-side action lane')
+assert(strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should inspect registry evidence in the right-side inspector')
+assert(strategyLabPage.includes('Strategy Ops'), 'Strategy Lab should merge spec/dry-run and learning/reward into one lifecycle block')
+assert(strategyLabPage.includes('Spec + Dry-run / Learning + Reward'), 'Strategy Ops should label ex-ante and ex-post strategy evidence together')
+assert(!strategyLabPage.includes('/> Experiment Registry'), 'Strategy Lab should not render a duplicate full-width Experiment Registry panel')
 assert(strategyLabPage.includes('actionResult: string | null'), 'ModelUpgradeLaunchpad should receive scoped action feedback props')
 assert(strategyLabPage.includes('actionError: string | null'), 'ModelUpgradeLaunchpad should receive scoped action error props')
 assert(strategyLabPage.includes('正在建立 Strategy Lab experiment registry metadata'), 'ModelUpgradeLaunchpad should show immediate progress when seeding registry')
@@ -66,6 +71,8 @@ assert(strategyLabPage.includes('Run next dry-run'), 'ModelUpgradeLaunchpad shou
 assert(strategyLabPage.includes('limit: 1'), 'ModelUpgrade dry-run action should avoid sequential batch timeouts')
 assert(strategyLabPage.includes("registry_status === 'evaluation_pending'"), 'ModelUpgrade dry-run action should advance pending experiments before rerunning needs-attention rows')
 assert(strategyLabPage.includes('candidate_ids: [nextTarget.candidate_id]'), 'ModelUpgrade dry-run action should send an explicit target candidate id')
+assert(strategyLabPage.includes("setRegistrySelection({ kind: 'model_upgrade'"), 'ModelUpgrade actions should select the right-side registry inspector target')
+assert(strategyLabPage.includes("setRegistrySelection({ kind: 'experiment'"), 'Experiment actions should select the right-side registry inspector target')
 assert(
   strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
   'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',

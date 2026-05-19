@@ -817,11 +817,14 @@ def build_feature_matrix(
                 _zscore_const_cols.append(col)
             roll_std = roll_std_raw.clip(1e-8, None)
             df = df.with_columns(
-                ((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0).alias(col)
+                pl.when(roll_std_raw < 1e-6)
+                .then(0.0)
+                .otherwise(((pl.col(col) - roll_mean) / roll_std).clip(-5.0, 5.0))
+                .alias(col)
             )
     if _zscore_const_cols:
         print(f"[Features] Z-score: {len(_zscore_const_cols)} constant-variance cols "
-              f"(will be ±5 binary): {_zscore_const_cols[:5]}")
+              f"(neutralized to 0.0): {_zscore_const_cols[:5]}")
 
     # ── 14. NaN handling (features only, not targets) ────────────────────────
     # forward_fill: carry last known value forward (stale but not fictional).

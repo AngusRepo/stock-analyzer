@@ -35,6 +35,7 @@ from .artifact_contract import (
     build_model_artifact_metadata,
     validate_model_artifact_metadata,
 )
+from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ def load_model(
         blob.download_to_file(buf)
         _MODEL_CACHE_STATS["gcs_downloads"] += 1
         buf.seek(0)
-        model = joblib.load(buf)
+        model = load_joblib_with_version_warnings(buf, artifact_name=blob_path)
 
         # 載入 metadata
         metadata = {}
@@ -300,6 +301,14 @@ def load_model(
                         "status": "legacy",
                         "reason": "metadata missing model-artifact-v2 schema",
                     }
+                metadata["runtime_version_report"] = sklearn_version_report(metadata)
+                if metadata["runtime_version_report"]["status"] == "mismatch":
+                    logger.warning(
+                        "[ModelStore] Artifact sklearn version mismatch for %s: artifact=%s runtime=%s",
+                        model_name,
+                        metadata["runtime_version_report"].get("artifact_sklearn"),
+                        metadata["runtime_version_report"].get("runtime_sklearn"),
+                    )
 
         logger.info(f"[ModelStore] Loaded {model_name} from {blob_path} ({'pool' if used_pool else 'legacy/wf'})")
         if cacheable:

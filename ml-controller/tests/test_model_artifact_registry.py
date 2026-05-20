@@ -8,6 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services import model_artifact_registry as registry  # noqa: E402
 
 
+PROMOTION_GRADE_OFFLINE_EVIDENCE = (
+    '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
+    '"validation_packet":{"pbo":0.12,"deflated_sharpe":1.21,"monte_carlo":{"decision":"PASS"}}}'
+)
+
+
+PROMOTION_GRADE_LIVE_EVIDENCE = (
+    '{"decision":{"root_cause":"ok","metrics":{"shadow_samples":180,"production_samples":180,"min_samples":50}}}'
+)
+
+
 def test_build_artifact_records_from_monthly_followup_strong_pass():
     payload = {
         "run_id": "monthly-202605",
@@ -359,7 +370,8 @@ def test_promotion_queue_includes_backend_owned_action_context():
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
                 "live_gate_status": "passed",
-                "live_evidence_json": '{"decision":{"root_cause":"ok","metrics":{"shadow_samples":80}}}',
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             },
         ],
         champion_versions={"XGBoost": "vM"},
@@ -403,11 +415,16 @@ def test_update_live_gate_from_ic_passes_when_shadow_beats_production(monkeypatc
         min_samples=50,
     )
 
-    assert result["updates"][0]["state"] == "live_gate_passed"
-    assert result["updates"][0]["live_gate_status"] == "passed"
-    assert result["updates"][0]["promotion_decision"] == "pending_promotion_controller"
-    assert executed[0]["params"][0] == "live_gate_passed"
-    assert executed[0]["params"][1] == "passed"
+    assert result["updates"][0]["state"] == "shadowing"
+    assert result["updates"][0]["live_gate_status"] == "rolling_ic_passed"
+    assert result["updates"][0]["promotion_decision"] == "needs_multi_evidence_gate"
+    assert result["updates"][0]["root_cause"] == "rolling_ic_passed_needs_multi_evidence"
+    assert result["updates"][0]["action_context"]["evidence_status"] == "blocked"
+    assert "rolling_ic_only" in {
+        item["code"] for item in result["updates"][0]["action_context"]["blockers"]
+    }
+    assert executed[0]["params"][0] == "shadowing"
+    assert executed[0]["params"][1] == "rolling_ic_passed"
 
 
 def test_update_live_gate_from_ic_blocks_relative_win_when_shadow_ic_still_negative(monkeypatch):
@@ -462,6 +479,8 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift():
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
                 "live_gate_status": "passed",
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             },
             {
                 "artifact_id": "LightGBM:vM:monthly_release",
@@ -471,6 +490,8 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift():
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
                 "live_gate_status": "passed",
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             },
         ],
         champion_versions={"XGBoost": "vOld", "LightGBM": "vOld"},
@@ -545,6 +566,30 @@ def test_build_promotion_queue_keeps_weekly_hidden_after_monthly_promotes():
     assert queue["queue"] == []
     assert queue["suppressed_count"] == 1
     assert queue["suppressed"][0]["superseded_by"] == "XGBoost:v20260517170259:monthly_release"
+
+
+def test_build_promotion_queue_hides_stale_row_when_pointer_already_promoted():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "CatBoost:v20260517170259:monthly_release",
+                "model_name": "CatBoost",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+            },
+        ],
+        champion_versions={"CatBoost": "v20260517170259"},
+    )
+
+    assert queue["queue"] == []
+    assert queue["suppressed_count"] == 1
+    assert queue["suppressed"][0]["reason"] == "candidate_version_already_current_champion"
+    assert queue["suppressed"][0]["superseded_by"] == "current_champion_pointer"
 
 
 def test_build_promotion_queue_blocks_without_champion_pointer():
@@ -648,8 +693,8 @@ def test_promotion_controller_dry_run_requires_weekly_approval():
             "state": "live_gate_passed",
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
-            "live_evidence_json": "{}",
-            "offline_evidence_json": "{}",
+            "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
         }],
         d1_pointers=[{
             "model_name": "XGBoost",
@@ -686,8 +731,8 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
             "state": "live_gate_passed",
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
-            "live_evidence_json": "{}",
-            "offline_evidence_json": "{}",
+            "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
         }],
         d1_pointers=[{
             "model_name": "LightGBM",

@@ -16,6 +16,9 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ML_CONTROLLER_ROOT = ROOT / "ml-controller"
+if str(ML_CONTROLLER_ROOT) not in sys.path:
+    sys.path.insert(0, str(ML_CONTROLLER_ROOT))
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,13 @@ CORE_SPECS = [
 ]
 
 TRADING_RESTRICTION_RETENTION_DAYS = int(os.environ.get("FINLAB_TRADING_RESTRICTION_RETENTION_DAYS", "31"))
+DEFAULT_CANONICAL_DATASETS = [
+    "canonical_market_daily",
+    "canonical_chip_daily",
+    "canonical_revenue_monthly",
+    "canonical_broker_flow_daily",
+    "finlab_taxonomy_tags",
+]
 
 OPTIONAL_NEWS_SPECS = [
     DatasetSpec(
@@ -686,6 +696,60 @@ def insert_finlab_runtime_tables(manifest: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def parse_canonical_datasets(raw: str | None) -> list[str]:
+    if not raw:
+        return list(DEFAULT_CANONICAL_DATASETS)
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or list(DEFAULT_CANONICAL_DATASETS)
+
+
+def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[str, str]:
+    end = datetime.fromisoformat(generated_at).date()
+    start = end - timedelta(days=max(0, window_days))
+    return start.isoformat(), end.isoformat()
+
+
+def materialize_canonical_to_d1(
+    manifest: dict[str, Any],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    datasets: list[str],
+    limit_per_dataset: int | None = None,
+    chunk_size: int = 250,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from services.d1_client import batch_execute
+    from services.finlab_canonical_materializer import build_d1_upsert_statements, materialize_finlab_canonical_outputs
+
+    outputs = materialize_finlab_canonical_outputs(
+        manifest["artifact_root"],
+        run_id=manifest["run_id"],
+        generated_at=manifest["generated_at"],
+        start_date=start_date,
+        end_date=end_date,
+        limit_per_dataset=limit_per_dataset,
+        datasets=datasets,
+    )
+    statements = build_d1_upsert_statements(outputs)
+    apply_result = {"total": len(statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
+    if not dry_run and statements:
+        apply_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+    return {
+        "schema_version": "finlab-canonical-d1-apply-v1",
+        "run_id": manifest["run_id"],
+        "generated_at": manifest["generated_at"],
+        "artifact_root": manifest["artifact_root"],
+        "start_date": start_date,
+        "end_date": end_date,
+        "datasets": datasets,
+        "row_counts": outputs.manifest.get("row_counts", {}),
+        "statement_count": len(statements),
+        "apply_result": apply_result,
+        "checksum": outputs.manifest.get("checksum"),
+    }
+
+
 def canonical_table_for_lane(lane: str) -> str:
     if "price" in lane or lane == "global_context":
         return "canonical_market_daily"
@@ -711,6 +775,14 @@ def main() -> int:
     parser.add_argument("--write-d1", action="store_true")
     parser.add_argument("--gcs-bucket", default=os.environ.get("GCS_BUCKET_NAME", ""))
     parser.add_argument("--gcs-prefix", default="finlab/v4/backfill")
+    parser.add_argument("--apply-canonical-d1", action="store_true", help="Materialize row-level canonical tables from this run and upsert them to D1.")
+    parser.add_argument("--canonical-start-date", default="", help="Inclusive canonical materialization start date. Defaults to generated_at - window days.")
+    parser.add_argument("--canonical-end-date", default="", help="Inclusive canonical materialization end date. Defaults to generated_at date.")
+    parser.add_argument("--canonical-window-days", type=int, default=7, help="Daily incremental canonical window when explicit dates are omitted.")
+    parser.add_argument("--canonical-datasets", default=",".join(DEFAULT_CANONICAL_DATASETS), help="Comma-separated canonical output datasets.")
+    parser.add_argument("--canonical-limit-per-dataset", type=int, default=0)
+    parser.add_argument("--canonical-d1-chunk-size", type=int, default=250)
+    parser.add_argument("--canonical-dry-run", action="store_true")
     args = parser.parse_args()
 
     missing = [key for key in ["FINLAB_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"] if not os.environ.get(key)]
@@ -759,6 +831,20 @@ def main() -> int:
     if args.write_d1:
         insert_d1_summary(manifest)
         manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
+        if args.apply_canonical_d1:
+            default_start, default_end = default_canonical_window(
+                generated_at=generated_at,
+                window_days=args.canonical_window_days,
+            )
+            manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
+                manifest,
+                start_date=args.canonical_start_date or default_start,
+                end_date=args.canonical_end_date or default_end,
+                datasets=parse_canonical_datasets(args.canonical_datasets),
+                limit_per_dataset=args.canonical_limit_per_dataset or None,
+                chunk_size=args.canonical_d1_chunk_size,
+                dry_run=args.canonical_dry_run,
+            )
         write_json(run_dir / "manifest.json", manifest)
 
     print(json.dumps({
@@ -768,6 +854,7 @@ def main() -> int:
         "artifact_root": str(run_dir),
         "gcs_upload": manifest.get("gcs_upload"),
         "runtime_table_writeback": manifest.get("runtime_table_writeback"),
+        "canonical_d1_apply": manifest.get("canonical_d1_apply"),
     }, ensure_ascii=False, sort_keys=True))
     return 0
 

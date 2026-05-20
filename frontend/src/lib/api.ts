@@ -1140,6 +1140,7 @@ export type ModelArtifactActionContext = {
   failed_gates?: string[]
   metrics?: Record<string, unknown>
   selection_slot?: string | null
+  blockers?: Array<{ code: string; label: string; next_action: string; severity?: string }>
 }
 
 export type ModelArtifactRegistryResponse = {
@@ -1194,6 +1195,8 @@ export type ModelArtifactPromotionQueueResponse = {
     promotion_decision: string
     approval_required: boolean
     next_action: string
+    blockers?: Array<{ code: string; label: string; next_action: string; severity?: string }>
+    blocker_codes?: string[]
     action_context?: ModelArtifactActionContext
   }>
 }

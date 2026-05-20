@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import polars as pl
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "ml-controller"))
 
 from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
@@ -11,6 +16,7 @@ from services.finlab_canonical_materializer import (
     materialize_finlab_canonical_outputs,
     normalize_symbol,
 )
+from tools.finlab_v4_remote_backfill import default_canonical_window, parse_canonical_datasets
 
 
 def _write(path: Path, df: pl.DataFrame) -> None:
@@ -25,6 +31,18 @@ def _root(name: str) -> Path:
 def test_normalize_symbol_handles_rotc_name_suffix() -> None:
     assert normalize_symbol("6682 Test Emerging") == "6682"
     assert normalize_symbol("2330") == "2330"
+
+
+def test_remote_backfill_canonical_defaults_are_incremental() -> None:
+    start, end = default_canonical_window(generated_at="2026-05-20T14:00:00+00:00", window_days=7)
+    assert (start, end) == ("2026-05-13", "2026-05-20")
+    datasets = parse_canonical_datasets("")
+    assert "canonical_market_daily" in datasets
+    assert "canonical_broker_flow_daily" in datasets
+    assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
+        "canonical_chip_daily",
+        "finlab_taxonomy_tags",
+    ]
 
 
 def test_emerging_broker_rows_materialize_canonical_chip_and_lineage() -> None:

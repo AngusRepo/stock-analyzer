@@ -131,6 +131,71 @@ function MetricCell({
   )
 }
 
+function sourceKeyFromCheck(check: DataQualityCheck) {
+  const text = `${check.id} ${check.label} ${check.summary}`.toLowerCase()
+  if (text.includes('finlab')) return 'FinLab'
+  if (text.includes('finnhub')) return 'Finnhub'
+  if (text.includes('gdelt')) return 'GDELT'
+  if (text.includes('official') || text.includes('twse') || text.includes('tpex') || text.includes('fsc')) return 'Official'
+  if (text.includes('ir') || text.includes('newsroom')) return 'IR'
+  if (text.includes('ptt')) return 'PTT'
+  if (text.includes('anue') || text.includes('cnyes') || text.includes('avenue')) return 'Anue'
+  if (text.includes('price') || text.includes('chip') || text.includes('market') || text.includes('canonical')) return 'Market Data'
+  if (text.includes('model') || text.includes('prediction') || text.includes('recommendation')) return 'Model Output'
+  return 'Other'
+}
+
+function SourceFreshnessSmallMultiples({ checks }: { checks: DataQualityCheck[] }) {
+  const grouped = checks.reduce<Record<string, { ok: number; warn: number; fail: number; total: number; latest: string }>>((acc, check) => {
+    const key = sourceKeyFromCheck(check)
+    const row = acc[key] ?? { ok: 0, warn: 0, fail: 0, total: 0, latest: '' }
+    row.total += 1
+    if (check.status === 'ok') row.ok += 1
+    else if (check.status === 'warn') row.warn += 1
+    else row.fail += 1
+    row.latest = check.summary || row.latest
+    acc[key] = row
+    return acc
+  }, {})
+  const rows = Object.entries(grouped)
+    .sort((a, b) => (b[1].fail - a[1].fail) || (b[1].warn - a[1].warn) || b[1].total - a[1].total)
+    .slice(0, 10)
+
+  if (!rows.length) return null
+
+  return (
+    <WorkstationPanel title="Source Freshness Matrix / 資料源 freshness" kicker="ok / warn / fail by source">
+      <div className="grid gap-3 p-3 md:grid-cols-2 xl:grid-cols-5">
+        {rows.map(([source, row]) => {
+          const tone: WorkstationTone = row.fail ? 'error' : row.warn ? 'warn' : 'ok'
+          const okPct = row.total ? (row.ok / row.total) * 100 : 0
+          const warnPct = row.total ? (row.warn / row.total) * 100 : 0
+          const failPct = row.total ? (row.fail / row.total) * 100 : 0
+          return (
+            <div key={source} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-semibold text-slate-100">{source}</div>
+                <WorkstationPill tone={tone}>{formatStatus(tone)}</WorkstationPill>
+              </div>
+              <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-[#111827]">
+                <div className="bg-emerald-300" style={{ width: `${okPct}%` }} />
+                <div className="bg-amber-300" style={{ width: `${warnPct}%` }} />
+                <div className="bg-rose-300" style={{ width: `${failPct}%` }} />
+              </div>
+              <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-500">
+                <span>ok {row.ok}</span>
+                <span>warn {row.warn}</span>
+                <span>fail {row.fail}</span>
+              </div>
+              <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-slate-500">{row.latest || 'no summary'}</p>
+            </div>
+          )
+        })}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
@@ -163,7 +228,7 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
             </a>
             <div className={`xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
               <p className="text-slate-400">
-                <span className="font-semibold text-slate-200">狀態紀錄：</span>{schedulerStatusLog(job)}
+                <span className="font-semibold text-slate-200">{schedulerStatusLogLabel(job)}：</span>{schedulerStatusLog(job)}
               </p>
               {schedulerHasRootCause(job) && (
                 <>
@@ -356,6 +421,9 @@ function AdaptiveMetaPanel({
   const bestMetrics = asRecord(gaEvidence.best_metrics)
   const learnedPolicy = asRecord(gaEvidence.learned_alpha_framework)
   const historyTail = gaEvidence.history_tail
+  const gaLearningUpdatedAt = String(gaEvidence.learning_updated_at ?? ga?.ts ?? '-')
+  const gaRunPopulation = gaEvidence.run_population_size ?? gaEvidence.population_size
+  const gaRunGenerations = gaEvidence.run_generations ?? gaEvidence.generations
   const requiredEvidence = Array.isArray(promotion.requiredEvidence)
     ? promotion.requiredEvidence.map(String)
     : Array.isArray(promotion.required_evidence)
@@ -438,7 +506,7 @@ function AdaptiveMetaPanel({
               <span>ctx {String(expandedContext.version ?? linucbLedger.context_version ?? '-')}</span>
             </div>
             <p className="mt-2 text-[#70809b]">
-              LinUCB baseline 會用 reward ledger 追蹤每個 arm 的樣本與報酬；NeuralUCB / NeuralTS 只能拿這些 evidence 做 shadow 訓練，不會直接改 production。
+              LinUCB reward ledger 由 post-verify chain 自動刷新；手動刷新只用於補跑或修復。NeuralUCB / NeuralTS 只使用這些 evidence 做 shadow 訓練，不直接改 production。
             </p>
           </div>
         </div>
@@ -471,10 +539,14 @@ function AdaptiveMetaPanel({
               <p className="text-slate-500">score delta</p>
               <p className="font-mono text-lg text-sky-200">{scoreDelta(historyTail)}</p>
             </div>
+            <div className="col-span-2">
+              <p className="text-slate-500">last learned</p>
+              <p className="font-mono text-sm text-slate-100">{gaLearningUpdatedAt}</p>
+            </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
-            <span>population {String(gaEvidence.population_size ?? '-')}</span>
-            <span>generations {String(gaEvidence.generations ?? '-')}</span>
+            <span>run population {String(gaRunPopulation ?? '-')}</span>
+            <span>run generations {String(gaRunGenerations ?? '-')}</span>
             <span>history {String(gaEvidence.history_count ?? '-')}</span>
             <span>PBO {fmtNumber(bestMetrics.pbo, 3)}</span>
             <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
@@ -511,8 +583,8 @@ function AdaptiveMetaPanel({
             </WorkstationPill>
           </div>
           <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-100">
-            <p className="font-semibold text-amber-200">L3 晉級規則</p>
-            <p>GA 會自動學習並產生 candidate，但 L3/L4 會先停在 approval gate：必須看到 fitness、PBO/MC、candidate diff 都合格，且由 Wei 審核後才允許寫入 production trading:config。</p>
+            <p className="font-semibold text-amber-200">GA 學習節奏</p>
+            <p>weekly 會跑小型 GA sweep（目前 12 population / 4 generations），monthly 會跑較大型 sweep（目前 36 / 12）。這些數字是單次 run 設定，不是累積進度；是否持續學習要看 last learned、history 與 best score 是否更新。L3/L4 仍需 approval gate，通過前不寫入 production trading config。</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {canRequestNextLevel && !pendingApprovalLevel && (
                 <Button
@@ -632,12 +704,18 @@ function schedulerHasRootCause(job: SchedulerJob) {
   const status = String(job.lastStatus ?? '').toLowerCase()
   if (job.lastError) return true
   if (status === 'failed' || status === 'error') return true
-  const text = String(job.summary ?? '').toLowerCase()
-  return /error|fail|failed|stale|timeout|sla|not ready|missing|incomplete|unauthorized|blocked/.test(text)
+  return Boolean(job.durationConcern && job.durationConcern !== 'expected_short')
+}
+
+function schedulerStatusLogLabel(job: SchedulerJob) {
+  return schedulerHasRootCause(job) ? '狀態紀錄' : '執行摘要'
 }
 
 function schedulerRootCause(job: SchedulerJob) {
   if (job.lastError) return job.lastError
+  if (job.durationConcern && job.durationConcern !== 'expected_short') {
+    return job.durationConcernReason || job.summary || job.durationConcern
+  }
   if (schedulerHasRootCause(job) && job.summary) return job.summary
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
   if (job.lastStatus === 'sleep') return '今天不是此排程的執行日。'
@@ -721,6 +799,8 @@ export default function ObservabilityPage() {
             <DependencyMap />
           </WorkstationPanel>
         </section>
+
+        <SourceFreshnessSmallMultiples checks={dqChecks} />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <div className="border-b border-[#263247] p-3">

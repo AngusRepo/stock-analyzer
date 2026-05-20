@@ -67,7 +67,14 @@ async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promis
          LIMIT 5
       )
       SELECT c.date,
-             SUM((COALESCE(c.foreign_net,0) + COALESCE(c.trust_net,0) + COALESCE(c.dealer_net,0)) * COALESCE(m.close,0)) / 100000000.0 AS net_billion
+             COUNT(m.close) AS priced_rows,
+             SUM(
+               CASE
+                 WHEN m.close IS NOT NULL
+                 THEN (COALESCE(c.foreign_net,0) + COALESCE(c.trust_net,0) + COALESCE(c.dealer_net,0)) * m.close
+                 ELSE NULL
+               END
+             ) / 100000000.0 AS net_billion
         FROM canonical_chip_daily c
         LEFT JOIN canonical_market_daily m
           ON m.stock_id = c.stock_id
@@ -76,13 +83,15 @@ async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promis
        WHERE c.date IN (SELECT date FROM dates)
        GROUP BY c.date
        ORDER BY c.date DESC
-    `).bind(date).all<{ date: string; net_billion: number | null }>()
+    `).bind(date).all<{ date: string; priced_rows: number | null; net_billion: number | null }>()
     const list = rows.results ?? []
     if (!list.length) return { value: null, sourceDate: null }
-    const total = list.reduce((sum, row) => sum + Number(row.net_billion ?? 0), 0)
+    const priced = list.filter((row) => Number(row.priced_rows ?? 0) > 0 && row.net_billion != null)
+    if (!priced.length) return { value: null, sourceDate: list[0]?.date ?? null }
+    const total = priced.reduce((sum, row) => sum + Number(row.net_billion ?? 0), 0)
     return {
       value: Math.round(total * 10) / 10,
-      sourceDate: list[0]?.date ?? null,
+      sourceDate: priced[0]?.date ?? list[0]?.date ?? null,
     }
   } catch {
     return { value: null, sourceDate: null }
@@ -101,8 +110,9 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
       ),
       daily AS (
         SELECT c.date,
-               SUM(COALESCE(c.margin_balance,0) * COALESCE(m.close,0)) / 100000000.0 AS margin_billion,
-               SUM(COALESCE(c.short_balance,0) * COALESCE(m.close,0)) / 100000000.0 AS short_billion
+               COUNT(m.close) AS priced_rows,
+               SUM(CASE WHEN m.close IS NOT NULL THEN COALESCE(c.margin_balance,0) * m.close ELSE NULL END) / 100000000.0 AS margin_billion,
+               SUM(CASE WHEN m.close IS NOT NULL THEN COALESCE(c.short_balance,0) * m.close ELSE NULL END) / 100000000.0 AS short_billion
           FROM canonical_chip_daily c
           LEFT JOIN canonical_market_daily m
             ON m.stock_id = c.stock_id
@@ -113,8 +123,8 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
          ORDER BY c.date ASC
       )
       SELECT * FROM daily
-    `).bind(date).all<{ date: string; margin_billion: number | null; short_billion: number | null }>()
-    const list = rows.results ?? []
+    `).bind(date).all<{ date: string; priced_rows: number | null; margin_billion: number | null; short_billion: number | null }>()
+    const list = (rows.results ?? []).filter((row) => Number(row.priced_rows ?? 0) > 0)
     if (list.length < 2) return { value: null, sourceDate: list.at(-1)?.date ?? null, detail: 'not enough canonical leverage rows' }
     const latest = list[list.length - 1]
     const prev = list[0]

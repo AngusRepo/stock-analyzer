@@ -1,5 +1,13 @@
-import { useEffect, useState } from 'react'
-import { Activity, AlertTriangle, BarChart3, Globe2, LineChart, ShieldCheck, TrendingDown, Waves } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Globe2,
+  ShieldCheck,
+  TrendingDown,
+  Waves,
+} from 'lucide-react'
 import { marketApi } from '@/lib/api'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 
@@ -22,12 +30,6 @@ interface MarketRiskFactor {
 interface MarketRisk {
   date: string
   twiiClose: number | null
-  twiiVol20: number | null
-  twiiMa20: number | null
-  twiiBias: number | null
-  foreignConsecutiveSell: number
-  foreignNet5d: number | null
-  marginRatio: number | null
   riskScore: number
   riskLevel: 'green' | 'yellow' | 'orange' | 'red' | 'black'
   riskSummary: string
@@ -55,49 +57,239 @@ interface HistoryRow {
   risk_level: string
 }
 
+interface FactorGroup {
+  id: string
+  label: string
+  value: string
+  status: FactorStatus
+  score: number
+  contribution: number
+  source: string
+  sourceDate?: string | null
+  detail: string
+  missingReason?: string
+  factors: MarketRiskFactor[]
+  Icon: typeof Activity
+}
+
 const LEVEL_CONFIG = {
   green: { label: '低風險', color: 'text-emerald-300', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', bar: 'bg-emerald-400' },
-  yellow: { label: '留意', color: 'text-yellow-300', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', bar: 'bg-yellow-400' },
+  yellow: { label: '觀察', color: 'text-yellow-300', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', bar: 'bg-yellow-400' },
   orange: { label: '偏高', color: 'text-orange-300', bg: 'bg-orange-500/10', border: 'border-orange-500/30', bar: 'bg-orange-400' },
   red: { label: '高風險', color: 'text-red-300', bg: 'bg-red-500/10', border: 'border-red-500/30', bar: 'bg-red-400' },
   black: { label: '極端風險', color: 'text-zinc-200', bg: 'bg-zinc-700/50', border: 'border-zinc-400/40', bar: 'bg-zinc-300' },
 }
 
-const FACTOR_ICONS: Record<string, typeof Activity> = {
-  price_trend: LineChart,
-  volatility: Waves,
-  breadth: BarChart3,
-  chips: TrendingDown,
-  leverage: Activity,
-  regime: ShieldCheck,
-  global_risk: Globe2,
-  global: Globe2,
-  lppls: AlertTriangle,
-  hawkes: Activity,
-  event_monitors: AlertTriangle,
-}
-
 const STATUS_STYLE: Record<FactorStatus, string> = {
-  ok: 'border-emerald-400/25 bg-emerald-400/8 text-emerald-200',
-  info: 'border-sky-400/20 bg-sky-400/8 text-sky-200',
-  warn: 'border-amber-400/25 bg-amber-400/8 text-amber-200',
-  error: 'border-red-400/25 bg-red-400/8 text-red-200',
-  missing: 'border-slate-400/20 bg-slate-400/8 text-slate-300',
+  ok: 'border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-200',
+  info: 'border-sky-400/25 bg-sky-400/[0.08] text-sky-200',
+  warn: 'border-amber-400/30 bg-amber-400/[0.08] text-amber-200',
+  error: 'border-red-400/30 bg-red-400/[0.08] text-red-200',
+  missing: 'border-slate-500/30 bg-slate-500/[0.08] text-slate-300',
 }
 
-function fmtNumber(value: unknown, decimals = 1): string {
-  const n = Number(value)
-  return Number.isFinite(n) ? n.toFixed(decimals) : '0.0'
+const GROUPS = [
+  {
+    id: 'trend_volatility',
+    label: '趨勢 / 波動',
+    factorIds: ['price_trend', 'volatility'],
+    sourceHint: '20MA 乖離 + VIX/20日波動',
+    Icon: Waves,
+  },
+  {
+    id: 'breadth',
+    label: '市場廣度',
+    factorIds: ['breadth'],
+    sourceHint: 'sector_flow 或漲跌家數 proxy',
+    Icon: BarChart3,
+  },
+  {
+    id: 'chips',
+    label: '籌碼',
+    factorIds: ['chips'],
+    sourceHint: 'canonical_chip_daily 5日法人金額',
+    Icon: TrendingDown,
+  },
+  {
+    id: 'leverage',
+    label: '槓桿',
+    factorIds: ['leverage'],
+    sourceHint: '融資融券 / 借券壓力',
+    Icon: Activity,
+  },
+  {
+    id: 'macro_global',
+    label: '總經 / 全球',
+    factorIds: ['macro', 'global', 'global_risk'],
+    sourceHint: 'FinLab 總經、世界指數、全球事件',
+    Icon: Globe2,
+  },
+  {
+    id: 'event_pressure',
+    label: '事件壓力',
+    factorIds: ['event_monitors', 'lppls', 'hawkes'],
+    sourceHint: '泡沫加速與事件連鎖監控',
+    Icon: AlertTriangle,
+  },
+] as const
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function cleanValue(value?: string | null) {
+  const text = String(value ?? '').trim()
+  if (!text || /^n\/a$/i.test(text) || /^context( missing)?$/i.test(text)) return '缺資料'
+  return text
+}
+
+function readableStatus(status: FactorStatus) {
+  if (status === 'ok') return '正常'
+  if (status === 'info') return '中性'
+  if (status === 'warn') return '注意'
+  if (status === 'error') return '風險'
+  return '缺資料'
+}
+
+function worstStatus(factors: MarketRiskFactor[]): FactorStatus {
+  if (!factors.length) return 'missing'
+  if (factors.some((factor) => factor.status === 'error')) return 'error'
+  if (factors.some((factor) => factor.status === 'warn')) return 'warn'
+  if (factors.every((factor) => factor.status === 'missing' || factor.missing_reason)) return 'missing'
+  if (factors.some((factor) => factor.status === 'info')) return 'info'
+  return 'ok'
+}
+
+function factorScore(factor: MarketRiskFactor) {
+  const score = Number(factor.score)
+  return Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 45
+}
+
+function factorContribution(factor: MarketRiskFactor) {
+  const contribution = Number(factor.contribution)
+  return Number.isFinite(contribution) ? contribution : factorScore(factor) * Number(factor.weight ?? 0)
+}
+
+function latestSourceDate(factors: MarketRiskFactor[]) {
+  return factors.map((factor) => factor.source_date).filter(Boolean).sort().at(-1) ?? null
+}
+
+function buildGroupValue(groupId: string, factors: MarketRiskFactor[]) {
+  const byId = new Map(factors.map((factor) => [factor.id, factor]))
+  if (groupId === 'trend_volatility') {
+    return `${cleanValue(byId.get('price_trend')?.value)} / ${cleanValue(byId.get('volatility')?.value)}`
+  }
+  if (groupId === 'macro_global') {
+    const values = [byId.get('macro')?.value, byId.get('global')?.value, byId.get('global_risk')?.value]
+      .map(cleanValue)
+      .filter((value) => value !== '缺資料')
+    return values.length ? values.join(' / ') : '缺資料'
+  }
+  if (groupId === 'event_pressure') {
+    const value = cleanValue(byId.get('event_monitors')?.value ?? byId.get('lppls')?.value ?? byId.get('hawkes')?.value)
+    return value === '缺資料' ? value : `壓力 ${value}`
+  }
+  return cleanValue(factors[0]?.value)
+}
+
+function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
+  return GROUPS.map((group) => {
+    const matched = factors.filter((factor) => group.factorIds.includes(factor.id as never))
+    const status = worstStatus(matched)
+    const missingReasons = matched
+      .map((factor) => factor.missing_reason)
+      .filter((reason): reason is string => Boolean(reason))
+    const avgScore = matched.length
+      ? matched.reduce((sum, factor) => sum + factorScore(factor), 0) / matched.length
+      : 45
+    const contribution = matched.reduce((sum, factor) => sum + factorContribution(factor), 0)
+    const sources = matched.map((factor) => factor.source).filter(Boolean)
+    const details = matched
+      .map((factor) => factor.detail)
+      .filter(Boolean)
+      .slice(0, 2)
+
+    return {
+      id: group.id,
+      label: group.label,
+      value: buildGroupValue(group.id, matched),
+      status,
+      score: Math.round(avgScore),
+      contribution: Math.round(contribution * 10) / 10,
+      source: sources.length ? Array.from(new Set(sources)).join(' + ') : group.sourceHint,
+      sourceDate: latestSourceDate(matched),
+      detail: details.length ? details.join('；') : group.sourceHint,
+      missingReason: missingReasons.length ? Array.from(new Set(missingReasons)).join(' / ') : undefined,
+      factors: matched,
+      Icon: group.Icon,
+    }
+  })
 }
 
 function fallbackFactors(risk: MarketRisk): MarketRiskFactor[] {
   return [
-    { id: 'price_trend', label: '價格趨勢', value: `${Number(risk.twiiBias ?? 0).toFixed(2)}%`, status: Number(risk.twiiBias ?? 0) < -1 ? 'warn' : 'ok', source: 'market_risk.twii_bias' },
-    { id: 'volatility', label: '波動', value: `${Number(risk.twiiVol20 ?? 0).toFixed(2)}%`, status: 'info', source: 'market_risk.twii_vol20' },
-    { id: 'chips', label: '籌碼', value: `${Number(risk.foreignNet5d ?? 0).toFixed(1)}億`, status: Number(risk.foreignNet5d ?? 0) < 0 ? 'warn' : 'ok', source: 'market_risk.foreign_net_5d' },
-    { id: 'leverage', label: '槓桿', value: risk.marginRatio == null ? 'n/a' : `${Number(risk.marginRatio).toFixed(2)}%`, status: 'info', source: 'market_risk.margin_ratio' },
-    { id: 'regime', label: 'Regime', value: risk.regimeState?.label ?? 'missing', status: risk.regimeState ? 'ok' : 'error', source: risk.regimeState?.source ?? 'market_regime_state' },
+    {
+      id: 'price_trend',
+      label: '價格趨勢',
+      value: '缺資料',
+      status: 'missing',
+      source: 'market_risk.twii_bias',
+      detail: `TWII close ${risk.twiiClose ?? 'n/a'}`,
+      missing_reason: 'market_regime_factor_packet_missing',
+    },
   ]
+}
+
+function marketSummary(risk: MarketRisk, groups: FactorGroup[]) {
+  const missing = groups.filter((group) => group.status === 'missing').map((group) => group.label)
+  const pressure = [...groups].sort((a, b) => b.contribution - a.contribution)[0]
+  const regime = risk.regimeState?.label ?? 'regime missing'
+  const base = `${regime}，主要風險來源：${pressure?.label ?? '缺資料'}。`
+  return missing.length ? `${base} 缺資料：${missing.join('、')}。` : base
+}
+
+function MiniBars({ factors }: { factors: MarketRiskFactor[] }) {
+  const safe = factors.length ? factors : [{ id: 'missing', score: 0, status: 'missing' as FactorStatus }] as MarketRiskFactor[]
+  return (
+    <div className="mt-3 flex h-7 items-end gap-1" aria-label="factor mini bars">
+      {safe.map((factor, index) => {
+        const score = factorScore(factor)
+        return (
+          <div
+            key={`${factor.id}:${index}`}
+            className="flex-1 rounded-sm bg-current opacity-70"
+            style={{ height: `${Math.max(4, (score / 100) * 28)}px` }}
+            title={`${factor.label ?? factor.id}: ${score}`}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function HistoryBars({ history }: { history: HistoryRow[] }) {
+  if (!history.length) return null
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">30 日風險分數</div>
+        <div className="font-mono text-[10px] text-muted-foreground">
+          {history[0]?.date.slice(5)} → {history[history.length - 1]?.date.slice(5)}
+        </div>
+      </div>
+      <div className="flex h-14 items-end gap-0.5">
+        {history.slice(-30).map((row) => {
+          const height = Math.max(4, (Number(row.risk_score ?? 0) / 100) * 56)
+          const cfg = LEVEL_CONFIG[row.risk_level as keyof typeof LEVEL_CONFIG] ?? LEVEL_CONFIG.green
+          return (
+            <div key={row.date} className="flex-1 rounded-sm" style={{ height: `${height}px` }} title={`${row.date} risk:${row.risk_score}`}>
+              <div className={`h-full w-full rounded-sm ${cfg.bar} opacity-80`} />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 export default function MarketRiskPanel() {
@@ -124,11 +316,17 @@ export default function MarketRiskPanel() {
     load()
   }, [])
 
+  const groups = useMemo(() => {
+    if (!risk) return []
+    const factors = risk.contextFactors?.length ? risk.contextFactors : fallbackFactors(risk)
+    return buildFactorGroups(factors)
+  }, [risk])
+
   if (loading) {
     return (
       <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">
         <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-        載入大盤風險...
+        載入市場判讀...
       </div>
     )
   }
@@ -136,8 +334,8 @@ export default function MarketRiskPanel() {
   if (error) {
     return (
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
-        <p className="font-semibold text-amber-200">大盤風險 API 載入失敗</p>
-        <p className="mt-1 text-xs text-muted-foreground">請回 OBS/Data Quality 查看 market_risk 與 market_regime_state。</p>
+        <p className="font-semibold text-amber-200">市場判讀 API 載入失敗</p>
+        <p className="mt-1 text-xs text-muted-foreground">請到 OBS/Data Quality 檢查 market_risk 與 market_regime_state。</p>
         <p className="mt-2 font-mono text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
       </div>
     )
@@ -146,89 +344,72 @@ export default function MarketRiskPanel() {
   if (!risk) return null
 
   const cfg = LEVEL_CONFIG[risk.riskLevel] ?? LEVEL_CONFIG.green
-  const factors = (risk.contextFactors?.length ? risk.contextFactors : fallbackFactors(risk)).slice(0, 9)
   const packetGeneratedAt = risk.factorPacket?.generated_at ?? risk.calculatedAt
+  const missingCount = groups.filter((group) => group.status === 'missing').length
+  const score = isFiniteNumber(risk.riskScore) ? risk.riskScore : Number(risk.factorPacket?.score ?? 0)
 
   return (
     <div className="space-y-3">
       <div className={`rounded-lg border ${cfg.border} ${cfg.bg} p-5`}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
           <div>
-            <div className="text-xs text-muted-foreground">今日市場判讀</div>
-            <div className={`mt-1 text-2xl font-bold ${cfg.color}`}>{cfg.label}</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              regime={risk.regimeState?.label ?? 'missing'} · run_date={risk.regimeState?.runDate ?? risk.date}
+            <div className="flex flex-wrap items-center gap-2">
+              <ShieldCheck className={`h-4 w-4 ${cfg.color}`} />
+              <span className="text-xs font-semibold text-muted-foreground">FinLab-style market regime packet</span>
+              {missingCount > 0 && (
+                <span className="rounded-full border border-slate-500/30 px-2 py-0.5 text-[10px] text-slate-300">
+                  missing {missingCount}
+                </span>
+              )}
             </div>
-            <div className="mt-2 text-[11px] font-mono text-muted-foreground">
-              policy={risk.factorPacket?.schema_version ?? 'legacy-market-risk'} · generated={formatTwDateTimeShort(packetGeneratedAt)}
+            <div className={`mt-2 text-2xl font-bold ${cfg.color}`}>{cfg.label}</div>
+            <p className="mt-2 text-sm leading-6 text-foreground/80">{marketSummary(risk, groups)}</p>
+            <div className="mt-3 flex flex-wrap gap-2 font-mono text-[10px] text-muted-foreground">
+              <span>run_date={risk.regimeState?.runDate ?? risk.date}</span>
+              <span>policy={risk.factorPacket?.schema_version ?? 'legacy-market-risk'}</span>
+              <span>generated={formatTwDateTimeShort(packetGeneratedAt)}</span>
             </div>
           </div>
-          <div className="text-right">
-            <div className="text-xs text-muted-foreground">風險分數</div>
-            <div className={`mt-1 text-3xl font-bold tabular-nums ${cfg.color}`}>
-              {risk.riskScore}<span className="text-sm font-normal text-muted-foreground">/100</span>
+          <div className="rounded-lg border border-black/20 bg-black/15 p-3 text-right">
+            <div className="text-xs text-muted-foreground">大盤風險分數</div>
+            <div className={`mt-1 text-4xl font-bold tabular-nums ${cfg.color}`}>
+              {score}<span className="text-sm font-normal text-muted-foreground">/100</span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted/30">
+              <div className={`h-full rounded-full transition-all duration-700 ${cfg.bar}`} style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
             </div>
           </div>
-        </div>
-
-        <div className="mt-4 h-2 overflow-hidden rounded-full bg-muted/30">
-          <div className={`h-full rounded-full transition-all duration-700 ${cfg.bar}`} style={{ width: `${Math.max(0, Math.min(100, risk.riskScore))}%` }} />
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {factors.map((factor) => {
-            const Icon = FACTOR_ICONS[factor.id] ?? Activity
-            const scoreWidth = Math.max(4, Math.min(100, Number(factor.score ?? 0)))
+          {groups.map((group) => {
+            const Icon = group.Icon
             return (
-              <div key={`${factor.id}:${factor.source}`} className={`rounded-md border p-3 ${STATUS_STYLE[factor.status] ?? STATUS_STYLE.info}`}>
-                <div className="flex items-center justify-between gap-3">
+              <div key={group.id} className={`rounded-md border p-3 ${STATUS_STYLE[group.status]}`}>
+                <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <Icon className="h-4 w-4 shrink-0" />
-                    <span className="truncate text-xs font-semibold">{factor.label}</span>
+                    <span className="truncate text-sm font-semibold">{group.label}</span>
                   </div>
-                  <span className="shrink-0 font-mono text-xs">{factor.value}</span>
+                  <span className="shrink-0 rounded-full border border-current/25 px-2 py-0.5 text-[10px]">{readableStatus(group.status)}</span>
                 </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/20">
-                  <div className="h-full rounded-full bg-current opacity-80" style={{ width: `${scoreWidth}%` }} />
+                <div className="mt-3 font-mono text-lg font-semibold tabular-nums">{group.value}</div>
+                <MiniBars factors={group.factors} />
+                <div className="mt-3 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground">
+                  <span className="truncate">{group.source}</span>
+                  <span className="shrink-0">risk {group.score} / c{group.contribution.toFixed(1)}</span>
                 </div>
-                <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground">
-                  <span className="truncate">{factor.source}</span>
-                  <span className="shrink-0">w{Math.round(Number(factor.weight ?? 0) * 100)} / c{fmtNumber(factor.contribution, 1)}</span>
+                <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                  {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
                 </div>
-                <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                  {factor.missing_reason ? `missing=${factor.missing_reason}` : factor.detail ?? ''}
-                </div>
-                {factor.source_date ? <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">source_date={factor.source_date}</div> : null}
+                {group.sourceDate ? <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">source_date={group.sourceDate}</div> : null}
               </div>
             )
           })}
         </div>
-
-        <p className="mt-4 text-sm leading-relaxed text-foreground/80">{risk.riskSummary}</p>
-        <div className="mt-3 text-xs text-muted-foreground">
-          更新時間：{formatTwDateTimeShort(risk.calculatedAt)}
-        </div>
       </div>
 
-      {history.length > 0 && (
-        <div className="rounded-lg border border-border bg-card p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">30 日風險分布</div>
-            <div className="font-mono text-[10px] text-muted-foreground">{history[0]?.date.slice(5)} → {history[history.length - 1]?.date.slice(5)}</div>
-          </div>
-          <div className="flex h-16 items-end gap-0.5">
-            {history.slice(-30).map((row) => {
-              const h = Math.max(4, (row.risk_score / 100) * 64)
-              const barCfg = LEVEL_CONFIG[row.risk_level as keyof typeof LEVEL_CONFIG] ?? LEVEL_CONFIG.green
-              return (
-                <div key={row.date} className="flex-1 rounded-sm transition-all" style={{ height: `${h}px` }} title={`${row.date} risk:${row.risk_score}`}>
-                  <div className={`h-full w-full rounded-sm ${barCfg.bar} opacity-80`} />
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      <HistoryBars history={history} />
     </div>
   )
 }

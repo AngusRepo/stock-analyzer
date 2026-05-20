@@ -97,6 +97,27 @@ export interface PendingBuySnapshot {
   meta?: Record<string, unknown>
 }
 
+export interface PendingBuyRunHistoryEntry {
+  run_id: number
+  trade_date: string
+  source_reco_date: string | null
+  status: PendingBuyRunStatus
+  debate_status: PendingBuyDebateStatus
+  candidate_count: number
+  error_message: string | null
+  created_at: string
+  updated_at: string
+  execution_counts: Record<string, number>
+  debate_counts: Record<string, number>
+  items: PendingBuy[]
+}
+
+export interface PendingBuyRunHistory {
+  requested_date: string
+  source: 'd1' | 'none'
+  runs: PendingBuyRunHistoryEntry[]
+}
+
 interface ReplacePendingBuyStateParams {
   tradeDate: string
   sourceRecoDate?: string | null
@@ -338,6 +359,66 @@ export async function loadPendingBuySnapshot(
   } catch (error) {
     if (!isMissingTableError(error)) throw error
     return await readKvSnapshot(env, requestedDate, allowFallbackRecent)
+  }
+}
+
+export async function loadPendingBuyRunHistory(
+  env: Bindings,
+  requestedDate: string,
+  opts: { limit?: number } = {},
+): Promise<PendingBuyRunHistory> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 5, 10))
+  try {
+    const { results: runs } = await env.DB.prepare(
+      `SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at
+         FROM pending_buy_runs
+        WHERE trade_date <= ? AND status != 'superseded'
+        ORDER BY trade_date DESC, id DESC
+        LIMIT ?`
+    ).bind(requestedDate, limit).all<PendingBuyRunRow>()
+    const out: PendingBuyRunHistoryEntry[] = []
+    for (const run of runs ?? []) {
+      const [{ results: itemRows }, executionCountRows, debateCountRows] = await Promise.all([
+        env.DB.prepare(
+          `SELECT symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
+                  reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct,
+                  kelly_pct, chip_score, tech_score, ml_score, score, source, original_entry, retry_count
+             FROM pending_buy_items
+            WHERE run_id = ?
+            ORDER BY score DESC, confidence DESC, symbol ASC`
+        ).bind(run.id).all<PendingBuyItemRow>(),
+        env.DB.prepare(
+          `SELECT COALESCE(execution_status, 'pending') AS key, COUNT(*) AS count
+             FROM pending_buy_items
+            WHERE run_id = ?
+            GROUP BY COALESCE(execution_status, 'pending')`
+        ).bind(run.id).all<PendingBuyCountRow>(),
+        env.DB.prepare(
+          `SELECT COALESCE(debate_status, 'pending') AS key, COUNT(*) AS count
+             FROM pending_buy_items
+            WHERE run_id = ?
+            GROUP BY COALESCE(debate_status, 'pending')`
+        ).bind(run.id).all<PendingBuyCountRow>(),
+      ])
+      out.push({
+        run_id: run.id,
+        trade_date: run.trade_date,
+        source_reco_date: run.source_reco_date,
+        status: run.status,
+        debate_status: run.debate_status,
+        candidate_count: run.candidate_count,
+        error_message: run.error_message,
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+        execution_counts: rowsToCounts(executionCountRows.results),
+        debate_counts: rowsToCounts(debateCountRows.results),
+        items: (itemRows ?? []).map(mapItemRow),
+      })
+    }
+    return { requested_date: requestedDate, source: out.length ? 'd1' : 'none', runs: out }
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error
+    return { requested_date: requestedDate, source: 'none', runs: [] }
   }
 }
 

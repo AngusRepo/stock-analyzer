@@ -1,4 +1,4 @@
-import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+import { DEFAULT_STRATEGY_SPECS, STRATEGY_SPEC_VERSION } from './strategySpec'
 import {
   DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY,
   buildStrategyCandidatePools,
@@ -56,6 +56,33 @@ const candidates = Array.from({ length: 90 }, (_, index) => {
   for (const count of Object.values(selection.telemetry.strategy_usage)) {
     assert(count <= maxPerStrategy, 'single strategy should not dominate the ML queue')
   }
+}
+
+{
+  const nearMatchSpecs = [{
+    id: 'near_match_spec_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Near match test',
+    status: 'shadow' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Exercise adaptive near-match pool when strict thresholds are empty.',
+    thresholds: { minSeedScore: 75, minTechScore: 26, minMomentumScore: 10, minPrice: 10 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }]
+  const pools = buildStrategyCandidatePools(candidates.slice(0, 12), nearMatchSpecs, { regime: 'bull' })
+  assert(pools[0].status === 'adaptive_near_match', 'empty strict pool should expose adaptive near-match status')
+  assert(pools[0].missing_evidence.includes('strict_threshold_match_empty'), 'adaptive near-match should be explicit evidence, not silent fallback')
+  const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
+  assert(selection.mlQueue.length > 0, 'adaptive near-match candidates should be able to enter shadow ML queue')
+  const firstNearMatch = selection.mlQueue[0] as any
+  assert(
+    String(firstNearMatch.strategy_pool_reason || '').startsWith('adaptive_near_match:'),
+    'candidate reason should explain which thresholds were near misses',
+  )
 }
 
 {

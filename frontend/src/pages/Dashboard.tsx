@@ -10,7 +10,7 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api } from '@/lib/api'
+import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api, recommendationsApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { usePWA } from '@/hooks/usePWA'
 import { Button } from '@/components/ui/button'
@@ -495,6 +495,64 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
 }
 
 // ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
+function SectorBreadthHeatmap() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['dashboard', 'sector-breadth-heatmap'],
+    queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme'),
+    staleTime: 30 * 60 * 1000,
+  })
+  const flows = [...(data?.flows ?? [])]
+    .sort((a: any, b: any) => Math.abs(b.total_net ?? 0) - Math.abs(a.total_net ?? 0))
+    .slice(0, 12)
+  const maxAbs = Math.max(...flows.map((flow: any) => Math.abs(Number(flow.total_net ?? 0))), 0.01)
+  const quadrantTone: Record<string, string> = {
+    Leading: 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100',
+    Improving: 'border-sky-400/30 bg-sky-500/15 text-sky-100',
+    Weakening: 'border-amber-400/30 bg-amber-500/15 text-amber-100',
+    Lagging: 'border-rose-400/30 bg-rose-500/15 text-rose-100',
+  }
+
+  return (
+    <WorkstationPanel title="主題強弱熱區" kicker="sector breadth, flow, RRG">
+      <div className="p-3">
+        {isLoading ? (
+          <div className="grid gap-2 md:grid-cols-4">
+            {[1, 2, 3, 4, 5, 6, 7, 8].map((item) => <div key={item} className="h-20 animate-pulse rounded-xl bg-muted/30" />)}
+          </div>
+        ) : flows.length ? (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {flows.map((flow: any) => {
+              const net = Number(flow.total_net ?? 0)
+              const strength = Math.max(8, Math.min(100, (Math.abs(net) / maxAbs) * 100))
+              const tone = quadrantTone[String(flow.quadrant ?? '')] ?? (net >= 0 ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100' : 'border-rose-400/25 bg-rose-500/10 text-rose-100')
+              return (
+                <div key={flow.sector} className={`rounded-xl border p-3 ${tone}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">{flow.sector}</p>
+                      <p className="mt-1 font-mono text-[11px] opacity-75">RS {Number(flow.rs_ratio ?? 0).toFixed(1)} / Mom {Number(flow.rs_momentum ?? 0).toFixed(1)}</p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 border-current/30 text-[10px]">{flow.quadrant ?? 'N/A'}</Badge>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/25">
+                    <div className={net >= 0 ? 'h-full bg-emerald-200' : 'h-full bg-rose-200'} style={{ width: `${strength}%` }} />
+                  </div>
+                  <div className="mt-2 flex justify-between font-mono text-[11px] opacity-85">
+                    <span>net {net.toFixed(1)}億</span>
+                    <span>{flow.count ?? flow.stock_count ?? 0} 檔</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">尚無主題資金流資料。</p>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
     <div className="min-h-full">
@@ -510,6 +568,8 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         </WorkstationPanel>
 
         <AttentionStocksCard />
+
+        <SectorBreadthHeatmap />
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.28fr)_minmax(360px,0.72fr)]">
           <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">

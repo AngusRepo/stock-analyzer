@@ -931,6 +931,7 @@ function registryTone(state?: string): WorkstationTone {
 
 function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
   if (!context) return null
+  const blockers = Array.isArray(context.blockers) ? context.blockers : []
   return (
     <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#8a92a6]">
       <div className="font-mono text-amber-200">root: {context.root_cause}</div>
@@ -939,6 +940,17 @@ function ActionContextNote({ context }: { context?: ModelArtifactActionContext }
       {context.scheduler_dependency?.length ? (
         <div className="mt-1 text-sky-200">needs: {context.scheduler_dependency.join(' -> ')}</div>
       ) : null}
+      {blockers.length > 0 && (
+        <div className="mt-2 space-y-1 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] p-2">
+          <div className="font-mono text-amber-200">blockers</div>
+          {blockers.slice(0, 5).map((blocker) => (
+            <div key={blocker.code} className="border-l border-amber-300/30 pl-2">
+              <div className="font-semibold text-slate-100">{blocker.label}</div>
+              <div className="text-[#9aa7bd]">{blocker.next_action}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1119,7 +1131,7 @@ function PromotionQueuePanel({
   const rows = queue?.queue ?? []
   const approvalCount = rows.filter((row) => row.approval_required).length
   const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
-  const blockedCount = rows.filter((row) => row.promotion_decision === 'blocked_missing_champion_pointer').length
+  const blockedCount = rows.filter((row) => row.promotion_decision.includes('blocked') || (row.blockers?.length ?? 0) > 0).length
   const suppressedCount = queue?.suppressed_count ?? queue?.suppressed?.length ?? 0
 
   return (
@@ -1131,7 +1143,10 @@ function PromotionQueuePanel({
         <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="缺 champion pointer 或 final comparison 前置條件" tone={blockedCount ? 'error' : 'ok'} />
       </div>
       <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
-        {rows.length ? rows.map((row) => (
+        {rows.length ? rows.map((row) => {
+          const blockers = Array.isArray(row.blockers) ? row.blockers : []
+          const isBlocked = row.promotion_decision.includes('blocked') || blockers.length > 0
+          return (
           <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1156,11 +1171,25 @@ function PromotionQueuePanel({
             </div>
             <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
             <ActionContextNote context={row.action_context} />
+            {blockers.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-3 text-[12px] leading-5">
+                <div className="mb-2 font-mono text-amber-200">需檢查 blockers / promotion is blocked</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {blockers.map((blocker) => (
+                    <div key={blocker.code} className="rounded-lg border border-[#33415c] bg-[#05070c] p-2">
+                      <div className="font-semibold text-slate-100">{blocker.label}</div>
+                      <div className="mt-1 text-[#9aa7bd]">{blocker.next_action}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#70809b]">{blocker.code}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
                 variant="outline"
-                disabled={!row.artifact_id || isPromoting || row.promotion_decision.includes('blocked')}
+                disabled={!row.artifact_id || isPromoting || isBlocked}
                 className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
                 onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
               >
@@ -1170,7 +1199,7 @@ function PromotionQueuePanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!row.artifact_id || isPromoting}
+                  disabled={!row.artifact_id || isPromoting || isBlocked}
                   className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
                   onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
                 >
@@ -1181,7 +1210,7 @@ function PromotionQueuePanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!row.artifact_id || isPromoting}
+                  disabled={!row.artifact_id || isPromoting || isBlocked}
                   className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
                   onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
                 >
@@ -1190,7 +1219,7 @@ function PromotionQueuePanel({
               )}
             </div>
           </div>
-        )) : (
+        )}) : (
           <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
             目前沒有 artifact 通過 live gate；promotion-controller 沒有待處理項目。
           </div>
@@ -1303,6 +1332,58 @@ function ArtifactLifecycleSummaryPanel({
           detail="missing / weak / failed evidence"
           tone={blockers ? 'warn' : 'ok'}
         />
+      </div>
+    </WorkstationPanel>
+  )
+}
+
+function PromotionEvidencePathChart({
+  selection,
+  pointers,
+  queue,
+}: {
+  selection?: ModelArtifactSelectionResponse
+  pointers?: ModelChampionPointersResponse
+  queue?: ModelArtifactPromotionQueueResponse
+}) {
+  const models = Object.values(selection?.models ?? {})
+  const selectedArtifacts = models.flatMap((row) => [
+    row.monthly_release_candidate,
+    row.weekly_drift_candidate,
+  ]).filter(Boolean) as ModelArtifactRegistryRow[]
+  const monthly = models.filter((row) => row.monthly_release_candidate).length
+  const weekly = models.filter((row) => row.weekly_drift_candidate).length
+  const offlinePassed = selectedArtifacts.filter((row) => String(row.offline_gate_decision ?? row.offline_gate_status ?? '').toLowerCase().includes('pass')).length
+  const livePassed = selectedArtifacts.filter((row) => String(row.live_gate_status ?? '').toLowerCase().includes('pass')).length
+  const approvalRequired = queue?.queue?.filter((row) => row.approval_required).length ?? 0
+  const pointerReady = pointers?.ready_count ?? 0
+  const pointerTotal = pointers?.model_count ?? 0
+  const stages = [
+    { label: 'Registry', value: selectedArtifacts.length, hint: `monthly ${monthly} / weekly ${weekly}`, color: 'bg-sky-300' },
+    { label: 'Offline Gate', value: offlinePassed, hint: 'CPCV / PBO / metadata', color: 'bg-cyan-300' },
+    { label: 'Live IC', value: livePassed, hint: 'shadow vs champion', color: 'bg-emerald-300' },
+    { label: 'Promotion Queue', value: queue?.count ?? 0, hint: `${approvalRequired} need Wei`, color: 'bg-amber-300' },
+    { label: 'Pointer Ready', value: pointerReady, hint: `${pointerReady}/${pointerTotal}`, color: 'bg-violet-300' },
+  ]
+  const max = Math.max(...stages.map((stage) => stage.value), 1)
+
+  return (
+    <WorkstationPanel title="Promotion Evidence Path / 晉級證據路徑" kicker="registry -> gate -> live -> queue -> pointer">
+      <div className="grid gap-3 p-3 lg:grid-cols-5">
+        {stages.map((stage, index) => (
+          <div key={stage.label} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{index + 1}. {stage.label}</div>
+              <div className="font-mono text-lg font-semibold text-slate-100">{stage.value}</div>
+            </div>
+            <div className="mt-3 h-20 rounded-lg border border-[#1b2535] bg-[#070a10] p-2">
+              <div className="flex h-full items-end">
+                <div className={`w-full rounded-t ${stage.color}`} style={{ height: `${Math.max(8, (stage.value / max) * 100)}%` }} />
+              </div>
+            </div>
+            <p className="mt-2 truncate text-[11px] text-slate-500">{stage.hint}</p>
+          </div>
+        ))}
       </div>
     </WorkstationPanel>
   )
@@ -1537,6 +1618,11 @@ export default function ModelPoolPage() {
               models={modelList}
               selection={artifactSelection.data}
               pointers={championPointers.data}
+            />
+            <PromotionEvidencePathChart
+              selection={artifactSelection.data}
+              pointers={championPointers.data}
+              queue={artifactPromotionQueue.data}
             />
             <PromotionQueuePanel
               queue={artifactPromotionQueue.data}

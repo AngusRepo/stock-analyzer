@@ -96,7 +96,7 @@ export interface StrategyPool<T extends StrategyCandidatePoolCandidate = Strateg
   evidence_requirements: string[]
   regime_scope: string[]
   regime_weight: number
-  status: 'ready' | 'out_of_regime' | 'invalid_spec'
+  status: 'ready' | 'adaptive_near_match' | 'out_of_regime' | 'invalid_spec'
   missing_evidence: string[]
   candidates: Array<StrategyPoolEntry<T>>
 }
@@ -192,6 +192,37 @@ function candidateLiquidity(candidate: StrategyCandidatePoolCandidate): number |
   return finiteNumber(candidate.trading_value)
     ?? finiteNumber(candidate.average_turnover)
     ?? finiteNumber(candidate.liquidity_value)
+}
+
+function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): string[] | null {
+  const thresholds = spec.thresholds
+  const industry = cleanText(candidate.industry ?? candidate.sector)
+  const includes = thresholds.includeIndustries?.map(cleanText).filter(Boolean) ?? []
+  const excludes = thresholds.excludeIndustries?.map(cleanText).filter(Boolean) ?? []
+  if (includes.length && !includes.includes(industry)) return null
+  if (excludes.length && excludes.includes(industry)) return null
+
+  const price = finiteNumber(candidate.current_price)
+  if (thresholds.minPrice != null && (price == null || price < thresholds.minPrice)) return null
+  if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
+
+  const checks: Array<[string, unknown, number | undefined]> = [
+    ['score', candidate.score, thresholds.minSeedScore],
+    ['chip', candidate.chip_score, thresholds.minChipScore],
+    ['technical', candidate.tech_score, thresholds.minTechScore],
+    ['momentum', candidate.momentum_score, thresholds.minMomentumScore],
+  ]
+  const misses: string[] = []
+  for (const [label, rawValue, minValue] of checks) {
+    if (minValue == null) continue
+    const value = finiteNumber(rawValue)
+    if (value == null) return null
+    if (value < minValue) {
+      if (value < minValue * 0.75) return null
+      misses.push(`${label}:${value.toFixed(1)}/${minValue}`)
+    }
+  }
+  return misses.length > 0 && misses.length <= 2 ? misses : null
 }
 
 function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
@@ -323,7 +354,8 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         }
       }
 
-      const entries = candidates
+      let usedAdaptiveNearMatch = false
+      let entries = candidates
         .map((candidate) => {
           const assessment = assessCandidateAgainstStrategySpecs(candidate, [spec])
           if (!assessment.matches.length) return null
@@ -349,6 +381,35 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         .slice(0, Math.min(quota, costBudget))
         .map((entry, index) => ({ ...entry, rank: index + 1 }))
 
+      if (!entries.length) {
+        usedAdaptiveNearMatch = true
+        entries = candidates
+          .map((candidate) => {
+            const misses = thresholdNearMisses(candidate, spec)
+            if (!misses) return null
+            const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
+            return {
+              strategy_id: spec.id,
+              strategy_name: spec.name,
+              alpha_bucket: spec.alphaBucket,
+              strategy_status: spec.status,
+              quota,
+              cost_budget: costBudget,
+              evidence_requirements: evidenceRequirements,
+              regime_weight: rWeight,
+              candidate: cloneCandidate(candidate),
+              raw_score: finiteNumber(candidate.score) ?? 0,
+              strategy_score: scored,
+              rank: 0,
+              reason: `adaptive_near_match:${misses.join('|')}`,
+            } satisfies StrategyPoolEntry<T>
+          })
+          .filter((entry): entry is StrategyPoolEntry<T> => entry != null)
+          .sort((a, b) => b.strategy_score - a.strategy_score)
+          .slice(0, Math.min(quota, costBudget))
+          .map((entry, index) => ({ ...entry, rank: index + 1 }))
+      }
+
       return {
         strategy_id: spec.id,
         strategy_name: spec.name,
@@ -359,8 +420,8 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         evidence_requirements: evidenceRequirements,
         regime_scope: spec.supportedRegimes.map(String),
         regime_weight: rWeight,
-        status: 'ready',
-        missing_evidence: [],
+        status: usedAdaptiveNearMatch && entries.length ? 'adaptive_near_match' : 'ready',
+        missing_evidence: usedAdaptiveNearMatch && entries.length ? ['strict_threshold_match_empty'] : [],
         candidates: entries,
       }
     })
@@ -429,7 +490,7 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
     const industry = candidateIndustry(entry.candidate)
     const nextStrategyCount = (strategyUsage.get(primaryStrategy) ?? 0) + 1
     const nextIndustryCount = (industryUsage.get(industry) ?? 0) + 1
-    let reason = 'selected_by_strategy_pool'
+    let reason = cleanText(entry.reason) || 'selected_by_strategy_pool'
     let decision: StrategyQueueDecision = 'ml_queue'
 
     if (!eligibleForMl(entry.candidate)) {

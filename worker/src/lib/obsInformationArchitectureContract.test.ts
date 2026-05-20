@@ -24,7 +24,7 @@ assert(!obs.includes('Selected Incident Detail'), 'OBS must not render the old s
 assert(obs.includes('Dependency Map'), 'OBS must expose a dependency map for ownership and blast radius')
 assert(!obs.includes('Reliability Map'), 'OBS must not render the low-signal reliability map')
 assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
-assert(obs.includes('狀態紀錄：'), 'OBS scheduler rows must expose normal status logs separately from root cause')
+assert(obs.includes('schedulerStatusLogLabel') && obs.includes('執行摘要'), 'OBS scheduler rows must label success rows as execution summaries and reserve root cause for abnormal jobs')
 assert(obs.includes('發生 {job.lastRun') || obs.includes('發生 '), 'Scheduler rows must expose occurrence time')
 assert(obs.includes('schedulerHasRootCause') && obs.includes('Root cause：') && obs.includes('可能影響：'), 'OBS scheduler rows must expose root cause and impact only for abnormal jobs')
 assert(!obs.includes('setActiveTab'), 'OBS must not expose fake tabs when Scheduler and Data Quality are both visible')

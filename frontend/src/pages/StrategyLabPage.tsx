@@ -720,7 +720,7 @@ function MetaLearningDecisionDesk({
                   </Button>
                   {track.id === 'LinUCB' && (
                     <Button size="sm" variant="outline" disabled={actionBusy === 'linucb-ledger'} onClick={onRefreshLinucb}>
-                      {actionBusy === 'linucb-ledger' ? '刷新中...' : '刷新 Reward Ledger'}
+                      {actionBusy === 'linucb-ledger' ? '補跑中...' : '手動補跑 Reward Ledger'}
                     </Button>
                   )}
                   {(track.id === 'NeuralUCB' || track.id === 'NeuralTS') && (
@@ -730,7 +730,7 @@ function MetaLearningDecisionDesk({
                   )}
                 </div>
                 <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                  建立研究實驗只寫入 hypothesis / dataset / metrics / gate 規格；Shadow 驗證才會用既有資料跑反事實決策並產出 reward evidence。只有 NeuralUCB / NeuralTS 是 live meta-router shadow，所以才有 Shadow 按鈕。
+                  建立研究實驗只寫入 hypothesis / dataset / metrics / gate 規格；Shadow 驗證才會用既有資料跑反事實決策並產出 reward evidence。LinUCB reward ledger 會在每日 post-verify chain 自動刷新，這裡的按鈕只用於補跑或修復。
                 </p>
               </div>
                   </>
@@ -1165,6 +1165,77 @@ function RegistryInspectorPanel({
             )}
           </div>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function StrategyLifecycleSwimlane({
+  specs,
+  dryRun,
+  learning,
+  experiments,
+}: {
+  specs: StrategySpec[]
+  dryRun: StrategyDryRunResponse | null
+  learning: StrategyLearningResponse | null
+  experiments: ResearchExperimentsResponse['experiments']
+}) {
+  const dryRunById = new Map((dryRun?.results ?? []).map((row) => [row.specId, row]))
+  const learningById = new Map((learning?.specs ?? []).map((row) => [row.id, row]))
+  const gateById = new Map((learning?.promotion_gate ?? []).map((gate) => [gate.strategy_id, gate]))
+  const experimentCountBySpec = experiments.reduce<Record<string, number>>((acc, experiment) => {
+    for (const id of experiment.strategy_spec_ids ?? []) acc[id] = (acc[id] ?? 0) + 1
+    return acc
+  }, {})
+  const rows = specs.slice(0, 8).map((spec) => {
+    const dry = dryRunById.get(spec.id)
+    const learned = learningById.get(spec.id)
+    const gate = gateById.get(spec.id)
+    return {
+      spec,
+      dry,
+      learned,
+      gate,
+      experiments: experimentCountBySpec[spec.id] ?? 0,
+      cells: [
+        { label: 'Spec', value: spec.status, ok: spec.validation?.ok !== false },
+        { label: 'Dry-run', value: dry ? `${dry.matched}/${dry.sampleSize}` : '-', ok: Boolean(dry?.valid) },
+        { label: 'Ledger', value: learned ? `${learned.learning.decisions}/${learned.learning.samples}` : '-', ok: Number(learned?.learning.samples ?? 0) > 0 },
+        { label: 'Gate', value: gate?.decision ?? '-', ok: gate?.decision === 'candidate_ready' || gate?.decision === 'active_monitor' },
+      ],
+    }
+  })
+
+  if (!rows.length) return null
+
+  return (
+    <Card className="border-slate-800 bg-slate-950/70">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <GitBranch className="h-4 w-4 text-cyan-300" /> Strategy Lifecycle Swimlane
+        </CardTitle>
+        <p className="text-xs text-slate-500">一列看完：策略定義、dry-run、reward ledger、promotion gate，不再靠兩個大表互相比對。</p>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {rows.map((row) => (
+          <div key={row.spec.id} className="grid gap-2 rounded-2xl border border-slate-800 bg-black/20 p-3 text-xs lg:grid-cols-[minmax(180px,0.9fr)_repeat(4,minmax(110px,1fr))_90px]">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-slate-100">{row.spec.name}</div>
+              <div className="mt-1 truncate font-mono text-[10px] text-slate-500">{row.spec.id}</div>
+            </div>
+            {row.cells.map((cell) => (
+              <div key={cell.label} className={`rounded-xl border px-3 py-2 ${cell.ok ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/25 bg-amber-500/10'}`}>
+                <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{cell.label}</div>
+                <div className={cell.ok ? 'mt-1 font-semibold text-emerald-100' : 'mt-1 font-semibold text-amber-100'}>{cell.value}</div>
+              </div>
+            ))}
+            <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Registry</div>
+              <div className="mt-1 font-semibold text-sky-100">{row.experiments}</div>
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   )
@@ -1644,6 +1715,13 @@ export default function StrategyLabPage() {
         <StrategyExperimentTimeline
           specs={specs?.specs ?? []}
           dryRun={dryRun}
+          experiments={experiments?.experiments ?? []}
+        />
+
+        <StrategyLifecycleSwimlane
+          specs={specs?.specs ?? []}
+          dryRun={dryRun}
+          learning={strategyLearning}
           experiments={experiments?.experiments ?? []}
         />
 

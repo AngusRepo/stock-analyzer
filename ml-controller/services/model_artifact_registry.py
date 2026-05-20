@@ -680,7 +680,11 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
         return False
     state = str(row.get("state") or "")
     live_status = str(row.get("live_gate_status") or "")
-    return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status == "passed"
+    return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status in {
+        "passed",
+        "multi_evidence_passed",
+        "rolling_ic_passed",
+    }
 
 
 def _monthly_supersedes_weekly(monthly: dict[str, Any] | None, weekly: dict[str, Any] | None) -> bool:
@@ -722,7 +726,161 @@ def _artifact_live_decision(row: dict[str, Any]) -> dict[str, Any]:
     return decision if isinstance(decision, dict) else {}
 
 
-def build_artifact_action_context(row: dict[str, Any] | None, *, selection_slot: str | None = None) -> dict[str, Any]:
+def _artifact_offline_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    offline = _json_loads(row.get("offline_evidence_json"))
+    return offline if isinstance(offline, dict) else {}
+
+
+def _deep_get(source: Any, keys: set[str]) -> Any:
+    if not isinstance(source, dict):
+        return None
+    for key, value in source.items():
+        if key in keys and value not in (None, ""):
+            return value
+    for value in source.values():
+        found = _deep_get(value, keys)
+        if found not in (None, ""):
+            return found
+    return None
+
+
+def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, dict):
+        for key in (
+            "decision",
+            "status",
+            "result",
+            "pass",
+            "passed",
+            "ok",
+            "value",
+            "score",
+            "pbo",
+            "deflated_sharpe",
+            "tail_risk",
+        ):
+            if key in value and _truthy_gate_value(value.get(key), max_fail_value=max_fail_value):
+                return True
+        return False
+    text = str(value).strip().upper()
+    if text in {"PASS", "PASSED", "STRONG_PASS", "OK", "TRUE"}:
+        return True
+    if text in {"FAIL", "FAILED", "N/A", "NA", "NONE", "FALSE"}:
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    if max_fail_value is not None:
+        return number <= max_fail_value
+    return number > 0
+
+
+def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | None = None) -> list[dict[str, Any]]:
+    """Return promotion blockers with machine codes and human-action text.
+
+    Rolling live IC is useful evidence, but it is not sufficient for production
+    promotion. The final promotion lane needs a multi-evidence packet so the UI
+    cannot make a one-window shadow win look like an approval-ready artifact.
+    """
+    blockers: list[dict[str, Any]] = []
+    live_status = str(row.get("live_gate_status") or "")
+    state = str(row.get("state") or "")
+    offline_decision = str(row.get("offline_gate_decision") or "")
+    live_decision = _artifact_live_decision(row)
+    metrics = live_decision.get("metrics") if isinstance(live_decision.get("metrics"), dict) else {}
+    offline = _artifact_offline_evidence(row)
+
+    def add(code: str, label: str, next_action: str, severity: str = "blocker") -> None:
+        blockers.append({
+            "code": code,
+            "label": label,
+            "next_action": next_action,
+            "severity": severity,
+        })
+
+    if live_status not in {"passed", "multi_evidence_passed", "rolling_ic_passed"} and state != "live_gate_passed":
+        add(
+            "live_ic_not_ready",
+            "Rolling live IC is not ready",
+            "Keep daily predict -> verify-v2 -> model-ic-tracker running until verified rows are promotion-grade.",
+        )
+    elif live_status == "rolling_ic_passed":
+        add(
+            "rolling_ic_only",
+            "Only rolling live IC passed",
+            "Run the multi-evidence promotion gate; a single rolling IC window cannot update the champion pointer.",
+            severity="review",
+        )
+
+    shadow_samples = _as_float(metrics.get("shadow_samples"))
+    production_samples = _as_float(metrics.get("production_samples"))
+    min_samples = _as_float(metrics.get("min_samples")) or 50
+    if shadow_samples is None or shadow_samples < max(150, min_samples):
+        add(
+            "shadow_sample_window_too_short",
+            "Shadow sample window is too short",
+            "Collect at least 150 verified shadow rows and report the comparison window_start/window_end.",
+        )
+    if production_samples is None or production_samples < max(150, min_samples):
+        add(
+            "champion_sample_window_too_short",
+            "Champion baseline sample window is too short",
+            "Collect matching champion verified rows before calling the comparison promotion-grade.",
+        )
+
+    if not champion_version:
+        add(
+            "missing_current_champion",
+            "Missing current champion pointer",
+            "Resolve the D1 champion pointer or model_pool serving version before final comparison.",
+        )
+
+    if offline_decision not in {"STRONG_PASS", "PASS"}:
+        add(
+            "offline_gate_not_passed",
+            "Offline gate did not pass",
+            "Rerun or inspect offline gate evidence: OOS IC, segment coverage, and artifact metadata.",
+        )
+
+    cpcv = _deep_get(offline, {"model_cpcv_decision", "cpcv_decision", "cpcv"})
+    if not _truthy_gate_value(cpcv):
+        add(
+            "cpcv_pbo_missing",
+            "Missing CPCV evidence",
+            "Attach CPCV/PBO validation evidence so rolling live IC is not treated as a one-window artifact.",
+        )
+
+    pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
+    if not _truthy_gate_value(pbo, max_fail_value=0.2):
+        add(
+            "pbo_threshold_missing",
+            "PBO threshold is missing or too high",
+            "Provide a PBO value at or below 0.20 before final promotion.",
+        )
+
+    dsr = _deep_get(offline, {"deflated_sharpe", "dsr"})
+    mc = _deep_get(offline, {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"})
+    if not _truthy_gate_value(dsr) or not _truthy_gate_value(mc):
+        add(
+            "dsr_mc_missing",
+            "Missing DSR or Monte Carlo tail-risk evidence",
+            "Attach deflated Sharpe and Monte Carlo tail-risk evidence before promotion.",
+        )
+
+    if live_status == "multi_evidence_passed":
+        return [b for b in blockers if b["code"] == "missing_current_champion"]
+    return blockers
+
+
+def build_artifact_action_context(
+    row: dict[str, Any] | None,
+    *,
+    selection_slot: str | None = None,
+    champion_version: str | None = None,
+) -> dict[str, Any]:
     """Normalize artifact/gate status into a human-actionable contract.
 
     UI and OBS should not infer root causes from scattered registry columns.
@@ -819,6 +977,7 @@ def build_artifact_action_context(row: dict[str, Any] | None, *, selection_slot:
         }
 
     if live_status == "failed":
+        blockers = artifact_promotion_blockers(row, champion_version=champion_version)
         return {
             "root_cause": live_decision.get("root_cause") or "live_gate_failed",
             "impact": "Candidate should not promote unless a later final comparison overturns this evidence.",
@@ -827,9 +986,23 @@ def build_artifact_action_context(row: dict[str, Any] | None, *, selection_slot:
             "scheduler_dependency": ["promotion_controller"],
             "evidence_status": "failed",
             "selection_slot": selection_slot,
+            "blockers": blockers,
         }
 
-    if live_status == "passed" or state == "live_gate_passed":
+    if live_status in {"passed", "rolling_ic_passed"} or state == "live_gate_passed":
+        blockers = artifact_promotion_blockers(row, champion_version=champion_version)
+        if blockers:
+            return {
+                "root_cause": "multi_evidence_gate_blocked",
+                "impact": "Rolling live IC is only one evidence source; candidate is not promotion-grade yet.",
+                "next_action": "Resolve promotion blockers before final comparison or approval.",
+                "affected_downstream": ["promotion_controller", "model_pool_ui"],
+                "scheduler_dependency": ["validation_packet", "model-ic-tracker"],
+                "evidence_status": "blocked",
+                "selection_slot": selection_slot,
+                "metrics": live_decision.get("metrics") if isinstance(live_decision.get("metrics"), dict) else {},
+                "blockers": blockers,
+            }
         return {
             "root_cause": "live_gate_passed",
             "impact": "Candidate is eligible for final comparison against the current champion.",
@@ -1014,8 +1187,11 @@ def _live_gate_decision(
     beats_champion = delta > 0
     passed = shadow_ic > 0 and beats_champion
     if passed:
-        failure_root_cause = "ok"
-        failure_reason = "Shadow candidate beats current production baseline on verified live IC."
+        failure_root_cause = "rolling_ic_passed_needs_multi_evidence"
+        failure_reason = (
+            "Shadow candidate beats current production baseline on rolling verified live IC, "
+            "but final promotion still requires CPCV/PBO, DSR/MC, and stability evidence."
+        )
     elif beats_champion:
         failure_root_cause = "shadow_beats_champion_but_absolute_ic_negative"
         failure_reason = (
@@ -1026,9 +1202,9 @@ def _live_gate_decision(
         failure_root_cause = "shadow_ic_not_better_than_champion"
         failure_reason = "Shadow candidate does not beat current production baseline on verified live IC."
     return {
-        "state": "live_gate_passed" if passed else "shadowing",
-        "live_gate_status": "passed" if passed else "failed",
-        "promotion_decision": "pending_promotion_controller" if passed else "reject_or_keep_shadowing",
+        "state": "shadowing",
+        "live_gate_status": "rolling_ic_passed" if passed else "failed",
+        "promotion_decision": "needs_multi_evidence_gate" if passed else "reject_or_keep_shadowing",
         "approval_state": "not_required",
         "reason": failure_reason,
         "metrics": {
@@ -1039,6 +1215,7 @@ def _live_gate_decision(
             "production_samples": production_samples,
             "ic_delta": round(delta, 6),
             "min_samples": min_samples,
+            "lookback_semantic": "rolling_verified_ic_window",
         },
         "root_cause": failure_root_cause,
         "production_root_cause": production.get("root_cause"),
@@ -1135,6 +1312,10 @@ def update_live_gate_from_ic(
     }
 
 
+def _blocker_codes(blockers: list[dict[str, Any]]) -> list[str]:
+    return [str(item.get("code") or "unknown_blocker") for item in blockers if isinstance(item, dict)]
+
+
 def build_promotion_queue(
     rows: list[dict[str, Any]],
     *,
@@ -1166,12 +1347,27 @@ def build_promotion_queue(
         live_status = str(row.get("live_gate_status") or "")
         if state in {"production", "archived", "rejected"}:
             continue
-        if state not in {"live_gate_passed", "approval_required", "approved"} and live_status != "passed":
+        if state not in {"live_gate_passed", "approval_required", "approved"} and live_status not in {
+            "passed",
+            "multi_evidence_passed",
+            "rolling_ic_passed",
+        }:
             continue
 
         model_name = str(row.get("model_name") or "")
         champion_version = champion_versions.get(model_name)
         candidate_type = str(row.get("candidate_type") or "unknown")
+        candidate_version = str(row.get("version") or "")
+        if champion_version and candidate_version and candidate_version == champion_version:
+            suppressed.append({
+                "artifact_id": row.get("artifact_id"),
+                "model_name": model_name,
+                "candidate_version": row.get("version"),
+                "candidate_type": candidate_type,
+                "superseded_by": "current_champion_pointer",
+                "reason": "candidate_version_already_current_champion",
+            })
+            continue
         superseding_monthly = promotable_monthly_by_model.get(model_name)
         if candidate_type == "weekly_drift" and _monthly_supersedes_weekly(superseding_monthly, row):
             suppressed.append({
@@ -1188,10 +1384,14 @@ def build_promotion_queue(
             candidate_type in {"weekly_drift", "manual_hotfix"}
             or str(row.get("approval_state") or "") == "required"
         )
-        missing_final_comparison = not champion_version
-        if missing_final_comparison:
+        blockers = artifact_promotion_blockers(row, champion_version=champion_version)
+        blocker_codes = _blocker_codes(blockers)
+        if not champion_version:
             decision = "blocked_missing_champion_pointer"
             next_action = "Resolve current champion version before final comparison."
+        elif blockers:
+            decision = "blocked_multi_evidence_gate"
+            next_action = "Resolve blockers before final comparison: " + ", ".join(blocker_codes)
         elif approval_required:
             decision = "approval_required"
             next_action = "Run final comparison against current champion, then request Wei approval before promotion."
@@ -1213,7 +1413,9 @@ def build_promotion_queue(
             "promotion_decision": decision,
             "approval_required": approval_required,
             "next_action": next_action,
-            "action_context": build_artifact_action_context(row),
+            "blockers": blockers,
+            "blocker_codes": blocker_codes,
+            "action_context": build_artifact_action_context(row, champion_version=champion_version),
         })
 
     return {
@@ -1331,12 +1533,16 @@ def _promotion_row_decision(
         or str(artifact.get("approval_state") or "") == "required"
     )
     blockers: list[str] = []
-    if live_status != "passed" and state != "live_gate_passed":
+    promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
+    if promotion_blockers:
+        blockers.extend(_blocker_codes(promotion_blockers))
+    if live_status not in {"passed", "multi_evidence_passed"} and state not in {"approval_required", "approved"}:
         blockers.append("live_gate_not_passed")
     if not champion_version:
         blockers.append("missing_current_champion")
     if offline_decision in {"FAIL", "PBO_FAIL", "CPCV_FAIL"}:
         blockers.append("offline_gate_failed")
+    blockers = list(dict.fromkeys(blockers))
 
     current_artifact_id = pointer.get("champion_artifact_id") if pointer else None
     live_evidence = _json_loads(artifact.get("live_evidence_json"))
@@ -1357,6 +1563,7 @@ def _promotion_row_decision(
         "approval_required": approval_required,
         "approved": approved,
         "blockers": blockers,
+        "blocker_details": promotion_blockers,
     }
 
     if blockers:

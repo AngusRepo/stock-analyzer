@@ -27,7 +27,7 @@ import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
-import { loadPendingBuySnapshot } from '../lib/pendingBuyStore'
+import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
 import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
@@ -43,6 +43,59 @@ import type { Bindings, Variables } from '../types'
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 const ACCOUNT_ID = 1
+const PAPER_EXTRA_BENCHMARK_SYMBOLS = ['00918A', '00631L', '00403A'] as const
+
+type BenchmarkPriceMap = Record<string, Record<string, number>>
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
+  return chunks
+}
+
+async function loadPaperEtfBenchmarks(db: D1Database, dates: string[]): Promise<BenchmarkPriceMap> {
+  const cleanDates = Array.from(new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))).sort()
+  const out: BenchmarkPriceMap = {}
+  if (!cleanDates.length) return out
+
+  for (const dateChunk of chunkArray(cleanDates, 120)) {
+    const dateValues = dateChunk.map(() => '(?)').join(',')
+    const symbolValues = PAPER_EXTRA_BENCHMARK_SYMBOLS.map(() => '?').join(',')
+    const rows = await db.prepare(`
+      WITH target_dates(date) AS (VALUES ${dateValues})
+      SELECT d.date AS snapshot_date,
+             s.symbol,
+             sp.close
+        FROM target_dates d
+        JOIN stocks s
+          ON s.symbol IN (${symbolValues})
+        LEFT JOIN stock_prices sp
+          ON sp.stock_id = s.id
+         AND sp.date = (
+           SELECT MAX(sp2.date)
+             FROM stock_prices sp2
+            WHERE sp2.stock_id = s.id
+              AND sp2.date <= d.date
+              AND sp2.close IS NOT NULL
+         )
+       WHERE sp.close IS NOT NULL
+       ORDER BY d.date ASC, s.symbol ASC
+    `).bind(...dateChunk, ...PAPER_EXTRA_BENCHMARK_SYMBOLS).all<{
+      snapshot_date: string
+      symbol: string
+      close: number | null
+    }>()
+
+    for (const row of rows.results ?? []) {
+      const close = Number(row.close)
+      if (!Number.isFinite(close) || close <= 0) continue
+      out[row.snapshot_date] = out[row.snapshot_date] ?? {}
+      out[row.snapshot_date][row.symbol] = close
+    }
+  }
+
+  return out
+}
 
 async function resolveManualExecutablePrice(
   c: Context<{ Bindings: Bindings; Variables: Variables }>,
@@ -308,12 +361,18 @@ paper.get('/pnl', async (c) => {
   const { results: snapshots } = await c.env.DB.prepare(
     'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
+  const snapshotRows = snapshots ?? []
+  const etfBenchmarks = await loadPaperEtfBenchmarks(c.env.DB, snapshotRows.map((row) => String(row.date ?? '').slice(0, 10)))
 
   return c.json({
     status: 'success',
     initial_cash: acc.initial_cash,
     current_cash: Math.round(acc.cash),
-    snapshots: snapshots ?? [],
+    benchmark_symbols: PAPER_EXTRA_BENCHMARK_SYMBOLS,
+    snapshots: snapshotRows.map((row) => ({
+      ...row,
+      etf_benchmarks: etfBenchmarks[String(row.date ?? '').slice(0, 10)] ?? {},
+    })),
   })
 })
 
@@ -464,6 +523,7 @@ paper.get('/pending-buys', async (c) => {
     ? snapshot.meta.source_reco_date
     : snapshot.date
   const pendingBuys = await enrichPendingBuyContext(c.env.DB, snapshot.pendingBuys, sourceRecoDate)
+  const runHistory = await loadPendingBuyRunHistory(c.env, twToday, { limit: 5 })
   return c.json({
     requested_date: snapshot.requested_date,
     date: snapshot.date,
@@ -473,6 +533,7 @@ paper.get('/pending-buys', async (c) => {
     meta: snapshot.meta ?? null,
     state,
     pendingBuys,
+    runHistory,
   })
 })
 

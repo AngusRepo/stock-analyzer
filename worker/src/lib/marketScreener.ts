@@ -1808,6 +1808,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 5d: top N 截斷
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
   let strategySelectionTelemetry: Record<string, unknown> | null = null
+  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(scored as ScreenerCandidate[])
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
     annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
   )
@@ -1821,7 +1822,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       getLatestStrategyPolicyState(env.DB).catch(() => null),
     ])
     const strategySelection = planStrategyFirstCandidateSelection(
-      afterIndustryLimit as any,
+      strategySourceUniverse as any,
       specs,
       {
         regime: (adaptiveParams as any)?.provenance?.regime ?? null,
@@ -1855,6 +1856,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       spec_source: source,
       capacity: strategySelection.capacity,
       telemetry: strategySelection.telemetry,
+      source_universe_count: strategySourceUniverse.length,
+      post_diversity_universe_count: afterIndustryLimit.length,
+      selection_order: 'strategy_pool_from_post_hard_filter_scored_universe_then_global_diversity_topup',
       top_up_count: topUpCandidates.length,
       pool_status: strategySelection.pools.map((pool) => ({
         strategy_id: pool.strategy_id,
@@ -1871,6 +1875,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `research_only=${strategySelection.researchOnlyQueue.length} overflow=${strategySelection.telemetry.overflow_count} ` +
       `cap=${strategySelection.capacity.mlQueueCap}/${strategySelection.capacity.totalCap} mode=${strategySelection.capacity.mode}`,
     )
+    const mlQueueAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelection.mlQueue.length)
+    for (const entry of strategySelection.mlQueue.slice(0, mlQueueAuditLimit)) {
+      pushFunnelItem(funnelItems, {
+        symbol: String(entry.symbol || ''),
+        name: entry.name,
+        stage: 'strategy_pool_ml_queue',
+        decision: 'pass',
+        reasonCode: String(entry.strategy_pool_reason ?? 'selected_by_strategy_pool'),
+        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
+        rank: entry.strategy_pool_rank ?? null,
+        evidence: {
+          strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_pool_score: entry.strategy_pool_score ?? null,
+          strategy_pool_decision: entry.strategy_pool_decision ?? null,
+          source_universe: 'post_hard_filter_scored_universe',
+          source_universe_count: strategySourceUniverse.length,
+          post_diversity_universe_count: afterIndustryLimit.length,
+          market_segment: entry.market_segment ?? null,
+        },
+      })
+    }
     const researchOnlyAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelection.researchOnlyQueue.length)
     for (const entry of strategySelection.researchOnlyQueue.slice(0, researchOnlyAuditLimit)) {
       pushFunnelItem(funnelItems, {

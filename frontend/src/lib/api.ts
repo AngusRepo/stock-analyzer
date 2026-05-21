@@ -1,16 +1,4 @@
-const DEFAULT_WORKER_API_URL = 'https://stockvision-worker.angus-solo-dev.workers.dev/api'
-
-function resolveApiBase() {
-  const configured = import.meta.env.VITE_API_URL
-  if (configured) return configured
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname
-    if (host === 'stockvision-frontend.pages.dev' || host.endsWith('.stockvision-frontend.pages.dev')) {
-      return DEFAULT_WORKER_API_URL
-    }
-  }
-  return '/api'
-}
+import { resolveApiBase } from '../const'
 
 const BASE = resolveApiBase()
 export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'

@@ -11,6 +11,8 @@ export interface MarketRegimeFactorTile {
   source_date: string | null
   detail: string
   missing_reason?: string
+  evidence_title?: string | null
+  evidence_url?: string | null
 }
 
 export interface MarketRegimeFactorPacket {
@@ -125,7 +127,7 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
       SELECT * FROM daily
     `).bind(date).all<{ date: string; priced_rows: number | null; margin_billion: number | null; short_billion: number | null }>()
     const list = (rows.results ?? []).filter((row) => Number(row.priced_rows ?? 0) > 0)
-    if (list.length < 2) return { value: null, sourceDate: list.at(-1)?.date ?? null, detail: 'not enough canonical leverage rows' }
+    if (list.length < 2) return { value: null, sourceDate: list.length ? list[list.length - 1]?.date ?? null : null, detail: 'not enough canonical leverage rows' }
     const latest = list[list.length - 1]
     const prev = list[0]
     const latestMargin = Number(latest.margin_billion ?? 0)
@@ -141,28 +143,98 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
   }
 }
 
-async function sectorBreadthProxy(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null; detail: string }> {
+function parseMetrics(raw: unknown): Record<string, any> {
+  if (!raw || typeof raw !== 'string') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : {}
+  } catch {
+    return {}
+  }
+}
+
+function scoreBusinessSignal(points: number | null): number {
+  if (points == null) return 45
+  if (points >= 38) return 12
+  if (points >= 32) return 22
+  if (points >= 23) return 40
+  if (points >= 17) return 62
+  return 82
+}
+
+function labelBusinessSignal(points: number | null): string {
+  if (points == null) return '缺資料'
+  if (points >= 38) return `紅燈 ${points.toFixed(0)}`
+  if (points >= 32) return `黃紅燈 ${points.toFixed(0)}`
+  if (points >= 23) return `綠燈 ${points.toFixed(0)}`
+  if (points >= 17) return `黃藍燈 ${points.toFixed(0)}`
+  return `藍燈 ${points.toFixed(0)}`
+}
+
+async function twBusinessSignalContext(db: D1Database, date: string): Promise<{
+  value: number | null
+  sourceDate: string | null
+  status: MarketRegimeFactorTile['status']
+  detail: string
+  source: string
+  missingReason?: string
+}> {
   try {
     const rows = await db.prepare(`
-      SELECT date, classification, quadrant, COUNT(*) AS n
-        FROM sector_flow
-       WHERE date = (SELECT MAX(date) FROM sector_flow WHERE date <= ?)
-         AND classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-         AND quadrant IS NOT NULL
-       GROUP BY date, classification, quadrant
-    `).bind(date).all<{ date: string; classification: string; quadrant: string; n: number }>()
+      SELECT dataset, latest_materialization, freshness_status, metrics_json
+        FROM source_quality_metrics
+       WHERE source = 'finlab'
+         AND dataset IN ('tw_business_indicators', 'tw_business_indicators_details')
+       ORDER BY as_of_date DESC, latest_materialization DESC
+       LIMIT 4
+    `).all<{
+      dataset: string
+      latest_materialization: string | null
+      freshness_status: string
+      metrics_json: string | null
+    }>()
     const list = rows.results ?? []
-    if (!list.length) return { value: null, sourceDate: null, detail: 'sector_flow missing' }
-    const positive = list.filter((row) => row.quadrant === 'Leading' || row.quadrant === 'Improving').reduce((sum, row) => sum + Number(row.n ?? 0), 0)
-    const total = list.reduce((sum, row) => sum + Number(row.n ?? 0), 0)
-    const ratio = total > 0 ? positive / total : null
+    if (!list.length) {
+      return {
+        value: null,
+        sourceDate: null,
+        status: 'missing',
+        detail: 'FinLab tw_business_indicators 尚未 materialize 到 D1',
+        source: 'finlab.tw_business_indicators',
+        missingReason: 'tw_business_indicators_not_materialized',
+      }
+    }
+    const metrics = list.map((row) => parseMetrics(row.metrics_json))
+    const scoreCandidates = metrics
+      .flatMap((item) => [
+        item.latest_signal_score,
+        item.latest_score,
+        item['景氣對策信號(分)'],
+        item.business_signal_score,
+      ])
+      .map(finiteNumber)
+      .filter((value): value is number => value != null)
+    const value = scoreCandidates[0] ?? null
+    const stale = list.some((row) => /stale|failed|degraded/i.test(`${row.freshness_status} ${row.metrics_json ?? ''}`))
     return {
-      value: ratio == null ? null : Math.round(ratio * 10000) / 100,
-      sourceDate: list[0]?.date ?? null,
-      detail: `positive_quadrants=${positive}/${total}`,
+      value,
+      sourceDate: list[0]?.latest_materialization ? String(list[0].latest_materialization).slice(0, 10) : date,
+      status: value == null ? 'missing' : stale ? 'warn' : scoreBusinessSignal(value) >= 60 ? 'warn' : 'ok',
+      detail: value == null
+        ? `${list.map((row) => `${row.dataset}:${row.freshness_status}`).join(' / ')}；缺 latest_signal_score`
+        : `景氣對策信號=${value.toFixed(0)}；${list.map((row) => `${row.dataset}:${row.freshness_status}`).join(' / ')}`,
+      source: 'finlab.tw_business_indicators',
+      missingReason: value == null ? 'tw_business_signal_score_missing' : undefined,
     }
   } catch {
-    return { value: null, sourceDate: null, detail: 'sector breadth query failed' }
+    return {
+      value: null,
+      sourceDate: null,
+      status: 'missing',
+      detail: 'tw_business_indicators query failed',
+      source: 'finlab.tw_business_indicators',
+      missingReason: 'tw_business_indicators_query_failed',
+    }
   }
 }
 
@@ -212,6 +284,84 @@ function monitorScore(monitors: Record<string, any>, key: string): number | null
   return finiteNumber(item?.score ?? item?.risk_score ?? item?.value ?? item)
 }
 
+async function latestExternalEvents(db: D1Database, date: string): Promise<{
+  count: number
+  sourceDate: string | null
+  status: MarketRegimeFactorTile['status']
+  title: string | null
+  url: string | null
+  source: string
+  detail: string
+  missingReason?: string
+}> {
+  try {
+    const rows = await db.prepare(`
+      SELECT source_id, source_kind, title, source_url, published_at, entity_linking_confidence, raw_json
+        FROM external_evidence_items
+       WHERE accepted = 1
+         AND published_at <= ?
+         AND source_id IN ('gdelt_events', 'anue', 'avenue', 'tw_news_cnyes', 'cnyes', 'official_rss')
+       ORDER BY
+         CASE source_id
+           WHEN 'gdelt_events' THEN 0
+           WHEN 'tw_news_cnyes' THEN 1
+           WHEN 'cnyes' THEN 1
+           WHEN 'anue' THEN 1
+           WHEN 'avenue' THEN 1
+           ELSE 2
+         END,
+         published_at DESC
+       LIMIT 8
+    `).bind(date).all<{
+      source_id: string
+      source_kind: string
+      title: string
+      source_url: string
+      published_at: string
+      entity_linking_confidence: number | null
+      raw_json: string | null
+    }>()
+    const list = rows.results ?? []
+    if (!list.length) {
+      return {
+        count: 0,
+        sourceDate: null,
+        status: 'missing',
+        title: null,
+        url: null,
+        source: 'external_evidence_items',
+        detail: 'GDELT/鉅亨/官方事件來源皆無 accepted rows',
+        missingReason: 'external_event_evidence_missing',
+      }
+    }
+    const top = list[0]
+    const hasFetchFailed = /fetch_failed|failed/i.test(`${top.title} ${top.raw_json ?? ''}`)
+    const preferred = list.find((row) => !/fetch_failed|failed/i.test(`${row.title} ${row.raw_json ?? ''}`)) ?? top
+    const sourceIds = Array.from(new Set(list.map((row) => row.source_id))).join('+')
+    return {
+      count: list.length,
+      sourceDate: preferred.published_at,
+      status: hasFetchFailed && preferred === top ? 'warn' : 'info',
+      title: preferred.title,
+      url: preferred.source_url,
+      source: `external_evidence_items.${sourceIds}`,
+      detail: `${preferred.source_id}: ${preferred.title}`,
+      missingReason: hasFetchFailed && preferred === top ? 'gdelt_fetch_failed_no_news_fallback' : undefined,
+    }
+  } catch {
+    return {
+      count: 0,
+      sourceDate: null,
+      status: 'missing',
+      title: null,
+      url: null,
+      source: 'external_evidence_items',
+      detail: 'external evidence query failed',
+      missingReason: 'external_event_evidence_query_failed',
+    }
+  }
+}
+
 function evidenceStanceScore(regimeState: any, key: string): number | null {
   const item =
     regimeState?.regime_evidence?.[key] ??
@@ -232,13 +382,14 @@ export async function buildMarketRegimeFactorPacket(
   regimeState: any,
 ): Promise<MarketRegimeFactorPacket> {
   const date = String(marketRiskRow.date ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10))
-  const [canonicalChip, leverage, breadthProxy, macroQuality, globalQuality, gdeltQuality] = await Promise.all([
+  const [canonicalChip, leverage, businessSignal, macroQuality, globalQuality, gdeltQuality, externalEvents] = await Promise.all([
     canonicalInstitutionalNet5d(db, date),
     canonicalLeverageStress(db, date),
-    sectorBreadthProxy(db, date),
-    sourceQualityContext(db, date, 'finlab', ['canonical_revenue_monthly']),
+    twBusinessSignalContext(db, date),
+    sourceQualityContext(db, date, 'finlab', ['tw_business_indicators', 'tw_total_pmi', 'tw_total_nmi', 'tw_monetary_aggregates']),
     sourceQualityContext(db, date, 'finlab', ['global_context']),
     sourceQualityContext(db, date, 'gdelt_events', ['global_event_pressure']),
+    latestExternalEvents(db, date),
   ])
 
   const twiiBias = finiteNumber(marketRiskRow.twii_bias)
@@ -246,10 +397,8 @@ export async function buildMarketRegimeFactorPacket(
   const vix = finiteNumber(marketRiskRow.vix)
   const foreignNet5d = canonicalChip.value ?? finiteNumber(marketRiskRow.foreign_net_5d)
   const marginRatio = finiteNumber(marketRiskRow.margin_ratio)
-  const bullAlignmentPct = finiteNumber(marketRiskRow.bull_alignment_pct)
-  const limitDownPct = finiteNumber(marketRiskRow.limit_down_pct)
-  const globalEvidenceScore = evidenceStanceScore(regimeState, 'global_risk') ?? globalQuality.score ?? gdeltQuality.score
-  const macroEvidenceScore = evidenceStanceScore(regimeState, 'macro_liquidity') ?? macroQuality.score
+  const globalEvidenceScore = evidenceStanceScore(regimeState, 'global_risk')
+  const macroEvidenceScore = evidenceStanceScore(regimeState, 'macro_liquidity') ?? (businessSignal.value != null ? scoreBusinessSignal(businessSignal.value) : null)
   const lppls = monitorScore(regimeState?.monitors ?? {}, 'lppls_weekly_bubble')
   const hawkes = monitorScore(regimeState?.monitors ?? {}, 'hawkes_contagion')
   const monitorRisk = Math.max(lppls ?? 0, hawkes ?? 0)
@@ -269,21 +418,17 @@ export async function buildMarketRegimeFactorPacket(
       missing_reason: twiiBias == null ? 'twii_bias_missing' : undefined,
     }),
     factor({
-      id: 'breadth',
-      label: '市場廣度',
-      raw_value: bullAlignmentPct ?? breadthProxy.value,
-      value: bullAlignmentPct != null ? `${bullAlignmentPct.toFixed(1)}%` : breadthProxy.value != null ? `${breadthProxy.value.toFixed(1)}%` : 'n/a',
-      score: bullAlignmentPct != null
-        ? clamp(bullAlignmentPct < 25 ? 80 : bullAlignmentPct < 40 ? 60 : bullAlignmentPct > 55 ? 25 : 42, 0, 100)
-        : breadthProxy.value != null
-          ? clamp(breadthProxy.value < 35 ? 75 : breadthProxy.value < 45 ? 58 : breadthProxy.value > 60 ? 25 : 42, 0, 100)
-          : 45,
+      id: 'economy_light',
+      label: '景氣燈號',
+      raw_value: businessSignal.value,
+      value: labelBusinessSignal(businessSignal.value),
+      score: scoreBusinessSignal(businessSignal.value),
       weight: 0.15,
-      status: bullAlignmentPct == null && breadthProxy.value == null ? 'missing' : (bullAlignmentPct ?? breadthProxy.value ?? 50) < 40 ? 'warn' : 'ok',
-      source: bullAlignmentPct != null ? 'market_risk.bull_alignment_pct' : 'sector_flow.quadrant_breadth',
-      source_date: bullAlignmentPct != null ? date : breadthProxy.sourceDate,
-      detail: bullAlignmentPct != null ? `limit_down_pct=${limitDownPct ?? 'n/a'}` : breadthProxy.detail,
-      missing_reason: bullAlignmentPct == null && breadthProxy.value == null ? 'breadth_missing' : undefined,
+      status: businessSignal.status,
+      source: businessSignal.source,
+      source_date: businessSignal.sourceDate,
+      detail: businessSignal.detail,
+      missing_reason: businessSignal.missingReason,
     }),
     factor({
       id: 'chips',
@@ -336,40 +481,44 @@ export async function buildMarketRegimeFactorPacket(
       id: 'macro',
       label: '總經流動性',
       raw_value: macroEvidenceScore,
-      value: macroEvidenceScore == null ? 'context missing' : String(macroEvidenceScore),
+      value: businessSignal.value != null ? labelBusinessSignal(businessSignal.value) : '缺 FinLab 總經',
       score: macroEvidenceScore ?? 45,
       weight: 0.10,
-      status: macroEvidenceScore == null ? 'missing' : macroQuality.status,
-      source: macroQuality.score != null ? macroQuality.source : 'market_regime_state.evidence.macro_liquidity',
+      status: macroEvidenceScore == null ? 'missing' : businessSignal.status === 'warn' ? 'warn' : macroQuality.status,
+      source: businessSignal.value != null ? businessSignal.source : macroQuality.source,
       source_date: macroQuality.sourceDate ?? regimeState?.run_date ?? null,
-      detail: macroQuality.score != null ? macroQuality.detail : 'FinLab tw_business_indicators / liquidity evidence packet',
-      missing_reason: macroEvidenceScore == null ? 'macro_liquidity_missing' : undefined,
+      detail: businessSignal.value != null
+        ? `${businessSignal.detail}；${macroQuality.detail}`
+        : `尚未 materialize FinLab tw_business_indicators / PMI / NMI / M1B：${macroQuality.detail}`,
+      missing_reason: macroEvidenceScore == null ? 'macro_finlab_not_materialized' : undefined,
     }),
     factor({
       id: 'global',
       label: '全球風險',
       raw_value: globalEvidenceScore,
-      value: globalEvidenceScore == null ? 'context missing' : String(globalEvidenceScore),
+      value: globalEvidenceScore == null ? '缺方向分數' : `風險 ${Math.round(globalEvidenceScore)}/100`,
       score: globalEvidenceScore ?? 45,
       weight: 0.10,
       status: globalEvidenceScore == null ? 'missing' : gdeltQuality.status === 'warn' ? 'warn' : globalQuality.status,
-      source: globalQuality.score != null ? `${globalQuality.source}+${gdeltQuality.source}` : 'market_regime_state.evidence.global_risk',
+      source: `${globalQuality.source}+${gdeltQuality.source}`,
       source_date: globalQuality.sourceDate ?? gdeltQuality.sourceDate ?? regimeState?.run_date ?? null,
-      detail: globalQuality.score != null ? `${globalQuality.detail} / ${gdeltQuality.detail}` : 'FinLab world_index / US leading / global risk evidence',
-      missing_reason: globalEvidenceScore == null ? 'global_risk_missing' : undefined,
+      detail: `FinLab world index: ${globalQuality.detail}；GDELT: ${gdeltQuality.detail}`,
+      missing_reason: globalEvidenceScore == null ? 'global_direction_score_missing' : undefined,
     }),
     factor({
       id: 'event_monitors',
-      label: 'LPPLS / Hawkes',
-      raw_value: monitorRisk || null,
-      value: monitorRisk ? `${Math.round(monitorRisk * 100)}%` : 'context missing',
+      label: '事件鏈',
+      raw_value: monitorRisk || externalEvents.count || null,
+      value: externalEvents.count ? `${externalEvents.count} 則事件` : monitorRisk ? `${Math.round(monitorRisk * 100)}%` : '缺事件',
       score: monitorRisk ? clamp(monitorRisk * 100, 0, 100) : 35,
       weight: 0.05,
-      status: monitorRisk >= 0.7 ? 'warn' : monitorRisk ? 'info' : 'missing',
-      source: 'market_regime_state.monitors',
-      source_date: regimeState?.run_date ?? null,
-      detail: `lppls=${lppls ?? 'n/a'} hawkes=${hawkes ?? 'n/a'}`,
-      missing_reason: monitorRisk ? undefined : 'lppls_hawkes_missing',
+      status: monitorRisk >= 0.7 ? 'warn' : externalEvents.status,
+      source: `${externalEvents.source}+market_regime_state.monitors`,
+      source_date: externalEvents.sourceDate ?? regimeState?.run_date ?? null,
+      detail: `${externalEvents.detail}；LPPLS=${lppls ?? 'n/a'} Hawkes=${hawkes ?? 'n/a'}`,
+      missing_reason: externalEvents.missingReason ?? (monitorRisk ? undefined : 'lppls_hawkes_missing'),
+      evidence_title: externalEvents.title,
+      evidence_url: externalEvents.url,
     }),
   ]
 
@@ -397,7 +546,7 @@ export async function buildMarketRegimeFactorPacket(
     missing_reasons: missing,
     lineage: {
       score_policy: 'weighted_finlab_composite_v1',
-      finlab_primary: ['canonical_chip_daily', 'canonical_market_daily', 'sector_flow', 'market_regime_state'],
+      finlab_primary: ['canonical_chip_daily', 'canonical_market_daily', 'tw_business_indicators', 'global_context', 'market_regime_state'],
       official_fallback: ['market_risk', 'TWSE/TPEX audit'],
     },
     generated_at: new Date().toISOString(),

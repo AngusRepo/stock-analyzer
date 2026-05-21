@@ -23,7 +23,7 @@ type PaperTradePerformanceChartProps = {
   loading?: boolean
 }
 
-type BenchmarkKey = '0050' | 'TWII' | '00918A' | '00631L' | '00403A'
+type BenchmarkKey = '0050' | 'TWII' | '00981A' | '00631L' | '00403A'
 
 type PerformancePoint = {
   time: string
@@ -49,7 +49,7 @@ const BENCHMARK_SERIES: Array<{
 }> = [
   { key: '0050', label: '0050', color: '#818cf8', lineStyle: LineStyle.Dashed, width: 2 },
   { key: 'TWII', label: 'TWII', color: '#a78bfa', lineStyle: LineStyle.Dotted, width: 1 },
-  { key: '00918A', label: '00918A', color: '#fbbf24', lineStyle: LineStyle.Solid, width: 1 },
+  { key: '00981A', label: '00981A', color: '#fbbf24', lineStyle: LineStyle.Solid, width: 1 },
   { key: '00631L', label: '00631L', color: '#fb7185', lineStyle: LineStyle.Solid, width: 1 },
   { key: '00403A', label: '00403A', color: '#38bdf8', lineStyle: LineStyle.Solid, width: 1 },
 ]

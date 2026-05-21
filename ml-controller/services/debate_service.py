@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import httpx
@@ -185,6 +185,7 @@ class DebateResult:
     summary: str             # <=500 chars, goes into paper_orders.note
     llm_source: str          # gemini_api | anthropic_api
     conviction_score: int    # 0-100
+    agent_turns: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Prompts (zh-TW, ported 1:1 from TS) ───────────────────────────────────────
@@ -257,6 +258,58 @@ _FULCRUM_SYS_PROMPT = "\n".join([
     "",
     "第二行起用繁體中文寫 1-2 句判決理由。不要有其他格式。",
 ])
+
+
+def _compact_turn_text(text: str, max_len: int = 360) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:max_len]
+
+
+def _build_agent_turns(
+    ml_context: str,
+    zealot_cases: list[str],
+    reaper_cases: list[str],
+    fulcrum_response: str,
+    llm_source: str,
+) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = [{
+        "agent": "theme",
+        "round": 0,
+        "stance": "context",
+        "summary": _compact_turn_text(ml_context),
+        "source": "morning_setup",
+    }]
+    for idx, text in enumerate(zealot_cases, start=1):
+        turns.append({
+            "agent": "bull",
+            "round": idx,
+            "stance": "support",
+            "summary": _compact_turn_text(text),
+            "source": llm_source,
+        })
+    for idx, text in enumerate(reaper_cases, start=1):
+        turns.append({
+            "agent": "bear",
+            "round": idx,
+            "stance": "challenge",
+            "summary": _compact_turn_text(text),
+            "source": llm_source,
+        })
+        turns.append({
+            "agent": "risk",
+            "round": idx,
+            "stance": "risk_check",
+            "summary": _compact_turn_text(text, 260),
+            "source": llm_source,
+        })
+    if fulcrum_response:
+        turns.append({
+            "agent": "judge",
+            "round": len(zealot_cases) + len(reaper_cases) + 1,
+            "stance": "verdict",
+            "summary": _compact_turn_text(re.sub(r"VERDICT:.*\n?", "", fulcrum_response, flags=re.IGNORECASE)),
+            "source": llm_source,
+        })
+    return turns
 
 
 # ── Main: runBuyDebate equivalent ─────────────────────────────────────────────
@@ -389,6 +442,7 @@ async def run_buy_debate(
                         summary=(f"Zealot only (Reaper LLM error R1): {zealot_cases[0] if zealot_cases else ''}")[:500],
                         llm_source=llm_source,
                         conviction_score=60,
+                        agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
                     )
                 break
 
@@ -425,6 +479,7 @@ async def run_buy_debate(
                          f"Zealot: {zealot_case[:200]} | Reaper: {reaper_case[:200]}")[:500],
                 llm_source=llm_source,
                 conviction_score=60,
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
             )
 
         # Injection detection on Reaper + Fulcrum (Zealot is LLM-rewrite, trust)
@@ -437,6 +492,7 @@ async def run_buy_debate(
                 summary=f"[INJECTION_BLOCKED] {','.join(m['pattern'] for m in injection['matches'])}"[:500],
                 llm_source=llm_source,
                 conviction_score=0,
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
             )
 
         verdict = _parse_verdict(fulcrum_response)
@@ -461,6 +517,7 @@ async def run_buy_debate(
             summary=summary,
             llm_source=llm_source,
             conviction_score=conviction,
+            agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
         )
         # #44 fire-and-forget A/B log (only when ab_model assigned)
         if ab_model:
@@ -523,6 +580,7 @@ async def run_buy_debate_cached(
                     summary=payload.get("summary", ""),
                     llm_source=payload.get("llm_source", "cached"),
                     conviction_score=payload.get("conviction_score", 60),
+                    agent_turns=payload.get("agent_turns", []),
                 )
             except Exception:
                 pass
@@ -544,6 +602,7 @@ async def run_buy_debate_cached(
                 "summary": result.summary,
                 "llm_source": result.llm_source,
                 "conviction_score": result.conviction_score,
+                "agent_turns": result.agent_turns,
             }),
             ttl_seconds=86400,
         )
@@ -604,6 +663,7 @@ async def run_buy_debate_batch(
                         "summary": result.summary,
                         "llm_source": result.llm_source,
                         "conviction_score": result.conviction_score,
+                        "agent_turns": result.agent_turns,
                     }
                 except Exception as e:
                     logger.error(f"[Debate] {symbol} batch crashed: {e}")

@@ -52,6 +52,10 @@ function buildScreenerSectorSummary(recs: any[]) {
     techSum: number
     symbols: string[]
     reasons: Set<string>
+    themeReasons: Set<string>
+    flowReasons: Set<string>
+    rotationReasons: Set<string>
+    strategyReasons: Set<string>
   }>()
 
   for (const rec of recs) {
@@ -64,6 +68,10 @@ function buildScreenerSectorSummary(recs: any[]) {
       techSum: 0,
       symbols: [],
       reasons: new Set<string>(),
+      themeReasons: new Set<string>(),
+      flowReasons: new Set<string>(),
+      rotationReasons: new Set<string>(),
+      strategyReasons: new Set<string>(),
     }
     row.count += 1
     row.scoreSum += Number(rec.score ?? 0)
@@ -73,10 +81,24 @@ function buildScreenerSectorSummary(recs: any[]) {
     if (rec.screener_funnel_reason) row.reasons.add(String(rec.screener_funnel_reason))
     const evidence = parseMaybeJson(rec.screener_funnel_evidence)
     const rrg = parseMaybeJson(evidence.rrg_overlay ?? evidence.rrg)
-    if (rrg.quadrant) row.reasons.add(`RRG ${rrg.quadrant}`)
-    if (evidence.buzz_score != null || evidence.buzz_z != null) row.reasons.add('題材熱度')
+    const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
+    const keywords = [
+      ...(Array.isArray(evidence.keywords) ? evidence.keywords : []),
+      ...(Array.isArray(evidence.theme_keywords) ? evidence.theme_keywords : []),
+      ...(Array.isArray(evidence.top_keywords) ? evidence.top_keywords : []),
+    ].filter(Boolean).slice(0, 3)
+    if (rrg.quadrant) row.rotationReasons.add(`RRG ${rrg.quadrant}`)
+    if (evidence.buzz_score != null || evidence.buzz_z != null) {
+      row.themeReasons.add(keywords.length ? `題材熱度：${keywords.join('、')}` : '題材熱度升溫')
+    }
+    if (evidence.theme_sources) row.themeReasons.add(`來源：${String(evidence.theme_sources).slice(0, 32)}`)
+    if (Number(rec.chip_score ?? 0) >= 28) row.flowReasons.add('籌碼分數偏強')
+    if (Number(rec.tech_score ?? 0) >= 22) row.rotationReasons.add('技術動能偏強')
+    if (evidence.broker_flow || evidence.foreign_flow || evidence.chip_flow) row.flowReasons.add('資金/券商流向支撐')
+    if (evidence.sector_flow || evidence.diversity_slot != null || evidence.diversity_reason) row.rotationReasons.add('族群輪動/分散控管')
+    if (Array.isArray(strategyIds) && strategyIds.length) row.strategyReasons.add(`策略池：${strategyIds.slice(0, 3).join('、')}`)
+    if (rec.strategy_pool_reason || evidence.strategy_pool_reason) row.strategyReasons.add(String(rec.strategy_pool_reason ?? evidence.strategy_pool_reason).slice(0, 48))
     if (evidence.cooldown_penalty != null) row.reasons.add('冷卻檢查')
-    if (evidence.diversity_slot != null || evidence.diversity_reason) row.reasons.add('分散控管')
     bySector.set(sector, row)
   }
 
@@ -86,7 +108,11 @@ function buildScreenerSectorSummary(recs: any[]) {
       avgScore: row.count ? row.scoreSum / row.count : 0,
       avgChip: row.count ? row.chipSum / row.count : 0,
       avgTech: row.count ? row.techSum / row.count : 0,
-      reasonText: [...row.reasons].slice(0, 3).join(' / ') || '多因子通過',
+      themeText: [...row.themeReasons].slice(0, 2).join(' / ') || '題材未提供明確關鍵字',
+      flowText: [...row.flowReasons].slice(0, 2).join(' / ') || '資金流以分數代理',
+      rotationText: [...row.rotationReasons].slice(0, 2).join(' / ') || '族群輪動無明確標籤',
+      strategyText: [...row.strategyReasons].slice(0, 2).join(' / ') || '未標策略池',
+      reasonText: [...row.reasons].slice(0, 2).join(' / ') || '多因子通過',
     }))
     .sort((a, b) => b.count - a.count || b.avgScore - a.avgScore)
     .slice(0, 8)
@@ -284,6 +310,47 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
 }
 
 // ─── T2 Pending Buy row ────────────────────────────────────────────────────
+function DebateTurnsList({ turns }: { turns: any[] }) {
+  const cleanTurns = Array.isArray(turns)
+    ? turns.filter((turn) => turn && typeof turn === 'object' && (turn.summary || turn.agent))
+    : []
+  if (!cleanTurns.length) {
+    return (
+      <div className="rounded-lg border border-border/70 bg-background/45 p-2 text-[11px] leading-5 text-muted-foreground">
+        這筆是舊 run 或 controller 尚未回傳 agent turns；目前只保存 verdict / execution terminal。
+      </div>
+    )
+  }
+  const agentLabel: Record<string, string> = {
+    theme: 'Theme Agent',
+    bull: 'Bull Agent',
+    bear: 'Bear Agent',
+    risk: 'Risk Agent',
+    judge: 'Final Judge',
+    zealot: 'Bull Agent',
+    reaper: 'Bear/Risk Agent',
+    fulcrum: 'Final Judge',
+  }
+  return (
+    <div className="space-y-1 rounded-lg border border-border/70 bg-background/45 p-2">
+      <p className="text-[11px] font-semibold text-foreground">逐輪辯論</p>
+      {cleanTurns.slice(0, 8).map((turn, i) => {
+        const key = String(turn.agent ?? '').toLowerCase()
+        const label = agentLabel[key] ?? String(turn.agent ?? `Round ${i + 1}`)
+        return (
+          <div key={`${label}-${i}`} className="grid gap-1 rounded-md border border-border/50 px-2 py-1.5 text-[11px] md:grid-cols-[120px_minmax(0,1fr)]">
+            <div>
+              <span className="font-semibold text-primary">{label}</span>
+              {turn.round != null ? <span className="ml-1 font-mono text-muted-foreground">R{turn.round}</span> : null}
+            </div>
+            <p className="leading-5 text-muted-foreground">{String(turn.summary ?? turn.text ?? '-')}</p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   return (
@@ -316,6 +383,7 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
             <span>debate <b className="font-mono text-foreground">{buy.debate_verdict ?? buy.debate_status ?? '-'}</b></span>
             <span>execution <b className="font-mono text-foreground">{buy.execution_status ?? 'pending'}</b></span>
           </div>
+          <DebateTurnsList turns={buy.debate_turns ?? buy.debateTurns ?? []} />
           {Array.isArray(buy.watch_points) && buy.watch_points.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {buy.watch_points.slice(0, 5).map((point: string) => (
@@ -331,129 +399,6 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
         </div>
       )}
     </div>
-  )
-}
-
-function parseMaybeArray(raw: unknown): any[] {
-  if (Array.isArray(raw)) return raw
-  if (typeof raw !== 'string' || !raw.trim()) return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function compactEvidenceValue(value: unknown): string {
-  if (value == null || value === '') return '-'
-  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(Math.abs(value) >= 10 ? 1 : 2) : '-'
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.slice(0, 3).join(', ')
-  return JSON.stringify(value).slice(0, 80)
-}
-
-function StockSelectionTracePanel({ recs }: { recs: any[] }) {
-  const rows = recs.slice(0, 8).map((rec) => {
-    const evidence = parseMaybeJson(rec.screener_funnel_evidence)
-    const timeline = parseMaybeArray(rec.screener_funnel_timeline)
-    const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
-    return {
-      rec,
-      evidence,
-      timeline,
-      strategyIds: Array.isArray(strategyIds) ? strategyIds : [],
-    }
-  })
-  if (!rows.length) return null
-  return (
-    <Card className="border-border bg-card">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">單檔選股 trace</CardTitle>
-        <p className="text-xs text-muted-foreground">從 screener 因子、strategy pool、taxonomy/熱度 evidence 到最後入列原因。</p>
-      </CardHeader>
-      <CardContent className="grid gap-2 lg:grid-cols-2">
-        {rows.map(({ rec, evidence, timeline, strategyIds }, i) => {
-          const rrg = parseMaybeJson(evidence.rrg_overlay ?? evidence.rrg)
-          return (
-            <div key={`${rec.symbol}-${i}`} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="font-mono text-sm font-semibold">{rec.symbol} <span className="font-sans text-muted-foreground">{rec.name}</span></p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    score {compactEvidenceValue(rec.score)} / chip {compactEvidenceValue(rec.chip_score)} / tech {compactEvidenceValue(rec.tech_score)} / ML {compactEvidenceValue(rec.ml_score)}
-                  </p>
-                </div>
-                <Badge variant="outline" className="font-mono text-[10px]">#{i + 1}</Badge>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {[...(strategyIds.length ? strategyIds : ['score_rank']), rec.industryTheme ?? rec.industry ?? rec.sector]
-                  .filter(Boolean)
-                  .slice(0, 5)
-                  .map((label: string) => (
-                    <Badge key={label} variant="outline" className="text-[10px]">{label}</Badge>
-                  ))}
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                <span>reason <b className="text-foreground">{String(rec.screener_funnel_reason ?? rec.reason ?? '-').slice(0, 60)}</b></span>
-                <span>buzz <b className="font-mono text-foreground">{compactEvidenceValue(evidence.buzz_score ?? evidence.buzz_z)}</b></span>
-                <span>strategy <b className="text-foreground">{String(rec.strategy_pool_reason ?? evidence.strategy_pool_reason ?? '-')}</b></span>
-                <span>rrg <b className="text-foreground">{compactEvidenceValue(rrg.quadrant)}</b></span>
-              </div>
-              <div className="mt-2 space-y-1">
-                {(timeline.length ? timeline : [{ stage: 'recommendation', reason_code: rec.screener_funnel_reason ?? 'selected' }]).slice(0, 4).map((item: any, idx: number) => (
-                  <div key={idx} className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span className="w-24 shrink-0 font-mono text-primary">{String(item.stage ?? item.step ?? 'stage')}</span>
-                    <span className="truncate">{String(item.reason_code ?? item.reasonCode ?? item.decision ?? item.reason ?? '-')}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
-  )
-}
-
-function PendingBuyHistoryPanel({ history }: { history: any }) {
-  const runs = Array.isArray(history?.runs) ? history.runs : []
-  if (!runs.length) return null
-  return (
-    <Card className="border-border bg-card">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">T2 pending buys 歷史與 terminal 狀態</CardTitle>
-        <p className="text-xs text-muted-foreground">當目前 pending=0 時，這裡仍會顯示最近 run 的 skipped/cancelled/expired/rejected 等終端結果。</p>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {runs.slice(0, 4).map((run: any) => {
-          const items = Array.isArray(run.items) ? run.items : []
-          return (
-            <div key={run.run_id} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <Badge variant="outline" className="font-mono">run {run.run_id}</Badge>
-                <span className="font-mono">{run.trade_date}</span>
-                <span className="text-muted-foreground">source {run.source_reco_date ?? '-'}</span>
-                <Badge variant="outline">{run.status}</Badge>
-                <Badge variant="outline">debate {run.debate_status}</Badge>
-                <span className="text-muted-foreground">execution {JSON.stringify(run.execution_counts ?? {})}</span>
-              </div>
-              <div className="mt-2 grid gap-1 md:grid-cols-2">
-                {items.slice(0, 6).map((item: any) => (
-                  <div key={`${run.run_id}-${item.symbol}`} className="rounded-lg border border-border/60 px-2 py-1 text-[11px]">
-                    <span className="font-mono font-semibold">{item.symbol}</span>
-                    <span className="ml-2 text-muted-foreground">{item.name}</span>
-                    <span className="ml-2 text-primary">{item.execution_status ?? 'pending'}</span>
-                    <span className="ml-2 text-muted-foreground">{item.debate_verdict ?? item.debate_status ?? '-'}</span>
-                    <p className="mt-1 truncate text-muted-foreground">{item.reason || '舊資料僅保存 verdict/reason/watch_points；完整 agent packet 尚未落庫'}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
   )
 }
 
@@ -486,7 +431,6 @@ export default function PipelinePage() {
   const allRecs = recData?.recommendations ?? []
   const recDate = recData?.date ?? today
   const pendingBuys = pbData?.pendingBuys ?? []
-  const pendingHistory = pbData?.runHistory ?? null
   const pbDate = pbData?.date ?? ''
   const qfList = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
 
@@ -547,17 +491,11 @@ export default function PipelinePage() {
         />
 
         {!isLoading && (
-          <>
-            <CandidateSourceMixChart
-              screener={screenerPassed}
-              recommendations={recommendationPreview.length ? recommendationPreview : screenerPreview}
-              pending={pendingBuys}
-            />
-            <div className="grid gap-4 xl:grid-cols-2">
-              <StockSelectionTracePanel recs={recommendationPreview.length ? recommendationPreview : screenerPreview} />
-              <PendingBuyHistoryPanel history={pendingHistory} />
-            </div>
-          </>
+          <CandidateSourceMixChart
+            screener={screenerPassed}
+            recommendations={recommendationPreview.length ? recommendationPreview : screenerPreview}
+            pending={pendingBuys}
+          />
         )}
 
         {/* Pipeline flow indicator */}
@@ -605,6 +543,12 @@ export default function PipelinePage() {
                           </p>
                         </div>
                         <Badge variant="outline" className="font-mono text-[10px]">{row.count} 檔</Badge>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-[11px] text-muted-foreground">
+                        <p><span className="text-amber-300">題材</span>：{row.themeText}</p>
+                        <p><span className="text-emerald-300">資金</span>：{row.flowText}</p>
+                        <p><span className="text-sky-300">族群輪動</span>：{row.rotationText}</p>
+                        <p><span className="text-violet-300">策略</span>：{row.strategyText}</p>
                       </div>
                       <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
                         <span>均分 <b className="font-mono text-foreground">{fmt(row.avgScore, 1)}</b></span>
@@ -715,7 +659,7 @@ export default function PipelinePage() {
                 />
                 {pendingBuys.length === 0 ? (
                   <div className="text-xs text-muted-foreground text-center py-6">
-                    目前沒有 active pending buys；若今天曾產生候選但已 skipped/cancelled/expired/rejected，請看上方 T2 歷史與 terminal 狀態。
+                    目前沒有 active pending buys；若今天曾產生候選但已被 skipped/cancelled/expired/rejected，請到模擬交易頁查看 terminal 狀態。
                   </div>
                 ) : (
                   <div className="space-y-0.5">

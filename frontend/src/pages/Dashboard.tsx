@@ -436,30 +436,14 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
 }
 
 function MorningBriefingCard() {
-  const items = [
-    { label: '市場情緒', value: '先觀察主題與資金流', tone: 'text-[#9cc7ef]', href: '/obs' },
-    { label: '可觀測性', value: '確認 SLO / Trace / Freshness', tone: 'text-[#8fc8a9]', href: '/obs' },
-    { label: '待處理事項', value: '查看模擬交易與提醒', tone: 'text-[#d4a44f]', href: '/bot' },
-  ]
-
   return (
     <section className="overflow-hidden rounded-xl border border-[#2b3a49] bg-[linear-gradient(135deg,#171714,#111821_55%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.22)]">
-      <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
-        <div>
-          <p className="text-[11px] font-semibold tracking-[0.18em] text-[#d6a85f]">MORNING BRIEF</p>
-          <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">先看市場，再看推薦，不急著按鈕</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#a8b6c5]">
-            Dashboard 是給一般朋友也看得懂的版本：先把市場風險、資料可信度、AI 候選與興櫃研究分流放在第一屏。
-          </p>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {items.map((item) => (
-            <a key={item.label} href={item.href} className="rounded-xl border border-[#2b3a49] bg-[#070a10]/55 p-3 transition hover:border-[#f0b90b]/35 hover:bg-[#111821]/80">
-              <p className="text-[11px] text-[#8b9bab]">{item.label}</p>
-              <p className={`mt-1 text-sm font-semibold ${item.tone}`}>{item.value}</p>
-            </a>
-          ))}
-        </div>
+      <div>
+        <p className="text-[11px] font-semibold tracking-[0.18em] text-[#d6a85f]">MORNING BRIEF / Morning overview</p>
+        <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">先看市場，再看推薦，不急著按鈕</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
+          第一屏只保留今天決策需要的市場風險、AI 候選、模擬掛單與資料可信度；詳細 trace 留在對應頁面，不在首頁堆入口。
+        </p>
       </div>
     </section>
   )

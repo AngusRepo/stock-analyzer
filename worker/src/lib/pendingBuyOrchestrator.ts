@@ -1051,6 +1051,7 @@ export async function reconcilePendingBuyDebates(
       debate_verdict: debate.verdict,
       debate_status: 'completed',
       risk_pct: debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
+      debate_turns: debate.agentTurns ?? [],
     })
   }
 

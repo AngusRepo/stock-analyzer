@@ -54,12 +54,21 @@ function checkInjection(rawText: string): { action: string; severity: string; ma
 
 export type DebateVerdict = 'APPROVE' | 'DOWNGRADE' | 'REJECT'
 
+export interface DebateAgentTurn {
+  agent: 'theme' | 'bull' | 'bear' | 'risk' | 'judge'
+  round?: number
+  stance?: string
+  summary: string
+  source?: string
+}
+
 export interface DebateResult {
   verdict: DebateVerdict
   rounds: number
   summary: string  // stored in paper_orders.note
   llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
   convictionScore: number // 0-100, judge 的信念度評分
+  agentTurns?: DebateAgentTurn[]
 }
 
 export interface StockProfile {
@@ -210,6 +219,43 @@ function parseJsonArray(raw: string | null | undefined, maxItems = 3): string {
   }
 }
 
+function compactTurnText(text: string, max = 360): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function buildAgentTurns(
+  mlContext: string,
+  zealotCases: string[],
+  reaperCases: string[],
+  fulcrumResponse: string,
+  llmSource: string,
+): DebateAgentTurn[] {
+  const turns: DebateAgentTurn[] = [{
+    agent: 'theme',
+    round: 0,
+    stance: 'context',
+    summary: compactTurnText(mlContext, 360),
+    source: 'morning_setup',
+  }]
+  zealotCases.forEach((text, idx) => {
+    turns.push({ agent: 'bull', round: idx + 1, stance: 'support', summary: compactTurnText(text), source: llmSource })
+  })
+  reaperCases.forEach((text, idx) => {
+    turns.push({ agent: 'bear', round: idx + 1, stance: 'challenge', summary: compactTurnText(text), source: llmSource })
+    turns.push({ agent: 'risk', round: idx + 1, stance: 'risk_check', summary: compactTurnText(text, 260), source: llmSource })
+  })
+  if (fulcrumResponse) {
+    turns.push({
+      agent: 'judge',
+      round: zealotCases.length + reaperCases.length + 1,
+      stance: 'verdict',
+      summary: compactTurnText(fulcrumResponse.replace(/VERDICT:.*\n?/i, ''), 360),
+      source: llmSource,
+    })
+  }
+  return turns
+}
+
 /**
  * Read max_rounds from KV `ml:config.debate_max_rounds` (bounded 1..3).
  * Default 2 (Phase 4 upgrade). Setting 1 restores pre-upgrade single-shot
@@ -290,6 +336,7 @@ export async function runBuyDebateBatchViaController(
         summary: r.summary ?? '',
         llmSource: r.llm_source ?? 'ml-controller',
         convictionScore: r.conviction_score ?? 60,
+        agentTurns: Array.isArray(r.agent_turns) ? r.agent_turns : [],
       })
     }
     return map
@@ -458,6 +505,7 @@ export async function runBuyDebate(
           summary: `Zealot only (Reaper LLM error R1): ${zealotCases[0] ?? ''}`.slice(0, 500),
           llmSource,
           convictionScore: 60,
+          agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
         }
       } else {
         break
@@ -512,6 +560,7 @@ export async function runBuyDebate(
       verdict: 'APPROVE', rounds: totalRounds - 1,
       summary: `Zealot+Reaper done (Fulcrum error). Zealot: ${zealotCase.slice(0, 200)} | Reaper: ${reaperCase.slice(0, 200)}`.slice(0, 500),
       llmSource, convictionScore: 60,
+      agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
     }
   }
 
@@ -523,6 +572,7 @@ export async function runBuyDebate(
       verdict: 'REJECT' as DebateVerdict, rounds: totalRounds,
       summary: `[INJECTION_BLOCKED] ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`.slice(0, 500),
       llmSource, convictionScore: 0,
+      agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
     }
   }
 
@@ -556,7 +606,14 @@ export async function runBuyDebate(
     llm_source: llmSource,
   })
 
-  return { verdict, rounds: totalRounds, summary, llmSource, convictionScore }
+  return {
+    verdict,
+    rounds: totalRounds,
+    summary,
+    llmSource,
+    convictionScore,
+    agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
+  }
 }
 
 // ─── Verdict Parser ───────────────────────────────────────────────────────────

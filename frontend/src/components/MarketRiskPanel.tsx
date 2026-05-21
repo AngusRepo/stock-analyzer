@@ -25,6 +25,8 @@ interface MarketRiskFactor {
   source_date?: string | null
   detail?: string
   missing_reason?: string
+  evidence_title?: string | null
+  evidence_url?: string | null
 }
 
 interface MarketRisk {
@@ -51,12 +53,6 @@ interface MarketRisk {
   } | null
 }
 
-interface HistoryRow {
-  date: string
-  risk_score: number
-  risk_level: string
-}
-
 interface FactorGroup {
   id: string
   label: string
@@ -68,6 +64,8 @@ interface FactorGroup {
   sourceDate?: string | null
   detail: string
   missingReason?: string
+  evidenceTitle?: string | null
+  evidenceUrl?: string | null
   factors: MarketRiskFactor[]
   Icon: typeof Activity
 }
@@ -98,9 +96,9 @@ const GROUPS = [
   },
   {
     id: 'breadth',
-    label: '市場廣度',
-    factorIds: ['breadth'],
-    sourceHint: 'sector_flow 或漲跌家數 proxy',
+    label: '景氣燈號',
+    factorIds: ['economy_light'],
+    sourceHint: 'FinLab tw_business_indicators 景氣對策信號',
     Icon: BarChart3,
   },
   {
@@ -120,15 +118,15 @@ const GROUPS = [
   {
     id: 'macro_global',
     label: '總經 / 全球',
-    factorIds: ['macro', 'global', 'global_risk'],
-    sourceHint: 'FinLab 總經、世界指數、全球事件',
+    factorIds: ['macro', 'global'],
+    sourceHint: 'FinLab 景氣燈號、PMI/NMI、世界指數',
     Icon: Globe2,
   },
   {
     id: 'event_pressure',
-    label: '事件壓力',
+    label: '事件鏈',
     factorIds: ['event_monitors', 'lppls', 'hawkes'],
-    sourceHint: '泡沫加速與事件連鎖監控',
+    sourceHint: 'GDELT / 鉅亨 / 官方事件與 LPPLS/Hawkes 監控',
     Icon: AlertTriangle,
   },
 ] as const
@@ -171,7 +169,8 @@ function factorContribution(factor: MarketRiskFactor) {
 }
 
 function latestSourceDate(factors: MarketRiskFactor[]) {
-  return factors.map((factor) => factor.source_date).filter(Boolean).sort().at(-1) ?? null
+  const sourceDates = factors.map((factor) => factor.source_date).filter(Boolean).sort()
+  return sourceDates.length ? sourceDates[sourceDates.length - 1] ?? null : null
 }
 
 function buildGroupValue(groupId: string, factors: MarketRiskFactor[]) {
@@ -187,7 +186,7 @@ function buildGroupValue(groupId: string, factors: MarketRiskFactor[]) {
   }
   if (groupId === 'event_pressure') {
     const value = cleanValue(byId.get('event_monitors')?.value ?? byId.get('lppls')?.value ?? byId.get('hawkes')?.value)
-    return value === '缺資料' ? value : `壓力 ${value}`
+    return value
   }
   return cleanValue(factors[0]?.value)
 }
@@ -208,6 +207,7 @@ function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
       .map((factor) => factor.detail)
       .filter(Boolean)
       .slice(0, 2)
+    const evidence = matched.find((factor) => factor.evidence_title || factor.evidence_url)
 
     return {
       id: group.id,
@@ -220,6 +220,8 @@ function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
       sourceDate: latestSourceDate(matched),
       detail: details.length ? details.join('；') : group.sourceHint,
       missingReason: missingReasons.length ? Array.from(new Set(missingReasons)).join(' / ') : undefined,
+      evidenceTitle: evidence?.evidence_title ?? null,
+      evidenceUrl: evidence?.evidence_url ?? null,
       factors: matched,
       Icon: group.Icon,
     }
@@ -267,46 +269,16 @@ function MiniBars({ factors }: { factors: MarketRiskFactor[] }) {
   )
 }
 
-function HistoryBars({ history }: { history: HistoryRow[] }) {
-  if (!history.length) return null
-  return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">30 日風險分數</div>
-        <div className="font-mono text-[10px] text-muted-foreground">
-          {history[0]?.date.slice(5)} → {history[history.length - 1]?.date.slice(5)}
-        </div>
-      </div>
-      <div className="flex h-14 items-end gap-0.5">
-        {history.slice(-30).map((row) => {
-          const height = Math.max(4, (Number(row.risk_score ?? 0) / 100) * 56)
-          const cfg = LEVEL_CONFIG[row.risk_level as keyof typeof LEVEL_CONFIG] ?? LEVEL_CONFIG.green
-          return (
-            <div key={row.date} className="flex-1 rounded-sm" style={{ height: `${height}px` }} title={`${row.date} risk:${row.risk_score}`}>
-              <div className={`h-full w-full rounded-sm ${cfg.bar} opacity-80`} />
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 export default function MarketRiskPanel() {
   const [risk, setRisk] = useState<MarketRisk | null>(null)
-  const [history, setHistory] = useState<HistoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [riskData, histData] = await Promise.all([
-          marketApi.risk(),
-          marketApi.riskHistory(30),
-        ])
+        const riskData = await marketApi.risk()
         setRisk(riskData)
-        setHistory(histData)
       } catch (e: any) {
         setError(e.message ?? 'load_failed')
       } finally {
@@ -402,6 +374,16 @@ export default function MarketRiskPanel() {
                 <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
                   {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
                 </div>
+                {group.evidenceTitle && group.evidenceUrl ? (
+                  <a
+                    href={group.evidenceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 block truncate rounded border border-current/20 px-2 py-1 text-[11px] underline-offset-2 hover:underline"
+                  >
+                    {group.evidenceTitle}
+                  </a>
+                ) : null}
                 {group.sourceDate ? <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">source_date={group.sourceDate}</div> : null}
               </div>
             )
@@ -409,7 +391,6 @@ export default function MarketRiskPanel() {
         </div>
       </div>
 
-      <HistoryBars history={history} />
     </div>
   )
 }

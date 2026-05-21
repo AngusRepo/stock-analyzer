@@ -189,6 +189,89 @@ def tags_query(symbols: list[str]) -> dict[str, list[str]]:
     return out
 
 
+def finlab_taxonomy_tags_query(symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not symbols:
+        return {}
+    placeholders = ",".join(["?"] * len(symbols))
+    rows = d1(
+        f"""
+        SELECT symbol, tag, tag_type, weight
+          FROM finlab_taxonomy_tags
+         WHERE symbol IN ({placeholders})
+           AND tag_type IN ('industry', 'industry_theme', 'subindustry', 'concept')
+        """,
+        symbols,
+    )
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        tag = str(row.get("tag") or "").strip()
+        tag_type = str(row.get("tag_type") or "tag").strip()
+        if not symbol or not tag:
+            continue
+        key = (symbol, tag, tag_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            weight = float(row.get("weight") or 1)
+        except (TypeError, ValueError):
+            weight = 1.0
+        out[symbol].append({"tag": tag, "tag_type": tag_type, "weight": weight})
+    return out
+
+
+def build_finlab_taxonomy_theme_rows(
+    tags_by_symbol: dict[str, list[dict[str, Any]]],
+    *,
+    date: str,
+    generated_at: str,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for symbol, tags in tags_by_symbol.items():
+        for tag in tags:
+            concept = str(tag.get("tag") or "").strip()
+            if not concept:
+                continue
+            bucket = buckets.setdefault(
+                concept,
+                {"symbols": set(), "tag_types": set(), "score_sum": 0.0},
+            )
+            bucket["symbols"].add(symbol)
+            bucket["tag_types"].add(str(tag.get("tag_type") or "tag"))
+            try:
+                bucket["score_sum"] += max(0.0, float(tag.get("weight") or 1))
+            except (TypeError, ValueError):
+                bucket["score_sum"] += 1.0
+
+    rows: list[dict[str, Any]] = []
+    for concept, bucket in buckets.items():
+        symbols = sorted(bucket["symbols"])
+        tag_types = sorted(bucket["tag_types"])
+        if not symbols:
+            continue
+        rows.append(
+            {
+                "date": date,
+                "concept": concept,
+                "source": "finlab_taxonomy",
+                "score": round(float(bucket["score_sum"]) / max(1, len(symbols)), 6),
+                "sentiment_avg": 0,
+                "evidence_count": len(symbols),
+                "symbols_json": json.dumps(symbols, ensure_ascii=False, sort_keys=True),
+                "top_titles": json.dumps(
+                    [f"finlab_taxonomy:{','.join(tag_types) or 'tag'}:{len(symbols)} symbols"],
+                    ensure_ascii=False,
+                ),
+                "allowed_use": "taxonomy_context",
+                "decision_effect": "context_only",
+                "generated_at": generated_at,
+            }
+        )
+    return sorted(rows, key=lambda row: (-int(row["evidence_count"]), str(row["concept"])))
+
+
 def build_official_items(tags_by_symbol: dict[str, list[str]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     endpoints = [
@@ -609,6 +692,7 @@ def main() -> None:
     symbols = [str(row.get("symbol")) for row in recommendations if row.get("symbol")]
     target_symbols = set(symbols)
     tags_by_symbol = tags_query(symbols)
+    finlab_tags_by_symbol = finlab_taxonomy_tags_query(symbols)
 
     official_items = build_official_items(tags_by_symbol)
 
@@ -624,7 +708,13 @@ def main() -> None:
         generated_at=GENERATED_AT,
     )
     evidence_rows = external_evidence_item_d1_rows(packet)
-    theme_rows = theme_signal_d1_rows(packet["runtime"]["theme_signals"])
+    external_theme_rows = theme_signal_d1_rows(packet["runtime"]["theme_signals"])
+    taxonomy_theme_rows = build_finlab_taxonomy_theme_rows(
+        finlab_tags_by_symbol,
+        date=TARGET_DATE,
+        generated_at=GENERATED_AT,
+    )
+    theme_rows = [*external_theme_rows, *taxonomy_theme_rows]
     feature_rows = build_stock_features(theme_rows, tags_by_symbol, target_symbols)
 
     upsert_external(evidence_rows)
@@ -694,6 +784,8 @@ def main() -> None:
                 "gdelt_status": gdelt_status,
                 "packet_quality": packet.get("quality_summary"),
                 "evidence_rows_written_or_existing": len(evidence_rows),
+                "external_theme_rows_upserted": len(external_theme_rows),
+                "finlab_taxonomy_theme_rows_upserted": len(taxonomy_theme_rows),
                 "theme_rows_upserted": len(theme_rows),
                 "stock_theme_features_upserted": len(feature_rows),
                 "post_external_evidence_by_source": post,

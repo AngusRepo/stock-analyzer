@@ -25,6 +25,13 @@ arch==7.0.0
 lightgbm>=4.0.0
 # PyTorch：FT-Transformer 需要；Chronos 也依賴 torch
 torch==2.8.0
+# Breeze2 reason-generation shadow provider. The model card requires
+# transformers 4.47.x plus MediaTek's prompt helpers; this path is shadow-only
+# and is activated explicitly through BREEZE2_REASON_SHADOW_PROVIDER.
+transformers==4.47.0
+accelerate>=0.26.0
+mtkresearch==0.3.2
+safetensors>=0.4.5
 # Chronos Amazon foundation model（zero-shot time series forecasting）
 # 若不需要 Chronos 可移除；DLinear 會自動接管 fallback
 chronos-forecasting>=2.0.0

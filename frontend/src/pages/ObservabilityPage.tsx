@@ -131,71 +131,6 @@ function MetricCell({
   )
 }
 
-function sourceKeyFromCheck(check: DataQualityCheck) {
-  const text = `${check.id} ${check.label} ${check.summary}`.toLowerCase()
-  if (text.includes('finlab')) return 'FinLab'
-  if (text.includes('finnhub')) return 'Finnhub'
-  if (text.includes('gdelt')) return 'GDELT'
-  if (text.includes('official') || text.includes('twse') || text.includes('tpex') || text.includes('fsc')) return 'Official'
-  if (text.includes('ir') || text.includes('newsroom')) return 'IR'
-  if (text.includes('ptt')) return 'PTT'
-  if (text.includes('anue') || text.includes('cnyes') || text.includes('avenue')) return 'Anue'
-  if (text.includes('price') || text.includes('chip') || text.includes('market') || text.includes('canonical')) return 'Market Data'
-  if (text.includes('model') || text.includes('prediction') || text.includes('recommendation')) return 'Model Output'
-  return 'Other'
-}
-
-function SourceFreshnessSmallMultiples({ checks }: { checks: DataQualityCheck[] }) {
-  const grouped = checks.reduce<Record<string, { ok: number; warn: number; fail: number; total: number; latest: string }>>((acc, check) => {
-    const key = sourceKeyFromCheck(check)
-    const row = acc[key] ?? { ok: 0, warn: 0, fail: 0, total: 0, latest: '' }
-    row.total += 1
-    if (check.status === 'ok') row.ok += 1
-    else if (check.status === 'warn') row.warn += 1
-    else row.fail += 1
-    row.latest = check.summary || row.latest
-    acc[key] = row
-    return acc
-  }, {})
-  const rows = Object.entries(grouped)
-    .sort((a, b) => (b[1].fail - a[1].fail) || (b[1].warn - a[1].warn) || b[1].total - a[1].total)
-    .slice(0, 10)
-
-  if (!rows.length) return null
-
-  return (
-    <WorkstationPanel title="Source Freshness Matrix / 資料源 freshness" kicker="ok / warn / fail by source">
-      <div className="grid gap-3 p-3 md:grid-cols-2 xl:grid-cols-5">
-        {rows.map(([source, row]) => {
-          const tone: WorkstationTone = row.fail ? 'error' : row.warn ? 'warn' : 'ok'
-          const okPct = row.total ? (row.ok / row.total) * 100 : 0
-          const warnPct = row.total ? (row.warn / row.total) * 100 : 0
-          const failPct = row.total ? (row.fail / row.total) * 100 : 0
-          return (
-            <div key={source} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="font-semibold text-slate-100">{source}</div>
-                <WorkstationPill tone={tone}>{formatStatus(tone)}</WorkstationPill>
-              </div>
-              <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-[#111827]">
-                <div className="bg-emerald-300" style={{ width: `${okPct}%` }} />
-                <div className="bg-amber-300" style={{ width: `${warnPct}%` }} />
-                <div className="bg-rose-300" style={{ width: `${failPct}%` }} />
-              </div>
-              <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-500">
-                <span>ok {row.ok}</span>
-                <span>warn {row.warn}</span>
-                <span>fail {row.fail}</span>
-              </div>
-              <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-slate-500">{row.latest || 'no summary'}</p>
-            </div>
-          )
-        })}
-      </div>
-    </WorkstationPanel>
-  )
-}
-
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
@@ -799,8 +734,6 @@ export default function ObservabilityPage() {
             <DependencyMap />
           </WorkstationPanel>
         </section>
-
-        <SourceFreshnessSmallMultiples checks={dqChecks} />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <div className="border-b border-[#263247] p-3">

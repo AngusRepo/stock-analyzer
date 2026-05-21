@@ -3,6 +3,7 @@ import { sendReportToChannels, type DiscordEmbed } from './notify'
 import { formatPendingBuyBriefing } from './pendingBuyBriefingSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
+import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -26,6 +27,17 @@ function safeParseJSON(value: string | null | undefined): any {
   } catch {
     return null
   }
+}
+
+function hasScoreEvidence(row: Record<string, unknown>): boolean {
+  return Boolean(row.score_components)
+    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
+      .some((key) => Number.isFinite(Number(row[key])))
+}
+
+export function recommendationReportScore(row: ScoreV2StorageRow): number | null {
+  if (!hasScoreEvidence(row as Record<string, unknown>)) return null
+  return readScoreV2Snapshot(row).finalScore
 }
 
 function riskColor(level: string): number {
@@ -163,7 +175,9 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   }
 
   const { results: recs } = await env.DB.prepare(`
-    SELECT symbol, name, sector, score, signal, confidence, reason
+    SELECT symbol, name, sector, score, signal, confidence, reason,
+           score_components, ml_score, chip_score, tech_score,
+           COALESCE(momentum_score, 0) AS momentum_score
       FROM daily_recommendations
      WHERE date=? AND has_buy_signal=1
      ORDER BY score DESC
@@ -172,7 +186,8 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   if (recs?.length) {
     const recText = recs.slice(0, 15).map((row: any, index: number) => {
       const reason = String(row.reason ?? '').slice(0, 120) || '尚無理由'
-      return `${index + 1}. ${row.symbol} ${row.name} (${row.sector ?? '未分類'}) | 分數 ${row.score ?? 'N/A'} | 信心 ${fmtPct(row.confidence)}\n${reason}`
+      const score = recommendationReportScore(row)
+      return `${index + 1}. ${row.symbol} ${row.name} (${row.sector ?? '未分類'}) | 分數 ${fmtNumber(score)} | 信心 ${fmtPct(row.confidence)}\n${reason}`
     }).join('\n\n')
     embeds.push({ title: '每日推薦摘要', color: 0xf39c12, description: recText })
   }
@@ -296,7 +311,8 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
         symbol: row.symbol,
         name: row.name,
         sector: row.sector,
-        score: row.score,
+        score: recommendationReportScore(row),
+        score_components: safeParseJSON(row.score_components) ?? row.score_components ?? null,
         confidence: row.confidence,
         reason: row.reason,
       }))),

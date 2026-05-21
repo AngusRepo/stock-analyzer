@@ -129,6 +129,44 @@ def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing
     assert final[0]["current_price"] == 89.0
 
 
+def test_filter_and_score_persists_score_v2_technical_signals(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    payload = _payload("2330")
+    payload["indicators"][0].update({
+        "atr14": 2.0,
+        "plusDi14": 34.0,
+        "minusDi14": 12.0,
+        "adx14": 29.0,
+        "parabolicSar": 95.0,
+        "cci20": 88.0,
+        "volumeWeightedRsi14": 64.0,
+        "volumeMomentumDivergence132710": 125000.0,
+    })
+
+    final, sell_count = filter_and_score_recommendations(
+        [_screener_rec("2330")],
+        {"2330": _prediction_with_ensemble_v2()},
+        [payload],
+    )
+
+    assert sell_count == 0
+    score_components = final[0]["score_components"]
+    signals = score_components["technicalSignals"]
+    breakdown = score_components["technicalBreakdown"]
+    assert signals["adx14"] == pytest.approx(29.0)
+    assert signals["parabolicSar"] == pytest.approx(95.0)
+    assert signals["volumeMomentumDivergence132710"] == pytest.approx(125000.0)
+    assert breakdown["trendStructure"] > 0
+    assert breakdown["volatilityStructure"] > 0
+    assert breakdown["reversalExtreme"] > 0
+    assert breakdown["volumeConfirmation"] > 0
+    assert "Score V2" in final[0]["reason"]
+    assert "ML Edge" in final[0]["reason"]
+    assert "Chip Flow" in final[0]["reason"]
+    assert "ADX" in final[0]["reason"]
+    assert "【籌碼】" not in final[0]["reason"]
+
+
 def test_emerging_segment_overrides_dirty_tradable_lane(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     rec = {
@@ -240,6 +278,11 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
     assert "券商分點" in row["reason"]
     assert "法人買賣超接近平衡" not in row["reason"]
     assert not any("籌碼資料不足" in point for point in row["watch_points"])
+    assert row["score_components"]["version"] == "score_v2"
+    assert row["score_components"]["weights"]["mlEdge"] == 25
+    assert row["score_components"]["components"]["chipFlow"] == pytest.approx(10.0)
+    assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
+    assert row["score_components"]["legacyComponents"]["chip"] == pytest.approx(16.0)
     assert row["score_components"]["chipEvidence"]["source"] == "finlab.rotc_broker_transactions"
     assert row["score_components"]["chipEvidence"]["broker_net_amount_5d_billion"] == pytest.approx(0.013395)
 

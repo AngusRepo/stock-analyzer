@@ -139,6 +139,49 @@ def test_list_artifact_registry_decodes_json_fields(monkeypatch):
     assert rows[0]["offline_evidence_json"]["gate"]["decision"] == "PASS"
 
 
+def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
+    def fake_query(sql, params=None, timeout=60.0):
+        if "FROM pbo_results" in sql:
+            return [{
+                "run_date": "2026-05-18",
+                "pbo": 0.12,
+                "go_live_verdict": "PASS",
+                "raw_details": '{"method":"cscv_rank_logit","oos_mean_return":0.02}',
+            }]
+        if "FROM monte_carlo_results" in sql:
+            return [{
+                "run_date": "2026-05-18",
+                "mdd_95th": 0.18,
+                "go_live_verdict": "PASS",
+                "simulation_method": "block_bootstrap",
+            }]
+        if "FROM backtest_results" in sql:
+            return [{
+                "run_date": "2026-05-18",
+                "strategy": "StockVisionStrategy",
+                "sharpe": 3.0,
+                "total_trades": 60,
+                "max_drawdown": 0.2,
+            }]
+        return [{
+            "artifact_id": "CatBoost:v20260518:monthly_release",
+            "offline_gate_failed_gates": "[]",
+            "offline_evidence_json": '{"gate":{"decision":"STRONG_PASS"},"registration":{"model_cpcv":{"decision":"PASS"}}}',
+            "live_evidence_json": "{}",
+        }]
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+
+    rows = registry.list_artifact_registry(model_name="CatBoost", limit=1)
+    offline = rows[0]["offline_evidence_json"]
+
+    assert offline["pbo"]["pbo"] == 0.12
+    assert offline["pbo"]["method"] == "cscv_rank_logit"
+    assert offline["monte_carlo"]["mdd_95th"] == 0.18
+    assert offline["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
+    assert offline["validation_packet"]["root_cause"] == "artifact_registry_missing_validation_pointer"
+
+
 def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     selection = registry.build_candidate_selection([
         {

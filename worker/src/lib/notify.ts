@@ -9,6 +9,7 @@
  */
 
 import { resolveReportDeliveryChannel } from './reportDeliveryChannel'
+import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 interface Env {
   DB: any
@@ -321,6 +322,11 @@ export interface ActionableSignal {
   name: string
   signal: string             // e.g. 'BUY', 'STRONG_BUY'
   score: number | null       // composite score
+  score_components?: unknown
+  ml_score?: number | null
+  chip_score?: number | null
+  tech_score?: number | null
+  momentum_score?: number | null
   confidence: number | null  // model confidence [0, 1]
   reason: string
 }
@@ -362,6 +368,27 @@ function pad(s: string, width: number): string {
   return len >= width ? s : s + ' '.repeat(width - len)
 }
 
+export function actionableSignalDisplayScore(signal: ActionableSignal): number | null {
+  const rawSignal = signal as unknown as Record<string, unknown>
+  const hasScoreEvidence = Boolean(signal.score_components)
+    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
+      .some((key) => Number.isFinite(Number(rawSignal[key])))
+  if (!hasScoreEvidence) return null
+  return readScoreV2Snapshot(signal as unknown as ScoreV2StorageRow).finalScore
+}
+
+export function actionableSignalScoreSummary(signal: ActionableSignal): string {
+  const rawSignal = signal as unknown as Record<string, unknown>
+  const hasScoreEvidence = Boolean(signal.score_components)
+    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
+      .some((key) => Number.isFinite(Number(rawSignal[key])))
+  if (!hasScoreEvidence) return ''
+  const snapshot = readScoreV2Snapshot(signal as unknown as ScoreV2StorageRow)
+  const source = snapshot.source === 'score_v2' ? 'Score V2' : 'Score V2 projection'
+  return `${source} ${Math.round(snapshot.finalScore)} ` +
+    `(ML ${Math.round(snapshot.components.mlEdge)}, 籌 ${Math.round(snapshot.components.chipFlow)}, 技 ${Math.round(snapshot.components.technicalStructure)})`
+}
+
 /** Build a single Discord Embed with 3 fields: actionable / holdings / summary. */
 export function buildTripartiteDailyEmbed(args: {
   date: string
@@ -375,12 +402,13 @@ export function buildTripartiteDailyEmbed(args: {
 
   // ── Actionable section ────────────────────────────────────────────────────
   const actionableText = actionable.length === 0
-    ? '_今日無新買訊_'
+    ? '_No actionable signals_'
     : actionable.slice(0, 8).map(s => {
-        const score = s.score != null ? ` 分 ${Math.round(s.score)}` : ''
+        const score = actionableSignalScoreSummary(s)
         const conf = s.confidence != null ? ` ${Math.round(s.confidence * 100)}%` : ''
-        return '`' + pad(s.symbol, 6) + '` ' + s.signal + score + conf +
-               (s.reason ? ` — ${s.reason.slice(0, 40)}` : '')
+        return '`' + pad(s.symbol, 6) + '` ' + s.signal +
+               (score ? ` ${score}` : '') + conf +
+               (s.reason ? ` - ${s.reason.slice(0, 40)}` : '')
       }).join('\n')
 
   // ── Holdings section ──────────────────────────────────────────────────────

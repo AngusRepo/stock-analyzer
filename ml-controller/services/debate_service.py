@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import httpx
@@ -185,6 +185,40 @@ class DebateResult:
     summary: str             # <=500 chars, goes into paper_orders.note
     llm_source: str          # gemini_api | anthropic_api
     conviction_score: int    # 0-100
+    agent_turns: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _build_agent_turns(
+    zealot_cases: list[str],
+    reaper_cases: list[str],
+    fulcrum_response: str,
+    verdict: str,
+    conviction: int,
+) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = []
+    for idx, text in enumerate(zealot_cases, start=1):
+        turns.append({
+            "agent": "Bull Agent",
+            "round": idx,
+            "stance": "support_buy",
+            "summary": text[:1200],
+        })
+    for idx, text in enumerate(reaper_cases, start=1):
+        turns.append({
+            "agent": "Bear/Risk Agent",
+            "round": idx,
+            "stance": "challenge_risk",
+            "summary": text[:1200],
+        })
+    if fulcrum_response:
+        turns.append({
+            "agent": "Final Judge",
+            "round": len(zealot_cases) + len(reaper_cases) + 1,
+            "stance": verdict,
+            "summary": fulcrum_response[:1200],
+            "conviction": conviction,
+        })
+    return turns
 
 
 # ── Prompts (zh-TW, ported 1:1 from TS) ───────────────────────────────────────
@@ -223,7 +257,8 @@ _ZEALOT_SYS_BASE = "\n".join([
     "",
     "規則：",
     "- 不准說「但是」「不過」「風險」「需要注意」，你是死多頭",
-    "- 把 ML 信號、技術面、籌碼面的正面訊號放大解讀",
+    "- 把 Score V2 的 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme 正面證據放大解讀",
+    "- 不准退回舊 chip_score / tech_score / ml_score 三分法語意",
     "- 簡潔有力，用繁體中文回答。",
 ])
 
@@ -232,9 +267,11 @@ _REAPER_SYS_BASE = "\n".join([
     "你的信念：任何看起來完美的交易都藏著致命缺陷。",
     "",
     "挑戰角度：",
-    "【價值面】估值合理性、護城河是否真實",
-    "【動能面】技術疲態、追高風險、量價背離",
-    "【宏觀面】總經/地緣尾部風險",
+    "【Fundamental Quality】估值合理性、護城河是否真實",
+    "【Technical Structure】趨勢疲態、波動結構、追高風險、量價背離",
+    "【Chip Flow】法人或券商分點是否與價格行為背離",
+    "【ML Edge】模型共識、信心與預期報酬是否矛盾",
+    "【News/Theme】題材熱度是否大於事實支撐",
     "",
     "規則：",
     "- 不准說「優點是」「看好」「值得買入」，你是死空頭",
@@ -308,7 +345,7 @@ async def run_buy_debate(
         if breeze2_block:
             ml_context_parts.append(breeze2_block)
         ml_context_parts.extend(profile_lines)
-        ml_context_parts.append("ML Ensemble Reasoning:")
+        ml_context_parts.append("Score V2 / ML Evidence:")
         ml_context_parts.append(reasoning)
         ml_context = "\n".join(ml_context_parts)
 
@@ -327,7 +364,7 @@ async def run_buy_debate(
 
             # ── Zealot turn ────────────────────────────────────────────────
             if is_initial:
-                zealot_system = _ZEALOT_SYS_BASE + "\n\n你的任務：根據 ML 數據和公司資訊，寫出 3-5 個強力看多理由。最多 300 字。"
+                zealot_system = _ZEALOT_SYS_BASE + "\n\n你的任務：根據 Score V2 finalScore、五構面、ML ensemble 與公司資訊，寫出 3-5 個強力看多理由。最多 300 字。"
                 zealot_prompt = f"Write the bull case:\n\n{ml_context}"
             else:
                 zealot_system = _ZEALOT_SYS_BASE + f"\n\n你的任務：讀對方（Reaper）剛才的空方論點，針對其每個挑戰回擊反駁。最多 180 字。"
@@ -461,6 +498,7 @@ async def run_buy_debate(
             summary=summary,
             llm_source=llm_source,
             conviction_score=conviction,
+            agent_turns=_build_agent_turns(zealot_cases, reaper_cases, fulcrum_response, verdict, conviction),
         )
         # #44 fire-and-forget A/B log (only when ab_model assigned)
         if ab_model:
@@ -523,6 +561,7 @@ async def run_buy_debate_cached(
                     summary=payload.get("summary", ""),
                     llm_source=payload.get("llm_source", "cached"),
                     conviction_score=payload.get("conviction_score", 60),
+                    agent_turns=payload.get("agent_turns") if isinstance(payload.get("agent_turns"), list) else [],
                 )
             except Exception:
                 pass
@@ -544,6 +583,7 @@ async def run_buy_debate_cached(
                 "summary": result.summary,
                 "llm_source": result.llm_source,
                 "conviction_score": result.conviction_score,
+                "agent_turns": result.agent_turns,
             }),
             ttl_seconds=86400,
         )
@@ -604,6 +644,7 @@ async def run_buy_debate_batch(
                         "summary": result.summary,
                         "llm_source": result.llm_source,
                         "conviction_score": result.conviction_score,
+                        "agent_turns": result.agent_turns,
                     }
                 except Exception as e:
                     logger.error(f"[Debate] {symbol} batch crashed: {e}")

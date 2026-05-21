@@ -62,6 +62,10 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   const finalSelection = pickLastByStage(steps, 'final_selection')
   const rrg = pickLastByStage(steps, 'rrg_overlay')
   const buzz = pickLastByStage(steps, 'buzz_evidence')
+  const strategyPool = [
+    ...pickAllByStage(steps, 'strategy_pool_ml_queue'),
+    ...pickAllByStage(steps, 'strategy_pool_research_only'),
+  ]
   const diversity = pickAllByStage(steps, 'diversity_cooldown')
   const scoring = pickLastByStage(steps, 'scoring')
 
@@ -81,6 +85,22 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   if (scoring) evidence.base_scoring = scoring.evidence
   if (rrg) evidence.rrg_overlay = { reason_code: rrg.reason_code, ...rrg.evidence }
   if (buzz) evidence.buzz_evidence = { reason_code: buzz.reason_code, ...buzz.evidence }
+  if (strategyPool.length) {
+    evidence.strategy_pool = strategyPool.map((step) => ({
+      stage: step.stage,
+      decision: step.decision,
+      reason_code: step.reason_code,
+      score_after: step.score_after,
+      rank: step.rank,
+      ...step.evidence,
+    }))
+    evidence.strategy_ids = [
+      ...new Set(strategyPool.flatMap((step) => {
+        const ids = step.evidence?.strategy_ids
+        return Array.isArray(ids) ? ids.map(String) : []
+      })),
+    ]
+  }
   if (diversity.length) {
     evidence.diversity_cooldown = diversity.map((step) => ({
       reason_code: step.reason_code,

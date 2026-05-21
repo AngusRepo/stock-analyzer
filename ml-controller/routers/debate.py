@@ -71,6 +71,7 @@ async def debate_buy_single(req: BuyDebateRequest):
             "summary": result.summary,
             "llm_source": result.llm_source,
             "conviction_score": result.conviction_score,
+            "agent_turns": result.agent_turns,
         }
     except Exception as e:
         logger.error(f"[Debate] {req.symbol} crashed: {e}", exc_info=True)

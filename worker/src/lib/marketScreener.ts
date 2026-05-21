@@ -12,13 +12,14 @@
 import type { Bindings } from '../types'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
-import { computeAndStoreIndicators } from './technicalIndicators'
+import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
 import { loadTradingRestrictionSet } from './tradingRestrictions'
+import { buildPartialScreenerScoreV2, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 const D1_IN_CHUNK_SIZE = 40
 
@@ -739,7 +740,7 @@ export function scoreMultiFactor(
   marketReturn5d: number,
   latestClose: number,
   config?: TradingConfig,
-): { base_score: number; chip_score: number; tech_score: number; momentum_score: number; reasons: string[] } {
+): { base_score: number; chip_score: number; tech_score: number; momentum_score: number; score_components: string; reasons: string[] } {
   const sc = config?.screener
   const reasons: string[] = []
   const latest = prices[prices.length - 1]
@@ -924,8 +925,28 @@ export function scoreMultiFactor(
   }
   momentum_score = clamp(momentum_score, 0, 20)
 
-  const base_score = chip_score + tech_score + momentum_score
-  return { base_score, chip_score, tech_score, momentum_score, reasons }
+  const scoreV2 = buildPartialScreenerScoreV2({
+    chipScore40: chip_score,
+    techScore30: tech_score,
+    momentumScore20: momentum_score,
+    reasons,
+  })
+  const base_score = Math.round((chip_score + tech_score + momentum_score) * 10) / 10
+  return {
+    base_score,
+    chip_score,
+    tech_score,
+    momentum_score,
+    score_components: JSON.stringify(scoreV2),
+    reasons,
+  } as {
+    base_score: number
+    chip_score: number
+    tech_score: number
+    momentum_score: number
+    score_components: string
+    reasons: string[]
+  }
 }
 
 // RRG logic (classifyQuadrant / backfillRRG / calcIndustryRRG) removed in Phase 6.6
@@ -1224,6 +1245,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     chip_score: number
     tech_score: number
     momentum_score: number
+    score_components?: string
     industry: string
     market_segment: string
     taxonomy?: SymbolTaxonomyProfile
@@ -1233,7 +1255,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   for (const { stockId, prices } of universe) {
     const latest = prices[prices.length - 1]
     const chipDates = data.chips.get(stockId)
-    const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
+    const { base_score, chip_score, tech_score, momentum_score, score_components, reasons } = scoreMultiFactor(
       prices, chipDates, marketReturn5d, latest.close, cfg
     )
 
@@ -1248,6 +1270,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       score: base_score,
       reason: reasons.slice(0, 3).join('；') || '符合篩選條件',
       chip_score, tech_score, momentum_score,
+      score_components,
       industry,
       market_segment: 'listed_otc',
       taxonomy,
@@ -1259,7 +1282,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       decision: 'pass',
       reasonCode: 'base_score_computed',
       scoreAfter: base_score,
-      evidence: { chip_score, tech_score, momentum_score, reasons, taxonomy },
+      evidence: { chip_score, tech_score, momentum_score, score_components, reasons, taxonomy },
     })
   }
 
@@ -1284,6 +1307,92 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     { label: '30-40', min: 30 }, { label: '20-30', min: 20 }, { label: '<20', min: 0 },
   ]
   debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
+
+  const maxCandidates = screenerPolicy.sizing.mlShortlistSize
+  let strategySelectionTelemetry: Record<string, unknown> | null = null
+  let strategySelectionPlan: any | null = null
+  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(scored as ScreenerCandidate[])
+  try {
+    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { planStrategyFirstCandidateSelection }] = await Promise.all([
+      import('./strategyLearning'),
+      import('./strategyCandidatePool'),
+    ])
+    const [{ specs, source }, policyState] = await Promise.all([
+      listStrategySpecsForLearning(env.DB),
+      getLatestStrategyPolicyState(env.DB).catch(() => null),
+    ])
+    strategySelectionPlan = planStrategyFirstCandidateSelection(
+      strategySourceUniverse as any,
+      specs,
+      {
+        regime: (adaptiveParams as any)?.provenance?.regime ?? null,
+        strategyWeights: policyState?.strategy_weights ?? undefined,
+        mlQueueCapOverride: maxCandidates,
+      },
+    )
+    strategySelectionTelemetry = {
+      version: strategySelectionPlan.version,
+      spec_source: source,
+      capacity: strategySelectionPlan.capacity,
+      telemetry: strategySelectionPlan.telemetry,
+      source_universe_count: strategySourceUniverse.length,
+      selection_order: 'strategy_pool_after_safety_hard_filter_before_rrg_scoring_overlays',
+      pool_status: strategySelectionPlan.pools.map((pool: any) => ({
+        strategy_id: pool.strategy_id,
+        status: pool.status,
+        quota: pool.quota,
+        candidates: pool.candidates.length,
+        regime_scope: pool.regime_scope,
+        missing_evidence: pool.missing_evidence,
+      })),
+    }
+    debugLog.push(
+      `[Step 2c] strategy_pool=${strategySelectionPlan.version} source=${source} ` +
+      `ml=${strategySelectionPlan.mlQueue.length}/${maxCandidates} ` +
+      `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
+      `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
+    )
+    const mlQueueAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelectionPlan.mlQueue.length)
+    for (const entry of strategySelectionPlan.mlQueue.slice(0, mlQueueAuditLimit)) {
+      pushFunnelItem(funnelItems, {
+        symbol: String(entry.symbol || ''),
+        name: entry.name,
+        stage: 'strategy_pool_ml_queue',
+        decision: 'pass',
+        reasonCode: String(entry.strategy_pool_reason ?? 'selected_by_strategy_pool'),
+        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
+        rank: entry.strategy_pool_rank ?? null,
+        evidence: {
+          strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_pool_score: entry.strategy_pool_score ?? null,
+          strategy_pool_decision: entry.strategy_pool_decision ?? null,
+          source_universe: 'post_safety_hard_filter_pre_rrg',
+          source_universe_count: strategySourceUniverse.length,
+          market_segment: entry.market_segment ?? null,
+        },
+      })
+    }
+    const researchOnlyAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelectionPlan.researchOnlyQueue.length)
+    for (const entry of strategySelectionPlan.researchOnlyQueue.slice(0, researchOnlyAuditLimit)) {
+      pushFunnelItem(funnelItems, {
+        symbol: String(entry.symbol || ''),
+        name: entry.name,
+        stage: 'strategy_pool_research_only',
+        decision: 'observe',
+        reasonCode: String(entry.strategy_pool_reason ?? 'research_only_queue'),
+        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
+        rank: entry.strategy_pool_rank ?? null,
+        evidence: {
+          strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_pool_score: entry.strategy_pool_score ?? null,
+          market_segment: entry.market_segment ?? null,
+          source_universe: 'post_safety_hard_filter_pre_rrg',
+        },
+      })
+    }
+  } catch (e) {
+    debugLog.push(`[Step 2c] strategy_pool unavailable before overlays; fallback to score top later: ${String(e)}`)
+  }
 
   // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
   // RRG bonus config is consumed below from trading config / Optuna pushes.
@@ -1645,53 +1754,21 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           c.score += 3  // 優質直線上漲
         }
 
-        // ③ G2+ADX: 計算 ADX 14 — 判斷有無趨勢
-        if (bars.length >= 15) {
-          // +DM / -DM / TR 計算
-          let smoothPlusDM = 0, smoothMinusDM = 0, smoothTR = 0
-          for (let i = 1; i < Math.min(15, bars.length); i++) {
-            const upMove = bars[i].high - bars[i - 1].high
-            const downMove = bars[i - 1].low - bars[i].low
-            const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0
-            const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0
-            const tr = Math.max(
-              bars[i].high - bars[i].low,
-              Math.abs(bars[i].high - bars[i - 1].close),
-              Math.abs(bars[i].low - bars[i - 1].close)
-            )
-            if (i <= 14) {
-              smoothPlusDM += plusDM
-              smoothMinusDM += minusDM
-              smoothTR += tr
-            }
-          }
-          // Wilder smoothing for remaining bars
-          for (let i = 15; i < bars.length; i++) {
-            const upMove = bars[i].high - bars[i - 1].high
-            const downMove = bars[i - 1].low - bars[i].low
-            const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0
-            const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0
-            const tr = Math.max(
-              bars[i].high - bars[i].low,
-              Math.abs(bars[i].high - bars[i - 1].close),
-              Math.abs(bars[i].low - bars[i - 1].close)
-            )
-            smoothPlusDM = smoothPlusDM - smoothPlusDM / 14 + plusDM
-            smoothMinusDM = smoothMinusDM - smoothMinusDM / 14 + minusDM
-            smoothTR = smoothTR - smoothTR / 14 + tr
-          }
-          const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0
-          const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0
-          const dx = (plusDI + minusDI) > 0 ? Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100 : 0
-          const adx = dx  // 簡化：用最新 DX 近似 ADX（完整 ADX 需要 DX 的 14 日均值）
+        // ③ G2+ADX: 共用完整 ADX 14 計算，避免用最新 DX 近似 ADX。
+        if (bars.length >= 28) {
+          const technicals = computeTechnicalIndicators(
+            bars.map(b => b.close),
+            bars.map(b => b.high),
+            bars.map(b => b.low),
+            bars.map(b => b.volume),
+          )
+          const adx = technicals.adx14
 
-          // ADX < 15 + 法人大買 = 無趨勢但法人掃貨（國光生 pattern）
-          if (adx < 15 && (c as any).chip_score >= 20) {
+          if (adx != null && adx < 15 && (c as any).chip_score >= 20) {
             c.score -= 5
             c.reason += `；ADX${adx.toFixed(0)}無趨勢`
             adxPenalty++
-          } else if (adx > 30) {
-            // 強趨勢加分（搭配 intent 方向）
+          } else if (adx != null && adx > 30) {
             if (intent > 0.1) c.score += 2
           }
         }
@@ -1805,40 +1882,37 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     console.warn('[Screener v2] Correlation dedup failed:', e)
   }
 
-  // 5d: top N 截斷
-  const maxCandidates = screenerPolicy.sizing.mlShortlistSize
-  let strategySelectionTelemetry: Record<string, unknown> | null = null
-  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(scored as ScreenerCandidate[])
+  // 5d: top N 截斷；strategy pool 已在 Step 2c（安全硬篩後、RRG/去重前）完成。
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
     annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
   )
-  try {
-    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { planStrategyFirstCandidateSelection }] = await Promise.all([
-      import('./strategyLearning'),
-      import('./strategyCandidatePool'),
-    ])
-    const [{ specs, source }, policyState] = await Promise.all([
-      listStrategySpecsForLearning(env.DB),
-      getLatestStrategyPolicyState(env.DB).catch(() => null),
-    ])
-    const strategySelection = planStrategyFirstCandidateSelection(
-      strategySourceUniverse as any,
-      specs,
-      {
-        regime: (adaptiveParams as any)?.provenance?.regime ?? null,
-        strategyWeights: policyState?.strategy_weights ?? undefined,
-        mlQueueCapOverride: maxCandidates,
-      },
-    )
-    const selectedSymbols = new Set(strategySelection.mlQueue.map((candidate) => String(candidate.symbol || '').trim()))
+  if (strategySelectionPlan) {
+    const updatedBySymbol = new Map(afterIndustryLimit.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
+    const selectedSymbols = new Set(strategySelectionPlan.mlQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
+    const selectedCandidates = strategySelectionPlan.mlQueue.map((entry: any) => {
+      const symbol = String(entry.symbol || '').trim()
+      const updated = updatedBySymbol.get(symbol)
+      return {
+        ...(updated ?? entry),
+        strategy_pool_decision: entry.strategy_pool_decision,
+        strategy_pool_reason: entry.strategy_pool_reason,
+        strategy_pool_rank: entry.strategy_pool_rank,
+        strategy_pool_ids: entry.strategy_pool_ids,
+        strategy_pool_score: entry.strategy_pool_score,
+        strategy_watch_points: Array.from(new Set([
+          ...((updated as any)?.strategy_watch_points ?? []),
+          ...((entry as any).strategy_watch_points ?? []),
+        ])),
+      }
+    })
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => !selectedSymbols.has(String(candidate.symbol || '').trim()))
-      .slice(0, Math.max(0, maxCandidates - strategySelection.mlQueue.length))
+      .slice(0, Math.max(0, maxCandidates - selectedCandidates.length))
       .map((candidate, index) => ({
         ...candidate,
         strategy_pool_decision: 'ml_queue',
         strategy_pool_reason: 'score_fallback_top_up',
-        strategy_pool_rank: strategySelection.mlQueue.length + index + 1,
+        strategy_pool_rank: selectedCandidates.length + index + 1,
         strategy_pool_ids: ['score_fallback'],
         strategy_watch_points: [
           ...((candidate as any).strategy_watch_points ?? []),
@@ -1847,74 +1921,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }))
     finalCandidates = dedupeScreenerCandidatesBySymbol(
       annotateCandidatesWithStrategySpecs([
-        ...(strategySelection.mlQueue as any[]),
+        ...(selectedCandidates as any[]),
         ...(topUpCandidates as any[]),
       ] as ScreenerCandidate[]),
     )
     strategySelectionTelemetry = {
-      version: strategySelection.version,
-      spec_source: source,
-      capacity: strategySelection.capacity,
-      telemetry: strategySelection.telemetry,
-      source_universe_count: strategySourceUniverse.length,
+      ...(strategySelectionTelemetry ?? {}),
       post_diversity_universe_count: afterIndustryLimit.length,
-      selection_order: 'strategy_pool_from_post_hard_filter_scored_universe_then_global_diversity_topup',
       top_up_count: topUpCandidates.length,
-      pool_status: strategySelection.pools.map((pool) => ({
-        strategy_id: pool.strategy_id,
-        status: pool.status,
-        quota: pool.quota,
-        candidates: pool.candidates.length,
-        regime_scope: pool.regime_scope,
-        missing_evidence: pool.missing_evidence,
-      })),
+      selected_after_overlay_count: selectedCandidates.length,
     }
     debugLog.push(
-      `[Step 5] strategy_pool=${strategySelection.version} source=${source} ` +
-      `ml=${strategySelection.mlQueue.length}+topup=${topUpCandidates.length}/${maxCandidates} ` +
-      `research_only=${strategySelection.researchOnlyQueue.length} overflow=${strategySelection.telemetry.overflow_count} ` +
-      `cap=${strategySelection.capacity.mlQueueCap}/${strategySelection.capacity.totalCap} mode=${strategySelection.capacity.mode}`,
+      `[Step 5] strategy_pool pre-RRG selection applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${maxCandidates} ` +
+      `post_diversity_universe=${afterIndustryLimit.length}`,
     )
-    const mlQueueAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelection.mlQueue.length)
-    for (const entry of strategySelection.mlQueue.slice(0, mlQueueAuditLimit)) {
-      pushFunnelItem(funnelItems, {
-        symbol: String(entry.symbol || ''),
-        name: entry.name,
-        stage: 'strategy_pool_ml_queue',
-        decision: 'pass',
-        reasonCode: String(entry.strategy_pool_reason ?? 'selected_by_strategy_pool'),
-        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
-        rank: entry.strategy_pool_rank ?? null,
-        evidence: {
-          strategy_ids: entry.strategy_pool_ids ?? [],
-          strategy_pool_score: entry.strategy_pool_score ?? null,
-          strategy_pool_decision: entry.strategy_pool_decision ?? null,
-          source_universe: 'post_hard_filter_scored_universe',
-          source_universe_count: strategySourceUniverse.length,
-          post_diversity_universe_count: afterIndustryLimit.length,
-          market_segment: entry.market_segment ?? null,
-        },
-      })
-    }
-    const researchOnlyAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelection.researchOnlyQueue.length)
-    for (const entry of strategySelection.researchOnlyQueue.slice(0, researchOnlyAuditLimit)) {
-      pushFunnelItem(funnelItems, {
-        symbol: String(entry.symbol || ''),
-        name: entry.name,
-        stage: 'strategy_pool_research_only',
-        decision: 'observe',
-        reasonCode: String(entry.strategy_pool_reason ?? 'research_only_queue'),
-        scoreAfter: Number(entry.strategy_pool_score ?? entry.score ?? 0),
-        rank: entry.strategy_pool_rank ?? null,
-        evidence: {
-          strategy_ids: entry.strategy_pool_ids ?? [],
-          strategy_pool_score: entry.strategy_pool_score ?? null,
-          market_segment: entry.market_segment ?? null,
-        },
-      })
-    }
-  } catch (e) {
-    debugLog.push(`[Step 5] strategy_pool fallback to score top ${maxCandidates}: ${String(e)}`)
+  } else {
+    debugLog.push(`[Step 5] strategy_pool unavailable; fallback to score top ${maxCandidates}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
   debugLog.push(step5Msg)
@@ -1945,7 +1967,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
       if (latest.Trading_Volume === 0) continue
       const chipMeta = latestChipMeta(emergingData.chips.get(stockId))
-      const { base_score, chip_score, tech_score, momentum_score, reasons } = scoreMultiFactor(
+      const { base_score, chip_score, tech_score, momentum_score, score_components, reasons } = scoreMultiFactor(
         prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
       )
       const info = sectorMap[stockId]
@@ -1960,6 +1982,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         chip_score,
         tech_score,
         momentum_score,
+        score_components,
         industry,
         market_segment: 'emerging',
         taxonomy,
@@ -2155,7 +2178,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         seed.rank, seed.row.seedScore,
         seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
         seed.row.currentPrice,
-        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.scoreComponents, seed.row.industry,
         tpexSymbolSet.has(c.symbol) ? 'OTC' : 'LISTED',
         'tradable',
         1,
@@ -2191,7 +2214,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         seed.rank, seed.row.seedScore,
         seed.row.chipScore, seed.row.techScore, seed.row.momentumScore,
         seed.row.currentPrice,
-        seed.row.reason, JSON.stringify(watchPoints), seed.row.industry,
+        seed.row.reason, JSON.stringify(watchPoints), seed.row.scoreComponents, seed.row.industry,
         'EMERGING',
         'emerging_watchlist',
         1,
@@ -2384,19 +2407,20 @@ function zScore(values: number[]): number[] {
 
 /**
  * P2-7: 因子 IC 計算 — 各因子與未來 N 日報酬的 Spearman rank correlation
- * 用於驗證 chip_score / tech_score / momentum_score 的預測力
+ * 用於驗證 Score V2 五構面與 finalScore 的預測力
  * 門檻：IC > 0.05 (ML), > 0.01 (Factor)
  */
 export async function calcFactorIC(env: Bindings): Promise<{
   factors: { name: string; ic_5d: number; ic_10d: number; ic_20d: number; sample: number }[]
 }> {
-  // 查最近 30 天的 daily_recommendations（有 chip_score, tech_score, ml_score）
+  // Score V2 payload is canonical; storage columns are projection fallback only.
   const { results: recRows } = await env.DB.prepare(`
-    SELECT r.symbol, r.date, r.chip_score, r.tech_score, r.ml_score, r.score as total_score
+    SELECT r.symbol, r.date, r.score, r.score_components,
+           r.chip_score, r.tech_score, r.momentum_score, r.ml_score
     FROM daily_recommendations r
     WHERE r.date >= date('now', '-30 days')
     ORDER BY r.date, r.symbol
-  `).all<{ symbol: string; date: string; chip_score: number; tech_score: number; ml_score: number; total_score: number }>()
+  `).all<Array<ScoreV2StorageRow & { symbol: string; date: string }>[number]>()
 
   if (!recRows?.length) return { factors: [] }
 
@@ -2437,8 +2461,33 @@ export async function calcFactorIC(env: Bindings): Promise<{
     return ranks
   }
 
-  // 計算每個因子的 IC
-  const factors = ['chip_score', 'tech_score', 'ml_score', 'total_score'] as const
+  // 計算 Score V2 taxonomy 因子的 IC
+  const factors = [
+    {
+      name: 'mlEdge',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.mlEdge,
+    },
+    {
+      name: 'chipFlow',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.chipFlow,
+    },
+    {
+      name: 'technicalStructure',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.technicalStructure,
+    },
+    {
+      name: 'fundamentalQuality',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.fundamentalQuality,
+    },
+    {
+      name: 'newsTheme',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.newsTheme,
+    },
+    {
+      name: 'finalScore',
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).finalScore,
+    },
+  ] as const
   const results = []
 
   for (const factor of factors) {
@@ -2467,7 +2516,7 @@ export async function calcFactorIC(env: Bindings): Promise<{
           const closeFuture = prices.get(dates[dateIdx + days])!
           if (closeNow <= 0) continue
 
-          factorValues.push(rec[factor])
+          factorValues.push(factor.value(rec))
           futureReturns.push((closeFuture - closeNow) / closeNow)
         }
 
@@ -2478,7 +2527,7 @@ export async function calcFactorIC(env: Bindings): Promise<{
     }
 
     results.push({
-      name: factor,
+      name: factor.name,
       ic_5d: ic['5d'].length ? +(ic['5d'].reduce((a, b) => a + b, 0) / ic['5d'].length).toFixed(4) : 0,
       ic_10d: ic['10d'].length ? +(ic['10d'].reduce((a, b) => a + b, 0) / ic['10d'].length).toFixed(4) : 0,
       ic_20d: ic['20d'].length ? +(ic['20d'].reduce((a, b) => a + b, 0) / ic['20d'].length).toFixed(4) : 0,

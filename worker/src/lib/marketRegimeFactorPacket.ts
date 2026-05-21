@@ -28,6 +28,8 @@ export interface MarketRegimeFactorPacket {
 }
 
 function finiteNumber(value: unknown): number | null {
+  if (value == null) return null
+  if (typeof value === 'string' && value.trim() === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
@@ -44,8 +46,8 @@ function riskLevel(score: number): MarketRegimeFactorPacket['level'] {
   return 'black'
 }
 
-function formatBillion(value: number | null): string {
-  if (value == null) return 'n/a'
+function formatAmountBillion(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return 'n/a'
   return `${value.toFixed(1)}億`
 }
 
@@ -56,7 +58,14 @@ function factor(input: Omit<MarketRegimeFactorTile, 'contribution'>): MarketRegi
   }
 }
 
-async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null }> {
+async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promise<{
+  total: number | null
+  foreign: number | null
+  trust: number | null
+  dealer: number | null
+  sourceDate: string | null
+  detail: string
+}> {
   try {
     const rows = await db.prepare(`
       WITH dates AS (
@@ -68,13 +77,9 @@ async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promis
       )
       SELECT c.date,
              COUNT(m.close) AS priced_rows,
-             SUM(
-               CASE
-                 WHEN m.close IS NOT NULL
-                 THEN (COALESCE(c.foreign_net,0) + COALESCE(c.trust_net,0) + COALESCE(c.dealer_net,0)) * m.close
-                 ELSE NULL
-               END
-             ) / 100000000.0 AS net_billion
+             SUM(CASE WHEN m.close IS NOT NULL AND c.foreign_net IS NOT NULL THEN c.foreign_net * m.close ELSE NULL END) / 100000000.0 AS foreign_billion,
+             SUM(CASE WHEN m.close IS NOT NULL AND c.trust_net IS NOT NULL THEN c.trust_net * m.close ELSE NULL END) / 100000000.0 AS trust_billion,
+             SUM(CASE WHEN m.close IS NOT NULL AND c.dealer_net IS NOT NULL THEN c.dealer_net * m.close ELSE NULL END) / 100000000.0 AS dealer_billion
         FROM canonical_chip_daily c
         LEFT JOIN canonical_market_daily m
           ON m.stock_id = c.stock_id
@@ -83,22 +88,41 @@ async function canonicalInstitutionalNet5d(db: D1Database, date: string): Promis
        WHERE c.date IN (SELECT date FROM dates)
        GROUP BY c.date
        ORDER BY c.date DESC
-    `).bind(date).all<{ date: string; priced_rows: number | null; net_billion: number | null }>()
+    `).bind(date).all<{
+      date: string
+      priced_rows: number | null
+      foreign_billion: number | null
+      trust_billion: number | null
+      dealer_billion: number | null
+    }>()
     const list = rows.results ?? []
-    if (!list.length) return { value: null, sourceDate: null }
-    const priced = list.filter((row) => Number(row.priced_rows ?? 0) > 0 && row.net_billion != null)
-    if (!priced.length) return { value: null, sourceDate: list[0]?.date ?? null }
-    const total = priced.reduce((sum, row) => sum + Number(row.net_billion ?? 0), 0)
+    if (!list.length) return { total: null, foreign: null, trust: null, dealer: null, sourceDate: null, detail: 'canonical chip rows missing' }
+    const priced = list.filter((row) => Number(row.priced_rows ?? 0) > 0)
+    if (!priced.length) return { total: null, foreign: null, trust: null, dealer: null, sourceDate: list[0]?.date ?? null, detail: 'canonical chip rows have no matched close price' }
+    const foreign = priced.reduce((sum, row) => sum + Number(row.foreign_billion ?? 0), 0)
+    const trust = priced.reduce((sum, row) => sum + Number(row.trust_billion ?? 0), 0)
+    const dealer = priced.reduce((sum, row) => sum + Number(row.dealer_billion ?? 0), 0)
+    const total = foreign + trust + dealer
     return {
-      value: Math.round(total * 10) / 10,
+      total: Math.round(total * 10) / 10,
+      foreign: Math.round(foreign * 10) / 10,
+      trust: Math.round(trust * 10) / 10,
+      dealer: Math.round(dealer * 10) / 10,
       sourceDate: priced[0]?.date ?? list[0]?.date ?? null,
+      detail: `外資=${formatAmountBillion(foreign)} 投信=${formatAmountBillion(trust)} 自營=${formatAmountBillion(dealer)}`,
     }
   } catch {
-    return { value: null, sourceDate: null }
+    return { total: null, foreign: null, trust: null, dealer: null, sourceDate: null, detail: 'canonical chip query failed' }
   }
 }
 
-async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null; detail: string }> {
+async function canonicalLeverageStress(db: D1Database, date: string): Promise<{
+  marginBillion: number | null
+  shortBillion: number | null
+  marginChangePct: number | null
+  sourceDate: string | null
+  detail: string
+}> {
   try {
     const rows = await db.prepare(`
       WITH dates AS (
@@ -111,8 +135,10 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
       daily AS (
         SELECT c.date,
                COUNT(m.close) AS priced_rows,
-               SUM(CASE WHEN m.close IS NOT NULL THEN COALESCE(c.margin_balance,0) * m.close ELSE NULL END) / 100000000.0 AS margin_billion,
-               SUM(CASE WHEN m.close IS NOT NULL THEN COALESCE(c.short_balance,0) * m.close ELSE NULL END) / 100000000.0 AS short_billion
+               SUM(CASE WHEN m.close IS NOT NULL AND c.margin_balance IS NOT NULL THEN c.margin_balance * m.close ELSE NULL END) / 100000000.0 AS margin_billion,
+               SUM(CASE WHEN m.close IS NOT NULL AND c.short_balance IS NOT NULL THEN c.short_balance * m.close ELSE NULL END) / 100000000.0 AS short_billion,
+               SUM(CASE WHEN c.margin_balance IS NOT NULL THEN 1 ELSE 0 END) AS margin_rows,
+               SUM(CASE WHEN c.short_balance IS NOT NULL THEN 1 ELSE 0 END) AS short_rows
           FROM canonical_chip_daily c
           LEFT JOIN canonical_market_daily m
             ON m.stock_id = c.stock_id
@@ -123,21 +149,31 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{ 
          ORDER BY c.date ASC
       )
       SELECT * FROM daily
-    `).bind(date).all<{ date: string; priced_rows: number | null; margin_billion: number | null; short_billion: number | null }>()
-    const list = (rows.results ?? []).filter((row) => Number(row.priced_rows ?? 0) > 0)
-    if (list.length < 2) return { value: null, sourceDate: list.at(-1)?.date ?? null, detail: 'not enough canonical leverage rows' }
+    `).bind(date).all<{
+      date: string
+      priced_rows: number | null
+      margin_rows: number | null
+      short_rows: number | null
+      margin_billion: number | null
+      short_billion: number | null
+    }>()
+    const list = (rows.results ?? []).filter((row) => Number(row.priced_rows ?? 0) > 0 && Number(row.margin_rows ?? 0) > 0)
+    if (!list.length) return { marginBillion: null, shortBillion: null, marginChangePct: null, sourceDate: null, detail: 'canonical margin_balance missing' }
     const latest = list[list.length - 1]
-    const prev = list[0]
+    const prev = list.length >= 2 ? list[0] : null
     const latestMargin = Number(latest.margin_billion ?? 0)
-    const prevMargin = Number(prev.margin_billion ?? 0)
-    const change = prevMargin > 0 ? (latestMargin / prevMargin - 1) * 100 : null
+    const latestShort = Number(latest.short_billion ?? 0)
+    const prevMargin = prev ? Number(prev.margin_billion ?? 0) : 0
+    const change = prev && prevMargin > 0 ? (latestMargin / prevMargin - 1) * 100 : null
     return {
-      value: change == null ? null : Math.round(change * 100) / 100,
+      marginBillion: Math.round(latestMargin * 10) / 10,
+      shortBillion: Math.round(latestShort * 10) / 10,
+      marginChangePct: change == null ? null : Math.round(change * 100) / 100,
       sourceDate: latest.date,
-      detail: `margin=${formatBillion(latestMargin)} short=${formatBillion(Number(latest.short_billion ?? 0))}`,
+      detail: `融資=${formatAmountBillion(latestMargin)} 融券=${formatAmountBillion(latestShort)}${change == null ? '；缺少前值，暫不顯示變化率' : `；融資變化=${change.toFixed(2)}%`}`,
     }
   } catch {
-    return { value: null, sourceDate: null, detail: 'canonical leverage query failed' }
+    return { marginBillion: null, shortBillion: null, marginChangePct: null, sourceDate: null, detail: 'canonical leverage query failed' }
   }
 }
 
@@ -226,30 +262,214 @@ function evidenceStanceScore(regimeState: any, key: string): number | null {
   return null
 }
 
+function evidenceRawContext(regimeState: any, key: string): {
+  raw: number | string | null
+  value: string
+  score: number | null
+  detail: string
+  missing: boolean
+} {
+  const item =
+    regimeState?.regime_evidence?.[key] ??
+    regimeState?.regime_surface?.evidence?.[key] ??
+    regimeState?.evidence?.[key] ??
+    regimeState?.regime_surface?.[key]
+
+  if (item == null || item === '') {
+    return {
+      raw: null,
+      value: 'n/a',
+      score: null,
+      detail: `${key} 尚未寫入 market_regime_state`,
+      missing: true,
+    }
+  }
+
+  if (typeof item === 'number' && Number.isFinite(item)) {
+    const normalized = item >= 0 && item <= 1 ? item * 100 : item
+    return {
+      raw: item,
+      value: item >= 0 && item <= 1 ? `${(item * 100).toFixed(1)}%` : String(item),
+      score: clamp(normalized, 0, 100),
+      detail: `${key} raw=${item}`,
+      missing: false,
+    }
+  }
+
+  if (typeof item === 'string') {
+    return {
+      raw: item,
+      value: item,
+      score: evidenceStanceScore(regimeState, key),
+      detail: `${key}=${item}`,
+      missing: false,
+    }
+  }
+
+  if (typeof item === 'object') {
+    const rawScore = finiteNumber(item.score ?? item.risk_score)
+    const score = rawScore == null
+      ? evidenceStanceScore(regimeState, key)
+      : clamp(rawScore >= 0 && rawScore <= 1 ? rawScore * 100 : rawScore, 0, 100)
+    const raw =
+      item.raw ??
+      item.raw_value ??
+      item.value ??
+      item.stance ??
+      item.label ??
+      item.summary ??
+      null
+    const value = String(
+      item.label ??
+      item.display ??
+      item.value ??
+      item.stance ??
+      item.summary ??
+      raw ??
+      'n/a',
+    )
+    const detailParts = [
+      item.summary ? `summary=${item.summary}` : null,
+      item.stance ? `stance=${item.stance}` : null,
+      item.value != null ? `value=${item.value}` : null,
+      rawScore != null ? `score=${rawScore}` : null,
+      item.source ? `source=${item.source}` : null,
+    ].filter(Boolean)
+    return {
+      raw: typeof raw === 'number' || typeof raw === 'string' ? raw : value,
+      value,
+      score,
+      detail: detailParts.length ? detailParts.join('；') : `${key} raw evidence`,
+      missing: false,
+    }
+  }
+
+  return {
+    raw: String(item),
+    value: String(item),
+    score: null,
+    detail: `${key} raw=${String(item)}`,
+    missing: false,
+  }
+}
+
+function firstPresent(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (value !== null && value !== undefined && String(value).trim() !== '') return value
+  }
+  return null
+}
+
+function businessCycleLight(score: number | null): string | null {
+  if (score == null) return null
+  if (score <= 16) return '藍燈'
+  if (score <= 22) return '黃藍燈'
+  if (score <= 31) return '綠燈'
+  if (score <= 37) return '黃紅燈'
+  return '紅燈'
+}
+
+function businessCycleContext(regimeState: any): { value: string; raw: number | string | null; sourceDate: string | null; detail: string; missing: boolean } {
+  const raw = firstPresent(
+    regimeState?.macro?.business_cycle_signal,
+    regimeState?.macro?.tw_business_cycle_signal,
+    regimeState?.regime_evidence?.tw_business_indicators?.signal,
+    regimeState?.regime_surface?.evidence?.tw_business_indicators?.signal,
+    regimeState?.evidence?.tw_business_indicators?.signal,
+  )
+  const score = finiteNumber(raw)
+  const light = businessCycleLight(score)
+  const leading = firstPresent(
+    regimeState?.macro?.leading_index,
+    regimeState?.regime_evidence?.tw_business_indicators?.leading_index,
+    regimeState?.evidence?.tw_business_indicators?.leading_index,
+  )
+  const coincident = firstPresent(
+    regimeState?.macro?.coincident_index,
+    regimeState?.regime_evidence?.tw_business_indicators?.coincident_index,
+    regimeState?.evidence?.tw_business_indicators?.coincident_index,
+  )
+  const date = String(firstPresent(
+    regimeState?.macro?.source_date,
+    regimeState?.regime_evidence?.tw_business_indicators?.date,
+    regimeState?.evidence?.tw_business_indicators?.date,
+    regimeState?.run_date,
+  ) ?? '')
+  if (score == null && !light) {
+    return {
+      value: 'n/a',
+      raw: null,
+      sourceDate: date || null,
+      detail: 'FinLab tw_business_indicators 尚未 materialize 到 market_regime_state',
+      missing: true,
+    }
+  }
+  return {
+    value: `${light ?? '景氣燈號'} ${score?.toFixed(0) ?? raw}`,
+    raw: score ?? String(raw),
+    sourceDate: date || null,
+    detail: `景氣對策信號=${score ?? raw}${leading != null ? `；領先=${leading}` : ''}${coincident != null ? `；同時=${coincident}` : ''}`,
+    missing: false,
+  }
+}
+
+async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: string | null; detail: string; url: string | null; missing: boolean }> {
+  const url = 'https://news.cnyes.com/api/v3/news/category/headline?page=1&limit=5'
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 1500)
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StockVision/12.3 (market-regime-context)' },
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    if (!res.ok) throw new Error(`cnyes_http_${res.status}`)
+    const body = await res.json() as any
+    const items = Array.isArray(body?.items?.data) ? body.items.data : []
+    const first = items.find((item: any) => item?.title)
+    if (!first) throw new Error('cnyes_empty')
+    const ts = Number(first.publishAt ?? first.publishedAt ?? 0)
+    const sourceDate = Number.isFinite(ts) && ts > 0
+      ? new Date(ts * 1000).toISOString().slice(0, 10)
+      : null
+    const newsId = first.newsId ?? first.id
+    return {
+      value: String(first.title).slice(0, 52),
+      sourceDate,
+      detail: `鉅亨頭條：${String(first.title).slice(0, 90)}${newsId ? `；url=https://news.cnyes.com/news/id/${newsId}` : ''}`,
+      url: newsId ? `https://news.cnyes.com/news/id/${newsId}` : 'https://news.cnyes.com/news/cat/headline',
+      missing: false,
+    }
+  } catch (error: any) {
+    return {
+      value: 'n/a',
+      sourceDate: null,
+      detail: `鉅亨頭條讀取失敗：${String(error?.message ?? error)}`,
+      url,
+      missing: true,
+    }
+  }
+}
+
 export async function buildMarketRegimeFactorPacket(
   db: D1Database,
   marketRiskRow: Record<string, any>,
   regimeState: any,
 ): Promise<MarketRegimeFactorPacket> {
   const date = String(marketRiskRow.date ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10))
-  const [canonicalChip, leverage, breadthProxy, macroQuality, globalQuality, gdeltQuality] = await Promise.all([
+  const [canonicalChip, leverage, cnyesEvent] = await Promise.all([
     canonicalInstitutionalNet5d(db, date),
     canonicalLeverageStress(db, date),
-    sectorBreadthProxy(db, date),
-    sourceQualityContext(db, date, 'finlab', ['canonical_revenue_monthly']),
-    sourceQualityContext(db, date, 'finlab', ['global_context']),
-    sourceQualityContext(db, date, 'gdelt_events', ['global_event_pressure']),
+    latestCnyesHeadlines(),
   ])
 
   const twiiBias = finiteNumber(marketRiskRow.twii_bias)
   const twiiVol20 = finiteNumber(marketRiskRow.twii_vol20)
   const vix = finiteNumber(marketRiskRow.vix)
-  const foreignNet5d = canonicalChip.value ?? finiteNumber(marketRiskRow.foreign_net_5d)
-  const marginRatio = finiteNumber(marketRiskRow.margin_ratio)
-  const bullAlignmentPct = finiteNumber(marketRiskRow.bull_alignment_pct)
-  const limitDownPct = finiteNumber(marketRiskRow.limit_down_pct)
-  const globalEvidenceScore = evidenceStanceScore(regimeState, 'global_risk') ?? globalQuality.score ?? gdeltQuality.score
-  const macroEvidenceScore = evidenceStanceScore(regimeState, 'macro_liquidity') ?? macroQuality.score
+  const institutionalNet5d = canonicalChip.total ?? finiteNumber(marketRiskRow.foreign_net_5d)
+  const businessCycle = businessCycleContext(regimeState)
+  const globalEvidence = evidenceRawContext(regimeState, 'global_risk')
+  const macroEvidence = evidenceRawContext(regimeState, 'macro_liquidity')
   const lppls = monitorScore(regimeState?.monitors ?? {}, 'lppls_weekly_bubble')
   const hawkes = monitorScore(regimeState?.monitors ?? {}, 'hawkes_contagion')
   const monitorRisk = Math.max(lppls ?? 0, hawkes ?? 0)
@@ -257,7 +477,7 @@ export async function buildMarketRegimeFactorPacket(
   const factors: MarketRegimeFactorTile[] = [
     factor({
       id: 'price_trend',
-      label: '價格趨勢',
+      label: '趨勢 / 20MA',
       raw_value: twiiBias,
       value: twiiBias == null ? 'n/a' : `${twiiBias.toFixed(2)}%`,
       score: twiiBias == null ? 45 : clamp(twiiBias <= -6 ? 85 : twiiBias <= -3 ? 65 : twiiBias >= 3 ? 20 : 40, 0, 100),
@@ -270,50 +490,48 @@ export async function buildMarketRegimeFactorPacket(
     }),
     factor({
       id: 'breadth',
-      label: '市場廣度',
-      raw_value: bullAlignmentPct ?? breadthProxy.value,
-      value: bullAlignmentPct != null ? `${bullAlignmentPct.toFixed(1)}%` : breadthProxy.value != null ? `${breadthProxy.value.toFixed(1)}%` : 'n/a',
-      score: bullAlignmentPct != null
-        ? clamp(bullAlignmentPct < 25 ? 80 : bullAlignmentPct < 40 ? 60 : bullAlignmentPct > 55 ? 25 : 42, 0, 100)
-        : breadthProxy.value != null
-          ? clamp(breadthProxy.value < 35 ? 75 : breadthProxy.value < 45 ? 58 : breadthProxy.value > 60 ? 25 : 42, 0, 100)
-          : 45,
+      label: '景氣對策燈號',
+      raw_value: businessCycle.raw,
+      value: businessCycle.value,
+      score: finiteNumber(businessCycle.raw) == null
+        ? 45
+        : clamp(Number(businessCycle.raw) <= 16 ? 85 : Number(businessCycle.raw) <= 22 ? 62 : Number(businessCycle.raw) <= 31 ? 38 : Number(businessCycle.raw) <= 37 ? 55 : 72, 0, 100),
       weight: 0.15,
-      status: bullAlignmentPct == null && breadthProxy.value == null ? 'missing' : (bullAlignmentPct ?? breadthProxy.value ?? 50) < 40 ? 'warn' : 'ok',
-      source: bullAlignmentPct != null ? 'market_risk.bull_alignment_pct' : 'sector_flow.quadrant_breadth',
-      source_date: bullAlignmentPct != null ? date : breadthProxy.sourceDate,
-      detail: bullAlignmentPct != null ? `limit_down_pct=${limitDownPct ?? 'n/a'}` : breadthProxy.detail,
-      missing_reason: bullAlignmentPct == null && breadthProxy.value == null ? 'breadth_missing' : undefined,
+      status: businessCycle.missing ? 'missing' : 'info',
+      source: 'finlab.tw_business_indicators',
+      source_date: businessCycle.sourceDate,
+      detail: businessCycle.detail,
+      missing_reason: businessCycle.missing ? 'tw_business_indicators_missing' : undefined,
     }),
     factor({
       id: 'chips',
-      label: '籌碼',
-      raw_value: foreignNet5d,
-      value: formatBillion(foreignNet5d),
-      score: foreignNet5d == null ? 45 : clamp(foreignNet5d < -250 ? 85 : foreignNet5d < -80 ? 65 : foreignNet5d > 120 ? 20 : 40, 0, 100),
+      label: '三大法人',
+      raw_value: institutionalNet5d,
+      value: formatAmountBillion(institutionalNet5d),
+      score: institutionalNet5d == null ? 45 : clamp(institutionalNet5d < -250 ? 85 : institutionalNet5d < -80 ? 65 : institutionalNet5d > 120 ? 20 : 40, 0, 100),
       weight: 0.15,
-      status: foreignNet5d == null ? 'missing' : foreignNet5d < -80 ? 'warn' : 'ok',
-      source: canonicalChip.value != null ? 'canonical_chip_daily.finlab_5d_amount' : 'market_risk.foreign_net_5d',
+      status: institutionalNet5d == null ? 'missing' : institutionalNet5d < -80 ? 'warn' : 'ok',
+      source: canonicalChip.total != null ? 'canonical_chip_daily.finlab_5d_amount' : 'market_risk.foreign_net_5d',
       source_date: canonicalChip.sourceDate ?? date,
-      detail: `foreign_consecutive_sell=${marketRiskRow.foreign_consecutive_sell ?? 0}`,
-      missing_reason: foreignNet5d == null ? 'institutional_flow_missing' : undefined,
+      detail: canonicalChip.total != null ? canonicalChip.detail : `外資5日=${formatAmountBillion(finiteNumber(marketRiskRow.foreign_net_5d))}`,
+      missing_reason: institutionalNet5d == null ? 'institutional_flow_missing' : undefined,
     }),
     factor({
       id: 'leverage',
-      label: '槓桿',
-      raw_value: marginRatio ?? leverage.value,
-      value: marginRatio != null ? `${marginRatio.toFixed(2)}%` : leverage.value != null ? `${leverage.value.toFixed(2)}%` : 'n/a',
-      score: marginRatio != null
-        ? clamp(marginRatio >= 80 ? 80 : marginRatio >= 65 ? 60 : 35, 0, 100)
-        : leverage.value != null
-          ? clamp(leverage.value > 8 ? 75 : leverage.value > 3 ? 55 : leverage.value < -5 ? 25 : 40, 0, 100)
-          : 45,
+      label: '融資融券',
+      raw_value: leverage.marginBillion,
+      value: leverage.marginBillion != null
+        ? `融資 ${formatAmountBillion(leverage.marginBillion)} / 融券 ${formatAmountBillion(leverage.shortBillion)}`
+        : 'n/a',
+      score: leverage.marginChangePct != null
+        ? clamp(leverage.marginChangePct > 8 ? 75 : leverage.marginChangePct > 3 ? 55 : leverage.marginChangePct < -5 ? 25 : 40, 0, 100)
+        : 45,
       weight: 0.15,
-      status: marginRatio == null && leverage.value == null ? 'missing' : (marginRatio ?? leverage.value ?? 0) > 3 ? 'warn' : 'info',
-      source: marginRatio != null ? 'market_risk.margin_ratio' : 'canonical_chip_daily.margin_short_proxy',
+      status: leverage.marginBillion == null ? 'missing' : leverage.marginChangePct != null && leverage.marginChangePct > 3 ? 'warn' : 'info',
+      source: 'canonical_chip_daily.margin_short_amount',
       source_date: leverage.sourceDate ?? date,
       detail: leverage.detail,
-      missing_reason: marginRatio == null && leverage.value == null ? 'leverage_missing' : undefined,
+      missing_reason: leverage.marginBillion == null ? 'leverage_missing' : undefined,
     }),
     factor({
       id: 'volatility',
@@ -334,42 +552,42 @@ export async function buildMarketRegimeFactorPacket(
     }),
     factor({
       id: 'macro',
-      label: '總經流動性',
-      raw_value: macroEvidenceScore,
-      value: macroEvidenceScore == null ? 'context missing' : String(macroEvidenceScore),
-      score: macroEvidenceScore ?? 45,
+      label: '總經',
+      raw_value: macroEvidence.raw,
+      value: macroEvidence.value,
+      score: macroEvidence.score ?? 45,
       weight: 0.10,
-      status: macroEvidenceScore == null ? 'missing' : macroQuality.status,
-      source: macroQuality.score != null ? macroQuality.source : 'market_regime_state.evidence.macro_liquidity',
-      source_date: macroQuality.sourceDate ?? regimeState?.run_date ?? null,
-      detail: macroQuality.score != null ? macroQuality.detail : 'FinLab tw_business_indicators / liquidity evidence packet',
-      missing_reason: macroEvidenceScore == null ? 'macro_liquidity_missing' : undefined,
+      status: macroEvidence.missing ? 'missing' : 'info',
+      source: 'market_regime_state.evidence.macro_liquidity',
+      source_date: regimeState?.run_date ?? null,
+      detail: macroEvidence.detail,
+      missing_reason: macroEvidence.missing ? 'macro_liquidity_missing' : undefined,
     }),
     factor({
       id: 'global',
       label: '全球風險',
-      raw_value: globalEvidenceScore,
-      value: globalEvidenceScore == null ? 'context missing' : String(globalEvidenceScore),
-      score: globalEvidenceScore ?? 45,
+      raw_value: globalEvidence.raw,
+      value: globalEvidence.value,
+      score: globalEvidence.score ?? 45,
       weight: 0.10,
-      status: globalEvidenceScore == null ? 'missing' : gdeltQuality.status === 'warn' ? 'warn' : globalQuality.status,
-      source: globalQuality.score != null ? `${globalQuality.source}+${gdeltQuality.source}` : 'market_regime_state.evidence.global_risk',
-      source_date: globalQuality.sourceDate ?? gdeltQuality.sourceDate ?? regimeState?.run_date ?? null,
-      detail: globalQuality.score != null ? `${globalQuality.detail} / ${gdeltQuality.detail}` : 'FinLab world_index / US leading / global risk evidence',
-      missing_reason: globalEvidenceScore == null ? 'global_risk_missing' : undefined,
+      status: globalEvidence.missing ? 'missing' : 'info',
+      source: 'market_regime_state.evidence.global_risk',
+      source_date: regimeState?.run_date ?? null,
+      detail: globalEvidence.detail,
+      missing_reason: globalEvidence.missing ? 'global_risk_missing' : undefined,
     }),
     factor({
       id: 'event_monitors',
-      label: 'LPPLS / Hawkes',
-      raw_value: monitorRisk || null,
-      value: monitorRisk ? `${Math.round(monitorRisk * 100)}%` : 'context missing',
-      score: monitorRisk ? clamp(monitorRisk * 100, 0, 100) : 35,
+      label: '全球事件',
+      raw_value: cnyesEvent.value,
+      value: cnyesEvent.value,
+      score: monitorRisk ? clamp(monitorRisk * 100, 0, 100) : 45,
       weight: 0.05,
-      status: monitorRisk >= 0.7 ? 'warn' : monitorRisk ? 'info' : 'missing',
-      source: 'market_regime_state.monitors',
-      source_date: regimeState?.run_date ?? null,
-      detail: `lppls=${lppls ?? 'n/a'} hawkes=${hawkes ?? 'n/a'}`,
-      missing_reason: monitorRisk ? undefined : 'lppls_hawkes_missing',
+      status: cnyesEvent.missing ? 'missing' : monitorRisk >= 0.7 ? 'warn' : 'info',
+      source: cnyesEvent.url ?? 'cnyes.headline',
+      source_date: cnyesEvent.sourceDate ?? regimeState?.run_date ?? null,
+      detail: `${cnyesEvent.detail}；LPPLS=${lppls ?? 'n/a'} Hawkes=${hawkes ?? 'n/a'}`,
+      missing_reason: cnyesEvent.missing ? 'cnyes_headline_missing' : undefined,
     }),
   ]
 

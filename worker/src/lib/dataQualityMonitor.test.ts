@@ -447,12 +447,12 @@ void (async () => {
 {
   const check = buildRecommendationMlOwnerCheck({
     total: 20,
-    mlScorePositive: 0,
+    scoreV2Count: 0,
     signalCount: 0,
     confidenceCount: 0,
     predictionRows: 200,
   })
-  assert(check.status === 'fail', 'recommendations with predictions but no ML owner fields should fail')
+  assert(check.status === 'fail', 'recommendations with predictions but no Score V2 payloads should fail')
 }
 
 {

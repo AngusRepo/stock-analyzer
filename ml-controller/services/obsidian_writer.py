@@ -14,6 +14,7 @@ import json
 import base64
 import logging
 from datetime import datetime, timezone, timedelta
+from typing import Any
 
 import httpx
 from jinja2 import Environment, FileSystemLoader
@@ -64,6 +65,115 @@ _jinja_env = Environment(
 def _render(template_name: str, **kwargs) -> str:
     tpl = _jinja_env.get_template(template_name)
     return tpl.render(**kwargs)
+
+
+SCORE_V2_WEIGHTS = {
+    "mlEdge": 25.0,
+    "chipFlow": 25.0,
+    "technicalStructure": 25.0,
+    "fundamentalQuality": 20.0,
+    "newsTheme": 5.0,
+}
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _score_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number == number and number not in (float("inf"), float("-inf")) else fallback
+
+
+def _round_score(value: float) -> float:
+    return round(float(value) * 10) / 10
+
+
+def _clamp_score(value: Any, maximum: float) -> float:
+    return _round_score(max(0.0, min(float(maximum), _score_float(value))))
+
+
+def _rescale_score(value: Any, old_max: float, new_max: float) -> float:
+    if old_max <= 0:
+        return 0.0
+    return _clamp_score((_score_float(value) / old_max) * new_max, new_max)
+
+
+def score_v2_payload(row: Any) -> dict | None:
+    payload = _row_value(row, "score_components")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(payload, dict) or payload.get("version") != "score_v2":
+        return None
+    return payload if isinstance(payload.get("components"), dict) else None
+
+
+def score_v2_component(row: Any, key: str) -> float:
+    payload = score_v2_payload(row)
+    if payload:
+        return _clamp_score((payload.get("components") or {}).get(key), SCORE_V2_WEIGHTS.get(key, 100.0))
+    if key == "mlEdge":
+        return _rescale_score(_row_value(row, "ml_score"), 30.0, SCORE_V2_WEIGHTS[key])
+    if key == "chipFlow":
+        return _rescale_score(_row_value(row, "chip_score"), 40.0, SCORE_V2_WEIGHTS[key])
+    if key == "technicalStructure":
+        legacy_tech = _score_float(_row_value(row, "tech_score"))
+        legacy_momentum = _score_float(_row_value(row, "momentum_score"))
+        return _rescale_score(legacy_tech + legacy_momentum, 50.0, SCORE_V2_WEIGHTS[key])
+    return 0.0
+
+
+def score_v2_total(row: Any) -> float:
+    payload = score_v2_payload(row)
+    if payload:
+        return _clamp_score(payload.get("total"), 100.0)
+    return _round_score(sum(score_v2_component(row, key) for key in SCORE_V2_WEIGHTS))
+
+
+def score_v2_final_score(row: Any) -> float:
+    payload = score_v2_payload(row)
+    if payload:
+        return _clamp_score(payload.get("finalScore", payload.get("total")), 100.0)
+    fallback = _row_value(row, "score", _row_value(row, "total_score", None))
+    if fallback is not None:
+        return _clamp_score(fallback, 100.0)
+    return score_v2_total(row)
+
+
+def score_v2_alpha_adjustment(row: Any) -> float:
+    payload = score_v2_payload(row)
+    if payload:
+        return _round_score(_score_float(payload.get("alphaAdjustment"), score_v2_final_score(row) - score_v2_total(row)))
+    return _round_score(score_v2_final_score(row) - score_v2_total(row))
+
+
+def score_v2_component_pct(row: Any, key: str) -> float:
+    total = score_v2_total(row)
+    if total <= 0:
+        return 0.0
+    return round((score_v2_component(row, key) / total) * 1000) / 10
+
+
+def score_v2_source(row: Any) -> str:
+    return "score_v2" if score_v2_payload(row) else "storage_projection"
+
+
+_jinja_env.globals.update(
+    score_v2_component=score_v2_component,
+    score_v2_final_score=score_v2_final_score,
+    score_v2_total=score_v2_total,
+    score_v2_alpha_adjustment=score_v2_alpha_adjustment,
+    score_v2_component_pct=score_v2_component_pct,
+    score_v2_source=score_v2_source,
+)
 
 
 # ── D1 Helpers (same pattern as backtest_service.py) ─────────────────────────
@@ -294,7 +404,7 @@ class ObsidianWriter:
         async with httpx.AsyncClient() as client:
             # Find the audit report for this week
             audit = (await _d1_query(client,
-                "SELECT * FROM weekly_audit_reports ORDER BY date DESC LIMIT 1")) or [{}]
+                "SELECT * FROM weekly_audit_reports ORDER BY report_date DESC LIMIT 1")) or [{}]
             audit = audit[0] if audit else {}
 
             # Parse JSON fields
@@ -306,9 +416,9 @@ class ObsidianWriter:
                 except (json.JSONDecodeError, TypeError):
                     return {}
 
-            l1 = safe_json(audit.get("l1_performance"))
-            l2 = safe_json(audit.get("l2_decisions"))
-            l3 = safe_json(audit.get("l3_model_health"))
+            l1 = safe_json(audit.get("l1_json"))
+            l2 = safe_json(audit.get("l2_json"))
+            l3 = safe_json(audit.get("l3_json"))
 
             # Get week dates
             dt = datetime.strptime(date, "%Y-%m-%d")

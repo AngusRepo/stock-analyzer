@@ -46,6 +46,56 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const rows = buildStrategyDecisionRows(
+    '2026-05-19',
+    [
+      {
+        symbol: '2330',
+        name: 'TSMC',
+        score: 10,
+        chip_score: 1,
+        tech_score: 1,
+        momentum_score: 1,
+        current_price: 900,
+        score_components: JSON.stringify({
+          version: 'score_v2',
+          finalScore: 70,
+          components: {
+            mlEdge: 12,
+            chipFlow: 24,
+            technicalStructure: 22,
+            fundamentalQuality: 10,
+            newsTheme: 2,
+          },
+          technicalBreakdown: {
+            trendStructure: 6,
+            volatilityStructure: 4,
+            reversalExtreme: 4,
+            volumeConfirmation: 3,
+            executionRisk: 1,
+          },
+          legacyComponents: {
+            screenerMomentum: 10,
+          },
+        }),
+      },
+    ],
+    DEFAULT_STRATEGY_SPECS,
+    { nowIso: '2026-05-19T00:00:00.000Z' },
+  )
+  const matched = rows.find((row) => row.matched === 1)
+  assert(matched != null, 'strategy learning should match by canonical Score V2 when legacy fields are stale')
+  const context = JSON.parse(matched.context_json)
+  assert(context.candidate.score_v2.source === 'score_v2', 'decision context should record Score V2 as the strategy score source')
+  assert(context.candidate.score_v2.finalScore === 70, 'decision context should persist canonical strategy seed score')
+  assert(context.candidate.score_v2.chipFlow === 24, 'decision context should persist Score V2 chipFlow')
+  assert(context.candidate.score_v2.technicalStructure === 22, 'decision context should persist Score V2 technicalStructure')
+  assert(!('chip_score' in context.candidate), 'decision context must not persist legacy chip_score')
+  assert(!('tech_score' in context.candidate), 'decision context must not persist legacy tech_score')
+  assert(!('momentum_score' in context.candidate), 'decision context must not persist legacy momentum_score')
+}
+
+{
   const ledger = buildStrategyRewardLedgerRows([
     {
       date: '2026-05-15',

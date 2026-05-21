@@ -8,6 +8,7 @@ import { sendDiscordNotification } from './notify'
 import {
   expireRecentPendingBuys,
   loadPendingBuySnapshot,
+  persistPendingBuyDebateTurns,
   replacePendingBuyState,
   type PendingBuy,
 } from './pendingBuyStore'
@@ -36,6 +37,7 @@ import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 
 type CircuitBreakerState = _CBState
 
@@ -46,8 +48,10 @@ interface BuyRecommendationRow {
   signal: string
   confidence: number
   reason: string | null
+  score_components: string | null
   chip_score: number | null
   tech_score: number | null
+  momentum_score: number | null
   ml_score: number | null
   score: number | null
   ml_entry_price: number | null
@@ -614,7 +618,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
+             dr.watch_points, dr.score_components, dr.chip_score, dr.tech_score, dr.momentum_score, dr.ml_score, dr.score,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -888,6 +892,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[MorningSetup] ${rec.symbol} ${kellyResult.info}`)
       }
 
+      const scoreV2 = readScoreV2Snapshot(rec)
       pendingBuys.push({
         symbol: rec.symbol,
         name: rec.name ?? rec.symbol,
@@ -911,10 +916,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
         risk_pct: riskPct,
         kelly_pct: kellyResult?.pct ?? null,
-        chip_score: rec.chip_score ?? null,
-        tech_score: rec.tech_score ?? null,
-        ml_score: rec.ml_score ?? null,
-        score: rec.score ?? null,
+        chip_score: scoreV2.components.chipFlow,
+        tech_score: scoreV2.components.technicalStructure,
+        ml_score: scoreV2.components.mlEdge,
+        score: scoreV2.finalScore,
         source: 'morning_setup',
         original_entry: originalEntry,
       })
@@ -979,7 +984,7 @@ export async function reconcilePendingBuyDebates(
     pendingItems.map((item, index) => ({
       symbol: item.symbol,
       name: item.name ?? item.symbol,
-      score: item.score ?? item.ml_score ?? item.confidence * 100,
+      score: item.score ?? item.confidence * 100,
       reason: item.reason ?? 'ML ensemble signal',
       watch_points: item.watch_points,
       rank: index + 1,
@@ -1051,6 +1056,7 @@ export async function reconcilePendingBuyDebates(
       debate_verdict: debate.verdict,
       debate_status: 'completed',
       risk_pct: debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
+      debate_agent_turns: debate.agentTurns ?? [],
     })
   }
 
@@ -1066,6 +1072,12 @@ export async function reconcilePendingBuyDebates(
       failed_count: failedCount,
     },
   })
+
+  await Promise.all(
+    nextPendingBuys.map((item) =>
+      persistPendingBuyDebateTurns(env, tradeDate, item.symbol, item.debate_agent_turns ?? []),
+    ),
+  )
 
   return `debated=${results.size} failed=${failedCount} remaining=${nextPendingBuys.length}`
 }

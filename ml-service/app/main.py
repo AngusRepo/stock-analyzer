@@ -126,6 +126,20 @@ async def breeze2_research_context_endpoint(request: Request):
     })
 
 
+@app.post("/breeze2/reason-generation")
+async def breeze2_reason_generation_endpoint(request: Request):
+    await verify_service_token(request)
+    payload = await request.json()
+    from .breeze2_reason_generation import generate_breeze2_reason_generation
+
+    return generate_breeze2_reason_generation({
+        **payload,
+        "allowed_use": "reason_shadow_only",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+    })
+
+
 class FactorAuditRequest(BaseModel):
     prices: list[dict]
     indicators: list[dict] = []

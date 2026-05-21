@@ -1,17 +1,13 @@
-"""
-llm_reason.py — Generate LLM recommendation reasons
-2026-04-07 LangGraph A+B refactor
-2026-04-10 C1 cost optimization: Sonnet → Gemini 3.1 Flash Lite ($24/月 → ~$1/月)
-
-Primary: Gemini 3.1 Flash Lite (faster, cheaper, better JSON compliance)
-Fallback: Claude Sonnet (if GEMINI_API_KEY not set or Gemini fails)
-"""
+"""Generate Score V2 recommendation reasons for Pipeline V2."""
 from __future__ import annotations
-import os
-import re
+
+import asyncio
 import json
 import logging
-from typing import Optional
+import math
+import os
+import re
+from typing import Any, Optional
 
 import httpx
 
@@ -22,42 +18,122 @@ GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"  # fallback
+ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 ANTHROPIC_BASE = "https://api.anthropic.com/v1/messages"
 
+SCORE_V2_WEIGHTS = {
+    "mlEdge": 25.0,
+    "chipFlow": 25.0,
+    "technicalStructure": 25.0,
+    "fundamentalQuality": 20.0,
+    "newsTheme": 5.0,
+}
 
-def _build_stock_line(idx: int, c: dict) -> str:
-    chip_amt = ((c.get("foreign_net_5d") or 0) + (c.get("trust_net_5d") or 0))
-    rsi = c.get("rsi14")
-    rsi_str = f"{rsi:.0f}" if rsi is not None else "N/A"
-    conf_pct = (c.get("ml_confidence") or 0) * 100
-    macd_h = c.get("macd_hist") or 0
+SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單撰寫可驗證的推薦理由。
+
+規則：
+- 每支股票 reason 限 120 字內，必須使用 Score V2 的 finalScore 與五構面語意。
+- 五構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme。
+- 不可宣稱保證獲利、絕對勝率或水晶球式預測；請用條件式、風險可控的語氣。
+- watchPoints 最多 3 點，必須是具體風險、觀察價量或資料品質提醒。
+- 必須只回傳 JSON array，格式：
+  [{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
+"""
+
+
+def _number(value: Any, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if math.isfinite(number) else fallback
+
+
+def _round1(value: float) -> float:
+    return round(float(value) * 10) / 10
+
+
+def _clamp(value: Any, maximum: float) -> float:
+    return _round1(max(0.0, min(float(maximum), _number(value))))
+
+
+def _parse_score_components(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if isinstance(value, dict) and value.get("version") == "score_v2" and isinstance(value.get("components"), dict):
+        return value
+    return None
+
+
+def _score_components(c: dict[str, Any]) -> dict[str, Any]:
+    payload = _parse_score_components(c.get("score_components"))
+    if payload:
+        return payload
+    components = {
+        "mlEdge": _clamp((_number(c.get("ml_score")) / 30.0) * SCORE_V2_WEIGHTS["mlEdge"], SCORE_V2_WEIGHTS["mlEdge"]),
+        "chipFlow": _clamp((_number(c.get("chip_score")) / 40.0) * SCORE_V2_WEIGHTS["chipFlow"], SCORE_V2_WEIGHTS["chipFlow"]),
+        "technicalStructure": _clamp(
+            ((_number(c.get("tech_score")) + _number(c.get("momentum_score"))) / 50.0) * SCORE_V2_WEIGHTS["technicalStructure"],
+            SCORE_V2_WEIGHTS["technicalStructure"],
+        ),
+        "fundamentalQuality": 0.0,
+        "newsTheme": 0.0,
+    }
+    total = _round1(sum(components.values()))
+    final_score = _clamp(c.get("score", total), 100.0)
+    return {
+        "version": "score_v2",
+        "components": components,
+        "total": total,
+        "alphaAdjustment": _round1(final_score - total),
+        "finalScore": final_score,
+        "formula": "score_v2_total + alphaAdjustment",
+        "reasons": ["llm_reason_storage_projection"],
+    }
+
+
+def _component(payload: dict[str, Any], key: str) -> float:
+    components = payload.get("components") if isinstance(payload.get("components"), dict) else {}
+    return _clamp(components.get(key), SCORE_V2_WEIGHTS.get(key, 100.0))
+
+
+def _score_context(c: dict[str, Any]) -> str:
+    payload = _score_components(c)
+    final_score = _clamp(payload.get("finalScore", payload.get("total")), 100.0)
+    total = _clamp(payload.get("total"), 100.0)
+    alpha = _round1(_number(payload.get("alphaAdjustment"), final_score - total))
     return (
-        f"{idx + 1}. {c['symbol']} {c.get('name','')} | "
-        f"signal={c.get('signal','N/A')} score={c.get('score',0)}"
-        f"(籌碼{c.get('chip_score',0)}+技術{c.get('tech_score',0)}+ML{c.get('ml_score',0)}) | "
-        f"ML投票{c.get('ml_models_up',0)}↑/{c.get('ml_models_down',0)}↓"
-        f"(共{c.get('ml_models_total',0)}) conf={conf_pct:.0f}% | "
-        f"RSI={rsi_str} MACD{'多' if macd_h > 0 else '空'} | "
-        f"5日法人淨額{chip_amt:.1f}億 | 價{c.get('current_price','N/A')}"
+        f"Score V2 finalScore={final_score:.1f}/100 "
+        f"(base={total:.1f}, alpha={alpha:.1f}); "
+        f"ML Edge={_component(payload, 'mlEdge'):.1f}/25, "
+        f"Chip Flow={_component(payload, 'chipFlow'):.1f}/25, "
+        f"Technical Structure={_component(payload, 'technicalStructure'):.1f}/25, "
+        f"Fundamental Quality={_component(payload, 'fundamentalQuality'):.1f}/20, "
+        f"News/Theme={_component(payload, 'newsTheme'):.1f}/5"
     )
 
 
-SYSTEM_PROMPT = """你是台灣股市資深分析師，負責為每日推薦清單撰寫具資訊量的推薦理由。
-規則：
-- 每支股票的 reason 限 120 字以內，需整合籌碼、技術、ML 三面向的重點
-- watchPoints 給 3 條具體觀察重點，每條 60-100 字，必須含具體數字（價位/百分比/天數）
-  例：「留意 58.8 月線支撐能否守住，跌破則 ATR 停損 56.08；上方 63.59 為 ML target1」
-  例：「RSI 39 雖未進超賣，但連續 3 日量縮，需確認量能放大才轉強訊號」
-  例：「外資 5 日淨買超 0.3 億偏弱，須觀察下週是否回補；投信若同步買進可加速推升」
-- 語氣專業簡潔，不用「建議」「推薦」等字眼，改用「留意」「觀察」
-- 若 ML 信心高(>0.6)，可強調模型共識；若低(<0.5)，強調需確認
-- 必須回傳 JSON array，格式：[{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
-- 長度必須和輸入股票數量完全一致"""
+def _build_stock_line(idx: int, c: dict[str, Any]) -> str:
+    chip_amt = _number(c.get("foreign_net_5d")) + _number(c.get("trust_net_5d"))
+    rsi = c.get("rsi14")
+    rsi_str = f"{_number(rsi):.0f}" if rsi is not None else "N/A"
+    conf_pct = _number(c.get("confidence", c.get("ml_confidence"))) * 100
+    macd_h = _number(c.get("macd_hist"))
+    vote_summary = c.get("ml_vote_summary_text") or c.get("ml_vote_summary") or "N/A"
+    return (
+        f"{idx + 1}. {c['symbol']} {c.get('name', '')} | "
+        f"signal={c.get('signal', 'N/A')} | {_score_context(c)} | "
+        f"ML vote={vote_summary}, conf={conf_pct:.0f}% | "
+        f"RSI={rsi_str}, MACD={'positive' if macd_h > 0 else 'non-positive'} | "
+        f"5d chip cash={chip_amt:.1f}B TWD | price={c.get('current_price', 'N/A')}"
+    )
 
 
 async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> Optional[str]:
-    """Call Gemini 3.1 Flash Lite. Returns raw text or None on failure."""
+    """Call Gemini. Returns raw text or None on failure."""
     if not GEMINI_API_KEY:
         return None
     url = f"{GEMINI_BASE}/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
@@ -74,7 +150,7 @@ async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> O
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=body, headers={"Content-Type": "application/json"})
         if resp.status_code != 200:
-            logger.warning(f"[llm_reason] Gemini HTTP {resp.status_code}: {resp.text[:200]}")
+            logger.warning("[llm_reason] Gemini HTTP %s: %s", resp.status_code, resp.text[:200])
             return None
         data = resp.json()
         text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
@@ -84,30 +160,30 @@ async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> O
         usage = data.get("usageMetadata", {})
         tokens_in = int(usage.get("promptTokenCount", 0) or 0)
         tokens_out = int(usage.get("candidatesTokenCount", 0) or 0)
-        logger.info(
-            f"[llm_reason] Gemini OK tokens in={tokens_in} out={tokens_out}"
-        )
-        # #43 cost tracking (fire-and-forget)
+        logger.info("[llm_reason] Gemini OK tokens in=%s out=%s", tokens_in, tokens_out)
         try:
             from .cost_tracker import record_llm_call
+
             await record_llm_call(
-                "llm_reason", "gemini", GEMINI_MODEL,
-                tokens_in, tokens_out,
+                "llm_reason",
+                "gemini",
+                GEMINI_MODEL,
+                tokens_in,
+                tokens_out,
                 meta={"n_candidates": n_candidates},
             )
         except Exception:
             pass
         return text
-    except Exception as e:
-        logger.warning(f"[llm_reason] Gemini error: {type(e).__name__}: {e!r}")
+    except Exception as exc:
+        logger.warning("[llm_reason] Gemini error: %s: %r", type(exc).__name__, exc)
         return None
 
 
 async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, max_attempts: int) -> Optional[str]:
-    """Call Claude Sonnet (fallback). Returns raw text or None on failure."""
+    """Call Claude fallback. Returns raw text or None on failure."""
     if not ANTHROPIC_API_KEY:
         return None
-    import asyncio
     max_tokens = min(8192, n_candidates * 500)
     headers = {
         "x-api-key": ANTHROPIC_API_KEY,
@@ -125,18 +201,20 @@ async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, m
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(ANTHROPIC_BASE, headers=headers, json=body)
             if resp.status_code != 200:
-                logger.error(f"[llm_reason] Anthropic HTTP {resp.status_code}: {resp.text[:300]}")
+                logger.error("[llm_reason] Anthropic HTTP %s: %s", resp.status_code, resp.text[:300])
                 return None
             data = resp.json()
-            text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+            text_blocks = [block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"]
             raw = "\n".join(text_blocks)
-            logger.info(f"[llm_reason] Anthropic fallback OK (attempt={attempt})")
-            # #43 cost tracking (fire-and-forget)
+            logger.info("[llm_reason] Anthropic fallback OK (attempt=%s)", attempt)
             try:
                 from .cost_tracker import record_llm_call
+
                 usage = data.get("usage", {}) or {}
                 await record_llm_call(
-                    "llm_reason", "anthropic", ANTHROPIC_MODEL,
+                    "llm_reason",
+                    "anthropic",
+                    ANTHROPIC_MODEL,
                     int(usage.get("input_tokens", 0) or 0),
                     int(usage.get("output_tokens", 0) or 0),
                     meta={"n_candidates": n_candidates, "attempt": attempt},
@@ -144,17 +222,22 @@ async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, m
             except Exception:
                 pass
             return raw
-        except httpx.RequestError as e:
-            exc_type = type(e).__name__
+        except httpx.RequestError as exc:
             if attempt < max_attempts:
                 backoff = 2 ** (attempt - 1)
-                logger.warning(f"[llm_reason] Anthropic network error {attempt}/{max_attempts}, retry in {backoff}s: {exc_type}")
+                logger.warning(
+                    "[llm_reason] Anthropic network error %s/%s, retry in %ss: %s",
+                    attempt,
+                    max_attempts,
+                    backoff,
+                    type(exc).__name__,
+                )
                 await asyncio.sleep(backoff)
                 continue
-            logger.error(f"[llm_reason] Anthropic failed after {max_attempts} attempts: {exc_type}")
+            logger.error("[llm_reason] Anthropic failed after %s attempts: %s", max_attempts, type(exc).__name__)
             return None
-        except Exception as e:
-            logger.error(f"[llm_reason] Anthropic unexpected: {type(e).__name__}: {e!r}")
+        except Exception as exc:
+            logger.error("[llm_reason] Anthropic unexpected: %s: %r", type(exc).__name__, exc)
             return None
     return None
 
@@ -163,12 +246,12 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
     """Parse JSON array from raw LLM response text."""
     match = re.search(r"\[[\s\S]*\]", raw, re.DOTALL)
     if not match:
-        logger.error(f"[llm_reason] No JSON array in response: {raw[:200]}")
+        logger.error("[llm_reason] No JSON array in response: %s", raw[:200])
         return {}
     try:
         parsed = json.loads(match.group(0))
-    except json.JSONDecodeError as e:
-        logger.error(f"[llm_reason] JSON parse failed: {e}")
+    except json.JSONDecodeError as exc:
+        logger.error("[llm_reason] JSON parse failed: %s", exc)
         return {}
 
     result: dict[str, dict] = {}
@@ -178,7 +261,7 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
         if symbol and reason:
             result[symbol] = {
                 "reason": reason[:200],
-                "watchPoints": (item.get("watchPoints") or [])[:3],
+                "watchPoints": (item.get("watchPoints") or item.get("watch_points") or [])[:3],
             }
     return result
 
@@ -190,11 +273,9 @@ async def generate_recommendation_reasons(
     max_attempts: int = 3,
 ) -> dict[str, dict]:
     """
-    Generate LLM reasons for N candidates.
+    Generate LLM reasons for recommendation candidates.
 
-    Primary: Gemini 3.1 Flash Lite (fast, cheap, good JSON)
-    Fallback: Claude Sonnet (if Gemini unavailable or fails)
-
+    Primary: Gemini. Fallback: Claude.
     Returns: {symbol: {"reason": str, "watchPoints": list[str]}}
     """
     if not candidates:
@@ -204,20 +285,14 @@ async def generate_recommendation_reasons(
         return {}
 
     stock_list = "\n".join(_build_stock_line(i, c) for i, c in enumerate(candidates))
-    theme_hint = ""
-    if top_themes:
-        theme_hint = f"\n\n今日主流主題：{'、'.join(top_themes)}"
-
+    theme_hint = f"\n\nTop themes: {', '.join(top_themes)}" if top_themes else ""
     user_prompt = (
-        f"請為以下 {len(candidates)} 支推薦股票各寫一段推薦理由：\n"
+        f"請為以下 {len(candidates)} 檔候選股票撰寫推薦理由。\n"
         f"{stock_list}{theme_hint}"
     )
 
-    # Layer 1: Gemini 3.1 Flash Lite
     raw = await _call_gemini(user_prompt, len(candidates), timeout)
     source = "gemini"
-
-    # Layer 2: Claude Sonnet fallback
     if raw is None:
         logger.info("[llm_reason] Gemini unavailable, falling back to Anthropic")
         raw = await _call_anthropic(user_prompt, len(candidates), timeout, max_attempts)
@@ -228,7 +303,5 @@ async def generate_recommendation_reasons(
         return {}
 
     result = _parse_reasons(raw, len(candidates))
-    logger.info(
-        f"[llm_reason] Generated {len(result)}/{len(candidates)} reasons via {source}"
-    )
+    logger.info("[llm_reason] Generated %s/%s reasons via %s", len(result), len(candidates), source)
     return result

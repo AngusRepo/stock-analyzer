@@ -207,6 +207,89 @@ function evidenceMetric(row: ModelArtifactRegistryRow, keys: string[], digits = 
   return compactUnknown(value, digits)
 }
 
+function artifactEvidenceValue(row: ModelArtifactRegistryRow, keys: string[]): unknown {
+  const offline = parseArtifactEvidence(row.offline_evidence_json)
+  const live = parseArtifactEvidence(row.live_evidence_json)
+  return deepMetric(live, keys) ?? deepMetric(offline, keys)
+}
+
+function evidenceNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function cpcvEvidenceSummary(row: ModelArtifactRegistryRow): { text: string; tone: WorkstationTone; missing: boolean } {
+  const raw = artifactEvidenceValue(row, ['model_cpcv'])
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  const decision = String(artifactEvidenceValue(row, ['model_cpcv_decision', 'cpcv_decision']) ?? obj?.decision ?? '').trim()
+  if (!decision && !obj) return { text: 'CPCV 未產生', tone: 'warn', missing: true }
+  const mean = evidenceNumber(obj?.oos_ic_mean)
+  const std = evidenceNumber(obj?.oos_ic_std)
+  const folds = evidenceNumber(obj?.folds)
+  const parts = [
+    `CPCV ${decision || '有證據'}`,
+    mean == null ? null : `IC ${mean.toFixed(3)}${std == null ? '' : `±${std.toFixed(3)}`}`,
+    folds == null ? null : `${Math.round(folds)} folds`,
+  ].filter(Boolean)
+  return { text: parts.join(' · '), tone: /pass/i.test(decision) || obj?.passed === true ? 'ok' : 'warn', missing: false }
+}
+
+function optionalEvidenceSummary(
+  row: ModelArtifactRegistryRow,
+  label: string,
+  keys: string[],
+): { text: string; tone: WorkstationTone; missing: boolean } {
+  const value = artifactEvidenceValue(row, keys)
+  if (value == null || value === '') return { text: `${label} 未產生`, tone: 'warn', missing: true }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const decision = String(obj.decision ?? obj.status ?? obj.verdict ?? obj.go_live_verdict ?? '').trim()
+    const metric = evidenceNumber(
+      obj.value ??
+      obj.score ??
+      obj.pbo ??
+      obj.mdd_95th ??
+      obj.sharpe ??
+      obj.adjusted_sharpe ??
+      obj.probability,
+    )
+    return {
+      text: `${label} ${decision || (metric == null ? '有證據' : metric.toFixed(3))}`,
+      tone: /fail|block/i.test(decision) ? 'error' : /pass|ok|strong/i.test(decision) ? 'ok' : 'info',
+      missing: false,
+    }
+  }
+  return { text: `${label} ${compactUnknown(value, 3)}`, tone: 'info', missing: false }
+}
+
+function artifactValidationGaps(row: ModelArtifactRegistryRow): string[] {
+  const gaps: string[] = []
+  if (cpcvEvidenceSummary(row).missing) gaps.push('CPCV')
+  if (optionalEvidenceSummary(row, 'PBO', ['pbo', 'pbo_result']).missing) gaps.push('PBO')
+  if (optionalEvidenceSummary(row, 'DSR', ['deflated_sharpe', 'dsr']).missing) gaps.push('DSR')
+  if (optionalEvidenceSummary(row, 'MC', ['monte_carlo', 'mc', 'plateau']).missing) gaps.push('MC')
+  return gaps
+}
+
+function liveGateReadableSummary(row: ModelArtifactRegistryRow, fallbackRoot: string): { root: string; detail: string } {
+  const live = parseArtifactEvidence(row.live_evidence_json)
+  const decision = deepMetric(live, ['decision'])
+  const decisionObj = decision && typeof decision === 'object' ? decision as Record<string, unknown> : {}
+  const reason = String(decisionObj.reason ?? deepMetric(live, ['reason']) ?? fallbackRoot ?? '').trim()
+  const shadow = compactUnknown(deepMetric(live, ['shadow_ic', 'shadowIc']), 4)
+  const champion = compactUnknown(deepMetric(live, ['production_ic', 'productionIc']), 4)
+  const samples = compactUnknown(deepMetric(live, ['shadow_samples', 'shadowSamples']), 0)
+  const gaps = artifactValidationGaps(row)
+  const base = row.live_gate_status === 'passed'
+    ? `Live IC 通過：shadow ${shadow} > champion ${champion}，n=${samples}`
+    : `Live IC 狀態：${row.live_gate_status ?? 'not_started'}`
+  const gapText = gaps.length ? `；完整驗證缺 ${gaps.join('/')}` : ''
+  return {
+    root: base,
+    detail: reason ? `${reason}${gapText}` : `等待 promotion-controller final comparison${gapText}`,
+  }
+}
+
 function promotionMetric(result: ModelArtifactPromotionControllerResponse, keys: string[], digits = 4): string {
   const value = deepMetric(result.evidence, keys)
   return compactUnknown(value, digits)
@@ -472,6 +555,11 @@ function UnifiedModelHealthMatrix({
                 const root = selected.context?.root_cause ?? shortRootCause(model)
                 const nextAction = selected.context?.next_action ?? (artifact ? artifactExclusionReason(artifact) : 'No selected registry candidate for live gate or promotion.')
                 const policyInfo = featurePolicyCopy(name, artifact?.feature_policy_version)
+                const cpcvSummary = artifact ? cpcvEvidenceSummary(artifact) : null
+                const pboSummary = artifact ? optionalEvidenceSummary(artifact, 'PBO', ['pbo', 'pbo_result']) : null
+                const dsrSummary = artifact ? optionalEvidenceSummary(artifact, 'DSR', ['deflated_sharpe', 'dsr']) : null
+                const mcSummary = artifact ? optionalEvidenceSummary(artifact, 'MC', ['monte_carlo', 'mc', 'plateau']) : null
+                const liveSummary = artifact ? liveGateReadableSummary(artifact, root) : null
 
                 return (
                   <tr key={name} className="align-top transition-colors odd:bg-[#070c14] even:bg-[#09111d] hover:bg-[#111e30]">
@@ -565,18 +653,29 @@ function UnifiedModelHealthMatrix({
                         </div>
                       ) : 'N/A'}
                     </td>
-                    <td className="border border-[#263247] px-3 py-3 text-slate-300">
-                      {artifact ? `${evidenceMetric(artifact, ['model_cpcv_decision', 'cpcv_decision'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}` : 'N/A'}
+                    <td className="min-w-[190px] border border-[#263247] px-3 py-3 text-slate-300">
+                      {artifact && cpcvSummary && pboSummary ? (
+                        <div className="space-y-1">
+                          <WorkstationPill tone={cpcvSummary.tone}>{cpcvSummary.text}</WorkstationPill>
+                          <WorkstationPill tone={pboSummary.tone}>{pboSummary.text}</WorkstationPill>
+                        </div>
+                      ) : 'N/A'}
                     </td>
-                    <td className="border border-[#263247] px-3 py-3 text-slate-300">
-                      {artifact ? `${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}` : 'N/A'}
+                    <td className="min-w-[170px] border border-[#263247] px-3 py-3 text-slate-300">
+                      {artifact && dsrSummary && mcSummary ? (
+                        <div className="space-y-1">
+                          <WorkstationPill tone={dsrSummary.tone}>{dsrSummary.text}</WorkstationPill>
+                          <WorkstationPill tone={mcSummary.tone}>{mcSummary.text}</WorkstationPill>
+                        </div>
+                      ) : 'N/A'}
                     </td>
                     <td className="min-w-[460px] max-w-[620px] border border-[#263247] px-3 py-3 whitespace-normal">
                       {artifact ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={liveTone}>{artifact.live_gate_status ?? 'not_started'}</WorkstationPill>
                           <div className="rounded border border-[#33415c] bg-[#05070c] p-2.5 text-[12px] leading-5 text-[#d0d8e8]">
-                            <div><span className="text-[#70809b]">root</span> {root}</div>
+                            <div><span className="text-[#70809b]">gate</span> {liveSummary?.root ?? root}</div>
+                            {liveSummary?.detail && <div className="mt-1 text-[#9aa7bd]">{liveSummary.detail}</div>}
                             {diagnosis?.reason && <div className="mt-1 text-[#8a92a6]">{diagnosis.reason}</div>}
                           </div>
                           <div className="text-[11px] leading-4 text-[#9aa7bd]">{nextAction}</div>
@@ -848,6 +947,10 @@ function ArtifactDiffPanel({
               const championArtifact = pointer?.d1_pointer_artifact_id ?? null
               const linkStatus = pointer?.artifact_link_status ?? 'not_linked'
               const policyInfo = featurePolicyCopy(modelName, artifact.feature_policy_version)
+              const cpcvSummary = cpcvEvidenceSummary(artifact)
+              const pboSummary = optionalEvidenceSummary(artifact, 'PBO', ['pbo', 'pbo_result'])
+              const dsrSummary = optionalEvidenceSummary(artifact, 'DSR', ['deflated_sharpe', 'dsr'])
+              const mcSummary = optionalEvidenceSummary(artifact, 'MC', ['monte_carlo', 'mc', 'plateau'])
               return (
                 <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -870,8 +973,8 @@ function ArtifactDiffPanel({
                     <ArtifactMetricDelta label="offline OOS IC" before="candidate holdout" after={evidenceMetric(artifact, ['oos_ic', 'oosIc'], 4)} afterNote="not live IC" />
                     <ArtifactMetricDelta label="live IC" before={`champion ${evidenceMetric(artifact, ['production_ic', 'productionIc'], 4)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_ic', 'shadowIc'], 4)}`} afterNote={`delta ${evidenceMetric(artifact, ['ic_delta', 'icDelta'], 4)}`} />
                     <ArtifactMetricDelta label="live samples" before={`champion ${evidenceMetric(artifact, ['production_samples', 'productionSamples'], 0)}`} after={`shadow ${evidenceMetric(artifact, ['shadow_samples', 'shadowSamples'], 0)}`} afterNote={`min ${evidenceMetric(artifact, ['min_samples', 'minSamples'], 0)}`} />
-                    <ArtifactMetricDelta label="CPCV / PBO" before="candidate offline gate" after={`${evidenceMetric(artifact, ['model_cpcv_decision', 'cpcv_decision'], 3)} / ${evidenceMetric(artifact, ['pbo'], 3)}`} />
-                    <ArtifactMetricDelta label="DSR / MC" before="candidate offline gate" after={`${evidenceMetric(artifact, ['deflated_sharpe', 'dsr'], 3)} / ${evidenceMetric(artifact, ['monte_carlo', 'mc', 'plateau'], 3)}`} />
+                    <ArtifactMetricDelta label="CPCV / PBO" before="candidate offline gate" after={`${cpcvSummary.text} / ${pboSummary.text}`} />
+                    <ArtifactMetricDelta label="DSR / MC" before="candidate offline gate" after={`${dsrSummary.text} / ${mcSummary.text}`} />
                     <ArtifactMetricDelta label="live gate" before="production serving" after={artifact.live_gate_status ?? 'not_started'} />
                   </div>
 
@@ -1337,58 +1440,6 @@ function ArtifactLifecycleSummaryPanel({
   )
 }
 
-function PromotionEvidencePathChart({
-  selection,
-  pointers,
-  queue,
-}: {
-  selection?: ModelArtifactSelectionResponse
-  pointers?: ModelChampionPointersResponse
-  queue?: ModelArtifactPromotionQueueResponse
-}) {
-  const models = Object.values(selection?.models ?? {})
-  const selectedArtifacts = models.flatMap((row) => [
-    row.monthly_release_candidate,
-    row.weekly_drift_candidate,
-  ]).filter(Boolean) as ModelArtifactRegistryRow[]
-  const monthly = models.filter((row) => row.monthly_release_candidate).length
-  const weekly = models.filter((row) => row.weekly_drift_candidate).length
-  const offlinePassed = selectedArtifacts.filter((row) => String(row.offline_gate_decision ?? row.offline_gate_status ?? '').toLowerCase().includes('pass')).length
-  const livePassed = selectedArtifacts.filter((row) => String(row.live_gate_status ?? '').toLowerCase().includes('pass')).length
-  const approvalRequired = queue?.queue?.filter((row) => row.approval_required).length ?? 0
-  const pointerReady = pointers?.ready_count ?? 0
-  const pointerTotal = pointers?.model_count ?? 0
-  const stages = [
-    { label: 'Registry', value: selectedArtifacts.length, hint: `monthly ${monthly} / weekly ${weekly}`, color: 'bg-sky-300' },
-    { label: 'Offline Gate', value: offlinePassed, hint: 'CPCV / PBO / metadata', color: 'bg-cyan-300' },
-    { label: 'Live IC', value: livePassed, hint: 'shadow vs champion', color: 'bg-emerald-300' },
-    { label: 'Promotion Queue', value: queue?.count ?? 0, hint: `${approvalRequired} need Wei`, color: 'bg-amber-300' },
-    { label: 'Pointer Ready', value: pointerReady, hint: `${pointerReady}/${pointerTotal}`, color: 'bg-violet-300' },
-  ]
-  const max = Math.max(...stages.map((stage) => stage.value), 1)
-
-  return (
-    <WorkstationPanel title="Promotion Evidence Path / 晉級證據路徑" kicker="registry -> gate -> live -> queue -> pointer">
-      <div className="grid gap-3 p-3 lg:grid-cols-5">
-        {stages.map((stage, index) => (
-          <div key={stage.label} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{index + 1}. {stage.label}</div>
-              <div className="font-mono text-lg font-semibold text-slate-100">{stage.value}</div>
-            </div>
-            <div className="mt-3 h-20 rounded-lg border border-[#1b2535] bg-[#070a10] p-2">
-              <div className="flex h-full items-end">
-                <div className={`w-full rounded-t ${stage.color}`} style={{ height: `${Math.max(8, (stage.value / max) * 100)}%` }} />
-              </div>
-            </div>
-            <p className="mt-2 truncate text-[11px] text-slate-500">{stage.hint}</p>
-          </div>
-        ))}
-      </div>
-    </WorkstationPanel>
-  )
-}
-
 function ServingDiagnosticsPanel({ payload }: { payload: any }) {
   const recs = (payload?.all_recommendations ?? payload?.recommendations ?? []) as any[]
   const diagnostics = recs
@@ -1618,11 +1669,6 @@ export default function ModelPoolPage() {
               models={modelList}
               selection={artifactSelection.data}
               pointers={championPointers.data}
-            />
-            <PromotionEvidencePathChart
-              selection={artifactSelection.data}
-              pointers={championPointers.data}
-              queue={artifactPromotionQueue.data}
             />
             <PromotionQueuePanel
               queue={artifactPromotionQueue.data}

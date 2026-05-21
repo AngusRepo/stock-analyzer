@@ -1,3 +1,5 @@
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+
 /**
  * llm.ts — Anthropic Claude API client
  */
@@ -252,8 +254,10 @@ export interface RecommendationCandidate {
   name: string
   signal: string
   score: number
+  score_components?: string | null
   chip_score: number
   tech_score: number
+  momentum_score?: number | null
   ml_score: number
   ml_confidence: number
   ml_models_up: number
@@ -276,7 +280,8 @@ export async function generateRecommendationReasons(
 
   const system = `你是台灣股市資深分析師，負責為每日推薦清單撰寫具資訊量的推薦理由。
 規則：
-- 每支股票的 reason 限 120 字以內，需整合籌碼、技術、ML 三面向的重點
+- 每支股票的 reason 限 120 字以內，必須使用 Score V2 finalScore 與五構面語意：ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme
+- 不准退回舊 chip_score / tech_score / ml_score 三分法，也不要只寫「籌碼、技術、ML」三面向
 - watchPoints 給 3 條具體觀察重點，每條 60-100 字，必須含具體數字（價位/百分比/天數）
   例：「留意 58.8 月線支撐能否守住，跌破則 ATR 停損 56.08；上方 63.59 為 ML target1」
   例：「RSI 39 雖未進超賣，但連續 3 日量縮，需確認量能放大才轉強訊號」
@@ -288,7 +293,8 @@ export async function generateRecommendationReasons(
 
   const stockList = candidates.map((c, i) => {
     const chipAmt = ((c.foreign_net_5d ?? 0) + (c.trust_net_5d ?? 0)).toFixed(1)
-    return `${i + 1}. ${c.symbol} ${c.name} | signal=${c.signal} score=${c.score}(籌碼${c.chip_score}+技術${c.tech_score}+ML${c.ml_score}) | ML投票${c.ml_models_up}↑/${c.ml_models_down}↓(共${c.ml_models_total}) conf=${(c.ml_confidence * 100).toFixed(0)}% | RSI=${c.rsi14?.toFixed(0) ?? 'N/A'} MACD${(c.macd_hist ?? 0) > 0 ? '多' : '空'} | 5日法人淨額${chipAmt}億 | 價${c.current_price ?? 'N/A'}`
+    const scoreV2 = readScoreV2Snapshot(c)
+    return `${i + 1}. ${c.symbol} ${c.name} | signal=${c.signal} score=${scoreV2.finalScore}(base=${scoreV2.total}; ML Edge=${scoreV2.components.mlEdge}/25, Chip Flow=${scoreV2.components.chipFlow}/25, Technical Structure=${scoreV2.components.technicalStructure}/25, Fundamental Quality=${scoreV2.components.fundamentalQuality}/20, News/Theme=${scoreV2.components.newsTheme}/5) | ML投票${c.ml_models_up}↑/${c.ml_models_down}↓(共${c.ml_models_total}) conf=${(c.ml_confidence * 100).toFixed(0)}% | RSI=${c.rsi14?.toFixed(0) ?? 'N/A'} MACD${(c.macd_hist ?? 0) > 0 ? '多' : '空'} | 5日法人淨額${chipAmt}億 | 價${c.current_price ?? 'N/A'}`
   }).join('\n')
 
   const themeHint = topThemes.length ? `\n\n今日主流主題：${topThemes.join('、')}` : ''

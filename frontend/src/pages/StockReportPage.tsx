@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatTwDateTimeShort } from '@/lib/twTime'
+import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 
 // ─── Signal 設定 ───────────────────────────────────────────────────────────────
 const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; border: string }> = {
@@ -52,14 +53,14 @@ function SectionCard({ title, icon: Icon, children, className }: {
 }
 
 function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = Math.round((value / max) * 100)
+  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-10 shrink-0 text-[#8f877a]">{label}</span>
+      <span className="min-w-16 shrink-0 text-[#8f877a]">{label}</span>
       <div className="flex-1 bg-[#27261f] rounded-full h-2 overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-10 text-right font-mono text-[#8f877a]">{value}/{max}</span>
+      <span className="w-14 text-right font-mono text-[#8f877a]">{value}/{max}</span>
     </div>
   )
 }
@@ -122,6 +123,7 @@ export default function StockReportPage() {
   const ml = mlData as any
   const signalKey = ml?.signal ?? rec?.signal ?? 'NO_SIGNAL'
   const cfg = SIGNAL_CFG[signalKey] ?? SIGNAL_CFG.NO_SIGNAL
+  const scoreViewModel = rec ? buildScoreBreakdownViewModel(rec) : null
 
   const isLoading = aiLoading || mlLoading
 
@@ -198,7 +200,7 @@ export default function StockReportPage() {
                       {rec && (
                         <>
                           <span className="text-muted-foreground">
-                            評分 <span className="text-foreground font-bold">{rec.score}</span>
+                            評分 <span className="text-foreground font-bold">{Math.round(scoreViewModel?.finalScore ?? rec.score ?? 0)}</span>
                           </span>
                           <span className="text-muted-foreground">
                             信心 <span className="text-foreground font-bold">{((rec.confidence ?? 0) * 100).toFixed(0)}%</span>
@@ -240,11 +242,11 @@ export default function StockReportPage() {
               </div>
 
               {/* 評分拆解 */}
-              {rec && (rec.chip_score != null || rec.tech_score != null || rec.ml_score != null) && (
+              {scoreViewModel && scoreViewModel.rows.length > 0 && (
                 <div className="space-y-2">
-                  <ScoreBar label="籌碼" value={rec.chip_score ?? 0} max={40} color="bg-blue-500" />
-                  <ScoreBar label="技術" value={rec.tech_score ?? 0} max={30} color="bg-purple-500" />
-                  <ScoreBar label="ML" value={rec.ml_score ?? 0} max={30} color="bg-emerald-500" />
+                  {scoreViewModel?.rows.map((item) => (
+                    <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+                  ))}
                 </div>
               )}
 

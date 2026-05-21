@@ -1,43 +1,21 @@
+"""POST /recommend.
+
+This registered route accepts lightweight candidate dictionaries and returns
+Score V2 recommendations. The scalar ``score`` is canonical finalScore.
+``chip_score``, ``tech_score``, and ``ml_score`` are storage projections kept
+for older D1 columns only; they are not the ranking source.
 """
-routers/recommend.py — POST /recommend
 
-Worker 傳入已從 D1 pre-query 好的股票多因子資料 → Controller 計算分數 → LLM 生成理由
-→ 回傳 top5 推薦 + sector_flow → Worker 寫入 D1。
-
-Worker 呼叫格式：
-  POST /recommend
-  {
-    "date": "2026-03-27",
-    "stocks": [ { stock_id, symbol, name, sector, current_price,
-                  foreign_net_5d, trust_net_5d, foreign_consecutive,
-                  rsi14, macd_hist, ma5, ma20, ma60,
-                  ml_signal, ml_confidence, ml_forecast_pct,
-                  hist_accuracy, hist_count } ],
-    "sectors": [ { sector, foreign_net, trust_net, total_net,
-                   avg_rsi, avg_momentum_5d, stock_count, up_count } ],
-    "anthropic_api_key": str,   # Worker 透過 env 傳入（避免 Controller 直接存 secret）
-    "top_n": 5
-  }
-
-回傳：
-  {
-    "recommendations": [
-      { rank, stock_id, symbol, name, sector, score, chip_score, tech_score, ml_score,
-        current_price, foreign_net_5d, trust_net_5d, rsi14, macd_hist,
-        ml_signal, ml_confidence, reason, watch_points, has_buy_signal }
-    ],
-    "sectors": [ sector_flow ... ]   # pass-through（原封不動）
-  }
-"""
-import os
 import json
 import logging
-from fastapi import APIRouter
-from pydantic import BaseModel
+import os
 from typing import Any, Optional
 
-from services.scorer import score_and_rank
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
 from services.llm_service import generate_reasons
+from services.recommend_score_v2_projection import rank_score_v2_route_candidates
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -48,7 +26,7 @@ _ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 class RecommendRequest(BaseModel):
     date: str
     stocks: list[dict[str, Any]]
-    sectors: list[dict[str, Any]] = []
+    sectors: list[dict[str, Any]] = Field(default_factory=list)
     anthropic_api_key: Optional[str] = None
     top_n: int = 5
 
@@ -58,44 +36,47 @@ def post_recommend(req: RecommendRequest):
     if not req.stocks:
         return {"recommendations": [], "sectors": req.sectors}
 
-    # 1. 多因子評分
-    scored = score_and_rank(req.stocks)
-    top = scored[:req.top_n]
+    # 1. Build Score V2 candidates and rank by canonical finalScore.
+    scored = rank_score_v2_route_candidates(req.stocks)
+    top = scored[: req.top_n]
+    score_components_by_symbol = {candidate.symbol: candidate.score_components for candidate in top}
 
     if not top:
-        logger.info(f"[recommend] date={req.date}: no stocks passed min_score threshold")
+        logger.info("[recommend] date=%s: no stocks passed finalScore threshold", req.date)
         return {"recommendations": [], "sectors": req.sectors}
 
-    # 2. LLM 推薦理由
+    # 2. Generate reasons with the same Score V2 payload.
     api_key = req.anthropic_api_key or _ANTHROPIC_KEY
-    reasons = generate_reasons(api_key, top, req.sectors) if api_key else []
+    reasons = generate_reasons(api_key, top, req.sectors, score_components_by_symbol) if api_key else []
     if len(reasons) < len(top):
-        reasons += [{"reason": "量化指標呈現強勢訊號", "watch_points": []}] * (len(top) - len(reasons))
+        reasons += [{"reason": "Score V2 context available; LLM reason not generated.", "watch_points": []}] * (len(top) - len(reasons))
 
-    # 3. 組裝回傳（Worker 直接用此格式寫入 D1）
+    # 3. Return Score V2 response plus storage projection fields.
     recommendations = []
-    for i, (s, r) in enumerate(zip(top, reasons)):
+    for rank, (candidate, reason_payload) in enumerate(zip(top, reasons), start=1):
+        score_components = score_components_by_symbol[candidate.symbol]
         recommendations.append({
-            "rank":            i + 1,
-            "stock_id":        s.stock_id,
-            "symbol":          s.symbol,
-            "name":            s.name,
-            "sector":          s.sector,
-            "score":           s.total_score,
-            "chip_score":      s.chip_score,
-            "tech_score":      s.tech_score,
-            "ml_score":        s.ml_score,
-            "current_price":   s.current_price,
-            "foreign_net_5d":  s.foreign_net_5d / 1e8,
-            "trust_net_5d":    s.trust_net_5d / 1e8,
-            "rsi14":           s.rsi14,
-            "macd_hist":       s.macd_hist,
-            "ml_signal":       s.ml_signal,
-            "ml_confidence":   s.ml_confidence,
-            "has_buy_signal":  1 if (s.ml_signal and "BUY" in s.ml_signal) else 0,
-            "reason":          r.get("reason", "")[:500],
-            "watch_points":    json.dumps(r.get("watch_points", [])[:3]),
+            "rank": rank,
+            "stock_id": candidate.stock_id,
+            "symbol": candidate.symbol,
+            "name": candidate.name,
+            "sector": candidate.sector,
+            "score": candidate.final_score,
+            "chip_score": candidate.chip_score,
+            "tech_score": candidate.tech_score,
+            "ml_score": candidate.ml_score,
+            "score_components": score_components,
+            "current_price": candidate.current_price,
+            "foreign_net_5d": candidate.foreign_net_5d / 1e8,
+            "trust_net_5d": candidate.trust_net_5d / 1e8,
+            "rsi14": candidate.rsi14,
+            "macd_hist": candidate.macd_hist,
+            "ml_signal": candidate.ml_signal,
+            "ml_confidence": candidate.ml_confidence,
+            "has_buy_signal": 1 if (candidate.ml_signal and "BUY" in candidate.ml_signal) else 0,
+            "reason": reason_payload.get("reason", "")[:500],
+            "watch_points": json.dumps(reason_payload.get("watch_points", [])[:3], ensure_ascii=False),
         })
 
-    logger.info(f"[recommend] date={req.date} top={[r['symbol'] for r in recommendations]}")
+    logger.info("[recommend] date=%s top=%s", req.date, [row["symbol"] for row in recommendations])
     return {"recommendations": recommendations, "sectors": req.sectors}

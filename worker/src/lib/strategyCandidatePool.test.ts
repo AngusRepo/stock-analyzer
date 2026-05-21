@@ -35,6 +35,45 @@ const candidates = Array.from({ length: 90 }, (_, index) => {
 }
 
 {
+  const scoreV2Only = {
+    symbol: '2330',
+    name: 'Score V2 Seed',
+    industry: 'Semiconductor',
+    score: 8,
+    chip_score: 1,
+    tech_score: 1,
+    momentum_score: 1,
+    current_price: 900,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+    score_components: JSON.stringify({
+      version: 'score_v2',
+      finalScore: 70,
+      components: {
+        mlEdge: 12,
+        chipFlow: 24,
+        technicalStructure: 22,
+        fundamentalQuality: 10,
+        newsTheme: 2,
+      },
+      technicalBreakdown: {
+        trendStructure: 6,
+        volatilityStructure: 4,
+        reversalExtreme: 4,
+        volumeConfirmation: 3,
+        executionRisk: 1,
+      },
+      legacyComponents: {
+        screenerMomentum: 10,
+      },
+    }),
+  }
+  const pools = buildStrategyCandidatePools([scoreV2Only], [DEFAULT_STRATEGY_SPECS[0]], { regime: 'bull' })
+  assert(pools[0].candidates.length === 1, 'candidate pool should rank by canonical Score V2 when legacy fields are stale')
+  assert(pools[0].candidates[0].raw_score === 70, 'candidate pool raw score should expose canonical strategy seed score')
+}
+
+{
   const capacity = resolveStrategyCapacityBudget()
   assert(capacity.mode === 'base', 'default strategy budget should stay base')
   assert(capacity.totalCap === 64, 'base total budget should remain 64')

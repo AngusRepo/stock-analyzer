@@ -214,117 +214,6 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Template reason / watch_points (port from dailyRecommendation.ts:406-494)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_reason(s: dict) -> str:
-    """三面向：籌碼 → 技術 → ML"""
-    # ── 籌碼面 ──
-    consec = s.get("foreign_consecutive") or 0
-    fnet = s.get("foreign_net_5d") or 0
-    tnet = s.get("trust_net_5d") or 0
-    net_amount = (fnet + tnet) / 1e8
-
-    if consec >= 5 and net_amount > 5:
-        chip_reason = f"法人連買{consec}天、淨買超{net_amount:.1f}億"
-    elif consec >= 3:
-        chip_reason = f"法人連買{consec}天"
-        if net_amount > 1:
-            chip_reason += f"（{net_amount:.1f}億）"
-    elif net_amount > 5:
-        chip_reason = f"5日法人淨買超{net_amount:.1f}億"
-    elif net_amount > 1:
-        chip_reason = f"法人買超{net_amount:.1f}億"
-    elif net_amount > 0:
-        chip_reason = "法人小幅買超"
-    elif net_amount > -1:
-        chip_reason = "法人持平"
-    else:
-        chip_reason = f"法人賣超{abs(net_amount):.1f}億"
-
-    # ── 技術面 ──
-    rsi = s.get("rsi14") or 0
-    macd_up = (s.get("macd_hist") or 0) > 0
-    above_ma = bool(s.get("current_price")) and bool(s.get("ma20")) and s["current_price"] > s["ma20"]
-    tech_parts: list[str] = []
-    if rsi > 0:
-        if rsi > 75:
-            tech_parts.append(f"RSI {rsi:.0f} 強勢")
-        elif rsi >= 55:
-            tech_parts.append(f"RSI {rsi:.0f} 健康")
-        elif rsi >= 40:
-            tech_parts.append(f"RSI {rsi:.0f} 中性")
-        else:
-            tech_parts.append(f"RSI {rsi:.0f} 偏弱")
-    tech_parts.append("MACD 多頭" if macd_up else "MACD 空頭")
-    tech_parts.append("站穩月線" if above_ma else "月線下方")
-    tech_reason = "、".join(tech_parts)
-
-    # ── ML 面 ──
-    sig = (s.get("_signal") or "").upper()
-    vote_summary = s.get("ml_vote_summary")
-    total = s.get("ml_models_total") or 0
-    up = s.get("ml_models_up") or 0
-    down = s.get("ml_models_down") or 0
-    forecast_pct = s.get("ml_forecast_pct") or 0
-    fp_str = f"{'+' if forecast_pct > 0 else ''}{forecast_pct * 100:.1f}%"
-
-    if vote_summary:
-        ml_reason = vote_summary
-    elif total == 0:
-        ml_reason = "ML 尚未分析"
-    elif "STRONG_BUY" in sig:
-        ml_reason = f"ML 強烈看多（{up}/{total}看漲，預期{fp_str}）"
-    elif "BUY" in sig:
-        ml_reason = f"ML 看多（{up}/{total}看漲，預期{fp_str}）"
-    elif sig == "HOLD":
-        if down > up:
-            ml_reason = f"ML 觀望（{down}/{total}偏空但信心不足）"
-        elif up > down:
-            ml_reason = f"ML 觀望（{up}/{total}偏多但共識未達門檻）"
-        else:
-            ml_reason = f"ML 觀望（多空分歧 {up}/{down}）"
-    else:
-        ml_reason = "ML 觀望"
-
-    return f"【籌碼】{chip_reason}｜【技術】{tech_reason}｜【ML】{ml_reason}"
-
-
-def build_watch_points(s: dict) -> list[str]:
-    """注意事項（template fallback，會被 LLM reason 覆寫）"""
-    points: list[str] = []
-    rsi = s.get("rsi14") or 50
-    conf = s.get("ml_confidence") or 0
-
-    if rsi > 80:
-        points.append("RSI 超買，短線可能過熱")
-    elif rsi > 75:
-        points.append("RSI 偏高，留意回檔")
-    macd_h = s.get("macd_hist") or 0
-    cp = s.get("current_price") or 0
-    ma20 = s.get("ma20") or 0
-    if macd_h < 0 and cp > ma20:
-        points.append("MACD 走弱但仍在月線上，留意趨勢轉折")
-
-    if (s.get("foreign_net_5d") or 0) < 0:
-        points.append("外資近期偏賣，留意籌碼變化")
-    if (s.get("trust_net_5d") or 0) < 0 and (s.get("foreign_net_5d") or 0) > 0:
-        points.append("外資買但投信賣，法人方向不一致")
-
-    sig = (s.get("_signal") or "").lower()
-    if "sell" in sig:
-        points.append("ML 模型偏空，不建議新建倉位")
-    elif conf < 0.45:
-        points.append("ML 信心偏低，建議觀望或小量試單")
-    elif 0.45 <= conf < 0.55 and sig == "hold":
-        points.append("ML 信心中等，方向未明確，可等待訊號確認")
-
-    if not points:
-        points.append("留意大盤整體走勢與國際局勢")
-    return points
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Filter + score (port from dailyRecommendation.ts:541-613)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -578,33 +467,209 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
     return details
 
 
+SCORE_V2_VERSION = "score_v2"
+SCORE_V2_WEIGHTS = {
+    "mlEdge": 25,
+    "chipFlow": 25,
+    "technicalStructure": 25,
+    "fundamentalQuality": 20,
+    "newsTheme": 5,
+}
+
+
+def _score_number(value: Any, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if math.isfinite(number) else fallback
+
+
+def _round1(value: float) -> float:
+    return round(float(value) * 10) / 10
+
+
+def _clamp_score(value: Any, maximum: float) -> float:
+    return _round1(max(0.0, min(float(maximum), _score_number(value))))
+
+
+def _rescale_score(value: Any, old_max: float, new_max: float) -> float:
+    if old_max <= 0:
+        return 0.0
+    return _clamp_score((_score_number(value) / old_max) * new_max, new_max)
+
+
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _score_v2_components_from_row(row: dict) -> dict[str, float]:
+    payload = row.get("score_components")
+    if isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION and isinstance(payload.get("components"), dict):
+        components = payload["components"]
+        return {
+            "mlEdge": _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"]),
+            "chipFlow": _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"]),
+            "technicalStructure": _clamp_score(components.get("technicalStructure"), SCORE_V2_WEIGHTS["technicalStructure"]),
+            "fundamentalQuality": _clamp_score(components.get("fundamentalQuality"), SCORE_V2_WEIGHTS["fundamentalQuality"]),
+            "newsTheme": _clamp_score(components.get("newsTheme"), SCORE_V2_WEIGHTS["newsTheme"]),
+        }
+    return {
+        "mlEdge": _rescale_score(row.get("ml_score"), 30, SCORE_V2_WEIGHTS["mlEdge"]),
+        "chipFlow": _rescale_score(row.get("chip_score"), 40, SCORE_V2_WEIGHTS["chipFlow"]),
+        "technicalStructure": _rescale_score(
+            _score_number(row.get("tech_score")) + _score_number(row.get("momentum_score")),
+            50,
+            SCORE_V2_WEIGHTS["technicalStructure"],
+        ),
+        "fundamentalQuality": 0.0,
+        "newsTheme": 0.0,
+    }
+
+
+def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
+    maxima = {
+        "trendStructure": 7.0,
+        "volatilityStructure": 5.0,
+        "reversalExtreme": 5.0,
+        "volumeConfirmation": 6.0,
+        "executionRisk": 2.0,
+    }
+    target = _clamp_score(target, SCORE_V2_WEIGHTS["technicalStructure"])
+
+    current_price = _first_float(row.get("current_price"))
+    ma20 = _first_float(row.get("ma20"))
+    macd_hist = _first_float(row.get("macd_hist"))
+    plus_di = _first_float(row.get("plus_di14"), row.get("plusDi14"))
+    minus_di = _first_float(row.get("minus_di14"), row.get("minusDi14"))
+    adx = _first_float(row.get("adx14"))
+    atr = _first_float(row.get("atr14"))
+    sar = _first_float(row.get("parabolic_sar"), row.get("parabolicSar"))
+    cci = _first_float(row.get("cci20"))
+    rsi = _first_float(row.get("rsi14"))
+    vw_rsi = _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14"))
+    vmd = _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710"))
+
+    detailed_values = [plus_di, minus_di, adx, atr, sar, cci, vw_rsi, vmd]
+    if not any(value is not None for value in detailed_values):
+        return {
+            "trendStructure": _rescale_score(row.get("tech_score"), 30, maxima["trendStructure"]),
+            "volatilityStructure": 0.0,
+            "reversalExtreme": 0.0,
+            "volumeConfirmation": _rescale_score(row.get("momentum_score"), 20, maxima["volumeConfirmation"]),
+            "executionRisk": 0.0,
+        }
+
+    natr = (atr / current_price * 100.0) if atr is not None and current_price and current_price > 0 else None
+    raw = {
+        "trendStructure": 0.0,
+        "volatilityStructure": 0.0,
+        "reversalExtreme": 0.0,
+        "volumeConfirmation": 0.0,
+        "executionRisk": 0.0,
+    }
+    if current_price is not None and ma20 is not None and current_price > ma20:
+        raw["trendStructure"] += 2.0
+    if macd_hist is not None and macd_hist > 0:
+        raw["trendStructure"] += 1.5
+    if plus_di is not None and minus_di is not None and plus_di > minus_di:
+        raw["trendStructure"] += 1.5
+    if adx is not None:
+        raw["trendStructure"] += 2.0 if adx >= 25 else 1.0 if adx >= 18 else 0.0
+
+    if natr is not None:
+        if 1.0 <= natr <= 4.0:
+            raw["volatilityStructure"] += 5.0
+        elif 0.5 <= natr <= 6.0:
+            raw["volatilityStructure"] += 3.0
+        elif natr > 0:
+            raw["volatilityStructure"] += 1.0
+
+    if sar is not None and current_price is not None and current_price > sar:
+        raw["reversalExtreme"] += 2.0
+    if cci is not None:
+        raw["reversalExtreme"] += 2.0 if -100 <= cci <= 150 else 1.0
+    if rsi is not None and 35 <= rsi <= 75:
+        raw["reversalExtreme"] += 1.0
+
+    if vmd is not None and vmd > 0:
+        raw["volumeConfirmation"] += 3.0
+    if vw_rsi is not None:
+        raw["volumeConfirmation"] += 2.0 if 55 <= vw_rsi <= 80 else 1.0 if vw_rsi > 80 else 0.0
+    raw["volumeConfirmation"] += _rescale_score(row.get("momentum_score"), 20, 1.0)
+
+    if rsi is not None and 35 <= rsi <= 75:
+        raw["executionRisk"] += 1.0
+    if natr is None or natr <= 6.0:
+        raw["executionRisk"] += 1.0
+
+    clamped = {key: _clamp_score(value, maxima[key]) for key, value in raw.items()}
+    raw_sum = sum(clamped.values())
+    if raw_sum <= 0 or target <= 0:
+        return {key: 0.0 for key in maxima}
+    scale = target / raw_sum
+    return {key: _clamp_score(value * scale, maxima[key]) for key, value in clamped.items()}
+
+
 def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | None = None) -> dict[str, Any]:
-    """Persist the score math so the UI never invents an opaque residual."""
+    """Persist canonical Score V2 payload; old scalar fields are storage inputs only."""
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
-    final_score = row.get("score") or raw_score
-    components = {
-        "chip": row.get("chip_score") or 0,
-        "tech": row.get("tech_score") or 0,
-        "screenerMomentum": row.get("momentum_score") or 0,
-        "ml": row.get("ml_score") or 0,
-        "persona": row.get("persona_score") or 0,
+    chip_score = _score_number(row.get("chip_score"))
+    tech_score = _score_number(row.get("tech_score"))
+    momentum_score = _score_number(row.get("momentum_score"))
+    ml_score = _score_number(row.get("ml_score"))
+    persona_score = _score_number(row.get("persona_score"))
+    risk_flags = ((alpha_context.get("risk_overlay") or {}).get("flags") if isinstance(alpha_context, dict) else []) or []
+    alpha_reason = {
+        "bucket": alpha_context.get("edge_bucket") if isinstance(alpha_context, dict) else None,
+        "regime": alpha_context.get("regime") if isinstance(alpha_context, dict) else None,
+        "regimeWeight": alpha_context.get("regime_weight") if isinstance(alpha_context, dict) else None,
+        "riskFlags": risk_flags,
+        "riskPenalty": ((alpha_context.get("risk_overlay") or {}).get("penalty") if isinstance(alpha_context, dict) else 0) or 0,
+        "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
+    }
+    components = _score_v2_components_from_row(row)
+    total = _round1(sum(components.values()))
+    technical_breakdown = _score_v2_technical_breakdown(row, components["technicalStructure"])
+    final_score = _clamp_score(total + _score_number(alpha_adjustment), 100)
+    payload: dict[str, Any] = {
+        "version": SCORE_V2_VERSION,
+        "weights": SCORE_V2_WEIGHTS,
+        "components": components,
+        "total": total,
+        "technicalBreakdown": technical_breakdown,
+        "technicalSignals": {
+            "plusDi14": _first_float(row.get("plus_di14"), row.get("plusDi14")),
+            "minusDi14": _first_float(row.get("minus_di14"), row.get("minusDi14")),
+            "adx14": _first_float(row.get("adx14")),
+            "parabolicSar": _first_float(row.get("parabolic_sar"), row.get("parabolicSar")),
+            "cci20": _first_float(row.get("cci20")),
+            "volumeWeightedRsi14": _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14")),
+            "volumeMomentumDivergence132710": _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710")),
+        },
+        "riskFlags": list(dict.fromkeys(str(flag) for flag in risk_flags if flag)),
+        "reasons": [],
+        "legacyComponents": {
+            "chip": chip_score,
+            "tech": tech_score,
+            "screenerMomentum": momentum_score,
+            "ml": ml_score,
+            "persona": persona_score,
+        },
         "rawScore": raw_score,
         "alphaAdjustment": alpha_adjustment or 0,
         "finalScore": final_score,
-        "formula": "chip + tech + ml + persona + alphaAdjustment",
-        "alphaReason": {
-            "bucket": alpha_context.get("edge_bucket") if isinstance(alpha_context, dict) else None,
-            "regime": alpha_context.get("regime") if isinstance(alpha_context, dict) else None,
-            "regimeWeight": alpha_context.get("regime_weight") if isinstance(alpha_context, dict) else None,
-            "riskFlags": ((alpha_context.get("risk_overlay") or {}).get("flags") if isinstance(alpha_context, dict) else []) or [],
-            "riskPenalty": ((alpha_context.get("risk_overlay") or {}).get("penalty") if isinstance(alpha_context, dict) else 0) or 0,
-            "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
-        },
+        "formula": "score_v2_total + alphaAdjustment",
+        "alphaReason": alpha_reason,
     }
     if isinstance(row.get("chip_evidence"), dict):
-        components["chipEvidence"] = row["chip_evidence"]
-    return components
+        payload["chipEvidence"] = row["chip_evidence"]
+    return payload
 
 
 def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) -> float:
@@ -709,6 +774,17 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
     ma20 = _float_or_none(latest_ind.get("ma20"))
     rsi14 = _float_or_none(latest_ind.get("rsi14"))
     macd_hist = _float_or_none(latest_ind.get("macdHist"))
+    atr14 = _first_float(latest_ind.get("atr14"))
+    plus_di14 = _first_float(latest_ind.get("plusDi14"), latest_ind.get("plus_di14"))
+    minus_di14 = _first_float(latest_ind.get("minusDi14"), latest_ind.get("minus_di14"))
+    adx14 = _first_float(latest_ind.get("adx14"))
+    parabolic_sar = _first_float(latest_ind.get("parabolicSar"), latest_ind.get("parabolic_sar"))
+    cci20 = _first_float(latest_ind.get("cci20"))
+    volume_weighted_rsi14 = _first_float(latest_ind.get("volumeWeightedRsi14"), latest_ind.get("volume_weighted_rsi14"))
+    volume_momentum_divergence = _first_float(
+        latest_ind.get("volumeMomentumDivergence132710"),
+        latest_ind.get("volume_momentum_divergence_13_27_10"),
+    )
 
     if ma20 is None and len(closes) >= 20:
         ma20 = sum(closes[-20:]) / 20.0
@@ -738,60 +814,71 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         "ma20": ma20,
         "rsi14": rsi14 if rsi14 is not None else _float_or_none(rec.get("rsi14")),
         "macd_hist": macd_hist if macd_hist is not None else _float_or_none(rec.get("macd_hist")),
+        "atr14": atr14,
+        "plus_di14": plus_di14,
+        "minus_di14": minus_di14,
+        "adx14": adx14,
+        "parabolic_sar": parabolic_sar,
+        "cci20": cci20,
+        "volume_weighted_rsi14": volume_weighted_rsi14,
+        "volume_momentum_divergence_13_27_10": volume_momentum_divergence,
     }
 
 
 def build_reason(s: dict) -> str:
-    """Build clean Traditional Chinese explanation for recommendation cards."""
-    fnet = float(s.get("foreign_net_5d") or 0.0)
-    tnet = float(s.get("trust_net_5d") or 0.0)
-    dnet = float(s.get("dealer_net_5d") or 0.0)
+    """Build fallback reason from canonical Score V2 payload."""
+    payload = s.get("score_components")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+    if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
+        payload = build_score_components(s, raw_score=_score_number(s.get("score")))
+    components = _score_v2_components_from_row({"score_components": payload})
+    final_score = _clamp_score(payload.get("finalScore", payload.get("total")), 100)
+    total = _clamp_score(payload.get("total"), 100)
+    alpha = _round1(_score_number(payload.get("alphaAdjustment"), final_score - total))
+
     market_segment = str(s.get("market_segment") or "").upper()
-    broker_cash_5d = float(s.get("broker_net_amount_5d") or 0.0)
     broker_rows = int(s.get("broker_rows") or 0)
+    broker_cash_5d = _score_number(s.get("broker_net_amount_5d"))
     if market_segment == "EMERGING" and broker_rows > 0:
-        direction = "買超" if broker_cash_5d >= 0 else "賣超"
-        chip_reason = f"券商分點近5日{direction}{_format_abs_cash_billion(broker_cash_5d)}"
-        broker_count = s.get("broker_count_latest")
-        concentration = s.get("broker_concentration_latest")
-        if broker_count is not None:
-            chip_reason += f"、券商數{int(float(broker_count))}"
-        if concentration is not None:
-            chip_reason += f"、集中度{float(concentration):.2f}"
+        chip_context = (
+            f"興櫃券商分點近5日{_format_abs_cash_billion(broker_cash_5d)}"
+            f", broker_count={s.get('broker_count_latest', 'N/A')}"
+        )
     elif market_segment == "EMERGING":
-        chip_reason = "興櫃券商分點資料不足，暫不以三大法人語意判讀"
+        chip_context = "emerging broker chip proxy unavailable"
     else:
-        net_amount = fnet + tnet + dnet
-        if net_amount > 5:
-            chip_reason = f"法人 5 日買超 {net_amount:.1f} 億"
-        elif net_amount > 1:
-            chip_reason = f"法人買超 {net_amount:.1f} 億"
-        elif net_amount > 0:
-            chip_reason = "法人小幅買超"
-        elif net_amount > -1:
-            chip_reason = "法人買賣超接近平衡"
-        else:
-            chip_reason = f"法人賣超 {abs(net_amount):.1f} 億"
+        net_amount = _score_number(s.get("foreign_net_5d")) + _score_number(s.get("trust_net_5d")) + _score_number(s.get("dealer_net_5d"))
+        chip_context = f"法人5日淨額 {net_amount:.1f} 億"
 
-    rsi = float(s.get("rsi14") or 0.0)
-    macd_up = float(s.get("macd_hist") or 0.0) > 0
-    above_ma = bool(s.get("current_price")) and bool(s.get("ma20")) and float(s["current_price"]) > float(s["ma20"])
-    tech_parts: list[str] = []
-    if rsi > 0:
-        if rsi > 75:
-            tech_parts.append(f"RSI {rsi:.0f} 偏熱")
-        elif rsi >= 55:
-            tech_parts.append(f"RSI {rsi:.0f} 健康")
-        elif rsi >= 40:
-            tech_parts.append(f"RSI {rsi:.0f} 中性")
-        else:
-            tech_parts.append(f"RSI {rsi:.0f} 偏弱")
-    tech_parts.append("MACD 多頭" if macd_up else "MACD 偏弱")
-    tech_parts.append("站穩月線" if above_ma else "月線下方")
-    tech_reason = "、".join(tech_parts)
+    technical_parts: list[str] = []
+    rsi = _first_float(s.get("rsi14"))
+    if rsi is not None:
+        technical_parts.append(f"RSI {rsi:.0f}")
+    macd_hist = _first_float(s.get("macd_hist"))
+    if macd_hist is not None:
+        technical_parts.append("MACD positive" if macd_hist > 0 else "MACD non-positive")
+    adx = _first_float(s.get("adx14"))
+    if adx is not None:
+        plus_di = _first_float(s.get("plus_di14"))
+        minus_di = _first_float(s.get("minus_di14"))
+        direction = ""
+        if plus_di is not None and minus_di is not None:
+            direction = " bullish" if plus_di > minus_di else " bearish"
+        technical_parts.append(f"ADX {adx:.0f}{direction}")
+    technical_context = ", ".join(technical_parts) if technical_parts else "technical signals limited"
+    ml_context = str(s.get("ml_vote_summary_text") or s.get("ml_vote_summary") or "ML evidence limited")
 
-    ml_reason = s.get("ml_vote_summary") or "ML 資料不足"
-    return f"【籌碼】{chip_reason}｜【技術】{tech_reason}｜【ML】{ml_reason}"
+    return (
+        f"Score V2 {final_score:.1f}/100 (base {total:.1f}, alpha {alpha:+.1f}): "
+        f"ML Edge {components['mlEdge']:.1f}/25, "
+        f"Chip Flow {components['chipFlow']:.1f}/25, "
+        f"Technical {components['technicalStructure']:.1f}/25. "
+        f"Chip Flow: {chip_context}; Technical: {technical_context}; ML Edge: {ml_context}"
+    )
 
 
 def build_watch_points(s: dict) -> list[str]:
@@ -808,6 +895,12 @@ def build_watch_points(s: dict) -> list[str]:
         points.append("RSI 偏熱，留意短線震盪")
     if float(s.get("macd_hist") or 0.0) < 0 and float(s.get("current_price") or 0.0) > float(s.get("ma20") or 0.0):
         points.append("價格站上月線但 MACD 偏弱，需確認量能延續")
+    adx = _float_or_none(s.get("adx14"))
+    vmd = _float_or_none(s.get("volume_momentum_divergence_13_27_10"))
+    if adx is not None and adx < 15:
+        points.append("ADX 顯示趨勢強度不足，避免只看突破追價")
+    if vmd is not None and vmd < 0:
+        points.append("量能動量偏離轉弱，需確認資金熱度是否降溫")
     if float(s.get("foreign_net_5d") or 0.0) < 0:
         points.append("外資近 5 日偏賣，籌碼需再確認")
     if float(s.get("trust_net_5d") or 0.0) < 0 < float(s.get("foreign_net_5d") or 0.0):
@@ -853,7 +946,7 @@ def filter_and_score_recommendations(
       - Reads persona_opinions[symbol] → {trust, retail}
       - compute_persona_score maps to [-20, +20] scalar
       - Multiplied by persona_weight (KV-driven dial for rollout safety)
-      - Added to chip+tech+ml to form total_score
+      - Stored as Score V2 alphaAdjustment before finalScore is persisted
       - Opinion-less symbols contribute 0 (NEUTRAL default)
     """
     payload_by_sym = {p["symbol"]: p for p in payloads}
@@ -1006,6 +1099,10 @@ def filter_and_score_recommendations(
             "broker_rows": broker_rows,
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
+            "adx14": technical.get("adx14"),
+            "cci20": technical.get("cci20"),
+            "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
+            "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
             "current_price": current_price,
             "ma20": technical.get("ma20"),
             "_signal": eff_ml.get("signal"),
@@ -1055,18 +1152,28 @@ def filter_and_score_recommendations(
             "eligible_for_ml": bool(stock_meta.get("eligible_for_ml", True)),
             "eligible_for_pending_buy": eligible_for_pending_buy,
             "has_buy_signal": 1 if (eligible_for_pending_buy and sig and "BUY" in sig) else 0,
-            "reason": build_reason(reason_data),
             "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
             "chip_evidence": chip_evidence,
+            "ma20": technical.get("ma20"),
             "rsi14": technical.get("rsi14"),
             "macd_hist": technical.get("macd_hist"),
+            "atr14": technical.get("atr14"),
+            "plus_di14": technical.get("plus_di14"),
+            "minus_di14": technical.get("minus_di14"),
+            "adx14": technical.get("adx14"),
+            "parabolic_sar": technical.get("parabolic_sar"),
+            "cci20": technical.get("cci20"),
+            "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
+            "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
         }
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
+        row["score"] = row["score_components"]["finalScore"]
+        row["reason"] = build_reason({**reason_data, **row})
         final.append(row)
 
     return final, sell_count
@@ -1131,7 +1238,6 @@ def hybrid_ranking_promotion(
     alpha = ranking_config.get("alpha", 0.40)
     beta = ranking_config.get("beta", 0.40)
     gamma = ranking_config.get("gamma", 0.20)
-    screener_denom = ranking_config.get("screenerDenominator", 60.0)
     top_k = ranking_config.get("topK", 3)
     policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
@@ -1143,7 +1249,12 @@ def hybrid_ranking_promotion(
     # Compute combined_score for each
     scored = []
     for r in recommendations:
-        screener_norm = min(1.0, ((r.get("chip_score") or 0) + (r.get("tech_score") or 0)) / screener_denom)
+        score_v2 = _score_v2_components_from_row(r)
+        screener_norm = min(
+            1.0,
+            (score_v2["chipFlow"] + score_v2["technicalStructure"])
+            / (SCORE_V2_WEIGHTS["chipFlow"] + SCORE_V2_WEIGHTS["technicalStructure"]),
+        )
         ml_conf = max(0.0, min(1.0, r.get("confidence") or 0))
         tier = _signal_tier(r.get("signal"))
         combined = alpha * screener_norm + beta * ml_conf + gamma * tier
@@ -1529,6 +1640,11 @@ def update_recommendations_in_d1(
         alpha_allocation, replaced_alpha_allocation = _sanitize_non_finite(r.get("alpha_allocation"))
         ml_vote_summary, replaced_ml_vote_summary = _sanitize_non_finite(r.get("ml_vote_summary"))
         score_components, replaced_score_components = _sanitize_non_finite(r.get("score_components"))
+        if isinstance(score_components, dict) and score_components.get("version") == SCORE_V2_VERSION:
+            score = _score_number(
+                score_components.get("finalScore", score_components.get("total")),
+                score,
+            )
         sanitized_count = (
             replaced_ml
             + replaced_score

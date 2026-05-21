@@ -65,7 +65,7 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
     },
   }))
   assert(decision.action === 'DEFER', 'stale broker quotes must fail closed')
-  assert(decision.reason === 'stale_quote:20000ms', 'stale quote reason should be explicit')
+  assert(decision.reason === 'stale_quote:20s', 'stale quote reason should be readable')
 }
 
 {

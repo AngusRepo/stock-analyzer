@@ -10,7 +10,7 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api, recommendationsApi } from '@/lib/api'
+import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { usePWA } from '@/hooks/usePWA'
 import { Button } from '@/components/ui/button'
@@ -266,97 +266,6 @@ function AttentionStocksCard() {
   )
 }
 
-function MarketPulsePanel() {
-  const { data: indices } = useQuery({
-    queryKey: ['market', 'indices'],
-    queryFn: marketApi.indices,
-    staleTime: 5 * 60_000,
-    refetchInterval: 5 * 60_000,
-  })
-  const { data: risk } = useQuery({
-    queryKey: ['market', 'risk'],
-    queryFn: marketApi.risk,
-    staleTime: 5 * 60_000,
-    refetchInterval: 5 * 60_000,
-  })
-
-  const indexItems = Array.isArray(indices)
-    ? indices
-    : [indices?.twii, indices?.twoii, indices?.nasdaq, indices?.sp500].filter(Boolean)
-  const twii = indexItems.find((idx: any) => String(idx.symbol ?? idx.name ?? '').toUpperCase().includes('TWII')) ?? indexItems[0]
-  const otc = indexItems.find((idx: any) => {
-    const key = String(idx.symbol ?? idx.name ?? '').toUpperCase()
-    return key.includes('OTC') || key.includes('TWOII') || key.includes('櫃')
-  }) ?? indexItems[1]
-  const indexCards = [twii, otc].filter(Boolean)
-
-  const vixLevel = risk?.vixLevel ?? risk?.vix_level ?? risk?.vix_level_label ?? 'normal'
-  const riskTiles = [
-    {
-      label: 'VIX 恐慌指數',
-      value: risk?.vix != null ? Number(risk.vix).toFixed(1) : '--',
-      detail: `${vixLevel === 'normal' ? '正常' : vixLevel}，一般正常值約 < 20`,
-      tone: ['high', 'extreme'].includes(String(vixLevel)) ? 'text-orange-300' : 'text-emerald-300',
-    },
-    {
-      label: '台股 20 日波動率',
-      value: risk?.twiiVol20 != null ? `${risk.twiiVol20}%` : '--',
-      detail: '年化波動率；越高代表進出場要更保守',
-      tone: Number(risk?.twiiVol20 ?? 0) > 24 ? 'text-orange-300' : 'text-slate-200',
-    },
-    {
-      label: '大盤乖離率（20MA）',
-      value: risk?.twiiBias != null ? `${risk.twiiBias > 0 ? '+' : ''}${Number(risk.twiiBias).toFixed(1)}%` : '--',
-      detail: `MA20：${risk?.twiiMa20?.toLocaleString('zh-TW') ?? '--'}`,
-      tone: Math.abs(Number(risk?.twiiBias ?? 0)) >= 6 ? 'text-orange-300' : 'text-amber-300',
-    },
-    {
-      label: '外資動向',
-      value: risk?.foreignConsecutiveSell < 0
-        ? `連賣 ${Math.abs(risk.foreignConsecutiveSell)} 日`
-        : risk?.foreignConsecutiveSell > 0
-          ? `連買 ${risk.foreignConsecutiveSell} 日`
-          : '中性',
-      detail: risk?.foreignNet5d != null ? `近 5 日：${risk.foreignNet5d > 0 ? '+' : ''}${Number(risk.foreignNet5d).toFixed(0)} 億元` : '近 5 日：--',
-      tone: risk?.foreignConsecutiveSell <= -3 ? 'text-rose-300' : 'text-emerald-300',
-    },
-  ]
-
-  return (
-    <div className="space-y-3">
-      {indexCards.length > 0 && (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {indexCards.map((idx: any, index) => {
-            const change = idx.change ?? idx.change_value ?? 0
-            const changePct = idx.changePct ?? idx.change_pct ?? 0
-            const current = idx.current ?? idx.close ?? idx.price ?? 0
-            const up = change >= 0
-            return (
-              <div key={idx.symbol ?? idx.name ?? index} className="rounded-xl border border-[#2b3a49] bg-[#111821]/70 p-3">
-                <p className="truncate text-[10px] text-[#8b9bab]">{idx.name ?? idx.symbol}</p>
-                <p className="font-mono text-xl font-bold text-[#e6edf3]">{Number(current).toLocaleString()}</p>
-                <p className={`font-mono text-xs ${up ? 'text-red-400' : 'text-emerald-400'}`}>
-                  {up ? '+' : ''}{Number(change).toFixed(2)} ({up ? '+' : ''}{Number(changePct).toFixed(2)}%)
-                </p>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-2">
-        {riskTiles.map((tile) => (
-          <div key={tile.label} className="rounded-xl border border-[#2b3a49] bg-[#0f151d]/70 p-3">
-            <p className="text-[10px] tracking-[0.14em] text-[#75879a]">{tile.label}</p>
-            <p className={`mt-1 font-mono text-lg font-semibold ${tile.tone}`}>{tile.value}</p>
-            <p className="mt-1 text-[11px] leading-4 text-[#8b9bab]">{tile.detail}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ── Watchlist Stock Cards（自選股牌卡）────────────────────────────────────────
 function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void }) {
   const { user } = useAuth()
@@ -495,64 +404,6 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
 }
 
 // ── EmptyState（主頁未選股票時的首頁）────────────────────────────────────────
-function SectorBreadthHeatmap() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['dashboard', 'sector-breadth-heatmap'],
-    queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme'),
-    staleTime: 30 * 60 * 1000,
-  })
-  const flows = [...(data?.flows ?? [])]
-    .sort((a: any, b: any) => Math.abs(b.total_net ?? 0) - Math.abs(a.total_net ?? 0))
-    .slice(0, 12)
-  const maxAbs = Math.max(...flows.map((flow: any) => Math.abs(Number(flow.total_net ?? 0))), 0.01)
-  const quadrantTone: Record<string, string> = {
-    Leading: 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100',
-    Improving: 'border-sky-400/30 bg-sky-500/15 text-sky-100',
-    Weakening: 'border-amber-400/30 bg-amber-500/15 text-amber-100',
-    Lagging: 'border-rose-400/30 bg-rose-500/15 text-rose-100',
-  }
-
-  return (
-    <WorkstationPanel title="主題強弱熱區" kicker="sector breadth, flow, RRG">
-      <div className="p-3">
-        {isLoading ? (
-          <div className="grid gap-2 md:grid-cols-4">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map((item) => <div key={item} className="h-20 animate-pulse rounded-xl bg-muted/30" />)}
-          </div>
-        ) : flows.length ? (
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            {flows.map((flow: any) => {
-              const net = Number(flow.total_net ?? 0)
-              const strength = Math.max(8, Math.min(100, (Math.abs(net) / maxAbs) * 100))
-              const tone = quadrantTone[String(flow.quadrant ?? '')] ?? (net >= 0 ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100' : 'border-rose-400/25 bg-rose-500/10 text-rose-100')
-              return (
-                <div key={flow.sector} className={`rounded-xl border p-3 ${tone}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold">{flow.sector}</p>
-                      <p className="mt-1 font-mono text-[11px] opacity-75">RS {Number(flow.rs_ratio ?? 0).toFixed(1)} / Mom {Number(flow.rs_momentum ?? 0).toFixed(1)}</p>
-                    </div>
-                    <Badge variant="outline" className="shrink-0 border-current/30 text-[10px]">{flow.quadrant ?? 'N/A'}</Badge>
-                  </div>
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/25">
-                    <div className={net >= 0 ? 'h-full bg-emerald-200' : 'h-full bg-rose-200'} style={{ width: `${strength}%` }} />
-                  </div>
-                  <div className="mt-2 flex justify-between font-mono text-[11px] opacity-85">
-                    <span>net {net.toFixed(1)}億</span>
-                    <span>{flow.count ?? flow.stock_count ?? 0} 檔</span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">尚無主題資金流資料。</p>
-        )}
-      </div>
-    </WorkstationPanel>
-  )
-}
-
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
     <div className="min-h-full">
@@ -561,15 +412,12 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         <MorningBriefingCard />
 
         <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
-          <div className="grid gap-3 p-3 xl:grid-cols-[minmax(360px,0.85fr)_minmax(0,1.15fr)]">
+          <div className="p-3">
             <MarketRiskPanel />
-            <MarketPulsePanel />
           </div>
         </WorkstationPanel>
 
         <AttentionStocksCard />
-
-        <SectorBreadthHeatmap />
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.28fr)_minmax(360px,0.72fr)]">
           <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">

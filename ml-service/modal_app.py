@@ -796,6 +796,27 @@ def breeze2_research_context(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=2,
+    memory=16384,
+    gpu="L4",
+    timeout=900,
+    scaledown_window=60,
+    max_containers=1,
+)
+def breeze2_reason_generation(payload: dict) -> dict:
+    """Generate Breeze2 shadow reasons; never writes trading state."""
+    _setup_env()
+    from app.breeze2_reason_generation import generate_breeze2_reason_generation
+
+    return generate_breeze2_reason_generation({
+        **payload,
+        "allowed_use": "reason_shadow_only",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+    })
+
+
+@app.function(
     cpu=1,                       # 1 CPU per prediction container.
     memory=2048,                 # 2GB is sufficient for CPU prediction runtime.
     timeout=300,                 # 5 min buffer for tail inference and cold start.

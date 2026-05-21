@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
+import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -79,32 +80,6 @@ type MlDiagnosticsSummary = {
     mergeCompression?: number | null
     weightHhi?: number | null
   }
-}
-
-type ScoreComponents = {
-  chip?: number | null
-  tech?: number | null
-  screenerMomentum?: number | null
-  ml?: number | null
-  persona?: number | null
-  rawScore?: number | null
-  alphaAdjustment?: number | null
-  finalScore?: number | null
-  formula?: string | null
-  alphaReason?: {
-    bucket?: string | null
-    regime?: string | null
-    riskFlags?: string[] | null
-    riskPenalty?: number | null
-    regimeWeight?: number | null
-    details?: Array<{
-      key?: string
-      label?: string
-      value?: number | null
-      explain?: string
-      flags?: string[]
-    }> | null
-  } | null
 }
 
 type EvidenceLink = {
@@ -337,12 +312,17 @@ function parseObject(raw: unknown): any | null {
   }
 }
 
+function scoreComponentValue(rec: any, key: string): number {
+  const row = buildScoreBreakdownViewModel(rec ?? {}).rows.find((item) => item.key === key)
+  return Number.isFinite(row?.value) ? Number(row?.value) : 0
+}
+
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
-    if (reported > 0 || evidence > 0 || Number(rec.ml_score ?? 0) <= 0) {
+    if (reported > 0 || evidence > 0 || scoreComponentValue(rec, 'mlEdge') <= 0) {
       return {
         ...persisted,
         forecastPct: normalizePersistedForecastPctForUi(persisted),
@@ -442,7 +422,7 @@ function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
 }
 
 function mlMetadataGapText(rec: any, summary: MlVoteSummary | null): string | null {
-  const mlScore = Number(rec.ml_score ?? 0)
+  const mlScore = scoreComponentValue(rec, 'mlEdge')
   if (!Number.isFinite(mlScore) || mlScore <= 0) return null
   const reported = Number(summary?.reported ?? 0)
   const votes = Number(summary?.bullish ?? 0) + Number(summary?.bearish ?? 0) + Number(summary?.flat ?? 0)
@@ -616,120 +596,80 @@ function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
 
 function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
   const safeValue = Number.isFinite(value) ? value : 0
-  const pct = Math.max(0, Math.min(100, Math.round((safeValue / max) * 100)))
+  const safeMax = Number.isFinite(max) ? max : 0
+  const pct = safeMax > 0 ? Math.max(0, Math.min(100, Math.round((safeValue / safeMax) * 100))) : 0
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-12 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-16 shrink-0 text-muted-foreground">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-12 text-right font-mono text-muted-foreground">
-        {fmtNumber(safeValue, 1)}/{max}
+      <span className="w-14 text-right font-mono text-muted-foreground">
+        {fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)}
       </span>
     </div>
   )
 }
 
-function ScoreBreakdown({ rec }: { rec: any }) {
-  const chip = Number(rec.chip_score ?? 0)
-  const tech = Number(rec.tech_score ?? 0)
-  const ml = Number(rec.ml_score ?? 0)
-  const base = Math.round((chip + tech + ml) * 10) / 10
-  const alphaAdj = Number(rec.alpha_context?.score_adjustment ?? 0)
-  const finalScore = Number(rec.score ?? base + alphaAdj)
-  const residual = Math.round((finalScore - base - alphaAdj) * 10) / 10
-
-  return (
-    <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-muted-foreground">分數公式</span>
-        <span className="font-mono text-foreground">
-          {fmtNumber(finalScore, 1)} = {fmtNumber(base, 1)}
-          {alphaAdj >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(alphaAdj), 1)}
-          {Math.abs(residual) >= 0.1 && `${residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(residual), 1)}`}
-        </span>
-      </div>
-      <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
-        <span>基礎分：籌碼 + 技術 + ML = {fmtNumber(base, 1)}</span>
-        <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
-        {Math.abs(residual) >= 0.1 && (
-          <span>其他調整：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
-        )}
-        <span>最終分數：{fmtNumber(finalScore, 1)}</span>
-      </div>
-      {Math.abs(residual) >= 0.1 && (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          其他調整是來源總分與目前可拆解欄位的差額，常見於舊 pending buy 未帶完整 metadata；不是額外 ML 預測報酬。
-        </p>
-      )}
-    </div>
-  )
-}
-
 function ScoreBreakdownV2({ rec }: { rec: any }) {
-  const components = parseObject(rec.score_components) as ScoreComponents | null
-  const chip = Number(components?.chip ?? rec.chip_score ?? 0)
-  const tech = Number(components?.tech ?? rec.tech_score ?? 0)
-  const screenerMomentum = Number(components?.screenerMomentum ?? rec.momentum_score ?? 0)
-  const ml = Number(components?.ml ?? rec.ml_score ?? 0)
-  const persona = Number(components?.persona ?? rec.persona_score ?? 0)
-  const rawScore = Number(components?.rawScore ?? Math.round((chip + tech + ml + persona) * 10) / 10)
-  const alphaAdj = Number(components?.alphaAdjustment ?? rec.alpha_context?.score_adjustment ?? 0)
-  const finalScore = Number(components?.finalScore ?? rec.score ?? rawScore + alphaAdj)
-  const residual = Math.round((finalScore - rawScore - alphaAdj) * 10) / 10
-  const hasBackendComponents = Boolean(components)
-  const riskFlags = components?.alphaReason?.riskFlags?.filter(Boolean) ?? []
-  const riskText = riskFlags.length > 0 ? riskFlags.join(', ') : '無額外風控旗標'
-  const alphaDetails = components?.alphaReason?.details?.filter((item) => item && item.value != null) ?? []
+  const viewModel = buildScoreBreakdownViewModel(rec)
+  const components = parseObject(rec.score_components)
+  const riskText = viewModel.riskFlags.length > 0 ? viewModel.riskFlags.join(', ') : '無'
+  const alphaDetails = components?.alphaReason?.details?.filter((item: any) => item && item.value != null) ?? []
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-muted-foreground">分數公式</span>
+        <span className="font-medium text-muted-foreground">Score V2 分解</span>
         <span className="font-mono text-foreground">
-          {fmtNumber(finalScore, 1)} = {fmtNumber(rawScore, 1)}
-          {alphaAdj >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(alphaAdj), 1)}
-          {Math.abs(residual) >= 0.1 && `${residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(residual), 1)}`}
+          {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)}
+          {viewModel.alphaAdjustment >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
+          {Math.abs(viewModel.residual) >= 0.1 && `${viewModel.residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(viewModel.residual), 1)}`}
         </span>
       </div>
       <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
-        <span>籌碼：{fmtNumber(chip, 1)}</span>
-        <span>技術：{fmtNumber(tech, 1)}</span>
-        {Math.abs(screenerMomentum) >= 0.1 && <span>Screener 動能：{fmtNumber(screenerMomentum, 1)}</span>}
-        <span>ML：{fmtNumber(ml, 1)}</span>
-        {Math.abs(persona) >= 0.1 && <span>Persona：{persona >= 0 ? '+' : ''}{fmtNumber(persona, 1)}</span>}
-        <span>基礎分：籌碼 + 技術 + ML{Math.abs(persona) >= 0.1 ? ' + Persona' : ''} = {fmtNumber(rawScore, 1)}</span>
-        <span>Alpha 調整：{alphaAdj >= 0 ? '+' : ''}{fmtNumber(alphaAdj, 1)}</span>
-        {Math.abs(residual) >= 0.1 && (
-          <span>未拆解差額：{residual >= 0 ? '+' : ''}{fmtNumber(residual, 1)}</span>
+        {viewModel.rows.map((item) => (
+          <span key={item.key}>{item.label}: {fmtNumber(item.value, 1)} / {fmtNumber(item.max, 0)}</span>
+        ))}
+        <span>基礎分數: {fmtNumber(viewModel.baseScore, 1)}</span>
+        <span>Alpha 調整: {viewModel.alphaAdjustment >= 0 ? '+' : ''}{fmtNumber(viewModel.alphaAdjustment, 1)}</span>
+        {Math.abs(viewModel.residual) >= 0.1 && (
+          <span>資料校準差: {viewModel.residual >= 0 ? '+' : ''}{fmtNumber(viewModel.residual, 1)}</span>
         )}
-        <span>最後分數：{fmtNumber(finalScore, 1)}</span>
+        <span>最終分數: {fmtNumber(viewModel.finalScore, 1)}</span>
       </div>
-      {hasBackendComponents && alphaDetails.length > 0 && (
+      {viewModel.technicalRows.length > 0 && (
+        <div className="mt-2 space-y-1 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
+          <p className="font-medium text-foreground/80">技術結構細項</p>
+          {viewModel.technicalRows.map((item) => (
+            <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+          ))}
+        </div>
+      )}
+      {viewModel.hasBackendPayload && alphaDetails.length > 0 && (
         <div className="mt-2 space-y-1 rounded-md border border-border/40 bg-muted/20 p-2 text-[11px] leading-relaxed text-muted-foreground/90">
-          <p className="font-medium text-foreground/80">Alpha 調整拆解</p>
+          <p className="font-medium text-foreground/80">Alpha 調整明細</p>
           {alphaDetails.map((item, index) => (
             <p key={`${item.key ?? item.label}-${index}`}>
-              {item.label ?? item.key}：{Number(item.value) >= 0 ? '+' : ''}{fmtNumber(item.value, 1)}
-              {item.explain ? `，${item.explain}` : ''}
+              {item.label ?? item.key}: {Number(item.value) >= 0 ? '+' : ''}{fmtNumber(item.value, 1)}
+              {item.explain ? `, ${item.explain}` : ''}
             </p>
           ))}
         </div>
       )}
-      {hasBackendComponents && alphaDetails.length === 0 && (
+      {viewModel.hasBackendPayload && alphaDetails.length === 0 && (
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          Alpha 調整沒有觸發可拆解旗標；風控旗標：{riskText}。
+          Alpha 調整目前沒有細項，風險旗標: {riskText}
         </p>
       )}
-      {Math.abs(residual) >= 0.1 && (
+      {Math.abs(viewModel.residual) >= 0.1 && (
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          這不是額外預測報酬，而是後端尚未提供完整 score_components 時，來源總分與可拆解欄位之間的差值；部署 schema 後應該逐步消失。
+          分數存在校準差，通常代表後端總分與目前可拆解欄位仍有不同步；Score V2 會優先採用後端 score_components。
         </p>
       )}
     </div>
   )
 }
-
 function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   if (!context) return null
   const bucket = context.bucket ?? 'unknown'
@@ -904,6 +844,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
+  const scoreViewModel = buildScoreBreakdownViewModel(rec)
 
   return (
     <div className={cn(
@@ -951,7 +892,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             )}
             {(mlSummary || mlMetadataGap) && (
               <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
-                ML {mlSummary ?? `分數 ${fmtNumber(rec.ml_score, 1)}，投票明細待同步`}
+                ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
               </Badge>
             )}
             {alphaContext?.bucket && (
@@ -964,7 +905,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
         </div>
 
         <div className="shrink-0 text-right">
-          <div className="text-lg font-bold text-primary">{Math.round(Number(rec.score ?? 0))}</div>
+          <div className="text-lg font-bold text-primary">{Math.round(scoreViewModel.finalScore)}</div>
           <div className="text-[10px] text-muted-foreground">最終分</div>
         </div>
 
@@ -998,9 +939,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
         <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
           <div className="space-y-1.5">
             <p className="mb-2 text-xs font-medium text-muted-foreground">基礎分數</p>
-            <ScoreBar label="籌碼" value={Number(rec.chip_score ?? 0)} max={40} color="bg-blue-500" />
-            <ScoreBar label="技術" value={Number(rec.tech_score ?? 0)} max={30} color="bg-purple-500" />
-            <ScoreBar label="ML" value={Number(rec.ml_score ?? 0)} max={30} color="bg-emerald-500" />
+            {scoreViewModel.rows.map((item) => (
+              <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+            ))}
           </div>
 
           <ScoreBreakdownV2 rec={rec} />

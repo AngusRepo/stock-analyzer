@@ -20,6 +20,7 @@ function assert(condition: unknown, message: string): void {
     chip_score: 99,
     tech_score: -2,
     momentum_score: Number.POSITIVE_INFINITY,
+    score_components: '{"version":"score_v2","total":40}',
   })
 
   assert(normalized.row.symbol === '2330', 'symbol should be trimmed')
@@ -30,6 +31,7 @@ function assert(condition: unknown, message: string): void {
   assert(normalized.row.techScore === 0, 'tech score should be clamped to 0-30')
   assert(normalized.row.momentumScore === 0, 'non-finite momentum score should fallback to 0')
   assert(normalized.row.seedScore === 40, 'seed score should be finite and component-based')
+  assert(normalized.row.scoreComponents?.includes('"score_v2"'), 'score components should be preserved for V2 audit')
   assert(normalized.issues.includes('name_missing'), 'missing name should be auditable')
   assert(normalized.issues.includes('sector_missing'), 'missing sector should be auditable')
   assert(normalized.issues.includes('momentum_score_non_finite'), 'non-finite momentum should be auditable')
@@ -67,6 +69,7 @@ function assert(condition: unknown, message: string): void {
   assert(sql.includes('daily_recommendations.signal IS NULL'), 'upsert should preserve ML owner fields')
   assert(sql.includes('daily_recommendations.confidence IS NULL'), 'upsert should preserve confidence owner field')
   assert(sql.includes('COALESCE(daily_recommendations.ml_score, 0) = 0'), 'upsert should preserve ML score owner field')
+  assert(sql.includes('score_components'), 'upsert should persist Score V2 components')
 }
 
 {

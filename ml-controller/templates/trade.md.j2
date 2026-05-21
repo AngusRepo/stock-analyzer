@@ -8,10 +8,13 @@ price: {{ order.price }}
 shares: {{ order.shares }}
 signal: {{ order.signal | default('') }}
 confidence: {{ ((order.confidence or 0) | round(2)) }}
-score: {{ ((decision.total_score or 0) | round(0) | int) }}
-chip_score: {{ ((decision.chip_score or 0) | round(0) | int) }}
-tech_score: {{ ((decision.tech_score or 0) | round(0) | int) }}
-ml_score: {{ ((decision.ml_score or 0) | round(0) | int) }}
+score: {{ score_v2_final_score(decision) | round(0) | int }}
+score_v2_source: {{ score_v2_source(decision) }}
+ml_edge_score: {{ score_v2_component(decision, 'mlEdge') | round(1) }}
+chip_flow_score: {{ score_v2_component(decision, 'chipFlow') | round(1) }}
+technical_structure_score: {{ score_v2_component(decision, 'technicalStructure') | round(1) }}
+fundamental_quality_score: {{ score_v2_component(decision, 'fundamentalQuality') | round(1) }}
+news_theme_score: {{ score_v2_component(decision, 'newsTheme') | round(1) }}
 sector: {{ decision.sector | default('') }}
 {% if order.side == 'sell' %}
 hold_days: {{ hold_days | default(0) }}
@@ -21,22 +24,23 @@ pnl_pct: {{ ((realized_pnl_pct or 0) | round(2)) }}
 tags: [trade, {{ order.side }}, auto-generated]
 ---
 
-# {{ order.side | upper }} {{ order.symbol }} {{ order.name | default('') }} — {{ date }}
+# {{ order.side | upper }} {{ order.symbol }} {{ order.name | default('') }} - {{ date }}
 
 ## Trade Summary
 - **Side**: {{ order.side | upper }} @ ${{ ((order.price or 0) | round(2)) }} x {{ order.shares }} shares
 - **Signal**: {{ order.signal | default('N/A') }} (conf {{ (((order.confidence or 0) * 100) | round(0) | int) }}%)
-- **Score**: {{ ((decision.total_score or 0) | round(0) | int) }}/100 (Chip {{ ((decision.chip_score or 0) | int) }}/40 + Tech {{ ((decision.tech_score or 0) | int) }}/30 + ML {{ ((decision.ml_score or 0) | int) }}/30)
+- **Score V2**: {{ score_v2_final_score(decision) | round(0) | int }}/100 (base {{ score_v2_total(decision) | round(1) }}, alpha {{ score_v2_alpha_adjustment(decision) | round(1) }}, source {{ score_v2_source(decision) }})
+- **Breakdown**: ML Edge {{ score_v2_component(decision, 'mlEdge') | round(1) }}/25 + Chip Flow {{ score_v2_component(decision, 'chipFlow') | round(1) }}/25 + Technical {{ score_v2_component(decision, 'technicalStructure') | round(1) }}/25 + Fundamental {{ score_v2_component(decision, 'fundamentalQuality') | round(1) }}/20 + News/Theme {{ score_v2_component(decision, 'newsTheme') | round(1) }}/5
 - **Source**: {{ order.source | default('auto_ml') }}
 
-{% if decision.chip_pct is defined %}
 ## Factor Attribution
 | Factor | Contribution |
-|--------|-------------|
-| Chip | {{ (((decision.chip_pct or 0) * 100) | round(1)) }}% |
-| Tech | {{ (((decision.tech_pct or 0) * 100) | round(1)) }}% |
-| ML | {{ (((decision.ml_pct or 0) * 100) | round(1)) }}% |
-{% endif %}
+|--------|-------------:|
+| ML Edge | {{ score_v2_component_pct(decision, 'mlEdge') | round(1) }}% |
+| Chip Flow | {{ score_v2_component_pct(decision, 'chipFlow') | round(1) }}% |
+| Technical Structure | {{ score_v2_component_pct(decision, 'technicalStructure') | round(1) }}% |
+| Fundamental Quality | {{ score_v2_component_pct(decision, 'fundamentalQuality') | round(1) }}% |
+| News/Theme | {{ score_v2_component_pct(decision, 'newsTheme') | round(1) }}% |
 
 {% if decision.debate_verdict is defined %}
 ## Debate Result

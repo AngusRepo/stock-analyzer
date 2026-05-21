@@ -41,10 +41,10 @@ No trades this week.
 
 {% if factor_attribution %}
 ### Factor Attribution
-| Factor | Win Contribution | Loss Contribution |
-|--------|-----------------|-------------------|
+| Factor | Avg Contribution |
+|--------|------------------|
 {% for f in factor_attribution %}
-| {{ f.name }} | {{ f.win_pct | default(0) | round(1) }}% | {{ f.loss_pct | default(0) | round(1) }}% |
+| {{ f.name }} | {{ f.avg_pct | default(0) | round(1) }}% |
 {% endfor %}
 {% endif %}
 

@@ -47,6 +47,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
     "breeze2_research_context": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
+    "breeze2_reason_generation": {"cpu": 2.0, "memory_mb": 16384, "gpu": "L4"},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "chronos_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "feature_selection_per_window": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
@@ -665,6 +666,32 @@ async def breeze2_research_context(payload: dict) -> dict:
             resp = await client.post(url, json=payload, headers=_ml_headers())
             return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}", "text": resp.text[:500]}
     raise RuntimeError("breeze2_research_context requires Modal or ML_SERVICE_URL")
+
+
+async def _modal_breeze2_reason_generation(payload: dict) -> dict:
+    return await _modal_remote_call(
+        "breeze2_reason_generation",
+        payload,
+        source="modal_breeze2_reason_generation",
+    )
+
+
+async def breeze2_reason_generation(payload: dict) -> dict:
+    """Run Breeze2 text generation as a non-mutating reason shadow provider."""
+    payload = {
+        **payload,
+        "allowed_use": "reason_shadow_only",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+    }
+    if _USE_MODAL:
+        return await _modal_breeze2_reason_generation(payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/breeze2/reason-generation"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}", "text": resp.text[:500]}
+    raise RuntimeError("breeze2_reason_generation requires Modal or ML_SERVICE_URL")
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict helpers

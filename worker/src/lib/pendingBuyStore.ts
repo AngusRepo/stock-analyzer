@@ -20,6 +20,14 @@ export type PendingBuyDebateStatus =
   | 'failed'
   | 'skipped'
 
+export interface PendingBuyDebateTurn {
+  agent: string
+  round?: number | null
+  stance?: string | null
+  summary: string
+  conviction?: number | null
+}
+
 export interface PendingBuy {
   symbol: string
   name: string
@@ -43,6 +51,7 @@ export interface PendingBuy {
   execution_status?: PendingBuyExecutionStatus
   original_entry?: number | null
   retry_count?: number | null
+  debate_agent_turns?: PendingBuyDebateTurn[]
 }
 
 interface PendingBuyRunRow {
@@ -176,6 +185,74 @@ function mapItemRow(row: PendingBuyItemRow): PendingBuy {
     original_entry: row.original_entry ?? null,
     retry_count: row.retry_count ?? null,
   }
+}
+
+function parseDebateEvidence(raw: string | null): PendingBuyDebateTurn {
+  if (!raw) return { agent: 'Unknown', summary: '' }
+  try {
+    const parsed = JSON.parse(raw)
+    return {
+      agent: String(parsed.agent ?? 'Unknown'),
+      round: parsed.round == null ? null : Number(parsed.round),
+      stance: parsed.stance == null ? null : String(parsed.stance),
+      summary: String(parsed.summary ?? ''),
+      conviction: parsed.conviction == null ? null : Number(parsed.conviction),
+    }
+  } catch {
+    return { agent: 'Unknown', summary: raw }
+  }
+}
+
+async function loadDebateTurnsBySymbol(
+  db: D1Database,
+  tradeDate: string,
+  symbols: string[],
+): Promise<Map<string, PendingBuyDebateTurn[]>> {
+  const out = new Map<string, PendingBuyDebateTurn[]>()
+  const cleanSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  if (!cleanSymbols.length) return out
+  try {
+    const placeholders = cleanSymbols.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT symbol, agent, round, stance, summary, evidence_json
+         FROM pending_buy_debate_turns
+        WHERE trade_date = ?
+          AND symbol IN (${placeholders})
+        ORDER BY symbol ASC, round ASC, id ASC`
+    ).bind(tradeDate, ...cleanSymbols).all<{
+      symbol: string
+      agent: string | null
+      round: number | null
+      stance: string | null
+      summary: string | null
+      evidence_json: string | null
+    }>()
+    for (const row of results ?? []) {
+      const turn = parseDebateEvidence(row.evidence_json)
+      turn.agent = row.agent ?? turn.agent
+      turn.round = row.round ?? turn.round ?? null
+      turn.stance = row.stance ?? turn.stance ?? null
+      turn.summary = row.summary ?? turn.summary
+      const list = out.get(row.symbol) ?? []
+      list.push(turn)
+      out.set(row.symbol, list)
+    }
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error
+  }
+  return out
+}
+
+async function attachDebateTurns(
+  db: D1Database,
+  tradeDate: string,
+  items: PendingBuy[],
+): Promise<PendingBuy[]> {
+  const bySymbol = await loadDebateTurnsBySymbol(db, tradeDate, items.map((item) => item.symbol))
+  return items.map((item) => ({
+    ...item,
+    debate_agent_turns: bySymbol.get(item.symbol) ?? [],
+  }))
 }
 
 function rowsToCounts(rows: PendingBuyCountRow[] | undefined): Record<string, number> {
@@ -326,13 +403,15 @@ async function readD1Snapshot(
     ).bind(run.id).all<PendingBuyCountRow>(),
   ])
 
+  const pendingBuys = await attachDebateTurns(env.DB, resolvedDate, (results ?? []).map(mapItemRow))
+
   return {
     date: resolvedDate,
     requested_date: requestedDate,
     is_stale: resolvedDate !== requestedDate,
     resolved_from: resolvedDate === requestedDate ? 'today' : 'fallback_recent',
     source: 'd1',
-    pendingBuys: (results ?? []).map(mapItemRow),
+    pendingBuys,
     meta: {
       run_id: run.id,
       status: run.status,
@@ -400,6 +479,7 @@ export async function loadPendingBuyRunHistory(
             GROUP BY COALESCE(debate_status, 'pending')`
         ).bind(run.id).all<PendingBuyCountRow>(),
       ])
+      const items = await attachDebateTurns(env.DB, run.trade_date, (itemRows ?? []).map(mapItemRow))
       out.push({
         run_id: run.id,
         trade_date: run.trade_date,
@@ -412,7 +492,7 @@ export async function loadPendingBuyRunHistory(
         updated_at: run.updated_at,
         execution_counts: rowsToCounts(executionCountRows.results),
         debate_counts: rowsToCounts(debateCountRows.results),
-        items: (itemRows ?? []).map(mapItemRow),
+        items,
       })
     }
     return { requested_date: requestedDate, source: out.length ? 'd1' : 'none', runs: out }
@@ -508,6 +588,39 @@ export async function replacePendingBuyState(
   }
 
   await syncKvSnapshot(env, params.tradeDate, params.kvPendingBuys ?? params.pendingBuys, meta)
+}
+
+export async function persistPendingBuyDebateTurns(
+  env: Bindings,
+  tradeDate: string,
+  symbol: string,
+  turns: PendingBuyDebateTurn[],
+): Promise<void> {
+  const cleanSymbol = String(symbol || '').trim()
+  if (!cleanSymbol || !turns.length) return
+  try {
+    await env.DB.prepare(
+      `DELETE FROM pending_buy_debate_turns
+        WHERE trade_date = ? AND symbol = ?`
+    ).bind(tradeDate, cleanSymbol).run()
+    for (const turn of turns) {
+      await env.DB.prepare(
+        `INSERT INTO pending_buy_debate_turns
+          (trade_date, symbol, agent, round, stance, summary, evidence_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).bind(
+        tradeDate,
+        cleanSymbol,
+        turn.agent,
+        turn.round ?? null,
+        turn.stance ?? null,
+        turn.summary,
+        JSON.stringify(turn),
+      ).run()
+    }
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error
+  }
 }
 
 export async function appendPendingBuy(

@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
   rsi14        REAL,
   macd         REAL, macd_signal REAL, macd_hist REAL,
   atr14        REAL,
+  plus_di14    REAL, minus_di14 REAL, adx14 REAL,
+  parabolic_sar REAL,
+  cci20        REAL,
+  volume_weighted_rsi14 REAL,
+  volume_momentum_divergence_13_27_10 REAL,
   bb_upper     REAL, bb_mid REAL, bb_lower REAL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(stock_id, date)

@@ -53,6 +53,115 @@ def _json_loads(value: Any) -> dict[str, Any]:
         return {}
 
 
+def _latest_validation_bundle() -> dict[str, Any]:
+    """Read the latest global validation rows and expose them to artifacts.
+
+    Root cause for UI N/A: PBO/MC rows exist in D1, but model artifacts only
+    carried callback CPCV evidence. This read-time bundle keeps candidate rows
+    immutable while making promotion blockers and UI evidence fail-visible.
+    """
+    try:
+        pbo_rows = d1_client.query(
+            """
+            SELECT *
+            FROM pbo_results
+            ORDER BY run_date DESC, created_at DESC
+            LIMIT 1
+            """,
+            [],
+        )
+    except Exception:  # noqa: BLE001 - validation visibility must degrade, not break model-pool reads.
+        pbo_rows = []
+    try:
+        mc_rows = d1_client.query(
+            """
+            SELECT *
+            FROM monte_carlo_results
+            ORDER BY run_date DESC, created_at DESC
+            LIMIT 1
+            """,
+            [],
+        )
+    except Exception:  # noqa: BLE001
+        mc_rows = []
+    try:
+        backtest_rows = d1_client.query(
+            """
+            SELECT *
+            FROM backtest_results
+            ORDER BY run_date DESC, created_at DESC
+            LIMIT 1
+            """,
+            [],
+        )
+    except Exception:  # noqa: BLE001
+        backtest_rows = []
+
+    pbo = dict(pbo_rows[0]) if pbo_rows else None
+    if pbo:
+        raw_details = _json_loads(pbo.get("raw_details"))
+        if raw_details:
+            pbo["raw_details"] = raw_details
+            pbo["method"] = pbo.get("method") or raw_details.get("method")
+
+    monte_carlo = dict(mc_rows[0]) if mc_rows else None
+    if monte_carlo:
+        raw_details = _json_loads(monte_carlo.get("raw_details"))
+        if raw_details:
+            monte_carlo["raw_details"] = raw_details
+
+    backtest = dict(backtest_rows[0]) if backtest_rows else None
+    dsr = None
+    if backtest:
+        try:
+            from services.validation_governance import deflated_sharpe_evidence
+
+            dsr = deflated_sharpe_evidence(backtest)
+        except Exception as exc:  # noqa: BLE001
+            dsr = {
+                "status": "FAIL",
+                "passed": False,
+                "method": "deflated_sharpe_unavailable",
+                "reason": str(exc),
+            }
+
+    return {
+        "scope": "latest_global_weekly_validation",
+        "root_cause": "artifact_registry_missing_validation_pointer",
+        "pbo": pbo,
+        "monte_carlo": monte_carlo,
+        "deflated_sharpe": dsr,
+        "backtest": backtest,
+    }
+
+
+def _attach_validation_bundle(row: dict[str, Any], bundle: dict[str, Any]) -> None:
+    offline = _json_loads(row.get("offline_evidence_json"))
+    packet = offline.get("validation_packet") if isinstance(offline.get("validation_packet"), dict) else {}
+    changed = False
+    for key in ("pbo", "monte_carlo", "deflated_sharpe"):
+        value = bundle.get(key)
+        if value and key not in offline:
+            offline[key] = value
+            changed = True
+        if value and key not in packet:
+            packet[key] = value
+            changed = True
+    if changed:
+        packet["scope"] = bundle.get("scope")
+        packet["root_cause"] = bundle.get("root_cause")
+        if bundle.get("backtest"):
+            packet["backtest"] = {
+                "run_date": bundle["backtest"].get("run_date"),
+                "strategy": bundle["backtest"].get("strategy"),
+                "sharpe": bundle["backtest"].get("sharpe"),
+                "max_drawdown": bundle["backtest"].get("max_drawdown"),
+                "total_trades": bundle["backtest"].get("total_trades"),
+            }
+        offline["validation_packet"] = packet
+        row["offline_evidence_json"] = offline
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -368,6 +477,7 @@ def list_artifact_registry(
         where.append("candidate_type = ?")
         params.append(candidate_type)
     sql_where = f"WHERE {' AND '.join(where)}" if where else ""
+    validation_bundle = _latest_validation_bundle()
     rows = d1_client.query(
         f"""
         SELECT *
@@ -387,6 +497,8 @@ def list_artifact_registry(
                 row[key] = json.loads(raw)
             except json.JSONDecodeError:
                 row[key] = raw
+    for row in rows:
+        _attach_validation_bundle(row, validation_bundle)
     return rows
 
 
@@ -751,6 +863,8 @@ def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bo
         for key in (
             "decision",
             "status",
+            "verdict",
+            "go_live_verdict",
             "result",
             "pass",
             "passed",
@@ -854,11 +968,19 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         )
 
     pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
-    if not _truthy_gate_value(pbo, max_fail_value=0.2):
+    pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
+    pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
+    if not _truthy_gate_value(pbo, max_fail_value=0.2) or (pbo_value is not None and pbo_value > 0.2):
         add(
             "pbo_threshold_missing",
             "PBO threshold is missing or too high",
             "Provide a PBO value at or below 0.20 before final promotion.",
+        )
+    if isinstance(pbo, dict) and pbo_method and pbo_method != "cscv_rank_logit":
+        add(
+            "pbo_method_not_promotion_grade",
+            "PBO method is proxy-grade",
+            "Run promotion-grade CSCV rank-logit PBO; proxy PBO is visible but cannot approve production.",
         )
 
     dsr = _deep_get(offline, {"deflated_sharpe", "dsr"})

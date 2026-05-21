@@ -58,3 +58,18 @@ CREATE INDEX IF NOT EXISTS idx_pending_buy_items_symbol
 
 CREATE INDEX IF NOT EXISTS idx_pending_buy_items_execution
   ON pending_buy_items(execution_status, debate_status, symbol);
+
+CREATE TABLE IF NOT EXISTS pending_buy_debate_turns (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date     TEXT NOT NULL,
+  symbol         TEXT NOT NULL,
+  agent          TEXT NOT NULL,
+  round          INTEGER,
+  stance         TEXT,
+  summary        TEXT NOT NULL,
+  evidence_json  TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_buy_debate_turns_date_symbol
+  ON pending_buy_debate_turns(trade_date DESC, symbol, round);

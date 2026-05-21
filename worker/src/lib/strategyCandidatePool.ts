@@ -1,5 +1,6 @@
 import {
   assessCandidateAgainstStrategySpecs,
+  deriveStrategyThresholdScores,
   validateStrategySpec,
   type StrategyCandidateInput,
   type StrategySpec,
@@ -206,11 +207,12 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
   if (thresholds.minPrice != null && (price == null || price < thresholds.minPrice)) return null
   if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
 
+  const scores = deriveStrategyThresholdScores(candidate)
   const checks: Array<[string, unknown, number | undefined]> = [
-    ['score', candidate.score, thresholds.minSeedScore],
-    ['chip', candidate.chip_score, thresholds.minChipScore],
-    ['technical', candidate.tech_score, thresholds.minTechScore],
-    ['momentum', candidate.momentum_score, thresholds.minMomentumScore],
+    ['score', scores.seedScore, thresholds.minSeedScore],
+    ['chip', scores.chipFlow, thresholds.minChipScore],
+    ['technical', scores.technicalStructure, thresholds.minTechScore],
+    ['momentum', scores.momentumProxy, thresholds.minMomentumScore],
   ]
   const misses: string[] = []
   for (const [label, rawValue, minValue] of checks) {
@@ -234,10 +236,11 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
 }
 
 function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number): number {
-  const score = finiteNumber(candidate.score) ?? 0
-  const chip = finiteNumber(candidate.chip_score) ?? 0
-  const tech = finiteNumber(candidate.tech_score) ?? 0
-  const momentum = finiteNumber(candidate.momentum_score) ?? 0
+  const scores = deriveStrategyThresholdScores(candidate)
+  const score = scores.seedScore
+  const chip = scores.chipFlow
+  const tech = scores.technicalStructure
+  const momentum = scores.momentumProxy
   const liquidity = candidateLiquidity(candidate)
   const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
   const raw = score * 0.52 + chip * 0.2 + tech * 0.16 + momentum * 0.1 + liquidityBonus
@@ -359,6 +362,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         .map((candidate) => {
           const assessment = assessCandidateAgainstStrategySpecs(candidate, [spec])
           if (!assessment.matches.length) return null
+          const thresholdScores = deriveStrategyThresholdScores(candidate)
           const scored = strategyScore(candidate, spec, rWeight)
           return {
             strategy_id: spec.id,
@@ -370,7 +374,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
             evidence_requirements: evidenceRequirements,
             regime_weight: rWeight,
             candidate: cloneCandidate(candidate),
-            raw_score: finiteNumber(candidate.score) ?? 0,
+            raw_score: thresholdScores.seedScore,
             strategy_score: scored,
             rank: 0,
             reason: assessment.matches[0]?.reason ?? spec.thesis,
@@ -387,6 +391,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .map((candidate) => {
             const misses = thresholdNearMisses(candidate, spec)
             if (!misses) return null
+            const thresholdScores = deriveStrategyThresholdScores(candidate)
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
             return {
               strategy_id: spec.id,
@@ -398,7 +403,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               evidence_requirements: evidenceRequirements,
               regime_weight: rWeight,
               candidate: cloneCandidate(candidate),
-              raw_score: finiteNumber(candidate.score) ?? 0,
+              raw_score: thresholdScores.seedScore,
               strategy_score: scored,
               rank: 0,
               reason: `adaptive_near_match:${misses.join('|')}`,

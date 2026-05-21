@@ -38,6 +38,7 @@ import {
   upsertMarketRegimeFactorPacket,
 } from '../lib/marketRegimeFactorPacket'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
+import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -414,7 +415,7 @@ ml.post('/predict/:stockId', async (c) => {
 
   const [prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
     c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+    c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
     c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
     c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
@@ -438,7 +439,7 @@ ml.post('/predict/:stockId', async (c) => {
       // 重新查詢
       const [p2, i2] = await Promise.all([
         c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
       ])
       priceRows = p2.results ?? []
       indRows   = i2.results ?? []
@@ -574,7 +575,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v5-homepage-factor-packet'
+  const cacheKey = 'market:risk:latest:v6-null-safe-factor-packet'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -590,23 +591,31 @@ market.get('/risk', async (c) => {
     id: string,
     label: string,
     value: string,
-    status: 'ok' | 'warn' | 'error' | 'info',
+    status: 'ok' | 'warn' | 'error' | 'info' | 'missing',
     source: string,
     detail = '',
   ) => ({ id, label, value, status, source, detail })
-  const twiiBias = Number(row.twii_bias ?? 0)
-  const foreignNet5d = Number(row.foreign_net_5d ?? 0)
-  const marginRatio = Number(row.margin_ratio ?? 0)
-  const limitDownPct = Number(row.limit_down_pct ?? 0)
+  const numberOrNull = (value: unknown): number | null => {
+    if (value == null) return null
+    if (typeof value === 'string' && value.trim() === '') return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const formatPct = (value: number | null, digits = 2) => value == null ? 'n/a' : `${value.toFixed(digits)}%`
+  const formatBillion = (value: number | null) => value == null ? 'n/a' : `${value.toFixed(1)}億`
+  const twiiBias = numberOrNull(row.twii_bias)
+  const foreignNet5d = numberOrNull(row.foreign_net_5d)
+  const marginRatio = numberOrNull(row.margin_ratio)
+  const limitDownPct = numberOrNull(row.limit_down_pct)
   const regimeSurface = regimeState?.regime_surface ?? {}
   const monitors = regimeState?.monitors ?? {}
   const transitionGuard = regimeState?.transition_guard ?? {}
   const legacyContextFactors = [
-    factor('price_trend', '價格趨勢', `${twiiBias.toFixed(2)}%`, twiiBias < -3 ? 'error' : twiiBias < -1 ? 'warn' : 'ok', 'market_risk.twii_bias', `TWII close ${row.twii_close ?? 'n/a'} vs MA20 ${row.twii_ma20 ?? 'n/a'}`),
+    factor('price_trend', '價格趨勢', formatPct(twiiBias), twiiBias == null ? 'missing' : twiiBias < -3 ? 'error' : twiiBias < -1 ? 'warn' : 'ok', 'market_risk.twii_bias', `TWII close ${row.twii_close ?? 'n/a'} vs MA20 ${row.twii_ma20 ?? 'n/a'}`),
     factor('volatility', '波動', row.vix != null ? `VIX ${Number(row.vix).toFixed(1)}` : `${Number(row.twii_vol20 ?? 0).toFixed(2)}%`, String(row.vix_level ?? '').toLowerCase().includes('high') ? 'warn' : 'info', 'market_risk.vix_twii_vol20'),
-    factor('breadth', '市場廣度', `${limitDownPct.toFixed(2)}%`, limitDownPct > 3 ? 'error' : limitDownPct > 1 ? 'warn' : 'ok', 'market_risk.limit_down_pct', `limit_down_count=${row.limit_down_count ?? 0}`),
-    factor('chips', '籌碼', `${foreignNet5d.toFixed(1)}億`, foreignNet5d < 0 ? 'warn' : 'ok', 'market_risk.foreign_net_5d', `foreign_consecutive_sell=${row.foreign_consecutive_sell ?? 0}`),
-    factor('leverage', '槓桿', marginRatio ? `${marginRatio.toFixed(2)}%` : 'n/a', marginRatio > 40 ? 'warn' : 'info', 'market_risk.margin_ratio'),
+    factor('breadth', '市場廣度', formatPct(limitDownPct), limitDownPct == null ? 'missing' : limitDownPct > 3 ? 'error' : limitDownPct > 1 ? 'warn' : 'ok', 'market_risk.limit_down_pct', `limit_down_count=${row.limit_down_count ?? 'n/a'}`),
+    factor('chips', '籌碼', formatBillion(foreignNet5d), foreignNet5d == null ? 'missing' : foreignNet5d < 0 ? 'warn' : 'ok', 'market_risk.foreign_net_5d', `foreign_consecutive_sell=${row.foreign_consecutive_sell ?? 0}`),
+    factor('leverage', '槓桿', formatPct(marginRatio), marginRatio == null ? 'missing' : marginRatio > 40 ? 'warn' : 'info', 'market_risk.margin_ratio'),
     factor('regime', 'Regime', regimeState?.label ?? 'missing', regimeState ? (regimeState.family === 'bear' ? 'warn' : 'ok') : 'error', regimeState?.source === 'legacy_label' ? 'legacy_regime_fallback' : 'market_regime_state', `run_date=${regimeState?.run_date ?? 'missing'}`),
     factor('global_risk', '全球風險', String((monitors as any).global_event_pressure ?? (regimeSurface as any).global_risk ?? 'context'), (regimeSurface as any).global_risk > 0.6 ? 'warn' : 'info', 'market_regime_state.monitors'),
     factor('lppls', 'LPPLS', String((monitors as any).lppls ?? 'context'), (transitionGuard as any).bubble_risk ? 'warn' : 'info', 'market_regime_state.monitors.lppls'),
@@ -1030,7 +1039,7 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 
 recommendations.use('/*', authMiddleware)
 
-const FINAL_RECOMMENDATION_WHERE = 'signal IS NOT NULL AND confidence IS NOT NULL AND COALESCE(ml_score, 0) > 0'
+const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%'"
 
 function isEmergingRecommendation(row: Record<string, any>): boolean {
   return String(row.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
@@ -1074,13 +1083,46 @@ function buildEmergingBrokerEvidence(row: Record<string, any>): Record<string, a
   }
 }
 
-function replaceChipReason(reason: unknown, chipReason: string): string {
+function isScoreV2Payload(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && (value as any).version === SCORE_V2_VERSION)
+}
+
+function normalizeScoreV2ReasonText(reason: unknown): string {
   const text = typeof reason === 'string' ? reason.trim() : ''
-  if (!text) return `【籌碼】${chipReason}`
-  if (text.includes('【籌碼】') && text.includes('｜【技術】')) {
-    return text.replace(/【籌碼】[^｜\n]+｜【技術】/, `【籌碼】${chipReason}｜【技術】`)
+  if (!text) return ''
+  return text
+    .replace(/^【籌碼】[^｜\n]+｜/, '')
+    .replace(/【技術】/g, 'Technical:')
+    .replace(/【ML】/g, 'ML Edge:')
+    .replace(/｜/g, '; ')
+    .trim()
+}
+
+function mergeEmergingBrokerReason(reason: unknown, evidence: Record<string, any> | null): string | unknown {
+  if (!evidence) return reason
+  const chipReason = String(evidence.reason ?? '券商分點資料已更新')
+  const text = normalizeScoreV2ReasonText(reason)
+  if (!text) return `Score V2 Chip Flow evidence: ${chipReason}`
+  if (text.includes(chipReason)) return text
+  return text.includes('Score V2')
+    ? `${text}; Chip Flow evidence: ${chipReason}`
+    : `Score V2 Chip Flow evidence: ${chipReason}; ${text}`
+}
+
+function mergeEmergingBrokerScoreComponents(scoreComponents: unknown, evidence: Record<string, any> | null): unknown {
+  if (!evidence) return scoreComponents
+  if (!isScoreV2Payload(scoreComponents)) {
+    return scoreComponents ? { ...(scoreComponents as Record<string, any>), chipEvidence: evidence } : null
   }
-  return `【籌碼】${chipReason}｜${text}`
+  const reasons = Array.isArray(scoreComponents.reasons)
+    ? scoreComponents.reasons.map(String).filter(Boolean)
+    : []
+  reasons.push(`chipFlowEvidence:${String(evidence.reason ?? 'broker evidence updated')}`)
+  return {
+    ...scoreComponents,
+    chipEvidence: evidence,
+    reasons: Array.from(new Set(reasons)),
+  }
 }
 
 function mergeEmergingBrokerWatchPoints(points: unknown, evidence: Record<string, any> | null): string[] {
@@ -1240,7 +1282,15 @@ recommendations.get('/daily', async (c) => {
           FROM screener_funnel_items
          WHERE run_id = (SELECT run_id FROM latest_screener_run)
            AND symbol IN (${placeholders})
-           AND stage IN ('scoring', 'rrg_overlay', 'buzz_evidence', 'diversity_cooldown', 'final_selection')
+           AND stage IN (
+             'scoring',
+             'rrg_overlay',
+             'buzz_evidence',
+             'diversity_cooldown',
+             'strategy_pool_ml_queue',
+             'strategy_pool_research_only',
+             'final_selection'
+           )
          ORDER BY symbol ASC, created_at ASC
       `).bind(date, ...resultSymbols).all<any>()
       for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
@@ -1285,12 +1335,7 @@ recommendations.get('/daily', async (c) => {
     const parsedWatchPoints = (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })()
     const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
     const watchPoints = mergeEmergingBrokerWatchPoints(parsedWatchPoints, emergingBrokerEvidence)
-    const scoreComponents = persistedScoreComponents
-      ? {
-        ...persistedScoreComponents,
-        ...(emergingBrokerEvidence ? { chipEvidence: emergingBrokerEvidence } : {}),
-      }
-      : (emergingBrokerEvidence ? { chipEvidence: emergingBrokerEvidence } : null)
+    const scoreComponents = mergeEmergingBrokerScoreComponents(persistedScoreComponents, emergingBrokerEvidence)
     const board = classifyBoard({
       market: r.market,
       open: r.latest_open,
@@ -1318,7 +1363,7 @@ recommendations.get('/daily', async (c) => {
       ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: scoreComponents,
       chip_evidence: emergingBrokerEvidence,
-      reason: emergingBrokerEvidence ? replaceChipReason(r.reason, String(emergingBrokerEvidence.reason ?? '券商分點資料已更新')) : r.reason,
+      reason: mergeEmergingBrokerReason(r.reason, emergingBrokerEvidence),
       screener_funnel_rank: screenerFunnel?.rank ?? null,
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
       screener_funnel_evidence: screenerFunnel?.evidence ?? null,
@@ -1373,6 +1418,8 @@ recommendations.get('/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 7), 30)
   const { results } = await c.env.DB.prepare(`
     SELECT r.date, r.symbol, r.name, r.sector, r.rank, r.score,
+           r.score_components, r.ml_score, r.chip_score, r.tech_score,
+           COALESCE(r.momentum_score, 0) AS momentum_score,
            r.signal, r.confidence, r.has_buy_signal,
            r.current_price,
            -- 回測：推薦後實際表現（從 predictions 取）

@@ -1,4 +1,5 @@
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
 
@@ -10,9 +11,11 @@ export interface StrategyCandidateInput {
   sector?: string
   industry?: string
   score?: number
+  ml_score?: number
   chip_score?: number
   tech_score?: number
   momentum_score?: number
+  score_components?: unknown
   current_price?: number | null
 }
 
@@ -68,6 +71,14 @@ export interface StrategySpecAssessment {
   watchPoints: string[]
 }
 
+export interface StrategyThresholdScores {
+  seedScore: number
+  chipFlow: number
+  technicalStructure: number
+  momentumProxy: number
+  source: 'score_v2' | 'storage_projection'
+}
+
 const FORBIDDEN_SPEC_KEYS = [
   'scoreBonus',
   'scoreBoost',
@@ -84,6 +95,22 @@ const FORBIDDEN_SPEC_KEYS = [
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function parseRecord(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
 }
 
 function cleanText(value: unknown): string {
@@ -141,12 +168,48 @@ function meetsPrice(candidate: StrategyCandidateInput, thresholds: StrategySpecT
   return true
 }
 
+function legacyComponentNumber(record: Record<string, unknown> | null, key: string): number | null {
+  const legacy = record?.legacyComponents
+  return legacy && typeof legacy === 'object' && !Array.isArray(legacy)
+    ? finiteNumber((legacy as Record<string, unknown>)[key])
+    : null
+}
+
+export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput): StrategyThresholdScores {
+  const snapshot = readScoreV2Snapshot(candidate)
+  const record = parseRecord(candidate.score_components)
+
+  if (snapshot.source === 'score_v2') {
+    return {
+      seedScore: snapshot.finalScore,
+      chipFlow: snapshot.components.chipFlow,
+      technicalStructure: snapshot.components.technicalStructure,
+      momentumProxy: legacyComponentNumber(record, 'screenerMomentum')
+        ?? finiteNumber(candidate.momentum_score)
+        ?? snapshot.technicalBreakdown?.volumeConfirmation
+        ?? 0,
+      source: 'score_v2',
+    }
+  }
+
+  return {
+    seedScore: finiteNumber(candidate.score) ?? snapshot.total,
+    chipFlow: finiteNumber(candidate.chip_score) ?? snapshot.components.chipFlow,
+    technicalStructure: finiteNumber(candidate.tech_score) ?? snapshot.components.technicalStructure,
+    momentumProxy: finiteNumber(candidate.momentum_score)
+      ?? snapshot.technicalBreakdown?.volumeConfirmation
+      ?? 0,
+    source: 'storage_projection',
+  }
+}
+
 export function assessCandidateAgainstStrategySpecs(
   candidate: StrategyCandidateInput,
   specs: StrategySpec[],
 ): StrategySpecAssessment {
   const matches: StrategySpecMatch[] = []
   const watchPoints: string[] = []
+  const scores = deriveStrategyThresholdScores(candidate)
 
   for (const spec of specs) {
     const validation = validateStrategySpec(spec)
@@ -157,10 +220,10 @@ export function assessCandidateAgainstStrategySpecs(
     const t = spec.thresholds
     if (!industryAllowed(candidate, t)) continue
     if (!meetsPrice(candidate, t)) continue
-    if (!meetsMinimum(candidate.score, t.minSeedScore)) continue
-    if (!meetsMinimum(candidate.chip_score, t.minChipScore)) continue
-    if (!meetsMinimum(candidate.tech_score, t.minTechScore)) continue
-    if (!meetsMinimum(candidate.momentum_score, t.minMomentumScore)) continue
+    if (!meetsMinimum(scores.seedScore, t.minSeedScore)) continue
+    if (!meetsMinimum(scores.chipFlow, t.minChipScore)) continue
+    if (!meetsMinimum(scores.technicalStructure, t.minTechScore)) continue
+    if (!meetsMinimum(scores.momentumProxy, t.minMomentumScore)) continue
 
     matches.push({
       specId: spec.id,

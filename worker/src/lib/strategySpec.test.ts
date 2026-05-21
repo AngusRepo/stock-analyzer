@@ -1,4 +1,9 @@
-import { DEFAULT_STRATEGY_SPECS, assessCandidateAgainstStrategySpecs, validateStrategySpec } from './strategySpec'
+import {
+  DEFAULT_STRATEGY_SPECS,
+  assessCandidateAgainstStrategySpecs,
+  deriveStrategyThresholdScores,
+  validateStrategySpec,
+} from './strategySpec'
 import { assertOwnerCanOwn, ownerOwns } from './strategyOwnerFreeze'
 import { annotateCandidateWithStrategySpecs } from './screenerStrategyConsumer'
 import { dryRunStrategySpec, listStrategySpecs } from './strategyLab'
@@ -28,6 +33,43 @@ function assert(condition: unknown, message: string): void {
   const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
   assert(assessment.matches.length >= 1, 'strong seed should match at least one strategy spec')
   assert(assessment.tags.some((tag) => tag.startsWith('strategy:')), 'strategy tags should be emitted')
+}
+
+{
+  const candidate = {
+    symbol: '2330',
+    score: 10,
+    chip_score: 1,
+    tech_score: 1,
+    momentum_score: 1,
+    current_price: 900,
+    score_components: JSON.stringify({
+      version: 'score_v2',
+      finalScore: 70,
+      components: {
+        mlEdge: 12,
+        chipFlow: 24,
+        technicalStructure: 22,
+        fundamentalQuality: 10,
+        newsTheme: 2,
+      },
+      technicalBreakdown: {
+        trendStructure: 6,
+        volatilityStructure: 4,
+        reversalExtreme: 4,
+        volumeConfirmation: 3,
+        executionRisk: 1,
+      },
+      legacyComponents: {
+        screenerMomentum: 10,
+      },
+    }),
+  }
+  const scores = deriveStrategyThresholdScores(candidate)
+  const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
+  assert(scores.source === 'score_v2', 'strategy thresholds should prefer canonical Score V2 components')
+  assert(scores.seedScore === 70, 'strategy seed score should use canonical finalScore')
+  assert(assessment.matches.length >= 1, 'Score V2 seed should match even when legacy score fields are stale')
 }
 
 {

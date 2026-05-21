@@ -23,8 +23,8 @@ class FakeStatement {
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM technical_indicators')) return { count: 2300 } as T
-    if (sql.includes('ml_score_positive')) {
-      return { total: 25, ml_score_positive: 25, signal_count: 25, confidence_count: 25 } as T
+    if (sql.includes('score_v2_count')) {
+      return { total: 25, score_v2_count: 25, signal_count: 25, confidence_count: 25 } as T
     }
     if (sql.includes('current_price_valid')) {
       return {

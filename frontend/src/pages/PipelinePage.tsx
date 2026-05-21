@@ -9,13 +9,13 @@ import { recommendationsApi, paperApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
-import DailyPipelineRunLane from '@/components/charts/DailyPipelineRunLane'
 import {
   Filter, Brain, Star, Scale, ChevronDown, ChevronUp,
   TrendingUp, TrendingDown, Minus,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
+import { buildScoreBreakdownViewModel, buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
 const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
@@ -29,6 +29,19 @@ const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
 function fmt(n: number | null | undefined, decimals = 0): string {
   if (n == null) return '-'
   return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+}
+
+function scoreComponentValue(rec: any, key: string): number {
+  const row = buildScoreBreakdownViewModel(rec ?? {}).rows.find((item) => item.key === key)
+  return Number.isFinite(row?.value) ? Number(row?.value) : 0
+}
+
+function scoreFinalValue(rec: any): number {
+  return buildScoreBreakdownViewModel(rec ?? {}).finalScore
+}
+
+function hasScorePayload(rec: any): boolean {
+  return buildScoreBreakdownViewModel(rec ?? {}).hasBackendPayload
 }
 
 function parseMaybeJson(raw: unknown): Record<string, any> {
@@ -66,9 +79,9 @@ function buildScreenerSectorSummary(recs: any[]) {
       reasons: new Set<string>(),
     }
     row.count += 1
-    row.scoreSum += Number(rec.score ?? 0)
-    row.chipSum += Number(rec.chip_score ?? 0)
-    row.techSum += Number(rec.tech_score ?? 0)
+    row.scoreSum += scoreFinalValue(rec)
+    row.chipSum += scoreComponentValue(rec, 'chipFlow')
+    row.techSum += scoreComponentValue(rec, 'technicalStructure')
     if (rec.symbol && row.symbols.length < 4) row.symbols.push(String(rec.symbol))
     if (rec.screener_funnel_reason) row.reasons.add(String(rec.screener_funnel_reason))
     const evidence = parseMaybeJson(rec.screener_funnel_evidence)
@@ -93,122 +106,6 @@ function buildScreenerSectorSummary(recs: any[]) {
 }
 
 // ─── Step indicator ────────────────────────────────────────────────────────
-const CANDIDATE_SOURCE_BUCKETS = [
-  { key: 'strategy', label: '策略池', color: 'bg-cyan-300' },
-  { key: 'theme', label: '題材/新聞', color: 'bg-amber-300' },
-  { key: 'taxonomy', label: '產業分類', color: 'bg-violet-300' },
-  { key: 'chipTech', label: '籌碼/技術', color: 'bg-emerald-300' },
-  { key: 'ml', label: 'ML 投票', color: 'bg-sky-300' },
-] as const
-
-type CandidateSourceKey = typeof CANDIDATE_SOURCE_BUCKETS[number]['key']
-
-function hasCandidateSource(rec: any, key: CandidateSourceKey) {
-  const evidence = parseMaybeJson(rec.screener_funnel_evidence)
-  const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
-  const haystack = [
-    rec.reason,
-    rec.screener_funnel_reason,
-    rec.strategy_pool_reason,
-    evidence.reason,
-    evidence.reason_code,
-    evidence.diversity_reason,
-    evidence.source,
-    evidence.sources,
-    evidence.theme_sources,
-  ].filter(Boolean).join(' ').toLowerCase()
-
-  if (key === 'strategy') {
-    return (Array.isArray(strategyIds) && strategyIds.length > 0) || Boolean(rec.strategy_pool_reason || evidence.strategy_pool_reason)
-  }
-  if (key === 'theme') {
-    return evidence.buzz_score != null || evidence.buzz_z != null || /ptt|anue|avenue|cnyes|gdelt|news|buzz|keyword|theme|題材|新聞|熱度/.test(haystack)
-  }
-  if (key === 'taxonomy') {
-    return Boolean(rec.industryTheme || rec.industry || rec.sector || evidence.taxonomy || evidence.industry_theme || evidence.diversity_slot)
-  }
-  if (key === 'chipTech') {
-    return Number(rec.chip_score ?? 0) > 0 || Number(rec.tech_score ?? 0) > 0 || /chip|broker|foreign|technical|籌碼|法人|券商|技術|rrg/.test(haystack)
-  }
-  if (key === 'ml') {
-    return rec.ml_score != null || Boolean(rec.signal) || /ml|model|alpha|vote|predict/.test(haystack)
-  }
-  return false
-}
-
-function buildCandidateSourceProfile(rows: any[]) {
-  const counts = CANDIDATE_SOURCE_BUCKETS.map((bucket) => ({
-    ...bucket,
-    count: rows.filter((rec) => hasCandidateSource(rec, bucket.key)).length,
-  }))
-  const totalEvidence = counts.reduce((sum, item) => sum + item.count, 0)
-  return { counts, totalEvidence }
-}
-
-function CandidateSourceMixChart({
-  screener,
-  recommendations,
-  pending,
-}: {
-  screener: any[]
-  recommendations: any[]
-  pending: any[]
-}) {
-  const rows = [
-    { label: '初篩候選', items: screener },
-    { label: '推薦池', items: recommendations },
-    { label: 'T2 pending', items: pending },
-  ].filter((row) => row.items.length > 0)
-
-  if (!rows.length) return null
-
-  return (
-    <Card className="border-border bg-card">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">候選來源組成</CardTitle>
-        <p className="text-xs text-muted-foreground">把同一批候選拆成策略、題材新聞、分類、籌碼技術與 ML evidence；用來檢查是不是每天都靠同一種來源在推股。</p>
-      </CardHeader>
-      <CardContent className="grid gap-3 xl:grid-cols-3">
-        {rows.map((row) => {
-          const profile = buildCandidateSourceProfile(row.items)
-          return (
-            <div key={row.label} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold">{row.label}</p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">{row.items.length} 檔 / {profile.totalEvidence} 個 evidence tag</p>
-                </div>
-                <Badge variant="outline" className="font-mono text-[10px]">{row.items.length}</Badge>
-              </div>
-              <div className="mt-3 flex h-3 overflow-hidden rounded-full bg-muted">
-                {profile.counts.map((bucket) => (
-                  <div
-                    key={bucket.key}
-                    className={`${bucket.color} min-w-[2px]`}
-                    style={{ width: `${profile.totalEvidence ? Math.max(3, (bucket.count / profile.totalEvidence) * 100) : 0}%` }}
-                    title={`${bucket.label}: ${bucket.count}`}
-                  />
-                ))}
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {profile.counts.map((bucket) => (
-                  <div key={bucket.key} className="rounded-lg border border-border/70 bg-background/50 px-2 py-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-2 w-2 rounded-full ${bucket.color}`} />
-                      <span className="text-[11px] text-muted-foreground">{bucket.label}</span>
-                    </div>
-                    <div className="mt-1 font-mono text-sm font-semibold">{bucket.count}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
-  )
-}
-
 function StepHeader({ step, icon: Icon, title, subtitle, count, color }: {
   step: number; icon: any; title: string; subtitle: string; count?: number; color: string
 }) {
@@ -231,14 +128,14 @@ function StepHeader({ step, icon: Icon, title, subtitle, count, color }: {
 
 // ─── Score bar ─────────────────────────────────────────────────────────────
 function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0
+  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0
   return (
     <div className="flex items-center gap-2 text-[11px]">
-      <span className="w-8 text-muted-foreground shrink-0">{label}</span>
+      <span className="min-w-14 text-muted-foreground shrink-0">{label}</span>
       <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right font-mono text-muted-foreground">{value}/{max}</span>
+      <span className="w-12 text-right font-mono text-muted-foreground">{value}/{max}</span>
     </div>
   )
 }
@@ -247,6 +144,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
 function StockRow({ rec, rank }: { rec: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_STYLE[rec.signal] ?? SIGNAL_STYLE['HOLD']
+  const scoreViewModel = buildScoreBreakdownViewModel(rec)
 
   return (
     <div className={`border rounded-lg transition-all ${expanded ? 'border-border bg-card' : 'border-transparent hover:bg-card/50'}`}>
@@ -259,15 +157,15 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
         <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{rec.name}</span>
         {rec.sector && <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0">{rec.sector}</Badge>}
         <Badge className={`text-[10px] px-1.5 py-0 border ${sig.cls}`}>{sig.label}</Badge>
-        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(rec.score)}</span>
+        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
         {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
       </div>
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
           <div className="space-y-1">
-            <ScoreBar label="籌碼" value={rec.chip_score ?? 0} max={40} color="bg-blue-500" />
-            <ScoreBar label="技術" value={rec.tech_score ?? 0} max={30} color="bg-purple-500" />
-            <ScoreBar label="ML" value={rec.ml_score ?? 0} max={30} color="bg-emerald-500" />
+            {scoreViewModel.rows.map((item) => (
+              <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+            ))}
           </div>
           {rec.reason && (
             <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
@@ -286,6 +184,10 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
 // ─── T2 Pending Buy row ────────────────────────────────────────────────────
 function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
+  const scoreViewModel = buildScoreBreakdownViewModel({
+    ...buy,
+    score_components: buy.score_components ?? buildScoreV2PayloadFromProjectedScores(buy),
+  })
   return (
     <div className={`border rounded-lg transition-all ${expanded ? 'border-primary/20 bg-card' : 'border-transparent hover:bg-card/50'}`}>
       <div
@@ -301,7 +203,7 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
         {buy.confidence != null && (
           <span className="text-xs font-mono text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
         )}
-        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(buy.score ?? 0)}</span>
+        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
         {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
       </div>
       {expanded && (
@@ -324,9 +226,9 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
             </div>
           )}
           <div className="flex gap-3">
-            {buy.chip_score != null && <span>籌碼 <span className="font-mono">{buy.chip_score}/40</span></span>}
-            {buy.tech_score != null && <span>技術 <span className="font-mono">{buy.tech_score}/30</span></span>}
-            {buy.ml_score != null && <span>ML <span className="font-mono">{buy.ml_score}/30</span></span>}
+            {scoreViewModel.rows.map((item) => (
+              <span key={item.key}>{item.label} <span className="font-mono">{item.value}/{item.max}</span></span>
+            ))}
           </div>
         </div>
       )}
@@ -353,62 +255,143 @@ function compactEvidenceValue(value: unknown): string {
   return JSON.stringify(value).slice(0, 80)
 }
 
+function stageLabel(stage: unknown): string {
+  const value = String(stage ?? '')
+  const labels: Record<string, string> = {
+    scoring: '初篩打分',
+    rrg_overlay: '產業/象限',
+    buzz_evidence: '熱門題材',
+    diversity_cooldown: '分散/冷卻',
+    strategy_pool_ml_queue: '策略候選池',
+    strategy_pool_research_only: '策略研究池',
+    final_selection: '最終入列',
+    recommendation: '推薦輸出',
+  }
+  return (labels[value] ?? value) || 'stage'
+}
+
+function extractStrategyIds(rec: any, evidence: Record<string, any>, timeline: any[]): string[] {
+  const ids = [
+    ...(Array.isArray(rec.strategy_pool_ids) ? rec.strategy_pool_ids : []),
+    ...(Array.isArray(evidence.strategy_ids) ? evidence.strategy_ids : []),
+    ...timeline.flatMap((item) => {
+      const ev = parseMaybeJson(item?.evidence)
+      return Array.isArray(ev.strategy_ids) ? ev.strategy_ids : []
+    }),
+  ]
+  return [...new Set(ids.map((item) => String(item)).filter(Boolean))]
+}
+
+function extractHotKeywords(evidence: Record<string, any>, timeline: any[]): string[] {
+  const buzz = parseMaybeJson(evidence.buzz_evidence)
+  const fromTimeline = timeline.flatMap((item) => {
+    const ev = parseMaybeJson(item?.evidence)
+    return [
+      ev.concept,
+      ...(Array.isArray(ev.matchedHot) ? ev.matchedHot : []),
+      ...(Array.isArray(ev.keywords) ? ev.keywords : []),
+    ]
+  })
+  return [...new Set([
+    buzz.concept,
+    ...(Array.isArray(buzz.matchedHot) ? buzz.matchedHot : []),
+    ...(Array.isArray(buzz.keywords) ? buzz.keywords : []),
+    ...fromTimeline,
+  ].map((item) => String(item ?? '').trim()).filter(Boolean))].slice(0, 10)
+}
+
 function StockSelectionTracePanel({ recs }: { recs: any[] }) {
-  const rows = recs.slice(0, 8).map((rec) => {
+  const rows = recs.map((rec) => {
     const evidence = parseMaybeJson(rec.screener_funnel_evidence)
     const timeline = parseMaybeArray(rec.screener_funnel_timeline)
-    const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
     return {
       rec,
       evidence,
       timeline,
-      strategyIds: Array.isArray(strategyIds) ? strategyIds : [],
+      strategyIds: extractStrategyIds(rec, evidence, timeline),
+      hotKeywords: extractHotKeywords(evidence, timeline),
     }
   })
   if (!rows.length) return null
   return (
     <Card className="border-border bg-card">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">單檔選股 trace</CardTitle>
-        <p className="text-xs text-muted-foreground">從 screener 因子、strategy pool、taxonomy/熱度 evidence 到最後入列原因。</p>
+        <CardTitle className="text-sm">選股決策流程紀錄</CardTitle>
+        <p className="text-xs text-muted-foreground">逐檔顯示策略候選池、熱門關鍵字、分散控管、RRG 與最終入列；不再截斷 reasons。</p>
       </CardHeader>
-      <CardContent className="grid gap-2 lg:grid-cols-2">
-        {rows.map(({ rec, evidence, timeline, strategyIds }, i) => {
+      <CardContent className="space-y-2">
+        {rows.map(({ rec, evidence, timeline, strategyIds, hotKeywords }, i) => {
           const rrg = parseMaybeJson(evidence.rrg_overlay ?? evidence.rrg)
+          const scoreViewModel = buildScoreBreakdownViewModel(rec)
           return (
-            <div key={`${rec.symbol}-${i}`} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="font-mono text-sm font-semibold">{rec.symbol} <span className="font-sans text-muted-foreground">{rec.name}</span></p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    score {compactEvidenceValue(rec.score)} / chip {compactEvidenceValue(rec.chip_score)} / tech {compactEvidenceValue(rec.tech_score)} / ML {compactEvidenceValue(rec.ml_score)}
-                  </p>
-                </div>
-                <Badge variant="outline" className="font-mono text-[10px]">#{i + 1}</Badge>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {[...(strategyIds.length ? strategyIds : ['score_rank']), rec.industryTheme ?? rec.industry ?? rec.sector]
-                  .filter(Boolean)
-                  .slice(0, 5)
-                  .map((label: string) => (
-                    <Badge key={label} variant="outline" className="text-[10px]">{label}</Badge>
-                  ))}
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                <span>reason <b className="text-foreground">{String(rec.screener_funnel_reason ?? rec.reason ?? '-').slice(0, 60)}</b></span>
-                <span>buzz <b className="font-mono text-foreground">{compactEvidenceValue(evidence.buzz_score ?? evidence.buzz_z)}</b></span>
-                <span>strategy <b className="text-foreground">{String(rec.strategy_pool_reason ?? evidence.strategy_pool_reason ?? '-')}</b></span>
-                <span>rrg <b className="text-foreground">{compactEvidenceValue(rrg.quadrant)}</b></span>
-              </div>
-              <div className="mt-2 space-y-1">
-                {(timeline.length ? timeline : [{ stage: 'recommendation', reason_code: rec.screener_funnel_reason ?? 'selected' }]).slice(0, 4).map((item: any, idx: number) => (
-                  <div key={idx} className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span className="w-24 shrink-0 font-mono text-primary">{String(item.stage ?? item.step ?? 'stage')}</span>
-                    <span className="truncate">{String(item.reason_code ?? item.reasonCode ?? item.decision ?? item.reason ?? '-')}</span>
+            <details key={`${rec.symbol}-${i}`} className="rounded-xl border border-border/80 bg-background/40 p-3" open={i < 3}>
+              <summary className="cursor-pointer list-none">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-sm font-semibold">{rec.symbol} <span className="font-sans text-muted-foreground">{rec.name}</span></p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      score {compactEvidenceValue(scoreViewModel.finalScore)} / chip {compactEvidenceValue(scoreComponentValue(rec, 'chipFlow'))} / tech {compactEvidenceValue(scoreComponentValue(rec, 'technicalStructure'))} / ML {compactEvidenceValue(scoreComponentValue(rec, 'mlEdge'))}
+                    </p>
                   </div>
-                ))}
+                  <Badge variant="outline" className="font-mono text-[10px]">#{i + 1}</Badge>
+                </div>
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap gap-1">
+                  {[...(strategyIds.length ? strategyIds : ['score_rank']), rec.industryTheme ?? rec.industry ?? rec.sector]
+                    .filter(Boolean)
+                    .map((label: string) => (
+                      <Badge key={label} variant="outline" className="text-[10px]">{label}</Badge>
+                    ))}
+                </div>
+                {hotKeywords.length > 0 && (
+                  <div>
+                    <p className="text-[11px] font-semibold text-muted-foreground">熱門關鍵字 / 題材</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {hotKeywords.map((label) => (
+                        <Badge key={label} className="border-amber-500/25 bg-amber-500/10 text-[10px] text-amber-200">{label}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="grid gap-2 text-[11px] text-muted-foreground md:grid-cols-2">
+                  <span>最終原因 <b className="text-foreground">{String(rec.screener_funnel_reason ?? '-')}</b></span>
+                  <span>strategy <b className="text-foreground">{String(rec.strategy_pool_reason ?? evidence.strategy_pool_reason ?? '-')}</b></span>
+                  <span>rrg <b className="text-foreground">{compactEvidenceValue(rrg.quadrant)}</b></span>
+                  <span>buzz <b className="font-mono text-foreground">{compactEvidenceValue(evidence.buzz_score ?? evidence.buzz_z ?? parseMaybeJson(evidence.buzz_evidence).buzzBonus)}</b></span>
+                </div>
+                {rec.reason && (
+                  <div className="rounded-lg border border-border/70 bg-background/45 p-2">
+                    <p className="text-[11px] font-semibold text-muted-foreground">完整推薦描述</p>
+                    <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-foreground/85">{String(rec.reason)}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground">逐步決策</p>
+                  <div className="mt-1 space-y-1">
+                    {(timeline.length ? timeline : [{ stage: 'recommendation', reason_code: rec.screener_funnel_reason ?? 'selected' }]).map((item: any, idx: number) => {
+                      const ev = parseMaybeJson(item.evidence)
+                      return (
+                        <div key={idx} className="rounded-lg border border-border/60 bg-background/35 p-2 text-[11px]">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="w-24 shrink-0 font-mono text-primary">{stageLabel(item.stage ?? item.step)}</span>
+                            <span className="text-foreground">{String(item.decision ?? item.reason_code ?? item.reasonCode ?? '-')}</span>
+                            {item.rank != null && <Badge variant="outline" className="font-mono text-[10px]">rank {item.rank}</Badge>}
+                            {item.score_before != null || item.score_after != null ? (
+                              <span className="font-mono text-muted-foreground">{compactEvidenceValue(item.score_before)} → {compactEvidenceValue(item.score_after)}</span>
+                            ) : null}
+                          </div>
+                          {item.reason_code && <p className="mt-1 text-muted-foreground">{String(item.reason_code)}</p>}
+                          {Object.keys(ev).length > 0 && (
+                            <p className="mt-1 break-words font-mono text-[10px] text-muted-foreground">{JSON.stringify(ev)}</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
-            </div>
+            </details>
           )
         })}
       </CardContent>
@@ -419,37 +402,60 @@ function StockSelectionTracePanel({ recs }: { recs: any[] }) {
 function PendingBuyHistoryPanel({ history }: { history: any }) {
   const runs = Array.isArray(history?.runs) ? history.runs : []
   if (!runs.length) return null
+  const latest = runs[0]
+  const items = Array.isArray(latest?.items) ? latest.items : []
   return (
     <Card className="border-border bg-card">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">T2 pending buys 歷史與 terminal 狀態</CardTitle>
-        <p className="text-xs text-muted-foreground">當目前 pending=0 時，這裡仍會顯示最近 run 的 skipped/cancelled/expired/rejected 等終端結果。</p>
+        <CardTitle className="text-sm">當日 debate 決策流程</CardTitle>
+        <p className="text-xs text-muted-foreground">只看最新一輪 T2 debate；顯示 Bull / Bear-Risk / Final Judge 的逐輪意見，不再重複牌卡摘要。</p>
       </CardHeader>
       <CardContent className="space-y-2">
-        {runs.slice(0, 4).map((run: any) => {
-          const items = Array.isArray(run.items) ? run.items : []
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant="outline" className="font-mono">run {latest.run_id}</Badge>
+          <span className="font-mono">{latest.trade_date}</span>
+          <span className="text-muted-foreground">source {latest.source_reco_date ?? '-'}</span>
+          <Badge variant="outline">{latest.status}</Badge>
+          <Badge variant="outline">debate {latest.debate_status}</Badge>
+          <span className="text-muted-foreground">execution {JSON.stringify(latest.execution_counts ?? {})}</span>
+        </div>
+        {items.length === 0 ? (
+          <div className="rounded-xl border border-border/80 bg-background/40 p-3 text-xs text-muted-foreground">
+            這輪沒有 pending buy item；可能已被風控、處置股、流動性或價格 gate 全部擋下。
+          </div>
+        ) : items.map((item: any) => {
+          const turns = Array.isArray(item.debate_agent_turns) ? item.debate_agent_turns : []
           return (
-            <div key={run.run_id} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <Badge variant="outline" className="font-mono">run {run.run_id}</Badge>
-                <span className="font-mono">{run.trade_date}</span>
-                <span className="text-muted-foreground">source {run.source_reco_date ?? '-'}</span>
-                <Badge variant="outline">{run.status}</Badge>
-                <Badge variant="outline">debate {run.debate_status}</Badge>
-                <span className="text-muted-foreground">execution {JSON.stringify(run.execution_counts ?? {})}</span>
-              </div>
-              <div className="mt-2 grid gap-1 md:grid-cols-2">
-                {items.slice(0, 6).map((item: any) => (
-                  <div key={`${run.run_id}-${item.symbol}`} className="rounded-lg border border-border/60 px-2 py-1 text-[11px]">
-                    <span className="font-mono font-semibold">{item.symbol}</span>
-                    <span className="ml-2 text-muted-foreground">{item.name}</span>
-                    <span className="ml-2 text-primary">{item.execution_status ?? 'pending'}</span>
-                    <span className="ml-2 text-muted-foreground">{item.debate_verdict ?? item.debate_status ?? '-'}</span>
-                    <p className="mt-1 truncate text-muted-foreground">{item.reason || '舊資料僅保存 verdict/reason/watch_points；完整 agent packet 尚未落庫'}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <details key={`${latest.run_id}-${item.symbol}`} className="rounded-xl border border-border/80 bg-background/40 p-3" open={turns.length > 0}>
+              <summary className="cursor-pointer list-none">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-mono font-semibold text-foreground">{item.symbol}</span>
+                  <span className="text-muted-foreground">{item.name}</span>
+                  <Badge variant="outline">{item.debate_verdict ?? item.debate_status ?? '-'}</Badge>
+                  <Badge variant="outline">{item.execution_status ?? 'pending'}</Badge>
+                  <span className="text-muted-foreground">{turns.length ? `${turns.length} agent turns` : 'agent turns 未落庫'}</span>
+                </div>
+              </summary>
+              {turns.length ? (
+                <div className="mt-3 space-y-2">
+                  {turns.map((turn: any, idx: number) => (
+                    <div key={`${item.symbol}-${idx}`} className="rounded-lg border border-border/60 bg-background/45 p-2">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                        <Badge variant="outline" className="font-mono text-[10px]">R{turn.round ?? idx + 1}</Badge>
+                        <span className="font-semibold text-foreground">{turn.agent}</span>
+                        {turn.stance && <span className="text-muted-foreground">{turn.stance}</span>}
+                        {turn.conviction != null && <span className="font-mono text-primary">conv {turn.conviction}</span>}
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{String(turn.summary ?? '')}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-2 text-xs text-amber-100/80">
+                  舊 run 只保存 verdict / execution terminal，沒有保存 Theme/Bull/Bear/Risk/Judge 逐輪內容；下一次 debate run 會寫入 agent turns。
+                </div>
+              )}
+            </details>
           )
         })}
       </CardContent>
@@ -496,12 +502,16 @@ export default function PipelinePage() {
   const mlHold = allRecs.filter((r: any) => r.signal === 'HOLD')
   const mlSell = allRecs.filter((r: any) => ['SELL', 'STRONG_SELL'].includes(r.signal))
   const mlNoSignal = allRecs.filter((r: any) => !r.signal || r.signal === 'NO_SIGNAL')
+  const scorePayloadCount = allRecs.filter((r: any) => hasScorePayload(r)).length
   const screenerPreview = [...screenerPassed]
-    .sort((a: any, b: any) => (b.chip_score ?? 0) + (b.tech_score ?? 0) - ((a.chip_score ?? 0) + (a.tech_score ?? 0)))
+    .sort((a: any, b: any) =>
+      scoreComponentValue(b, 'chipFlow') + scoreComponentValue(b, 'technicalStructure')
+      - (scoreComponentValue(a, 'chipFlow') + scoreComponentValue(a, 'technicalStructure')),
+    )
     .slice(0, 10)
   const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
   const recommendationPreview = [...mlBuy, ...mlHold]
-    .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
+    .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
     .slice(0, 10)
 
   const isLoading = recLoading || pbLoading
@@ -538,33 +548,18 @@ export default function PipelinePage() {
           </div>
         </div>
 
-        <DailyPipelineRunLane
-          recommendations={allRecs}
-          pendingBuys={pendingBuys}
-          quadrantFilters={qfList}
-          recDate={recDate}
-          loading={isLoading}
-        />
-
         {!isLoading && (
-          <>
-            <CandidateSourceMixChart
-              screener={screenerPassed}
-              recommendations={recommendationPreview.length ? recommendationPreview : screenerPreview}
-              pending={pendingBuys}
-            />
-            <div className="grid gap-4 xl:grid-cols-2">
-              <StockSelectionTracePanel recs={recommendationPreview.length ? recommendationPreview : screenerPreview} />
-              <PendingBuyHistoryPanel history={pendingHistory} />
-            </div>
-          </>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <StockSelectionTracePanel recs={recommendationPreview.length ? recommendationPreview : screenerPreview} />
+            <PendingBuyHistoryPanel history={pendingHistory} />
+          </div>
         )}
 
         {/* Pipeline flow indicator */}
         <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">
           {[
             { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
-            { label: '模型判斷', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-[#d7b98c]' },
+            { label: '模型判斷', count: scorePayloadCount, color: 'text-[#d7b98c]' },
             { label: '推薦整理', count: mlBuy.length + mlHold.length, color: 'text-[#f1c16f]' },
             { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
           ].map((step, i) => (
@@ -627,7 +622,7 @@ export default function PipelinePage() {
                   step={2} icon={Brain}
                   title="模型判斷"
                   subtitle="整合多模型投票與 signal_score，先分出買進、觀望與賣出，再交給下一層整理。"
-                  count={allRecs.filter((r: any) => r.ml_score != null).length}
+                  count={scorePayloadCount}
                   color="bg-purple-500/20 text-purple-400"
                 />
                 <div className="grid grid-cols-1 gap-3">
@@ -637,11 +632,11 @@ export default function PipelinePage() {
                       <span className="text-xs font-medium text-red-400">BUY ({mlBuy.length})</span>
                     </div>
                     <div className="space-y-0.5">
-                      {mlBuy.sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((r: any, i: number) => (
+                      {mlBuy.sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a)).map((r: any, i: number) => (
                         <div key={r.symbol} className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-muted/30">
                           <span className="font-mono font-semibold w-12">{r.symbol}</span>
                           <span className="text-muted-foreground truncate flex-1">{r.name}</span>
-                          <span className="font-mono text-primary">{Math.round(r.score)}</span>
+                          <span className="font-mono text-primary">{Math.round(scoreFinalValue(r))}</span>
                         </div>
                       ))}
                     </div>
@@ -652,11 +647,11 @@ export default function PipelinePage() {
                       <span className="text-xs font-medium text-yellow-400">HOLD ({mlHold.length})</span>
                     </div>
                     <div className="space-y-0.5">
-                      {mlHold.sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((r: any, i: number) => (
+                      {mlHold.sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a)).map((r: any, i: number) => (
                         <div key={r.symbol} className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-muted/30">
                           <span className="font-mono font-semibold w-12">{r.symbol}</span>
                           <span className="text-muted-foreground truncate flex-1">{r.name}</span>
-                          <span className="font-mono text-muted-foreground">{Math.round(r.score)}</span>
+                          <span className="font-mono text-muted-foreground">{Math.round(scoreFinalValue(r))}</span>
                         </div>
                       ))}
                     </div>

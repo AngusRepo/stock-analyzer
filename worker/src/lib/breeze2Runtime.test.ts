@@ -27,6 +27,25 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const score_components = JSON.stringify({
+    version: 'score_v2',
+    total: 58,
+    finalScore: 90,
+    components: {
+      mlEdge: 20,
+      chipFlow: 20,
+      technicalStructure: 18,
+      fundamentalQuality: 0,
+      newsTheme: 0,
+    },
+  })
+  assert(
+    shouldRequestBreeze2({ score: 35, score_components, theme: { hype_risk: 0.75 } }),
+    'Breeze2 candidate selection should prefer canonical Score V2 finalScore over stale scalar score',
+  )
+}
+
+{
   const request = buildBreeze2FactCheckRequest(
     {
       symbol: '2330',
@@ -45,6 +64,32 @@ function assert(condition: unknown, message: string): void {
   assert(request.mutation_allowed === false, 'request must stay non-mutating')
   assert(request.real_trading_allowed === false, 'request must never request real trading')
   assert(request.metadata?.run_date === '2026-05-17', 'request should preserve run date metadata')
+}
+
+{
+  const request = buildBreeze2FactCheckRequest(
+    {
+      symbol: '2317',
+      name: 'Hon Hai',
+      score: 35,
+      score_components: JSON.stringify({
+        version: 'score_v2',
+        total: 58,
+        finalScore: 88,
+        components: {
+          mlEdge: 20,
+          chipFlow: 20,
+          technicalStructure: 18,
+          fundamentalQuality: 0,
+          newsTheme: 0,
+        },
+      }),
+    },
+    'screener_enrichment',
+  )
+
+  assert(request.metadata.screener_score === 88, 'Breeze2 metadata should expose Score V2 finalScore')
+  assert(request.metadata.score_source === 'score_v2', 'Breeze2 metadata should record canonical score source')
 }
 
 {

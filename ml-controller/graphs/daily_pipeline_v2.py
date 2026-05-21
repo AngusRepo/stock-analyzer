@@ -48,6 +48,11 @@ from services.recommendation_service import (
     merge_llm_reasons_into_recommendations,
 )
 from services.llm_reason import generate_recommendation_reasons
+from services.breeze2_reason_shadow import (
+    breeze2_reason_shadow_metrics,
+    build_breeze2_generation_shadow_for_candidates,
+    build_breeze2_reason_shadow_for_candidates,
+)
 from services.sector_flow_service import run_sector_flow_pipeline
 from services.persona_service import (
     ChipBar,
@@ -103,6 +108,16 @@ def _state_space_overlay_mode() -> str:
     return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
 
 
+def _breeze2_reason_shadow_enabled() -> bool:
+    raw = os.environ.get("BREEZE2_REASON_SHADOW", "1")
+    return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
+
+
+def _breeze2_reason_shadow_provider() -> str:
+    provider = str(os.environ.get("BREEZE2_REASON_SHADOW_PROVIDER") or "context").strip().lower()
+    return provider if provider in {"context", "modal_generation"} else "context"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # State schema — typed, contains domain data (not just step_status)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +145,8 @@ class PipelineStateV2(TypedDict, total=False):
     final_recommendations: list[dict]       # after filter + scoring + ranking
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
     llm_reasons: dict                       # symbol → {reason, watchPoints}
+
+    breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
 
     # Outputs
     sector_flow_summary: dict               # Phase 6: RRG compute result (concept + industry)
@@ -1499,7 +1516,20 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
 
     try:
         reasons = await generate_recommendation_reasons(candidates, top_themes=top_themes)
-        return {"llm_reasons": reasons}
+        breeze2_shadow = {}
+        if _breeze2_reason_shadow_enabled():
+            provider = _breeze2_reason_shadow_provider()
+            try:
+                breeze2_shadow = (
+                    await build_breeze2_generation_shadow_for_candidates(candidates, run_date=state.get("run_date"))
+                    if provider == "modal_generation"
+                    else build_breeze2_reason_shadow_for_candidates(candidates)
+                )
+            except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
+                logger.warning("[Pipeline V2] Breeze2 reason shadow skipped: %s", shadow_error)
+        if breeze2_shadow:
+            logger.info("[Pipeline V2] Breeze2 reason shadow generated: %s", breeze2_reason_shadow_metrics(breeze2_shadow))
+        return {"llm_reasons": reasons, "breeze2_reason_shadow": breeze2_shadow}
     except Exception as e:
         logger.error(f"[Pipeline V2] LLM reasons failed: {e}")
         return {"llm_reasons": {}, "errors": [f"llm_reasons: {e}"]}
@@ -1553,6 +1583,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "recommendations_updated": rec_updated,
         "sell_deleted": sell_deleted,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
+        "breeze2_reason_shadow": breeze2_reason_shadow_metrics(state.get("breeze2_reason_shadow") or {}),
         "alpha_bucket_counts": alpha_bucket_counts,
         "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
         "alpha_skip_count": alpha_skip_count,

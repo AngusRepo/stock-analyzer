@@ -60,6 +60,13 @@ export interface DebateResult {
   summary: string  // stored in paper_orders.note
   llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
   convictionScore: number // 0-100, judge 的信念度評分
+  agentTurns?: Array<{
+    agent: string
+    round?: number
+    stance?: string
+    summary: string
+    conviction?: number
+  }>
 }
 
 export interface StockProfile {
@@ -290,6 +297,7 @@ export async function runBuyDebateBatchViaController(
         summary: r.summary ?? '',
         llmSource: r.llm_source ?? 'ml-controller',
         convictionScore: r.conviction_score ?? 60,
+        agentTurns: Array.isArray(r.agent_turns) ? r.agent_turns : [],
       })
     }
     return map
@@ -334,7 +342,7 @@ export async function runBuyDebate(
     ...(usContext ? [`【美股前夜】${usContext}`] : []),
     ...(taifexContext ? [`【台指期夜盤】${taifexContext}`] : []),
     ...profileLines,
-    `ML Ensemble Reasoning:`,
+    `Score V2 / ML Evidence:`,
     reasoning,
     ...(historicalBlock ? ['', historicalBlock] : []),
   ].join('\n')
@@ -356,11 +364,12 @@ export async function runBuyDebate(
 
   const zealotSystemPromptBase = [
     '你是 Zealot — 一位極度樂觀的多頭交易員。',
-    '你的信念：每一支被 ML 模型選中的股票都有獨到的買入理由。',
+    '你的信念：每一支通過 Score V2 finalScore 與風控門檻的股票都有獨到的買入理由。',
     '',
     '規則：',
     '- 不准說「但是」「不過」「風險」「需要注意」，你是死多頭',
-    '- 把 ML 信號、技術面、籌碼面的正面訊號放大解讀',
+    '- 把 Score V2 的 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme 正面證據放大解讀',
+    '- 不准退回舊 chip_score / tech_score / ml_score 三分法語意',
     '- 簡潔有力，用繁體中文回答。',
   ].join('\n')
 
@@ -369,9 +378,11 @@ export async function runBuyDebate(
     '你的信念：任何看起來完美的交易都藏著致命缺陷。',
     '',
     '挑戰角度：',
-    '【價值面】估值合理性、護城河是否真實',
-    '【動能面】技術疲態、追高風險、量價背離',
-    '【宏觀面】總經/地緣尾部風險',
+    '【Fundamental Quality】估值合理性、護城河是否真實',
+    '【Technical Structure】趨勢疲態、波動結構、追高風險、量價背離',
+    '【Chip Flow】法人或券商分點是否與價格行為背離',
+    '【ML Edge】模型共識、信心與預期報酬是否矛盾',
+    '【News/Theme】題材熱度是否大於事實支撐',
     '',
     '規則：',
     '- 不准說「優點是」「看好」「值得買入」，你是死空頭',
@@ -393,7 +404,7 @@ export async function runBuyDebate(
     let zealotPrompt: string
     let zealotSystem: string
     if (isInitial) {
-      zealotSystem = zealotSystemPromptBase + '\n\n你的任務：根據 ML 數據和公司資訊，寫出 3-5 個強力看多理由。最多 300 字。'
+      zealotSystem = zealotSystemPromptBase + '\n\n你的任務：根據 Score V2 finalScore、五構面、ML ensemble 與公司資訊，寫出 3-5 個強力看多理由。最多 300 字。'
       zealotPrompt = `Write the bull case:\n\n${mlContext}`
     } else {
       zealotSystem = zealotSystemPromptBase + `\n\n你的任務：讀對方（Reaper）剛才的空方論點，針對其每個挑戰回擊反駁。最多 180 字。`

@@ -1,6 +1,7 @@
 import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
+  deriveStrategyThresholdScores,
   validateStrategySpec,
   type StrategyCandidateInput,
   type StrategySpec,
@@ -405,10 +406,11 @@ export async function listStrategySpecsForLearning(
 
 function matchScore(candidate: StrategyCandidateInput, matched: boolean): number | null {
   if (!matched) return null
-  const score = finiteNumber(candidate.score) ?? 0
-  const chip = finiteNumber(candidate.chip_score) ?? 0
-  const tech = finiteNumber(candidate.tech_score) ?? 0
-  const momentum = finiteNumber(candidate.momentum_score) ?? 0
+  const scores = deriveStrategyThresholdScores(candidate)
+  const score = scores.seedScore
+  const chip = scores.chipFlow
+  const tech = scores.technicalStructure
+  const momentum = scores.momentumProxy
   return round6(Math.max(0, Math.min(1, (score * 0.45 + chip * 0.25 + tech * 0.2 + momentum * 0.1) / 100)))
 }
 
@@ -440,12 +442,16 @@ export function buildStrategyDecisionRows(
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
       }
+      const thresholdScores = deriveStrategyThresholdScores(candidate)
       const context = {
         candidate: {
-          score: finiteNumber(candidate.score),
-          chip_score: finiteNumber(candidate.chip_score),
-          tech_score: finiteNumber(candidate.tech_score),
-          momentum_score: finiteNumber(candidate.momentum_score),
+          score_v2: {
+            finalScore: thresholdScores.seedScore,
+            chipFlow: thresholdScores.chipFlow,
+            technicalStructure: thresholdScores.technicalStructure,
+            momentumProxy: thresholdScores.momentumProxy,
+            source: thresholdScores.source,
+          },
           current_price: finiteNumber(candidate.current_price),
           industry: candidate.industry ?? candidate.sector ?? null,
         },
@@ -480,6 +486,7 @@ export async function listStrategyLearningCandidates(
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const { results } = await db.prepare(`
     SELECT symbol, name, sector, industry, score, chip_score, tech_score,
+           ml_score, score_components,
            COALESCE(momentum_score, 0) AS momentum_score,
            current_price
       FROM daily_recommendations

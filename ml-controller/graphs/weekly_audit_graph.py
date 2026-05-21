@@ -13,7 +13,7 @@ import logging
 import os
 import statistics
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any
 
 import httpx
 
@@ -28,6 +28,80 @@ D1_API = (
     f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
     f"/d1/database/{CF_D1_DB_ID}/query"
 )
+
+SCORE_V2_COMPONENTS = (
+    ("mlEdge", "ML Edge"),
+    ("chipFlow", "Chip Flow"),
+    ("technicalStructure", "Technical Structure"),
+    ("fundamentalQuality", "Fundamental Quality"),
+    ("newsTheme", "News/Theme"),
+)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n == n else None
+
+
+def _clamp_pct(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    return max(0.0, min(1.0, value))
+
+
+def _json_record(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _score_v2_payload(value: Any) -> dict[str, Any] | None:
+    payload = _json_record(value)
+    if not payload or payload.get("version") != "score_v2":
+        return None
+    components = payload.get("components")
+    return payload if isinstance(components, dict) else None
+
+
+def _component_contributions(row: dict[str, Any]) -> tuple[dict[str, float], bool]:
+    payload = _score_v2_payload(row.get("score_components"))
+    if payload:
+        components = payload.get("components") or {}
+        total = _float_or_none(payload.get("total"))
+        if not total or total <= 0:
+            total = sum(_float_or_none(components.get(key)) or 0.0 for key, _ in SCORE_V2_COMPONENTS)
+        return {
+            key: _clamp_pct(((_float_or_none(components.get(key)) or 0.0) / total) if total and total > 0 else 0.0)
+            for key, _ in SCORE_V2_COMPONENTS
+        }, True
+
+    total_score = _float_or_none(row.get("total_score"))
+
+    def legacy_pct(pct_key: str, score_key: str) -> float:
+        pct_value = _float_or_none(row.get(pct_key))
+        if pct_value is not None:
+            return _clamp_pct(pct_value)
+        score = _float_or_none(row.get(score_key))
+        if score is None or not total_score or total_score <= 0:
+            return 0.0
+        return _clamp_pct(score / total_score)
+
+    return {
+        "mlEdge": legacy_pct("ml_pct", "ml_score"),
+        "chipFlow": legacy_pct("chip_pct", "chip_score"),
+        "technicalStructure": legacy_pct("tech_pct", "tech_score"),
+        "fundamentalQuality": 0.0,
+        "newsTheme": 0.0,
+    }, False
 
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
@@ -119,20 +193,29 @@ async def generate_weekly_audit() -> dict:
 
         # ── L2: Decision Attribution (7-day) ──
         decisions = await _d1_query(client, """
-            SELECT symbol, action, chip_score, tech_score, ml_score, total_score,
+            SELECT symbol, action, score_components, chip_score, tech_score, ml_score, total_score,
                    chip_pct, tech_pct, ml_pct, debate_verdict, ml_signal, ml_confidence
             FROM decision_logs
             WHERE date >= ? ORDER BY date
         """, [week_ago])
 
-        # Aggregate factor contributions
-        avg_chip_pct = 0
-        avg_tech_pct = 0
-        avg_ml_pct = 0
+        # Aggregate Score V2 factor contributions. Historical rows without
+        # score_components are read as a storage projection only.
+        contribution_rows = [_component_contributions(d) for d in decisions]
+        score_v2_payload_count = sum(1 for _, is_score_v2 in contribution_rows if is_score_v2)
+        avg_contribution = {key: 0.0 for key, _ in SCORE_V2_COMPONENTS}
         if decisions:
-            avg_chip_pct = statistics.mean(d.get("chip_pct", 0) or 0 for d in decisions)
-            avg_tech_pct = statistics.mean(d.get("tech_pct", 0) or 0 for d in decisions)
-            avg_ml_pct = statistics.mean(d.get("ml_pct", 0) or 0 for d in decisions)
+            avg_contribution = {
+                key: statistics.mean(row[key] for row, _ in contribution_rows)
+                for key, _ in SCORE_V2_COMPONENTS
+            }
+        factor_attribution = [
+            {
+                "name": label,
+                "avg_pct": round(avg_contribution[key] * 100, 1),
+            }
+            for key, label in SCORE_V2_COMPONENTS
+        ]
 
         debate_counts = {"APPROVE": 0, "DOWNGRADE": 0, "REJECT": 0}
         for d in decisions:
@@ -142,13 +225,17 @@ async def generate_weekly_audit() -> dict:
 
         l2 = {
             "total_decisions": len(decisions),
-            "avg_chip_contribution": f"{avg_chip_pct:.0%}",
-            "avg_tech_contribution": f"{avg_tech_pct:.0%}",
-            "avg_ml_contribution": f"{avg_ml_pct:.0%}",
+            "score_v2_payloads": f"{score_v2_payload_count}/{len(decisions)}",
+            "avg_ml_edge_contribution": f"{avg_contribution['mlEdge']:.0%}",
+            "avg_chip_flow_contribution": f"{avg_contribution['chipFlow']:.0%}",
+            "avg_technical_structure_contribution": f"{avg_contribution['technicalStructure']:.0%}",
+            "avg_fundamental_quality_contribution": f"{avg_contribution['fundamentalQuality']:.0%}",
+            "avg_news_theme_contribution": f"{avg_contribution['newsTheme']:.0%}",
             "dominant_factor": max(
-                [("chip", avg_chip_pct), ("tech", avg_tech_pct), ("ml", avg_ml_pct)],
+                [(label, avg_contribution[key]) for key, label in SCORE_V2_COMPONENTS],
                 key=lambda x: x[1]
             )[0] if decisions else "N/A",
+            "factor_attribution": factor_attribution,
             "debate_verdicts": debate_counts,
         }
 
@@ -216,9 +303,13 @@ async def generate_weekly_audit() -> dict:
         report_sections.append(
             f"\n## 🎯 Decision Attribution\n"
             f"- {l2['total_decisions']} buy decisions this week\n"
-            f"- Dominant factor: **{l2['dominant_factor']}**\n"
-            f"- Avg contribution: Chip {l2['avg_chip_contribution']} | "
-            f"Tech {l2['avg_tech_contribution']} | ML {l2['avg_ml_contribution']}\n"
+            f"- Score V2 payload coverage: {l2['score_v2_payloads']}\n"
+            f"- Dominant Score V2 factor: **{l2['dominant_factor']}**\n"
+            f"- Avg contribution: ML Edge {l2['avg_ml_edge_contribution']} | "
+            f"Chip Flow {l2['avg_chip_flow_contribution']} | "
+            f"Technical Structure {l2['avg_technical_structure_contribution']} | "
+            f"Fundamental Quality {l2['avg_fundamental_quality_contribution']} | "
+            f"News/Theme {l2['avg_news_theme_contribution']}\n"
             f"- Debate: {debate_counts['APPROVE']} approve, "
             f"{debate_counts['DOWNGRADE']} downgrade, {debate_counts['REJECT']} reject"
         )

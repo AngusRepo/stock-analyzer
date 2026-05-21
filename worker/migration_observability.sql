@@ -7,12 +7,12 @@ CREATE TABLE IF NOT EXISTS decision_logs (
   date            TEXT NOT NULL,
   symbol          TEXT NOT NULL,
   action          TEXT NOT NULL,              -- 'BUY' | 'SELL' | 'SWAP_OUT' | 'SKIP'
-  -- Factor contributions (from scorer)
-  chip_score      REAL,                       -- 0-40
-  tech_score      REAL,                       -- 0-30
-  ml_score        REAL,                       -- 0-30
-  total_score     REAL,                       -- chip + tech + ml
-  chip_pct        REAL,                       -- chip_score / total_score (contribution %)
+  -- Score V2 projection columns. Canonical payload is added by migration_decision_logs_score_v2.sql.
+  chip_score      REAL,                       -- Score V2 Chip Flow projection
+  tech_score      REAL,                       -- Score V2 Technical Structure projection
+  ml_score        REAL,                       -- Score V2 ML Edge projection
+  total_score     REAL,                       -- Score V2 finalScore
+  chip_pct        REAL,                       -- Chip Flow contribution %
   tech_pct        REAL,
   ml_pct          REAL,
   -- ML detail

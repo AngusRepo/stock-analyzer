@@ -29,7 +29,7 @@ interface CountRow {
   total?: number
   latest_date?: string | null
   rows_on_latest?: number
-  ml_score_positive?: number
+  score_v2_count?: number
   signal_count?: number
   confidence_count?: number
   unclassified?: number
@@ -306,17 +306,13 @@ export function buildModelIcEvidenceCheck(
 
 export function buildRecommendationMlOwnerCheck(input: {
   total: number
-  mlScorePositive: number
+  scoreV2Count: number
   signalCount: number
   confidenceCount: number
   predictionRows: number
 }): DataQualityCheck {
   const total = Number(input.total ?? 0)
-  const enriched = Math.max(
-    Number(input.mlScorePositive ?? 0),
-    Number(input.signalCount ?? 0),
-    Number(input.confidenceCount ?? 0),
-  )
+  const scoreV2Count = Number(input.scoreV2Count ?? 0)
   if (total <= 0) {
     return {
       id: 'recommendation_ml_enrichment',
@@ -326,22 +322,22 @@ export function buildRecommendationMlOwnerCheck(input: {
       metrics: { total },
     }
   }
-  const ratio = enriched / total
-  const status: DataQualityStatus = input.predictionRows > 0 && enriched === 0
+  const ratio = scoreV2Count / total
+  const status: DataQualityStatus = input.predictionRows > 0 && scoreV2Count === 0
     ? 'fail'
     : ratio < 0.5
       ? 'warn'
       : 'ok'
   return {
     id: 'recommendation_ml_enrichment',
-    label: 'Recommendation ML enrichment',
+    label: 'Recommendation Score V2 enrichment',
     status,
-    summary: `${enriched}/${total} recommendations have ML owner fields`,
+    summary: `${scoreV2Count}/${total} recommendations have canonical Score V2 payloads`,
     metrics: {
       total,
-      enriched,
+      enriched: scoreV2Count,
       ratio,
-      ml_score_positive: input.mlScorePositive,
+      score_v2_count: scoreV2Count,
       signal_count: input.signalCount,
       confidence_count: input.confidenceCount,
       prediction_rows: input.predictionRows,
@@ -425,11 +421,11 @@ export function buildScreenerSeedQualityCheck(input: {
     id: 'screener_seed_quality',
     label: 'Screener seed quality',
     status,
-    summary: `rows=${total} invalid=${invalid} missing_components=${missingComponents} unclassified=${unclassified} price_valid=${currentPriceValid}`,
+    summary: `rows=${total} invalid=${invalid} missing_score_v2_components=${missingComponents} unclassified=${unclassified} price_valid=${currentPriceValid}`,
     metrics: {
       total,
       invalid_scores: invalid,
-      missing_components: missingComponents,
+      missing_score_v2_components: missingComponents,
       unclassified,
       missing_reasons: missingReasons,
       current_price_valid: currentPriceValid,
@@ -933,7 +929,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     firstCount(
       env.DB,
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN COALESCE(ml_score, 0) > 0 THEN 1 ELSE 0 END) AS ml_score_positive,
+              SUM(CASE WHEN score_components LIKE '%score_v2%' THEN 1 ELSE 0 END) AS score_v2_count,
               SUM(CASE WHEN signal IS NOT NULL AND signal <> '' THEN 1 ELSE 0 END) AS signal_count,
               SUM(CASE WHEN confidence IS NOT NULL THEN 1 ELSE 0 END) AS confidence_count
        FROM daily_recommendations WHERE date = ?`,
@@ -944,7 +940,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN sector IS NULL OR TRIM(sector) = '' OR sector IN (?, ?) OR industry IS NULL OR TRIM(industry) = '' OR industry IN (?, ?) THEN 1 ELSE 0 END) AS unclassified,
               SUM(CASE WHEN score IS NULL OR score < 0 OR score > 100 THEN 1 ELSE 0 END) AS invalid_scores,
-              SUM(CASE WHEN chip_score IS NULL OR tech_score IS NULL THEN 1 ELSE 0 END) AS missing_components,
+              SUM(CASE WHEN score_components IS NULL OR score_components NOT LIKE '%score_v2%' THEN 1 ELSE 0 END) AS missing_components,
               SUM(CASE WHEN reason IS NULL OR reason = '' THEN 1 ELSE 0 END) AS missing_reasons,
               SUM(CASE WHEN current_price IS NOT NULL AND current_price > 0 THEN 1 ELSE 0 END) AS current_price_valid,
               SUM(CASE WHEN recommendation_lane = 'tradable' THEN 1 ELSE 0 END) AS tradable_count,
@@ -1218,7 +1214,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     buildPredictionCoverageCheck(predictionGroups.results ?? []),
     buildRecommendationMlOwnerCheck({
       total: Number(recommendationStats.total ?? 0),
-      mlScorePositive: Number(recommendationStats.ml_score_positive ?? 0),
+      scoreV2Count: Number(recommendationStats.score_v2_count ?? 0),
       signalCount: Number(recommendationStats.signal_count ?? 0),
       confidenceCount: Number(recommendationStats.confidence_count ?? 0),
       predictionRows,

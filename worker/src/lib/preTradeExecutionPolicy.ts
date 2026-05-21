@@ -50,6 +50,14 @@ function roundPrice(value: number): number {
   return Math.round(value * 100) / 100
 }
 
+function formatQuoteAge(quoteAgeMs: number): string {
+  const seconds = Math.max(0, Math.round(quoteAgeMs / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainSeconds = seconds % 60
+  return remainSeconds > 0 ? `${minutes}m${remainSeconds}s` : `${minutes}m`
+}
+
 export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTradeExecutionDecision {
   const currentPrice = Number(input.currentPrice)
   const entryPrice = Number(input.entryPrice)
@@ -66,7 +74,7 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
   const quoteAgeMs = Number(input.quoteAgeMs ?? 0)
   const maxQuoteAgeMs = Number(input.policy.maxQuoteAgeMs ?? 0)
   if (maxQuoteAgeMs > 0 && Number.isFinite(quoteAgeMs) && quoteAgeMs > maxQuoteAgeMs) {
-    return { action: 'DEFER', reason: `stale_quote:${Math.round(quoteAgeMs)}ms` }
+    return { action: 'DEFER', reason: `stale_quote:${formatQuoteAge(quoteAgeMs)}` }
   }
 
   const previousClose = Number(input.previousClose ?? 0)

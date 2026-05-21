@@ -8,6 +8,7 @@ export interface ScreenerSeedCandidateInput {
   chip_score?: unknown
   tech_score?: unknown
   momentum_score?: unknown
+  score_components?: unknown
 }
 
 export interface ScreenerSeedRow {
@@ -21,6 +22,7 @@ export interface ScreenerSeedRow {
   seedScore: number
   reason: string
   currentPrice: number | null
+  scoreComponents: string | null
 }
 
 export interface ScreenerSeedBuildResult {
@@ -48,6 +50,29 @@ function cleanSymbol(value: unknown): string {
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function normalizeScoreComponents(value: unknown, issues: string[]): string | null {
+  if (value == null || value === '') return null
+  if (typeof value === 'string') {
+    try {
+      JSON.parse(value)
+      return value
+    } catch {
+      issues.push('score_components_invalid')
+      return null
+    }
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      issues.push('score_components_invalid')
+      return null
+    }
+  }
+  issues.push('score_components_invalid')
+  return null
 }
 
 function scoreComponent(value: unknown, lower: number, upper: number, issueName: string, issues: string[]): number {
@@ -82,6 +107,7 @@ export function normalizeScreenerSeedCandidate(candidate: ScreenerSeedCandidateI
   const momentumScore = scoreComponent(candidate.momentum_score, 0, 20, 'momentum_score_non_finite', issues)
   const seedScore = Math.round(clamp(chipScore + techScore + momentumScore, 0, 100) * 10) / 10
   const reason = cleanText(candidate.reason) || DEFAULT_REASON
+  const scoreComponents = normalizeScoreComponents(candidate.score_components, issues)
 
   return {
     row: {
@@ -95,6 +121,7 @@ export function normalizeScreenerSeedCandidate(candidate: ScreenerSeedCandidateI
       seedScore,
       reason,
       currentPrice: null,
+      scoreComponents,
     },
     watchPoints: issues.map((issue) => `screener_quality:${issue}`),
     issues,
@@ -135,10 +162,10 @@ export function buildScreenerSeedUpsertSql(): string {
     INSERT INTO daily_recommendations
       (date, stock_id, symbol, name, sector, rank, score,
        chip_score, tech_score, momentum_score, ml_score, current_price,
-       reason, watch_points, has_buy_signal, industry,
+       reason, watch_points, score_components, has_buy_signal, industry,
        market_segment, recommendation_lane, eligible_for_ml, eligible_for_pending_buy)
     VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?, ?, ?,
-            ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+            ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     ON CONFLICT(date, stock_id) DO UPDATE SET
       symbol = excluded.symbol,
       name = excluded.name,
@@ -168,6 +195,11 @@ export function buildScreenerSeedUpsertSql(): string {
          AND daily_recommendations.confidence IS NULL
          AND COALESCE(daily_recommendations.ml_score, 0) = 0
         THEN excluded.watch_points ELSE daily_recommendations.watch_points END,
+      score_components = CASE
+        WHEN daily_recommendations.signal IS NULL
+         AND daily_recommendations.confidence IS NULL
+         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        THEN excluded.score_components ELSE daily_recommendations.score_components END,
       has_buy_signal = CASE
         WHEN daily_recommendations.signal IS NULL
          AND daily_recommendations.confidence IS NULL

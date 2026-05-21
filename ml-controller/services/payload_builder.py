@@ -484,7 +484,9 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
     placeholders = ",".join("?" * len(stock_ids))
     rows = d1_client.query(
         f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
-        f"       macd_hist as macdHist, bb_upper, bb_lower, atr14 "
+        f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
+        f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
+        f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
         f"FROM technical_indicators "
         f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
         f"ORDER BY stock_id ASC, date ASC",
@@ -502,6 +504,13 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
                 "rsi14": r.get("rsi14"), "macdHist": r.get("macdHist"),
                 "bb_upper": r.get("bb_upper"), "bb_lower": r.get("bb_lower"),
                 "atr14": r.get("atr14"),
+                "plusDi14": r.get("plus_di14"),
+                "minusDi14": r.get("minus_di14"),
+                "adx14": r.get("adx14"),
+                "parabolicSar": r.get("parabolic_sar"),
+                "cci20": r.get("cci20"),
+                "volumeWeightedRsi14": r.get("volume_weighted_rsi14"),
+                "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
             })
     for sid in grouped:
         if len(grouped[sid]) > limit:

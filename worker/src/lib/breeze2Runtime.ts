@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { controllerFetch } from './controllerClient'
+import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export type Breeze2Trigger = 'morning_debate' | 'screener_enrichment'
 
@@ -8,6 +9,11 @@ export interface Breeze2CandidateLike {
   name?: unknown
   stock_name?: unknown
   score?: unknown
+  score_components?: unknown
+  ml_score?: unknown
+  chip_score?: unknown
+  tech_score?: unknown
+  momentum_score?: unknown
   rank?: unknown
   reason?: unknown
   watch_points?: unknown
@@ -45,6 +51,18 @@ function normalizeScore(score: unknown): number {
   return value > 1 ? Math.min(1, value / 100) : Math.max(0, Math.min(1, value))
 }
 
+function scoreSnapshot(candidate: Breeze2CandidateLike) {
+  return readScoreV2Snapshot(candidate as ScoreV2StorageRow)
+}
+
+function candidateScore(candidate: Breeze2CandidateLike): number {
+  return scoreSnapshot(candidate).finalScore
+}
+
+function normalizeCandidateScore(candidate: Breeze2CandidateLike): number {
+  return normalizeScore(candidateScore(candidate))
+}
+
 function collectWatchPoints(candidate: Breeze2CandidateLike): string[] {
   return [
     ...(Array.isArray(candidate.watch_points) ? candidate.watch_points : []),
@@ -54,7 +72,7 @@ function collectWatchPoints(candidate: Breeze2CandidateLike): string[] {
 
 function inferTheme(candidate: Breeze2CandidateLike): Record<string, unknown> {
   const explicit = candidate.theme && typeof candidate.theme === 'object' ? candidate.theme : {}
-  const score = normalizeScore(candidate.score)
+  const score = normalizeCandidateScore(candidate)
   const points = collectWatchPoints(candidate)
   const hasBuzz = points.some((point) => point.includes('buzz_evidence'))
   const hasRrg = points.some((point) => point.includes('rrg_overlay'))
@@ -68,7 +86,7 @@ function inferTheme(candidate: Breeze2CandidateLike): Record<string, unknown> {
 
 function priority(candidate: Breeze2CandidateLike): number {
   const theme = inferTheme(candidate)
-  const score = normalizeScore(candidate.score)
+  const score = normalizeCandidateScore(candidate)
   const themeScore = asNumber(theme.theme_score, 0)
   const factSupport = asNumber(theme.fact_support, 1)
   const hypeRisk = asNumber(theme.hype_risk, 0)
@@ -76,7 +94,7 @@ function priority(candidate: Breeze2CandidateLike): number {
 }
 
 export function shouldRequestBreeze2(candidate: Breeze2CandidateLike): boolean {
-  const score = normalizeScore(candidate.score)
+  const score = normalizeCandidateScore(candidate)
   const theme = inferTheme(candidate)
   const themeScore = asNumber(theme.theme_score, 0)
   const factSupport = asNumber(theme.fact_support, 1)
@@ -108,6 +126,7 @@ export function buildBreeze2FactCheckRequest(
   const symbol = String(candidate.symbol ?? '').trim()
   const stockName = String(candidate.stock_name ?? candidate.name ?? symbol).trim()
   const points = collectWatchPoints(candidate)
+  const score = scoreSnapshot(candidate)
   return {
     symbol,
     stock_name: stockName,
@@ -121,7 +140,8 @@ export function buildBreeze2FactCheckRequest(
     metadata: {
       run_date: options.runDate,
       rank: options.rank ?? candidate.rank,
-      screener_score: candidate.score,
+      screener_score: score.finalScore,
+      score_source: score.source,
       recommendation_lane: candidate.recommendation_lane,
       source: 'stockvision_worker',
     },

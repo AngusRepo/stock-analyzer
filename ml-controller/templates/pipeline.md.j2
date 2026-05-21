@@ -9,52 +9,54 @@ tags: [pipeline, auto-generated]
 
 # Pipeline {{ date }}
 
-> {{ recommendations | length }} Screener → {{ recommendations | selectattr('ml_score', 'defined') | list | length }} ML → {{ recommendations | selectattr('signal', 'in', ['BUY', 'STRONG_BUY', 'HOLD']) | list | length }} Filter → {{ t2_buys | length }} T2
+> {{ recommendations | length }} Screener -> {{ recommendations | selectattr('signal', 'defined') | list | length }} ML -> {{ recommendations | selectattr('signal', 'in', ['BUY', 'STRONG_BUY', 'HOLD']) | list | length }} Filter -> {{ t2_buys | length }} T2
 
-## Step 1: Bottom-Up Screener (882 → {{ recommendations | length }})
-Multi-factor scoring: Chip(0-40) + Tech(0-30) + Momentum(0-20) → Top 25 with dedup
+## Step 1: Bottom-Up Screener
 
-| # | Symbol | Name | Chip | Tech | Total | Sector |
-|---|--------|------|------|------|-------|--------|
-{% for r in recommendations | sort(attribute='score', reverse=true) %}
-| {{ loop.index }} | {{ r.symbol }} | {{ r.name | default('') }} | {{ r.chip_score | default(0) | int }} | {{ r.tech_score | default(0) | int }} | {{ (r.chip_score | default(0) + r.tech_score | default(0)) | int }} | {{ r.sector | default('') }} |
+Score V2 canonical view: finalScore = five-factor total + alpha adjustment.
+
+| # | Symbol | Name | Final | ML Edge | Chip Flow | Technical | Fundamental | News/Theme | Source | Sector |
+|---|--------|------|------:|--------:|----------:|----------:|------------:|-----------:|--------|--------|
+{% for r in recommendations %}
+| {{ loop.index }} | {{ r.symbol }} | {{ r.name | default('') }} | {{ score_v2_final_score(r) | round(0) | int }} | {{ score_v2_component(r, 'mlEdge') | round(1) }} | {{ score_v2_component(r, 'chipFlow') | round(1) }} | {{ score_v2_component(r, 'technicalStructure') | round(1) }} | {{ score_v2_component(r, 'fundamentalQuality') | round(1) }} | {{ score_v2_component(r, 'newsTheme') | round(1) }} | {{ score_v2_source(r) }} | {{ r.sector | default('') }} |
 {% endfor %}
 
 ## Step 2: ML Ensemble Predict
 
 ### BUY ({{ recommendations | selectattr('signal', 'in', ['BUY', 'STRONG_BUY']) | list | length }})
-{% for r in recommendations | selectattr('signal', 'in', ['BUY', 'STRONG_BUY']) | sort(attribute='score', reverse=true) %}
-- **{{ r.symbol }}** {{ r.name | default('') }} — {{ r.signal }} (ML {{ r.ml_score | default(0) | int }}/30, conf {{ (r.confidence | default(0) * 100) | round(0) | int }}%) — Score **{{ r.score | default(0) | int }}**
+{% for r in recommendations if r.signal in ['BUY', 'STRONG_BUY'] %}
+- **{{ r.symbol }}** {{ r.name | default('') }} -> {{ r.signal }} (ML Edge {{ score_v2_component(r, 'mlEdge') | round(1) }}/25, conf {{ ((r.confidence or 0) * 100) | round(0) | int }}%) -> Score V2 **{{ score_v2_final_score(r) | round(0) | int }}**
 {% endfor %}
 
 ### HOLD ({{ recommendations | selectattr('signal', 'equalto', 'HOLD') | list | length }})
-{% for r in recommendations | selectattr('signal', 'equalto', 'HOLD') | sort(attribute='score', reverse=true) %}
-- {{ r.symbol }} {{ r.name | default('') }} — ML {{ r.ml_score | default(0) | int }}/30 — Score {{ r.score | default(0) | int }}
+{% for r in recommendations if r.signal == 'HOLD' %}
+- {{ r.symbol }} {{ r.name | default('') }} -> ML Edge {{ score_v2_component(r, 'mlEdge') | round(1) }}/25 -> Score V2 {{ score_v2_final_score(r) | round(0) | int }}
 {% endfor %}
 
 ### SELL / NO_SIGNAL
-{% for r in recommendations | rejectattr('signal', 'in', ['BUY', 'STRONG_BUY', 'HOLD']) %}
-- ~~{{ r.symbol }}~~ {{ r.name | default('') }} — {{ r.signal | default('NO_SIGNAL') }}
+{% for r in recommendations if r.signal not in ['BUY', 'STRONG_BUY', 'HOLD'] %}
+- ~~{{ r.symbol }}~~ {{ r.name | default('') }} -> {{ r.signal | default('NO_SIGNAL') }}
 {% endfor %}
 
 ## Step 3: Recommendation Filter
+
 BUY + HOLD retained as watchlist. SELL / NO_SIGNAL filtered out.
 
-{% for r in recommendations | selectattr('signal', 'in', ['BUY', 'STRONG_BUY', 'HOLD']) | sort(attribute='score', reverse=true) %}
-{{ loop.index }}. **{{ r.symbol }}** {{ r.name | default('') }} — {{ r.signal }} — Score {{ r.score | default(0) | int }}
+{% for r in recommendations if r.signal in ['BUY', 'STRONG_BUY', 'HOLD'] %}
+{{ loop.index }}. **{{ r.symbol }}** {{ r.name | default('') }} -> {{ r.signal }} -> Score V2 {{ score_v2_final_score(r) | round(0) | int }} (base {{ score_v2_total(r) | round(1) }}, alpha {{ score_v2_alpha_adjustment(r) | round(1) }})
 {% if r.reason %}   > {{ r.reason }}{% endif %}
 
 {% endfor %}
 
 ## Step 4: T2 Debate & Order
 {% if t2_buys %}
-Morning setup debate → RRG quadrant filter → Limit orders
+Morning setup debate -> RRG quadrant filter -> Limit orders
 
 {% for b in t2_buys %}
 ### {{ loop.index }}. {{ b.symbol }} {{ b.name | default('') }}
-- Signal: {{ b.signal }} | Confidence: {{ (b.confidence | default(0) * 100) | round(0) | int }}%
+- Signal: {{ b.signal }} | Confidence: {{ ((b.confidence or 0) * 100) | round(0) | int }}%
 - Entry: ${{ b.ml_entry_price | default('?') }} | SL: ${{ b.ml_stop_loss | default('?') }} | TP: ${{ b.ml_target1 | default('?') }}
-- Score: {{ b.score | default(0) | int }} (Chip {{ b.chip_score | default('?') }} + Tech {{ b.tech_score | default('?') }} + ML {{ b.ml_score | default('?') }})
+- Score V2: {{ score_v2_final_score(b) | round(0) | int }} (ML Edge {{ score_v2_component(b, 'mlEdge') | round(1) }}/25 + Chip Flow {{ score_v2_component(b, 'chipFlow') | round(1) }}/25 + Technical {{ score_v2_component(b, 'technicalStructure') | round(1) }}/25)
 
 {% endfor %}
 {% else %}

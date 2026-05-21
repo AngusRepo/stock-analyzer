@@ -1337,58 +1337,6 @@ function ArtifactLifecycleSummaryPanel({
   )
 }
 
-function PromotionEvidencePathChart({
-  selection,
-  pointers,
-  queue,
-}: {
-  selection?: ModelArtifactSelectionResponse
-  pointers?: ModelChampionPointersResponse
-  queue?: ModelArtifactPromotionQueueResponse
-}) {
-  const models = Object.values(selection?.models ?? {})
-  const selectedArtifacts = models.flatMap((row) => [
-    row.monthly_release_candidate,
-    row.weekly_drift_candidate,
-  ]).filter(Boolean) as ModelArtifactRegistryRow[]
-  const monthly = models.filter((row) => row.monthly_release_candidate).length
-  const weekly = models.filter((row) => row.weekly_drift_candidate).length
-  const offlinePassed = selectedArtifacts.filter((row) => String(row.offline_gate_decision ?? row.offline_gate_status ?? '').toLowerCase().includes('pass')).length
-  const livePassed = selectedArtifacts.filter((row) => String(row.live_gate_status ?? '').toLowerCase().includes('pass')).length
-  const approvalRequired = queue?.queue?.filter((row) => row.approval_required).length ?? 0
-  const pointerReady = pointers?.ready_count ?? 0
-  const pointerTotal = pointers?.model_count ?? 0
-  const stages = [
-    { label: 'Registry', value: selectedArtifacts.length, hint: `monthly ${monthly} / weekly ${weekly}`, color: 'bg-sky-300' },
-    { label: 'Offline Gate', value: offlinePassed, hint: 'CPCV / PBO / metadata', color: 'bg-cyan-300' },
-    { label: 'Live IC', value: livePassed, hint: 'shadow vs champion', color: 'bg-emerald-300' },
-    { label: 'Promotion Queue', value: queue?.count ?? 0, hint: `${approvalRequired} need Wei`, color: 'bg-amber-300' },
-    { label: 'Pointer Ready', value: pointerReady, hint: `${pointerReady}/${pointerTotal}`, color: 'bg-violet-300' },
-  ]
-  const max = Math.max(...stages.map((stage) => stage.value), 1)
-
-  return (
-    <WorkstationPanel title="Promotion Evidence Path / 晉級證據路徑" kicker="registry -> gate -> live -> queue -> pointer">
-      <div className="grid gap-3 p-3 lg:grid-cols-5">
-        {stages.map((stage, index) => (
-          <div key={stage.label} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{index + 1}. {stage.label}</div>
-              <div className="font-mono text-lg font-semibold text-slate-100">{stage.value}</div>
-            </div>
-            <div className="mt-3 h-20 rounded-lg border border-[#1b2535] bg-[#070a10] p-2">
-              <div className="flex h-full items-end">
-                <div className={`w-full rounded-t ${stage.color}`} style={{ height: `${Math.max(8, (stage.value / max) * 100)}%` }} />
-              </div>
-            </div>
-            <p className="mt-2 truncate text-[11px] text-slate-500">{stage.hint}</p>
-          </div>
-        ))}
-      </div>
-    </WorkstationPanel>
-  )
-}
-
 function ServingDiagnosticsPanel({ payload }: { payload: any }) {
   const recs = (payload?.all_recommendations ?? payload?.recommendations ?? []) as any[]
   const diagnostics = recs
@@ -1618,11 +1566,6 @@ export default function ModelPoolPage() {
               models={modelList}
               selection={artifactSelection.data}
               pointers={championPointers.data}
-            />
-            <PromotionEvidencePathChart
-              selection={artifactSelection.data}
-              pointers={championPointers.data}
-              queue={artifactPromotionQueue.data}
             />
             <PromotionQueuePanel
               queue={artifactPromotionQueue.data}

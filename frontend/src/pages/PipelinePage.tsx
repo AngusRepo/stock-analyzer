@@ -9,7 +9,6 @@ import { recommendationsApi, paperApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
-import DailyPipelineRunLane from '@/components/charts/DailyPipelineRunLane'
 import {
   Filter, Brain, Star, Scale, ChevronDown, ChevronUp,
   TrendingUp, TrendingDown, Minus,
@@ -116,123 +115,6 @@ function buildScreenerSectorSummary(recs: any[]) {
     }))
     .sort((a, b) => b.count - a.count || b.avgScore - a.avgScore)
     .slice(0, 8)
-}
-
-// ─── Step indicator ────────────────────────────────────────────────────────
-const CANDIDATE_SOURCE_BUCKETS = [
-  { key: 'strategy', label: '策略池', color: 'bg-cyan-300' },
-  { key: 'theme', label: '題材/新聞', color: 'bg-amber-300' },
-  { key: 'taxonomy', label: '產業分類', color: 'bg-violet-300' },
-  { key: 'chipTech', label: '籌碼/技術', color: 'bg-emerald-300' },
-  { key: 'ml', label: 'ML 投票', color: 'bg-sky-300' },
-] as const
-
-type CandidateSourceKey = typeof CANDIDATE_SOURCE_BUCKETS[number]['key']
-
-function hasCandidateSource(rec: any, key: CandidateSourceKey) {
-  const evidence = parseMaybeJson(rec.screener_funnel_evidence)
-  const strategyIds = evidence.strategy_ids ?? rec.strategy_pool_ids ?? []
-  const haystack = [
-    rec.reason,
-    rec.screener_funnel_reason,
-    rec.strategy_pool_reason,
-    evidence.reason,
-    evidence.reason_code,
-    evidence.diversity_reason,
-    evidence.source,
-    evidence.sources,
-    evidence.theme_sources,
-  ].filter(Boolean).join(' ').toLowerCase()
-
-  if (key === 'strategy') {
-    return (Array.isArray(strategyIds) && strategyIds.length > 0) || Boolean(rec.strategy_pool_reason || evidence.strategy_pool_reason)
-  }
-  if (key === 'theme') {
-    return evidence.buzz_score != null || evidence.buzz_z != null || /ptt|anue|avenue|cnyes|gdelt|news|buzz|keyword|theme|題材|新聞|熱度/.test(haystack)
-  }
-  if (key === 'taxonomy') {
-    return Boolean(rec.industryTheme || rec.industry || rec.sector || evidence.taxonomy || evidence.industry_theme || evidence.diversity_slot)
-  }
-  if (key === 'chipTech') {
-    return Number(rec.chip_score ?? 0) > 0 || Number(rec.tech_score ?? 0) > 0 || /chip|broker|foreign|technical|籌碼|法人|券商|技術|rrg/.test(haystack)
-  }
-  if (key === 'ml') {
-    return rec.ml_score != null || Boolean(rec.signal) || /ml|model|alpha|vote|predict/.test(haystack)
-  }
-  return false
-}
-
-function buildCandidateSourceProfile(rows: any[]) {
-  const counts = CANDIDATE_SOURCE_BUCKETS.map((bucket) => ({
-    ...bucket,
-    count: rows.filter((rec) => hasCandidateSource(rec, bucket.key)).length,
-  }))
-  const totalEvidence = counts.reduce((sum, item) => sum + item.count, 0)
-  return { counts, totalEvidence }
-}
-
-function CandidateSourceMixChart({
-  screener,
-  recommendations,
-  pending,
-}: {
-  screener: any[]
-  recommendations: any[]
-  pending: any[]
-}) {
-  const rows = [
-    { label: '初篩候選', items: screener },
-    { label: '推薦池', items: recommendations },
-    { label: 'T2 pending', items: pending },
-  ].filter((row) => row.items.length > 0)
-
-  if (!rows.length) return null
-
-  return (
-    <Card className="border-border bg-card">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">候選來源組成</CardTitle>
-        <p className="text-xs text-muted-foreground">把同一批候選拆成策略、題材新聞、分類、籌碼技術與 ML evidence；用來檢查是不是每天都靠同一種來源在推股。</p>
-      </CardHeader>
-      <CardContent className="grid gap-3 xl:grid-cols-3">
-        {rows.map((row) => {
-          const profile = buildCandidateSourceProfile(row.items)
-          return (
-            <div key={row.label} className="rounded-xl border border-border/80 bg-background/40 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold">{row.label}</p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">{row.items.length} 檔 / {profile.totalEvidence} 個 evidence tag</p>
-                </div>
-                <Badge variant="outline" className="font-mono text-[10px]">{row.items.length}</Badge>
-              </div>
-              <div className="mt-3 flex h-3 overflow-hidden rounded-full bg-muted">
-                {profile.counts.map((bucket) => (
-                  <div
-                    key={bucket.key}
-                    className={`${bucket.color} min-w-[2px]`}
-                    style={{ width: `${profile.totalEvidence ? Math.max(3, (bucket.count / profile.totalEvidence) * 100) : 0}%` }}
-                    title={`${bucket.label}: ${bucket.count}`}
-                  />
-                ))}
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {profile.counts.map((bucket) => (
-                  <div key={bucket.key} className="rounded-lg border border-border/70 bg-background/50 px-2 py-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-2 w-2 rounded-full ${bucket.color}`} />
-                      <span className="text-[11px] text-muted-foreground">{bucket.label}</span>
-                    </div>
-                    <div className="mt-1 font-mono text-sm font-semibold">{bucket.count}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
-  )
 }
 
 function StepHeader({ step, icon: Icon, title, subtitle, count, color }: {
@@ -351,8 +233,18 @@ function DebateTurnsList({ turns }: { turns: any[] }) {
   )
 }
 
+function cleanDecisionReason(reason: unknown): string {
+  const text = String(reason ?? '').trim()
+  if (!text) return ''
+  return text
+    .replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/i, '')
+    .replace(/^Signal Provenance \([^)]*\): [\s\S]*?(?:Judge on business merit and industry context, not raw signal strength\.|Treat as ranking promotion, not a naturally strong BUY\.)\s*/i, '')
+    .trim()
+}
+
 function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
+  const reason = cleanDecisionReason(buy.reason)
   return (
     <div className={`border rounded-lg transition-all ${expanded ? 'border-primary/20 bg-card' : 'border-transparent hover:bg-card/50'}`}>
       <div
@@ -378,7 +270,7 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
             <div>停損 <span className="font-mono text-emerald-400">${fmt(buy.ml_stop_loss, 1)}</span></div>
             <div>目標 <span className="font-mono text-red-400">${fmt(buy.ml_target1, 1)}</span></div>
           </div>
-          {buy.reason && <p className="leading-relaxed">{buy.reason}</p>}
+          {reason && <p className="leading-relaxed">{reason}</p>}
           <div className="grid grid-cols-2 gap-2 rounded-lg border border-border/70 bg-background/45 p-2">
             <span>debate <b className="font-mono text-foreground">{buy.debate_verdict ?? buy.debate_status ?? '-'}</b></span>
             <span>execution <b className="font-mono text-foreground">{buy.execution_status ?? 'pending'}</b></span>
@@ -481,22 +373,6 @@ export default function PipelinePage() {
             <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
           </div>
         </div>
-
-        <DailyPipelineRunLane
-          recommendations={allRecs}
-          pendingBuys={pendingBuys}
-          quadrantFilters={qfList}
-          recDate={recDate}
-          loading={isLoading}
-        />
-
-        {!isLoading && (
-          <CandidateSourceMixChart
-            screener={screenerPassed}
-            recommendations={recommendationPreview.length ? recommendationPreview : screenerPreview}
-            pending={pendingBuys}
-          />
-        )}
 
         {/* Pipeline flow indicator */}
         <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">

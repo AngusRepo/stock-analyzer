@@ -34,13 +34,9 @@ export default defineConfig({
       devOptions: { enabled: process.env.VITE_PWA_DEV === '1' },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        // 2026-04-21 fix: without these flags new sw waits for all tabs to
-        // close before activating → user sees stale bundle after deploy.
-        // skipWaiting + clientsClaim makes new sw take over on next refresh.
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
-        // API calls: never cache financial data
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
@@ -61,9 +57,11 @@ export default defineConfig({
       manifest: {
         name: 'StockVision 股票分析平台',
         short_name: 'StockVision',
-        description: '台股＋美股 AI 驅動分析平台',
+        description: '台股與美股 AI 驅動分析平台',
         start_url: '/',
+        scope: '/',
         display: 'standalone',
+        orientation: 'portrait-primary',
         background_color: '#0a0b0f',
         theme_color: '#0a0b0f',
         lang: 'zh-TW',
@@ -74,9 +72,17 @@ export default defineConfig({
         ],
         shortcuts: [
           {
-            name: 'Bot Dashboard',
-            short_name: 'Bot',
-            url: '/bot',
+            name: '晨間儀表板',
+            short_name: 'Dashboard',
+            description: '打開 StockVision 晨間概覽',
+            url: '/',
+            icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }],
+          },
+          {
+            name: '模型池',
+            short_name: 'Models',
+            description: '查看模型健康與晉級狀態',
+            url: '/model-pool',
             icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }],
           },
         ],
@@ -94,11 +100,15 @@ export default defineConfig({
         chunkFileNames: `assets/[name]-${BUILD_ID}-[hash].js`,
         assetFileNames: `assets/[name]-${BUILD_ID}-[hash][extname]`,
         manualChunks: {
-          'vendor-react':  ['react', 'react-dom', 'react-router-dom'],
-          'vendor-query':  ['@tanstack/react-query'],
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-query': ['@tanstack/react-query'],
           'vendor-charts': ['recharts', 'lightweight-charts'],
-          'vendor-ui':     ['@radix-ui/react-tabs', '@radix-ui/react-dialog',
-                            '@radix-ui/react-dropdown-menu', '@radix-ui/react-tooltip'],
+          'vendor-ui': [
+            '@radix-ui/react-tabs',
+            '@radix-ui/react-dialog',
+            '@radix-ui/react-dropdown-menu',
+            '@radix-ui/react-tooltip',
+          ],
         },
       },
     },

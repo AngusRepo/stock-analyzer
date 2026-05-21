@@ -845,6 +845,7 @@ function isContextWatchPoint(point: string): boolean {
 function executionWatchPointKey(point: string): string {
   const event = parseExecutionEvent(point)
   if (!event) return point.trim()
+  if (event.kind === 'execution' && event.status === 'stale_quote') return 'execution:stale_quote'
   if (event.kind === 'execution' && event.status === 'deferred') {
     if (event.reason.startsWith('volume_ratio_low')) return 'execution:deferred:volume_ratio_low'
     if (event.reason.startsWith('momentum_unavailable')) return 'execution:deferred:momentum_unavailable'

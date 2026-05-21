@@ -22,6 +22,7 @@ import { loadTradingRestrictionSet } from './tradingRestrictions'
 import { buildPartialScreenerScoreV2, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 const D1_IN_CHUNK_SIZE = 40
+const SCREENER_FUNNEL_MAX_ITEMS = 5000
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -327,7 +328,8 @@ async function writeScreenerFunnel(
   ).run()
 
   if (!input.items.length) return
-  const batch = input.items.slice(0, 2500).map((item) =>
+  const persistedItems = input.items.slice(0, SCREENER_FUNNEL_MAX_ITEMS)
+  const batch = persistedItems.map((item) =>
     env.DB.prepare(`
       INSERT INTO screener_funnel_items
         (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)

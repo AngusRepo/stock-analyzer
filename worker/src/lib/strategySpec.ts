@@ -178,10 +178,12 @@ function legacyComponentNumber(record: Record<string, unknown> | null, key: stri
 export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput): StrategyThresholdScores {
   const snapshot = readScoreV2Snapshot(candidate)
   const record = parseRecord(candidate.score_components)
+  const storageSeed = finiteNumber(candidate.score)
 
   if (snapshot.source === 'score_v2') {
+    const canonicalFinal = finiteNumber(record?.finalScore)
     return {
-      seedScore: snapshot.finalScore,
+      seedScore: canonicalFinal ?? storageSeed ?? snapshot.finalScore,
       chipFlow: snapshot.components.chipFlow,
       technicalStructure: snapshot.components.technicalStructure,
       momentumProxy: legacyComponentNumber(record, 'screenerMomentum')

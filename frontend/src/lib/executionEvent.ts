@@ -42,6 +42,12 @@ function extractNumber(text: string, pattern: RegExp): string | null {
   return text.match(pattern)?.[1] ?? null
 }
 
+function formatMsAsSeconds(msText: string | null): string {
+  const ms = Number(msText)
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} 秒`
+}
+
 export function explainExecutionEvent(raw: string): string | null {
   const event = parseExecutionEvent(raw)
   if (!event) return null
@@ -61,6 +67,11 @@ export function explainExecutionEvent(raw: string): string | null {
   }
 
   if (event.kind !== 'execution') return null
+
+  if (event.status === 'stale_quote' || /stale quote/i.test(combined)) {
+    const age = formatMsAsSeconds(extractNumber(combined, /stale quote[: ]+([0-9.]+)ms/i))
+    return `報價過期：即時報價${age ? `已超過 ${age}` : '已超過允許時間'}，系統 fail-closed，不用過期價格假裝成交。`
+  }
 
   if (event.status === 'deferred') {
     if (/volume ratio low/i.test(combined)) {

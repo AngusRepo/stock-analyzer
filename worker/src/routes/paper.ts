@@ -43,7 +43,7 @@ import type { Bindings, Variables } from '../types'
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 const ACCOUNT_ID = 1
-const PAPER_EXTRA_BENCHMARK_SYMBOLS = ['00918A', '00631L', '00403A'] as const
+const PAPER_EXTRA_BENCHMARK_SYMBOLS = ['00981A', '00631L', '00403A'] as const
 
 type BenchmarkPriceMap = Record<string, Record<string, number>>
 

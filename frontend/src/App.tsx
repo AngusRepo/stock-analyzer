@@ -26,6 +26,7 @@ export default function App() {
     <ErrorBoundary>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route path="/stock/:id" component={Dashboard} />
         <Route path="/unauthorized" component={Unauthorized} />
         <Route path="/report/:symbol">
@@ -69,9 +70,7 @@ export default function App() {
           </Suspense>
         </Route>
         <Route>
-          <div className="flex h-screen items-center justify-center text-muted-foreground">
-            <p>找不到這個頁面</p>
-          </div>
+          <Dashboard />
         </Route>
       </Switch>
     </ErrorBoundary>

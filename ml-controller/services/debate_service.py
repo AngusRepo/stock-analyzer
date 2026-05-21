@@ -188,39 +188,6 @@ class DebateResult:
     agent_turns: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _build_agent_turns(
-    zealot_cases: list[str],
-    reaper_cases: list[str],
-    fulcrum_response: str,
-    verdict: str,
-    conviction: int,
-) -> list[dict[str, Any]]:
-    turns: list[dict[str, Any]] = []
-    for idx, text in enumerate(zealot_cases, start=1):
-        turns.append({
-            "agent": "Bull Agent",
-            "round": idx,
-            "stance": "support_buy",
-            "summary": text[:1200],
-        })
-    for idx, text in enumerate(reaper_cases, start=1):
-        turns.append({
-            "agent": "Bear/Risk Agent",
-            "round": idx,
-            "stance": "challenge_risk",
-            "summary": text[:1200],
-        })
-    if fulcrum_response:
-        turns.append({
-            "agent": "Final Judge",
-            "round": len(zealot_cases) + len(reaper_cases) + 1,
-            "stance": verdict,
-            "summary": fulcrum_response[:1200],
-            "conviction": conviction,
-        })
-    return turns
-
-
 # ── Prompts (zh-TW, ported 1:1 from TS) ───────────────────────────────────────
 
 def format_breeze2_context_block(breeze2_context: dict[str, Any] | None) -> str:
@@ -253,7 +220,7 @@ def format_breeze2_context_block(breeze2_context: dict[str, Any] | None) -> str:
 
 _ZEALOT_SYS_BASE = "\n".join([
     "你是 Zealot — 一位極度樂觀的多頭交易員。",
-    "你的信念：每一支被 ML 模型選中的股票都有獨到的買入理由。",
+    "你的信念：每一支通過 Score V2 finalScore 與風控門檻的股票都有獨到的買入理由。",
     "",
     "規則：",
     "- 不准說「但是」「不過」「風險」「需要注意」，你是死多頭",
@@ -267,11 +234,9 @@ _REAPER_SYS_BASE = "\n".join([
     "你的信念：任何看起來完美的交易都藏著致命缺陷。",
     "",
     "挑戰角度：",
-    "【Fundamental Quality】估值合理性、護城河是否真實",
-    "【Technical Structure】趨勢疲態、波動結構、追高風險、量價背離",
-    "【Chip Flow】法人或券商分點是否與價格行為背離",
-    "【ML Edge】模型共識、信心與預期報酬是否矛盾",
-    "【News/Theme】題材熱度是否大於事實支撐",
+    "【價值面】估值合理性、護城河是否真實",
+    "【動能面】技術疲態、追高風險、量價背離",
+    "【宏觀面】總經/地緣尾部風險",
     "",
     "規則：",
     "- 不准說「優點是」「看好」「值得買入」，你是死空頭",
@@ -294,6 +259,58 @@ _FULCRUM_SYS_PROMPT = "\n".join([
     "",
     "第二行起用繁體中文寫 1-2 句判決理由。不要有其他格式。",
 ])
+
+
+def _compact_turn_text(text: str, max_len: int = 360) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:max_len]
+
+
+def _build_agent_turns(
+    ml_context: str,
+    zealot_cases: list[str],
+    reaper_cases: list[str],
+    fulcrum_response: str,
+    llm_source: str,
+) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = [{
+        "agent": "theme",
+        "round": 0,
+        "stance": "context",
+        "summary": _compact_turn_text(ml_context),
+        "source": "morning_setup",
+    }]
+    for idx, text in enumerate(zealot_cases, start=1):
+        turns.append({
+            "agent": "bull",
+            "round": idx,
+            "stance": "support",
+            "summary": _compact_turn_text(text),
+            "source": llm_source,
+        })
+    for idx, text in enumerate(reaper_cases, start=1):
+        turns.append({
+            "agent": "bear",
+            "round": idx,
+            "stance": "challenge",
+            "summary": _compact_turn_text(text),
+            "source": llm_source,
+        })
+        turns.append({
+            "agent": "risk",
+            "round": idx,
+            "stance": "risk_check",
+            "summary": _compact_turn_text(text, 260),
+            "source": llm_source,
+        })
+    if fulcrum_response:
+        turns.append({
+            "agent": "judge",
+            "round": len(zealot_cases) + len(reaper_cases) + 1,
+            "stance": "verdict",
+            "summary": _compact_turn_text(re.sub(r"VERDICT:.*\n?", "", fulcrum_response, flags=re.IGNORECASE)),
+            "source": llm_source,
+        })
+    return turns
 
 
 # ── Main: runBuyDebate equivalent ─────────────────────────────────────────────
@@ -426,6 +443,7 @@ async def run_buy_debate(
                         summary=(f"Zealot only (Reaper LLM error R1): {zealot_cases[0] if zealot_cases else ''}")[:500],
                         llm_source=llm_source,
                         conviction_score=60,
+                        agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
                     )
                 break
 
@@ -462,6 +480,7 @@ async def run_buy_debate(
                          f"Zealot: {zealot_case[:200]} | Reaper: {reaper_case[:200]}")[:500],
                 llm_source=llm_source,
                 conviction_score=60,
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
             )
 
         # Injection detection on Reaper + Fulcrum (Zealot is LLM-rewrite, trust)
@@ -474,6 +493,7 @@ async def run_buy_debate(
                 summary=f"[INJECTION_BLOCKED] {','.join(m['pattern'] for m in injection['matches'])}"[:500],
                 llm_source=llm_source,
                 conviction_score=0,
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
             )
 
         verdict = _parse_verdict(fulcrum_response)
@@ -498,7 +518,7 @@ async def run_buy_debate(
             summary=summary,
             llm_source=llm_source,
             conviction_score=conviction,
-            agent_turns=_build_agent_turns(zealot_cases, reaper_cases, fulcrum_response, verdict, conviction),
+            agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
         )
         # #44 fire-and-forget A/B log (only when ab_model assigned)
         if ab_model:
@@ -561,7 +581,7 @@ async def run_buy_debate_cached(
                     summary=payload.get("summary", ""),
                     llm_source=payload.get("llm_source", "cached"),
                     conviction_score=payload.get("conviction_score", 60),
-                    agent_turns=payload.get("agent_turns") if isinstance(payload.get("agent_turns"), list) else [],
+                    agent_turns=payload.get("agent_turns", []),
                 )
             except Exception:
                 pass

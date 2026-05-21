@@ -6,39 +6,43 @@ export function usePWA() {
   const [installPrompt, setInstallPrompt] = useState<any>(null)
   const [isInstalled, setIsInstalled] = useState(false)
 
-  // vite-plugin-pwa auto-update: shows toast when new SW is waiting
   useRegisterSW({
     onNeedRefresh() {
       toast('StockVision 有新版本', {
-        description: '重新整理頁面以套用更新',
-        action: { label: '立即更新', onClick: () => window.location.reload() },
+        description: '重新整理後即可使用最新介面。',
+        action: { label: '重新整理', onClick: () => window.location.reload() },
         duration: 10000,
       })
     },
     onOfflineReady() {
-      toast.success('StockVision 已可離線使用')
+      toast.success('StockVision 已可離線開啟')
     },
   })
 
   useEffect(() => {
-    // PWA install state
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as any).standalone === true
     setIsInstalled(isStandalone)
 
-    const handlePrompt = (e: Event) => {
-      e.preventDefault()
-      setInstallPrompt(e)
+    const handlePrompt = (event: Event) => {
+      event.preventDefault()
+      setInstallPrompt(event)
     }
-    window.addEventListener('beforeinstallprompt', handlePrompt)
-    window.addEventListener('appinstalled', () => {
+
+    const handleInstalled = () => {
       setIsInstalled(true)
       setInstallPrompt(null)
-      toast.success('StockVision 已安裝到桌面！')
-    })
+      toast.success('StockVision 已安裝')
+    }
 
-    return () => window.removeEventListener('beforeinstallprompt', handlePrompt)
+    window.addEventListener('beforeinstallprompt', handlePrompt)
+    window.addEventListener('appinstalled', handleInstalled)
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handlePrompt)
+      window.removeEventListener('appinstalled', handleInstalled)
+    }
   }, [])
 
   const install = async () => {
@@ -47,9 +51,9 @@ export function usePWA() {
     const { outcome } = await installPrompt.userChoice
     if (outcome === 'accepted') {
       setInstallPrompt(null)
-      toast.success('正在安裝 StockVision…')
+      toast.success('已安裝 StockVision')
     }
   }
 
-  return { isInstalled, canInstall: !!installPrompt, install }
+  return { isInstalled, canInstall: !isInstalled && !!installPrompt, install }
 }

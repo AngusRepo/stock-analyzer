@@ -8,7 +8,6 @@ import { sendDiscordNotification } from './notify'
 import {
   expireRecentPendingBuys,
   loadPendingBuySnapshot,
-  persistPendingBuyDebateTurns,
   replacePendingBuyState,
   type PendingBuy,
 } from './pendingBuyStore'
@@ -48,10 +47,8 @@ interface BuyRecommendationRow {
   signal: string
   confidence: number
   reason: string | null
-  score_components: string | null
   chip_score: number | null
   tech_score: number | null
-  momentum_score: number | null
   ml_score: number | null
   score: number | null
   ml_entry_price: number | null
@@ -618,7 +615,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.score_components, dr.chip_score, dr.tech_score, dr.momentum_score, dr.ml_score, dr.score,
+             dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -984,7 +981,7 @@ export async function reconcilePendingBuyDebates(
     pendingItems.map((item, index) => ({
       symbol: item.symbol,
       name: item.name ?? item.symbol,
-      score: item.score ?? item.confidence * 100,
+      score: item.score ?? item.ml_score ?? item.confidence * 100,
       reason: item.reason ?? 'ML ensemble signal',
       watch_points: item.watch_points,
       rank: index + 1,
@@ -1056,7 +1053,7 @@ export async function reconcilePendingBuyDebates(
       debate_verdict: debate.verdict,
       debate_status: 'completed',
       risk_pct: debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
-      debate_agent_turns: debate.agentTurns ?? [],
+      debate_turns: debate.agentTurns ?? [],
     })
   }
 
@@ -1072,12 +1069,6 @@ export async function reconcilePendingBuyDebates(
       failed_count: failedCount,
     },
   })
-
-  await Promise.all(
-    nextPendingBuys.map((item) =>
-      persistPendingBuyDebateTurns(env, tradeDate, item.symbol, item.debate_agent_turns ?? []),
-    ),
-  )
 
   return `debated=${results.size} failed=${failedCount} remaining=${nextPendingBuys.length}`
 }

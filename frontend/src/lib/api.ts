@@ -1,4 +1,6 @@
-const BASE = import.meta.env.VITE_API_URL ?? '/api'
+import { resolveApiBase } from '../const'
+
+const BASE = resolveApiBase()
 export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'
 
 let _token: string | null = sessionStorage.getItem('sv_token')

@@ -54,19 +54,21 @@ function checkInjection(rawText: string): { action: string; severity: string; ma
 
 export type DebateVerdict = 'APPROVE' | 'DOWNGRADE' | 'REJECT'
 
+export interface DebateAgentTurn {
+  agent: 'theme' | 'bull' | 'bear' | 'risk' | 'judge'
+  round?: number
+  stance?: string
+  summary: string
+  source?: string
+}
+
 export interface DebateResult {
   verdict: DebateVerdict
   rounds: number
   summary: string  // stored in paper_orders.note
   llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
   convictionScore: number // 0-100, judge 的信念度評分
-  agentTurns?: Array<{
-    agent: string
-    round?: number
-    stance?: string
-    summary: string
-    conviction?: number
-  }>
+  agentTurns?: DebateAgentTurn[]
 }
 
 export interface StockProfile {
@@ -215,6 +217,43 @@ function parseJsonArray(raw: string | null | undefined, maxItems = 3): string {
   } catch {
     return raw.slice(0, 200)
   }
+}
+
+function compactTurnText(text: string, max = 360): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function buildAgentTurns(
+  mlContext: string,
+  zealotCases: string[],
+  reaperCases: string[],
+  fulcrumResponse: string,
+  llmSource: string,
+): DebateAgentTurn[] {
+  const turns: DebateAgentTurn[] = [{
+    agent: 'theme',
+    round: 0,
+    stance: 'context',
+    summary: compactTurnText(mlContext, 360),
+    source: 'morning_setup',
+  }]
+  zealotCases.forEach((text, idx) => {
+    turns.push({ agent: 'bull', round: idx + 1, stance: 'support', summary: compactTurnText(text), source: llmSource })
+  })
+  reaperCases.forEach((text, idx) => {
+    turns.push({ agent: 'bear', round: idx + 1, stance: 'challenge', summary: compactTurnText(text), source: llmSource })
+    turns.push({ agent: 'risk', round: idx + 1, stance: 'risk_check', summary: compactTurnText(text, 260), source: llmSource })
+  })
+  if (fulcrumResponse) {
+    turns.push({
+      agent: 'judge',
+      round: zealotCases.length + reaperCases.length + 1,
+      stance: 'verdict',
+      summary: compactTurnText(fulcrumResponse.replace(/VERDICT:.*\n?/i, ''), 360),
+      source: llmSource,
+    })
+  }
+  return turns
 }
 
 /**
@@ -378,11 +417,9 @@ export async function runBuyDebate(
     '你的信念：任何看起來完美的交易都藏著致命缺陷。',
     '',
     '挑戰角度：',
-    '【Fundamental Quality】估值合理性、護城河是否真實',
-    '【Technical Structure】趨勢疲態、波動結構、追高風險、量價背離',
-    '【Chip Flow】法人或券商分點是否與價格行為背離',
-    '【ML Edge】模型共識、信心與預期報酬是否矛盾',
-    '【News/Theme】題材熱度是否大於事實支撐',
+    '【價值面】估值合理性、護城河是否真實',
+    '【動能面】技術疲態、追高風險、量價背離',
+    '【宏觀面】總經/地緣尾部風險',
     '',
     '規則：',
     '- 不准說「優點是」「看好」「值得買入」，你是死空頭',
@@ -469,6 +506,7 @@ export async function runBuyDebate(
           summary: `Zealot only (Reaper LLM error R1): ${zealotCases[0] ?? ''}`.slice(0, 500),
           llmSource,
           convictionScore: 60,
+          agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
         }
       } else {
         break
@@ -523,6 +561,7 @@ export async function runBuyDebate(
       verdict: 'APPROVE', rounds: totalRounds - 1,
       summary: `Zealot+Reaper done (Fulcrum error). Zealot: ${zealotCase.slice(0, 200)} | Reaper: ${reaperCase.slice(0, 200)}`.slice(0, 500),
       llmSource, convictionScore: 60,
+      agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, '', llmSource),
     }
   }
 
@@ -534,6 +573,7 @@ export async function runBuyDebate(
       verdict: 'REJECT' as DebateVerdict, rounds: totalRounds,
       summary: `[INJECTION_BLOCKED] ${injectionCheck.matches.map((m: any) => m.pattern).join(', ')}`.slice(0, 500),
       llmSource, convictionScore: 0,
+      agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
     }
   }
 
@@ -567,7 +607,14 @@ export async function runBuyDebate(
     llm_source: llmSource,
   })
 
-  return { verdict, rounds: totalRounds, summary, llmSource, convictionScore }
+  return {
+    verdict,
+    rounds: totalRounds,
+    summary,
+    llmSource,
+    convictionScore,
+    agentTurns: buildAgentTurns(mlContext, zealotCases, reaperCases, fulcrumResponse, llmSource),
+  }
 }
 
 // ─── Verdict Parser ───────────────────────────────────────────────────────────

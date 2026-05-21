@@ -97,9 +97,14 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
     evidence.strategy_ids = [
       ...new Set(strategyPool.flatMap((step) => {
         const ids = step.evidence?.strategy_ids
-        return Array.isArray(ids) ? ids.map(String) : []
+      return Array.isArray(ids) ? ids.map(String) : []
       })),
     ]
+  } else {
+    const finalStrategyIds = finalSelection?.evidence?.strategy_pool_ids
+    if (Array.isArray(finalStrategyIds) && finalStrategyIds.length) {
+      evidence.strategy_ids = [...new Set(finalStrategyIds.map(String).filter(Boolean))]
+    }
   }
   if (diversity.length) {
     evidence.diversity_cooldown = diversity.map((step) => ({

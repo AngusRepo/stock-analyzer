@@ -414,6 +414,32 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .slice(0, Math.min(quota, costBudget))
           .map((entry, index) => ({ ...entry, rank: index + 1 }))
       }
+      if (!entries.length) {
+        usedAdaptiveNearMatch = true
+        entries = candidates
+          .map((candidate) => {
+            const thresholdScores = deriveStrategyThresholdScores(candidate)
+            const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.86) * 1000) / 1000
+            return {
+              strategy_id: spec.id,
+              strategy_name: spec.name,
+              alpha_bucket: spec.alphaBucket,
+              strategy_status: spec.status,
+              quota,
+              cost_budget: costBudget,
+              evidence_requirements: evidenceRequirements,
+              regime_weight: rWeight,
+              candidate: cloneCandidate(candidate),
+              raw_score: thresholdScores.seedScore,
+              strategy_score: scored,
+              rank: 0,
+              reason: 'adaptive_empty_pool_ranked_proxy',
+            } satisfies StrategyPoolEntry<T>
+          })
+          .sort((a, b) => b.strategy_score - a.strategy_score)
+          .slice(0, Math.min(quota, costBudget))
+          .map((entry, index) => ({ ...entry, rank: index + 1 }))
+      }
 
       return {
         strategy_id: spec.id,

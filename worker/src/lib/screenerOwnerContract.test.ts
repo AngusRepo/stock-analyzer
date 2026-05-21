@@ -105,6 +105,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(screenerFunnelEvidence.includes('rrg_overlay'), 'funnel evidence summary must include RRG overlay')
   assert(screenerFunnelEvidence.includes('buzz_evidence'), 'funnel evidence summary must include buzz evidence')
   assert(screenerFunnelEvidence.includes('diversity_cooldown'), 'funnel evidence summary must include diversity/cooldown evidence')
+  assert(screenerFunnelEvidence.includes('finalSelection?.evidence?.strategy_pool_ids'), 'funnel evidence summary must expose final selection strategy ids when explicit strategy_pool rows are absent')
 }
 
 {
@@ -116,7 +117,10 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(strategyCandidatePool.includes('lowLoadTotalCap: 128'), 'strategy candidate pool should expose adaptive 128 low-load cap')
   assert(strategyCandidatePool.includes('hardTotalCap: 160'), 'strategy candidate pool should expose hard 160 cap')
   assert(strategyCandidatePool.includes('researchOnlyQueue'), 'strategy candidate pool should route overflow into research-only queue instead of silently dropping')
+  assert(strategyCandidatePool.includes('adaptive_empty_pool_ranked_proxy'), 'empty strict strategy pools must still emit explicit shadow proxy candidates instead of leaving UI untagged')
   assert(strategySpec.includes('canonicalFinal ?? storageSeed ?? snapshot.finalScore'), 'strategy pools must use storage seed score for partial screener Score V2 payloads')
+  assert(strategySpec.includes("'bull', 'sideways', 'volatile'"), 'trend strategy must remain available in volatile regime for shadow candidate discovery')
+  assert(strategySpec.includes("'bull', 'sideways', 'bear', 'volatile'"), 'defensive strategy must remain available in volatile regime for shadow candidate discovery')
   assert(screenerStrategyConsumer.includes("from './strategySpec'"), 'screener strategy consumer should read the strategy spec contract')
   assert(screenerStrategyConsumer.includes("from './strategyOwnerFreeze'"), 'screener strategy consumer should enforce owner freeze')
   assert(strategyOwnerFreeze.includes('STRATEGY_OWNER_BOUNDARIES'), 'owner freeze must be explicit and testable')

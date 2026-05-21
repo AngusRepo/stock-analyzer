@@ -24,6 +24,7 @@ import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanc
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
+import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
 import {
@@ -405,6 +406,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         const qf = qfMap.get(b.symbol)
         const executionBadge = formatExecutionStatusBadge(b.execution_status)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
+        const allocatorSummary = describeAllocatorDecision(b.watch_points)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
         // prefix with price line. Previously price line 100% replaced reason.
         // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
@@ -443,6 +445,19 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div className="mt-1 text-muted-foreground/70">
                 {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
               </div>
+              {allocatorSummary && (
+                <div className={[
+                  'mt-2 rounded-md border px-2 py-1.5',
+                  allocatorSummary.tone === 'ok'
+                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+                    : allocatorSummary.tone === 'warn'
+                      ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
+                      : 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200',
+                ].join(' ')}>
+                  <div className="font-semibold">{allocatorSummary.title}</div>
+                  <div className="mt-0.5 text-muted-foreground/80">{allocatorSummary.detail}</div>
+                </div>
+              )}
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}

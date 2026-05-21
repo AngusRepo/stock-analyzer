@@ -36,6 +36,14 @@ import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
 import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from './tradingRestrictions'
+import {
+  buildFiveSlotCapitalPlan,
+  fiveSlotHoldingWeaknessScore,
+  formatFiveSlotDecisionWatchPoint,
+  type FiveSlotDecision,
+  type FiveSlotCandidate,
+  type FiveSlotHolding,
+} from './fiveSlotCapitalAllocator'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -245,10 +253,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (pendingSnapshot.pendingBuys.length > 0) {
       const pendingBuys = pendingSnapshot.pendingBuys
       const cancelled = pendingBuys.map((b) => b.symbol).join(', ')
-      console.log(`[Intraday] 收盤前取消未成交掛單: ${cancelled}`)
+      console.log(`[Intraday] cancelling unfilled pending buys before close: ${cancelled}`)
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
-        `收盤前取消未成交掛單\n${pendingBuys.map((b) => `- ${b.symbol} ${b.name} @ $${b.ml_entry_price}`).join('\n')}`,
+        `Cancel unfilled pending buys before close\n${pendingBuys.map((b) => `- ${b.symbol} ${b.name} @ $${b.ml_entry_price}`).join('\n')}`,
       )
       await markPendingBuyExecutionEvents(
         env,
@@ -276,8 +284,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
-    const errMsg = `Shioaji 報價異常: ${zeroPriceSymbols.join(',')}`
-    console.error(`[Intraday] 錯誤 ${errMsg}`)
+    const errMsg = `Shioaji quote anomaly: ${zeroPriceSymbols.join(',')}`
+    console.error(`[Intraday] error ${errMsg}`)
     await env.KV.put(
       `scheduler:run:intraday-error:${today}`,
       JSON.stringify({ error: errMsg, symbols: zeroPriceSymbols, timestamp: new Date().toISOString() }),
@@ -286,7 +294,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if ((env as any).DISCORD_WEBHOOK_URL) {
       void sendDiscordNotification(
         (env as any).DISCORD_WEBHOOK_URL,
-        `錯誤 **Shioaji 報價缺失** ${errMsg} (${zeroPriceSymbols.length}/${pendingSymbols.length} 檔)`,
+        `Error **Shioaji quote missing** ${errMsg} (${zeroPriceSymbols.length}/${pendingSymbols.length} symbols)`,
       )
     }
   }
@@ -328,6 +336,24 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   let dailySwaps = 0
   const maxSwaps = cfg.position.maxDailySwaps ?? 1
 
+  let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[] } = { risk_level: 'unknown' }
+  if ((env as any).SHIOAJI_PROXY_URL) {
+    try {
+      const mrRes = await fetch(`${(env as any).SHIOAJI_PROXY_URL}/market-risk`, {
+        headers: { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (mrRes.ok) {
+        marketRisk = (await mrRes.json()) as any
+        if (marketRisk.risk_level !== 'low') {
+          console.log(`[RiskGate] market risk guard: ${marketRisk.risk_level} (${marketRisk.change_rate ?? 0}%) -> ${(marketRisk.risk_reasons ?? []).join(', ')}`)
+        }
+      }
+    } catch (e) {
+      console.warn('[RiskGate] market-risk fetch failed (fail-closed):', e)
+    }
+  }
+
   if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
     console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
 
@@ -339,36 +365,70 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const weaknessScores: { symbol: string; score: number }[] = []
     for (const pos of fullPositions ?? []) {
-      const px = posValueMap.get(pos.symbol) ?? pos.avg_cost
-      const pnlPct = pos.avg_cost > 0 ? (px - pos.avg_cost) / pos.avg_cost : 0
       const daysHeld = pos.entry_date
         ? Math.floor((Date.now() + 8 * 3600_000 - new Date(pos.entry_date + 'T00:00:00+08:00').getTime()) / 86400_000)
         : 0
-      const timeRatio = Math.min(1, daysHeld / (cfg.exit.timeStopDays ?? 20))
-
-      const sw = cfg.position.swapWeights
-      const tp1MissMult = (sw as any).tp1MissMultiplier ?? 0.5
-      const tp1NotHitPen = (sw as any).tp1NotHitPenalty ?? 40
-      const lossPen = (sw as any).lossPenalty ?? 20
-      const pnlScore = Math.max(0, -pnlPct * 100)
-      const timeScore = timeRatio * 100
-      const score =
-        pnlScore * sw.pnl +
-        timeScore * sw.time +
-        (1 - (pos.tp1_hit ? tp1MissMult : 0)) * tp1NotHitPen * sw.tp1 +
-        (pnlPct < 0 ? lossPen : 0) * sw.loss
+      const score = fiveSlotHoldingWeaknessScore({
+        symbol: String(pos.symbol),
+        shares: Number(pos.shares ?? 0),
+        avgCost: Number(pos.avg_cost ?? 0),
+        lastPrice: posValueMap.get(pos.symbol) ?? Number(pos.avg_cost ?? 0),
+        daysHeld,
+        tp1Hit: Boolean(pos.tp1_hit),
+      })
       weaknessScores.push({ symbol: pos.symbol, score })
     }
     weaknessScores.sort((a, b) => b.score - a.score)
 
-    const swapThreshold = cfg.position.swapThreshold ?? 1.15
     const minHoldDays = cfg.position.swapMinHoldDays ?? 3
+    const autoSwapPlan = buildFiveSlotCapitalPlan({
+      account: {
+        cash: Number((acc as any).cash ?? 0),
+        totalPortfolio,
+        dailyRemaining: cfg.position.dailyBuyLimit,
+      },
+      marketRiskLevel: marketRisk.risk_level,
+      config: {
+        maxPositions: maxPos,
+        maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+        maxPctOfCash: cfg.position.maxPctOfCash,
+        dailyBuyLimit: cfg.position.dailyBuyLimit,
+        minPositionValue: cfg.position.minPositionValue ?? 30_000,
+        swapThreshold: cfg.position.swapThreshold,
+      },
+      holdings: (fullPositions ?? []).map((pos: any) => ({
+        symbol: String(pos.symbol),
+        shares: Number(pos.shares ?? 0),
+        avgCost: Number(pos.avg_cost ?? 0),
+        lastPrice: posValueMap.get(pos.symbol) ?? Number(pos.avg_cost ?? 0),
+        daysHeld: pos.entry_date
+          ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+          : 0,
+        tp1Hit: Boolean(pos.tp1_hit),
+      })),
+      candidates: pendingBuys.map((pending) => ({
+        symbol: pending.symbol,
+        confidence: pending.confidence,
+        score: pending.score,
+        riskPct: pending.risk_pct,
+      })),
+    })
 
+    const soldSwapSymbols = new Set<string>()
     for (const pending of [...pendingBuys]) {
       if (dailySwaps >= maxSwaps) break
-      if (weaknessScores.length === 0) break
+      if ((fullPositions ?? []).length === 0) break
 
-      const weakest = weaknessScores[0]
+      const replacementDecision = autoSwapPlan.decisions.get(pending.symbol)
+      if (replacementDecision?.action !== 'replace' || !replacementDecision.replaceSymbol) {
+        console.log(`[Swap] ${pending.symbol} allocator decision=${replacementDecision?.action ?? 'none'}, skip replacement`)
+        continue
+      }
+      const weakest = {
+        symbol: replacementDecision.replaceSymbol,
+        score: replacementDecision.replaceWeaknessScore ?? 0,
+      }
+      if (soldSwapSymbols.has(weakest.symbol)) continue
       const weakPos = (fullPositions ?? []).find((p: any) => p.symbol === weakest.symbol)
       if (!weakPos) continue
 
@@ -377,13 +437,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         : 0
       if (daysHeld < minHoldDays) {
         console.log(`[Swap] ${weakest.symbol} held only ${daysHeld}d < ${minHoldDays}d, skip swap`)
-        continue
-      }
-
-      const newQuality = (pending.confidence ?? cfg.signal.buySignalScore) * 100
-      const weaknessThreshold = 100 / swapThreshold
-      if (weakest.score < weaknessThreshold || newQuality < 55) {
-        console.log(`[Swap] ${weakest.symbol}(weakness=${weakest.score.toFixed(0)}) not weak enough (need>${weaknessThreshold.toFixed(0)}) or ${pending.symbol}(quality=${newQuality.toFixed(0)}) not strong enough, skip`)
         continue
       }
 
@@ -440,7 +493,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         continue
       }
       const sellPrice = sellFill.fillPrice
-      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(quality=${newQuality.toFixed(1)})`)
+      console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(rank=${replacementDecision.candidateRank ?? 'na'})`)
       const sellValue = sellPrice * weakPos.shares
       const sellTax = calcTax(sellValue, cfg)
       const sellComm = calcCommission(sellValue, cfg)
@@ -448,6 +501,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const sellNote = buildSellOrderNote({
         reason: 'auto_swap',
         weakness_score: Math.round(weakest.score * 10) / 10,
+        candidate_rank: replacementDecision.candidateRank ?? null,
+        allocator_reason: replacementDecision.reason,
         replaced_by: pending.symbol,
         entry_date: weakPos.entry_date ?? null,
       }, {
@@ -486,6 +541,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         detail: {
           replaced_by: pending.symbol,
           weakness_score: Math.round(weakest.score * 10) / 10,
+          candidate_rank: replacementDecision.candidateRank ?? null,
+          allocator_reason: replacementDecision.reason,
           fill_reason: sellFill.reason,
           quote_last: weakQuote.last,
           quote_bid: weakQuote.bid ?? null,
@@ -500,6 +557,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       acc.cash += sellProceeds
 
       weaknessScores.shift()
+      soldSwapSymbols.add(weakest.symbol)
       dailySwaps++
     }
   }
@@ -519,12 +577,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   ).bind(ACCOUNT_ID, today).first<any>()
   let dailyBuyTotal = todayBought?.total ?? 0
 
+  const { results: capitalPositionRows } = await env.DB.prepare(
+    'SELECT symbol, shares, avg_cost, entry_date, tp1_hit FROM paper_positions WHERE account_id=? AND shares>0',
+  ).bind(ACCOUNT_ID).all<any>()
+  const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
+
   const sectorCountMap = new Map<string, number>()
-  if (posSymbols.length > 0) {
-    const sectorPlaceholders = posSymbols.map(() => '?').join(',')
+  if (capitalPositionSymbols.length > 0) {
+    const sectorPlaceholders = capitalPositionSymbols.map(() => '?').join(',')
     const { results: sectorRows } = await env.DB.prepare(
       `SELECT symbol, sector FROM stocks WHERE symbol IN (${sectorPlaceholders})`,
-    ).bind(...posSymbols).all<{ symbol: string; sector: string | null }>()
+    ).bind(...capitalPositionSymbols).all<{ symbol: string; sector: string | null }>()
     for (const row of sectorRows ?? []) {
       const sec = row.sector ?? 'UNKNOWN'
       sectorCountMap.set(sec, (sectorCountMap.get(sec) ?? 0) + 1)
@@ -548,23 +611,44 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
-  let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[] } = { risk_level: 'unknown' }
-  if ((env as any).SHIOAJI_PROXY_URL) {
-    try {
-      const mrRes = await fetch(`${(env as any).SHIOAJI_PROXY_URL}/market-risk`, {
-        headers: { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },
-        signal: AbortSignal.timeout(5000),
-      })
-      if (mrRes.ok) {
-        marketRisk = (await mrRes.json()) as any
-        if (marketRisk.risk_level !== 'low') {
-          console.log(`[RiskGate] 市場風險升高: ${marketRisk.risk_level} (${marketRisk.change_rate ?? 0}%) -> ${(marketRisk.risk_reasons ?? []).join(', ')}`)
-        }
-      }
-    } catch (e) {
-      console.warn('[RiskGate] market-risk fetch failed (fail-closed):', e)
-    }
-  }
+  const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map((pos: any) => ({
+    symbol: String(pos.symbol),
+    shares: Number(pos.shares ?? 0),
+    avgCost: Number(pos.avg_cost ?? 0),
+    lastPrice: posValueMap.get(String(pos.symbol)) ?? Number(pos.avg_cost ?? 0),
+    daysHeld: pos.entry_date
+      ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+      : 0,
+    tp1Hit: Boolean(pos.tp1_hit),
+  }))
+  const capitalCandidates: FiveSlotCandidate[] = pendingBuys.map((pending) => ({
+    symbol: pending.symbol,
+    confidence: pending.confidence,
+    score: pending.score,
+    riskPct: pending.risk_pct,
+  }))
+  const capitalPlan = buildFiveSlotCapitalPlan({
+    account: {
+      cash: Number((acc as any).cash ?? 0),
+      totalPortfolio,
+      dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
+    },
+    marketRiskLevel: marketRisk.risk_level,
+    config: {
+      maxPositions: maxPos,
+      maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+      maxPctOfCash: cfg.position.maxPctOfCash,
+      dailyBuyLimit: DAILY_BUY_LIMIT,
+      minPositionValue: cfg.position.minPositionValue ?? 30_000,
+      swapThreshold: cfg.position.swapThreshold,
+    },
+    holdings: capitalHoldings,
+    candidates: capitalCandidates,
+  })
+  console.log(
+    `[Allocator] 5-slot exposure=${(capitalPlan.targetExposure * 100).toFixed(0)}% ` +
+    `slot=${Math.round(capitalPlan.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
+  )
 
   let stateChanged = false
   const executionEvents: PendingBuyExecutionEvent[] = []
@@ -591,6 +675,29 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     pendingBuys = transition.allItems as PendingBuy[]
     recordExecutionNote(symbol, status, reason, detail)
     if (transition.changed) stateChanged = true
+  }
+  const recordAllocatorDecision = (symbol: string, decision: FiveSlotDecision) => {
+    const watchPoint = formatFiveSlotDecisionWatchPoint(decision)
+    const idx = pendingBuys.findIndex((item) => item.symbol === symbol)
+    if (idx >= 0) {
+      const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
+      const nextPoints = [...points.filter((point) => !String(point).startsWith('allocator:')), watchPoint]
+      const changed = nextPoints.length !== points.length || nextPoints.some((point, i) => point !== points[i])
+      if (changed || !pendingBuys[idx].execution_status) {
+        pendingBuys[idx] = {
+          ...pendingBuys[idx],
+          execution_status: pendingBuys[idx].execution_status ?? 'pending',
+          watch_points: nextPoints,
+        }
+        stateChanged = true
+      }
+    }
+    recordExecutionNote(
+      symbol,
+      `allocator_${decision.action}`,
+      decision.reason,
+      `target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
+    )
   }
   for (const pending of [...pendingBuys]) {
     if ((pending.debate_verdict ?? 'PENDING') === 'PENDING') continue
@@ -626,9 +733,25 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
 
     if (blockedSymbols.has(pending.symbol)) {
-      console.warn(`[Intraday] ${pending.symbol} 屬於懲罰/注意/下市風險清單，移出待買清單`)
+      console.warn(`[Intraday] ${pending.symbol} restricted execution gate`)
       recordExecutionEvent(pending.symbol, 'skipped', 'restricted_execution_gate', 'punished_or_attention_or_delisting')
       stateChanged = true
+      continue
+    }
+
+    const allocatorDecision = capitalPlan.decisions.get(pending.symbol)
+    if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision)
+    if (!allocatorDecision || allocatorDecision.action === 'skip' || allocatorDecision.action === 'hold') {
+      const reason = allocatorDecision?.reason ?? 'allocator_no_plan'
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'pending',
+        reason,
+        allocatorDecision
+          ? `target=${Math.round(allocatorDecision.targetPositionValue)};current=${Math.round(allocatorDecision.currentPositionValue)}`
+          : null,
+      )
+      console.log(`[Allocator] ${pending.symbol}: ${reason}`)
       continue
     }
 
@@ -727,8 +850,16 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const currentCount = await env.DB.prepare(
       'SELECT COUNT(*) as cnt FROM paper_positions WHERE account_id=? AND shares>0',
     ).bind(ACCOUNT_ID).first<any>()
-    if ((currentCount?.cnt ?? 0) >= maxPos) {
+    if ((currentCount?.cnt ?? 0) >= maxPos && allocatorDecision.action !== 'add') {
       console.log(`[Intraday] ${pending.symbol}: position cap (${maxPos}) reached, skip`)
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'pending',
+        allocatorDecision.action === 'replace' ? 'allocator_replace_requires_sell_first' : 'allocator_full_requires_replacement',
+        allocatorDecision.replaceSymbol
+          ? `replace=${allocatorDecision.replaceSymbol};weakness=${allocatorDecision.replaceWeaknessScore ?? 'na'}`
+          : null,
+      )
       continue
     }
 
@@ -737,7 +868,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const recSector = (await env.DB.prepare('SELECT sector FROM stocks WHERE symbol=?').bind(pending.symbol).first<any>())?.sector ?? 'UNKNOWN'
     if ((sectorCountMap.get(recSector) ?? 0) >= 2) {
-      console.log(`[Intraday] ${pending.symbol} 同產業已達持倉上限，跳過`)
+      console.log(`[Intraday] ${pending.symbol}: sector cap reached, skip`)
       continue
     }
 
@@ -751,14 +882,25 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (pending.kelly_pct != null && pending.kelly_pct > 0) {
       const kellyAdj = pending.kelly_pct * mediumRiskDampen
       const kellyBudget = totalPortfolio * kellyAdj
-      budget = Math.min(kellyBudget, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      budget = Math.min(kellyBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
       sizingMode = 'kelly'
       console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% -> budget ${budget.toFixed(0)}`)
     } else {
       const riskPctAdj = pending.risk_pct * mediumRiskDampen
       const riskBudget = totalPortfolio * riskPctAdj / stopPct
-      budget = Math.min(riskBudget, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      budget = Math.min(riskBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
       sizingMode = 'risk_parity'
+    }
+
+    const minPosVal = cfg.position.minPositionValue ?? 30_000
+    if (budget < minPosVal) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'pending',
+        'allocator_budget_below_min',
+        `budget=${Math.round(budget)};min=${minPosVal};action=${allocatorDecision.action}`,
+      )
+      continue
     }
 
     const fillPrice = fillPriceOverride
@@ -781,7 +923,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const isPartialFill = shares < requestedShares
 
     const txValue = fillPrice * shares
-    const minPosVal = cfg.position.minPositionValue ?? 30_000
     if (txValue < minPosVal) {
       console.log('[Intraday] txValue below minimum', pending.symbol, txValue, minPosVal)
       continue
@@ -872,6 +1013,16 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             risk_pct: pending.risk_pct,
             kelly_pct: pending.kelly_pct,
             sizing_mode: sizingMode,
+            allocation_action: allocatorDecision.action,
+            allocation_reason: allocatorDecision.reason,
+            allocation_target_exposure: allocatorDecision.targetExposure,
+            allocation_target_slot: Math.round(allocatorDecision.targetSlotValue),
+            allocation_target_position: Math.round(allocatorDecision.targetPositionValue),
+            allocation_current_position: Math.round(allocatorDecision.currentPositionValue),
+            allocation_budget_cap: Math.round(allocatorDecision.budgetCap),
+            allocation_replace_symbol: allocatorDecision.replaceSymbol ?? null,
+            allocation_replace_weakness: allocatorDecision.replaceWeaknessScore ?? null,
+            allocation_candidate_rank: allocatorDecision.candidateRank ?? null,
             stop_pct: stopPct,
             atr14,
             budget: Math.round(budget),
@@ -972,7 +1123,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       console.warn('[L2] Decision log failed:', e)
     }
 
-    const lotTag = isOddLot ? ' [零股]' : ''
+    const lotTag = isOddLot ? ' [odd-lot]' : ''
     console.log(`[Intraday] filled ${pending.symbol} ${shares}${lotTag} @ ${fillPrice} (mkt ${price})`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,

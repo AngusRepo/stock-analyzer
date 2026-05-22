@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
-import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import { buildScoreBreakdownViewModel, type ScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
 const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
@@ -47,13 +47,17 @@ function scoreFinalValue(rec: any): number {
   return buildScoreBreakdownViewModel(rec ?? {}).finalScore
 }
 
+function scoreComponentValue(scoreViewModel: ScoreBreakdownViewModel, key: string): number {
+  return scoreViewModel.rows.find((row) => row.key === key)?.value ?? 0
+}
+
 function buildScreenerSectorSummary(recs: any[]) {
   const bySector = new Map<string, {
     sector: string
     count: number
     scoreSum: number
-    chipSum: number
-    techSum: number
+    chipFlowSum: number
+    technicalStructureSum: number
     symbols: string[]
     reasons: Set<string>
     themeReasons: Set<string>
@@ -68,8 +72,8 @@ function buildScreenerSectorSummary(recs: any[]) {
       sector,
       count: 0,
       scoreSum: 0,
-      chipSum: 0,
-      techSum: 0,
+      chipFlowSum: 0,
+      technicalStructureSum: 0,
       symbols: [],
       reasons: new Set<string>(),
       themeReasons: new Set<string>(),
@@ -77,10 +81,13 @@ function buildScreenerSectorSummary(recs: any[]) {
       rotationReasons: new Set<string>(),
       strategyReasons: new Set<string>(),
     }
+    const scoreViewModel = buildScoreBreakdownViewModel(rec ?? {})
+    const chipFlow = scoreComponentValue(scoreViewModel, 'chipFlow')
+    const technicalStructure = scoreComponentValue(scoreViewModel, 'technicalStructure')
     row.count += 1
-    row.scoreSum += scoreFinalValue(rec)
-    row.chipSum += Number(rec.chip_score ?? 0)
-    row.techSum += Number(rec.tech_score ?? 0)
+    row.scoreSum += scoreViewModel.finalScore
+    row.chipFlowSum += chipFlow
+    row.technicalStructureSum += technicalStructure
     if (rec.symbol && row.symbols.length < 4) row.symbols.push(String(rec.symbol))
     if (rec.screener_funnel_reason) row.reasons.add(String(rec.screener_funnel_reason))
     const evidence = parseMaybeJson(rec.screener_funnel_evidence)
@@ -96,8 +103,8 @@ function buildScreenerSectorSummary(recs: any[]) {
       row.themeReasons.add(keywords.length ? `題材熱度：${keywords.join('、')}` : '題材熱度升溫')
     }
     if (evidence.theme_sources) row.themeReasons.add(`來源：${String(evidence.theme_sources).slice(0, 32)}`)
-    if (Number(rec.chip_score ?? 0) >= 28) row.flowReasons.add('籌碼分數偏強')
-    if (Number(rec.tech_score ?? 0) >= 22) row.rotationReasons.add('技術動能偏強')
+    if (chipFlow >= 18) row.flowReasons.add('Score V2 籌碼流偏強')
+    if (technicalStructure >= 18) row.rotationReasons.add('Score V2 技術結構偏強')
     if (evidence.broker_flow || evidence.foreign_flow || evidence.chip_flow) row.flowReasons.add('資金/券商流向支撐')
     if (evidence.sector_flow || evidence.diversity_slot != null || evidence.diversity_reason) row.rotationReasons.add('族群輪動/分散控管')
     if (Array.isArray(strategyIds) && strategyIds.length) row.strategyReasons.add(`策略池：${strategyIds.slice(0, 3).join('、')}`)
@@ -110,8 +117,8 @@ function buildScreenerSectorSummary(recs: any[]) {
     .map((row) => ({
       ...row,
       avgScore: row.count ? row.scoreSum / row.count : 0,
-      avgChip: row.count ? row.chipSum / row.count : 0,
-      avgTech: row.count ? row.techSum / row.count : 0,
+      avgChipFlow: row.count ? row.chipFlowSum / row.count : 0,
+      avgTechnicalStructure: row.count ? row.technicalStructureSum / row.count : 0,
       themeText: [...row.themeReasons].slice(0, 2).join(' / ') || '題材未提供明確關鍵字',
       flowText: [...row.flowReasons].slice(0, 2).join(' / ') || '資金流以分數代理',
       rotationText: [...row.rotationReasons].slice(0, 2).join(' / ') || '族群輪動無明確標籤',
@@ -147,11 +154,11 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   const pct = max > 0 ? Math.round((value / max) * 100) : 0
   return (
     <div className="flex items-center gap-2 text-[11px]">
-      <span className="w-8 text-muted-foreground shrink-0">{label}</span>
+      <span className="w-24 truncate text-muted-foreground shrink-0">{label}</span>
       <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right font-mono text-muted-foreground">{value}/{max}</span>
+      <span className="w-14 text-right font-mono text-muted-foreground">{fmt(value, 1)}/{max}</span>
     </div>
   )
 }
@@ -179,9 +186,16 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
           <div className="space-y-1">
-            <ScoreBar label="籌碼" value={rec.chip_score ?? 0} max={40} color="bg-blue-500" />
-            <ScoreBar label="技術" value={rec.tech_score ?? 0} max={30} color="bg-purple-500" />
-            <ScoreBar label="ML" value={rec.ml_score ?? 0} max={30} color="bg-emerald-500" />
+            {scoreViewModel.rows.map((row) => (
+              <ScoreBar key={row.key} label={row.label} value={row.value} max={row.max} color={row.color} />
+            ))}
+            {scoreViewModel.technicalRows.length > 0 && (
+              <div className="pt-1 space-y-1 border-t border-border/60">
+                {scoreViewModel.technicalRows.map((row) => (
+                  <ScoreBar key={row.key} label={row.label} value={row.value} max={row.max} color={row.color} />
+                ))}
+              </div>
+            )}
           </div>
           {rec.reason && (
             <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
@@ -290,10 +304,12 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
               ))}
             </div>
           )}
-          <div className="flex gap-3">
-            {buy.chip_score != null && <span>籌碼 <span className="font-mono">{buy.chip_score}/40</span></span>}
-            {buy.tech_score != null && <span>技術 <span className="font-mono">{buy.tech_score}/30</span></span>}
-            {buy.ml_score != null && <span>ML <span className="font-mono">{buy.ml_score}/30</span></span>}
+          <div className="grid grid-cols-2 gap-2">
+            {scoreViewModel.rows.map((row) => (
+              <span key={row.key}>
+                {row.label} <span className="font-mono">{fmt(row.value, 1)}/{row.max}</span>
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -340,7 +356,7 @@ export default function PipelinePage() {
   const mlSell = allRecs.filter((r: any) => ['SELL', 'STRONG_SELL'].includes(r.signal))
   const mlNoSignal = allRecs.filter((r: any) => !r.signal || r.signal === 'NO_SIGNAL')
   const screenerPreview = [...screenerPassed]
-    .sort((a: any, b: any) => (b.chip_score ?? 0) + (b.tech_score ?? 0) - ((a.chip_score ?? 0) + (a.tech_score ?? 0)))
+    .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
     .slice(0, 10)
   const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
   const recommendationPreview = [...mlBuy, ...mlHold]
@@ -385,7 +401,7 @@ export default function PipelinePage() {
         <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">
           {[
             { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
-            { label: '模型判斷', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-[#d7b98c]' },
+            { label: '模型判斷', count: allRecs.filter((r: any) => r.signal && r.signal !== 'NO_SIGNAL').length, color: 'text-[#d7b98c]' },
             { label: '推薦整理', count: mlBuy.length + mlHold.length, color: 'text-[#f1c16f]' },
             { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
           ].map((step, i) => (
@@ -411,7 +427,7 @@ export default function PipelinePage() {
                 <StepHeader
                   step={1} icon={Filter}
                   title="自下而上初篩"
-                  subtitle="全市場約 882 檔 → 多因子評分（籌碼 0-40、技術 0-30、動能 0-20）→ 同產業去重 → 前 25 名"
+                  subtitle="全市場約 882 檔 → Score V2 五構面評分 → 同產業去重 → 前 25 名"
                   count={screenerPassed.length}
                   color="bg-blue-500/20 text-blue-400"
                 />
@@ -435,8 +451,8 @@ export default function PipelinePage() {
                       </div>
                       <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
                         <span>均分 <b className="font-mono text-foreground">{fmt(row.avgScore, 1)}</b></span>
-                        <span>籌碼 <b className="font-mono text-foreground">{fmt(row.avgChip, 1)}</b></span>
-                        <span>技術 <b className="font-mono text-foreground">{fmt(row.avgTech, 1)}</b></span>
+                        <span>籌碼流 <b className="font-mono text-foreground">{fmt(row.avgChipFlow, 1)}</b></span>
+                        <span>技術結構 <b className="font-mono text-foreground">{fmt(row.avgTechnicalStructure, 1)}</b></span>
                       </div>
                     </div>
                   ))}
@@ -454,7 +470,7 @@ export default function PipelinePage() {
                   step={2} icon={Brain}
                   title="模型判斷"
                   subtitle="整合多模型投票與 signal_score，先分出買進、觀望與賣出，再交給下一層整理。"
-                  count={allRecs.filter((r: any) => r.ml_score != null).length}
+                  count={allRecs.filter((r: any) => r.signal && r.signal !== 'NO_SIGNAL').length}
                   color="bg-purple-500/20 text-purple-400"
                 />
                 <div className="grid grid-cols-1 gap-3">

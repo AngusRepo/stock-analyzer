@@ -16,9 +16,15 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ML_CONTROLLER_ROOT = ROOT / "ml-controller"
-if str(ML_CONTROLLER_ROOT) not in sys.path:
-    sys.path.insert(0, str(ML_CONTROLLER_ROOT))
+
+
+def service_import_roots(root: Path) -> list[Path]:
+    return [candidate for candidate in (root / "ml-controller", root) if (candidate / "services").exists()]
+
+
+for import_root in service_import_roots(ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,15 @@ CORE_SPECS = [
             "dealer_hedge_net": "institutional_investors_trading_summary:自營商買賣超股數(避險)",
             "margin_balance": "margin_transactions:融資今日餘額",
             "short_balance": "margin_transactions:融券今日餘額",
+        },
+    ),
+    DatasetSpec(
+        lane="institutional_amount_summary",
+        kind="wide_fields",
+        keys={
+            "buy_amount": "institutional_investors_trading_all_market_summary:買進金額",
+            "sell_amount": "institutional_investors_trading_all_market_summary:賣出金額",
+            "net_amount": "institutional_investors_trading_all_market_summary:買賣超",
         },
     ),
     DatasetSpec(
@@ -120,6 +135,7 @@ TRADING_RESTRICTION_RETENTION_DAYS = int(os.environ.get("FINLAB_TRADING_RESTRICT
 DEFAULT_CANONICAL_DATASETS = [
     "canonical_market_daily",
     "canonical_chip_daily",
+    "canonical_institutional_amount_daily",
     "canonical_revenue_monthly",
     "canonical_broker_flow_daily",
     "finlab_taxonomy_tags",
@@ -143,7 +159,7 @@ def start_date_for_years(years: int) -> str:
     return today.replace(year=today.year - years).isoformat()
 
 
-def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+def d1_execute(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     token = os.environ["CF_API_TOKEN"]
     account = os.environ["CF_ACCOUNT_ID"]
     db = os.environ["CF_D1_DB_ID"]
@@ -165,11 +181,15 @@ def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:500])
     result = payload.get("result") or []
-    return (result[0] or {}).get("results") or []
+    return result[0] or {}
 
 
-def d1_exec(sql: str, params: list[Any] | None = None) -> None:
-    d1_query(sql, params)
+def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    return d1_execute(sql, params).get("results") or []
+
+
+def d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    return d1_execute(sql, params)
 
 
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -233,6 +253,7 @@ def d1_counts(start: str) -> dict[str, int]:
     queries = {
         "daily_price": "SELECT COUNT(*) AS n FROM stock_prices WHERE date >= ?",
         "chip_diversity": "SELECT COUNT(*) AS n FROM chip_data WHERE date >= ?",
+        "institutional_amount_summary": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
         "revenue": "SELECT COUNT(*) AS n FROM monthly_revenue WHERE date >= ?",
         "canonical_market_daily": "SELECT COUNT(*) AS n FROM canonical_market_daily WHERE date >= ?",
         "canonical_chip_daily": "SELECT COUNT(*) AS n FROM canonical_chip_daily WHERE date >= ?",
@@ -240,8 +261,11 @@ def d1_counts(start: str) -> dict[str, int]:
     }
     counts: dict[str, int] = {}
     for key, sql in queries.items():
-        rows = d1_query(sql, [start])
-        counts[key] = int((rows[0] if rows else {}).get("n") or 0)
+        try:
+            rows = d1_query(sql, [start])
+            counts[key] = int((rows[0] if rows else {}).get("n") or 0)
+        except Exception:
+            counts[key] = 0
     return counts
 
 
@@ -250,6 +274,8 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
         return counts.get("daily_price", 0)
     if lane in {"chip_diversity", "emerging_chip_diversity"}:
         return counts.get("chip_diversity", 0)
+    if lane == "institutional_amount_summary":
+        return counts.get("institutional_amount_summary", 0)
     if lane in {"revenue", "emerging_revenue_diversity"}:
         return counts.get("revenue", 0)
     return 0
@@ -633,7 +659,7 @@ def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRIC
         """,
         [cutoff],
     )
-    return int(result.get("meta", {}).get("changes") or 0)
+    return int((result or {}).get("meta", {}).get("changes") or 0)
 
 
 def insert_finlab_cnyes_evidence(manifest: dict[str, Any], *, max_rows: int = 800) -> int:
@@ -703,6 +729,17 @@ def parse_canonical_datasets(raw: str | None) -> list[str]:
     return values or list(DEFAULT_CANONICAL_DATASETS)
 
 
+def canonical_apply_skipped_status(*, write_d1: bool, apply_canonical_d1: bool) -> dict[str, Any] | None:
+    if not write_d1 or apply_canonical_d1:
+        return None
+    return {
+        "status": "skipped",
+        "reason": "--apply-canonical-d1 not set",
+        "impact": "summary/source_quality may update while canonical row-level D1 tables stay stale",
+        "required_flag": "--apply-canonical-d1",
+    }
+
+
 def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[str, str]:
     end = datetime.fromisoformat(generated_at).date()
     start = end - timedelta(days=max(0, window_days))
@@ -751,6 +788,8 @@ def materialize_canonical_to_d1(
 
 
 def canonical_table_for_lane(lane: str) -> str:
+    if lane == "institutional_amount_summary":
+        return "canonical_institutional_amount_daily"
     if "price" in lane or lane == "global_context":
         return "canonical_market_daily"
     if "chip" in lane:
@@ -844,6 +883,11 @@ def main() -> int:
                 limit_per_dataset=args.canonical_limit_per_dataset or None,
                 chunk_size=args.canonical_d1_chunk_size,
                 dry_run=args.canonical_dry_run,
+            )
+        else:
+            manifest["canonical_d1_apply"] = canonical_apply_skipped_status(
+                write_d1=args.write_d1,
+                apply_canonical_d1=args.apply_canonical_d1,
             )
         write_json(run_dir / "manifest.json", manifest)
 

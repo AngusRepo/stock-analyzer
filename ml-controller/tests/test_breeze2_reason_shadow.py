@@ -125,4 +125,5 @@ def test_pipeline_keeps_breeze2_shadow_out_of_canonical_reason_writer():
     assert "build_breeze2_generation_shadow_for_candidates" in pipeline
     assert 'return {"llm_reasons": reasons, "breeze2_reason_shadow": breeze2_shadow}' in pipeline
     assert 'merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})' in pipeline
+    assert 'merge_breeze2_reason_shadow_into_score_components(final, state.get("breeze2_reason_shadow") or {})' in pipeline
     assert 'merge_llm_reasons_into_recommendations(final, state.get("breeze2_reason_shadow")' not in pipeline

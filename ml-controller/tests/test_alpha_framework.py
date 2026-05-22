@@ -21,6 +21,7 @@ from services import recommendation_service  # noqa: E402
 from services.recommendation_service import filter_and_score_recommendations  # noqa: E402
 from services.recommendation_service import write_predictions_to_d1  # noqa: E402
 from services.recommendation_service import merge_llm_reasons_into_recommendations  # noqa: E402
+from services.recommendation_service import merge_breeze2_reason_shadow_into_score_components  # noqa: E402
 
 
 def _payload(symbol: str, closes: list[float], rsi: float = 58.0, volume: float = 1_500_000) -> dict:
@@ -338,6 +339,45 @@ def test_merge_llm_reasons_preserves_domain_watch_points():
     assert rows[0]["watch_points"][:2] == ["觀察 2265 支撐", "留意成交量"]
     assert any(point.startswith("Alpha bucket:") for point in rows[0]["watch_points"])
     assert any("window=2026-04-13~2026-04-27" in point for point in rows[0]["watch_points"])
+
+
+def test_breeze2_shadow_persists_as_score_v2_reason_variant_without_overwriting_gemini_reason():
+    rows = [{
+        "symbol": "2330",
+        "reason": "Gemini reason",
+        "score_components": {
+            "version": "score_v2",
+            "total": 61,
+            "finalScore": 63,
+            "components": {
+                "mlEdge": 20,
+                "chipFlow": 18,
+                "technicalStructure": 16,
+                "fundamentalQuality": 5,
+                "newsTheme": 2,
+            },
+        },
+    }]
+
+    merge_breeze2_reason_shadow_into_score_components(
+        rows,
+        {
+            "2330": {
+                "source": "breeze2_generation_shadow",
+                "decision_effect": "advisory_only",
+                "reason": "Breeze2：量能未確認，先等回測。",
+                "watchPoints": ["觀察量能", "跌破支撐降風險"],
+                "breeze2_context": "generation_shadow",
+                "riskFlags": ["volume_confirmation_needed"],
+            }
+        },
+    )
+
+    assert rows[0]["reason"] == "Gemini reason"
+    variant = rows[0]["score_components"]["reasonVariants"]["breeze2"]
+    assert variant["reason"] == "Breeze2：量能未確認，先等回測。"
+    assert variant["decision_effect"] == "advisory_only"
+    assert variant["watchPoints"] == ["觀察量能", "跌破支撐降風險"]
 
 
 def _allocation_row(symbol: str, score: float, bucket: str) -> dict:

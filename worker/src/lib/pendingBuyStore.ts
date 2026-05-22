@@ -6,6 +6,12 @@ import {
   type PendingBuyExecutionStatus,
 } from './pendingBuyExecutionState'
 import { recordPaperExecutionEvents } from './paperExecutionEvents'
+import {
+  readScoreV2Snapshot,
+  serializeScoreV2Snapshot,
+  type ScoreV2SnapshotSummary,
+  type ScoreV2StorageRow,
+} from './scoreV2Taxonomy'
 
 export type PendingBuyRunStatus =
   | 'ready'
@@ -42,10 +48,11 @@ export interface PendingBuy {
   debate_verdict: string
   risk_pct: number
   kelly_pct: number | null
-  chip_score: number | null
-  tech_score: number | null
-  ml_score: number | null
-  score: number | null
+  chip_score?: number | null
+  tech_score?: number | null
+  ml_score?: number | null
+  score?: number | null
+  score_v2?: ScoreV2SnapshotSummary | null
   source?: string | null
   debate_status?: PendingBuyDebateStatus
   execution_status?: PendingBuyExecutionStatus
@@ -140,6 +147,7 @@ interface ReplacePendingBuyStateParams {
 }
 
 const ACTIVE_RUN_STATUSES: PendingBuyRunStatus[] = ['ready', 'empty', 'halted', 'error']
+const D1_IN_CHUNK_SIZE = 40
 const PENDING_BUY_BASE_COLUMNS = `
   symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
   reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct,
@@ -207,6 +215,21 @@ function fromDebateTurnsJson(raw: string | null | undefined): DebateAgentTurn[] 
   }
 }
 
+export function normalizePendingBuyScoreProjection<T extends PendingBuy>(item: T): T {
+  const scoreV2 = item.score_v2 ?? null
+  return {
+    ...item,
+    chip_score: item.chip_score ?? scoreV2?.components.chipFlow ?? null,
+    tech_score: item.tech_score ?? scoreV2?.components.technicalStructure ?? null,
+    ml_score: item.ml_score ?? scoreV2?.components.mlEdge ?? null,
+    score: item.score ?? scoreV2?.finalScore ?? null,
+  }
+}
+
+function normalizePendingBuyScoreProjections(pendingBuys: PendingBuy[]): PendingBuy[] {
+  return pendingBuys.map(normalizePendingBuyScoreProjection)
+}
+
 async function hasDebateTurnsColumn(db: D1Database): Promise<boolean> {
   if (debateTurnsColumnCache != null) return debateTurnsColumnCache
   try {
@@ -244,6 +267,49 @@ function mapItemRow(row: PendingBuyItemRow): PendingBuy {
     retry_count: row.retry_count ?? null,
     debate_turns: fromDebateTurnsJson(row.debate_turns_json),
   }
+}
+
+function chunkArray<T>(items: T[], size = D1_IN_CHUNK_SIZE): T[][] {
+  const safeSize = Math.max(1, Math.min(D1_IN_CHUNK_SIZE, Math.floor(size || D1_IN_CHUNK_SIZE)))
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += safeSize) chunks.push(items.slice(i, i + safeSize))
+  return chunks
+}
+
+async function loadPendingBuyScoreV2BySymbol(
+  db: D1Database,
+  sourceRecoDate: string | null | undefined,
+  pendingBuys: PendingBuy[],
+): Promise<Map<string, ScoreV2SnapshotSummary>> {
+  const date = String(sourceRecoDate ?? '').trim()
+  const symbols = Array.from(new Set(pendingBuys.map((item) => item.symbol).filter(Boolean)))
+  const out = new Map<string, ScoreV2SnapshotSummary>()
+  if (!date || symbols.length === 0) return out
+
+  for (const chunk of chunkArray(symbols)) {
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(`
+      SELECT symbol, score_components
+        FROM daily_recommendations
+       WHERE date = ?
+         AND symbol IN (${placeholders})
+    `).bind(date, ...chunk).all<{ symbol: string; score_components: unknown }>()
+    for (const row of results ?? []) {
+      const snapshot = readScoreV2Snapshot(row as ScoreV2StorageRow)
+      if (snapshot) out.set(String(row.symbol), serializeScoreV2Snapshot(snapshot))
+    }
+  }
+  return out
+}
+
+function enrichPendingBuysWithScoreV2(
+  pendingBuys: PendingBuy[],
+  scoreV2BySymbol: Map<string, ScoreV2SnapshotSummary>,
+): PendingBuy[] {
+  return pendingBuys.map((item) => ({
+    ...item,
+    score_v2: item.score_v2 ?? scoreV2BySymbol.get(item.symbol) ?? null,
+  }))
 }
 
 function rowsToCounts(rows: PendingBuyCountRow[] | undefined): Record<string, number> {
@@ -293,7 +359,8 @@ async function syncKvSnapshot(
   pendingBuys: PendingBuy[],
   meta?: Record<string, unknown>,
 ): Promise<void> {
-  await env.KV.put(`paper:pending_buys:${tradeDate}`, JSON.stringify(pendingBuys), { expirationTtl: 86400 })
+  const projectedPendingBuys = normalizePendingBuyScoreProjections(pendingBuys)
+  await env.KV.put(`paper:pending_buys:${tradeDate}`, JSON.stringify(projectedPendingBuys), { expirationTtl: 86400 })
   if (!meta) return
   await env.KV.put(
     `paper:pending_buys_meta:${tradeDate}`,
@@ -407,6 +474,8 @@ async function readD1Snapshot(
         GROUP BY COALESCE(debate_status, 'pending')`
     ).bind(run.id).all<PendingBuyCountRow>(),
   ])
+  const pendingBuys = itemRows.map(mapItemRow)
+  const scoreV2BySymbol = await loadPendingBuyScoreV2BySymbol(env.DB, run.source_reco_date ?? resolvedDate, pendingBuys)
 
   return {
     date: resolvedDate,
@@ -414,7 +483,7 @@ async function readD1Snapshot(
     is_stale: resolvedDate !== requestedDate,
     resolved_from: resolvedDate === requestedDate ? 'today' : 'fallback_recent',
     source: 'd1',
-    pendingBuys: itemRows.map(mapItemRow),
+    pendingBuys: enrichPendingBuysWithScoreV2(pendingBuys, scoreV2BySymbol),
     meta: {
       run_id: run.id,
       status: run.status,
@@ -481,6 +550,8 @@ export async function loadPendingBuyRunHistory(
             GROUP BY COALESCE(debate_status, 'pending')`
         ).bind(run.id).all<PendingBuyCountRow>(),
       ])
+      const pendingBuys = itemRows.map(mapItemRow)
+      const scoreV2BySymbol = await loadPendingBuyScoreV2BySymbol(env.DB, run.source_reco_date ?? run.trade_date, pendingBuys)
       out.push({
         run_id: run.id,
         trade_date: run.trade_date,
@@ -493,7 +564,7 @@ export async function loadPendingBuyRunHistory(
         updated_at: run.updated_at,
         execution_counts: rowsToCounts(executionCountRows.results),
         debate_counts: rowsToCounts(debateCountRows.results),
-        items: itemRows.map(mapItemRow),
+        items: enrichPendingBuysWithScoreV2(pendingBuys, scoreV2BySymbol),
       })
     }
     return { requested_date: requestedDate, source: out.length ? 'd1' : 'none', runs: out }
@@ -507,6 +578,10 @@ export async function replacePendingBuyState(
   env: Bindings,
   params: ReplacePendingBuyStateParams,
 ): Promise<void> {
+  const pendingBuys = normalizePendingBuyScoreProjections(params.pendingBuys)
+  const kvPendingBuys = params.kvPendingBuys
+    ? normalizePendingBuyScoreProjections(params.kvPendingBuys)
+    : pendingBuys
   const debateStatus = params.debateStatus ?? 'pending'
   const meta = {
     status: params.status,
@@ -532,17 +607,17 @@ export async function replacePendingBuyState(
       params.sourceRecoDate ?? null,
       params.status,
       debateStatus,
-      params.pendingBuys.length,
+      pendingBuys.length,
       params.errorMessage ?? null,
     ).first<{ id: number }>()
 
     const runId = Number(runRow?.id ?? 0)
-    if (!runId && params.pendingBuys.length > 0) {
+    if (!runId && pendingBuys.length > 0) {
       throw new Error(`pending_buy_runs insert did not return id for ${params.tradeDate}`)
     }
     const withDebateTurns = runId > 0 ? await hasDebateTurnsColumn(env.DB) : false
-    if (runId > 0 && params.pendingBuys.length > 0) {
-      for (const item of params.pendingBuys) {
+    if (runId > 0 && pendingBuys.length > 0) {
+      for (const item of pendingBuys) {
         const baseValues = [
           runId,
           item.symbol,
@@ -605,9 +680,9 @@ export async function replacePendingBuyState(
       const inserted = await env.DB.prepare(
         'SELECT COUNT(*) AS count FROM pending_buy_items WHERE run_id = ?',
       ).bind(runId).first<{ count: number }>()
-      if (Number(inserted?.count ?? 0) !== params.pendingBuys.length) {
+      if (Number(inserted?.count ?? 0) !== pendingBuys.length) {
         throw new Error(
-          `pending_buy_items insert mismatch for run ${runId}: expected ${params.pendingBuys.length}, got ${inserted?.count ?? 0}`,
+          `pending_buy_items insert mismatch for run ${runId}: expected ${pendingBuys.length}, got ${inserted?.count ?? 0}`,
         )
       }
     }
@@ -615,7 +690,7 @@ export async function replacePendingBuyState(
     if (!isMissingTableError(error)) throw error
   }
 
-  await syncKvSnapshot(env, params.tradeDate, params.kvPendingBuys ?? params.pendingBuys, meta)
+  await syncKvSnapshot(env, params.tradeDate, kvPendingBuys, meta)
 }
 
 export async function appendPendingBuy(

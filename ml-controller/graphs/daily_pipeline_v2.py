@@ -27,6 +27,7 @@ from langgraph.types import RetryPolicy
 from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
 from services.payload_builder import (
+    DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
     load_market_env,
     build_payloads,
@@ -45,6 +46,7 @@ from services.recommendation_service import (
     update_recommendations_in_d1,
     delete_filtered_recommendations,
     re_rank_recommendations,
+    merge_breeze2_reason_shadow_into_score_components,
     merge_llm_reasons_into_recommendations,
 )
 from services.llm_reason import generate_recommendation_reasons
@@ -167,7 +169,8 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     run_date = state["run_date"]
 
     screener_recs = d1_client.query(
-        "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
+        f"SELECT {DAILY_RECOMMENDATION_PIPELINE_COLUMNS} "
+        "FROM daily_recommendations WHERE date = ? ORDER BY rank",
         [run_date],
     )
     if not screener_recs:
@@ -339,20 +342,33 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     # Guard against Chronos total failure (don't let it block feature preds)
     chronos_map: dict[str, dict] = {}
+    chronos_errors: list[str] = []
+    chronos_active = model_status.get("Chronos", "active") in ("active", "degraded")
     if isinstance(chronos_raw, BaseException):
         logger.warning(f"[Pipeline V2] Chronos batch failed entirely: {chronos_raw} — skipping Chronos layer")
+        chronos_errors.append(f"{type(chronos_raw).__name__}: {chronos_raw}")
     elif isinstance(chronos_raw, dict) and not chronos_raw.get("error"):
         for cr in chronos_raw.get("results") or []:
             sym = cr.get("symbol")
             if sym and not cr.get("error"):
                 chronos_map[sym] = cr
+            elif sym:
+                chronos_errors.append(f"{sym}: {cr.get('error', 'unknown_error')}")
         logger.info(
             f"[Pipeline V2] Chronos universal: {len(chronos_map)}/{len(chronos_series)} succeeded"
         )
     elif isinstance(chronos_raw, dict) and chronos_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] Chronos skipped: {chronos_raw.get('error')}")
+        chronos_errors.append(str(chronos_raw.get("error") or "empty_results"))
     else:
         logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
+        chronos_errors.append(str(chronos_raw))
+    if chronos_active and len(chronos_map) < len(chronos_series):
+        sample = "; ".join(chronos_errors[:5]) or "no error detail"
+        raise RuntimeError(
+            f"Chronos active slot incomplete: {len(chronos_map)}/{len(chronos_series)} succeeded; "
+            f"sample_errors={sample}"
+        )
 
     # Guard against DLinear total failure (Stage 0.2 — may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
@@ -1421,7 +1437,7 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute ml_score + persona_score, hybrid ranking promotion.
+    Filter SELL, compute canonical Score V2 finalScore, and apply hybrid ranking promotion.
     """
     logger.info("[Pipeline V2] node_recommend")
 
@@ -1551,6 +1567,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     # 2. Merge LLM reasons into recommendations (overwrite template)
     final = state["final_recommendations"]
     merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})
+    merge_breeze2_reason_shadow_into_score_components(final, state.get("breeze2_reason_shadow") or {})
 
     # 3. Update daily_recommendations
     rec_updated = update_recommendations_in_d1(final, run_date)

@@ -8,7 +8,7 @@
  */
 
 import { appendPendingBuy, loadPendingBuySnapshot } from './pendingBuyStore'
-import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
 
 export type ExitReasonCategory =
   | 'HardStop'
@@ -186,7 +186,7 @@ export async function onPostExit(
 
     const { results: recs } = await ctx.db.prepare(`
       SELECT dr.symbol, dr.name, dr.signal, dr.confidence, dr.current_price,
-             dr.reason, dr.score_components, dr.score, dr.chip_score, dr.tech_score, dr.momentum_score, dr.ml_score
+             dr.reason, dr.score_components
         FROM daily_recommendations dr
        WHERE dr.date = ?
          AND dr.has_buy_signal = 1
@@ -220,6 +220,10 @@ export async function onPostExit(
       return outcome
     }
     const scoreV2 = readScoreV2Snapshot(best)
+    if (!scoreV2) {
+      outcome.reason = 'missing_score_v2_payload'
+      return outcome
+    }
 
     const snapshot = await loadPendingBuySnapshot(ctx as any, ctx.today, { allowFallbackRecent: false })
     const alreadyQueued = (snapshot.pendingBuys ?? []).some((item: any) => item.symbol === best.symbol)
@@ -241,10 +245,7 @@ export async function onPostExit(
       debate_verdict: 'skipped',
       risk_pct: 0.01,
       kelly_pct: null,
-      chip_score: scoreV2.components.chipFlow,
-      tech_score: scoreV2.components.technicalStructure,
-      ml_score: scoreV2.components.mlEdge,
-      score: scoreV2.finalScore,
+      score_v2: serializeScoreV2Snapshot(scoreV2),
       source: 'post_exit_rerank',
     }
 

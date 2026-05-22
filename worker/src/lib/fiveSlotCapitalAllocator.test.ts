@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import {
   buildFiveSlotCapitalPlan,
   fiveSlotHoldingWeaknessScore,
@@ -7,6 +8,30 @@ import {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+const allocatorSource = readFileSync('src/lib/fiveSlotCapitalAllocator.ts', 'utf8')
+const paperEntryTasksSource = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
+
+assert(
+  allocatorSource.includes("score_v2?: Pick<ScoreV2SnapshotSummary, 'finalScore' | 'total'> | null"),
+  'five-slot allocator candidate contract should accept canonical score_v2 summaries',
+)
+assert(
+  !allocatorSource.includes('score?: number'),
+  'five-slot allocator candidate contract must not expose scalar score',
+)
+assert(
+  paperEntryTasksSource.includes('score_v2: pending.score_v2 ?? null'),
+  'paper entry capital allocator call sites should pass canonical pending score_v2',
+)
+assert(
+  !paperEntryTasksSource.includes('score: pending.score'),
+  'paper entry capital allocator call sites must not pass scalar pending score',
+)
+
+function scoreV2(finalScore: number) {
+  return { finalScore, total: finalScore }
 }
 
 const baseConfig = {
@@ -30,7 +55,7 @@ const baseConfig = {
       { symbol: 'D', shares: 1000, avgCost: 100, lastPrice: 100 },
       { symbol: 'E', shares: 1000, avgCost: 100, lastPrice: 100 },
     ],
-    candidates: [{ symbol: 'F', confidence: 0.78, score: 72, riskPct: 0.015 }],
+    candidates: [{ symbol: 'F', confidence: 0.78, score_v2: scoreV2(72), riskPct: 0.015 }],
   })
   const decision = plan.decisions.get('F')
   assert(decision?.action === 'skip', 'full 5-slot portfolio must not open a sixth position')
@@ -49,7 +74,7 @@ const baseConfig = {
       { symbol: '2308', shares: 1000, avgCost: 100, lastPrice: 100 },
       { symbol: '3711', shares: 1000, avgCost: 100, lastPrice: 100 },
     ],
-    candidates: [{ symbol: '2330', confidence: 0.82, score: 80, riskPct: 0.015 }],
+    candidates: [{ symbol: '2330', confidence: 0.82, score_v2: scoreV2(80), riskPct: 0.015 }],
   })
   const decision = plan.decisions.get('2330')
   assert(decision?.action === 'add', 'underweight existing slot should allow add-on even when maxPositions is reached')
@@ -62,7 +87,7 @@ const baseConfig = {
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [{ symbol: '2330', shares: 2000, avgCost: 100, lastPrice: 100 }],
-    candidates: [{ symbol: '2330', confidence: 0.70, score: 70, riskPct: 0.015 }],
+    candidates: [{ symbol: '2330', confidence: 0.70, score_v2: scoreV2(70), riskPct: 0.015 }],
   })
   const decision = plan.decisions.get('2330')
   assert(decision?.action === 'hold', 'fully sized existing slot should produce hold instead of another buy')
@@ -80,7 +105,7 @@ const baseConfig = {
       { symbol: 'D', shares: 1000, avgCost: 100, lastPrice: 105, daysHeld: 8, tp1Hit: true },
       { symbol: 'E', shares: 1000, avgCost: 100, lastPrice: 106, daysHeld: 8, tp1Hit: true },
     ],
-    candidates: [{ symbol: 'STRONG', confidence: 0.84, score: 83, riskPct: 0.015 }],
+    candidates: [{ symbol: 'STRONG', confidence: 0.84, score_v2: scoreV2(83), riskPct: 0.015 }],
   })
   const decision = plan.decisions.get('STRONG')
   assert(decision?.action === 'replace', 'strong candidate should be eligible to replace a weak full-slot holding')

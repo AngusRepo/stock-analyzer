@@ -1,7 +1,7 @@
-import { recommendationReportScore } from './dailyReport'
+import { recommendationReportScore, recommendationReportScoreV2 } from './dailyReport'
 import { actionableSignalDisplayScore, actionableSignalScoreSummary, buildTripartiteDailyEmbed } from './notify'
 
-function assert(condition: unknown, message: string): void {
+function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
 
@@ -20,22 +20,28 @@ function assert(condition: unknown, message: string): void {
     },
   })
   const score = recommendationReportScore({
-    score: 10,
     score_components,
   })
-  assert(score === 61.5, 'daily report should prefer canonical Score V2 finalScore over stale scalar score')
+  assert(score === 61.5, 'daily report should use canonical Score V2 finalScore')
+
+  const scoreV2 = recommendationReportScoreV2({
+    score_components,
+  })
+  assert(scoreV2?.source === 'score_v2', 'daily report should expose canonical Score V2 payload source')
+  assert(scoreV2?.finalScore === 61.5, 'daily report Score V2 payload should expose finalScore')
+  assert(scoreV2?.components.mlEdge === 20, 'daily report Score V2 payload should expose ML Edge component')
 }
 
 {
   const score = recommendationReportScore({
-    score: 77,
     score_components: null,
-    ml_score: 30,
-    chip_score: 40,
-    tech_score: 30,
-    momentum_score: 20,
   })
-  assert(score === 77, 'daily report should use scalar score only as missing-payload fallback')
+  assert(score === null, 'daily report must not use a missing-payload fallback')
+
+  const scoreV2 = recommendationReportScoreV2({
+    score_components: null,
+  })
+  assert(scoreV2 === null, 'daily report must not synthesize Score V2 without canonical payload')
 }
 
 {
@@ -43,8 +49,7 @@ function assert(condition: unknown, message: string): void {
     symbol: '2330',
     name: 'TSMC',
     signal: 'BUY',
-    score: 10,
-    score_components: {
+    score_v2: {
       version: 'score_v2',
       total: 59,
       finalScore: 62,
@@ -75,8 +80,7 @@ function assert(condition: unknown, message: string): void {
       symbol: '2330',
       name: 'TSMC',
       signal: 'BUY',
-      score: 10,
-      score_components: {
+      score_v2: {
         version: 'score_v2',
         total: 59,
         finalScore: 62,

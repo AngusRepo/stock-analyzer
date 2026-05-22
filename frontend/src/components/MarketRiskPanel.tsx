@@ -69,9 +69,8 @@ const LEVEL_CONFIG = {
   yellow: { label: '中性', color: 'text-yellow-300', border: 'border-yellow-500/30', bg: 'bg-yellow-500/10' },
   orange: { label: '偏熱', color: 'text-orange-300', border: 'border-orange-500/30', bg: 'bg-orange-500/10' },
   red: { label: '恐慌', color: 'text-red-300', border: 'border-red-500/30', bg: 'bg-red-500/10' },
-  black: { label: '極度恐慌', color: 'text-zinc-100', border: 'border-zinc-400/40', bg: 'bg-zinc-700/40' },
+  black: { label: '極恐慌', color: 'text-zinc-100', border: 'border-zinc-400/40', bg: 'bg-zinc-700/40' },
 }
-
 const STATUS_STYLE: Record<FactorStatus, string> = {
   ok: 'border-emerald-400/25 bg-emerald-400/[0.07] text-emerald-100',
   info: 'border-sky-400/25 bg-sky-400/[0.07] text-sky-100',
@@ -82,18 +81,44 @@ const STATUS_STYLE: Record<FactorStatus, string> = {
 
 const STATUS_LABEL: Record<FactorStatus, string> = {
   ok: '正常',
-  info: '參考',
+  info: '資訊',
   warn: '注意',
-  error: '風險',
+  error: '錯誤',
   missing: '缺資料',
 }
 
+const LIGHT_STYLE = [
+  { name: '藍燈', className: 'bg-sky-400 shadow-sky-400/40' },
+  { name: '黃藍燈', className: 'bg-cyan-300 shadow-cyan-300/40' },
+  { name: '綠燈', className: 'bg-emerald-400 shadow-emerald-400/40' },
+  { name: '黃紅燈', className: 'bg-amber-300 shadow-amber-300/40' },
+  { name: '紅燈', className: 'bg-red-400 shadow-red-400/40' },
+]
+
+function lightClass(text: string) {
+  return LIGHT_STYLE.find((item) => text.includes(item.name))?.className ?? 'bg-slate-400 shadow-slate-400/30'
+}
+
+function BusinessCycleLightValue({ value }: { value: string }) {
+  const parts = value.split(/\s*(?:→|->)\s*/).filter(Boolean)
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-sm font-semibold leading-6 tabular-nums">
+      {parts.map((part, index) => (
+        <span key={`${part}-${index}`} className="inline-flex items-center gap-1.5">
+          <span className={`h-2.5 w-2.5 rounded-full shadow ${lightClass(part)}`} />
+          <span>{part}</span>
+          {index < parts.length - 1 ? <span className="text-muted-foreground/80">→</span> : null}
+        </span>
+      ))}
+    </div>
+  )
+}
 const GROUPS = [
   {
     id: 'trend_volatility',
     label: '趨勢 / 波動',
     factorIds: ['price_trend', 'volatility'],
-    sourceHint: 'TWII 20MA 乖離與 VIX / 20 日波動',
+    sourceHint: 'TWII 20MA 與 VIX / 20 日波動',
     Icon: Waves,
   },
   {
@@ -107,32 +132,31 @@ const GROUPS = [
     id: 'chips',
     label: '三大法人',
     factorIds: ['chips'],
-    sourceHint: 'canonical_chip_daily：外資、投信、自營商 5 日金額',
+    sourceHint: 'FinLab institutional_investors_trading_all_market_summary 官方當日金額',
     Icon: TrendingDown,
   },
   {
     id: 'leverage',
     label: '融資融券',
     factorIds: ['leverage'],
-    sourceHint: 'canonical_chip_daily：融資餘額與融券餘額',
+    sourceHint: 'canonical_chip_daily；若 canonical stale 則讀 margin_data',
     Icon: Activity,
   },
   {
     id: 'macro_global',
     label: '總經 / 全球',
     factorIds: ['macro', 'global', 'global_risk'],
-    sourceHint: 'market_regime_state：macro_liquidity / global_risk raw evidence',
+    sourceHint: 'market_regime_state macro_liquidity / global_risk evidence',
     Icon: Globe2,
   },
   {
     id: 'event_pressure',
-    label: '全球事件',
+    label: '事件壓力',
     factorIds: ['event_monitors', 'lppls', 'hawkes'],
-    sourceHint: '鉅亨頭條 + LPPLS / Hawkes 監控',
+    sourceHint: '鉅亨頭條 + LPPLS / Hawkes monitors',
     Icon: AlertTriangle,
   },
 ] as const
-
 function cleanValue(value?: string | number | null) {
   const text = String(value ?? '').trim()
   if (!text || /^n\/a$/i.test(text) || /^context( missing)?$/i.test(text)) return 'n/a'
@@ -149,7 +173,8 @@ function worstStatus(factors: MarketRiskFactor[]): FactorStatus {
 }
 
 function latestSourceDate(factors: MarketRiskFactor[]) {
-  return factors.map((factor) => factor.source_date).filter(Boolean).sort().at(-1) ?? null
+  const dates = factors.map((factor) => factor.source_date).filter(Boolean).sort()
+  return dates.length ? dates[dates.length - 1] ?? null : null
 }
 
 function uniqueText(values: Array<string | null | undefined>) {
@@ -171,7 +196,6 @@ function buildGroupValue(groupId: string, factors: MarketRiskFactor[]) {
   }
   return cleanValue(factors[0]?.value)
 }
-
 function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
   return GROUPS.map((group) => {
     const matched = factors.filter((factor) => group.factorIds.includes(factor.id as never))
@@ -213,12 +237,14 @@ function MarketFearGauge({ score, level }: { score: number; level: keyof typeof 
   const cfg = LEVEL_CONFIG[level] ?? LEVEL_CONFIG.yellow
   const safeScore = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
   const angle = Math.PI + (safeScore / 100) * Math.PI
-  const needleX = 120 + Math.cos(angle) * 76
-  const needleY = 120 + Math.sin(angle) * 76
+  const centerX = 110
+  const centerY = 100
+  const needleX = centerX + Math.cos(angle) * 58
+  const needleY = centerY + Math.sin(angle) * 58
   return (
-    <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-center">
+    <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-center">
       <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Market Composite</div>
-      <svg viewBox="0 0 240 150" className="mx-auto mt-2 h-32 w-full max-w-[260px] overflow-visible">
+      <svg viewBox="0 0 220 116" className="mx-auto mt-1 h-24 w-full max-w-[220px] overflow-visible" aria-label={`Market Composite ${Math.round(safeScore)}`}>
         <defs>
           <linearGradient id="market-risk-gauge" x1="0" x2="1" y1="0" y2="0">
             <stop offset="0%" stopColor="#10b981" />
@@ -234,14 +260,14 @@ function MarketFearGauge({ score, level }: { score: number; level: keyof typeof 
             </feMerge>
           </filter>
         </defs>
-        <path d="M30 120 A90 90 0 0 1 210 120" fill="none" stroke="rgba(148,163,184,.18)" strokeWidth="18" strokeLinecap="round" />
-        <path d="M30 120 A90 90 0 0 1 210 120" fill="none" stroke="url(#market-risk-gauge)" strokeWidth="18" strokeLinecap="round" pathLength="100" strokeDasharray="100 100" filter="url(#market-risk-glow)" />
-        <line x1="120" y1="120" x2={needleX} y2={needleY} stroke="#facc15" strokeWidth="3" strokeLinecap="round" />
-        <circle cx="120" cy="120" r="8" fill="#facc15" stroke="#fff7ad" strokeWidth="2" />
+        <path d="M30 100 A80 80 0 0 1 190 100" fill="none" stroke="rgba(148,163,184,.18)" strokeWidth="14" strokeLinecap="round" />
+        <path d="M30 100 A80 80 0 0 1 190 100" fill="none" stroke="url(#market-risk-gauge)" strokeWidth="14" strokeLinecap="round" pathLength="100" strokeDasharray="100 100" filter="url(#market-risk-glow)" />
+        <line x1={centerX} y1={centerY} x2={needleX} y2={needleY} stroke="#facc15" strokeWidth="3" strokeLinecap="round" />
+        <circle cx={centerX} cy={centerY} r="6" fill="#facc15" stroke="#fff7ad" strokeWidth="2" />
       </svg>
-      <div className={`-mt-8 text-5xl font-bold tabular-nums ${cfg.color}`}>{Math.round(safeScore)}</div>
-      <div className={`mt-1 text-sm font-semibold ${cfg.color}`}>{cfg.label}</div>
-      <div className="mt-4 grid grid-cols-5 gap-1 text-[10px] text-muted-foreground">
+      <div className={`mt-1 text-3xl font-bold leading-none tabular-nums ${cfg.color}`}>{Math.round(safeScore)}</div>
+      <div className={`mt-0.5 text-xs font-semibold ${cfg.color}`}>{cfg.label}</div>
+      <div className="mt-3 grid grid-cols-5 gap-1 text-[10px] text-muted-foreground">
         {['貪婪', '中性', '偏熱', '恐慌', '極恐慌'].map((label) => (
           <span key={label}>{label}</span>
         ))}
@@ -264,7 +290,11 @@ function FactorCard({ group }: { group: FactorGroup }) {
           {STATUS_LABEL[group.status]}
         </span>
       </div>
-      <div className="mt-3 break-words font-mono text-base font-semibold leading-6 tabular-nums">{group.value}</div>
+      {group.id === 'business_cycle' ? (
+        <BusinessCycleLightValue value={group.value} />
+      ) : (
+        <div className="mt-3 break-words font-mono text-base font-semibold leading-6 tabular-nums">{group.value}</div>
+      )}
       <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
         {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
       </div>
@@ -281,7 +311,6 @@ function FactorCard({ group }: { group: FactorGroup }) {
     </div>
   )
 }
-
 export default function MarketRiskPanel() {
   const [risk, setRisk] = useState<MarketRisk | null>(null)
   const [loading, setLoading] = useState(true)
@@ -311,7 +340,7 @@ export default function MarketRiskPanel() {
     return (
       <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">
         <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-        載入市場判讀...
+        載入市場風險...
       </div>
     )
   }
@@ -319,13 +348,12 @@ export default function MarketRiskPanel() {
   if (error) {
     return (
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
-        <p className="font-semibold text-amber-200">市場判讀 API 載入失敗</p>
-        <p className="mt-1 text-xs text-muted-foreground">請檢查 OBS/Data Quality 的 market_risk 與 market_regime_state。</p>
+        <p className="font-semibold text-amber-200">市場風險 API 載入失敗</p>
+        <p className="mt-1 text-xs text-muted-foreground">請檢查 OBS/Data Quality、market_risk 與 market_regime_state。</p>
         <p className="mt-2 font-mono text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
       </div>
     )
   }
-
   if (!risk) return null
 
   const cfg = LEVEL_CONFIG[risk.riskLevel] ?? LEVEL_CONFIG.yellow
@@ -335,7 +363,7 @@ export default function MarketRiskPanel() {
 
   return (
     <div className={`rounded-xl border ${cfg.border} ${cfg.bg} p-5`}>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(260px,3fr)]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className={`h-4 w-4 ${cfg.color}`} />

@@ -35,7 +35,6 @@ import {
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
-import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -424,8 +423,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? null,
-          chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
-          score_components: b.score_components ?? buildScoreV2PayloadFromProjectedScores(b),
+          score_v2: b.score_v2 ?? null,
           alpha_context: b.alpha_context ?? null,
           alpha_allocation: b.alpha_allocation ?? null,
           ml_vote_summary: b.ml_vote_summary ?? null,

@@ -485,6 +485,22 @@ def _score_number(value: Any, fallback: float = 0.0) -> float:
     return number if math.isfinite(number) else fallback
 
 
+def _parse_score_components_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        payload = parsed if isinstance(parsed, dict) else None
+    else:
+        payload = None
+    if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
+        return None
+    return payload
+
+
 def _round1(value: float) -> float:
     return round(float(value) * 10) / 10
 
@@ -507,22 +523,88 @@ def _first_float(*values: Any) -> float | None:
     return None
 
 
+def _score_v2_seed_inputs(row: dict) -> dict[str, float]:
+    seeds = row.get("score_seed_inputs")
+    if not isinstance(seeds, dict):
+        seeds = row.get("seedComponents")
+    if isinstance(seeds, dict):
+        return {
+            "chipFlowSeed40": _score_number(seeds.get("chipFlowSeed40")),
+            "technicalSeed30": _score_number(seeds.get("technicalSeed30")),
+            "screenerMomentumSeed20": _score_number(seeds.get("screenerMomentumSeed20")),
+            "mlEdgeSeed30": _score_number(seeds.get("mlEdgeSeed30")),
+            "personaAlphaSeed": _score_number(seeds.get("personaAlphaSeed")),
+        }
+    return {
+        "chipFlowSeed40": _score_number(row.get("chip_score")),
+        "technicalSeed30": _score_number(row.get("tech_score")),
+        "screenerMomentumSeed20": _score_number(row.get("momentum_score")),
+        "mlEdgeSeed30": _score_number(row.get("ml_score")),
+        "personaAlphaSeed": _score_number(row.get("persona_score")),
+    }
+
+
+def _score_v2_seed_inputs_from_payload(payload: dict[str, Any] | None, *, ml_score: float) -> dict[str, float] | None:
+    if not payload:
+        return None
+    seeds = payload.get("seedComponents")
+    if isinstance(seeds, dict):
+        return {
+            "chipFlowSeed40": _score_number(seeds.get("chipFlowSeed40")),
+            "technicalSeed30": _score_number(seeds.get("technicalSeed30")),
+            "screenerMomentumSeed20": _score_number(seeds.get("screenerMomentumSeed20")),
+            "mlEdgeSeed30": ml_score,
+            "personaAlphaSeed": 0.0,
+        }
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        return None
+    chip_seed = _rescale_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"], 40)
+    combined_technical_seed = _rescale_score(
+        components.get("technicalStructure"),
+        SCORE_V2_WEIGHTS["technicalStructure"],
+        50,
+    )
+    technical_breakdown = payload.get("technicalBreakdown")
+    volume_confirmation = (
+        _score_number(technical_breakdown.get("volumeConfirmation"))
+        if isinstance(technical_breakdown, dict)
+        else 0.0
+    )
+    momentum_seed = _rescale_score(volume_confirmation, 6, 20) if volume_confirmation > 0 else 0.0
+    momentum_seed = _round1(min(momentum_seed, combined_technical_seed, 20.0))
+    technical_seed = _round1(min(max(combined_technical_seed - momentum_seed, 0.0), 30.0))
+    if technical_seed + momentum_seed < combined_technical_seed:
+        momentum_seed = _round1(min(20.0, momentum_seed + (combined_technical_seed - technical_seed - momentum_seed)))
+    return {
+        "chipFlowSeed40": chip_seed,
+        "technicalSeed30": technical_seed,
+        "screenerMomentumSeed20": momentum_seed,
+        "mlEdgeSeed30": ml_score,
+        "personaAlphaSeed": 0.0,
+    }
+
+
 def _score_v2_components_from_row(row: dict) -> dict[str, float]:
-    payload = row.get("score_components")
+    payload = _parse_score_components_payload(row.get("score_components"))
     if isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION and isinstance(payload.get("components"), dict):
         components = payload["components"]
+        ml_edge = _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"])
+        if "score_seed_inputs" in row or "ml_score" in row:
+            ml_edge = _rescale_score(_score_v2_seed_inputs(row)["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"])
         return {
-            "mlEdge": _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"]),
+            "mlEdge": ml_edge,
             "chipFlow": _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"]),
             "technicalStructure": _clamp_score(components.get("technicalStructure"), SCORE_V2_WEIGHTS["technicalStructure"]),
             "fundamentalQuality": _clamp_score(components.get("fundamentalQuality"), SCORE_V2_WEIGHTS["fundamentalQuality"]),
             "newsTheme": _clamp_score(components.get("newsTheme"), SCORE_V2_WEIGHTS["newsTheme"]),
         }
+    seeds = _score_v2_seed_inputs(row)
     return {
-        "mlEdge": _rescale_score(row.get("ml_score"), 30, SCORE_V2_WEIGHTS["mlEdge"]),
-        "chipFlow": _rescale_score(row.get("chip_score"), 40, SCORE_V2_WEIGHTS["chipFlow"]),
+        "mlEdge": _rescale_score(seeds["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"]),
+        "chipFlow": _rescale_score(seeds["chipFlowSeed40"], 40, SCORE_V2_WEIGHTS["chipFlow"]),
         "technicalStructure": _rescale_score(
-            _score_number(row.get("tech_score")) + _score_number(row.get("momentum_score")),
+            seeds["technicalSeed30"] + seeds["screenerMomentumSeed20"],
             50,
             SCORE_V2_WEIGHTS["technicalStructure"],
         ),
@@ -540,6 +622,7 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
         "executionRisk": 2.0,
     }
     target = _clamp_score(target, SCORE_V2_WEIGHTS["technicalStructure"])
+    seeds = _score_v2_seed_inputs(row)
 
     current_price = _first_float(row.get("current_price"))
     ma20 = _first_float(row.get("ma20"))
@@ -557,10 +640,10 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
     detailed_values = [plus_di, minus_di, adx, atr, sar, cci, vw_rsi, vmd]
     if not any(value is not None for value in detailed_values):
         return {
-            "trendStructure": _rescale_score(row.get("tech_score"), 30, maxima["trendStructure"]),
+            "trendStructure": _rescale_score(seeds["technicalSeed30"], 30, maxima["trendStructure"]),
             "volatilityStructure": 0.0,
             "reversalExtreme": 0.0,
-            "volumeConfirmation": _rescale_score(row.get("momentum_score"), 20, maxima["volumeConfirmation"]),
+            "volumeConfirmation": _rescale_score(seeds["screenerMomentumSeed20"], 20, maxima["volumeConfirmation"]),
             "executionRisk": 0.0,
         }
 
@@ -600,7 +683,7 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
         raw["volumeConfirmation"] += 3.0
     if vw_rsi is not None:
         raw["volumeConfirmation"] += 2.0 if 55 <= vw_rsi <= 80 else 1.0 if vw_rsi > 80 else 0.0
-    raw["volumeConfirmation"] += _rescale_score(row.get("momentum_score"), 20, 1.0)
+    raw["volumeConfirmation"] += _rescale_score(seeds["screenerMomentumSeed20"], 20, 1.0)
 
     if rsi is not None and 35 <= rsi <= 75:
         raw["executionRisk"] += 1.0
@@ -616,14 +699,10 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
 
 
 def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | None = None) -> dict[str, Any]:
-    """Persist canonical Score V2 payload; old scalar fields are storage inputs only."""
+    """Persist canonical Score V2 payload from normalized seed inputs."""
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
-    chip_score = _score_number(row.get("chip_score"))
-    tech_score = _score_number(row.get("tech_score"))
-    momentum_score = _score_number(row.get("momentum_score"))
-    ml_score = _score_number(row.get("ml_score"))
-    persona_score = _score_number(row.get("persona_score"))
+    seeds = _score_v2_seed_inputs(row)
     risk_flags = ((alpha_context.get("risk_overlay") or {}).get("flags") if isinstance(alpha_context, dict) else []) or []
     alpha_reason = {
         "bucket": alpha_context.get("edge_bucket") if isinstance(alpha_context, dict) else None,
@@ -654,12 +733,8 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         },
         "riskFlags": list(dict.fromkeys(str(flag) for flag in risk_flags if flag)),
         "reasons": [],
-        "legacyComponents": {
-            "chip": chip_score,
-            "tech": tech_score,
-            "screenerMomentum": momentum_score,
-            "ml": ml_score,
-            "persona": persona_score,
+        "seedComponents": {
+            **seeds,
         },
         "rawScore": raw_score,
         "alphaAdjustment": alpha_adjustment or 0,
@@ -986,9 +1061,14 @@ def filter_and_score_recommendations(
         # ML score reflects model evidence only; ranking/top-K promotion is
         # tracked in signal_source/reason but should not inflate ML votes.
         ml_score = calculate_ml_score(eff_ml, ml) if ml else 0.0
-        chip_score = rec.get("chip_score") or 0
-        tech_score = rec.get("tech_score") or 0
-        momentum_score = rec.get("momentum_score") or 0
+        existing_score_components = _parse_score_components_payload(rec.get("score_components"))
+        score_seed_inputs = _score_v2_seed_inputs_from_payload(existing_score_components, ml_score=ml_score) or {
+            "chipFlowSeed40": _score_number(rec.get("chip_score")),
+            "technicalSeed30": _score_number(rec.get("tech_score")),
+            "screenerMomentumSeed20": _score_number(rec.get("momentum_score")),
+            "mlEdgeSeed30": ml_score,
+            "personaAlphaSeed": 0.0,
+        }
 
         # Persona score (Batch B: 投信/散戶 augmentation)
         persona_score = 0.0
@@ -1002,6 +1082,7 @@ def filter_and_score_recommendations(
                     retail = RetailOp(**op.get("retail", {})) if op.get("retail") else None
                     if trust and retail:
                         persona_score = compute_score(trust, retail) * persona_weight
+                        score_seed_inputs["personaAlphaSeed"] = persona_score
                         persona_applied = {
                             "trust_signal": trust.signal, "trust_strength": trust.strength,
                             "retail_signal": retail.signal, "retail_strength": retail.strength,
@@ -1009,7 +1090,12 @@ def filter_and_score_recommendations(
                 except Exception as e:
                     logger.debug(f"[reco] persona_score failed for {symbol}: {e}")
 
-        total_score = round((chip_score + tech_score + ml_score + persona_score) * 10) / 10
+        total_score = round((
+            score_seed_inputs["chipFlowSeed40"]
+            + score_seed_inputs["technicalSeed30"]
+            + score_seed_inputs["mlEdgeSeed30"]
+            + score_seed_inputs["personaAlphaSeed"]
+        ) * 10) / 10
 
         payload = payload_by_sym.get(symbol, {})
         raw_stock_meta = payload.get("stock_meta", {}) if payload else {}
@@ -1131,11 +1217,12 @@ def filter_and_score_recommendations(
             "rec_id": rec.get("id"),
             "name": rec.get("name"),
             "sector": rec.get("sector"),
-            "industry": rec.get("industry"),
-            "chip_score": chip_score,
-            "tech_score": tech_score,
-            "momentum_score": momentum_score,
-            "ml_score": ml_score,
+            "industry": rec.get("industry") or rec.get("sector"),
+            "score_seed_inputs": score_seed_inputs,
+            "chip_score": score_seed_inputs["chipFlowSeed40"],
+            "tech_score": score_seed_inputs["technicalSeed30"],
+            "momentum_score": score_seed_inputs["screenerMomentumSeed20"],
+            "ml_score": score_seed_inputs["mlEdgeSeed30"],
             "persona_score": persona_score,
             "persona_applied": persona_applied,  # None if no persona data
             "score": total_score,
@@ -1168,6 +1255,8 @@ def filter_and_score_recommendations(
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
         }
+        if existing_score_components:
+            row["score_components"] = existing_score_components
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
@@ -1627,7 +1716,11 @@ def update_recommendations_in_d1(
 
     statements: list[tuple[str, list[Any]]] = []
     for idx, r in enumerate(recommendations, start=1):
-        ml_score, replaced_ml = _sanitize_non_finite(r.get("ml_score") or 0)
+        score_seed_inputs = _score_v2_seed_inputs(r)
+        chip_flow_seed, replaced_chip_seed = _sanitize_non_finite(score_seed_inputs["chipFlowSeed40"])
+        technical_seed, replaced_technical_seed = _sanitize_non_finite(score_seed_inputs["technicalSeed30"])
+        screener_momentum_seed, replaced_momentum_seed = _sanitize_non_finite(score_seed_inputs["screenerMomentumSeed20"])
+        ml_score, replaced_ml = _sanitize_non_finite(score_seed_inputs["mlEdgeSeed30"])
         score, replaced_score = _sanitize_non_finite(r.get("score") or 0)
         confidence, replaced_conf = _sanitize_non_finite(r.get("confidence"))
         current_price, replaced_price = _sanitize_non_finite(r.get("current_price"))
@@ -1646,7 +1739,10 @@ def update_recommendations_in_d1(
                 score,
             )
         sanitized_count = (
-            replaced_ml
+            replaced_chip_seed
+            + replaced_technical_seed
+            + replaced_momentum_seed
+            + replaced_ml
             + replaced_score
             + replaced_conf
             + replaced_price
@@ -1719,9 +1815,9 @@ def update_recommendations_in_d1(
                 trust_net_5d,
                 rsi14,
                 macd_hist,
-                r.get("chip_score") or 0,
-                r.get("tech_score") or 0,
-                r.get("momentum_score") or 0,
+                chip_flow_seed,
+                technical_seed,
+                screener_momentum_seed,
                 ml_score,
                 r.get("industry"),
                 r.get("market_segment") or "UNKNOWN",
@@ -1811,3 +1907,45 @@ def merge_llm_reasons_into_recommendations(
                     )
                 ]
                 r["watch_points"] = llm_points + domain_points
+
+
+def merge_breeze2_reason_shadow_into_score_components(
+    recommendations: list[dict],
+    breeze2_shadow: dict[str, dict],
+) -> None:
+    """Persist Breeze2 as a side-by-side Score V2 reason variant.
+
+    This keeps Gemini/primary reasons authoritative for the card headline while
+    exposing Breeze2's advisory-only text for UI comparison.
+    """
+    if not breeze2_shadow:
+        return
+    for row in recommendations:
+        symbol = str(row.get("symbol") or "").strip()
+        entry = breeze2_shadow.get(symbol)
+        if not isinstance(entry, dict):
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        if not reason:
+            continue
+        payload = _parse_score_components_payload(row.get("score_components"))
+        if not payload:
+            continue
+        variants = payload.get("reasonVariants")
+        if not isinstance(variants, dict):
+            variants = {}
+        watch_points = [
+            str(point).strip()
+            for point in (entry.get("watchPoints") or [])
+            if isinstance(point, str) and point.strip()
+        ][:5]
+        variants["breeze2"] = {
+            "source": str(entry.get("source") or "breeze2_shadow"),
+            "decision_effect": "advisory_only",
+            "reason": reason[:700],
+            "watchPoints": watch_points,
+            "breeze2_context": str(entry.get("breeze2_context") or "unknown"),
+            "riskFlags": [str(flag) for flag in (entry.get("riskFlags") or []) if flag][:8],
+        }
+        payload["reasonVariants"] = variants
+        row["score_components"] = payload

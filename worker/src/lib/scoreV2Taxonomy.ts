@@ -50,29 +50,19 @@ export interface ScoreV2Payload {
   finalScore?: number
   alphaAdjustment?: number
   technicalBreakdown?: Required<ScoreV2TechnicalBreakdown>
+  technicalSignals?: Record<string, unknown>
   riskFlags: string[]
   reasons: string[]
-}
-
-export interface LegacyScoreProjection {
-  score: number
-  ml_score: number
-  chip_score: number
-  tech_score: number
-  momentum_score: number
-  score_components: string
+  alphaReason?: Record<string, unknown>
+  chipEvidence?: Record<string, unknown>
+  reasonVariants?: Record<string, any>
 }
 
 export interface ScoreV2StorageRow {
   score_components?: unknown
-  chip_score?: unknown
-  tech_score?: unknown
-  momentum_score?: unknown
-  ml_score?: unknown
-  score?: unknown
 }
 
-export type ScoreV2SnapshotSource = 'score_v2' | 'storage_projection'
+export type ScoreV2SnapshotSource = 'score_v2'
 
 export interface ScoreV2Snapshot {
   source: ScoreV2SnapshotSource
@@ -82,8 +72,29 @@ export interface ScoreV2Snapshot {
   finalScore: number
   alphaAdjustment: number
   technicalBreakdown?: Required<ScoreV2TechnicalBreakdown>
+  technicalSignals?: Record<string, unknown>
   riskFlags: string[]
   reasons: string[]
+  alphaReason?: Record<string, unknown>
+  chipEvidence?: Record<string, unknown>
+  reasonVariants?: Record<string, any>
+}
+
+export interface ScoreV2SnapshotSummary {
+  version: typeof SCORE_V2_VERSION
+  source: ScoreV2SnapshotSource
+  weights: typeof SCORE_V2_WEIGHTS
+  components: ScoreV2Components
+  total: number
+  finalScore: number
+  alphaAdjustment: number
+  technicalBreakdown?: Required<ScoreV2TechnicalBreakdown>
+  technicalSignals?: Record<string, unknown>
+  riskFlags: string[]
+  reasons: string[]
+  alphaReason?: Record<string, unknown>
+  chipEvidence?: Record<string, unknown>
+  reasonVariants?: Record<string, any>
 }
 
 export interface ScoreV2ComponentPct {
@@ -169,22 +180,11 @@ function parseScoreV2Payload(value: unknown): ScoreV2Payload | null {
     ...payload,
     ...(finalScore != null ? { finalScore: clampScore(finalScore, 100) } : {}),
     ...(alphaAdjustment != null ? { alphaAdjustment: round1(alphaAdjustment) } : {}),
+    ...(parseComponentsRecord(record.technicalSignals) ? { technicalSignals: parseComponentsRecord(record.technicalSignals)! } : {}),
+    ...(parseComponentsRecord(record.alphaReason) ? { alphaReason: parseComponentsRecord(record.alphaReason)! } : {}),
+    ...(parseComponentsRecord(record.chipEvidence) ? { chipEvidence: parseComponentsRecord(record.chipEvidence)! } : {}),
+    ...(parseComponentsRecord(record.reasonVariants) ? { reasonVariants: parseComponentsRecord(record.reasonVariants)! as Record<string, any> } : {}),
   }
-}
-
-function buildStorageProjection(row: ScoreV2StorageRow): ScoreV2Payload {
-  const legacyTech = finiteNumber(row.tech_score) ?? 0
-  const legacyMomentum = finiteNumber(row.momentum_score) ?? 0
-  return buildScoreV2Components({
-    mlEdge: rescale(row.ml_score, 30, SCORE_V2_WEIGHTS.mlEdge),
-    chipFlow: rescale(row.chip_score, 40, SCORE_V2_WEIGHTS.chipFlow),
-    technicalStructure: rescale(legacyTech + legacyMomentum, 50, SCORE_V2_WEIGHTS.technicalStructure),
-    technicalBreakdown: {
-      trendStructure: rescale(legacyTech, 30, 7),
-      volumeConfirmation: rescale(legacyMomentum, 20, 6),
-    },
-    reasons: ['score_v2_storage_projection'],
-  })
 }
 
 function pct(value: number, total: number): number {
@@ -213,26 +213,45 @@ export function buildScoreV2Components(input: ScoreV2Input): ScoreV2Payload {
   }
 }
 
-export function readScoreV2Snapshot(row: ScoreV2StorageRow): ScoreV2Snapshot {
+export function readScoreV2Snapshot(row: ScoreV2StorageRow): ScoreV2Snapshot | null {
   const canonical = parseScoreV2Payload(row.score_components)
-  const payload = canonical ?? buildStorageProjection(row)
-  const storageScore = finiteNumber(row.score)
-  const finalScore = canonical
-    ? payload.finalScore ?? payload.total
-    : storageScore ?? payload.total
-  const alphaAdjustment = canonical
-    ? payload.alphaAdjustment ?? round1(finalScore - payload.total)
-    : round1(finalScore - payload.total)
+  if (!canonical) return null
+  const payload = canonical
+  const finalScore = payload.finalScore ?? payload.total
+  const alphaAdjustment = payload.alphaAdjustment ?? round1(finalScore - payload.total)
   return {
-    source: canonical ? 'score_v2' : 'storage_projection',
+    source: 'score_v2',
     payload,
     components: payload.components,
     total: payload.total,
     finalScore: clampScore(finalScore, 100),
     alphaAdjustment,
     ...(payload.technicalBreakdown ? { technicalBreakdown: payload.technicalBreakdown } : {}),
+    ...(payload.technicalSignals ? { technicalSignals: payload.technicalSignals } : {}),
     riskFlags: payload.riskFlags,
     reasons: payload.reasons,
+    ...(payload.alphaReason ? { alphaReason: payload.alphaReason } : {}),
+    ...(payload.chipEvidence ? { chipEvidence: payload.chipEvidence } : {}),
+    ...(payload.reasonVariants ? { reasonVariants: payload.reasonVariants } : {}),
+  }
+}
+
+export function serializeScoreV2Snapshot(snapshot: ScoreV2Snapshot): ScoreV2SnapshotSummary {
+  return {
+    version: SCORE_V2_VERSION,
+    source: snapshot.source,
+    weights: snapshot.payload.weights,
+    components: snapshot.components,
+    total: snapshot.total,
+    finalScore: snapshot.finalScore,
+    alphaAdjustment: snapshot.alphaAdjustment,
+    ...(snapshot.technicalBreakdown ? { technicalBreakdown: snapshot.technicalBreakdown } : {}),
+    ...(snapshot.technicalSignals ? { technicalSignals: snapshot.technicalSignals } : {}),
+    riskFlags: snapshot.riskFlags,
+    reasons: snapshot.reasons,
+    ...(snapshot.alphaReason ? { alphaReason: snapshot.alphaReason } : {}),
+    ...(snapshot.chipEvidence ? { chipEvidence: snapshot.chipEvidence } : {}),
+    ...(snapshot.reasonVariants ? { reasonVariants: snapshot.reasonVariants } : {}),
   }
 }
 
@@ -243,18 +262,6 @@ export function scoreV2ComponentPercentages(snapshot: ScoreV2Snapshot): ScoreV2C
     technicalPct: pct(snapshot.components.technicalStructure, snapshot.total),
     fundamentalPct: pct(snapshot.components.fundamentalQuality, snapshot.total),
     newsPct: pct(snapshot.components.newsTheme, snapshot.total),
-  }
-}
-
-export function projectScoreV2ToLegacy(payload: ScoreV2Payload): LegacyScoreProjection {
-  const volumeConfirmation = payload.technicalBreakdown?.volumeConfirmation ?? 0
-  return {
-    score: payload.finalScore ?? payload.total,
-    ml_score: payload.components.mlEdge,
-    chip_score: payload.components.chipFlow,
-    tech_score: payload.components.technicalStructure,
-    momentum_score: clampScore(volumeConfirmation, 20),
-    score_components: JSON.stringify(payload),
   }
 }
 

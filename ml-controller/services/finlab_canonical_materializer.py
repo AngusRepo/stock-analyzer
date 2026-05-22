@@ -21,6 +21,7 @@ class FinLabCanonicalOutputs:
     artifact_root: str
     canonical_market_daily: list[dict[str, Any]]
     canonical_chip_daily: list[dict[str, Any]]
+    canonical_institutional_amount_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
     finlab_taxonomy_tags: list[dict[str, Any]]
@@ -199,6 +200,62 @@ def build_chip_rows(
         "as_of_date",
     ])
     return _rows(df, limit)
+
+
+INSTITUTIONAL_AMOUNT_CATEGORY_MAP: dict[str, tuple[str, str]] = {
+    "上市合計": ("LISTED", "total"),
+    "上市外資": ("LISTED", "foreign_total"),
+    "上市外資及陸資(不含外資自營商)": ("LISTED", "foreign"),
+    "上市外資自營商": ("LISTED", "foreign_dealer"),
+    "上市投信": ("LISTED", "trust"),
+    "上市自營商(自行買賣)": ("LISTED", "dealer_self"),
+    "上市自營商(避險)": ("LISTED", "dealer_hedge"),
+    "上市自營商合計": ("LISTED", "dealer_total"),
+    "上櫃三大法人合計*": ("OTC", "total"),
+    "上櫃外資及陸資(不含自營商)": ("OTC", "foreign"),
+    "上櫃外資及陸資合計": ("OTC", "foreign_total"),
+    "上櫃外資自營商": ("OTC", "foreign_dealer"),
+    "上櫃投信": ("OTC", "trust"),
+    "上櫃自營商(自行買賣)": ("OTC", "dealer_self"),
+    "上櫃自營商(避險)": ("OTC", "dealer_hedge"),
+    "上櫃自營商合計": ("OTC", "dealer_total"),
+}
+
+
+def build_institutional_amount_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    fields = ["buy_amount", "sell_amount", "net_amount"]
+    df = _join_wide_fields(artifact_root / "raw" / "institutional_amount_summary", fields, start_date=start_date, end_date=end_date)
+    if df.is_empty():
+        return []
+    lineage = _lineage(run_id, "institutional_amount_summary", fields, artifact_root)
+    rows: list[dict[str, Any]] = []
+    for row in df.to_dicts():
+        category = str(row.get("stock_id") or "").strip()
+        mapped = INSTITUTIONAL_AMOUNT_CATEGORY_MAP.get(category)
+        if mapped is None:
+            continue
+        market_segment, investor = mapped
+        rows.append({
+            "date": str(row.get("date"))[:10],
+            "market_segment": market_segment,
+            "investor": investor,
+            "category": category,
+            "buy_amount": row.get("buy_amount"),
+            "sell_amount": row.get("sell_amount"),
+            "net_amount": row.get("net_amount"),
+            "source": "finlab.institutional_investors_trading_all_market_summary",
+            "lineage_json": lineage,
+            "as_of_date": generated_at[:10],
+        })
+    return rows[:limit] if limit and limit > 0 else rows
 
 
 def build_emerging_broker_rows(
@@ -523,6 +580,14 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_chip_daily") else []
+    institutional_amounts = build_institutional_amount_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_institutional_amount_daily") else []
     if wants("canonical_chip_daily") or wants("canonical_broker_flow_daily"):
         emerging_chip, broker_flow = build_emerging_broker_rows(
             root,
@@ -567,6 +632,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_market_daily"] = listed_market + emerging_market
     if wants("canonical_chip_daily"):
         output_rows["canonical_chip_daily"] = listed_chip + emerging_chip
+    if wants("canonical_institutional_amount_daily"):
+        output_rows["canonical_institutional_amount_daily"] = institutional_amounts
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
     if wants("canonical_broker_flow_daily"):
@@ -596,6 +663,7 @@ def materialize_finlab_canonical_outputs(
         artifact_root=str(root),
         canonical_market_daily=output_rows.get("canonical_market_daily", []),
         canonical_chip_daily=output_rows.get("canonical_chip_daily", []),
+        canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
         finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
@@ -653,6 +721,13 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "date", "market_segment", "foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance", "source", "lineage_json", "as_of_date"],
         ["stock_id", "date", "source"],
         ["market_segment", "foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_institutional_amount_daily",
+        outputs.canonical_institutional_amount_daily,
+        ["date", "market_segment", "investor", "category", "buy_amount", "sell_amount", "net_amount", "source", "lineage_json", "as_of_date"],
+        ["date", "market_segment", "investor", "source"],
+        ["category", "buy_amount", "sell_amount", "net_amount", "lineage_json", "as_of_date"],
     ))
     statements.extend(_row_statements(
         "canonical_revenue_monthly",

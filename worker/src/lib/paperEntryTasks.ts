@@ -36,7 +36,7 @@ import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
 import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from './tradingRestrictions'
-import { readScoreV2Snapshot, scoreV2ComponentPercentages } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
   buildFiveSlotCapitalPlan,
   fiveSlotHoldingWeaknessScore,
@@ -410,7 +410,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       candidates: pendingBuys.map((pending) => ({
         symbol: pending.symbol,
         confidence: pending.confidence,
-        score: pending.score,
+        score_v2: pending.score_v2 ?? null,
         riskPct: pending.risk_pct,
       })),
     })
@@ -625,7 +625,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   const capitalCandidates: FiveSlotCandidate[] = pendingBuys.map((pending) => ({
     symbol: pending.symbol,
     confidence: pending.confidence,
-    score: pending.score,
+    score_v2: pending.score_v2 ?? null,
     riskPct: pending.risk_pct,
   }))
   const capitalPlan = buildFiveSlotCapitalPlan({
@@ -1091,43 +1091,38 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     try {
       const recRow = await env.DB.prepare(
-        `SELECT score_components, chip_score, tech_score, momentum_score, ml_score, score
+        `SELECT score_components
            FROM daily_recommendations
           WHERE date=? AND symbol=?`,
       ).bind(today, pending.symbol).first<any>()
       if (recRow) {
         const scoreV2 = readScoreV2Snapshot(recRow)
-        const pct = scoreV2ComponentPercentages(scoreV2)
-        const decisionScoreComponents = JSON.stringify({
-          ...scoreV2.payload,
-          finalScore: scoreV2.finalScore,
-          alphaAdjustment: scoreV2.alphaAdjustment,
-        })
-        await env.DB.prepare(`
-          INSERT OR REPLACE INTO decision_logs
-            (date, symbol, action, score_components, chip_score, tech_score, ml_score, total_score,
-             chip_pct, tech_pct, ml_pct, ml_signal, ml_confidence,
-             debate_verdict, debate_summary, market_risk, sector, entry_price)
-          VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          today,
-          pending.symbol,
-          decisionScoreComponents,
-          scoreV2.components.chipFlow,
-          scoreV2.components.technicalStructure,
-          scoreV2.components.mlEdge,
-          scoreV2.finalScore,
-          pct.chipPct,
-          pct.technicalPct,
-          pct.mlPct,
-          pending.signal,
-          pending.confidence,
-          pending.debate_verdict ?? null,
-          null,
-          marketRisk?.risk_level ?? null,
-          recSector,
-          fillPrice,
-        ).run()
+        if (!scoreV2) {
+          console.warn(`[PaperEntry] missing Score V2 payload for decision log: ${pending.symbol}`)
+        } else {
+          const decisionScoreComponents = JSON.stringify({
+            ...scoreV2.payload,
+            finalScore: scoreV2.finalScore,
+            alphaAdjustment: scoreV2.alphaAdjustment,
+          })
+          await env.DB.prepare(`
+            INSERT OR REPLACE INTO decision_logs
+              (date, symbol, action, score_components, ml_signal, ml_confidence,
+               debate_verdict, debate_summary, market_risk, sector, entry_price)
+            VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            today,
+            pending.symbol,
+            decisionScoreComponents,
+            pending.signal,
+            pending.confidence,
+            pending.debate_verdict ?? null,
+            null,
+            marketRisk?.risk_level ?? null,
+            recSector,
+            fillPrice,
+          ).run()
+        }
       }
     } catch (e) {
       console.warn('[L2] Decision log failed:', e)

@@ -1,4 +1,4 @@
-export type ScoreBreakdownSource = 'score_v2' | 'storage_projection'
+export type ScoreBreakdownSource = 'score_v2' | 'missing_score_v2'
 
 export type ScoreBreakdownRow = {
   key: string
@@ -6,6 +6,7 @@ export type ScoreBreakdownRow = {
   value: number
   max: number
   color: string
+  explanation?: string
 }
 
 export type ScoreBreakdownViewModel = {
@@ -28,20 +29,12 @@ const SCORE_V2_COMPONENTS = [
   ['newsTheme', '新聞題材', 5, 'bg-cyan-500'],
 ] as const
 
-const SCORE_V2_WEIGHTS = {
-  mlEdge: 25,
-  chipFlow: 25,
-  technicalStructure: 25,
-  fundamentalQuality: 20,
-  newsTheme: 5,
-} as const
-
 const SCORE_V2_TECHNICAL = [
-  ['trendStructure', '趨勢結構', 7, 'bg-violet-500'],
-  ['volatilityStructure', '波動結構', 5, 'bg-sky-500'],
-  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500'],
-  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500'],
+  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '分數高代表收盤價、均線與短中期方向比較一致，趨勢不是只靠單日跳動撐起來。'],
+  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '分數高代表波動沒有失控，突破或回測比較不容易被雜訊掃掉。'],
+  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '分數高代表目前沒有太靠近過熱或過冷極端，進場不是單純追高或接刀。'],
+  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '分數高代表量能有跟上價格方向，市場不是只有價格動、成交沒人接。'],
+  ['executionRisk', '執行風險', 2, 'bg-rose-500', '分數高代表流動性、漲跌停與滑價風險較低，實際下單比較不容易失真。'],
 ] as const
 
 function parseObject(raw: unknown): Record<string, any> | null {
@@ -72,10 +65,86 @@ function clampScore(value: unknown, max: number): number {
   return round1(Math.max(0, Math.min(max, n)))
 }
 
-function rescale(value: unknown, oldMax: number, newMax: number): number {
-  if (oldMax <= 0) return 0
-  const n = finiteNumber(value)
-  return clampScore((Math.max(0, Math.min(oldMax, n)) / oldMax) * newMax, newMax)
+function fmtSignal(value: unknown, decimals = 1): string | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(decimals) : null
+}
+
+function riskFlagIncludes(flags: string[], pattern: RegExp): boolean {
+  return flags.some((flag) => pattern.test(flag))
+}
+
+function technicalExplanation(
+  key: string,
+  value: number,
+  max: number,
+  signals: Record<string, any>,
+  riskFlags: string[],
+  fallback: string,
+): string {
+  const scoreText = `${value.toFixed(1)}/${max.toFixed(0)}`
+  const plusDi = fmtSignal(signals.plusDi14)
+  const minusDi = fmtSignal(signals.minusDi14)
+  const adx = fmtSignal(signals.adx14)
+  const cci = fmtSignal(signals.cci20)
+  const vwRsi = fmtSignal(signals.volumeWeightedRsi14)
+  const volumeMomentum = fmtSignal(signals.volumeMomentumDivergence132710, 0)
+  const volumeMomentumNumber = Number(signals.volumeMomentumDivergence132710)
+  const lowLiquidity = riskFlagIncludes(riskFlags, /low[_-]?liquidity/i)
+
+  if (key === 'trendStructure') {
+    if (plusDi && minusDi && adx) {
+      const direction = Number(signals.plusDi14) >= Number(signals.minusDi14)
+        ? `+DI ${plusDi} 高於 -DI ${minusDi}`
+        : `-DI ${minusDi} 高於 +DI ${plusDi}`
+      const strength = Number(signals.adx14) >= 25 ? `ADX ${adx} 顯示趨勢有強度` : `ADX ${adx} 顯示趨勢還不夠強`
+      return `拿 ${scoreText}，因為 ${direction}，${strength}，所以方向性有被趨勢資料支持。`
+    }
+    return `拿 ${scoreText}，${fallback}`
+  }
+
+  if (key === 'volatilityStructure') {
+    const parts = [
+      adx ? (Number(signals.adx14) >= 35 ? `ADX ${adx} 偏高，代表波動與趨勢正在擴張` : `ADX ${adx} 未失控`) : null,
+      cci ? (Math.abs(Number(signals.cci20)) >= 120 ? `CCI ${cci} 接近極端，容易急拉急殺` : `CCI ${cci} 還在可控區間`) : null,
+      lowLiquidity ? '低流動性會放大滑價與跳動' : null,
+    ].filter(Boolean)
+    return parts.length
+      ? `拿 ${scoreText}，${parts.join('；')}。`
+      : `拿 ${scoreText}，${fallback}`
+  }
+
+  if (key === 'reversalExtreme') {
+    const parts = [
+      vwRsi ? (Number(signals.volumeWeightedRsi14) >= 80 ? `量加權 RSI ${vwRsi} 偏熱` : Number(signals.volumeWeightedRsi14) <= 30 ? `量加權 RSI ${vwRsi} 偏冷` : `量加權 RSI ${vwRsi} 沒有落在極端區`) : null,
+      cci ? (Math.abs(Number(signals.cci20)) >= 120 ? `CCI ${cci} 顯示轉折風險較高` : `CCI ${cci} 未到過熱或過冷`) : null,
+    ].filter(Boolean)
+    return parts.length
+      ? `拿 ${scoreText}，${parts.join('；')}。`
+      : `拿 ${scoreText}，${fallback}`
+  }
+
+  if (key === 'volumeConfirmation') {
+    const parts = [
+      Number.isFinite(volumeMomentumNumber)
+        ? (volumeMomentumNumber > 0 ? `量能動能為正 ${volumeMomentum}，代表成交量有跟著方向放大` : `量能動能為負 ${volumeMomentum}，代表價格與資金熱度不同步`)
+        : null,
+      vwRsi ? (Number(signals.volumeWeightedRsi14) >= 55 ? `量加權 RSI ${vwRsi} 偏強` : `量加權 RSI ${vwRsi} 尚未確認多方`) : null,
+    ].filter(Boolean)
+    return parts.length
+      ? `拿 ${scoreText}，${parts.join('；')}。`
+      : `拿 ${scoreText}，${fallback}`
+  }
+
+  if (key === 'executionRisk') {
+    const parts = [
+      lowLiquidity ? '低流動性旗標會壓低分數，盤中更容易有滑價或買不到/賣不掉' : '沒有明顯低流動性旗標',
+      vwRsi ? `量加權 RSI ${vwRsi} 用來檢查是否太擁擠` : null,
+    ].filter(Boolean)
+    return `拿 ${scoreText}，${parts.join('；')}。`
+  }
+
+  return `拿 ${scoreText}，${fallback}`
 }
 
 function row(
@@ -84,6 +153,7 @@ function row(
   value: unknown,
   max: unknown,
   color: string,
+  explanation?: string,
 ): ScoreBreakdownRow {
   const maxValue = round1(Math.max(0, finiteNumber(max)))
   return {
@@ -92,6 +162,7 @@ function row(
     value: clampScore(value, maxValue),
     max: maxValue,
     color,
+    explanation,
   }
 }
 
@@ -105,38 +176,21 @@ function scoreV2Rows(payload: Record<string, any>): ScoreBreakdownRow[] {
 
 function scoreV2TechnicalRows(payload: Record<string, any>): ScoreBreakdownRow[] {
   const breakdown = parseObject(payload.technicalBreakdown) ?? {}
+  const signals = parseObject(payload.technicalSignals) ?? {}
+  const riskFlags = riskFlagsFromPayload(payload)
   return SCORE_V2_TECHNICAL
     .filter(([key]) => breakdown[key] != null)
-    .map(([key, label, max, color]) => row(key, label, breakdown[key], max, color))
-}
-
-function storageSource(rec: Record<string, any>, payload: Record<string, any> | null): Record<string, any> {
-  const legacyComponents = parseObject(payload?.legacyComponents)
-  return legacyComponents ?? payload ?? rec
-}
-
-function storageRows(rec: Record<string, any>, payload: Record<string, any> | null): ScoreBreakdownRow[] {
-  const source = storageSource(rec, payload)
-  const tech = finiteNumber(source.tech ?? rec.tech_score)
-  const momentum = finiteNumber(source.screenerMomentum ?? rec.momentum_score)
-  const values = {
-    mlEdge: rescale(source.ml ?? rec.ml_score, 30, 25),
-    chipFlow: rescale(source.chip ?? rec.chip_score, 40, 25),
-    technicalStructure: rescale(tech + momentum, 50, 25),
-    fundamentalQuality: 0,
-    newsTheme: 0,
-  }
-  return SCORE_V2_COMPONENTS.map(([key, label, max, color]) => row(key, label, values[key], max, color))
-}
-
-function storageTechnicalRows(rec: Record<string, any>, payload: Record<string, any> | null): ScoreBreakdownRow[] {
-  const source = storageSource(rec, payload)
-  const tech = source.tech ?? rec.tech_score
-  const momentum = source.screenerMomentum ?? rec.momentum_score
-  const rows: ScoreBreakdownRow[] = []
-  if (tech != null) rows.push(row('trendStructure', '趨勢結構', rescale(tech, 30, 7), 7, 'bg-violet-500'))
-  if (momentum != null) rows.push(row('volumeConfirmation', '量能確認', rescale(momentum, 20, 6), 6, 'bg-cyan-500'))
-  return rows
+    .map(([key, label, max, color, explanation]) => {
+      const value = clampScore(breakdown[key], max)
+      return row(
+        key,
+        label,
+        value,
+        max,
+        color,
+        technicalExplanation(key, value, max, signals, riskFlags, explanation),
+      )
+    })
 }
 
 function sumRows(rows: ScoreBreakdownRow[]): number {
@@ -149,27 +203,8 @@ function riskFlagsFromPayload(payload: Record<string, any> | null): string[] {
   return []
 }
 
-export function buildScoreV2PayloadFromProjectedScores(rec: Record<string, any>): Record<string, any> {
-  const components = {
-    mlEdge: clampScore(rec.ml_score, SCORE_V2_WEIGHTS.mlEdge),
-    chipFlow: clampScore(rec.chip_score, SCORE_V2_WEIGHTS.chipFlow),
-    technicalStructure: clampScore(rec.tech_score, SCORE_V2_WEIGHTS.technicalStructure),
-    fundamentalQuality: 0,
-    newsTheme: 0,
-  }
-  const componentTotal = round1(Object.values(components).reduce((sum, value) => sum + value, 0))
-  return {
-    version: 'score_v2',
-    weights: SCORE_V2_WEIGHTS,
-    components,
-    total: clampScore(rec.score ?? componentTotal, 100),
-    riskFlags: [],
-    reasons: ['score_v2_projected_storage'],
-  }
-}
-
 export function buildScoreBreakdownViewModel(rec: Record<string, any>): ScoreBreakdownViewModel {
-  const payload = parseObject(rec.score_components)
+  const payload = parseObject(rec.score_v2)
   const isScoreV2 = payload?.version === 'score_v2' && parseObject(payload.components) != null
   const alphaAdjustment = round1(finiteNumber(payload?.alphaAdjustment ?? rec.alpha_context?.score_adjustment))
 
@@ -190,19 +225,17 @@ export function buildScoreBreakdownViewModel(rec: Record<string, any>): ScoreBre
     }
   }
 
-  const rows = storageRows(rec, payload)
-  const baseScore = sumRows(rows)
-  const finalScore = round1(baseScore + alphaAdjustment)
+  const rows = SCORE_V2_COMPONENTS.map(([key, label, max, color]) => row(key, label, 0, max, color))
 
   return {
-    source: 'storage_projection',
-    hasBackendPayload: Boolean(payload),
+    source: 'missing_score_v2',
+    hasBackendPayload: false,
     rows,
-    technicalRows: storageTechnicalRows(rec, payload),
-    baseScore,
-    finalScore,
-    alphaAdjustment,
-    residual: round1(finalScore - baseScore - alphaAdjustment),
-    riskFlags: riskFlagsFromPayload(payload),
+    technicalRows: [],
+    baseScore: 0,
+    finalScore: 0,
+    alphaAdjustment: 0,
+    residual: 0,
+    riskFlags: [],
   }
 }

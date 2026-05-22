@@ -1,4 +1,4 @@
-import { buildScoreBreakdownViewModel, buildScoreV2PayloadFromProjectedScores } from './scoreV2ViewModel.ts'
+import { buildScoreBreakdownViewModel } from './scoreV2ViewModel.ts'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -8,7 +8,7 @@ function assert(condition: unknown, message: string): void {
   const vm = buildScoreBreakdownViewModel({
     score: 67,
     alpha_context: { score_adjustment: 2 },
-    score_components: JSON.stringify({
+    score_v2: JSON.stringify({
       version: 'score_v2',
       total: 65,
       weights: {
@@ -29,6 +29,15 @@ function assert(condition: unknown, message: string): void {
         trendStructure: 5,
         volatilityStructure: 3,
         volumeConfirmation: 4,
+        executionRisk: 1,
+      },
+      technicalSignals: {
+        plusDi14: 31.2,
+        minusDi14: 16.4,
+        adx14: 28.5,
+        cci20: 64.3,
+        volumeWeightedRsi14: 67.1,
+        volumeMomentumDivergence132710: 245.5,
       },
       riskFlags: ['LOW_LIQUIDITY'],
     }),
@@ -45,8 +54,54 @@ function assert(condition: unknown, message: string): void {
   assert(vm.technicalRows.some((row) => row.key === 'volatilityStructure' && row.max === 5), 'technical breakdown should use Score V2 volatility max')
   assert(vm.technicalRows.some((row) => row.key === 'trendStructure' && row.label === '趨勢結構'), 'technical detail should use readable trend label')
   assert(vm.technicalRows.some((row) => row.key === 'volumeConfirmation' && row.value === 4), 'technical breakdown should include volume confirmation')
+  assert(vm.technicalRows.every((row) => row.explanation && !row.explanation.includes('公式')), 'technical details should carry plain-language explanations')
+  assert(vm.technicalRows.some((row) => row.key === 'trendStructure' && row.explanation?.includes('+DI 31.2 高於 -DI 16.4')), 'trend detail should explain the actual directional evidence')
+  assert(vm.technicalRows.some((row) => row.key === 'volumeConfirmation' && row.explanation?.includes('量能動能為正')), 'volume detail should explain the actual volume evidence')
+  assert(vm.technicalRows.some((row) => row.key === 'executionRisk' && row.explanation?.includes('低流動性')), 'execution detail should mention liquidity risk flags when present')
   assert(vm.baseScore === 65 && vm.finalScore === 67 && vm.residual === 0, 'formula should account for alpha adjustment')
   assert(vm.riskFlags[0] === 'LOW_LIQUIDITY', 'risk flags should be preserved')
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
+    score_components: JSON.stringify({
+      version: 'score_v2',
+      total: 65,
+      finalScore: 67,
+      components: {
+        mlEdge: 20,
+        chipFlow: 18,
+        technicalStructure: 17,
+        fundamentalQuality: 8,
+        newsTheme: 2,
+      },
+    }),
+  })
+  assert(vm.source === 'missing_score_v2', 'frontend must not read Score V2 from legacy score_components')
+  assert(vm.finalScore === 0, 'legacy score_components should not create a frontend score even when it contains score_v2')
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
+    score: 10,
+    score_v2: {
+      version: 'score_v2',
+      source: 'score_v2',
+      total: 58,
+      finalScore: 61,
+      alphaAdjustment: 3,
+      components: {
+        mlEdge: 21,
+        chipFlow: 14,
+        technicalStructure: 13,
+        fundamentalQuality: 7,
+        newsTheme: 3,
+      },
+    },
+  })
+  assert(vm.source === 'score_v2', 'Score V2 summary payload should be detected from score_v2')
+  assert(vm.finalScore === 61, 'score_v2 summary finalScore should override stale scalar score')
+  assert(vm.rows.find(row => row.key === 'chipFlow')?.value === 14, 'score_v2 summary should expose chipFlow component')
 }
 
 {
@@ -56,12 +111,10 @@ function assert(condition: unknown, message: string): void {
     tech_score: 20,
     ml_score: 15,
   })
-  assert(vm.source === 'storage_projection', 'old columns should only be exposed as Score V2 storage projection')
-  assert(vm.rows.length === 5, 'storage projection should still expose five Score V2 dimensions')
-  assert(vm.rows.some((row) => row.key === 'chipFlow' && row.max === 25 && row.value === 18.8), 'chip storage projection should rescale to 25-point V2')
-  assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.max === 25 && row.value === 10), 'technical storage projection should rescale to 25-point V2')
-  assert(vm.rows.some((row) => row.key === 'mlEdge' && row.max === 25 && row.value === 12.5), 'ML storage projection should rescale to 25-point V2')
-  assert(vm.baseScore === 41.3 && vm.finalScore === 41.3 && vm.residual === 0, 'storage projection should not reuse legacy total score')
+  assert(vm.source === 'missing_score_v2', 'frontend must not project legacy score fields into Score V2')
+  assert(vm.rows.length === 5, 'missing Score V2 payload should still expose the five-dimension shell')
+  assert(vm.finalScore === 0, 'missing Score V2 payload should not reuse stale scalar score')
+  assert(vm.rows.every((row) => row.value === 0), 'missing Score V2 payload should not synthesize component values')
 }
 
 {
@@ -77,24 +130,7 @@ function assert(condition: unknown, message: string): void {
       alphaReason: { riskFlags: ['OVERHEATED'] },
     },
   })
-  assert(vm.source === 'storage_projection', 'old backend score_components should be projected into Score V2')
-  assert(vm.rows.length === 5, 'old backend score_components should still render through five V2 dimensions')
-  assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.max === 25 && row.value === 14), 'legacy tech plus momentum should project into V2 technical structure')
-  assert(vm.baseScore === 46.5 && vm.finalScore === 43.5 && vm.alphaAdjustment === -3, 'storage projection should recompute the V2 formula')
-  assert(vm.riskFlags[0] === 'OVERHEATED', 'legacy risk flags should be preserved')
-}
-
-{
-  const payload = buildScoreV2PayloadFromProjectedScores({
-    score: 50,
-    chip_score: 20,
-    tech_score: 18,
-    ml_score: 12,
-  })
-  const vm = buildScoreBreakdownViewModel({ score_components: payload })
-  assert(vm.source === 'score_v2', 'projected pending-buy scores should re-enter UI as canonical Score V2')
-  assert(vm.rows.some((row) => row.key === 'chipFlow' && row.value === 20 && row.max === 25), 'projected chipFlow should not be rescaled twice')
-  assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.value === 18 && row.max === 25), 'projected technicalStructure should not be rescaled twice')
-  assert(vm.rows.some((row) => row.key === 'mlEdge' && row.value === 12 && row.max === 25), 'projected mlEdge should not be rescaled twice')
-  assert(vm.baseScore === 50, 'projected total should remain canonical Score V2 total')
+  assert(vm.source === 'missing_score_v2', 'frontend must not project legacy score_components into Score V2')
+  assert(vm.finalScore === 0, 'legacy score_components should not create a frontend score')
+  assert(vm.riskFlags.length === 0, 'legacy risk flags should not be treated as canonical Score V2 risk flags')
 }

@@ -36,7 +36,7 @@ import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
-import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
 
 type CircuitBreakerState = _CBState
 
@@ -47,10 +47,7 @@ interface BuyRecommendationRow {
   signal: string
   confidence: number
   reason: string | null
-  chip_score: number | null
-  tech_score: number | null
-  ml_score: number | null
-  score: number | null
+  score_components: unknown
   ml_entry_price: number | null
   ml_stop_loss: number | null
   ml_target1: number | null
@@ -615,7 +612,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
+             dr.watch_points, dr.score_components,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -890,6 +887,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
 
       const scoreV2 = readScoreV2Snapshot(rec)
+      if (!scoreV2) {
+        entryWatchPoints.push('score_v2:missing')
+        continue
+      }
       pendingBuys.push({
         symbol: rec.symbol,
         name: rec.name ?? rec.symbol,
@@ -913,10 +914,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
         risk_pct: riskPct,
         kelly_pct: kellyResult?.pct ?? null,
-        chip_score: scoreV2.components.chipFlow,
-        tech_score: scoreV2.components.technicalStructure,
-        ml_score: scoreV2.components.mlEdge,
-        score: scoreV2.finalScore,
+        score_v2: serializeScoreV2Snapshot(scoreV2),
         source: 'morning_setup',
         original_entry: originalEntry,
       })
@@ -981,7 +979,7 @@ export async function reconcilePendingBuyDebates(
     pendingItems.map((item, index) => ({
       symbol: item.symbol,
       name: item.name ?? item.symbol,
-      score: item.score ?? item.ml_score ?? item.confidence * 100,
+      score_components: item.score_v2 ?? null,
       reason: item.reason ?? 'ML ensemble signal',
       watch_points: item.watch_points,
       rank: index + 1,

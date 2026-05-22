@@ -107,7 +107,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
+  '名詞解釋：基礎分 = ML Edge + 籌碼流 + 技術結構 + 基本面 + 新聞題材；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -611,38 +611,74 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   )
 }
 
+function signedText(value: number | null | undefined, decimals = 1): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '-'
+  return `${n >= 0 ? '+' : ''}${n.toFixed(decimals)}`
+}
+
+function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof buildScoreBreakdownViewModel> }) {
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">基礎分數與 Alpha 調整</p>
+        <span className="font-mono text-xs text-muted-foreground">
+          {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)} {viewModel.alphaAdjustment >= 0 ? '+' : '-'} {fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-md border border-border/40 bg-muted/20 p-2">
+          <p className="text-[10px] text-muted-foreground">基礎分數</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold">{fmtNumber(viewModel.baseScore, 1)}</p>
+        </div>
+        <div className="rounded-md border border-sky-500/25 bg-sky-500/[0.06] p-2">
+          <p className="text-[10px] text-sky-700 dark:text-sky-300">Alpha 調整</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold text-sky-700 dark:text-sky-300">{signedText(viewModel.alphaAdjustment)}</p>
+        </div>
+        <div className="rounded-md border border-primary/25 bg-primary/[0.06] p-2">
+          <p className="text-[10px] text-muted-foreground">最終分數</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold text-primary">{fmtNumber(viewModel.finalScore, 1)}</p>
+        </div>
+      </div>
+      {Math.abs(viewModel.residual) >= 0.1 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          資料校準差 {signedText(viewModel.residual)}，代表後端總分與目前可拆解欄位仍有不同步。
+        </p>
+      )}
+    </div>
+  )
+}
+
+function alphaDetailsFromRec(rec: any): any[] {
+  const payload = parseObject(rec.score_v2)
+  const alphaReason = parseObject(payload?.alphaReason)
+  const details = Array.isArray(alphaReason?.details) ? alphaReason.details : []
+  return details.filter((item: any) => item && item.value != null)
+}
+
 function ScoreBreakdownV2({ rec }: { rec: any }) {
   const viewModel = buildScoreBreakdownViewModel(rec)
-  const components = parseObject(rec.score_components)
   const riskText = viewModel.riskFlags.length > 0 ? viewModel.riskFlags.join(', ') : '無'
-  const alphaDetails = components?.alphaReason?.details?.filter((item: any) => item && item.value != null) ?? []
+  const alphaDetails = alphaDetailsFromRec(rec)
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-muted-foreground">Score V2 分解</span>
-        <span className="font-mono text-foreground">
-          {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)}
-          {viewModel.alphaAdjustment >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
-          {Math.abs(viewModel.residual) >= 0.1 && `${viewModel.residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(viewModel.residual), 1)}`}
-        </span>
-      </div>
-      <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
-        {viewModel.rows.map((item) => (
-          <span key={item.key}>{item.label}: {fmtNumber(item.value, 1)} / {fmtNumber(item.max, 0)}</span>
-        ))}
-        <span>基礎分數: {fmtNumber(viewModel.baseScore, 1)}</span>
-        <span>Alpha 調整: {viewModel.alphaAdjustment >= 0 ? '+' : ''}{fmtNumber(viewModel.alphaAdjustment, 1)}</span>
-        {Math.abs(viewModel.residual) >= 0.1 && (
-          <span>資料校準差: {viewModel.residual >= 0 ? '+' : ''}{fmtNumber(viewModel.residual, 1)}</span>
-        )}
-        <span>最終分數: {fmtNumber(viewModel.finalScore, 1)}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
       </div>
       {viewModel.technicalRows.length > 0 && (
-        <div className="mt-2 space-y-1 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
+        <div className="mt-2 space-y-2 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
           <p className="font-medium text-foreground/80">技術結構細項</p>
           {viewModel.technicalRows.map((item) => (
-            <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+            <div key={item.key} className="space-y-1">
+              <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
+              {item.explanation && (
+                <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                  {item.explanation}
+                </p>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -662,11 +698,327 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
           Alpha 調整目前沒有細項，風險旗標: {riskText}
         </p>
       )}
-      {Math.abs(viewModel.residual) >= 0.1 && (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          分數存在校準差，通常代表後端總分與目前可拆解欄位仍有不同步；Score V2 會優先採用後端 score_components。
+    </div>
+  )
+}
+
+function reasonTextFromValue(raw: unknown): string | null {
+  if (!raw) return null
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    return text ? translateRecommendationReason(text) : null
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, any>
+  return reasonTextFromValue(obj.reason ?? obj.text ?? obj.summary ?? obj.recommendation_reason)
+}
+
+function breeze2ReasonFromRec(rec: any): string | null {
+  const scoreV2 = parseObject(rec.score_v2)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  const breezeWatchPoint = normalizeWatchPoints(rec.watch_points).find((point) => point.startsWith('breeze2:'))
+  return reasonTextFromValue(rec.breeze2_reason_shadow)
+    ?? reasonTextFromValue(rec.breeze2_reason)
+    ?? reasonTextFromValue(rec.breeze2_shadow_reason)
+    ?? reasonTextFromValue(reasonVariants?.breeze2 ?? reasonVariants?.Breeze2)
+    ?? reasonTextFromValue(variants?.breeze2 ?? variants?.Breeze2)
+    ?? (breezeWatchPoint ? `Breeze2 shadow：${breezeWatchPoint.replace(/^breeze2:/, '').trim()}` : null)
+}
+
+function planPrice(value: unknown): string | null {
+  return fmtOptionalNumber(value as any, 2)
+}
+
+function compactLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function PlanBlock({ title, accent, lines }: { title: string; accent: string; lines: string[] }) {
+  return (
+    <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
+      <div className={cn('w-1 shrink-0', accent)} />
+      <div className="min-w-0 flex-1 p-3">
+        <p className="text-xs font-medium text-foreground">{title}</p>
+        <div className="mt-1.5 space-y-1 text-xs leading-relaxed text-muted-foreground">
+          {lines.filter(Boolean).map((line, index) => (
+            <p key={`${title}-${index}`}>{line}</p>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type TradePlanReadRow = {
+  label: string
+  value: string
+  note: string
+  tone?: 'good' | 'warn' | 'neutral'
+}
+
+function tradePlanToneClass(tone: TradePlanReadRow['tone']) {
+  if (tone === 'good') return 'text-emerald-600 dark:text-emerald-300'
+  if (tone === 'warn') return 'text-amber-600 dark:text-amber-300'
+  return 'text-sky-700 dark:text-sky-300'
+}
+
+function TradePlanRow({ row }: { row: TradePlanReadRow }) {
+  return (
+    <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[7rem_8rem_1fr] sm:items-start">
+      <span className="text-[11px] font-medium text-muted-foreground">項目：{row.label}</span>
+      <span className={cn('font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>{row.value}</span>
+      <span className="text-xs leading-relaxed text-muted-foreground">判讀：{row.note}</span>
+    </div>
+  )
+}
+
+function ProviderReasonCompare({ geminiReason, breeze2Reason }: { geminiReason: string; breeze2Reason: string | null }) {
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
+        <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.1 Flash</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
+      </div>
+      <div className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
+        <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">Breeze2</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          {breeze2Reason ?? 'Breeze2 shadow 目前只有 pipeline metrics，尚未逐檔寫入 daily_recommendations，無法在卡片比對文字差異。'}
         </p>
-      )}
+      </div>
+    </div>
+  )
+}
+
+function numericPrice(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function KLinePlanSketch({ context, currentPrice }: { context: AlphaContext | null; currentPrice: unknown }) {
+  const latest = numericPrice(context?.latestClose ?? currentPrice)
+  const fairLow = numericPrice(context?.fairValueLow)
+  const fairHigh = numericPrice(context?.fairValueHigh)
+  const poc = numericPrice(context?.poc)
+  const target = numericPrice(context?.optimisticValueHigh) ?? fairHigh
+  const support = fairLow ?? poc ?? latest
+  const prices = [latest, fairLow, fairHigh, poc, target].filter((value): value is number => value != null)
+  if (prices.length === 0) return null
+  const min = Math.min(...prices) * 0.97
+  const max = Math.max(...prices) * 1.03
+  const y = (price: number) => 118 - ((price - min) / Math.max(0.01, max - min)) * 92
+  const base = latest ?? prices[0]
+  const candles = [-0.045, -0.02, 0.012, 0.038, -0.006, 0.024, 0.052, 0.018].map((delta, index) => {
+    const close = base * (1 + delta)
+    const open = base * (1 + delta - (index % 2 === 0 ? 0.018 : -0.014))
+    const high = Math.max(open, close) * 1.012
+    const low = Math.min(open, close) * 0.988
+    return { x: 28 + index * 30, open, close, high, low, up: close >= open }
+  })
+  const supportY = support ? y(support) : null
+  const triggerY = fairHigh ? y(fairHigh) : target ? y(target) : null
+  const targetY = target ? y(target) : null
+  return (
+    <div className="overflow-hidden rounded-md border border-border/50 bg-background/60">
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+        <span className="text-xs font-medium text-foreground">策略示意</span>
+        <span className="font-mono text-[11px] text-muted-foreground">非即時K線</span>
+      </div>
+      <svg viewBox="0 0 300 142" className="h-44 w-full" role="img" aria-label="K線交易計劃示意圖">
+        <rect x="0" y="0" width="300" height="142" fill="transparent" />
+        {[26, 55, 84, 113].map((gridY) => (
+          <line key={gridY} x1="18" x2="282" y1={gridY} y2={gridY} stroke="currentColor" className="text-border" strokeDasharray="3 4" />
+        ))}
+        {targetY != null && (
+          <>
+            <line x1="18" x2="282" y1={targetY} y2={targetY} stroke="#f87171" strokeWidth="1.4" />
+            <text x="22" y={Math.max(12, targetY - 5)} fill="#f87171" fontSize="10">目標 {fmtNumber(target, 2)}</text>
+          </>
+        )}
+        {triggerY != null && (
+          <>
+            <line x1="18" x2="282" y1={triggerY} y2={triggerY} stroke="#38bdf8" strokeWidth="1.4" />
+            <text x="176" y={Math.max(14, triggerY - 5)} fill="#38bdf8" fontSize="10">突破確認 {fmtNumber(fairHigh ?? target, 2)}</text>
+          </>
+        )}
+        {supportY != null && (
+          <>
+            <line x1="18" x2="282" y1={supportY} y2={supportY} stroke="#22c55e" strokeWidth="1.4" />
+            <rect x="18" y={supportY - 8} width="264" height="16" fill="#22c55e" opacity="0.10" rx="3" />
+            <text x="22" y={supportY + 20} fill="#22c55e" fontSize="10">支撐/拉回區 {fmtNumber(support, 2)}</text>
+          </>
+        )}
+        {candles.map((candle) => {
+          const top = y(Math.max(candle.open, candle.close))
+          const bottom = y(Math.min(candle.open, candle.close))
+          return (
+            <g key={candle.x}>
+              <line x1={candle.x} x2={candle.x} y1={y(candle.high)} y2={y(candle.low)} stroke={candle.up ? '#22c55e' : '#ef4444'} strokeWidth="1.2" />
+              <rect x={candle.x - 5} y={top} width="10" height={Math.max(4, bottom - top)} fill={candle.up ? '#22c55e' : '#ef4444'} rx="1.5" />
+            </g>
+          )
+        })}
+        <path d="M215 102 C218 83 232 72 244 58" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
+        <path d="M244 58 l-2 10 l9 -5 z" fill="#38bdf8" />
+        <path d="M218 93 C210 98 204 104 198 113" fill="none" stroke="#facc15" strokeWidth="2" strokeLinecap="round" />
+        <path d="M198 113 l9 -4 l-2 10 z" fill="#facc15" />
+      </svg>
+    </div>
+  )
+}
+
+function scoreTone(value: number, high: number, low: number): TradePlanReadRow['tone'] {
+  if (value >= high) return 'good'
+  if (value <= low) return 'warn'
+  return 'neutral'
+}
+
+function technicalPlanNote(rec: any): string {
+  const vm = buildScoreBreakdownViewModel(rec)
+  const rows = vm.technicalRows
+  const trend = rows.find((row) => row.key === 'trendStructure')?.explanation
+  const volume = rows.find((row) => row.key === 'volumeConfirmation')?.explanation
+  const execution = rows.find((row) => row.key === 'executionRisk')?.explanation
+  return [trend, volume, execution].filter(Boolean).slice(0, 2).join(' ')
+    || '技術資料不足，先以盤中量價確認。'
+}
+
+function chipPlanNote(rec: any): string {
+  const scoreV2 = parseObject(rec.score_v2)
+  const evidence = parseObject(scoreV2?.chipEvidence) ?? parseObject(rec.chip_evidence)
+  if (evidence?.broker_net_amount_5d_billion != null) {
+    const amount = Number(evidence.broker_net_amount_5d_billion)
+    const direction = amount >= 0 ? '買超' : '賣超'
+    return `興櫃券商分點近5日${direction}${fmtChipAmount(amount)}，broker_count=${evidence.broker_count_latest ?? 'n/a'}，只作籌碼 proxy。`
+  }
+  const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
+  if (Number.isFinite(net)) {
+    const direction = net >= 0 ? '買超' : '賣超'
+    return `法人5日估算${direction}${fmtChipAmount(net)}，這是股數乘收盤價的 proxy，不等於官方成交金額。`
+  }
+  return '籌碼來源不足，不能把法人流向當主要理由。'
+}
+
+function geminiReasonForCompare(rec: any, reason: string): string {
+  const clean = compactLine(reason)
+  if (!clean || clean.startsWith('Score V2 ')) {
+    const signal = rec.signal ? `訊號 ${rec.signal}` : '訊號待確認'
+    return `Gemini 逐檔理由尚未回寫；目前只保留 ${signal} 與 Score V2 結構化資料，避免把分數摘要偽裝成投資建議。`
+  }
+  return clean
+}
+
+function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
+  const vm = buildScoreBreakdownViewModel(rec)
+  const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
+  const chip = vm.rows.find((row) => row.key === 'chipFlow')?.value ?? 0
+  const technical = vm.rows.find((row) => row.key === 'technicalStructure')?.value ?? 0
+  const latest = planPrice(context?.latestClose ?? rec.current_price)
+  const fairLow = planPrice(context?.fairValueLow)
+  const fairHigh = planPrice(context?.fairValueHigh)
+  const regime = shortLabelFor(context?.regime, REGIME_TEXT)
+  const bucket = shortLabelFor(context?.bucket)
+  const location = shortLabelFor(context?.location, LOCATION_TEXT)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummaryFromRec(rec)) ?? '模型共識尚未明確'
+  return [
+    {
+      label: '模型共識',
+      value: `${fmtNumber(ml, 1)}/25`,
+      note: mlSummary,
+      tone: scoreTone(ml, 18, 10),
+    },
+    {
+      label: '籌碼流',
+      value: `${fmtNumber(chip, 1)}/25`,
+      note: chipPlanNote(rec),
+      tone: scoreTone(chip, 18, 10),
+    },
+    {
+      label: '技術結構',
+      value: `${fmtNumber(technical, 1)}/25`,
+      note: technicalPlanNote(rec),
+      tone: scoreTone(technical, 18, 10),
+    },
+    {
+      label: 'Alpha 結構',
+      value: `${bucket} / ${regime}`,
+      note: `現價 ${latest ?? '-'}，fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}，價格位置 ${location}。`,
+      tone: context?.skip ? 'warn' : 'neutral',
+    },
+  ]
+}
+
+function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: AlphaContext | null; reason: string }) {
+  const breeze2Reason = breeze2ReasonFromRec(rec)
+  const latestClose = planPrice(context?.latestClose ?? rec.current_price)
+  const poc = planPrice(context?.poc)
+  const fairLow = planPrice(context?.fairValueLow)
+  const fairHigh = planPrice(context?.fairValueHigh)
+  const optimisticHigh = planPrice(context?.optimisticValueHigh)
+  const stop = fairLow ?? poc ?? '近端支撐'
+  const breakoutTrigger = fairHigh ?? optimisticHigh ?? '近端壓力'
+  const pullbackZone = fairLow && fairHigh ? `${fairLow}~${fairHigh}` : poc ?? '量價支撐區'
+  const alphaAdj = context?.scoreAdjustment == null ? 'Alpha 調整資料不足' : `Alpha 調整 ${signedText(Number(context.scoreAdjustment))}`
+  const sizing = context?.sizing == null ? '部位倍率待定' : `部位倍率 x${fmtNumber(context.sizing, 2)}`
+  const marketLine = [
+    latestClose ? `現價 ${latestClose}` : null,
+    fairLow || fairHigh ? `fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}` : null,
+    poc ? `POC ${poc}` : null,
+  ].filter(Boolean).join('，')
+  const tradePlanRows = buildTradePlanRows(rec, context)
+  const geminiReason = geminiReasonForCompare(rec, reason)
+
+  return (
+    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
+      <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
+        <ShieldCheck className="h-3 w-3" />
+        推薦理由 / Alpha 交易計劃
+      </p>
+      <div className="grid gap-2">
+        <KLinePlanSketch context={context} currentPrice={rec.current_price} />
+        <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
+          <div className="w-1 shrink-0 bg-sky-400" />
+          <div className="min-w-0 flex-1 p-3">
+            <p className="text-xs font-medium text-foreground">盤勢判讀</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {marketLine || '市場結構資料不足，先以盤中價量與風控為主。'}
+            </p>
+            <div className="mt-2">
+              {tradePlanRows.map((row) => (
+                <TradePlanRow key={row.label} row={row} />
+              ))}
+            </div>
+          </div>
+        </div>
+        <PlanBlock
+          title="方案 A | 突破追價"
+          accent="bg-cyan-400"
+          lines={[
+            `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
+            `進場：突破後回測不破再加碼，避免一根急拉直接追滿。`,
+            `目標：先看 ${optimisticHigh ?? '近端高點'}，站穩後再看下一段趨勢延伸。`,
+          ]}
+        />
+        <PlanBlock
+          title="方案 B | 拉回低吸"
+          accent="bg-emerald-400"
+          lines={[
+            `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
+            `進場：先小部位，等重新轉強再補，不一次滿倉。`,
+            `目標：先回到 ${fairHigh ?? 'fair value 上緣'}，再觀察能否轉突破。`,
+          ]}
+        />
+        <PlanBlock
+          title="風控規則"
+          accent="bg-amber-400"
+          lines={[
+            `${alphaAdj}；${sizing}；${context?.skip ? '風控層標記 skip，暫不自動進場。' : '未被風控層標記 skip。'}`,
+            `跌破 ${stop} 或量縮後失守支撐，先降倉，不用硬凹。`,
+            '這是系統交易計劃，不是個別投資建議。',
+          ]}
+        />
+      </div>
+      <ProviderReasonCompare geminiReason={geminiReason} breeze2Reason={breeze2Reason} />
     </div>
   )
 }
@@ -938,8 +1290,10 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
       {expanded && (
         <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
+          <ScoreFormulaSummary viewModel={scoreViewModel} />
+
           <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">基礎分數</p>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">五構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
               <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
             ))}
@@ -947,10 +1301,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <ScoreBreakdownV2 rec={rec} />
 
-          <div>
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
-            <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
-          </div>
+          <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 
           {(mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
@@ -959,8 +1310,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>
           )}
-
-          <AlphaContextBlock context={alphaContext} />
 
           {noticePoints.length > 0 && (
             <div>

@@ -51,6 +51,7 @@ def main() -> int:
     tables = {
         "canonical_market_daily": outputs.canonical_market_daily,
         "canonical_chip_daily": outputs.canonical_chip_daily,
+        "canonical_institutional_amount_daily": outputs.canonical_institutional_amount_daily,
         "canonical_revenue_monthly": outputs.canonical_revenue_monthly,
         "canonical_broker_flow_daily": outputs.canonical_broker_flow_daily,
         "finlab_taxonomy_tags": outputs.finlab_taxonomy_tags,

@@ -16,7 +16,8 @@ from services.finlab_canonical_materializer import (
     materialize_finlab_canonical_outputs,
     normalize_symbol,
 )
-from tools.finlab_v4_remote_backfill import default_canonical_window, parse_canonical_datasets
+from tools import finlab_v4_remote_backfill as remote_backfill
+from tools.finlab_v4_remote_backfill import canonical_apply_skipped_status, default_canonical_window, parse_canonical_datasets
 
 
 def _write(path: Path, df: pl.DataFrame) -> None:
@@ -39,10 +40,47 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     datasets = parse_canonical_datasets("")
     assert "canonical_market_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
+    assert "canonical_institutional_amount_daily" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
         "canonical_chip_daily",
         "finlab_taxonomy_tags",
     ]
+
+
+def test_remote_backfill_service_import_roots_support_repo_and_container_layout(monkeypatch) -> None:
+    repo_root = Path("/repo")
+    container_root = Path("/app")
+    existing = {
+        repo_root / "ml-controller" / "services",
+        container_root / "services",
+    }
+    monkeypatch.setattr(Path, "exists", lambda self: self in existing)
+
+    assert remote_backfill.service_import_roots(repo_root) == [repo_root / "ml-controller"]
+    assert remote_backfill.service_import_roots(container_root) == [container_root]
+
+
+def test_remote_backfill_marks_canonical_apply_skipped_when_write_d1_summary_only() -> None:
+    skipped = canonical_apply_skipped_status(write_d1=True, apply_canonical_d1=False)
+
+    assert skipped is not None
+    assert skipped["status"] == "skipped"
+    assert skipped["required_flag"] == "--apply-canonical-d1"
+    assert "canonical row-level D1 tables stay stale" in skipped["impact"]
+    assert canonical_apply_skipped_status(write_d1=True, apply_canonical_d1=True) is None
+    assert canonical_apply_skipped_status(write_d1=False, apply_canonical_d1=False) is None
+
+
+def test_remote_backfill_cleanup_tolerates_d1_exec_without_meta(monkeypatch) -> None:
+    monkeypatch.setattr(remote_backfill, "d1_exec", lambda *_args, **_kwargs: None)
+
+    assert remote_backfill.cleanup_finlab_trading_restrictions() == 0
+
+
+def test_remote_backfill_cleanup_reports_d1_changes(monkeypatch) -> None:
+    monkeypatch.setattr(remote_backfill, "d1_exec", lambda *_args, **_kwargs: {"meta": {"changes": 7}})
+
+    assert remote_backfill.cleanup_finlab_trading_restrictions() == 7
 
 
 def test_emerging_broker_rows_materialize_canonical_chip_and_lineage() -> None:
@@ -150,6 +188,55 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_materialize_institutional_amount_summary_uses_official_daily_amounts() -> None:
+    root = _root("institutional_amount_summary")
+    for field, values in {
+        "buy_amount": {
+            "上市外資及陸資(不含外資自營商)": 398_309_751_347.0,
+            "上市投信": 32_552_166_835.0,
+            "上市自營商(自行買賣)": 10_422_313_674.0,
+            "上市自營商(避險)": 36_871_311_540.0,
+            "上市合計": 478_155_543_396.0,
+        },
+        "sell_amount": {
+            "上市外資及陸資(不含外資自營商)": 337_969_068_387.0,
+            "上市投信": 27_171_867_723.0,
+            "上市自營商(自行買賣)": 4_000_146_350.0,
+            "上市自營商(避險)": 23_697_385_832.0,
+            "上市合計": 392_838_468_292.0,
+        },
+        "net_amount": {
+            "上市外資及陸資(不含外資自營商)": 60_340_682_960.0,
+            "上市投信": 5_380_299_112.0,
+            "上市自營商(自行買賣)": 6_422_167_324.0,
+            "上市自營商(避險)": 13_173_925_708.0,
+            "上市合計": 85_317_075_104.0,
+        },
+    }.items():
+        _write(
+            root / "raw" / "institutional_amount_summary" / f"{field}.parquet",
+            pl.DataFrame({"date": ["2026-05-21"], **{name: [value] for name, value in values.items()}}),
+        )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-22T00:00:00+00:00",
+        start_date="2026-05-21",
+        end_date="2026-05-21",
+        datasets=["canonical_institutional_amount_daily"],
+    )
+
+    rows = outputs.canonical_institutional_amount_daily
+    foreign = next(row for row in rows if row["market_segment"] == "LISTED" and row["investor"] == "foreign")
+    total = next(row for row in rows if row["market_segment"] == "LISTED" and row["investor"] == "total")
+    assert foreign["net_amount"] == 60_340_682_960.0
+    assert total["net_amount"] == 85_317_075_104.0
+    assert foreign["source"] == "finlab.institutional_investors_trading_all_market_summary"
+    assert outputs.manifest["row_counts"]["canonical_institutional_amount_daily"] == 5
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_institutional_amount_daily" in sql for sql, _ in statements)
 
 
 def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:

@@ -271,6 +271,107 @@ function artifactValidationGaps(row: ModelArtifactRegistryRow): string[] {
   return gaps
 }
 
+type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
+type PromotionBlocker = NonNullable<PromotionQueueRow['blockers']>[number]
+
+function hasContextBlocker(context: ModelArtifactActionContext | undefined, code: string): boolean {
+  return Boolean(context?.blockers?.some((blocker) => blocker.code === code))
+}
+
+function promotionBlockerCopy(blocker: PromotionBlocker): { label: string; next: string; tone: WorkstationTone } {
+  if (blocker.code === 'rolling_ic_only') {
+    return {
+      label: '只有 rolling IC 通過',
+      next: '新機制會先保留候選，不只用單一 rolling IC 視窗升級 champion。',
+      tone: 'warn',
+    }
+  }
+  if (blocker.code === 'pbo_method_not_promotion_grade') {
+    return {
+      label: 'PBO 還是 proxy grade',
+      next: '需要 candidate-specific CSCV rank-logit PBO，proxy PBO 只能當觀察證據。',
+      tone: 'warn',
+    }
+  }
+  if (blocker.code === 'dsr_mc_missing') {
+    return {
+      label: '缺 DSR / MC tail-risk 證據',
+      next: '這是缺 promotion-grade 證據，不是 MC fail；補完 candidate-specific DSR/MC 後再 final compare。',
+      tone: 'warn',
+    }
+  }
+  if (blocker.code === 'missing_current_champion') {
+    return {
+      label: '缺 champion pointer',
+      next: '先修 D1 champion pointer 對齊，否則無法做 final comparison。',
+      tone: 'error',
+    }
+  }
+  return {
+    label: blocker.label || blocker.code,
+    next: blocker.next_action || '補齊這個 promotion 前置條件後再比較 champion。',
+    tone: blocker.severity === 'blocker' ? 'warn' : 'info',
+  }
+}
+
+function promotionDecisionDisplay(row: PromotionQueueRow): { label: string; detail: string; tone: WorkstationTone; pointerBlocked: boolean } {
+  const blockers = row.blockers ?? []
+  const pointerBlocked = row.promotion_decision.includes('blocked') || blockers.length > 0
+  if (row.promotion_decision === 'blocked_multi_evidence_gate') {
+    return {
+      label: '候選保留，暫不升 champion',
+      detail: '新機制已生效：rolling IC 可保留候選，但缺多證據時不更新 champion pointer。',
+      tone: 'warn',
+      pointerBlocked,
+    }
+  }
+  if (row.promotion_decision === 'blocked_missing_champion_pointer') {
+    return {
+      label: '缺 champion pointer',
+      detail: '先對齊 D1 champion pointer，否則 final comparison 沒有正式基準。',
+      tone: 'error',
+      pointerBlocked,
+    }
+  }
+  if (row.promotion_decision === 'auto_promote_candidate') {
+    return {
+      label: '可做 final compare',
+      detail: '多證據已齊，仍需 final comparison 通過才更新 champion pointer。',
+      tone: 'ok',
+      pointerBlocked,
+    }
+  }
+  if (row.approval_required || row.promotion_decision === 'approval_required') {
+    return {
+      label: '需 Wei approval',
+      detail: '候選通過前置條件，但 weekly/manual 類型需要人工確認後才升級。',
+      tone: 'warn',
+      pointerBlocked,
+    }
+  }
+  return {
+    label: row.promotion_decision.replace(/_/g, ' '),
+    detail: row.next_action,
+    tone: pointerBlocked ? 'warn' : 'info',
+    pointerBlocked,
+  }
+}
+
+function actionContextCopy(context: ModelArtifactActionContext): { root: string; impact: string; next: string } {
+  if (context.root_cause === 'multi_evidence_gate_blocked') {
+    return {
+      root: '多證據晉級門檻未完成',
+      impact: '候選可留在 shadow/adaptive 觀察，但不會更新 production champion pointer。',
+      next: '補 candidate-specific CPCV/PBO、DSR、MC tail-risk 後再做 final compare。',
+    }
+  }
+  return {
+    root: context.root_cause,
+    impact: context.impact,
+    next: context.next_action,
+  }
+}
+
 function liveGateReadableSummary(row: ModelArtifactRegistryRow, fallbackRoot: string): { root: string; detail: string } {
   const live = parseArtifactEvidence(row.live_evidence_json)
   const decision = deepMetric(live, ['decision'])
@@ -664,8 +765,17 @@ function UnifiedModelHealthMatrix({
                     <td className="min-w-[170px] border border-[#263247] px-3 py-3 text-slate-300">
                       {artifact && dsrSummary && mcSummary ? (
                         <div className="space-y-1">
-                          <WorkstationPill tone={dsrSummary.tone}>{dsrSummary.text}</WorkstationPill>
-                          <WorkstationPill tone={mcSummary.tone}>{mcSummary.text}</WorkstationPill>
+                          {hasContextBlocker(selected.context, 'dsr_mc_missing') ? (
+                            <>
+                              <WorkstationPill tone="warn">缺 promotion-grade DSR / MC</WorkstationPill>
+                              <div className="text-[11px] leading-4 text-[#9aa7bd]">不是 MC fail；候選保留，不升 champion pointer。</div>
+                            </>
+                          ) : (
+                            <>
+                              <WorkstationPill tone={dsrSummary.tone}>{dsrSummary.text}</WorkstationPill>
+                              <WorkstationPill tone={mcSummary.tone}>{mcSummary.text}</WorkstationPill>
+                            </>
+                          )}
                         </div>
                       ) : 'N/A'}
                     </td>
@@ -1035,23 +1145,27 @@ function registryTone(state?: string): WorkstationTone {
 function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
   if (!context) return null
   const blockers = Array.isArray(context.blockers) ? context.blockers : []
+  const copy = actionContextCopy(context)
   return (
     <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#8a92a6]">
-      <div className="font-mono text-amber-200">root: {context.root_cause}</div>
-      <div>impact: {context.impact}</div>
-      <div>next: {context.next_action}</div>
+      <div className="font-mono text-amber-200">{copy.root}</div>
+      <div>{copy.impact}</div>
+      <div>下一步：{copy.next}</div>
       {context.scheduler_dependency?.length ? (
         <div className="mt-1 text-sky-200">needs: {context.scheduler_dependency.join(' -> ')}</div>
       ) : null}
       {blockers.length > 0 && (
         <div className="mt-2 space-y-1 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] p-2">
-          <div className="font-mono text-amber-200">blockers</div>
-          {blockers.slice(0, 5).map((blocker) => (
-            <div key={blocker.code} className="border-l border-amber-300/30 pl-2">
-              <div className="font-semibold text-slate-100">{blocker.label}</div>
-              <div className="text-[#9aa7bd]">{blocker.next_action}</div>
-            </div>
-          ))}
+          <div className="font-mono text-amber-200">需補的晉級證據</div>
+          {blockers.slice(0, 5).map((blocker) => {
+            const blockerCopy = promotionBlockerCopy(blocker)
+            return (
+              <div key={blocker.code} className="border-l border-amber-300/30 pl-2">
+                <div className="font-semibold text-slate-100">{blockerCopy.label}</div>
+                <div className="text-[#9aa7bd]">{blockerCopy.next}</div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1243,12 +1357,12 @@ function PromotionQueuePanel({
         <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release 且通過 live gate，仍需 final comparison" tone={autoCount ? 'ok' : 'neutral'} />
         <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly hotfix / manual hotfix 需要 Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
         <SignalInsightCard title="Superseded weekly" value={String(suppressedCount)} detail="newer monthly release hides older weekly approval rows" tone={suppressedCount ? 'info' : 'neutral'} />
-        <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="缺 champion pointer 或 final comparison 前置條件" tone={blockedCount ? 'error' : 'ok'} />
+        <SignalInsightCard title="候選保留" value={String(blockedCount)} detail="新機制：缺多證據時保留候選，但不升 champion pointer" tone={blockedCount ? 'warn' : 'ok'} />
       </div>
       <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
         {rows.length ? rows.map((row) => {
           const blockers = Array.isArray(row.blockers) ? row.blockers : []
-          const isBlocked = row.promotion_decision.includes('blocked') || blockers.length > 0
+          const decision = promotionDecisionDisplay(row)
           return (
           <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
             <div className="flex items-start justify-between gap-3">
@@ -1258,8 +1372,8 @@ function PromotionQueuePanel({
                   {row.current_champion_version ?? 'champion N/A'} → {row.candidate_version ?? 'candidate N/A'}
                 </p>
               </div>
-              <WorkstationPill tone={row.promotion_decision === 'auto_promote_candidate' ? 'ok' : row.approval_required ? 'warn' : row.promotion_decision.includes('blocked') ? 'error' : 'info'}>
-                {row.promotion_decision}
+              <WorkstationPill tone={decision.tone}>
+                {decision.label}
               </WorkstationPill>
             </div>
             <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-2">
@@ -1272,19 +1386,21 @@ function PromotionQueuePanel({
                 <p className="mt-1 text-slate-200">{row.final_compared_to ?? 'pending champion pointer'}</p>
               </div>
             </div>
-            <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
+            <p className="mt-3 text-[12px] leading-5 text-slate-300">{decision.detail}</p>
             <ActionContextNote context={row.action_context} />
             {blockers.length > 0 && (
               <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-3 text-[12px] leading-5">
-                <div className="mb-2 font-mono text-amber-200">需檢查 blockers / promotion is blocked</div>
+                <div className="mb-2 font-mono text-amber-200">新機制：先保留候選，補齊後再升 champion</div>
                 <div className="grid gap-2 md:grid-cols-2">
-                  {blockers.map((blocker) => (
-                    <div key={blocker.code} className="rounded-lg border border-[#33415c] bg-[#05070c] p-2">
-                      <div className="font-semibold text-slate-100">{blocker.label}</div>
-                      <div className="mt-1 text-[#9aa7bd]">{blocker.next_action}</div>
-                      <div className="mt-1 font-mono text-[10px] text-[#70809b]">{blocker.code}</div>
-                    </div>
-                  ))}
+                  {blockers.map((blocker) => {
+                    const blockerCopy = promotionBlockerCopy(blocker)
+                    return (
+                      <div key={blocker.code} className="rounded-lg border border-[#33415c] bg-[#05070c] p-2">
+                        <div className="font-semibold text-slate-100">{blockerCopy.label}</div>
+                        <div className="mt-1 text-[#9aa7bd]">{blockerCopy.next}</div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}
@@ -1292,7 +1408,7 @@ function PromotionQueuePanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={!row.artifact_id || isPromoting || isBlocked}
+                disabled={!row.artifact_id || isPromoting || decision.pointerBlocked}
                 className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
                 onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
               >
@@ -1302,7 +1418,7 @@ function PromotionQueuePanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!row.artifact_id || isPromoting || isBlocked}
+                  disabled={!row.artifact_id || isPromoting || decision.pointerBlocked}
                   className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
                   onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
                 >
@@ -1313,7 +1429,7 @@ function PromotionQueuePanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!row.artifact_id || isPromoting || isBlocked}
+                  disabled={!row.artifact_id || isPromoting || decision.pointerBlocked}
                   className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
                   onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
                 >

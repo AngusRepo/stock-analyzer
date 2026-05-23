@@ -6,12 +6,10 @@ import {
   HistogramSeries,
   LineSeries,
   LineStyle,
-  createSeriesMarkers,
   createChart,
   type ChartOptions,
   type DeepPartial,
   type IChartApi,
-  type SeriesMarker,
   type Time,
 } from 'lightweight-charts'
 import { useQuery } from '@tanstack/react-query'
@@ -908,6 +906,12 @@ function priceRowTime(row: any): Time {
   return String(row?.date ?? '').slice(0, 10) as Time
 }
 
+function positivePrice(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 function addCalendarDays(time: Time | undefined, days: number): Time | null {
   if (!time || typeof time !== 'string') return null
   const date = new Date(`${time}T00:00:00Z`)
@@ -917,35 +921,37 @@ function addCalendarDays(time: Time | undefined, days: number): Time | null {
 }
 
 function priceRowsToCandles(rows: any[], limit = 42): KlineCandle[] {
-  return rows
-    .slice(-limit)
-    .map((item) => ({
-      time: priceRowTime(item),
-      open: Number(item.open),
-      high: Number(item.high),
-      low: Number(item.low),
-      close: Number(item.close),
-    }))
-    .filter((item) =>
-      Boolean(item.time)
-      && Number.isFinite(item.open)
-      && Number.isFinite(item.high)
-      && Number.isFinite(item.low)
-      && Number.isFinite(item.close),
-    )
+  const candles: KlineCandle[] = []
+  let prevClose: number | null = null
+  for (const item of rows.slice(-limit)) {
+    const time = priceRowTime(item)
+    const close = positivePrice(item.close ?? item.avg_price)
+    if (!time || close == null) continue
+    const avg = positivePrice(item.avg_price)
+    const rawHigh = positivePrice(item.high)
+    const rawLow = positivePrice(item.low)
+    const rawOpen = positivePrice(item.open)
+    const open = rawOpen ?? prevClose ?? avg ?? close
+    const high = Math.max(rawHigh ?? close, open, close)
+    const low = Math.min(rawLow ?? close, open, close)
+    candles.push({ time, open, high, low, close })
+    prevClose = close
+  }
+  return candles
 }
 
-function priceRowsToVolume(rows: any[], limit = 42) {
+function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
+  const candleByTime = new Map(candles.map((candle) => [String(candle.time), candle]))
   return rows
     .slice(-limit)
     .map((item) => {
-      const open = Number(item.open)
-      const close = Number(item.close)
+      const time = priceRowTime(item)
+      const candle = candleByTime.get(String(time))
       const value = Number(item.volume ?? item.Trading_Volume ?? item.trading_volume)
       return {
-        time: priceRowTime(item),
+        time,
         value: Number.isFinite(value) ? value : 0,
-        color: close >= open ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)',
+        color: candle && candle.close >= candle.open ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)',
       }
     })
     .filter((item) => Boolean(item.time))
@@ -977,7 +983,7 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
   const support = fairLow ?? poc ?? latest
   const prices = [latest, fairLow, fairHigh, poc, target].filter((value): value is number => value != null)
   const candles = priceRowsToCandles(priceRows)
-  const volume = priceRowsToVolume(priceRows)
+  const volume = priceRowsToVolume(priceRows, candles)
   const lastTime = candles[candles.length - 1]?.time
   const nextTime = addCalendarDays(lastTime, 1)
   const targetTime = addCalendarDays(lastTime, 3)
@@ -1075,42 +1081,6 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
         axisLabelVisible: true,
         title: 'POC',
       })
-    }
-
-    if (lastTime) {
-      const markers: SeriesMarker<Time>[] = [
-        support
-          ? {
-            time: lastTime,
-            position: 'atPriceBottom',
-            price: support,
-            color: '#22c55e',
-            shape: 'arrowUp',
-            text: '支撐',
-          }
-          : null,
-        fairHigh
-          ? {
-            time: lastTime,
-            position: 'atPriceMiddle',
-            price: fairHigh,
-            color: '#38bdf8',
-            shape: 'circle',
-            text: '突破',
-          }
-          : null,
-        target
-          ? {
-            time: lastTime,
-            position: 'atPriceTop',
-            price: target,
-            color: '#f87171',
-            shape: 'arrowDown',
-            text: '樂觀',
-          }
-          : null,
-      ].filter(Boolean) as SeriesMarker<Time>[]
-      createSeriesMarkers(candleSeries, markers, { zOrder: 'top' })
     }
 
     chart.panes()[1]?.setHeight(64)

@@ -420,7 +420,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         const cleanReason = b.reason ? stripProvenance(b.reason) : ''
         const rec = {
           symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
-          current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
+          current_price: b.ml_entry_price, sector: qf?.quadrant ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? null,
           score_v2: b.score_v2 ?? null,
@@ -1088,6 +1088,12 @@ function BacktestCard() {
   const mcBadge = mcVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
     : mcVerdict === 'CAUTION' ? 'bg-yellow-500/20 text-yellow-400'
     : mcVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
+  const mcTailStatus = (mcData as any)?.tail_risk_status
+  const mcMethod = (mcData as any)?.simulation_method
+  const mcSource = (mcData as any)?.source
+  const mcRegimeClosed = (mcData as any)?.regime_closed_loop
+  const mcRegimeGap = (mcData as any)?.regime_gap_reason
+  const mcCurated = (mcData as any)?.curated_exclusion
 
   // PBO verdict badge
   const pboVerdict = pboData?.go_live_verdict
@@ -1131,8 +1137,26 @@ function BacktestCard() {
               <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] font-mono ${mcBadge || 'bg-white/5 text-muted-foreground'}`}>
                 95th {mcData?.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict ?? 'N/A'}
               </div>
-              {String((mcData as any)?.raw_distribution ?? '').includes('LOW_SAMPLE_TAIL_RISK') && (
-                <div className="mt-1 text-[10px] text-amber-300">LOW_SAMPLE_TAIL_RISK</div>
+              <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
+                <span className="text-muted-foreground">source</span>
+                <span className="font-mono text-slate-200">{mcSource ?? '-'}</span>
+                <span className="text-muted-foreground">method</span>
+                <span className="font-mono text-slate-200">{mcMethod ?? '-'}</span>
+                <span className="text-muted-foreground">regime</span>
+                <span className={`font-mono ${mcRegimeClosed === false ? 'text-red-300' : 'text-emerald-300'}`}>
+                  {mcRegimeClosed == null ? '-' : mcRegimeClosed ? 'closed' : 'gap'}
+                </span>
+              </div>
+              {mcTailStatus && (
+                <div className="mt-1 text-[10px] text-amber-300">{mcTailStatus}</div>
+              )}
+              {mcCurated?.enabled && (
+                <div className="mt-1 text-[10px] text-sky-300">
+                  curated exclude {(mcCurated.symbols ?? []).join(', ')}
+                </div>
+              )}
+              {mcRegimeGap && (
+                <div className="mt-1 text-[10px] text-red-300">{mcRegimeGap}</div>
               )}
             </div>
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">

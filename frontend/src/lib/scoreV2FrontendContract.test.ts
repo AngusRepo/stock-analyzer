@@ -8,6 +8,8 @@ const viewModel = readFileSync('src/lib/scoreV2ViewModel.ts', 'utf8')
 const recommendationCard = readFileSync('src/components/RecommendationCardClean.tsx', 'utf8')
 const pipelinePage = readFileSync('src/pages/PipelinePage.tsx', 'utf8')
 const botDashboard = readFileSync('src/pages/BotDashboard.tsx', 'utf8')
+const stockAIReport = readFileSync('src/components/StockAIReport.tsx', 'utf8')
+const stockReportPage = readFileSync('src/pages/StockReportPage.tsx', 'utf8')
 const pipelineTemplate = readFileSync('../ml-controller/templates/pipeline.md.j2', 'utf8')
 
 const scoreBreakdownStart = recommendationCard.indexOf('function ScoreBreakdownV2')
@@ -37,7 +39,6 @@ for (const removedProjectionRef of [
   'rec.tech_score',
   'rec.ml_score',
   'rec.momentum_score',
-  'rec.score_components',
 ]) {
   assert(!viewModel.includes(removedProjectionRef), `Score V2 view model should not keep frontend storage projection reference: ${removedProjectionRef}`)
 }
@@ -61,12 +62,16 @@ assert(!scoreBreakdown.includes('tech_score'), 'Recommendation card Score V2 blo
 assert(!scoreBreakdown.includes('ml_score'), 'Recommendation card Score V2 block should not render legacy ml_score')
 assert(!scoreBreakdown.includes('嚗'), 'Recommendation card Score V2 block should not contain mojibake punctuation')
 assert(
-  recommendationCard.includes('const payload = parseObject(rec.score_v2)'),
-  'Recommendation card Score V2 block should accept canonical score_v2 summaries',
+  recommendationCard.includes('function scoreV2PayloadFromRec')
+    && !recommendationCard.includes('rec?.score_components')
+    && !recommendationCard.includes('scoreComponentsPayload'),
+  'Recommendation card should only consume normalized score_v2 payloads',
 )
 assert(
-  !recommendationCard.includes('parseObject(rec.score_components)'),
-  'Recommendation card must not read Score V2 details from legacy score_components',
+  viewModel.includes('canonicalScoreV2Payload')
+    && !viewModel.includes('rec.score_components')
+    && !viewModel.includes('scoreComponentsPayload'),
+  'Score V2 view model should not recover raw score_components as downstream compatibility',
 )
 for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '方案 A | 突破追價', '方案 B | 拉回低吸', '風控規則', 'Gemini 3.1 Flash', 'Breeze2']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
@@ -75,10 +80,16 @@ assert(
   scoreBreakdown.includes('reasonVariants?.breeze2'),
   'Breeze2 comparison should read persisted Score V2 reason variants per symbol',
 )
-for (const text of ['KLinePlanSketch', '策略示意', 'TradePlanRow', '項目', '判讀']) {
+assert(
+  scoreBreakdown.includes('reasonVariants?.gemini'),
+  'Gemini comparison should read persisted Score V2 reason variants per symbol when available',
+)
+for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Charts', 'createChart', 'CandlestickSeries', 'TradePlanRow', '樂觀區間']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading plan should render structured rows and chart: ${text}`)
 }
 assert(!scoreBreakdown.includes('compactLine(reason),'), '盤勢判讀 should not repeat the raw score/reason paragraph as a row')
+assert(!scoreBreakdown.includes('項目：'), 'Trade plan rows should not render label/value as prose prefixes')
+assert(!scoreBreakdown.includes('判讀：'), 'Trade plan rows should keep item note as a structured column, not duplicated prose')
 assert(!recommendationCard.includes('<AlphaContextBlock'), 'AlphaContextBlock should not render separately from recommendation reason')
 
 assert(
@@ -116,6 +127,7 @@ for (const legacyRef of [
   'chip_score: b.chip_score',
   'tech_score: b.tech_score',
   'ml_score: b.ml_score',
+  'score: b.score ??',
 ]) {
   assert(!botDashboard.includes(legacyRef), `Bot dashboard should not pass legacy pending-buy score field: ${legacyRef}`)
 }
@@ -123,6 +135,12 @@ assert(
   botDashboard.includes('score_v2: b.score_v2 ?? null'),
   'Bot dashboard pending-buy cards should consume backend score_v2 payload',
 )
+for (const stockReportSurface of [stockAIReport, stockReportPage]) {
+  assert(
+    !stockReportSurface.includes('scoreViewModel?.finalScore ?? rec.score'),
+    'stock report surfaces must not fall back to legacy rec.score when Score V2 is missing',
+  )
+}
 
 assert(
   !pipelineTemplate.includes("selectattr('ml_score', 'defined')"),

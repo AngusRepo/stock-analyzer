@@ -6,8 +6,45 @@ import type { Bindings, Variables } from '../types'
 import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+type DashboardDecisionLogRow = ScoreV2StorageRow & {
+  date: string
+  symbol: string
+  action: string
+  ml_signal: string | null
+  ml_confidence: number | null
+  debate_verdict: string | null
+  debate_summary: string | null
+  model_breakdown: string | null
+  market_risk: string | null
+  sector: string | null
+  entry_price: number | null
+  created_at: string | null
+}
+
+function shapeDashboardDecision(row: DashboardDecisionLogRow) {
+  const snapshot = readScoreV2Snapshot(row)
+  const scoreV2 = snapshot ? serializeScoreV2Snapshot(snapshot) : null
+  return {
+    date: row.date,
+    symbol: row.symbol,
+    action: row.action,
+    score: scoreV2?.finalScore ?? null,
+    score_v2: scoreV2,
+    ml_signal: row.ml_signal,
+    ml_confidence: row.ml_confidence,
+    debate_verdict: row.debate_verdict,
+    debate_summary: row.debate_summary,
+    model_breakdown: row.model_breakdown,
+    market_risk: row.market_risk,
+    sector: row.sector,
+    entry_price: row.entry_price,
+    created_at: row.created_at,
+  }
+}
 
 function parseDashboardId(s: string | undefined | null): number | null {
   const n = Number.parseInt(s ?? '', 10)
@@ -18,6 +55,36 @@ function parseDashboardPosInt(s: string | undefined | null, fallback: number, ma
   const n = Number.parseInt(s ?? '', 10)
   if (!Number.isFinite(n) || n <= 0) return fallback
   return Math.min(n, max)
+}
+
+function parseJsonObject(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function shapeMonteCarloRow(row: Record<string, any> | null) {
+  if (!row) return null
+  const raw = parseJsonObject(row.raw_distribution)
+  const diagnostics = parseJsonObject(raw?.tail_risk_diagnostics)
+  return {
+    ...row,
+    raw_distribution_json: raw,
+    simulation_method: row.simulation_method ?? raw?.simulation_method ?? null,
+    tail_risk_status: row.tail_risk_status ?? raw?.tail_risk_status ?? null,
+    tail_risk_diagnostics: diagnostics,
+    curated_exclusion: parseJsonObject(raw?.curated_exclusion),
+    regime_closed_loop: diagnostics?.regime_closed_loop ?? null,
+    regime_gap_reason: diagnostics?.regime_gap_reason ?? null,
+  }
 }
 
 function isStateSpaceOverlay(name: string, model: Record<string, any>): boolean {
@@ -119,9 +186,18 @@ dashboardReadRoutes.get('/api/backtest/monte-carlo', async (c) => {
   if (authError) return authError
 
   const row = await c.env.DB.prepare(
-    'SELECT * FROM monte_carlo_results ORDER BY run_date DESC, created_at DESC LIMIT 1'
-  ).first()
-  return c.json(row ?? null)
+    `SELECT *
+      FROM monte_carlo_results
+      ORDER BY run_date DESC,
+               CASE
+                 WHEN source='backtest_curated' THEN 0
+                 WHEN source='backtest' THEN 1
+                 ELSE 2
+               END,
+               created_at DESC
+      LIMIT 1`
+  ).first<Record<string, any>>()
+  return c.json(shapeMonteCarloRow(row ?? null))
 })
 
 dashboardReadRoutes.get('/api/observability/decisions', async (c) => {
@@ -130,9 +206,21 @@ dashboardReadRoutes.get('/api/observability/decisions', async (c) => {
 
   const date = c.req.query('date') ?? twToday()
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC'
-  ).bind(date).all()
-  return c.json({ date, decisions: results ?? [] })
+    `SELECT date, symbol, action, score_components, ml_signal, ml_confidence,
+            debate_verdict, debate_summary, model_breakdown, market_risk,
+            sector, entry_price, created_at
+       FROM decision_logs
+      WHERE date=?
+      ORDER BY CASE WHEN json_valid(score_components) THEN
+        COALESCE(
+          CAST(json_extract(score_components, '$.finalScore') AS REAL),
+          CAST(json_extract(score_components, '$.total') AS REAL),
+          0
+        )
+        ELSE 0
+      END DESC`
+  ).bind(date).all<DashboardDecisionLogRow>()
+  return c.json({ date, decisions: (results ?? []).map(shapeDashboardDecision) })
 })
 
 dashboardReadRoutes.get('/api/observability/model-health', async (c) => {

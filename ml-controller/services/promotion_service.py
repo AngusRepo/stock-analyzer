@@ -62,6 +62,13 @@ def _attach_validation_packet(result: dict[str, Any], validation_packet: dict[st
     return result
 
 
+def _base_risk_source(source: str) -> str:
+    text = str(source or "").strip()
+    if text.endswith("_curated"):
+        return text[: -len("_curated")]
+    return text
+
+
 def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
     row = row or {}
     raw = _safe_json(row.get("raw_results"))
@@ -93,12 +100,17 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
 def normalize_latest_monte_carlo_row(row: dict[str, Any] | None) -> dict[str, Any]:
     row = row or {}
     raw = _safe_json(row.get("raw_distribution"))
+    curated = raw.get("curated_exclusion") if isinstance(raw.get("curated_exclusion"), dict) else None
+    diagnostics = raw.get("tail_risk_diagnostics") if isinstance(raw.get("tail_risk_diagnostics"), dict) else {}
     return {
         "source": row.get("source"),
+        "base_source": raw.get("base_source") or _base_risk_source(str(row.get("source") or "")),
         "n_trades": _as_int(row.get("n_trades"), 0),
         "simulation_method": raw.get("simulation_method") or row.get("simulation_method") or "unknown",
         "block_size": raw.get("block_size") or row.get("block_size"),
         "regime_counts": raw.get("regime_counts") if isinstance(raw.get("regime_counts"), dict) else {},
+        "tail_risk_diagnostics": diagnostics,
+        "curated_exclusion": curated,
         "mdd_95th": _as_float(row.get("mdd_95th"), 1.0),
         "go_live_verdict": row.get("go_live_verdict") or "",
     }
@@ -118,7 +130,7 @@ def normalize_latest_pbo_row(row: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def load_latest_gate_inputs(source: str = "backtest", pbo_source: str | None = None) -> dict[str, Any]:
-    resolved_pbo_source = pbo_source or source
+    resolved_pbo_source = pbo_source or _base_risk_source(source)
     backtest_row = _first(query(
         """
         SELECT *

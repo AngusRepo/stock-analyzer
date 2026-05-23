@@ -14,6 +14,7 @@ const adminWorker = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 
 const dailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
+const dashboardReadRoutes = fs.readFileSync('src/routes/dashboardReadRoutes.ts', 'utf8')
 
 assert(
   workflows.includes("'ga_optimizer'"),
@@ -141,4 +142,19 @@ assert(
   !adminGcp.includes("deps.runWeeklyMonteCarlo().catch") &&
     !adminGcp.includes("deps.runWeeklyPBO().catch"),
   'manual weekly-backtest trigger must not swallow MC/PBO failures into a successful scheduler run',
+)
+
+assert(
+  !workflows.includes('method=block_bootstrap') &&
+    workflows.includes('`/backtest/monte-carlo?n=1000&source=${source}`'),
+  'weekly Monte Carlo should let the controller auto-select regime-aware backtest MC instead of hard-coding block bootstrap',
+)
+
+assert(
+  dashboardReadRoutes.includes("WHEN source='backtest_curated' THEN 0") &&
+    dashboardReadRoutes.includes("WHEN source='backtest' THEN 1") &&
+    dashboardReadRoutes.includes('raw_distribution_json') &&
+    dashboardReadRoutes.includes('tail_risk_diagnostics') &&
+    dashboardReadRoutes.includes('regime_closed_loop'),
+  'dashboard MC readback should prefer curated/backtest MC and expose closed-loop diagnostics',
 )

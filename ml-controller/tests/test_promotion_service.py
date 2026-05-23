@@ -75,10 +75,13 @@ def test_normalize_latest_monte_carlo_row_uses_numeric_mdd():
 
     assert out == {
         "source": "backtest",
+        "base_source": "backtest",
         "n_trades": 120,
         "simulation_method": "block_bootstrap",
         "block_size": 10,
         "regime_counts": {"green": 60, "red": 60},
+        "tail_risk_diagnostics": {},
+        "curated_exclusion": None,
         "mdd_95th": 0.18,
         "go_live_verdict": "PASS",
     }
@@ -222,6 +225,77 @@ def test_evaluate_latest_promotion_gate_can_use_separate_pbo_source(monkeypatch)
     assert out["inputs"]["source"] == "backtest"
     assert out["inputs"]["pbo_source"] == "optuna_l2"
     assert ["optuna_l2"] in [params for _, params in calls if params]
+
+
+def test_evaluate_latest_promotion_gate_maps_curated_mc_to_base_pbo_source(monkeypatch):
+    calls = []
+    rows = {
+        "backtest_results": [{
+            "run_date": "2026-04-25",
+            "strategy": "mode-b",
+            "total_trades": 120,
+            "sharpe": 1.1,
+            "profit_factor": 1.4,
+            "max_drawdown": 0.11,
+            "raw_results": json.dumps({
+                "mode": "B",
+                "summary": {"total_trades": 120},
+                "per_regime": {
+                    "bull": {"trades": 60, "return": 0.08},
+                    "sideways": {"trades": 60, "return": 0.03},
+                },
+                "parity_audit": {"worker_parity": {"decision": "PASS", "drift_rate": 0.0}},
+                "sanity_flags": [],
+                "absolute_confidence": "moderate",
+                "walk_forward": {"passed": True, "windows": 6},
+            }),
+        }],
+        "monte_carlo_results": [{
+            "source": "backtest_curated",
+            "n_trades": 118,
+            "mdd_95th": 0.16,
+            "go_live_verdict": "PASS",
+            "raw_distribution": json.dumps({
+                "simulation_method": "regime_block_bootstrap",
+                "base_source": "backtest",
+                "regime_counts": {"bull": 60, "sideways": 58},
+                "tail_risk_diagnostics": {"regime_closed_loop": True},
+                "curated_exclusion": {
+                    "enabled": True,
+                    "symbols": ["8047", "2640"],
+                    "excluded_trade_count": 2,
+                },
+            }),
+        }],
+        "pbo_results": [{
+            "source": "backtest",
+            "n_trades": 120,
+            "raw_details": json.dumps({"method": "cscv_rank_logit"}),
+            "pbo": 0.31,
+            "oos_mean_return": 0.03,
+            "go_live_verdict": "PASS",
+        }],
+    }
+
+    def fake_query(sql, params=None, timeout=60.0):
+        calls.append((sql, params))
+        for table, result in rows.items():
+            if table in sql:
+                return result
+        return []
+
+    import services.promotion_service as promotion_service
+
+    monkeypatch.setattr(promotion_service, "query", fake_query)
+
+    out = evaluate_latest_promotion_gate(source="backtest_curated")
+
+    assert out["decision"] == "PASS"
+    assert out["inputs"]["source"] == "backtest_curated"
+    assert out["inputs"]["pbo_source"] == "backtest"
+    assert out["inputs"]["monte_carlo"]["curated_exclusion"]["symbols"] == ["8047", "2640"]
+    assert ["backtest_curated"] in [params for _, params in calls if params]
+    assert ["backtest"] in [params for _, params in calls if params]
 
 
 def test_evaluate_latest_promotion_gate_fails_closed_when_risk_rows_missing(monkeypatch):

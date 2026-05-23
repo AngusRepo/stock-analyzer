@@ -1,4 +1,20 @@
-import { useState, type ElementType } from 'react'
+import { useEffect, useRef, useState, type ElementType } from 'react'
+import {
+  CandlestickSeries,
+  ColorType,
+  CrosshairMode,
+  HistogramSeries,
+  LineSeries,
+  LineStyle,
+  createSeriesMarkers,
+  createChart,
+  type ChartOptions,
+  type DeepPartial,
+  type IChartApi,
+  type SeriesMarker,
+  type Time,
+} from 'lightweight-charts'
+import { useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
   BarChart3,
@@ -14,6 +30,7 @@ import {
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
+import { stocksApi } from '@/lib/api'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import { cn } from '@/lib/utils'
 
@@ -107,7 +124,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = ML Edge + 籌碼流 + 技術結構 + 基本面 + 新聞題材；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
+  '閱讀提示：基礎分由 ML Edge、籌碼流、技術結構、基本面與新聞題材組成；Alpha 調整會依風控與市場狀態加減分；Slate 只影響清單分散與配置順序，不再直接加到預測分數。ML 摘要提供模型共識與校準後預期報酬，最後仍要搭配 alpha bucket、market structure 與盤中再評估。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -310,6 +327,11 @@ function parseObject(raw: unknown): any | null {
   } catch {
     return null
   }
+}
+
+function scoreV2PayloadFromRec(rec: any): any | null {
+  const scoreV2Payload = parseObject(rec?.score_v2)
+  return scoreV2Payload?.version === 'score_v2' ? scoreV2Payload : null
 }
 
 function scoreComponentValue(rec: any, key: string): number {
@@ -650,7 +672,7 @@ function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof build
 }
 
 function alphaDetailsFromRec(rec: any): any[] {
-  const payload = parseObject(rec.score_v2)
+  const payload = scoreV2PayloadFromRec(rec)
   const alphaReason = parseObject(payload?.alphaReason)
   const details = Array.isArray(alphaReason?.details) ? alphaReason.details : []
   return details.filter((item: any) => item && item.value != null)
@@ -714,7 +736,7 @@ function reasonTextFromValue(raw: unknown): string | null {
 }
 
 function breeze2ReasonFromRec(rec: any): string | null {
-  const scoreV2 = parseObject(rec.score_v2)
+  const scoreV2 = scoreV2PayloadFromRec(rec)
   const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
   const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
   const breezeWatchPoint = normalizeWatchPoints(rec.watch_points).find((point) => point.startsWith('breeze2:'))
@@ -724,6 +746,16 @@ function breeze2ReasonFromRec(rec: any): string | null {
     ?? reasonTextFromValue(reasonVariants?.breeze2 ?? reasonVariants?.Breeze2)
     ?? reasonTextFromValue(variants?.breeze2 ?? variants?.Breeze2)
     ?? (breezeWatchPoint ? `Breeze2 shadow：${breezeWatchPoint.replace(/^breeze2:/, '').trim()}` : null)
+}
+
+function geminiVariantReasonFromRec(rec: any): string | null {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  return reasonTextFromValue(rec.gemini_reason)
+    ?? reasonTextFromValue(rec.gemini_reason_shadow)
+    ?? reasonTextFromValue(reasonVariants?.gemini ?? reasonVariants?.Gemini)
+    ?? reasonTextFromValue(variants?.gemini ?? variants?.Gemini)
 }
 
 function planPrice(value: unknown): string | null {
@@ -765,10 +797,12 @@ function tradePlanToneClass(tone: TradePlanReadRow['tone']) {
 
 function TradePlanRow({ row }: { row: TradePlanReadRow }) {
   return (
-    <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[7rem_8rem_1fr] sm:items-start">
-      <span className="text-[11px] font-medium text-muted-foreground">項目：{row.label}</span>
-      <span className={cn('font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>{row.value}</span>
-      <span className="text-xs leading-relaxed text-muted-foreground">判讀：{row.note}</span>
+    <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[6.5rem_8.5rem_1fr] sm:items-start">
+      <span className="text-[11px] font-semibold text-foreground/85">{row.label}</span>
+      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+        {row.value}
+      </span>
+      <span className="text-xs leading-relaxed text-muted-foreground">{row.note}</span>
     </div>
   )
 }
@@ -795,74 +829,297 @@ function numericPrice(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
-function KLinePlanSketch({ context, currentPrice }: { context: AlphaContext | null; currentPrice: unknown }) {
-  const latest = numericPrice(context?.latestClose ?? currentPrice)
-  const fairLow = numericPrice(context?.fairValueLow)
-  const fairHigh = numericPrice(context?.fairValueHigh)
+function klineChartOptions(width: number): DeepPartial<ChartOptions> {
+  return {
+    width,
+    height: 210,
+    autoSize: true,
+    layout: {
+      background: { type: ColorType.Solid, color: 'transparent' },
+      textColor: '#94a3b8',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    },
+    grid: {
+      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      horzLines: { color: 'rgba(148, 163, 184, 0.10)' },
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      scaleMargins: { top: 0.10, bottom: 0.14 },
+    },
+    timeScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      timeVisible: false,
+      secondsVisible: false,
+    },
+    crosshair: {
+      mode: CrosshairMode.MagnetOHLC,
+      horzLine: { color: 'rgba(56, 189, 248, 0.28)' },
+      vertLine: { color: 'rgba(56, 189, 248, 0.28)' },
+    },
+  }
+}
+
+type KlineCandle = {
+  time: Time
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+function priceRowTime(row: any): Time {
+  return String(row?.date ?? '').slice(0, 10) as Time
+}
+
+function addCalendarDays(time: Time | undefined, days: number): Time | null {
+  if (!time || typeof time !== 'string') return null
+  const date = new Date(`${time}T00:00:00Z`)
+  if (Number.isNaN(date.getTime())) return null
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10) as Time
+}
+
+function priceRowsToCandles(rows: any[], limit = 42): KlineCandle[] {
+  return rows
+    .slice(-limit)
+    .map((item) => ({
+      time: priceRowTime(item),
+      open: Number(item.open),
+      high: Number(item.high),
+      low: Number(item.low),
+      close: Number(item.close),
+    }))
+    .filter((item) =>
+      Boolean(item.time)
+      && Number.isFinite(item.open)
+      && Number.isFinite(item.high)
+      && Number.isFinite(item.low)
+      && Number.isFinite(item.close),
+    )
+}
+
+function priceRowsToVolume(rows: any[], limit = 42) {
+  return rows
+    .slice(-limit)
+    .map((item) => {
+      const open = Number(item.open)
+      const close = Number(item.close)
+      const value = Number(item.volume ?? item.Trading_Volume ?? item.trading_volume)
+      return {
+        time: priceRowTime(item),
+        value: Number.isFinite(value) ? value : 0,
+        color: close >= open ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)',
+      }
+    })
+    .filter((item) => Boolean(item.time))
+}
+
+function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | null }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
+  const inlineRows = Array.isArray(rec.price_candles)
+    ? rec.price_candles
+    : Array.isArray(rec.prices)
+      ? rec.prices
+      : []
+  const { data: fetchedRows = [], isLoading } = useQuery({
+    queryKey: ['recommendation-card-kline', stockId],
+    queryFn: () => stocksApi.prices(stockId, 120),
+    enabled: Number.isFinite(stockId) && stockId > 0 && inlineRows.length === 0,
+    staleTime: 5 * 60_000,
+  })
+  const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
+  const latest = numericPrice(context?.latestClose ?? rec.current_price ?? rec.close ?? rec.latest_close)
+  const entry = numericPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.reference_entry)
+  const stopLoss = numericPrice(rec.stop_loss ?? rec.stopLoss)
+  const fairLow = numericPrice(context?.fairValueLow) ?? stopLoss ?? (latest ? latest * 0.97 : null)
+  const fairHigh = numericPrice(context?.fairValueHigh) ?? entry ?? (latest ? latest * 1.02 : null)
   const poc = numericPrice(context?.poc)
-  const target = numericPrice(context?.optimisticValueHigh) ?? fairHigh
+  const target = numericPrice(context?.optimisticValueHigh ?? rec.target_price ?? rec.targetPrice) ?? (latest ? latest * 1.06 : fairHigh)
   const support = fairLow ?? poc ?? latest
   const prices = [latest, fairLow, fairHigh, poc, target].filter((value): value is number => value != null)
-  if (prices.length === 0) return null
-  const min = Math.min(...prices) * 0.97
-  const max = Math.max(...prices) * 1.03
-  const y = (price: number) => 118 - ((price - min) / Math.max(0.01, max - min)) * 92
-  const base = latest ?? prices[0]
-  const candles = [-0.045, -0.02, 0.012, 0.038, -0.006, 0.024, 0.052, 0.018].map((delta, index) => {
-    const close = base * (1 + delta)
-    const open = base * (1 + delta - (index % 2 === 0 ? 0.018 : -0.014))
-    const high = Math.max(open, close) * 1.012
-    const low = Math.min(open, close) * 0.988
-    return { x: 28 + index * 30, open, close, high, low, up: close >= open }
+  const candles = priceRowsToCandles(priceRows)
+  const volume = priceRowsToVolume(priceRows)
+  const lastTime = candles[candles.length - 1]?.time
+  const nextTime = addCalendarDays(lastTime, 1)
+  const targetTime = addCalendarDays(lastTime, 3)
+  const projection = latest && target && lastTime && nextTime && targetTime
+    ? [
+      { time: lastTime, value: latest },
+      { time: nextTime, value: fairHigh ?? latest },
+      { time: targetTime, value: target },
+    ]
+    : []
+  const chartKey = JSON.stringify({
+    stockId,
+    latest,
+    support,
+    fairHigh,
+    target,
+    rows: candles.map((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close]),
   })
-  const supportY = support ? y(support) : null
-  const triggerY = fairHigh ? y(fairHigh) : target ? y(target) : null
-  const targetY = target ? y(target) : null
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || candles.length === 0) return
+
+    const chart = createChart(container, klineChartOptions(container.clientWidth || 420))
+    chartRef.current = chart
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      borderDownColor: '#ef4444',
+      wickUpColor: '#86efac',
+      wickDownColor: '#fca5a5',
+      priceLineVisible: false,
+    })
+    candleSeries.setData(candles)
+
+    if (volume.length) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 1)
+      volumeSeries.setData(volume)
+    }
+
+    if (projection.length) {
+      const projectionSeries = chart.addSeries(LineSeries, {
+        color: '#38bdf8',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      projectionSeries.setData(projection)
+    }
+
+    if (target) {
+      candleSeries.createPriceLine({
+        price: target,
+        color: '#f87171',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '前高/樂觀上緣',
+      })
+    }
+    if (fairHigh) {
+      candleSeries.createPriceLine({
+        price: fairHigh,
+        color: '#38bdf8',
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: '突破確認',
+      })
+    }
+    if (support) {
+      candleSeries.createPriceLine({
+        price: support,
+        color: '#22c55e',
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: '關鍵支撐',
+      })
+    }
+
+    if (poc) {
+      candleSeries.createPriceLine({
+        price: poc,
+        color: '#f59e0b',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: 'POC',
+      })
+    }
+
+    if (lastTime) {
+      const markers: SeriesMarker<Time>[] = [
+        support
+          ? {
+            time: lastTime,
+            position: 'atPriceBottom',
+            price: support,
+            color: '#22c55e',
+            shape: 'arrowUp',
+            text: '支撐',
+          }
+          : null,
+        fairHigh
+          ? {
+            time: lastTime,
+            position: 'atPriceMiddle',
+            price: fairHigh,
+            color: '#38bdf8',
+            shape: 'circle',
+            text: '突破',
+          }
+          : null,
+        target
+          ? {
+            time: lastTime,
+            position: 'atPriceTop',
+            price: target,
+            color: '#f87171',
+            shape: 'arrowDown',
+            text: '樂觀',
+          }
+          : null,
+      ].filter(Boolean) as SeriesMarker<Time>[]
+      createSeriesMarkers(candleSeries, markers, { zOrder: 'top' })
+    }
+
+    chart.panes()[1]?.setHeight(56)
+    chart.timeScale().fitContent()
+
+    let resizeObserver: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        chart.applyOptions({ width: Math.max(280, Math.floor(entry.contentRect.width)) })
+      })
+      resizeObserver.observe(container)
+    }
+
+    return () => {
+      resizeObserver?.disconnect()
+      chart.remove()
+      chartRef.current = null
+    }
+  }, [chartKey])
+
+  if (isLoading && candles.length === 0) {
+    return <div className="h-[250px] animate-pulse rounded-md border border-border/50 bg-background/60" />
+  }
+
+  if (prices.length === 0 || candles.length === 0) {
+    return (
+      <div className="rounded-md border border-border/50 bg-background/60 p-3 text-xs text-muted-foreground">
+        K線策略圖：價格資料不足，暫時只能保留文字交易計劃。
+      </div>
+    )
+  }
   return (
     <div className="overflow-hidden rounded-md border border-border/50 bg-background/60">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
-        <span className="text-xs font-medium text-foreground">策略示意</span>
-        <span className="font-mono text-[11px] text-muted-foreground">非即時K線</span>
+        <span className="text-xs font-medium text-foreground">K線交易計劃圖</span>
+        <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
       </div>
-      <svg viewBox="0 0 300 142" className="h-44 w-full" role="img" aria-label="K線交易計劃示意圖">
-        <rect x="0" y="0" width="300" height="142" fill="transparent" />
-        {[26, 55, 84, 113].map((gridY) => (
-          <line key={gridY} x1="18" x2="282" y1={gridY} y2={gridY} stroke="currentColor" className="text-border" strokeDasharray="3 4" />
-        ))}
-        {targetY != null && (
-          <>
-            <line x1="18" x2="282" y1={targetY} y2={targetY} stroke="#f87171" strokeWidth="1.4" />
-            <text x="22" y={Math.max(12, targetY - 5)} fill="#f87171" fontSize="10">目標 {fmtNumber(target, 2)}</text>
-          </>
-        )}
-        {triggerY != null && (
-          <>
-            <line x1="18" x2="282" y1={triggerY} y2={triggerY} stroke="#38bdf8" strokeWidth="1.4" />
-            <text x="176" y={Math.max(14, triggerY - 5)} fill="#38bdf8" fontSize="10">突破確認 {fmtNumber(fairHigh ?? target, 2)}</text>
-          </>
-        )}
-        {supportY != null && (
-          <>
-            <line x1="18" x2="282" y1={supportY} y2={supportY} stroke="#22c55e" strokeWidth="1.4" />
-            <rect x="18" y={supportY - 8} width="264" height="16" fill="#22c55e" opacity="0.10" rx="3" />
-            <text x="22" y={supportY + 20} fill="#22c55e" fontSize="10">支撐/拉回區 {fmtNumber(support, 2)}</text>
-          </>
-        )}
-        {candles.map((candle) => {
-          const top = y(Math.max(candle.open, candle.close))
-          const bottom = y(Math.min(candle.open, candle.close))
-          return (
-            <g key={candle.x}>
-              <line x1={candle.x} x2={candle.x} y1={y(candle.high)} y2={y(candle.low)} stroke={candle.up ? '#22c55e' : '#ef4444'} strokeWidth="1.2" />
-              <rect x={candle.x - 5} y={top} width="10" height={Math.max(4, bottom - top)} fill={candle.up ? '#22c55e' : '#ef4444'} rx="1.5" />
-            </g>
-          )
-        })}
-        <path d="M215 102 C218 83 232 72 244 58" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
-        <path d="M244 58 l-2 10 l9 -5 z" fill="#38bdf8" />
-        <path d="M218 93 C210 98 204 104 198 113" fill="none" stroke="#facc15" strokeWidth="2" strokeLinecap="round" />
-        <path d="M198 113 l9 -4 l-2 10 z" fill="#facc15" />
-      </svg>
+      <div ref={containerRef} className="h-[210px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
+      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-3">
+        <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
+        <span className="font-mono text-sky-500">突破 {fairHigh ? fmtNumber(fairHigh, 2) : '-'}</span>
+        <span className="font-mono text-rose-500">樂觀 {target ? fmtNumber(target, 2) : '-'}</span>
+      </div>
     </div>
   )
 }
@@ -884,7 +1141,7 @@ function technicalPlanNote(rec: any): string {
 }
 
 function chipPlanNote(rec: any): string {
-  const scoreV2 = parseObject(rec.score_v2)
+  const scoreV2 = scoreV2PayloadFromRec(rec)
   const evidence = parseObject(scoreV2?.chipEvidence) ?? parseObject(rec.chip_evidence)
   if (evidence?.broker_net_amount_5d_billion != null) {
     const amount = Number(evidence.broker_net_amount_5d_billion)
@@ -900,6 +1157,8 @@ function chipPlanNote(rec: any): string {
 }
 
 function geminiReasonForCompare(rec: any, reason: string): string {
+  const variant = geminiVariantReasonFromRec(rec)
+  if (variant) return variant
   const clean = compactLine(reason)
   if (!clean || clean.startsWith('Score V2 ')) {
     const signal = rec.signal ? `訊號 ${rec.signal}` : '訊號待確認'
@@ -916,10 +1175,17 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
   const latest = planPrice(context?.latestClose ?? rec.current_price)
   const fairLow = planPrice(context?.fairValueLow)
   const fairHigh = planPrice(context?.fairValueHigh)
+  const optimisticLow = planPrice(context?.optimisticValueLow)
+  const optimisticHigh = planPrice(context?.optimisticValueHigh)
   const regime = shortLabelFor(context?.regime, REGIME_TEXT)
   const bucket = shortLabelFor(context?.bucket)
   const location = shortLabelFor(context?.location, LOCATION_TEXT)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummaryFromRec(rec)) ?? '模型共識尚未明確'
+  const optimisticStatus = shortLabelFor(context?.optimisticValueStatus, {
+    upside_available: '仍有空間',
+    inside_optimistic_range: '已在區間內',
+    exceeded: '已高於上緣',
+  })
   return [
     {
       label: '模型共識',
@@ -945,7 +1211,67 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
       note: `現價 ${latest ?? '-'}，fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}，價格位置 ${location}。`,
       tone: context?.skip ? 'warn' : 'neutral',
     },
+    {
+      label: '樂觀區間',
+      value: `${optimisticLow ?? '-'}~${optimisticHigh ?? '-'}`,
+      note: optimisticLow || optimisticHigh
+        ? `順風上緣假設，狀態：${optimisticStatus}；不是保證目標價，若已高於上緣要視為追價風險。`
+        : 'Alpha structure 沒有提供 optimistic range，目標價只能用近端壓力替代。',
+      tone: context?.optimisticValueStatus === 'exceeded' ? 'warn' : 'neutral',
+    },
   ]
+}
+
+function chipPlanValue(rec: any): string {
+  const evidence = parseObject(scoreV2PayloadFromRec(rec)?.chipEvidence) ?? parseObject(rec.chip_evidence)
+  const brokerAmount = Number(evidence?.broker_net_amount_5d_billion)
+  if (Number.isFinite(brokerAmount)) {
+    return `${brokerAmount >= 0 ? '買超' : '賣超'} ${Math.abs(brokerAmount).toFixed(2)} 億`
+  }
+  const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
+  return Number.isFinite(net)
+    ? `${net >= 0 ? '買超' : '賣超'} ${Math.abs(net).toFixed(2)} 億`
+    : '資料不足'
+}
+
+function alphaStructureValue(context: AlphaContext | null): string {
+  const parts = [
+    context?.bucket ? `bucket ${context.bucket}` : null,
+    context?.regime ? `regime ${context.regime}` : null,
+    context?.location ? `location ${context.location}` : null,
+    context?.scoreAdjustment != null ? `alpha ${signedText(Number(context.scoreAdjustment))}` : null,
+    context?.sizing != null ? `sizing x${fmtNumber(context.sizing, 2)}` : null,
+    context?.skip ? 'skip by risk overlay' : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' / ') : 'Alpha 結構資料不足'
+}
+
+function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
+  const latest = planPrice(context?.latestClose ?? rec.current_price)
+  const fairLow = planPrice(context?.fairValueLow)
+  const fairHigh = planPrice(context?.fairValueHigh)
+  const poc = planPrice(context?.poc)
+  const optimisticLow = planPrice(context?.optimisticValueLow)
+  const optimisticHigh = planPrice(context?.optimisticValueHigh)
+  return [
+    { label: '現價', value: latest ?? '-', note: '', tone: 'neutral' },
+    { label: 'Fair value', value: `${fairLow ?? '-'} ~ ${fairHigh ?? '-'}`, note: '', tone: 'neutral' },
+    { label: 'POC', value: poc ?? '-', note: '', tone: 'neutral' },
+    { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
+    { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
+    { label: '樂觀價格區間', value: `${optimisticLow ?? '-'} ~ ${optimisticHigh ?? '-'}`, note: '', tone: context?.optimisticValueStatus === 'exceeded' ? 'warn' : 'neutral' },
+  ]
+}
+
+function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-start gap-3 border-b border-border/30 py-2 last:border-b-0">
+      <span className="text-[11px] font-semibold text-foreground/80">{row.label}</span>
+      <span className={cn('min-w-0 break-words font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+        {row.value}
+      </span>
+    </div>
+  )
 }
 
 function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: AlphaContext | null; reason: string }) {
@@ -965,7 +1291,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
     fairLow || fairHigh ? `fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}` : null,
     poc ? `POC ${poc}` : null,
   ].filter(Boolean).join('，')
-  const tradePlanRows = buildTradePlanRows(rec, context)
+  const tradePlanRows = buildFocusedTradePlanRows(rec, context)
   const geminiReason = geminiReasonForCompare(rec, reason)
 
   return (
@@ -975,17 +1301,17 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
         推薦理由 / Alpha 交易計劃
       </p>
       <div className="grid gap-2">
-        <KLinePlanSketch context={context} currentPrice={rec.current_price} />
+        <KLinePlanSketch rec={rec} context={context} />
         <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
           <div className="w-1 shrink-0 bg-sky-400" />
           <div className="min-w-0 flex-1 p-3">
             <p className="text-xs font-medium text-foreground">盤勢判讀</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            <p className="hidden">
               {marketLine || '市場結構資料不足，先以盤中價量與風控為主。'}
             </p>
             <div className="mt-2">
               {tradePlanRows.map((row) => (
-                <TradePlanRow key={row.label} row={row} />
+                <FocusedTradePlanRow key={row.label} row={row} />
               ))}
             </div>
           </div>

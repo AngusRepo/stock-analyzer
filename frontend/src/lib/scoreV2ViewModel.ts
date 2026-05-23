@@ -30,11 +30,11 @@ const SCORE_V2_COMPONENTS = [
 ] as const
 
 const SCORE_V2_TECHNICAL = [
-  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '分數高代表收盤價、均線與短中期方向比較一致，趨勢不是只靠單日跳動撐起來。'],
-  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '分數高代表波動沒有失控，突破或回測比較不容易被雜訊掃掉。'],
-  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '分數高代表目前沒有太靠近過熱或過冷極端，進場不是單純追高或接刀。'],
-  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '分數高代表量能有跟上價格方向，市場不是只有價格動、成交沒人接。'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500', '分數高代表流動性、漲跌停與滑價風險較低，實際下單比較不容易失真。'],
+  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '趨勢結構目前缺少方向指標，不能只靠單日價格變動下結論。'],
+  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構目前缺少穩定度指標，突破或回測要保守確認。'],
+  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '轉折極端目前缺少過熱/過冷指標，進場要等位置確認。'],
+  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '量能確認目前缺少成交量佐證，突破前要等量能放大。'],
+  ['executionRisk', '執行風險', 2, 'bg-rose-500', '執行風險目前缺少流動性佐證，實際下單要保守處理。'],
 ] as const
 
 function parseObject(raw: unknown): Record<string, any> | null {
@@ -49,6 +49,11 @@ function parseObject(raw: unknown): Record<string, any> | null {
   } catch {
     return null
   }
+}
+
+function canonicalScoreV2Payload(rec: Record<string, any>): Record<string, any> | null {
+  const scoreV2Payload = parseObject(rec.score_v2)
+  return scoreV2Payload?.version === 'score_v2' ? scoreV2Payload : null
 }
 
 function finiteNumber(raw: unknown, fallback = 0): number {
@@ -72,6 +77,34 @@ function fmtSignal(value: unknown, decimals = 1): string | null {
 
 function riskFlagIncludes(flags: string[], pattern: RegExp): boolean {
   return flags.some((flag) => pattern.test(flag))
+}
+
+function scoreLevel(value: number, max: number): string {
+  const ratio = max > 0 ? value / max : 0
+  if (ratio >= 0.72) return '偏強'
+  if (ratio >= 0.48) return '中性'
+  return '偏弱'
+}
+
+function technicalFallbackConclusion(key: string, value: number, max: number): string {
+  const scoreText = `${value.toFixed(1)}/${max.toFixed(0)}`
+  const level = scoreLevel(value, max)
+  if (key === 'trendStructure') {
+    return `拿 ${scoreText}，趨勢結構${level}；目前沒有足夠方向指標佐證，不能只因短線上漲就當成強趨勢。`
+  }
+  if (key === 'volatilityStructure') {
+    return `拿 ${scoreText}，波動結構${level}；若分數偏低，代表突破後被震盪洗掉的機率較高。`
+  }
+  if (key === 'reversalExtreme') {
+    return `拿 ${scoreText}，轉折風險${level}；分數不足時代表位置可能太熱或太冷，進場要等價格穩住。`
+  }
+  if (key === 'volumeConfirmation') {
+    return `拿 ${scoreText}，量能確認${level}；分數不足時代表成交量沒有明確跟上，突破前要等量能放大。`
+  }
+  if (key === 'executionRisk') {
+    return `拿 ${scoreText}，執行風險${level}；分數不足時代表滑價、流動性或盤中成交品質需要保守處理。`
+  }
+  return `拿 ${scoreText}，目前資料不足，只能把這項當成${level}訊號。`
 }
 
 function technicalExplanation(
@@ -100,7 +133,7 @@ function technicalExplanation(
       const strength = Number(signals.adx14) >= 25 ? `ADX ${adx} 顯示趨勢有強度` : `ADX ${adx} 顯示趨勢還不夠強`
       return `拿 ${scoreText}，因為 ${direction}，${strength}，所以方向性有被趨勢資料支持。`
     }
-    return `拿 ${scoreText}，${fallback}`
+    return technicalFallbackConclusion(key, value, max)
   }
 
   if (key === 'volatilityStructure') {
@@ -111,7 +144,7 @@ function technicalExplanation(
     ].filter(Boolean)
     return parts.length
       ? `拿 ${scoreText}，${parts.join('；')}。`
-      : `拿 ${scoreText}，${fallback}`
+      : technicalFallbackConclusion(key, value, max)
   }
 
   if (key === 'reversalExtreme') {
@@ -121,7 +154,7 @@ function technicalExplanation(
     ].filter(Boolean)
     return parts.length
       ? `拿 ${scoreText}，${parts.join('；')}。`
-      : `拿 ${scoreText}，${fallback}`
+      : technicalFallbackConclusion(key, value, max)
   }
 
   if (key === 'volumeConfirmation') {
@@ -133,7 +166,7 @@ function technicalExplanation(
     ].filter(Boolean)
     return parts.length
       ? `拿 ${scoreText}，${parts.join('；')}。`
-      : `拿 ${scoreText}，${fallback}`
+      : technicalFallbackConclusion(key, value, max)
   }
 
   if (key === 'executionRisk') {
@@ -144,7 +177,7 @@ function technicalExplanation(
     return `拿 ${scoreText}，${parts.join('；')}。`
   }
 
-  return `拿 ${scoreText}，${fallback}`
+  return technicalFallbackConclusion(key, value, max)
 }
 
 function row(
@@ -204,7 +237,7 @@ function riskFlagsFromPayload(payload: Record<string, any> | null): string[] {
 }
 
 export function buildScoreBreakdownViewModel(rec: Record<string, any>): ScoreBreakdownViewModel {
-  const payload = parseObject(rec.score_v2)
+  const payload = canonicalScoreV2Payload(rec)
   const isScoreV2 = payload?.version === 'score_v2' && parseObject(payload.components) != null
   const alphaAdjustment = round1(finiteNumber(payload?.alphaAdjustment ?? rec.alpha_context?.score_adjustment))
 

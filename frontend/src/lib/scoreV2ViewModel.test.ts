@@ -64,6 +64,37 @@ function assert(condition: unknown, message: string): void {
 
 {
   const vm = buildScoreBreakdownViewModel({
+    score_v2: {
+      version: 'score_v2',
+      total: 40,
+      components: {
+        mlEdge: 10,
+        chipFlow: 10,
+        technicalStructure: 10,
+        fundamentalQuality: 8,
+        newsTheme: 2,
+      },
+      technicalBreakdown: {
+        trendStructure: 2,
+        volatilityStructure: 1.5,
+        reversalExtreme: 2.4,
+        volumeConfirmation: 1.2,
+        executionRisk: 0.5,
+      },
+    },
+  })
+  assert(
+    vm.technicalRows.some((row) => row.key === 'volumeConfirmation' && row.explanation?.includes('成交量沒有明確跟上')),
+    'technical fallback should summarize what the score implies instead of explaining the term',
+  )
+  assert(
+    vm.technicalRows.every((row) => !row.explanation?.includes('分數高代表')),
+    'technical fallback should not render generic dictionary-style explanations',
+  )
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
     score_components: JSON.stringify({
       version: 'score_v2',
       total: 65,
@@ -77,8 +108,9 @@ function assert(condition: unknown, message: string): void {
       },
     }),
   })
-  assert(vm.source === 'missing_score_v2', 'frontend must not read Score V2 from legacy score_components')
-  assert(vm.finalScore === 0, 'legacy score_components should not create a frontend score even when it contains score_v2')
+  assert(vm.source === 'missing_score_v2', 'frontend must not recover Score V2 from raw score_components compatibility payloads')
+  assert(vm.finalScore === 0, 'raw score_components without score_v2 should not create a frontend score')
+  assert(vm.rows.find(row => row.key === 'mlEdge')?.value === 0, 'raw score_components should not expose ML Edge without score_v2')
 }
 
 {

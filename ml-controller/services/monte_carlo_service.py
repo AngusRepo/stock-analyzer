@@ -38,6 +38,9 @@ D1_API = (
 # ── Simulation Parameters ─────────────────────────────────────────────────────
 DEFAULT_N_SIMULATIONS = 1000
 MIN_FULL_TAIL_RISK_TRADES = 30
+BACKTEST_REGIME_CLOSED_LOOP_MISSING = "backtest_regime_closed_loop_missing"
+CURATED_EXCLUSION_DEFAULT_SYMBOLS = ["8047", "2640"]
+CURATED_SOURCE_SUFFIX = "_curated"
 TW_BUY_FEE = 0.001425
 TW_SELL_FEE = 0.004425
 
@@ -354,8 +357,53 @@ def _extract_backtest_returns_and_regimes(raw: dict) -> tuple[list[float], list[
         returns = [float(x) for x in returns]
 
     if isinstance(regimes, list) and len(regimes) == len(returns):
-        return returns, [str(r or "unknown") for r in regimes]
+        normalized = [str(r or "unknown") for r in regimes]
+        if any(r.strip().lower() not in {"", "none", "null", "unknown"} for r in normalized):
+            return returns, normalized
     return returns, None
+
+
+def _build_tail_risk_diagnostics(
+    trade_returns: list[float],
+    trades: list[dict] | None = None,
+    trade_regimes: list[str] | None = None,
+    backtest_summary: dict | None = None,
+) -> dict:
+    losses = [ret for ret in trade_returns if ret < 0]
+    large_losses = [ret for ret in trade_returns if ret <= -0.10]
+    sorted_losses = sorted(losses)[:8]
+    hard_stop_losses = []
+    for trade in trades or []:
+        if not isinstance(trade, dict):
+            continue
+        ret = _as_number(trade.get("profit_ratio"))
+        reason = str(trade.get("exit_reason") or "")
+        if ret is not None and ret < 0 and "HardStop" in reason:
+            hard_stop_losses.append({
+                "symbol": trade.get("symbol"),
+                "entry_date": trade.get("entry_date"),
+                "exit_date": trade.get("exit_date"),
+                "profit_ratio": ret,
+                "exit_reason": reason,
+            })
+    missing_regime = not trade_regimes
+    return {
+        "n_trades": len(trade_returns),
+        "loss_count": len(losses),
+        "loss_gt_10pct_count": len(large_losses),
+        "worst_losses": [round(x, 6) for x in sorted_losses],
+        "hard_stop_loss_count": len(hard_stop_losses),
+        "hard_stop_losses": hard_stop_losses[:8],
+        "regime_closed_loop": not missing_regime,
+        "regime_gap_reason": None if not missing_regime else "backtest raw_results has no usable entry_regime/all_regimes",
+        "backtest_max_drawdown": (backtest_summary or {}).get("max_drawdown"),
+        "backtest_sharpe": (backtest_summary or {}).get("sharpe"),
+        "root_cause_hint": (
+            "tail risk comes from clustered double-digit HardStop losses and missing regime labels for regime-aware bootstrap"
+            if len(large_losses) >= 3 or missing_regime
+            else "tail risk comes from the stored trade return distribution"
+        ),
+    }
 
 
 def _as_number(value) -> float | None:
@@ -363,6 +411,114 @@ def _as_number(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_simulation_method(
+    source: str,
+    requested_method: str | None,
+    trade_regimes: list[str] | None,
+) -> str:
+    requested = (requested_method or "").strip()
+    if source == "backtest" and requested == "regime_block_bootstrap" and not trade_regimes:
+        raise ValueError(BACKTEST_REGIME_CLOSED_LOOP_MISSING)
+    if requested:
+        return requested
+    if source == "backtest":
+        if trade_regimes:
+            return "regime_block_bootstrap"
+        raise ValueError(BACKTEST_REGIME_CLOSED_LOOP_MISSING)
+    return "block_bootstrap"
+
+
+def _normalize_symbol_list(raw: str | list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    if raw is None:
+        return []
+    values: list[str]
+    if isinstance(raw, str):
+        values = raw.replace("，", ",").split(",")
+    else:
+        values = [str(item) for item in raw]
+    out: list[str] = []
+    for value in values:
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in out:
+            out.append(symbol)
+    return out
+
+
+def _resolve_source_and_exclusion(
+    source: str,
+    exclude_symbols: str | list[str] | tuple[str, ...] | set[str] | None,
+) -> tuple[str, str, list[str], dict]:
+    requested_source = str(source or "").strip()
+    curated_requested = requested_source.endswith(CURATED_SOURCE_SUFFIX)
+    base_source = (
+        requested_source[: -len(CURATED_SOURCE_SUFFIX)]
+        if curated_requested
+        else requested_source
+    )
+    symbols = _normalize_symbol_list(exclude_symbols)
+    if curated_requested and not symbols:
+        symbols = CURATED_EXCLUSION_DEFAULT_SYMBOLS.copy()
+    effective_source = f"{base_source}{CURATED_SOURCE_SUFFIX}" if symbols else base_source
+    return base_source, effective_source, symbols, {
+        "enabled": bool(symbols),
+        "base_source": base_source,
+        "effective_source": effective_source,
+        "symbols": symbols,
+        "requested_source": requested_source,
+        "default_symbols_applied": curated_requested and not _normalize_symbol_list(exclude_symbols),
+        "rationale": (
+            "transparent curated exclusion for early-strategy contamination review"
+            if symbols else None
+        ),
+    }
+
+
+def _symbol_excluded(symbol: object, excluded_symbols: set[str]) -> bool:
+    return str(symbol or "").strip().upper() in excluded_symbols
+
+
+def _filter_backtest_trades_for_exclusion(
+    raw: dict,
+    excluded_symbols: list[str],
+) -> tuple[list[float], list[str] | None, list[dict], dict]:
+    trades = raw.get("trades") if isinstance(raw.get("trades"), list) else []
+    excluded = set(excluded_symbols)
+    valid_trades = [
+        trade for trade in trades
+        if isinstance(trade, dict) and _as_number(trade.get("profit_ratio")) is not None
+    ]
+    if not excluded:
+        returns, regimes = _extract_backtest_returns_and_regimes(raw)
+        return returns, regimes, trades, {
+            "enabled": False,
+            "original_trade_count": len(valid_trades) or len(returns),
+            "excluded_trade_count": 0,
+            "remaining_trade_count": len(returns),
+        }
+    if not valid_trades:
+        return [], None, [], {
+            "enabled": True,
+            "error": "curated_exclusion_requires_backtest_trades",
+            "original_trade_count": 0,
+            "excluded_trade_count": 0,
+            "remaining_trade_count": 0,
+        }
+
+    kept_trades = [
+        trade for trade in valid_trades
+        if not _symbol_excluded(trade.get("symbol"), excluded)
+    ]
+    filtered_raw = {"trades": kept_trades}
+    returns, regimes = _extract_backtest_returns_and_regimes(filtered_raw)
+    return returns, regimes, kept_trades, {
+        "enabled": True,
+        "filter_source": "raw_results.trades",
+        "original_trade_count": len(valid_trades),
+        "excluded_trade_count": len(valid_trades) - len(kept_trades),
+        "remaining_trade_count": len(kept_trades),
+    }
 
 
 def _run_monte_carlo(
@@ -480,6 +636,7 @@ async def run_monte_carlo_mdd(
     source: str = "paper",
     method: str | None = None,
     block_size: int | None = None,
+    exclude_symbols: str | list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> dict:
     """
     Full Monte Carlo MDD pipeline:
@@ -493,14 +650,21 @@ async def run_monte_carlo_mdd(
     if httpx is None:
         return {"error": "httpx not installed", "status": "failed"}
 
+    base_source, effective_source, excluded_symbols, curated_exclusion = _resolve_source_and_exclusion(
+        source,
+        exclude_symbols,
+    )
+
     async with httpx.AsyncClient() as client:
         # ── Step 1: Fetch trade returns ──
         trade_returns: list[float] = []
         trade_regimes: list[str] | None = None
+        backtest_summary: dict = {}
+        backtest_trades: list[dict] = []
 
         data_quality_info: dict = {}
 
-        if source == "paper":
+        if base_source == "paper":
             logger.info("[MonteCarlo] Fetching paper_orders from D1...")
             orders = await _d1_query(
                 client,
@@ -512,6 +676,26 @@ async def run_monte_carlo_mdd(
 
             if not orders:
                 return {"error": "No paper orders found", "status": "failed"}
+
+            original_order_count = len(orders)
+            if excluded_symbols:
+                excluded_set = set(excluded_symbols)
+                orders = [
+                    order for order in orders
+                    if not _symbol_excluded(order.get("symbol"), excluded_set)
+                ]
+                curated_exclusion.update({
+                    "filter_source": "paper_orders",
+                    "original_order_count": original_order_count,
+                    "excluded_order_count": original_order_count - len(orders),
+                    "remaining_order_count": len(orders),
+                })
+                if not orders:
+                    return {
+                        "error": "No paper orders remain after curated exclusion",
+                        "status": "failed",
+                        "curated_exclusion": curated_exclusion,
+                    }
 
             logger.info(f"[MonteCarlo] Found {len(orders)} orders, validating + pairing...")
             pairing = _validate_and_pair_orders(orders)
@@ -539,8 +723,14 @@ async def run_monte_carlo_mdd(
                 "dirty_symbols": pairing.dirty_symbols[:10],
                 "quality_detail": pairing.quality_detail,
             }
+            if excluded_symbols:
+                curated_exclusion.update({
+                    "original_trade_count": None,
+                    "excluded_trade_count": None,
+                    "remaining_trade_count": pairing.paired_trades,
+                })
 
-        elif source == "backtest":
+        elif base_source == "backtest":
             logger.info("[MonteCarlo] Fetching backtest trades from D1...")
             row = await _d1_query(
                 client,
@@ -552,7 +742,19 @@ async def run_monte_carlo_mdd(
                 return {"error": "No backtest results found", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
-            trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
+            backtest_summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
+            trade_returns, trade_regimes, backtest_trades, backtest_filter_meta = _filter_backtest_trades_for_exclusion(
+                raw,
+                excluded_symbols,
+            )
+            if backtest_filter_meta.get("error"):
+                return {
+                    "error": backtest_filter_meta["error"],
+                    "status": "failed",
+                    "source": effective_source,
+                    "curated_exclusion": {**curated_exclusion, **backtest_filter_meta},
+                }
+            curated_exclusion.update(backtest_filter_meta)
 
         else:
             return {"error": f"Unknown source: {source}", "status": "failed"}
@@ -568,9 +770,29 @@ async def run_monte_carlo_mdd(
         )
 
         # ── Step 3: Run Monte Carlo ──
-        simulation_method = method or os.environ.get("MONTE_CARLO_METHOD", "").strip()
-        if not simulation_method:
-            simulation_method = "regime_block_bootstrap" if trade_regimes else "block_bootstrap"
+        env_method = os.environ.get("MONTE_CARLO_METHOD", "").strip() or None
+        requested_method = method or (env_method if base_source != "backtest" else None)
+        try:
+            simulation_method = _resolve_simulation_method(base_source, requested_method, trade_regimes)
+        except ValueError as exc:
+            if str(exc) != BACKTEST_REGIME_CLOSED_LOOP_MISSING:
+                raise
+            tail_risk_diagnostics = _build_tail_risk_diagnostics(
+                trade_returns,
+                trades=backtest_trades,
+                trade_regimes=trade_regimes,
+                backtest_summary=backtest_summary,
+            )
+            return {
+                "status": "failed",
+                "error": BACKTEST_REGIME_CLOSED_LOOP_MISSING,
+                "source": effective_source,
+                "n_trades": len(trade_returns),
+                "tail_risk_diagnostics": tail_risk_diagnostics,
+                "curated_exclusion": curated_exclusion,
+                "required_backtest_fields": ["all_regimes", "trades[].entry_regime"],
+                "next_action": "rerun /backtest/run with regime-aware raw_results before Monte Carlo",
+            }
         mc = _run_monte_carlo(
             trade_returns,
             n_simulations,
@@ -590,17 +812,26 @@ async def run_monte_carlo_mdd(
         for mdd in mdds_for_dist:
             bucket = f"{int(mdd * 100)}%"
             buckets[bucket] = buckets.get(bucket, 0) + 1
+        tail_risk_diagnostics = _build_tail_risk_diagnostics(
+            trade_returns,
+            trades=backtest_trades,
+            trade_regimes=trade_regimes,
+            backtest_summary=backtest_summary,
+        )
 
         raw_json = json.dumps({
             "distribution": mdds_for_dist,
             "histogram": buckets,
-            "source": source,
+            "source": effective_source,
+            "base_source": base_source,
             "n_trades": len(trade_returns),
             "simulation_method": mc.simulation_method,
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
             "tail_risk_status": mc.tail_risk_status,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
+            "tail_risk_diagnostics": tail_risk_diagnostics,
+            "curated_exclusion": curated_exclusion if curated_exclusion.get("enabled") else None,
             "data_quality": data_quality_info or None,
         }, ensure_ascii=False)
 
@@ -614,7 +845,7 @@ async def run_monte_carlo_mdd(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 today,
-                source,
+                effective_source,
                 mc.n_simulations,
                 mc.n_trades,
                 mc.historical_mdd,
@@ -634,7 +865,8 @@ async def run_monte_carlo_mdd(
         summary = {
             "status": "success" if success else "d1_write_failed",
             "run_date": today,
-            "source": source,
+            "source": effective_source,
+            "base_source": base_source,
             "n_simulations": mc.n_simulations,
             "n_trades": mc.n_trades,
             "historical_mdd": f"{mc.historical_mdd:.2%}",
@@ -648,6 +880,8 @@ async def run_monte_carlo_mdd(
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
             "data_quality": data_quality_info or None,
+            "curated_exclusion": curated_exclusion if curated_exclusion.get("enabled") else None,
+            "tail_risk_diagnostics": tail_risk_diagnostics,
             "tail_risk_status": mc.tail_risk_status,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
         }

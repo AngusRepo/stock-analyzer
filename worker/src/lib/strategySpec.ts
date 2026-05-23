@@ -10,11 +10,6 @@ export interface StrategyCandidateInput {
   name?: string
   sector?: string
   industry?: string
-  score?: number
-  ml_score?: number
-  chip_score?: number
-  tech_score?: number
-  momentum_score?: number
   score_components?: unknown
   current_price?: number | null
 }
@@ -76,10 +71,17 @@ export interface StrategyThresholdScores {
   chipFlow: number
   technicalStructure: number
   momentumProxy: number
-  source: 'score_v2' | 'storage_projection'
+  source: 'score_v2' | 'missing_score_v2'
 }
 
 const FORBIDDEN_SPEC_KEYS = [
+  'score',
+  'chip_score',
+  'tech_score',
+  'momentum_score',
+  'chipScore',
+  'techScore',
+  'momentumScore',
   'scoreBonus',
   'scoreBoost',
   'slateBoost',
@@ -168,26 +170,24 @@ function meetsPrice(candidate: StrategyCandidateInput, thresholds: StrategySpecT
   return true
 }
 
-function legacyComponentNumber(record: Record<string, unknown> | null, key: string): number | null {
-  const legacy = record?.legacyComponents
-  return legacy && typeof legacy === 'object' && !Array.isArray(legacy)
-    ? finiteNumber((legacy as Record<string, unknown>)[key])
+function seedComponentNumber(record: Record<string, unknown> | null, key: string): number | null {
+  const seeds = record?.seedComponents
+  return seeds && typeof seeds === 'object' && !Array.isArray(seeds)
+    ? finiteNumber((seeds as Record<string, unknown>)[key])
     : null
 }
 
 export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput): StrategyThresholdScores {
   const snapshot = readScoreV2Snapshot(candidate)
   const record = parseRecord(candidate.score_components)
-  const storageSeed = finiteNumber(candidate.score)
 
-  if (snapshot.source === 'score_v2') {
+  if (snapshot) {
     const canonicalFinal = finiteNumber(record?.finalScore)
     return {
-      seedScore: canonicalFinal ?? storageSeed ?? snapshot.finalScore,
+      seedScore: canonicalFinal ?? snapshot.finalScore,
       chipFlow: snapshot.components.chipFlow,
       technicalStructure: snapshot.components.technicalStructure,
-      momentumProxy: legacyComponentNumber(record, 'screenerMomentum')
-        ?? finiteNumber(candidate.momentum_score)
+      momentumProxy: seedComponentNumber(record, 'screenerMomentumSeed20')
         ?? snapshot.technicalBreakdown?.volumeConfirmation
         ?? 0,
       source: 'score_v2',
@@ -195,13 +195,11 @@ export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput)
   }
 
   return {
-    seedScore: finiteNumber(candidate.score) ?? snapshot.total,
-    chipFlow: finiteNumber(candidate.chip_score) ?? snapshot.components.chipFlow,
-    technicalStructure: finiteNumber(candidate.tech_score) ?? snapshot.components.technicalStructure,
-    momentumProxy: finiteNumber(candidate.momentum_score)
-      ?? snapshot.technicalBreakdown?.volumeConfirmation
-      ?? 0,
-    source: 'storage_projection',
+    seedScore: 0,
+    chipFlow: 0,
+    technicalStructure: 0,
+    momentumProxy: 0,
+    source: 'missing_score_v2',
   }
 }
 
@@ -282,6 +280,25 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     thresholds: { minSeedScore: 54, minChipScore: 20, minTechScore: 12, minPrice: 10 },
     candidatePolicy: { poolQuota: 16, costBudget: 20, evidenceRequirements: ['price', 'chip_or_flow', 'risk'] },
     riskNotes: ['防守型種子仍需確認沒有資料 stale、流動性過薄或大盤風險。'],
+    createdBy: 'p5_strategy_governance',
+  },
+  {
+    id: 'finlab_ai_skill_shadow_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'FinLab AI Skill shadow lane',
+    status: 'shadow',
+    owner: 'strategy',
+    alphaBucket: 'mean_reversion',
+    supportedRegimes: ['bull', 'sideways', 'bear', 'volatile'],
+    thesis: 'FinLab AI Skill generates factor and taxonomy hypotheses in shadow mode; candidates are recorded for research evidence only until backtest, MC, PBO, and manual approval pass.',
+    thresholds: { minSeedScore: 50, minPrice: 10 },
+    candidatePolicy: {
+      poolQuota: 12,
+      costBudget: 12,
+      evidenceRequirements: ['finlab_ai_skill', 'finlab_factor', 'finlab_taxonomy', 'shadow_reward'],
+      maxMlShare: 0,
+    },
+    riskNotes: ['Shadow lane only: do not route to ML queue, debate, pending-buy, or live execution before promotion approval.'],
     createdBy: 'p5_strategy_governance',
   },
 ]

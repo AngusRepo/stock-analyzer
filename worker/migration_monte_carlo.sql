@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS monte_carlo_results (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   run_date          TEXT NOT NULL,                    -- 執行日期
-  source            TEXT NOT NULL DEFAULT 'paper',    -- 'paper' | 'backtest'
+  source            TEXT NOT NULL DEFAULT 'paper',    -- 'paper' | 'backtest' | '*_curated'
   n_simulations     INTEGER NOT NULL DEFAULT 1000,
   n_trades          INTEGER NOT NULL,                 -- 輸入交易筆數
   historical_mdd    REAL,                             -- 實際歷史 MDD (0~1)

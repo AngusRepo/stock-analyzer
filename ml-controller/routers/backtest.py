@@ -61,12 +61,14 @@ async def trigger_backtest():
 @router.post("/monte-carlo")
 async def trigger_monte_carlo(
     n: int = Query(default=1000, ge=100, le=10000, description="Number of simulations"),
-    source: str = Query(default="paper", pattern="^(paper|backtest)$",
-                        description="Data source: paper (real trades) or backtest"),
-    method: str = Query(default="block_bootstrap", pattern="^(block_bootstrap|regime_block_bootstrap|iid_shuffle)$",
-                        description="Simulation method; regime/block bootstrap preserves clustered loss streaks"),
+    source: str = Query(default="paper", pattern="^(paper|backtest|paper_curated|backtest_curated)$",
+                        description="Data source: paper/backtest or transparent curated scenarios"),
+    method: Optional[str] = Query(default=None, pattern="^(block_bootstrap|regime_block_bootstrap|iid_shuffle)$",
+                                  description="Simulation method. None=auto; backtest requires regime labels for regime bootstrap."),
     block_size: int | None = Query(default=None, ge=1, le=60,
                                    description="Optional moving-block size for block bootstrap"),
+    exclude_symbols: str | None = Query(default=None,
+                                        description="Comma-separated symbols for transparent curated exclusion"),
 ):
     """
     P0#5 Monte Carlo MDD Simulation:
@@ -76,13 +78,17 @@ async def trigger_monte_carlo(
     4. Report 95th/99th percentile worst-case MDD
     5. Go-live verdict: PASS (<20%) / CAUTION (20-30%) / FAIL (>30%)
     """
-    logger.info(f"[MonteCarlo] Triggered: source={source}, n={n}, method={method}, block_size={block_size}")
+    logger.info(
+        f"[MonteCarlo] Triggered: source={source}, n={n}, method={method or 'auto'}, "
+        f"block_size={block_size}, exclude_symbols={exclude_symbols or '-'}"
+    )
     try:
         return await run_monte_carlo_mdd(
             n_simulations=n,
             source=source,
             method=method,
             block_size=block_size,
+            exclude_symbols=exclude_symbols,
         )
     except Exception as e:
         logger.exception("[MonteCarlo] Pipeline failed")
@@ -152,7 +158,7 @@ class AlphaPromotionGateRequest(BaseModel):
         default_factory=dict,
         description="Alpha policy candidate metadata from /optuna/alpha_framework or Worker sandbox metadata.",
     )
-    source: str = Field(default="backtest", pattern="^(backtest)$")
+    source: str = Field(default="backtest", pattern="^(backtest|backtest_curated)$")
     pbo_source: Optional[str] = Field(default=None, pattern="^(backtest|optuna_l2)$")
     evidence: Optional[dict] = Field(
         default=None,
@@ -480,7 +486,7 @@ async def trigger_pbo(
 
 @router.get("/promotion-gate")
 async def get_promotion_gate(
-    source: str = Query(default="backtest", pattern="^(paper|backtest)$",
+    source: str = Query(default="backtest", pattern="^(paper|backtest|paper_curated|backtest_curated)$",
                         description="Risk source for Monte Carlo rows"),
     pbo_source: str | None = Query(default=None, pattern="^(paper|backtest|optuna_l2)$",
                                    description="PBO row source; defaults to source"),

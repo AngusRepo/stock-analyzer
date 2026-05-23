@@ -79,6 +79,7 @@ export interface StrategyPoolEntry<T extends StrategyCandidatePoolCandidate = St
   quota: number
   cost_budget: number
   evidence_requirements: string[]
+  max_ml_share: number | null
   regime_weight: number
   candidate: T
   raw_score: number
@@ -195,6 +196,21 @@ function candidateLiquidity(candidate: StrategyCandidatePoolCandidate): number |
     ?? finiteNumber(candidate.liquidity_value)
 }
 
+function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate): {
+  seedScore: number
+  chipFlow: number
+  technicalStructure: number
+  momentumProxy: number
+} {
+  const canonical = deriveStrategyThresholdScores(candidate)
+  return {
+    seedScore: canonical.seedScore,
+    chipFlow: canonical.chipFlow,
+    technicalStructure: canonical.technicalStructure,
+    momentumProxy: canonical.momentumProxy,
+  }
+}
+
 function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): string[] | null {
   const thresholds = spec.thresholds
   const industry = cleanText(candidate.industry ?? candidate.sector)
@@ -207,7 +223,7 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
   if (thresholds.minPrice != null && (price == null || price < thresholds.minPrice)) return null
   if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
 
-  const scores = deriveStrategyThresholdScores(candidate)
+  const scores = candidatePoolThresholdScores(candidate)
   const checks: Array<[string, unknown, number | undefined]> = [
     ['score', scores.seedScore, thresholds.minSeedScore],
     ['chip', scores.chipFlow, thresholds.minChipScore],
@@ -236,7 +252,7 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
 }
 
 function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number): number {
-  const scores = deriveStrategyThresholdScores(candidate)
+  const scores = candidatePoolThresholdScores(candidate)
   const score = scores.seedScore
   const chip = scores.chipFlow
   const tech = scores.technicalStructure
@@ -318,6 +334,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       const runtimePolicy = policyForSpec(spec)
       const quota = boundedQuota(runtimePolicy.poolQuota, policy)
       const costBudget = Math.max(1, Math.round(finiteNumber(runtimePolicy.costBudget) ?? policy.defaultCostBudget))
+      const maxMlShare = finiteNumber(runtimePolicy.maxMlShare)
       const evidenceRequirements = runtimePolicy.evidenceRequirements?.map(cleanText).filter(Boolean)
         ?? ['price', 'chip_or_flow', 'technical']
       const rWeight = regimeWeight(spec, options.regime) * (finiteNumber(options.strategyWeights?.[spec.id]) ?? 1)
@@ -372,6 +389,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
             quota,
             cost_budget: costBudget,
             evidence_requirements: evidenceRequirements,
+            max_ml_share: maxMlShare,
             regime_weight: rWeight,
             candidate: cloneCandidate(candidate),
             raw_score: thresholdScores.seedScore,
@@ -391,7 +409,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .map((candidate) => {
             const misses = thresholdNearMisses(candidate, spec)
             if (!misses) return null
-            const thresholdScores = deriveStrategyThresholdScores(candidate)
+            const thresholdScores = candidatePoolThresholdScores(candidate)
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
             return {
               strategy_id: spec.id,
@@ -401,6 +419,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               quota,
               cost_budget: costBudget,
               evidence_requirements: evidenceRequirements,
+              max_ml_share: maxMlShare,
               regime_weight: rWeight,
               candidate: cloneCandidate(candidate),
               raw_score: thresholdScores.seedScore,
@@ -418,7 +437,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         usedAdaptiveNearMatch = true
         entries = candidates
           .map((candidate) => {
-            const thresholdScores = deriveStrategyThresholdScores(candidate)
+            const thresholdScores = candidatePoolThresholdScores(candidate)
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.86) * 1000) / 1000
             return {
               strategy_id: spec.id,
@@ -428,6 +447,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               quota,
               cost_budget: costBudget,
               evidence_requirements: evidenceRequirements,
+              max_ml_share: maxMlShare,
               regime_weight: rWeight,
               candidate: cloneCandidate(candidate),
               raw_score: thresholdScores.seedScore,
@@ -521,13 +541,20 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
     const industry = candidateIndustry(entry.candidate)
     const nextStrategyCount = (strategyUsage.get(primaryStrategy) ?? 0) + 1
     const nextIndustryCount = (industryUsage.get(industry) ?? 0) + 1
+    const entryMaxMlShare = finiteNumber(entry.max_ml_share)
+    const entryStrategyCap = entryMaxMlShare == null
+      ? strategyCap
+      : Math.max(1, Math.floor(capacity.mlQueueCap * clamp(entryMaxMlShare, 0, 1)))
     let reason = cleanText(entry.reason) || 'selected_by_strategy_pool'
     let decision: StrategyQueueDecision = 'ml_queue'
 
     if (!eligibleForMl(entry.candidate)) {
       decision = 'research_only_queue'
       reason = entry.candidate.restricted === true ? 'restricted_or_attention' : 'not_ml_eligible_segment'
-    } else if (nextStrategyCount > strategyCap) {
+    } else if (entryMaxMlShare === 0) {
+      decision = 'research_only_queue'
+      reason = 'strategy_shadow_lane_only'
+    } else if (nextStrategyCount > entryStrategyCap) {
       decision = 'research_only_queue'
       reason = 'strategy_share_cap'
     } else if (nextIndustryCount > industryCap) {

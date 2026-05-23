@@ -38,7 +38,12 @@ import {
   upsertMarketRegimeFactorPacket,
 } from '../lib/marketRegimeFactorPacket'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
-import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
+import {
+  SCORE_V2_VERSION,
+  readScoreV2Snapshot,
+  serializeScoreV2Snapshot,
+  type ScoreV2StorageRow,
+} from '../lib/scoreV2Taxonomy'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -1051,6 +1056,30 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function hasScoreV2Evidence(row: Record<string, unknown>): boolean {
+  return Boolean(row.score_components)
+}
+
+function recommendationScoreV2Payload(row: Record<string, unknown>) {
+  if (!hasScoreV2Evidence(row)) return null
+  const snapshot = readScoreV2Snapshot(row as ScoreV2StorageRow)
+  return snapshot ? serializeScoreV2Snapshot(snapshot) : null
+}
+
+function removeLegacyRecommendationScoreFields(row: Record<string, any>): Record<string, any> {
+  const {
+    score: _score,
+    total_score: _totalScore,
+    score_components: _scoreComponents,
+    ml_score: _mlScore,
+    chip_score: _chipScore,
+    tech_score: _techScore,
+    momentum_score: _momentumScore,
+    ...rest
+  } = row
+  return rest
+}
+
 function formatAbsTwdAmountFromBillion(value: number): string {
   const abs = Math.abs(value)
   if (abs < 0.01 && abs > 0) return `${Math.round(abs * 10_000)}萬`
@@ -1092,8 +1121,8 @@ function normalizeScoreV2ReasonText(reason: unknown): string {
   if (!text) return ''
   return text
     .replace(/^【籌碼】[^｜\n]+｜/, '')
-    .replace(/【技術】/g, 'Technical:')
-    .replace(/【ML】/g, 'ML Edge:')
+    .replace(/【技術】/g, '技術：')
+    .replace(/【ML】/g, '模型：')
     .replace(/｜/g, '; ')
     .trim()
 }
@@ -1102,11 +1131,9 @@ function mergeEmergingBrokerReason(reason: unknown, evidence: Record<string, any
   if (!evidence) return reason
   const chipReason = String(evidence.reason ?? '券商分點資料已更新')
   const text = normalizeScoreV2ReasonText(reason)
-  if (!text) return `Score V2 Chip Flow evidence: ${chipReason}`
+  if (!text) return `籌碼流：${chipReason}`
   if (text.includes(chipReason)) return text
-  return text.includes('Score V2')
-    ? `${text}; Chip Flow evidence: ${chipReason}`
-    : `Score V2 Chip Flow evidence: ${chipReason}; ${text}`
+  return `${text}；籌碼流：${chipReason}`
 }
 
 function mergeEmergingBrokerScoreComponents(scoreComponents: unknown, evidence: Record<string, any> | null): unknown {
@@ -1117,7 +1144,7 @@ function mergeEmergingBrokerScoreComponents(scoreComponents: unknown, evidence: 
   const reasons = Array.isArray(scoreComponents.reasons)
     ? scoreComponents.reasons.map(String).filter(Boolean)
     : []
-  reasons.push(`chipFlowEvidence:${String(evidence.reason ?? 'broker evidence updated')}`)
+  reasons.push(`籌碼流：${String(evidence.reason ?? '券商分點資料已更新')}`)
   return {
     ...scoreComponents,
     chipEvidence: evidence,
@@ -1127,11 +1154,15 @@ function mergeEmergingBrokerScoreComponents(scoreComponents: unknown, evidence: 
 
 function mergeEmergingBrokerWatchPoints(points: unknown, evidence: Record<string, any> | null): string[] {
   const list = Array.isArray(points) ? points.map((p) => String(p ?? '')).filter(Boolean) : []
-  if (!evidence) return list
-  const filtered = list.filter((p) => !p.includes('籌碼資料不足：興櫃或資料源未提供三大法人明細'))
-  filtered.push(
-    `chip_source=${evidence.source},source_date=${evidence.source_date},broker_net_amount_5d=${evidence.broker_net_amount_5d_billion},broker_net_shares_5d=${evidence.broker_net_shares_5d ?? 'n/a'},broker_count=${evidence.broker_count_latest ?? 'n/a'},concentration=${evidence.concentration_latest ?? 'n/a'}`,
+  const filtered = list.filter((p) =>
+    !p.includes('籌碼資料不足：興櫃或資料源未提供三大法人明細')
+    && !/^market_segment:/i.test(p)
+    && !/^chip_source=/i.test(p)
+    && !/(?:^|,)source_date=/i.test(p)
+    && !/broker_net_(?:amount|shares)_5d=/i.test(p)
+    && !/broker_count=|concentration=/i.test(p),
   )
+  if (!evidence) return Array.from(new Set(filtered))
   return Array.from(new Set(filtered))
 }
 
@@ -1324,7 +1355,7 @@ recommendations.get('/daily', async (c) => {
 
   // 解析 watch_points JSON
   const tradingConfig = await getTradingConfig(c.env.KV)
-  const recs = (results ?? []).map((r: any) => {
+  const recs: Record<string, any>[] = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
     const persistedAlphaContext = parsePredictionForecastData(r.alpha_context)
     const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
@@ -1336,6 +1367,7 @@ recommendations.get('/daily', async (c) => {
     const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
     const watchPoints = mergeEmergingBrokerWatchPoints(parsedWatchPoints, emergingBrokerEvidence)
     const scoreComponents = mergeEmergingBrokerScoreComponents(persistedScoreComponents, emergingBrokerEvidence)
+    const scoreV2 = recommendationScoreV2Payload({ ...r, score_components: scoreComponents })
     const board = classifyBoard({
       market: r.market,
       open: r.latest_open,
@@ -1348,8 +1380,11 @@ recommendations.get('/daily', async (c) => {
     const eligibleForPendingBuy = r.eligible_for_pending_buy == null
       ? board.eligibleForPendingBuy
       : Number(r.eligible_for_pending_buy) === 1
+    const base = removeLegacyRecommendationScoreFields(r)
     return {
-      ...r,
+      ...base,
+      score: scoreV2?.finalScore ?? null,
+      score_v2: scoreV2,
       market_segment: r.market_segment || board.boardType,
       board_type: board.boardType,
       tradability_tier: board.tradabilityTier,
@@ -1361,7 +1396,6 @@ recommendations.get('/daily', async (c) => {
       alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
       ml_diagnostics: buildMlDiagnostics(forecastData),
-      score_components: scoreComponents,
       chip_evidence: emergingBrokerEvidence,
       reason: mergeEmergingBrokerReason(r.reason, emergingBrokerEvidence),
       screener_funnel_rank: screenerFunnel?.rank ?? null,
@@ -1417,9 +1451,8 @@ recommendations.get('/daily', async (c) => {
 recommendations.get('/history', async (c) => {
   const days = Math.min(parsePosInt(c.req.query('days'), 7), 30)
   const { results } = await c.env.DB.prepare(`
-    SELECT r.date, r.symbol, r.name, r.sector, r.rank, r.score,
-           r.score_components, r.ml_score, r.chip_score, r.tech_score,
-           COALESCE(r.momentum_score, 0) AS momentum_score,
+    SELECT r.date, r.symbol, r.name, r.sector, r.rank,
+           r.score_components,
            r.signal, r.confidence, r.has_buy_signal,
            r.current_price,
            -- 回測：推薦後實際表現（從 predictions 取）
@@ -1432,7 +1465,26 @@ recommendations.get('/history', async (c) => {
     WHERE r.date >= date('now', '-' || ? || ' days')
     ORDER BY r.date DESC, r.rank ASC
   `).bind(days).all<any>()
-  return c.json(results ?? [])
+  const history = (results ?? []).map((row: any) => {
+    const scoreV2 = recommendationScoreV2Payload(row)
+    return {
+      date: row.date,
+      symbol: row.symbol,
+      name: row.name,
+      sector: row.sector,
+      rank: row.rank,
+      score: scoreV2?.finalScore ?? null,
+      score_v2: scoreV2,
+      signal: row.signal,
+      confidence: row.confidence,
+      has_buy_signal: row.has_buy_signal,
+      current_price: row.current_price,
+      actual_return_pct: row.actual_return_pct,
+      direction_correct: row.direction_correct,
+      trade_outcome: row.trade_outcome,
+    }
+  })
+  return c.json(history)
 })
 
 // GET /api/recommendations/sector-flow?date=YYYY-MM-DD&type=industry|theme

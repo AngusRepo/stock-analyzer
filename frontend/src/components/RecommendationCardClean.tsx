@@ -330,8 +330,16 @@ function parseObject(raw: unknown): any | null {
 }
 
 function scoreV2PayloadFromRec(rec: any): any | null {
-  const scoreV2Payload = parseObject(rec?.score_v2)
-  return scoreV2Payload?.version === 'score_v2' ? scoreV2Payload : null
+  const raw = parseObject(rec?.score_v2)
+  const nested = parseObject(raw?.payload)
+  const payload = nested?.version === 'score_v2' || nested?.source === 'score_v2' ? nested : raw
+  if (!payload) return null
+  const hasScoreV2Marker = payload.version === 'score_v2' || payload.source === 'score_v2'
+  const hasScoreV2Score = Number.isFinite(Number(payload.finalScore ?? payload.total))
+  const hasScoreV2Components = parseObject(payload.components) != null
+  return hasScoreV2Marker && (hasScoreV2Score || hasScoreV2Components)
+    ? { ...payload, version: 'score_v2', source: payload.source ?? 'score_v2' }
+    : null
 }
 
 function scoreComponentValue(rec: any, key: string): number {
@@ -735,17 +743,42 @@ function reasonTextFromValue(raw: unknown): string | null {
   return reasonTextFromValue(obj.reason ?? obj.text ?? obj.summary ?? obj.recommendation_reason)
 }
 
+function breeze2WatchPointSummary(point: string): string | null {
+  const body = point.replace(/^breeze2:/i, '').trim()
+  if (!body) return null
+  const context = body.match(/^([a-z_]+)\s+/i)?.[1]
+  const fact = body.match(/\bfact=([0-9.]+)/i)?.[1]
+  const hype = body.match(/\bhype=([0-9.]+)/i)?.[1]
+  const quality = body.match(/\bquality=([0-9.]+)/i)?.[1]
+  const flags = body.match(/\bflags=([^ ]+)/i)?.[1]
+  const contextLabel: Record<string, string> = {
+    candidate_context: '候選脈絡',
+    watchlist_context: '觀察名單脈絡',
+    human_review: '需人工複核',
+    insufficient_evidence: '佐證不足',
+  }
+  const parts = [
+    context ? contextLabel[context] ?? context.replace(/_/g, ' ') : null,
+    fact ? `事實支撐 ${Number(fact).toFixed(2)}` : null,
+    hype ? `題材熱度 ${Number(hype).toFixed(2)}` : null,
+    quality ? `來源品質 ${Number(quality).toFixed(2)}` : null,
+    flags && flags !== 'none' ? `旗標 ${flags.replace(/_/g, ' ')}` : null,
+  ].filter(Boolean)
+  return parts.length ? `Breeze2 影子線：${parts.join('；')}。` : null
+}
+
 function breeze2ReasonFromRec(rec: any): string | null {
   const scoreV2 = scoreV2PayloadFromRec(rec)
   const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
   const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
   const breezeWatchPoint = normalizeWatchPoints(rec.watch_points).find((point) => point.startsWith('breeze2:'))
+  const breezeWatchSummary = breezeWatchPoint ? breeze2WatchPointSummary(breezeWatchPoint) : null
   return reasonTextFromValue(rec.breeze2_reason_shadow)
     ?? reasonTextFromValue(rec.breeze2_reason)
     ?? reasonTextFromValue(rec.breeze2_shadow_reason)
     ?? reasonTextFromValue(reasonVariants?.breeze2 ?? reasonVariants?.Breeze2)
     ?? reasonTextFromValue(variants?.breeze2 ?? variants?.Breeze2)
-    ?? (breezeWatchPoint ? `Breeze2 shadow：${breezeWatchPoint.replace(/^breeze2:/, '').trim()}` : null)
+    ?? breezeWatchSummary
 }
 
 function geminiVariantReasonFromRec(rec: any): string | null {
@@ -817,7 +850,7 @@ function ProviderReasonCompare({ geminiReason, breeze2Reason }: { geminiReason: 
       <div className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
         <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">Breeze2</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          {breeze2Reason ?? 'Breeze2 shadow 目前只有 pipeline metrics，尚未逐檔寫入 daily_recommendations，無法在卡片比對文字差異。'}
+          {breeze2Reason ?? 'Breeze2 尚未回寫逐檔中文總結；目前正式資料只有模型流程指標，還不能和 Gemini 做逐字理由比較。'}
         </p>
       </div>
     </div>
@@ -832,7 +865,7 @@ function numericPrice(value: unknown): number | null {
 function klineChartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
-    height: 210,
+    height: 260,
     autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: 'transparent' },
@@ -845,12 +878,15 @@ function klineChartOptions(width: number): DeepPartial<ChartOptions> {
     },
     rightPriceScale: {
       borderColor: 'rgba(148, 163, 184, 0.18)',
-      scaleMargins: { top: 0.10, bottom: 0.14 },
+      scaleMargins: { top: 0.16, bottom: 0.22 },
     },
     timeScale: {
       borderColor: 'rgba(148, 163, 184, 0.18)',
       timeVisible: false,
       secondsVisible: false,
+      rightOffset: 8,
+      barSpacing: 8,
+      minBarSpacing: 5,
     },
     crosshair: {
       mode: CrosshairMode.MagnetOHLC,
@@ -969,12 +1005,12 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
     chartRef.current = chart
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#22c55e',
-      downColor: '#ef4444',
-      borderUpColor: '#22c55e',
-      borderDownColor: '#ef4444',
-      wickUpColor: '#86efac',
-      wickDownColor: '#fca5a5',
+      upColor: '#ef4444',
+      downColor: '#22c55e',
+      borderUpColor: '#ef4444',
+      borderDownColor: '#22c55e',
+      wickUpColor: '#fca5a5',
+      wickDownColor: '#86efac',
       priceLineVisible: false,
     })
     candleSeries.setData(candles)
@@ -1077,8 +1113,14 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
       createSeriesMarkers(candleSeries, markers, { zOrder: 'top' })
     }
 
-    chart.panes()[1]?.setHeight(56)
+    chart.panes()[1]?.setHeight(64)
     chart.timeScale().fitContent()
+    if (candles.length > 32) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, candles.length - 32),
+        to: candles.length + 5,
+      })
+    }
 
     let resizeObserver: ResizeObserver | null = null
     if (typeof ResizeObserver !== 'undefined') {
@@ -1098,7 +1140,7 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
   }, [chartKey])
 
   if (isLoading && candles.length === 0) {
-    return <div className="h-[250px] animate-pulse rounded-md border border-border/50 bg-background/60" />
+    return <div className="h-[300px] animate-pulse rounded-md border border-border/50 bg-background/60" />
   }
 
   if (prices.length === 0 || candles.length === 0) {
@@ -1114,7 +1156,7 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
         <span className="text-xs font-medium text-foreground">K線交易計劃圖</span>
         <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
       </div>
-      <div ref={containerRef} className="h-[210px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
+      <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
       <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-3">
         <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
         <span className="font-mono text-sky-500">突破 {fairHigh ? fmtNumber(fairHigh, 2) : '-'}</span>
@@ -1146,7 +1188,8 @@ function chipPlanNote(rec: any): string {
   if (evidence?.broker_net_amount_5d_billion != null) {
     const amount = Number(evidence.broker_net_amount_5d_billion)
     const direction = amount >= 0 ? '買超' : '賣超'
-    return `興櫃券商分點近5日${direction}${fmtChipAmount(amount)}，broker_count=${evidence.broker_count_latest ?? 'n/a'}，只作籌碼 proxy。`
+    const brokerCount = evidence.broker_count_latest ?? evidence.broker_count ?? null
+    return `興櫃券商分點近5日${direction}${fmtChipAmount(amount)}${brokerCount ? `，參與券商 ${brokerCount} 家` : ''}，只作籌碼輔助判讀。`
   }
   const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
   if (Number.isFinite(net)) {
@@ -1236,12 +1279,12 @@ function chipPlanValue(rec: any): string {
 
 function alphaStructureValue(context: AlphaContext | null): string {
   const parts = [
-    context?.bucket ? `bucket ${context.bucket}` : null,
-    context?.regime ? `regime ${context.regime}` : null,
-    context?.location ? `location ${context.location}` : null,
-    context?.scoreAdjustment != null ? `alpha ${signedText(Number(context.scoreAdjustment))}` : null,
-    context?.sizing != null ? `sizing x${fmtNumber(context.sizing, 2)}` : null,
-    context?.skip ? 'skip by risk overlay' : null,
+    context?.bucket ? `策略 ${shortLabelFor(context.bucket)}` : null,
+    context?.regime ? `大盤 ${shortLabelFor(context.regime, REGIME_TEXT)}` : null,
+    context?.location ? `位置 ${shortLabelFor(context.location, LOCATION_TEXT)}` : null,
+    context?.scoreAdjustment != null ? `Alpha ${signedText(Number(context.scoreAdjustment))}` : null,
+    context?.sizing != null ? `部位 x${fmtNumber(context.sizing, 2)}` : null,
+    context?.skip ? '風控暫停' : null,
   ].filter(Boolean)
   return parts.length ? parts.join(' / ') : 'Alpha 結構資料不足'
 }
@@ -1316,24 +1359,26 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
             </div>
           </div>
         </div>
-        <PlanBlock
-          title="方案 A | 突破追價"
-          accent="bg-cyan-400"
-          lines={[
-            `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
-            `進場：突破後回測不破再加碼，避免一根急拉直接追滿。`,
-            `目標：先看 ${optimisticHigh ?? '近端高點'}，站穩後再看下一段趨勢延伸。`,
-          ]}
-        />
-        <PlanBlock
-          title="方案 B | 拉回低吸"
-          accent="bg-emerald-400"
-          lines={[
-            `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
-            `進場：先小部位，等重新轉強再補，不一次滿倉。`,
-            `目標：先回到 ${fairHigh ?? 'fair value 上緣'}，再觀察能否轉突破。`,
-          ]}
-        />
+        <div className="grid gap-2 lg:grid-cols-2">
+          <PlanBlock
+            title="方案 A | 突破追價"
+            accent="bg-cyan-400"
+            lines={[
+              `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
+              `進場：突破後回測不破再加碼，避免一根急拉直接追滿。`,
+              `目標：先看 ${optimisticHigh ?? '近端高點'}，站穩後再看下一段趨勢延伸。`,
+            ]}
+          />
+          <PlanBlock
+            title="方案 B | 拉回低吸"
+            accent="bg-emerald-400"
+            lines={[
+              `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
+              `進場：先小部位，等重新轉強再補，不一次滿倉。`,
+              `目標：先回到 ${fairHigh ?? 'fair value 上緣'}，再觀察能否轉突破。`,
+            ]}
+          />
+        </div>
         <PlanBlock
           title="風控規則"
           accent="bg-amber-400"
@@ -1460,6 +1505,17 @@ function isContextWatchPoint(point: string): boolean {
     || normalized.startsWith('ML ensemble：')
 }
 
+function isRawDebugWatchPoint(point: string): boolean {
+  const normalized = point.trim()
+  return normalized.startsWith('breeze2:')
+    || /^market_segment:/i.test(normalized)
+    || /^chip_source=/i.test(normalized)
+    || /(?:^|,)source_date=/i.test(normalized)
+    || /broker_net_(?:amount|shares)_5d=/i.test(normalized)
+    || /broker_count=|concentration=/i.test(normalized)
+    || /^quality=/i.test(normalized)
+}
+
 function executionWatchPointKey(point: string): string {
   const event = parseExecutionEvent(point)
   if (!event) return point.trim()
@@ -1475,7 +1531,7 @@ function executionWatchPointKey(point: string): string {
 function displayWatchPoints(points: string[]): string[] {
   const latestByKey = new Map<string, string>()
   for (const point of points) {
-    if (isContextWatchPoint(point)) continue
+    if (isContextWatchPoint(point) || isRawDebugWatchPoint(point)) continue
     const key = executionWatchPointKey(point)
     if (latestByKey.has(key)) latestByKey.delete(key)
     latestByKey.set(key, point)

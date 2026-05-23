@@ -138,6 +138,22 @@ function assert(condition: unknown, message: string): void {
 
 {
   const vm = buildScoreBreakdownViewModel({
+    score: 0,
+    score_v2: {
+      source: 'score_v2',
+      total: 54.5,
+      finalScore: 54.5,
+      alphaAdjustment: 0,
+    },
+  })
+  assert(vm.source === 'score_v2', 'score_v2 summary-only payload should still be detected')
+  assert(vm.baseScore === 54.5 && vm.finalScore === 54.5, 'summary-only score_v2 payload should not render as zero')
+  assert(vm.rows.length === 5, 'summary-only score_v2 payload should still expose the five-dimension shell')
+  assert(vm.rows.every((row) => row.value === 0), 'summary-only score_v2 payload should not synthesize missing component values')
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
     score: 66,
     chip_score: 30,
     tech_score: 20,

@@ -118,49 +118,81 @@ const GROUPS = [
     id: 'trend_volatility',
     label: '趨勢 / 波動',
     factorIds: ['price_trend', 'volatility'],
-    sourceHint: 'TWII 20MA 與 VIX / 20 日波動',
+    sourceHint: '加權指數 20MA 與近 20 日波動',
     Icon: Waves,
   },
   {
     id: 'business_cycle',
     label: '景氣對策燈號',
     factorIds: ['breadth'],
-    sourceHint: 'FinLab tw_business_indicators',
+    sourceHint: '景氣對策燈號資料',
     Icon: Landmark,
   },
   {
     id: 'chips',
     label: '三大法人',
     factorIds: ['chips'],
-    sourceHint: 'FinLab institutional_investors_trading_all_market_summary 官方當日金額',
+    sourceHint: '三大法人官方當日買賣超',
     Icon: TrendingDown,
   },
   {
     id: 'leverage',
     label: '融資融券',
     factorIds: ['leverage'],
-    sourceHint: 'canonical_chip_daily；若 canonical stale 則讀 margin_data',
+    sourceHint: '融資融券最新餘額',
     Icon: Activity,
   },
   {
     id: 'macro_global',
     label: '總經 / 全球',
     factorIds: ['macro', 'global', 'global_risk'],
-    sourceHint: 'market_regime_state macro_liquidity / global_risk evidence',
+    sourceHint: '總經流動性與全球風險佐證',
     Icon: Globe2,
   },
   {
     id: 'event_pressure',
     label: '事件壓力',
     factorIds: ['event_monitors', 'lppls', 'hawkes'],
-    sourceHint: '鉅亨頭條 + LPPLS / Hawkes monitors',
+    sourceHint: '新聞事件、泡沫壓力與事件叢集',
     Icon: AlertTriangle,
   },
 ] as const
 function cleanValue(value?: string | number | null) {
   const text = String(value ?? '').trim()
-  if (!text || /^n\/a$/i.test(text) || /^context( missing)?$/i.test(text)) return 'n/a'
+  if (!text || /^n\/a$/i.test(text) || /^context( missing)?$/i.test(text)) return '資料不足'
+  const normalized = text.toLowerCase().replace(/[\s_-]+/g, '_')
+  const valueMap: Record<string, string> = {
+    bullish: '偏多',
+    bull: '偏多',
+    risk_on: '偏多',
+    bearish: '偏空',
+    bear: '偏空',
+    risk_off: '偏空',
+    neutral: '中性',
+    sideways: '盤整',
+    volatile: '高波動',
+    high_volatility: '高波動',
+    low_volatility: '低波動',
+    greedy: '貪婪',
+    fear: '恐慌',
+    panic: '恐慌',
+  }
+  if (valueMap[normalized]) return valueMap[normalized]
   return text
+}
+
+function cleanDetail(value?: string | null) {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+  if (/^(source|run_date|generated)=/i.test(text)) return ''
+  return text
+    .replace(/\bTWII close\b/i, '加權指數收盤')
+    .replace(/\bmarket_regime_state\b/ig, '市場狀態')
+    .replace(/\bmacro_liquidity\b/ig, '總經流動性')
+    .replace(/\bglobal_risk\b/ig, '全球風險')
+    .replace(/\bevidence\b/ig, '佐證')
+    .replace(/\bLPPLS\b/g, '泡沫壓力')
+    .replace(/\bHawkes\b/g, '事件叢集')
 }
 
 function worstStatus(factors: MarketRiskFactor[]): FactorStatus {
@@ -201,7 +233,7 @@ function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
     const matched = factors.filter((factor) => group.factorIds.includes(factor.id as never))
     const status = worstStatus(matched)
     const sources = uniqueText(matched.map((factor) => factor.source))
-    const details = uniqueText(matched.map((factor) => factor.detail)).slice(0, 3)
+    const details = uniqueText(matched.map((factor) => cleanDetail(factor.detail))).slice(0, 3)
     const missingReasons = uniqueText(matched.map((factor) => factor.missing_reason))
 
     return {
@@ -211,7 +243,7 @@ function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
       status,
       source: sources.length ? sources.join(' + ') : group.sourceHint,
       sourceDate: latestSourceDate(matched),
-      detail: details.length ? details.join(' / ') : group.sourceHint,
+      detail: details.length ? details.join(' / ') : cleanDetail(group.sourceHint),
       missingReason: missingReasons.length ? missingReasons.join(' / ') : undefined,
       factors: matched,
       Icon: group.Icon,
@@ -224,10 +256,10 @@ function fallbackFactors(risk: MarketRisk): MarketRiskFactor[] {
     {
       id: 'price_trend',
       label: '趨勢 / 20MA',
-      value: 'n/a',
+      value: '資料不足',
       status: 'missing',
       source: 'market_risk.twii_bias',
-      detail: `TWII close ${risk.twiiClose ?? 'n/a'}`,
+      detail: `加權指數收盤 ${risk.twiiClose ?? '資料不足'}`,
       missing_reason: 'market_regime_factor_packet_missing',
     },
   ]
@@ -243,7 +275,7 @@ function MarketFearGauge({ score, level }: { score: number; level: keyof typeof 
   const needleY = centerY + Math.sin(angle) * 58
   return (
     <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-center">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Market Composite</div>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">市場綜合分數</div>
       <svg viewBox="0 0 220 116" className="mx-auto mt-1 h-24 w-full max-w-[220px] overflow-visible" aria-label={`Market Composite ${Math.round(safeScore)}`}>
         <defs>
           <linearGradient id="market-risk-gauge" x1="0" x2="1" y1="0" y2="0">
@@ -278,7 +310,6 @@ function MarketFearGauge({ score, level }: { score: number; level: keyof typeof 
 
 function FactorCard({ group }: { group: FactorGroup }) {
   const Icon = group.Icon
-  const isUrl = /^https?:\/\//i.test(group.source)
   return (
     <div className={`rounded-lg border p-3 ${STATUS_STYLE[group.status]}`}>
       <div className="flex items-start justify-between gap-3">
@@ -298,15 +329,8 @@ function FactorCard({ group }: { group: FactorGroup }) {
       <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
         {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground/80">
-        {isUrl ? (
-          <a className="truncate text-sky-300 hover:text-sky-200" href={group.source} target="_blank" rel="noreferrer">
-            source link
-          </a>
-        ) : (
-          <span className="truncate">{group.source}</span>
-        )}
-        {group.sourceDate ? <span className="shrink-0">{group.sourceDate}</span> : null}
+      <div className="mt-2 flex items-center justify-end gap-2 font-mono text-[10px] text-muted-foreground/80">
+        {group.sourceDate ? <span className="shrink-0">更新：{group.sourceDate}</span> : null}
       </div>
     </div>
   )
@@ -349,8 +373,7 @@ export default function MarketRiskPanel() {
     return (
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
         <p className="font-semibold text-amber-200">市場風險 API 載入失敗</p>
-        <p className="mt-1 text-xs text-muted-foreground">請檢查 OBS/Data Quality、market_risk 與 market_regime_state。</p>
-        <p className="mt-2 font-mono text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
+        <p className="mt-1 text-xs text-muted-foreground">請檢查資料品質與市場狀態資料是否已更新。</p>
       </div>
     )
   }
@@ -370,14 +393,14 @@ export default function MarketRiskPanel() {
             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">今日市場判讀</span>
             {missingCount > 0 && (
               <span className="rounded-full border border-slate-500/30 px-2 py-0.5 text-[10px] text-slate-300">
-                missing {missingCount}
+                缺資料 {missingCount}
               </span>
             )}
           </div>
           <div className="mt-2 flex flex-wrap items-end gap-3">
             <div className={`text-2xl font-bold ${cfg.color}`}>{cfg.label}</div>
-            <div className="font-mono text-xs text-muted-foreground">run_date={risk.regimeState?.runDate ?? risk.date}</div>
-            <div className="font-mono text-xs text-muted-foreground">generated={formatTwDateTimeShort(packetGeneratedAt)}</div>
+            <div className="font-mono text-xs text-muted-foreground">資料日：{risk.regimeState?.runDate ?? risk.date}</div>
+            <div className="font-mono text-xs text-muted-foreground">更新：{formatTwDateTimeShort(packetGeneratedAt)}</div>
           </div>
           <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {groups.map((group) => (

@@ -52,8 +52,15 @@ function parseObject(raw: unknown): Record<string, any> | null {
 }
 
 function canonicalScoreV2Payload(rec: Record<string, any>): Record<string, any> | null {
-  const scoreV2Payload = parseObject(rec.score_v2)
-  return scoreV2Payload?.version === 'score_v2' ? scoreV2Payload : null
+  const raw = parseObject(rec.score_v2)
+  const nested = parseObject(raw?.payload)
+  const payload = nested?.version === 'score_v2' || nested?.source === 'score_v2' ? nested : raw
+  if (!payload) return null
+  const hasScoreV2Marker = payload.version === 'score_v2' || payload.source === 'score_v2'
+  const hasScoreV2Score = Number.isFinite(Number(payload.finalScore ?? payload.total))
+  const hasScoreV2Components = parseObject(payload.components) != null
+  if (!hasScoreV2Marker || (!hasScoreV2Score && !hasScoreV2Components)) return null
+  return { ...payload, version: 'score_v2', source: payload.source ?? 'score_v2' }
 }
 
 function finiteNumber(raw: unknown, fallback = 0): number {
@@ -238,7 +245,7 @@ function riskFlagsFromPayload(payload: Record<string, any> | null): string[] {
 
 export function buildScoreBreakdownViewModel(rec: Record<string, any>): ScoreBreakdownViewModel {
   const payload = canonicalScoreV2Payload(rec)
-  const isScoreV2 = payload?.version === 'score_v2' && parseObject(payload.components) != null
+  const isScoreV2 = payload?.version === 'score_v2'
   const alphaAdjustment = round1(finiteNumber(payload?.alphaAdjustment ?? rec.alpha_context?.score_adjustment))
 
   if (isScoreV2) {

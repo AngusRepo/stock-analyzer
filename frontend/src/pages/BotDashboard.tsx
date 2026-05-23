@@ -423,11 +423,18 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           current_price: b.ml_entry_price, sector: qf?.quadrant ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? null,
+          stock_id: b.stock_id ?? b.stockId ?? null,
+          market_segment: b.market_segment ?? null,
+          recommendation_lane: b.recommendation_lane ?? null,
           score_v2: b.score_v2 ?? null,
           alpha_context: b.alpha_context ?? null,
           alpha_allocation: b.alpha_allocation ?? null,
           ml_vote_summary: b.ml_vote_summary ?? null,
           prediction_forecast_data: b.prediction_forecast_data ?? null,
+          chip_evidence: b.chip_evidence ?? null,
+          reason_variants: b.reason_variants ?? b.llm_reason_variants ?? null,
+          gemini_reason: b.gemini_reason ?? null,
+          breeze2_reason: b.breeze2_reason ?? b.breeze2_reason_shadow ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>

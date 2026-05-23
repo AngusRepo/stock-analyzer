@@ -87,6 +87,9 @@ assert(
 for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Charts', 'createChart', 'CandlestickSeries', 'TradePlanRow', '樂觀區間']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading plan should render structured rows and chart: ${text}`)
 }
+for (const text of ['isRawDebugWatchPoint', 'market_segment:', 'chip_source=', 'broker_net_(?:amount|shares)_5d']) {
+  assert(recommendationCard.includes(text), `Recommendation card should filter raw debug watch point: ${text}`)
+}
 assert(!scoreBreakdown.includes('compactLine(reason),'), '盤勢判讀 should not repeat the raw score/reason paragraph as a row')
 assert(!scoreBreakdown.includes('項目：'), 'Trade plan rows should not render label/value as prose prefixes')
 assert(!scoreBreakdown.includes('判讀：'), 'Trade plan rows should keep item note as a structured column, not duplicated prose')
@@ -134,6 +137,10 @@ for (const legacyRef of [
 assert(
   botDashboard.includes('score_v2: b.score_v2 ?? null'),
   'Bot dashboard pending-buy cards should consume backend score_v2 payload',
+)
+assert(
+  botDashboard.includes('stock_id: b.stock_id ?? b.stockId ?? null'),
+  'Bot dashboard pending-buy cards should pass stock_id so each card can fetch its own K-line data',
 )
 for (const stockReportSurface of [stockAIReport, stockReportPage]) {
   assert(

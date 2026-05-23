@@ -399,8 +399,12 @@ def _build_tail_risk_diagnostics(
         "backtest_max_drawdown": (backtest_summary or {}).get("max_drawdown"),
         "backtest_sharpe": (backtest_summary or {}).get("sharpe"),
         "root_cause_hint": (
-            "tail risk comes from clustered double-digit HardStop losses and missing regime labels for regime-aware bootstrap"
-            if len(large_losses) >= 3 or missing_regime
+            "tail risk comes from clustered double-digit HardStop losses; regime labels are closed-loop"
+            if len(large_losses) >= 3 and not missing_regime
+            else "tail risk comes from clustered double-digit HardStop losses and missing regime labels for regime-aware bootstrap"
+            if len(large_losses) >= 3
+            else "tail risk comes from missing regime labels for regime-aware bootstrap"
+            if missing_regime
             else "tail risk comes from the stored trade return distribution"
         ),
     }

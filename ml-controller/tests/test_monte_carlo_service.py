@@ -239,3 +239,19 @@ def test_tail_risk_diagnostics_exposes_loss_cluster_and_regime_gap():
     assert diagnostics["hard_stop_loss_count"] == 2
     assert diagnostics["regime_closed_loop"] is False
     assert diagnostics["backtest_max_drawdown"] == 0.42
+
+
+def test_tail_risk_diagnostics_does_not_report_regime_gap_when_closed_loop():
+    diagnostics = _build_tail_risk_diagnostics(
+        [0.12, -0.13, -0.18, 0.04, -0.11],
+        trades=[
+            {"symbol": "2330", "entry_date": "2026-03-25", "exit_date": "2026-03-31", "profit_ratio": -0.13, "exit_reason": "HardStop (-13.0%)"},
+            {"symbol": "2454", "entry_date": "2026-03-26", "exit_date": "2026-04-01", "profit_ratio": -0.18, "exit_reason": "HardStop (-18.0%)"},
+        ],
+        trade_regimes=["yellow", "yellow", "yellow", "yellow", "yellow"],
+        backtest_summary={"max_drawdown": 0.42, "sharpe": 1.2},
+    )
+
+    assert diagnostics["regime_closed_loop"] is True
+    assert diagnostics["regime_gap_reason"] is None
+    assert "missing regime labels" not in diagnostics["root_cause_hint"]

@@ -24,7 +24,8 @@ import os
 import json
 import logging
 import statistics
-from collections import defaultdict
+from bisect import bisect_right
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -349,6 +350,56 @@ async def _bulk_load_ensemble_signals_by_stock(
     return grouped, query_count
 
 
+async def _load_market_regimes(
+    client: httpx.AsyncClient,
+    start_date: str,
+    end_date: str,
+) -> tuple[dict[str, str], list[str]]:
+    """Load market_risk risk_level labels for regime-aware MC closure."""
+    rows = await _d1_query(
+        client,
+        """
+        SELECT date, risk_level
+        FROM market_risk
+        WHERE date >= ? AND date <= ?
+        ORDER BY date ASC
+        """,
+        [start_date, end_date],
+    )
+    regimes: dict[str, str] = {}
+    for row in rows:
+        date = str(row.get("date") or "")[:10]
+        level = str(row.get("risk_level") or "").strip().lower()
+        if date and level:
+            regimes[date] = level
+    return regimes, sorted(regimes)
+
+
+def _lookup_entry_regime(regimes: dict[str, str], dates: list[str], entry_date: str | None) -> str:
+    """Use exact date risk_level, falling back to the latest known prior regime."""
+    if not entry_date or not dates:
+        return "unknown"
+    date = str(entry_date)[:10]
+    exact = regimes.get(date)
+    if exact:
+        return exact
+    idx = bisect_right(dates, date) - 1
+    if idx >= 0:
+        return regimes.get(dates[idx], "unknown")
+    return "unknown"
+
+
+def _attach_entry_regimes(
+    trades: list[dict],
+    regimes: dict[str, str],
+    dates: list[str],
+) -> dict[str, int]:
+    """Mutate completed trade dicts with entry_regime for closed-loop MC."""
+    for trade in trades:
+        trade["entry_regime"] = _lookup_entry_regime(regimes, dates, trade.get("entry_date"))
+    return dict(Counter(str(trade.get("entry_regime") or "unknown") for trade in trades))
+
+
 def _tick_size(price: float) -> float:
     """Taiwan stock tick size by price level."""
     if price < 10: return 0.01
@@ -636,6 +687,12 @@ async def run_full_backtest() -> dict:
             len(signals_by_stock),
             1 + price_query_count + signal_query_count,
         )
+        market_regimes, market_regime_dates = await _load_market_regimes(
+            client,
+            backtest_start_date,
+            backtest_end_date,
+        )
+        logger.info("[Backtest] Loaded market regimes: dates=%s", len(market_regime_dates))
 
         all_trades: list[dict] = []
         first_date = "9999-12-31"
@@ -692,6 +749,8 @@ async def run_full_backtest() -> dict:
             f"{stocks_skipped} skipped, {len(all_trades)} trades"
         )
         result = _compute_metrics(all_trades, first_date, last_date)
+        regime_counts = _attach_entry_regimes(all_trades, market_regimes, market_regime_dates)
+        unknown_regime_count = int(regime_counts.get("unknown", 0))
 
         # ── Step 3: Exit distribution summary ──
         exit_dist: dict[str, int] = {}
@@ -718,9 +777,12 @@ async def run_full_backtest() -> dict:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
         all_returns = [t["profit_ratio"] for t in all_trades]
+        all_regimes = [str(t.get("entry_regime") or "unknown") for t in all_trades]
         raw_json = json.dumps({
             "trades": all_trades[:500],
             "all_returns": all_returns,  # full list for Monte Carlo source=backtest
+            "all_regimes": all_regimes,
+            "regime_counts": regime_counts,
             "exit_distribution": exit_dist,
             "summary": {
                 "total_trades": result.total_trades,
@@ -737,6 +799,9 @@ async def run_full_backtest() -> dict:
                 "data_access": data_access.to_dict(),
                 "d1_read_queries": 1 + price_query_count + signal_query_count,
                 "d1_read_chunk_size": BACKTEST_D1_READ_CHUNK_SIZE,
+                "regime_closed_loop": bool(all_trades) and unknown_regime_count < len(all_trades),
+                "unknown_regime_count": unknown_regime_count,
+                "market_regime_dates": len(market_regime_dates),
             },
         }, ensure_ascii=False)
 
@@ -787,6 +852,9 @@ async def run_full_backtest() -> dict:
                 "price_groups": len(prices_by_stock),
                 "signal_groups": len(signals_by_stock),
             },
+            "regime_closed_loop": bool(all_trades) and unknown_regime_count < len(all_trades),
+            "regime_counts": regime_counts,
+            "unknown_regime_count": unknown_regime_count,
         }
         logger.info(f"[Backtest] Done: {summary}")
         return summary

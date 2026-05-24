@@ -12,6 +12,7 @@ const schema = fs.readFileSync('schema.sql', 'utf8')
 const optunaJob = fs.readFileSync('../ml-controller/optuna_job_main.py', 'utf8')
 const configPool = fs.readFileSync('../ml-controller/routers/config_pool.py', 'utf8')
 const kvPusher = fs.readFileSync('../ml-controller/services/kv_pusher.py', 'utf8')
+const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 
 assert(
   registry.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_registry') &&
@@ -92,6 +93,15 @@ assert(
     kvPusher.includes('OPTUNA_CADENCE') &&
     kvPusher.includes('OPTUNA_RUN_DATE'),
   'Optuna push metadata must carry run_id/cadence/run_date so registry rows are traceable to the scheduler execution',
+)
+
+assert(
+  schedulerStatus.includes("id: 'parameter-candidate-validation'") &&
+    schedulerStatus.includes('status: lastStatus') &&
+    schedulerStatus.includes('run_id: lastLog?.run_id ?? null') &&
+    schedulerStatus.includes('run_date: lastLog?.run_date ?? null') &&
+    schedulerStatus.includes('timestamp: lastLog?.timestamp ?? null'),
+  'scheduler status readback must expose parameter validation and callback run identifiers for dashboard closure',
 )
 
 assert(

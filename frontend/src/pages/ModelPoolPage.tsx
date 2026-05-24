@@ -262,21 +262,241 @@ function optionalEvidenceSummary(
   return { text: `${label} ${compactUnknown(value, 3)}`, tone: 'info', missing: false }
 }
 
+type PromotionGateStatus = 'PASS' | 'FAIL' | 'MISSING' | 'WARN'
+
+type PromotionEvidenceGateRow = {
+  key: string
+  label: string
+  value: string
+  status: PromotionGateStatus
+  tone: WorkstationTone
+  reason: string
+}
+
+function evidenceRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function firstEvidenceValue(source: Record<string, unknown>, keys: string[]): unknown {
+  return deepMetric(source, keys)
+}
+
+function formatRatioPercent(value: unknown, digits = 1): string | null {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return `${(n * 100).toFixed(digits)}%`
+}
+
+function gateTone(status: PromotionGateStatus): WorkstationTone {
+  if (status === 'PASS') return 'ok'
+  if (status === 'FAIL') return 'error'
+  if (status === 'MISSING') return 'warn'
+  return 'info'
+}
+
+function statusFromEvidence(raw: Record<string, unknown>): PromotionGateStatus {
+  const passed = firstEvidenceValue(raw, ['passed'])
+  if (passed === true) return 'PASS'
+  if (passed === false) return 'FAIL'
+  const decision = String(firstEvidenceValue(raw, ['decision', 'status', 'verdict', 'go_live_verdict']) ?? '').toUpperCase()
+  if (decision.includes('PASS') || decision === 'OK') return 'PASS'
+  if (decision.includes('FAIL') || decision.includes('BLOCK') || decision.includes('REJECT')) return 'FAIL'
+  return 'WARN'
+}
+
+function blockerFor(context: ModelArtifactActionContext | undefined, codes: string[]) {
+  return context?.blockers?.find((blocker) => codes.includes(blocker.code))
+}
+
+function evidenceReason(raw: Record<string, unknown> | null, fallback: string): string {
+  if (!raw) return fallback
+  const reason = firstEvidenceValue(raw, ['reason', 'verdict_reason', 'message'])
+  return reason == null || reason === '' ? fallback : String(reason)
+}
+
+function applyBlocker(row: PromotionEvidenceGateRow, blocker: ReturnType<typeof blockerFor> | undefined): PromotionEvidenceGateRow {
+  if (!blocker) return row
+  return {
+    ...row,
+    status: row.status === 'MISSING' ? 'MISSING' : 'FAIL',
+    tone: row.status === 'MISSING' ? 'warn' : 'error',
+    reason: blocker.next_action || blocker.label || row.reason,
+  }
+}
+
+function pboGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
+  const raw = artifactEvidenceValue(row, ['pbo', 'pbo_result', 'probability_of_backtest_overfitting'])
+  const obj = evidenceRecord(raw)
+  if (raw == null || raw === '') {
+    return {
+      key: 'pbo',
+      label: 'PBO',
+      value: '未產生',
+      status: 'MISSING',
+      tone: 'warn',
+      reason: blockerFor(context, ['pbo_threshold_missing', 'pbo_method_not_promotion_grade', 'cpcv_pbo_missing'])?.next_action ?? 'validation_packet.pbo 不存在，不能判斷是否過度最佳化。',
+    }
+  }
+  const pbo = obj ? firstEvidenceValue(obj, ['pbo', 'probability_of_backtest_overfitting', 'value', 'score']) : raw
+  const method = obj ? String(firstEvidenceValue(obj, ['method']) ?? '') : ''
+  const oos = obj ? formatRatioPercent(firstEvidenceValue(obj, ['oos_mean_return']), 2) : null
+  let status = obj ? statusFromEvidence(obj) : 'WARN'
+  const pboNumber = evidenceNumber(pbo)
+  if (status === 'WARN' && pboNumber != null) status = pboNumber < 0.5 ? 'PASS' : 'FAIL'
+  const parts = [
+    pboNumber == null ? compactUnknown(pbo, 3) : formatRatioPercent(pboNumber, 1),
+    method || null,
+    oos ? `OOS ${oos}` : null,
+  ].filter(Boolean)
+  return applyBlocker({
+    key: 'pbo',
+    label: 'PBO',
+    value: parts.join(' / ') || '有證據',
+    status,
+    tone: gateTone(status),
+    reason: evidenceReason(obj, method && method !== 'cscv_rank_logit' ? `method=${method}，不是 promotion-grade CSCV rank-logit。` : 'PBO < 50% 且 OOS 報酬為正才算過關。'),
+  }, blockerFor(context, ['pbo_threshold_missing', 'pbo_method_not_promotion_grade']))
+}
+
+function dsrGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
+  const raw = artifactEvidenceValue(row, ['deflated_sharpe', 'dsr'])
+  const obj = evidenceRecord(raw)
+  if (raw == null || raw === '') {
+    return {
+      key: 'dsr',
+      label: 'DSR',
+      value: '未產生',
+      status: 'MISSING',
+      tone: 'warn',
+      reason: blockerFor(context, ['dsr_mc_missing'])?.next_action ?? 'validation_packet.deflated_sharpe 不存在。',
+    }
+  }
+  const adjusted = obj ? firstEvidenceValue(obj, ['adjusted_sharpe', 'deflated_sharpe', 'value', 'score']) : raw
+  const probability = obj ? firstEvidenceValue(obj, ['probability']) : null
+  let status = obj ? statusFromEvidence(obj) : 'WARN'
+  const adjustedNumber = evidenceNumber(adjusted)
+  const probabilityNumber = evidenceNumber(probability)
+  if (status === 'WARN' && (adjustedNumber != null || probabilityNumber != null)) {
+    status = (adjustedNumber == null || adjustedNumber >= 0.25) && (probabilityNumber == null || probabilityNumber >= 0.7) ? 'PASS' : 'FAIL'
+  }
+  const parts = [
+    adjustedNumber == null ? compactUnknown(adjusted, 3) : `adj ${adjustedNumber.toFixed(3)}`,
+    probabilityNumber == null ? null : `p ${formatRatioPercent(probabilityNumber, 1)}`,
+  ].filter(Boolean)
+  return {
+    key: 'dsr',
+    label: 'DSR',
+    value: parts.join(' / ') || '有證據',
+    status,
+    tone: gateTone(status),
+    reason: evidenceReason(obj, '調整後 Sharpe >= 0.25 且可信機率 >= 70% 才算過關。'),
+  }
+}
+
+function mcGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
+  const raw = artifactEvidenceValue(row, ['monte_carlo', 'mc', 'plateau', 'mc_tail_risk', 'tail_risk'])
+  const obj = evidenceRecord(raw)
+  if (raw == null || raw === '') {
+    return {
+      key: 'mc',
+      label: 'MC',
+      value: '未產生',
+      status: 'MISSING',
+      tone: 'warn',
+      reason: blockerFor(context, ['dsr_mc_missing'])?.next_action ?? 'validation_packet.monte_carlo 不存在。',
+    }
+  }
+  const mdd95 = obj ? firstEvidenceValue(obj, ['mdd_95th', 'max_drawdown_95th']) : null
+  const method = obj ? String(firstEvidenceValue(obj, ['simulation_method', 'method']) ?? '') : ''
+  let status = obj ? statusFromEvidence(obj) : 'WARN'
+  const mddNumber = evidenceNumber(mdd95)
+  if (status === 'WARN' && mddNumber != null) status = mddNumber <= 0.2 ? 'PASS' : 'FAIL'
+  const value = [
+    mddNumber == null ? compactUnknown(raw, 3) : `MDD95 ${formatRatioPercent(mddNumber, 1)}`,
+    method || null,
+  ].filter(Boolean).join(' / ')
+  return {
+    key: 'mc',
+    label: 'MC',
+    value: value || '有證據',
+    status,
+    tone: gateTone(status),
+    reason: evidenceReason(obj, 'MC 必須用 block/regime bootstrap，且 95% MDD <= 20%。'),
+  }
+}
+
+function spaGate(row: ModelArtifactRegistryRow): PromotionEvidenceGateRow {
+  const raw = artifactEvidenceValue(row, ['data_snooping', 'hansen_spa', 'white_reality_check', 'spa', 'reality_check'])
+  const obj = evidenceRecord(raw)
+  if (raw == null || raw === '') {
+    return {
+      key: 'spa',
+      label: 'SPA',
+      value: '未產生',
+      status: 'MISSING',
+      tone: 'warn',
+      reason: '缺 White Reality Check / Hansen SPA；目前 validation packet 尚未提供 data-snooping guard。',
+    }
+  }
+  const pValue = obj ? firstEvidenceValue(obj, ['p_value', 'pvalue']) : null
+  const method = obj ? String(firstEvidenceValue(obj, ['method']) ?? '') : ''
+  let status = obj ? statusFromEvidence(obj) : 'WARN'
+  const pNumber = evidenceNumber(pValue)
+  if (status === 'WARN' && pNumber != null) status = pNumber <= 0.2 ? 'PASS' : 'FAIL'
+  return {
+    key: 'spa',
+    label: 'SPA',
+    value: [
+      pNumber == null ? compactUnknown(raw, 3) : `p ${formatRatioPercent(pNumber, 1)}`,
+      method || null,
+    ].filter(Boolean).join(' / ') || '有證據',
+    status,
+    tone: gateTone(status),
+    reason: evidenceReason(obj, 'White Reality Check / Hansen SPA p-value <= 20% 才算排除 data snooping。'),
+  }
+}
+
+function promotionEvidenceGateRows(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow[] {
+  return [
+    pboGate(row, context),
+    dsrGate(row, context),
+    mcGate(row, context),
+    spaGate(row),
+  ]
+}
+
+function PromotionEvidenceGateList({ row, context }: { row: ModelArtifactRegistryRow; context?: ModelArtifactActionContext }) {
+  const gates = promotionEvidenceGateRows(row, context)
+  return (
+    <div className="space-y-1.5">
+      {gates.map((gate) => (
+        <div key={gate.key} className="rounded border border-[#263247] bg-[#05070c] px-2 py-1.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="font-mono text-[11px] font-semibold text-[#dbe7ff]">{gate.label}</div>
+              <div className="mt-0.5 break-words font-mono text-[11px] text-[#f7c86a]">{gate.value}</div>
+            </div>
+            <WorkstationPill tone={gate.tone}>{gate.status}</WorkstationPill>
+          </div>
+          <div className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{gate.reason}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function artifactValidationGaps(row: ModelArtifactRegistryRow): string[] {
   const gaps: string[] = []
   if (cpcvEvidenceSummary(row).missing) gaps.push('CPCV')
   if (optionalEvidenceSummary(row, 'PBO', ['pbo', 'pbo_result']).missing) gaps.push('PBO')
   if (optionalEvidenceSummary(row, 'DSR', ['deflated_sharpe', 'dsr']).missing) gaps.push('DSR')
   if (optionalEvidenceSummary(row, 'MC', ['monte_carlo', 'mc', 'plateau']).missing) gaps.push('MC')
+  if (spaGate(row).status === 'MISSING') gaps.push('SPA')
   return gaps
 }
 
 type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
 type PromotionBlocker = NonNullable<PromotionQueueRow['blockers']>[number]
-
-function hasContextBlocker(context: ModelArtifactActionContext | undefined, code: string): boolean {
-  return Boolean(context?.blockers?.some((blocker) => blocker.code === code))
-}
 
 function promotionBlockerCopy(blocker: PromotionBlocker): { label: string; next: string; tone: WorkstationTone } {
   if (blocker.code === 'rolling_ic_only') {
@@ -289,14 +509,14 @@ function promotionBlockerCopy(blocker: PromotionBlocker): { label: string; next:
   if (blocker.code === 'pbo_method_not_promotion_grade') {
     return {
       label: 'PBO 還是 proxy grade',
-      next: '需要 candidate-specific CSCV rank-logit PBO，proxy PBO 只能當觀察證據。',
+      next: '看 PBO row 的 method；必須是 candidate-specific CSCV rank-logit，proxy PBO 只能當觀察證據。',
       tone: 'warn',
     }
   }
   if (blocker.code === 'dsr_mc_missing') {
     return {
-      label: '模型 artifact 缺 DSR / MC 證據',
-      next: '這格是 model artifact promotion queue 的證據，不代表 parameter candidate validation 沒跑；parameter candidate 請看 validation packet 的 DSR/MC/PBO/SPA gate。',
+      label: 'DSR 或 MC 未產生',
+      next: '看 DSR / MC row：若顯示 MISSING，代表 validation_packet.deflated_sharpe 或 monte_carlo 沒寫入，需重跑 candidate validation chain。',
       tone: 'warn',
     }
   }
@@ -362,7 +582,7 @@ function actionContextCopy(context: ModelArtifactActionContext): { root: string;
     return {
       root: '多證據晉級門檻未完成',
       impact: '候選可留在 shadow/adaptive 觀察，但不會更新 production champion pointer。',
-      next: '補 candidate-specific CPCV/PBO、DSR、MC tail-risk 後再做 final compare。',
+      next: '補 candidate-specific CPCV/PBO、DSR、MC tail-risk、White Reality Check / Hansen SPA 後再做 final compare。',
     }
   }
   return {
@@ -627,8 +847,8 @@ function UnifiedModelHealthMatrix({
                   'Feature policy',
                   'Offline gate / OOS IC',
                   'Live IC / Samples',
-                  'CPCV / PBO',
-                  'DSR / MC',
+                  'Offline gate / CPCV',
+                  'DSR / MC / PBO / SPA',
                   'Live gate / Root cause / Next action',
                 ].map((label) => (
                   <th key={label} className="border border-[#263247] px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em]">{label}</th>
@@ -657,9 +877,6 @@ function UnifiedModelHealthMatrix({
                 const nextAction = selected.context?.next_action ?? (artifact ? artifactExclusionReason(artifact) : 'No selected registry candidate for live gate or promotion.')
                 const policyInfo = featurePolicyCopy(name, artifact?.feature_policy_version)
                 const cpcvSummary = artifact ? cpcvEvidenceSummary(artifact) : null
-                const pboSummary = artifact ? optionalEvidenceSummary(artifact, 'PBO', ['pbo', 'pbo_result']) : null
-                const dsrSummary = artifact ? optionalEvidenceSummary(artifact, 'DSR', ['deflated_sharpe', 'dsr']) : null
-                const mcSummary = artifact ? optionalEvidenceSummary(artifact, 'MC', ['monte_carlo', 'mc', 'plateau']) : null
                 const liveSummary = artifact ? liveGateReadableSummary(artifact, root) : null
 
                 return (
@@ -754,31 +971,16 @@ function UnifiedModelHealthMatrix({
                         </div>
                       ) : 'N/A'}
                     </td>
-                    <td className="min-w-[190px] border border-[#263247] px-3 py-3 text-slate-300">
-                      {artifact && cpcvSummary && pboSummary ? (
+                    <td className="min-w-[170px] border border-[#263247] px-3 py-3 text-slate-300">
+                      {artifact && cpcvSummary ? (
                         <div className="space-y-1">
                           <WorkstationPill tone={cpcvSummary.tone}>{cpcvSummary.text}</WorkstationPill>
-                          <WorkstationPill tone={pboSummary.tone}>{pboSummary.text}</WorkstationPill>
                         </div>
                       ) : 'N/A'}
                     </td>
-                    <td className="min-w-[170px] border border-[#263247] px-3 py-3 text-slate-300">
-                      {artifact && dsrSummary && mcSummary ? (
-                        <div className="space-y-1">
-                          {hasContextBlocker(selected.context, 'dsr_mc_missing') ? (
-                            <>
-                              <WorkstationPill tone="warn">模型 artifact DSR/MC 未齊</WorkstationPill>
-                              <div className="text-[11px] leading-4 text-[#9aa7bd]">
-                                這不是 parameter candidate chain；它只表示此模型 artifact 尚缺 final promotion-grade tail-risk 證據。
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <WorkstationPill tone={dsrSummary.tone}>{dsrSummary.text}</WorkstationPill>
-                              <WorkstationPill tone={mcSummary.tone}>{mcSummary.text}</WorkstationPill>
-                            </>
-                          )}
-                        </div>
+                    <td className="min-w-[310px] border border-[#263247] px-3 py-3 text-slate-300">
+                      {artifact ? (
+                        <PromotionEvidenceGateList row={artifact} context={selected.context} />
                       ) : 'N/A'}
                     </td>
                     <td className="min-w-[460px] max-w-[620px] border border-[#263247] px-3 py-3 whitespace-normal">
@@ -1348,21 +1550,23 @@ function PromotionQueuePanel({
   promotionResult?: ModelArtifactPromotionControllerResponse | null
 }) {
   const rows = queue?.queue ?? []
-  const approvalCount = rows.filter((row) => row.approval_required).length
-  const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
-  const blockedCount = rows.filter((row) => row.promotion_decision.includes('blocked') || (row.blockers?.length ?? 0) > 0).length
+  const actionableRows = rows.filter((row) => !promotionDecisionDisplay(row).pointerBlocked)
+  const blockedRows = rows.filter((row) => promotionDecisionDisplay(row).pointerBlocked)
+  const approvalCount = actionableRows.filter((row) => row.approval_required).length
+  const autoCount = actionableRows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
+  const blockedCount = blockedRows.length
   const suppressedCount = queue?.suppressed_count ?? queue?.suppressed?.length ?? 0
 
   return (
     <WorkstationPanel title="Promotion Queue / 晉級決策佇列" kicker="final comparison, approval, champion pointer">
       <div className="grid gap-3 p-3 md:grid-cols-4">
-        <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release 且通過 live gate，仍需 final comparison" tone={autoCount ? 'ok' : 'neutral'} />
-        <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly hotfix / manual hotfix 需要 Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
+        <SignalInsightCard title="Ready final compare" value={String(autoCount)} detail="已補齊多證據，可進 final comparison" tone={autoCount ? 'ok' : 'neutral'} />
+        <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="通過 final compare 後才需要 Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
         <SignalInsightCard title="Superseded weekly" value={String(suppressedCount)} detail="newer monthly release hides older weekly approval rows" tone={suppressedCount ? 'info' : 'neutral'} />
-        <SignalInsightCard title="候選保留" value={String(blockedCount)} detail="新機制：缺多證據時保留候選，但不升 champion pointer" tone={blockedCount ? 'warn' : 'ok'} />
+        <SignalInsightCard title="待補證據" value={String(blockedCount)} detail="不佔晉級 action queue；只保留 audit / shadow" tone={blockedCount ? 'warn' : 'ok'} />
       </div>
       <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
-        {rows.length ? rows.map((row) => {
+        {actionableRows.length ? actionableRows.map((row) => {
           const blockers = Array.isArray(row.blockers) ? row.blockers : []
           const decision = promotionDecisionDisplay(row)
           return (
@@ -1442,7 +1646,51 @@ function PromotionQueuePanel({
           </div>
         )}) : (
           <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
-            目前沒有 artifact 通過 live gate；promotion-controller 沒有待處理項目。
+            目前沒有可執行的晉級決策；缺證據的候選保留在下方，不更新 champion pointer。
+          </div>
+        )}
+        {blockedRows.length > 0 && (
+          <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.04] p-3 lg:col-span-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-mono text-[12px] font-semibold text-amber-100">候選驗證阻塞 / 不在晉級佇列</p>
+                <p className="mt-1 text-[11px] leading-4 text-[#9aa7bd]">
+                  新流程不刪除 artifact audit trail；未補齊 DSR/MC/PBO/SPA 或 champion pointer 前，只能留在 shadow / audit。
+                </p>
+              </div>
+              <WorkstationPill tone="warn">{blockedRows.length} blocked</WorkstationPill>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {blockedRows.map((row) => {
+                const blockers = Array.isArray(row.blockers) ? row.blockers : []
+                const decision = promotionDecisionDisplay(row)
+                return (
+                  <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}-blocked`} className="rounded-lg border border-[#33415c] bg-[#05070c] p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-mono text-[11px] font-semibold text-slate-100">{row.model_name}</p>
+                        <p className="mt-0.5 font-mono text-[10px] text-[#70809b]">{row.candidate_version ?? 'candidate N/A'} · {row.candidate_type}</p>
+                      </div>
+                      <WorkstationPill tone={decision.tone}>{decision.label}</WorkstationPill>
+                    </div>
+                    <p className="mt-2 text-[11px] leading-4 text-[#9aa7bd]">{decision.detail}</p>
+                    <div className="mt-2 space-y-1">
+                      {blockers.length ? blockers.map((blocker) => {
+                        const blockerCopy = promotionBlockerCopy(blocker)
+                        return (
+                          <div key={blocker.code} className="border-l border-amber-300/40 pl-2 text-[11px] leading-4">
+                            <span className="font-semibold text-amber-100">{blockerCopy.label}</span>
+                            <span className="text-[#9aa7bd]">：{blockerCopy.next}</span>
+                          </div>
+                        )
+                      }) : (
+                        <div className="text-[11px] text-[#9aa7bd]">等待 validation packet 補齊。</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
         {promotionResult && (
@@ -1518,7 +1766,7 @@ function ArtifactLifecycleSummaryPanel({
   const liveCollecting = contexts.filter((ctx) => ctx.evidence_status === 'collecting' || ctx.evidence_status === 'offline_only').length
   const blockers = contexts.filter((ctx) => ['failed', 'missing', 'partial'].includes(String(ctx.evidence_status))).length
   const pointerReady = `${pointers?.ready_count ?? 0}/${pointers?.model_count ?? 0}`
-  const promotionCount = queue?.count ?? 0
+  const promotionCount = (queue?.queue ?? []).filter((row) => !promotionDecisionDisplay(row).pointerBlocked).length
 
   return (
     <WorkstationPanel title="Artifact Lifecycle Summary / 版本生命週期總覽" kicker="registry -> gate -> shadow -> promotion pointer">

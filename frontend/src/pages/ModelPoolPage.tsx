@@ -295,8 +295,8 @@ function promotionBlockerCopy(blocker: PromotionBlocker): { label: string; next:
   }
   if (blocker.code === 'dsr_mc_missing') {
     return {
-      label: '缺 DSR / MC tail-risk 證據',
-      next: '這是缺 promotion-grade 證據，不是 MC fail；補完 candidate-specific DSR/MC 後再 final compare。',
+      label: '模型 artifact 缺 DSR / MC 證據',
+      next: '這格是 model artifact promotion queue 的證據，不代表 parameter candidate validation 沒跑；parameter candidate 請看 validation packet 的 DSR/MC/PBO/SPA gate。',
       tone: 'warn',
     }
   }
@@ -767,8 +767,10 @@ function UnifiedModelHealthMatrix({
                         <div className="space-y-1">
                           {hasContextBlocker(selected.context, 'dsr_mc_missing') ? (
                             <>
-                              <WorkstationPill tone="warn">缺 promotion-grade DSR / MC</WorkstationPill>
-                              <div className="text-[11px] leading-4 text-[#9aa7bd]">不是 MC fail；候選保留，不升 champion pointer。</div>
+                              <WorkstationPill tone="warn">模型 artifact DSR/MC 未齊</WorkstationPill>
+                              <div className="text-[11px] leading-4 text-[#9aa7bd]">
+                                這不是 parameter candidate chain；它只表示此模型 artifact 尚缺 final promotion-grade tail-risk 證據。
+                              </div>
                             </>
                           ) : (
                             <>

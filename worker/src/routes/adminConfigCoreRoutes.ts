@@ -71,13 +71,53 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
 
-  await setTradingConfig(c.env.KV, merged)
-  return c.json({ success: true, config: merged })
+  const {
+    PRODUCTION_OVERRIDE_HEADER,
+    isExplicitProductionOverride,
+    recordProductionOverride,
+    validatePromotionPacketForProd,
+  } = await import('../lib/parameterCandidateRegistry')
+  const candidateId = typeof body.candidate_id === 'string' ? body.candidate_id : undefined
+  const promotionPacketId = typeof body.promotion_packet_id === 'string' ? body.promotion_packet_id : undefined
+  const overrideReason = String(body.override_reason ?? body.reason ?? '').trim()
+  const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+    candidateId,
+    promotionPacketId,
+  })
+  const override = isExplicitProductionOverride(c.req.header(PRODUCTION_OVERRIDE_HEADER), overrideReason)
+  if (!promotionGate.ok && !override) {
+    return c.json({
+      error: 'config_put_requires_promotion_packet_or_override',
+      reason: promotionGate.error,
+      hint: `Attach promotion_packet_id + candidate_id, or use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
+    }, 400)
+  }
+  const overrideAudit = !promotionGate.ok
+    ? await recordProductionOverride(c.env.DB, {
+      route: '/api/admin/config',
+      reason: overrideReason,
+      candidateId,
+      promotionPacketId,
+      detail: { source: 'direct_put' },
+    })
+    : null
+
+  await setTradingConfig(c.env.KV, merged, {
+    source: overrideAudit ? 'manual_override' : 'parameter_promotion',
+    push_id: promotionPacketId,
+  })
+  return c.json({
+    success: true,
+    config: merged,
+    promotion_packet_id: promotionPacketId ?? null,
+    override_audit_id: overrideAudit?.audit_id ?? null,
+  })
 })
 
 adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
+  const body = await c.req.json<any>().catch(() => null) ?? {}
 
   const { getTradingConfig, setTradingConfig, DEFAULT_TRADING_CONFIG, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
   const current = await getTradingConfig(c.env.KV)
@@ -106,9 +146,27 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
     alphaFramework: mergeAlphaFrameworkConfig((current as any).alphaFramework ?? (current as any).alpha_framework),
   }
 
-  await setTradingConfig(c.env.KV, filled as any)
+  const overrideReason = String(body.override_reason ?? body.reason ?? '').trim()
+  const { PRODUCTION_OVERRIDE_HEADER, isExplicitProductionOverride, recordProductionOverride } = await import('../lib/parameterCandidateRegistry')
+  if (!isExplicitProductionOverride(c.req.header(PRODUCTION_OVERRIDE_HEADER), overrideReason)) {
+    return c.json({
+      error: 'push_defaults_requires_production_override',
+      hint: `Use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
+    }, 400)
+  }
+  const overrideAudit = await recordProductionOverride(c.env.DB, {
+    route: '/api/admin/config/push-defaults',
+    reason: overrideReason,
+    detail: { source: 'push_defaults' },
+  })
+
+  await setTradingConfig(c.env.KV, filled as any, {
+    source: 'manual_override',
+    push_id: overrideAudit.audit_id,
+  })
   return c.json({
     success: true,
+    override_audit_id: overrideAudit.audit_id,
     message: 'Schema defaults 已補齊到 KV，既有值會保留',
     config: filled,
   })

@@ -17,10 +17,13 @@ optuna.py — Optuna 自動化 endpoint (Cloud Run 版)
 GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑（不再 call Modal）
 """
 from __future__ import annotations
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +52,13 @@ router = APIRouter(prefix="/optuna", tags=["optuna"])
 OPTUNA_D1_READ_CHUNK_SIZE = 80
 OPTUNA_JOB_NAME = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep").strip() or "optuna-research-sweep"
 _optuna_jobs_client = CloudRunJobsClient(job_name=OPTUNA_JOB_NAME)
+
+
+def _per_regime_executor() -> str:
+    raw = os.environ.get("OPTUNA_PER_REGIME_EXECUTOR", "cloud_run_job").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "cloud_run_job"
 
 
 class OptunaReq(BaseModel):
@@ -1093,8 +1103,10 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
     sweep over HTTP. The Job owns the long lifecycle and callbacks Worker with
     the final weekly-optuna/monthly-optuna status.
     """
+    run_id = f"optuna-{req.cadence}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     env_overrides = {
         "OPTUNA_CADENCE": req.cadence,
+        "OPTUNA_RUN_ID": run_id,
         "OPTUNA_N_TRIALS": str(req.n_trials),
         "OPTUNA_SUBSET_SIZE": str(req.subset_size),
         "OPTUNA_MAX_PARALLEL_SOURCES": str(req.max_parallel_sources),
@@ -1128,9 +1140,18 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
     return {
         "status": "triggered",
         "job": OPTUNA_JOB_NAME,
+        "source": "optuna_research_sweep",
         "cadence": req.cadence,
+        "run_id": run_id,
         "execution_id": execution.execution_id,
         "execution_name": execution.execution_name,
+        "candidate_ids": [],
+        "push_results": [],
+        "snapshot": {
+            "status": "triggered",
+            "job": OPTUNA_JOB_NAME,
+            "execution_id": execution.execution_id,
+        },
         "message": "optuna research Job triggered; callback expected",
     }
 
@@ -1363,6 +1384,13 @@ class PerRegimeReq(BaseModel):
     subset_size: int = Field(default=400, ge=50, le=2000)
     window_days: int = Field(default=365, ge=90, le=730)
     cadence: str | None = None
+    run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    trigger_source: str | None = Field(
+        default=None,
+        pattern="^(regime_change|risk_anomaly|scheduled|manual_research|queue)$",
+        description="Ledger source for cooldown/idempotency analysis.",
+    )
+    trigger_id: str | None = Field(default=None, max_length=160)
     research_data_source: ResearchDataMode | None = None
     push_kv: bool = Field(default=False,
                           description="If true, push winning params to KV via "
@@ -1381,7 +1409,8 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
 
     Writes winning params to sandbox (via push_optuna_result default path) —
     Wei then promotes to challenger slot via POST /api/admin/config/challenger
-    and the T3.5 weekly_eval cron compares vs champion before promote.
+    only after candidate-specific evidence exists. T3.5 weekly_eval is shadow
+    stability only; production promotion requires a promotion_packet_id.
 
     Expensive: runs replay_period 50×200 = ~10000 times on 400-stock subset
     × 365-day window. Typical wall-clock 8-15 min on ml-controller Cloud Run.
@@ -1399,7 +1428,8 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
     logger.info(
         f"[Optuna/per_regime] target={req.target} n_trials={req.n_trials} "
         f"subset={req.subset_size} window={req.window_days}d "
-        f"push_kv={req.push_kv} dry_run={req.dry_run}"
+        f"push_kv={req.push_kv} dry_run={req.dry_run} "
+        f"trigger_source={req.trigger_source or '-'} trigger_id={req.trigger_id or '-'}"
     )
 
     try:
@@ -1428,6 +1458,7 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
         notes=[
             "Per-regime Optuna is intended for sandbox/challenger promotion, not direct production overwrite.",
             "Even when pushed, it should flow through challenger evaluation before champion promotion.",
+            f"trigger_source={req.trigger_source or 'unspecified'}",
         ],
     )
 
@@ -1435,6 +1466,109 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
         "status": "completed",
         "source": "per_regime_robust",
         "dry_run": req.dry_run,
+        "trigger_source": req.trigger_source,
+        "trigger_id": req.trigger_id,
         "contract": contract,
         **result,
+    }
+
+
+@router.post("/per_regime/run")
+def trigger_per_regime_job(req: PerRegimeReq = Body(default=PerRegimeReq())):
+    """Trigger per-regime Optuna through the controller-owned Job lifecycle.
+
+    This keeps Worker/HTTP callers out of the 8-15 minute robust-search request
+    path. The Job callback owns final scheduler status; results still write only
+    sandbox/challenger candidates unless a later promotion gate approves them.
+    """
+    executor = _per_regime_executor()
+    run_id = req.trigger_id or f"optuna-per-regime-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    research_data_source = str(req.research_data_source or "snapshot")
+    if executor == "modal":
+        payload = {
+            "target": req.target,
+            "n_trials": req.n_trials,
+            "subset_size": req.subset_size,
+            "window_days": req.window_days,
+            "cadence": req.cadence,
+            "run_date": req.run_date,
+            "trigger_source": req.trigger_source or "queue",
+            "trigger_id": req.trigger_id,
+            "research_data_source": research_data_source,
+            "push_kv": req.push_kv,
+            "dry_run": req.dry_run,
+            "run_id": run_id,
+            "callback_task": "optuna-queue",
+        }
+        try:
+            from services import modal_client
+            spawn = asyncio.run(modal_client.spawn_optuna_per_regime(payload))
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[Optuna/per_regime/run] failed to spawn Modal")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Modal Optuna per-regime spawn failed: {type(e).__name__}: {e}",
+            ) from e
+
+        return {
+            "status": "triggered",
+            "executor": "modal",
+            "source": "per_regime_robust",
+            "run_id": run_id,
+            "function_call_id": spawn.get("function_call_id"),
+            "trigger_source": req.trigger_source or "queue",
+            "trigger_id": req.trigger_id,
+            "message": "per-regime optuna Modal run spawned; callback expected",
+        }
+
+    env_overrides = {
+        "OPTUNA_JOB_KIND": "per_regime",
+        "OPTUNA_PER_REGIME_TARGET": req.target,
+        "OPTUNA_N_TRIALS": str(req.n_trials),
+        "OPTUNA_SUBSET_SIZE": str(req.subset_size),
+        "OPTUNA_WINDOW_DAYS": str(req.window_days),
+        "OPTUNA_RESEARCH_DATA_SOURCE": str(req.research_data_source or "snapshot"),
+        "OPTUNA_PUSH_KV": "1" if req.push_kv else "0",
+        "OPTUNA_DRY_RUN": "1" if req.dry_run else "0",
+        "OPTUNA_TRIGGER_SOURCE": req.trigger_source or "queue",
+        "OPTUNA_TRIGGER_ID": req.trigger_id or "",
+        "OPTUNA_CALLBACK_TASK": "optuna-queue",
+        "OPTUNA_RUN_ID": run_id,
+    }
+    if req.cadence:
+        env_overrides["OPTUNA_CADENCE"] = req.cadence
+    if req.run_date:
+        env_overrides["OPTUNA_RUN_DATE"] = req.run_date
+    try:
+        execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"{OPTUNA_JOB_NAME} already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "target": req.target,
+                "trigger_source": req.trigger_source,
+                "trigger_id": req.trigger_id,
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[Optuna/per_regime/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run Optuna per-regime Job trigger failed: {type(e).__name__}: {e}",
+        ) from e
+
+    return {
+        "status": "triggered",
+        "executor": "cloud_run_job",
+        "job": OPTUNA_JOB_NAME,
+        "source": "per_regime_robust",
+        "run_id": run_id,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "trigger_source": req.trigger_source or "queue",
+        "trigger_id": req.trigger_id,
+        "message": "per-regime optuna Job triggered; callback expected",
     }

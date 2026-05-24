@@ -34,32 +34,94 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
     sandbox_id?: string
     config?: unknown
     note?: string
-    gate?: { decision?: string; passed?: boolean; failed_gates?: string[] }
+    candidate_id?: string
+    promotion_packet_id?: string
+    override_reason?: string
+    evidence_packet?: Record<string, unknown>
+    gate?: { decision?: string; passed?: boolean; failed_gates?: string[]; validation_packet?: Record<string, unknown> }
   }>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON body' }, 400)
 
   const { getSandboxEntry, setChallenger } = await import('../lib/tradingConfig')
+  const {
+    candidateIdFromSandbox,
+    evidenceDecision,
+    isExplicitProductionOverride,
+    recordParameterCandidateEvidence,
+    recordParameterCandidateFromSandbox,
+    recordParameterCandidateEvent,
+    validateParameterCandidateEvidencePacket,
+  } = await import('../lib/parameterCandidateRegistry')
 
   let config: any
   let source: string
   let sourceId: string | undefined
+  let candidateId = typeof body.candidate_id === 'string' ? body.candidate_id : undefined
+  let evidencePacket: Record<string, unknown> | null = body.evidence_packet ?? null
 
   if (body.sandbox_id) {
     const entry = await getSandboxEntry(c.env.KV, body.sandbox_id)
     if (!entry) return c.json({ error: 'sandbox entry not found' }, 404)
-    if (entry.source === 'alpha_framework' && (body.gate?.decision !== 'PASS' || body.gate?.passed !== true)) {
+    candidateId = candidateId ?? candidateIdFromSandbox(entry.source, body.sandbox_id)
+    if (!evidencePacket && body.gate) {
+      evidencePacket = {
+        ...body.gate,
+        candidate_id: candidateId,
+        promotion_packet_id: body.promotion_packet_id ?? null,
+      }
+    }
+    await recordParameterCandidateFromSandbox(c.env.DB, {
+      source: entry.source,
+      sandboxId: body.sandbox_id,
+      candidateId,
+      configHash: entry.hash,
+      cadence: typeof entry.metadata?.cadence === 'string' ? entry.metadata.cadence : undefined,
+      runId: typeof entry.metadata?.run_id === 'string' ? entry.metadata.run_id : entry.push_id,
+      metadata: {
+        sandbox_pushed_at: entry.pushed_at,
+        note: entry.note ?? null,
+        metadata: entry.metadata ?? null,
+      },
+    })
+    const validation = await validateParameterCandidateEvidencePacket(c.env.DB, {
+      candidateId,
+      promotionPacketId: body.promotion_packet_id,
+      evidencePacket,
+    })
+    if (!validation.ok) {
       return c.json({
-        error: 'alpha_framework sandbox requires PASS alpha promotion gate before challenger',
-        hint: 'Use ml-controller POST /config_pool/alpha_challenger with apply=true and confirm=true.',
+        error: 'parameter_candidate_requires_evidence_packet',
+        reason: validation.error,
+        hint: 'Attach candidate_id + PASS evidence_packet from /config_pool/parameter_candidates/validation_chain before moving any parameter source to challenger.',
         failed_gates: body.gate?.failed_gates ?? null,
       }, 400)
+    }
+    if (evidencePacket) {
+      await recordParameterCandidateEvidence(c.env.DB, {
+        candidateId,
+        evidence: evidencePacket,
+        decision: evidenceDecision(evidencePacket),
+        promotionPacketId: body.promotion_packet_id ?? (String(evidencePacket.promotion_packet_id ?? '') || null),
+        evidenceType: 'challenger_gate',
+      })
     }
     config = entry.config
     source = `sandbox:${entry.source}`
     sourceId = body.sandbox_id
   } else if (body.config) {
+    const overrideReason = String(body.override_reason ?? body.note ?? '').trim()
+    if (!isExplicitProductionOverride(c.req.header('X-Confirm-Config-Override'), overrideReason)) {
+      return c.json({
+        error: 'manual_challenger_requires_candidate_evidence_or_config_override',
+        hint: 'Use a sandbox candidate with evidence, or add X-Confirm-Config-Override: true and override_reason.',
+      }, 400)
+    }
     config = body.config
     source = 'manual'
+    await recordParameterCandidateEvent(c.env.DB, null, 'manual_challenger_override', {
+      reason: overrideReason,
+      note: body.note ?? null,
+    })
   } else {
     return c.json({ error: 'Body requires either sandbox_id or config' }, 400)
   }
@@ -79,11 +141,20 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger', async (c) => {
     'challenger_set',
     source,
     state.hash,
-    JSON.stringify({ source_id: sourceId, note: body.note, shadow_since: state.shadow_since, gate: body.gate ?? null }),
+    JSON.stringify({
+      source_id: sourceId,
+      candidate_id: candidateId ?? null,
+      promotion_packet_id: body.promotion_packet_id ?? null,
+      note: body.note,
+      shadow_since: state.shadow_since,
+      gate: body.gate ?? null,
+      evidence_packet: evidencePacket ?? null,
+    }),
   ).run()
 
   return c.json({
     success: true,
+    candidate_id: candidateId ?? null,
     challenger: {
       hash: state.hash,
       shadow_since: state.shadow_since,
@@ -143,6 +214,39 @@ adminConfigLifecycleRoutes.get('/api/admin/config/challenger/state', async (c) =
   })
 })
 
+adminConfigLifecycleRoutes.get('/api/admin/config/parameter-candidates', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const { ensureParameterCandidateTables } = await import('../lib/parameterCandidateRegistry')
+  await ensureParameterCandidateTables(c.env.DB)
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit')) || 50))
+  const rows = await c.env.DB.prepare(
+    `SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
+            metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
+     FROM parameter_candidate_registry
+     ORDER BY updated_at DESC
+     LIMIT ?`,
+  ).bind(limit).all<any>()
+
+  const parse = (raw: any) => {
+    if (!raw) return null
+    try { return JSON.parse(String(raw)) } catch { return raw }
+  }
+  return c.json({
+    success: true,
+    states: ['NO_CANDIDATE', 'SHADOW_COLLECTING', 'VALIDATION_BLOCKED', 'PROMOTION_READY', 'APPROVAL_REQUIRED', 'PROD_ACTIVE'],
+    count: rows.results?.length ?? 0,
+    candidates: (rows.results || []).map((row: any) => ({
+      ...row,
+      metadata: parse(row.metadata_json),
+      latest_evidence: parse(row.latest_evidence_json),
+      metadata_json: undefined,
+      latest_evidence_json: undefined,
+    })),
+  })
+})
+
 adminConfigLifecycleRoutes.post('/api/admin/config/challenger/eval_commit', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
@@ -195,15 +299,57 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
     return c.json({ error: 'requires X-Confirm-Prod: true header' }, 400)
   }
 
-  const body = await c.req.json<{ reason?: string }>().catch(() => null) ?? {} as { reason?: string }
+  const body = await c.req.json<{
+    reason?: string
+    candidate_id?: string
+    promotion_packet_id?: string
+    override_reason?: string
+  }>().catch(() => null) ?? {} as {
+    reason?: string
+    candidate_id?: string
+    promotion_packet_id?: string
+    override_reason?: string
+  }
 
   const { getChallenger, setTradingConfig, retireChallenger } = await import('../lib/tradingConfig')
+  const {
+    PRODUCTION_OVERRIDE_HEADER,
+    candidateIdFromSandbox,
+    isExplicitProductionOverride,
+    recordProductionOverride,
+    validatePromotionPacketForProd,
+  } = await import('../lib/parameterCandidateRegistry')
   const ch = await getChallenger(c.env.KV)
   if (!ch) return c.json({ error: 'no active challenger to promote' }, 404)
+  const sourceName = ch.source.startsWith('sandbox:') ? ch.source.slice('sandbox:'.length) : ch.source
+  const candidateId = body.candidate_id
+    ?? (ch.source_id ? candidateIdFromSandbox(sourceName, ch.source_id) : undefined)
+  const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+    candidateId,
+    promotionPacketId: body.promotion_packet_id,
+  })
+  const overrideReason = String(body.override_reason ?? body.reason ?? '').trim()
+  const override = isExplicitProductionOverride(c.req.header(PRODUCTION_OVERRIDE_HEADER), overrideReason)
+  if (!promotionGate.ok && !override) {
+    return c.json({
+      error: 'prod_promote_requires_promotion_packet_or_override',
+      reason: promotionGate.error,
+      hint: `Attach promotion_packet_id + candidate_id, or use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
+    }, 400)
+  }
+  const overrideAudit = !promotionGate.ok
+    ? await recordProductionOverride(c.env.DB, {
+      route: '/api/admin/config/challenger/promote_to_prod',
+      reason: overrideReason,
+      candidateId,
+      promotionPacketId: body.promotion_packet_id,
+      detail: { challenger_hash: ch.hash, challenger_source: ch.source },
+    })
+    : null
 
   const snap = await setTradingConfig(c.env.KV, ch.config, {
-    source: 'auto_promote',
-    push_id: ch.hash,
+    source: overrideAudit ? 'manual_override' : 'parameter_promotion',
+    push_id: body.promotion_packet_id ?? ch.hash,
   })
 
   await retireChallenger(c.env.KV)
@@ -218,10 +364,13 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
     ch.source,
     ch.hash,
     JSON.stringify({
-      reason: body?.reason ?? 'auto-promote from weekly_eval',
+      reason: body?.reason ?? 'parameter promotion controller',
       promoted_at: new Date().toISOString(),
       new_snapshot_id: snap.snapshotId,
       snapshot_skipped: snap.skipped,
+      candidate_id: candidateId ?? null,
+      promotion_packet_id: body.promotion_packet_id ?? null,
+      override_audit_id: overrideAudit?.audit_id ?? null,
     }),
   ).run()
 
@@ -240,6 +389,9 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
   return c.json({
     success: true,
     promoted_hash: ch.hash,
+    candidate_id: candidateId ?? null,
+    promotion_packet_id: body.promotion_packet_id ?? null,
+    override_audit_id: overrideAudit?.audit_id ?? null,
     new_snapshot_id: snap.snapshotId,
     snapshot_skipped: snap.skipped,
     retired_at: new Date().toISOString(),

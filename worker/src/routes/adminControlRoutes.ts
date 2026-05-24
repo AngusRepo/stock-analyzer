@@ -123,6 +123,25 @@ async function handleSchedulerCallback(c: any) {
       ? body.date
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
+  const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+    ? body.metadata as Record<string, unknown>
+    : undefined
+  let optunaClosure: Record<string, unknown> | null = null
+  if (String(body.task) === 'optuna-queue') {
+    const { closeOptunaQueueCallbackRun } = await import('../lib/optunaRunClosure')
+    optunaClosure = await closeOptunaQueueCallbackRun(c.env, {
+      status: body.status,
+      runId: callbackRunId,
+      runDate: callbackRunDate,
+      summary: String(body.summary ?? ''),
+      durationMs: Number(body.duration_ms ?? 0),
+      error: body.error != null ? String(body.error) : undefined,
+      metadata: callbackMetadata,
+    })
+  }
+  const schedulerRunDate = typeof optunaClosure?.business_date === 'string'
+    ? optunaClosure.business_date
+    : callbackRunDate
 
   await logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,
@@ -130,13 +149,14 @@ async function handleSchedulerCallback(c: any) {
     duration_ms: Number(body.duration_ms ?? 0),
     error: body.error != null ? String(body.error) : undefined,
     run_id: callbackRunId,
-    run_date: callbackRunDate,
+    run_date: schedulerRunDate,
   })
 
   if (
+    String(body.task) !== 'optuna-queue' &&
     REPORT_ARTIFACT_TASKS.has(String(body.task)) &&
     body.status === 'success' &&
-    callbackRunDate &&
+    schedulerRunDate &&
     callbackRunId
   ) {
     c.executionCtx.waitUntil((async () => {
@@ -145,14 +165,53 @@ async function handleSchedulerCallback(c: any) {
         await recordSchedulerRunReportArtifact(c.env, {
           task: String(body.task),
           status: String(body.status),
-          businessDate: callbackRunDate,
+          businessDate: schedulerRunDate,
           runId: callbackRunId,
           summary: String(body.summary ?? ''),
           durationMs: Number(body.duration_ms ?? 0),
           error: body.error != null ? String(body.error) : undefined,
+          metadata: callbackMetadata,
         })
       } catch (e) {
         console.warn('[scheduler-callback] R2 scheduler report artifact failed:', e)
+      }
+    })())
+  }
+
+  if (
+    (String(body.task) === 'weekly-optuna' || String(body.task) === 'monthly-optuna') &&
+    body.status === 'success'
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const candidateIds = Array.isArray(callbackMetadata?.candidate_ids)
+          ? callbackMetadata.candidate_ids.map((id: unknown) => String(id)).filter(Boolean)
+          : []
+        const { runParameterCandidateValidationChain } = await import('../lib/controllerResearchWorkflows')
+        const summary = await runParameterCandidateValidationChain(c.env, {
+          cadence: String(callbackMetadata?.cadence ?? String(body.task).replace('-optuna', '')),
+          runDate: callbackRunDate,
+          runId: callbackRunId,
+          candidateIds,
+          source: String(body.task),
+          metadata: callbackMetadata,
+        })
+        await logSchedulerResult(c.env.KV, 'parameter-candidate-validation', {
+          status: 'success',
+          summary,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: schedulerRunDate,
+        }, c.env as any)
+      } catch (e: any) {
+        await logSchedulerResult(c.env.KV, 'parameter-candidate-validation', {
+          status: 'error',
+          summary: e?.message ?? 'parameter candidate validation chain failed',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: schedulerRunDate,
+        }, c.env as any)
       }
     })())
   }
@@ -207,7 +266,7 @@ async function handleSchedulerCallback(c: any) {
     `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`,
   )
 
-  return c.json({ ok: true, task: body.task, status: body.status })
+  return c.json({ ok: true, task: body.task, status: body.status, optuna_closure: optunaClosure })
 }
 
 adminControlRoutes.post('/api/admin/scheduler-callback', handleSchedulerCallback)

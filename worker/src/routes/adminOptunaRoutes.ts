@@ -362,11 +362,26 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       const notificationChannel = shouldNotify
         ? await sendOperatorNotification(c.env, formatGaPromotionNotification(learningState, promotion))
         : 'not_sent:no_channel_configured'
+      const { recordGaParameterCandidate } = await import('../lib/parameterCandidateRegistry')
+      const candidate = await recordGaParameterCandidate(c.env.DB, {
+        promotionKey,
+        runId: meta?.run_id ?? meta?.push_id,
+        cadence: meta?.cadence,
+        promotion: promotion as any,
+        metadata: {
+          latest_key: latestKey,
+          history_key: historyKey,
+          audit_key: auditKey,
+          meta: meta ?? null,
+        },
+      })
 
       return c.json({
         success: true,
         target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
+        candidate_id: candidate.candidate_id,
+        candidate_status: candidate.status,
         updatedKeys: [latestKey, historyKey, promotionKey],
         audit_key: auditKey,
         promotion,
@@ -434,6 +449,17 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
 
   const wantsProd = c.req.query('prod') === '1'
   const confirmProd = c.req.header('X-Confirm-Prod') === 'true'
+  const promotionPacketId = typeof body.promotion_packet_id === 'string'
+    ? body.promotion_packet_id
+    : typeof meta?.promotion_packet_id === 'string'
+      ? meta.promotion_packet_id
+      : undefined
+  const candidateId = typeof body.candidate_id === 'string'
+    ? body.candidate_id
+    : typeof meta?.candidate_id === 'string'
+      ? meta.candidate_id
+      : undefined
+  const overrideReason = String(body.override_reason ?? meta?.override_reason ?? body.reason ?? '').trim()
 
   if (wantsProd && !confirmProd) {
     return c.json({
@@ -443,6 +469,33 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
   }
 
   if (wantsProd && confirmProd) {
+    const {
+      PRODUCTION_OVERRIDE_HEADER,
+      isExplicitProductionOverride,
+      recordProductionOverride,
+      validatePromotionPacketForProd,
+    } = await import('../lib/parameterCandidateRegistry')
+    const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+      candidateId,
+      promotionPacketId,
+    })
+    const override = isExplicitProductionOverride(c.req.header(PRODUCTION_OVERRIDE_HEADER), overrideReason)
+    if (!promotionGate.ok && !override) {
+      return c.json({
+        error: 'prod_optuna_push_requires_promotion_packet_or_override',
+        reason: promotionGate.error,
+        hint: `Attach promotion_packet_id + candidate_id, or use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
+      }, 400)
+    }
+    const overrideAudit = !promotionGate.ok
+      ? await recordProductionOverride(c.env.DB, {
+        route: '/api/admin/optuna-push?prod=1',
+        reason: overrideReason,
+        candidateId,
+        promotionPacketId,
+        detail: { source, updatedFields, meta: meta ?? null },
+      })
+      : null
     const snapshotResult = await setTradingConfig(c.env.KV, merged, {
       source,
       push_id: meta?.run_id ?? meta?.push_id,
@@ -458,6 +511,8 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       pushed_at: new Date().toISOString(),
       snapshot_id: snapshotResult.snapshotId,
       snapshot_skipped: snapshotResult.skipped,
+      promotion_packet_id: promotionPacketId ?? null,
+      override_audit_id: overrideAudit?.audit_id ?? null,
     }), { expirationTtl: 30 * 86400 })
 
     return c.json({
@@ -468,6 +523,8 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       audit_key: auditKey,
       snapshot_id: snapshotResult.snapshotId,
       snapshot_skipped: snapshotResult.skipped,
+      promotion_packet_id: promotionPacketId ?? null,
+      override_audit_id: overrideAudit?.audit_id ?? null,
       message: `Optuna ${source} pushed to PROD trading:config (${updatedFields.length} fields updated)`,
     })
   }
@@ -476,6 +533,19 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     push_id: meta?.run_id ?? meta?.push_id,
     note: meta?.note,
     metadata: meta ?? undefined,
+  })
+  const { recordParameterCandidateFromSandbox } = await import('../lib/parameterCandidateRegistry')
+  const candidate = await recordParameterCandidateFromSandbox(c.env.DB, {
+    source,
+    sandboxId,
+    configHash: sandboxId.split(':').pop(),
+    cadence: meta?.cadence,
+    runId: meta?.run_id ?? meta?.push_id,
+    metadata: {
+      meta: meta ?? null,
+      updatedFields,
+      audit_source: 'optuna_push',
+    },
   })
 
   const auditKey = `audit:optuna-push:${source}:${twToday()}`
@@ -487,6 +557,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     updatedFields,
     pushed_at: new Date().toISOString(),
     sandbox_id: sandboxId,
+    candidate_id: candidate.candidate_id,
   }), { expirationTtl: 30 * 86400 })
 
   return c.json({
@@ -496,6 +567,8 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     updatedFields,
     audit_key: auditKey,
     sandbox_id: sandboxId,
-    message: `Optuna ${source} written to SANDBOX (prod unchanged). Promote via POST /api/admin/config/promote {sandbox_id} + X-Confirm-Prod: true`,
+    candidate_id: candidate.candidate_id,
+    candidate_status: candidate.status,
+    message: `Optuna ${source} written to SANDBOX (prod unchanged). Run candidate validation, then promote with promotion_packet_id or explicit production override.`,
   })
 })

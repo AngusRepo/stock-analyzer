@@ -10,6 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers import config_pool  # noqa: E402
 
 
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
 def _sandbox_record() -> dict:
     return {
         "success": True,
@@ -37,6 +42,12 @@ def _evidence(candidate_id: str) -> dict:
             "absolute_confidence": "moderate",
             "sanity_flags": [],
             "parity_audit": {"worker_parity": {"decision": "PASS"}},
+            "per_regime": {
+                "bull": {"trades": 30, "return": 0.06},
+                "volatile": {"trades": 30, "return": 0.04},
+                "sideways": {"trades": 30, "return": 0.03},
+                "bear": {"trades": 30, "return": 0.02},
+            },
         },
         "monte_carlo": {
             "source": "backtest",
@@ -53,16 +64,39 @@ def _evidence(candidate_id: str) -> dict:
             "oos_mean_return": 0.03,
             "go_live_verdict": "PASS",
         },
+        "data_snooping": {
+            "method": "hansen_spa",
+            "p_value": 0.05,
+            "candidate_count": 2,
+            "go_live_verdict": "PASS",
+        },
+        "walk_forward": {
+            "method": "paired_partition_walk_forward",
+            "passed": True,
+            "windows": 6,
+        },
     }
 
 
 def _passing_evidence(candidate_id: str) -> dict:
     bundle = _evidence(candidate_id)
-    bundle["gate"] = {"decision": "PASS", "passed": True, "failed_gates": []}
+    bundle["validation_packet"] = {"decision": "PASS", "passed": True, "failed_gates": []}
+    bundle["promotion_packet_id"] = f"promotion_packet:{candidate_id}:test"
+    bundle["gate"] = {
+        "decision": "PASS",
+        "passed": True,
+        "failed_gates": [],
+        "validation_packet": bundle["validation_packet"],
+    }
     return bundle
 
 
-@pytest.mark.asyncio
+def _candidate_id() -> str:
+    record = _sandbox_record()
+    return config_pool._candidate_id_from_sandbox(record["source"], record["id"])
+
+
+@pytest.mark.anyio
 async def test_alpha_challenger_dry_run_does_not_set_challenger(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -96,7 +130,7 @@ async def test_alpha_challenger_dry_run_does_not_set_challenger(monkeypatch):
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_alpha_challenger_apply_requires_passed_gate(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -130,7 +164,7 @@ async def test_alpha_challenger_apply_requires_passed_gate(monkeypatch):
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_alpha_challenger_apply_sets_challenger_only_with_confirmed_pass(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -167,10 +201,12 @@ async def test_alpha_challenger_apply_sets_challenger_only_with_confirmed_pass(m
     assert out["status"] == "applied"
     assert challenger_calls
     assert challenger_calls[0][2]["sandbox_id"].startswith("trading:config:sandbox:alpha_framework:")
+    assert challenger_calls[0][2]["candidate_id"] == _candidate_id()
+    assert challenger_calls[0][2]["evidence_packet"]["candidate_id"] == _candidate_id()
     assert challenger_calls[0][2]["gate"]["decision"] == "PASS"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_alpha_challenger_rejects_mismatched_candidate_evidence(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -196,7 +232,7 @@ async def test_alpha_challenger_rejects_mismatched_candidate_evidence(monkeypatc
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_alpha_challenger_can_generate_candidate_specific_evidence_dry_run(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
     runner_calls: list[tuple[dict, dict]] = []
@@ -228,13 +264,13 @@ async def test_alpha_challenger_can_generate_candidate_specific_evidence_dry_run
 
     assert out["status"] == "dry_run"
     assert out["gate"]["decision"] == "PASS"
-    assert out["evidence"]["candidate_id"] == _sandbox_record()["id"]
+    assert out["evidence"]["candidate_id"] == _candidate_id()
     assert runner_calls[0][1]["baseline_config"]["position"]["maxPositions"] == 5
     assert runner_calls[0][1]["start_date"] == "2026-01-01"
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_alpha_challenger_auto_evidence_apply_sets_challenger_after_pass(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -269,4 +305,7 @@ async def test_alpha_challenger_auto_evidence_apply_sets_challenger_after_pass(m
     challenger_calls = [call for call in calls if call[0] == "/api/admin/config/challenger"]
     assert out["status"] == "applied"
     assert challenger_calls
+    assert challenger_calls[0][2]["candidate_id"] == _candidate_id()
+    assert challenger_calls[0][2]["promotion_packet_id"] == f"promotion_packet:{_candidate_id()}:test"
+    assert challenger_calls[0][2]["evidence_packet"]["validation_packet"]["decision"] == "PASS"
     assert challenger_calls[0][2]["gate"]["decision"] == "PASS"

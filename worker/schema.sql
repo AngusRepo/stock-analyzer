@@ -652,6 +652,54 @@ CREATE TABLE IF NOT EXISTS scheduler_locks (
 CREATE INDEX IF NOT EXISTS idx_scheduler_locks_owner_date
   ON scheduler_locks(owner, run_date, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS parameter_candidate_registry (
+  candidate_id          TEXT PRIMARY KEY,
+  source                TEXT NOT NULL,
+  config_hash           TEXT,
+  sandbox_id            TEXT,
+  cadence               TEXT,
+  run_id                TEXT,
+  status                TEXT NOT NULL CHECK(status IN (
+    'NO_CANDIDATE',
+    'SHADOW_COLLECTING',
+    'VALIDATION_BLOCKED',
+    'PROMOTION_READY',
+    'APPROVAL_REQUIRED',
+    'PROD_ACTIVE'
+  )),
+  metadata_json         TEXT,
+  latest_evidence_json  TEXT,
+  promotion_packet_id   TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_registry_status
+  ON parameter_candidate_registry(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_registry_packet
+  ON parameter_candidate_registry(promotion_packet_id);
+
+CREATE TABLE IF NOT EXISTS parameter_candidate_evidence (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id          TEXT NOT NULL,
+  evidence_type         TEXT NOT NULL,
+  decision              TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
+  evidence_json         TEXT,
+  promotion_packet_id   TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_evidence_candidate
+  ON parameter_candidate_evidence(candidate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS parameter_candidate_events (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id          TEXT,
+  event_type            TEXT NOT NULL,
+  detail_json           TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_events_candidate
+  ON parameter_candidate_events(candidate_id, created_at DESC);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡
 -- 首次部署：wrangler d1 execute stockvision-db --remote --file=./worker/schema.sql

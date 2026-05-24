@@ -133,6 +133,9 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     sandbox_id?: string
     dry_run?: boolean
     reason?: string
+    candidate_id?: string
+    promotion_packet_id?: string
+    override_reason?: string
   }>().catch(() => null)
   if (!body?.sandbox_id) {
     return c.json({ error: 'Body requires { sandbox_id, dry_run?, reason? }' }, 400)
@@ -141,6 +144,13 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
   const dryRun = body.dry_run !== false
   const { getSandboxEntry, getTradingConfig, promoteSandbox } = await import('../lib/tradingConfig')
   const { diffConfig, summarizeDiff } = await import('../lib/configDiff')
+  const {
+    PRODUCTION_OVERRIDE_HEADER,
+    candidateIdFromSandbox,
+    isExplicitProductionOverride,
+    recordProductionOverride,
+    validatePromotionPacketForProd,
+  } = await import('../lib/parameterCandidateRegistry')
 
   const sandbox = await getSandboxEntry(c.env.KV, body.sandbox_id)
   if (!sandbox) return c.json({ error: 'sandbox entry not found (expired or never existed)' }, 404)
@@ -157,7 +167,7 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
       sandbox_pushed_at: sandbox.pushed_at,
       diff_summary: summarizeDiff(diff),
       diff,
-      hint: 'Re-POST with dry_run=false + header X-Confirm-Prod: true to promote.',
+      hint: 'Re-POST with dry_run=false + X-Confirm-Prod: true plus promotion_packet_id, or explicit X-Confirm-Production-Override: true with override_reason.',
     })
   }
 
@@ -167,9 +177,37 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
       hint: 'Run with dry_run=true first to preview diff.',
     }, 400)
   }
+  const candidateId = body.candidate_id ?? candidateIdFromSandbox(sandbox.source, body.sandbox_id)
+  const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+    candidateId,
+    promotionPacketId: body.promotion_packet_id,
+  })
+  const overrideReason = String(body.override_reason ?? body.reason ?? '').trim()
+  const override = isExplicitProductionOverride(c.req.header(PRODUCTION_OVERRIDE_HEADER), overrideReason)
+  if (!promotionGate.ok && !override) {
+    return c.json({
+      error: 'config_promote_requires_promotion_packet_or_override',
+      reason: promotionGate.error,
+      hint: `Attach promotion_packet_id + candidate_id, or use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
+    }, 400)
+  }
+  const overrideAudit = !promotionGate.ok
+    ? await recordProductionOverride(c.env.DB, {
+      route: '/api/admin/config/promote',
+      reason: overrideReason,
+      candidateId,
+      promotionPacketId: body.promotion_packet_id,
+      detail: {
+        sandbox_id: body.sandbox_id,
+        sandbox_source: sandbox.source,
+        diff_summary: summarizeDiff(diff),
+      },
+    })
+    : null
 
   const result = await promoteSandbox(c.env.KV, body.sandbox_id, {
     reason: body.reason,
+    push_id: body.promotion_packet_id,
   })
   if (!result) return c.json({ error: 'sandbox entry vanished mid-operation' }, 409)
 
@@ -181,6 +219,9 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     skipped: result.skipped,
     reason: body.reason ?? null,
     diff_summary: summarizeDiff(diff),
+    candidate_id: candidateId,
+    promotion_packet_id: body.promotion_packet_id ?? null,
+    override_audit_id: overrideAudit?.audit_id ?? null,
     promoted_at: new Date().toISOString(),
   }), { expirationTtl: 90 * 86400 })
 
@@ -188,6 +229,9 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     success: true,
     mode: 'promoted',
     promoted_from: body.sandbox_id,
+    candidate_id: candidateId,
+    promotion_packet_id: body.promotion_packet_id ?? null,
+    override_audit_id: overrideAudit?.audit_id ?? null,
     new_snapshot_id: result.snapshotId,
     skipped: result.skipped,
     audit_key: auditKey,

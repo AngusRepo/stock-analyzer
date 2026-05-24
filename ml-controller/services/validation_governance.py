@@ -86,6 +86,7 @@ def _requires_promotion_grade_evidence(source: str, external_risk_required: bool
         "promotion_gate",
         "alpha_policy_latest_gate",
         "alpha_policy_evidence_gate",
+        "parameter_candidate_evidence_gate",
     }
 
 

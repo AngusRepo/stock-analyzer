@@ -9,7 +9,9 @@ from services.pbo_service import _run_cscv_rank_logit_pbo
 from services.validation_governance import hansen_spa_reality_check
 from services.promotion_service import (
     build_alpha_policy_evidence_bundle,
+    build_parameter_candidate_evidence_bundle,
     evaluate_alpha_policy_evidence_gate,
+    evaluate_parameter_candidate_evidence_gate,
 )
 
 
@@ -135,6 +137,37 @@ def _pbo_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     }
 
 
+def _walk_forward_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
+    champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
+    candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
+    windows = min(len(champion_partitions), len(candidate_partitions))
+    if windows <= 0:
+        return {
+            "method": "paired_partition_walk_forward",
+            "passed": False,
+            "reason": "missing_partition_returns",
+            "windows": 0,
+        }
+
+    paired = list(zip(champion_partitions[:windows], candidate_partitions[:windows]))
+    candidate_mean = sum(v for _, v in paired) / windows
+    champion_mean = sum(v for v, _ in paired) / windows
+    positive_ratio = sum(1 for _, v in paired if v > 0) / windows
+    beats_ratio = sum(1 for champion, candidate in paired if candidate >= champion) / windows
+    passed = windows >= 3 and candidate_mean > 0 and positive_ratio >= 0.5 and beats_ratio >= 0.5
+    return {
+        "method": "paired_partition_walk_forward",
+        "passed": passed,
+        "gate_pass": passed,
+        "reason": "ok" if passed else "partition_walk_forward_not_stable",
+        "windows": windows,
+        "candidate_mean_return": round(candidate_mean, 8),
+        "champion_mean_return": round(champion_mean, 8),
+        "positive_ratio": round(positive_ratio, 6),
+        "beats_champion_ratio": round(beats_ratio, 6),
+    }
+
+
 def _data_snooping_row(champion_metrics: Any, candidate_metrics: Any) -> dict[str, Any]:
     champion_partitions = [_as_float(v) for v in (_metric_attr(champion_metrics, "partition_returns", []) or [])]
     candidate_partitions = [_as_float(v) for v in (_metric_attr(candidate_metrics, "partition_returns", []) or [])]
@@ -188,6 +221,7 @@ def run_alpha_candidate_evidence(
         monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
         pbo=_pbo_row(champion_metrics, candidate_metrics),
         data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
+        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics),
     )
     gate = evaluate_alpha_policy_evidence_gate(candidate, evidence)
     if not alpha_replay_applied:
@@ -210,6 +244,62 @@ def run_alpha_candidate_evidence(
             "baseline_replayed": True,
             "candidate_replayed": True,
             "alpha_replay_applied": alpha_replay_applied,
+            "parity_audit_present": bool(parity_audit),
+        },
+    }
+
+
+def run_parameter_candidate_evidence(
+    candidate: dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    baseline_config: dict[str, Any] | None = None,
+    initial_capital: float = 1_000_000,
+    mode: str = "B",
+    symbols: list[str] | None = None,
+    mc_simulations: int = 1000,
+    parity_audit: dict[str, Any] | None = None,
+    dataset_loader: Callable[..., Any] | None = None,
+    replay_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    from services.backtest_engine import BacktestDataset, replay_period
+
+    dataset_loader = dataset_loader or BacktestDataset.load_from_d1
+    replay_fn = replay_fn or replay_period
+
+    baseline = deepcopy(baseline_config or {})
+    candidate_params = _deep_merge(baseline, _candidate_config(candidate))
+    dataset = dataset_loader(start_date=start_date, end_date=end_date, symbols=symbols)
+    replay_args = {
+        "dataset": dataset,
+        "start_date": start_date,
+        "end_date": end_date,
+        "initial_capital": initial_capital,
+        "mode": mode,
+    }
+    champion_metrics = replay_fn(**replay_args, params=baseline)
+    candidate_metrics = replay_fn(**replay_args, params=candidate_params)
+
+    evidence = build_parameter_candidate_evidence_bundle(
+        candidate_id=_candidate_id(candidate),
+        backtest=_backtest_row(candidate_metrics, parity_audit=parity_audit),
+        monte_carlo=_monte_carlo_row(candidate_metrics, n_simulations=mc_simulations),
+        pbo=_pbo_row(champion_metrics, candidate_metrics),
+        data_snooping=_data_snooping_row(champion_metrics, candidate_metrics),
+        walk_forward=_walk_forward_row(champion_metrics, candidate_metrics),
+    )
+    gate = evaluate_parameter_candidate_evidence_gate(candidate, evidence)
+    return {
+        **evidence,
+        "gate": gate,
+        "provenance": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "mode": mode,
+            "baseline_replayed": True,
+            "candidate_replayed": True,
+            "candidate_specific": True,
             "parity_audit_present": bool(parity_audit),
         },
     }

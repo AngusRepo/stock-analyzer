@@ -93,7 +93,8 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
   const executionId = String(data.execution_id ?? '')
-  const summary = `optuna research Job triggered cadence=${options.cadence} execution_id=${executionId || 'unknown'} callback expected`
+  const runId = String(data.run_id ?? '')
+  const summary = `optuna research Job triggered cadence=${options.cadence} run_id=${runId || 'unknown'} execution_id=${executionId || 'unknown'} callback expected`
 
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./notify')
@@ -101,6 +102,45 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
   }
 
   return `triggered ${summary}`
+}
+
+export async function runParameterCandidateValidationChain(
+  env: Bindings,
+  options: {
+    cadence?: OptunaCadence | string
+    runDate?: string
+    runId?: string
+    candidateIds?: string[]
+    source?: string
+    metadata?: Record<string, unknown>
+  } = {},
+) {
+  requireController(env)
+  const { ensureParameterCandidateTables } = await import('./parameterCandidateRegistry')
+  await ensureParameterCandidateTables(env.DB)
+
+  const resp = await controllerFetch(env, '/config_pool/parameter_candidates/validation_chain', {
+    method: 'POST',
+    jsonBody: {
+      cadence: options.cadence,
+      run_date: options.runDate,
+      run_id: options.runId,
+      candidate_ids: options.candidateIds ?? [],
+      source: options.source ?? 'optuna_callback',
+      metadata: options.metadata ?? {},
+      persist: true,
+    },
+    timeoutMs: 120_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`parameter candidate validation HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status === 'failed' || result.status === 'error') {
+    throw new Error(`parameter candidate validation failed: ${result.reason ?? result.error ?? result.status}`)
+  }
+  return `candidate_validation status=${result.status ?? 'completed'} total=${result.total ?? 0} ready=${result.ready ?? 0} blocked=${result.blocked ?? 0}`
 }
 
 export async function runWeeklyOptunaResearch(env: Bindings, runDate?: string) {
@@ -138,13 +178,23 @@ function isFailureSummary(value: string): boolean {
     normalized.includes('http')
 }
 
+function optunaTriggerSource(reason: string): 'regime_change' | 'risk_anomaly' | 'manual_research' | 'queue' {
+  if (reason === 'regime_shift') return 'regime_change'
+  if (reason === 'sharpe_rolling' || reason === 'dd_spike') return 'risk_anomaly'
+  if (reason === 'manual') return 'manual_research'
+  return 'queue'
+}
+
 export function summarizeWeeklyValidationChain(results: {
   backtest: string
   monteCarlo: string
   pbo: string
+  artifactValidation?: string
 }): string {
-  const summary = `bt(${results.backtest}) | mc(${results.monteCarlo}) | pbo(${results.pbo})`
+  const artifact = results.artifactValidation ? ` | artifact(${results.artifactValidation})` : ''
+  const summary = `bt(${results.backtest}) | mc(${results.monteCarlo}) | pbo(${results.pbo})${artifact}`
   const failed = Object.entries(results)
+    .filter(([, value]) => Boolean(value))
     .filter(([, value]) => isFailureSummary(value))
     .map(([key, value]) => `${key}:${value}`)
   if (failed.length > 0) {
@@ -156,21 +206,60 @@ export function summarizeWeeklyValidationChain(results: {
 export async function runOptunaQueueProcessor(env: Bindings) {
   requireController(env)
 
-  const { popNextPending, markProcessed, markFailed } = await import('./optunaQueue')
-  const entry = await popNextPending(env.KV)
-  if (!entry) return 'empty'
+  const {
+    acquireOptunaQueueProcessorD1Lock,
+    acquireOptunaQueueProcessorLock,
+    acquireOptunaRunD1Lock,
+    popNextPending,
+    markProcessed,
+    markFailed,
+    releaseOptunaQueueProcessorD1Lock,
+    releaseOptunaQueueProcessorLock,
+  } = await import('./optunaQueue')
+  const lockRunId = `optuna-queue:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+  const d1Lock = await acquireOptunaQueueProcessorD1Lock(env.DB, lockRunId, 3600)
+  if (!d1Lock.acquired) return 'locked: optuna queue processor already running (d1)'
+  const locked = await acquireOptunaQueueProcessorLock(env.KV, lockRunId, 3600)
+  if (!locked) {
+    await releaseOptunaQueueProcessorD1Lock(env.DB, lockRunId)
+    return 'locked: optuna queue processor already running'
+  }
 
+  let entry: Awaited<ReturnType<typeof popNextPending>> = null
   try {
+    entry = await popNextPending(env.KV)
+    if (!entry) return 'empty'
+
     const isPerRegime = entry.target === 'per_regime'
-    const endpoint = isPerRegime ? '/optuna/per_regime' : `/optuna/${entry.target}`
+    const runLockRunId = `optuna-per-regime:${entry.id}:${Date.now()}`
+    const runLock = isPerRegime
+      ? await acquireOptunaRunD1Lock(env.DB, entry, runLockRunId, 6 * 3600)
+      : null
+    if (runLock && !runLock.acquired) {
+      await markProcessed(env.KV, entry.id, {
+        note: `skipped_d1_run_lock=${runLock.lock_key}`,
+      })
+      return `locked: ${entry.id} d1_run=${runLock.lock_key}`
+    }
+    const endpoint = isPerRegime ? '/optuna/per_regime/run' : `/optuna/${entry.target}`
     const body = isPerRegime
-      ? { target: 'sltp', n_trials: 50, subset_size: 200, window_days: 365, push_kv: true, dry_run: false }
+      ? {
+        target: 'sltp',
+        n_trials: 50,
+        subset_size: 200,
+        window_days: 365,
+        push_kv: true,
+        dry_run: false,
+        cadence: 'queue',
+        trigger_source: optunaTriggerSource(entry.reason),
+        trigger_id: entry.id,
+      }
       : { n_trials: 200, push_kv: true, dry_run: false }
 
     const resp = await controllerFetch(env, endpoint, {
       method: 'POST',
       jsonBody: body,
-      timeoutMs: 3_500_000,
+      timeoutMs: isPerRegime ? 60_000 : 3_500_000,
     })
     if (!resp.ok) {
       const text = await resp.text().catch(() => '')
@@ -182,16 +271,32 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     const sandboxId = data.push_response?.sandbox_id
       ?? data.push_response?.id
       ?? (data.kv_push_ok ? data.sandbox_id : undefined)
+    const executionId = data.execution_id ? String(data.execution_id) : undefined
+    const functionCallId = data.function_call_id ? String(data.function_call_id) : undefined
+    const asyncRunId = executionId ?? functionCallId ?? (data.run_id ? String(data.run_id) : undefined)
+    const executor = data.executor
+      ? String(data.executor)
+      : (functionCallId ? 'modal' : 'cloud_run_job')
 
     await markProcessed(env.KV, entry.id, {
       sandbox_id: sandboxId,
-      note: `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,
+      note: asyncRunId
+        ? `triggered_${executor}=${asyncRunId} trigger_source=${data.trigger_source ?? optunaTriggerSource(entry.reason)}${runLock ? ` d1_run_lock=${runLock.lock_key}` : ''}`
+        : `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,
     })
-    return `processed: ${entry.id}${sandboxId ? ` sandbox=${sandboxId.slice(-12)}` : ''}`
+    return asyncRunId
+      ? `triggered: ${entry.id} ${executor}=${asyncRunId}`
+      : `processed: ${entry.id}${sandboxId ? ` sandbox=${sandboxId.slice(-12)}` : ''}`
   } catch (e: any) {
     const msg = e?.message ?? String(e)
-    await markFailed(env.KV, entry.id, msg)
-    return `failed: ${entry.id} ${msg.slice(0, 100)}`
+    if (entry) {
+      await markFailed(env.KV, entry.id, msg)
+      return `failed: ${entry.id} ${msg.slice(0, 100)}`
+    }
+    return `failed: optuna queue claim ${msg.slice(0, 100)}`
+  } finally {
+    await releaseOptunaQueueProcessorLock(env.KV, lockRunId)
+    await releaseOptunaQueueProcessorD1Lock(env.DB, lockRunId)
   }
 }
 
@@ -269,6 +374,21 @@ export async function runWeeklyPBO(env: Bindings) {
   const result = await resp.json() as Record<string, any>
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
   return `PBO=${result.pbo}(${result.go_live_verdict}), OOS=${result.oos_mean_return}`
+}
+
+export async function runWeeklyModelArtifactValidation(env: Bindings) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/model_pool/artifact_registry/validation_chain', {
+    method: 'POST',
+    jsonBody: { limit: 200, persist: true },
+    timeoutMs: 120_000,
+  }).catch(() => null)
+  if (!resp?.ok) return 'failed'
+
+  const result = await resp.json() as Record<string, any>
+  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  return `artifacts=${result.count ?? 0}, updated=${result.updated ?? 0}, ready=${result.ready ?? 0}, blocked=${result.blocked ?? 0}`
 }
 
 export async function runWeeklyAlphaQuality(env: Bindings) {

@@ -1,5 +1,5 @@
 """
-config_pool.py — #28b T3.5 Weekly challenger eval + auto-promote gate
+config_pool.py — #28b T3.5 Weekly challenger eval + shadow stability gate
 
 Mirrors Plan A model_pool weekly IC tracker pattern, adapted for
 trading:config parameter set.
@@ -13,13 +13,11 @@ which:
      with each config as params. Compare sharpe / win_rate / max_dd.
   4. Update Worker D1 config_lifecycle_state via REST (worker admin endpoint)
      + append event to config_lifecycle_events.
-  5. Apply promote / retire logic from services.config_pool_policy:
+  5. Apply shadow stability logic from services.config_pool_policy:
        - Challenger wins or loses are evaluated by active policy thresholds.
-       - Consecutive wins → promote (calls setTradingConfig via worker
-         /api/admin/optuna-push?prod=1 + X-Confirm-Prod: true — internal
-         system trigger, differs from human refactor path).
+       - Consecutive wins emit promotion-ready signal only.
        - Consecutive losses or stale shadow age → retire challenger.
-  6. Discord alert on promote / retire / warning.
+  6. Discord alert on promotion-ready / retire / warning.
 
 Threshold / window are resolved by services.config_pool_policy from
 trading:config configPool / alphaFramework.configPool with audited defaults.
@@ -33,7 +31,7 @@ import anyio
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from services.alpha_evidence_runner import run_alpha_candidate_evidence
+from services.alpha_evidence_runner import run_alpha_candidate_evidence, run_parameter_candidate_evidence
 from services.alpha_policy_search import load_alpha_outcome_rows
 from services.alpha_quality import evaluate_alpha_quality
 from services.alpha_quality_policy import resolve_alpha_quality_inputs
@@ -80,6 +78,22 @@ class AlphaChallengerRequest(BaseModel):
         description="Candidate-specific evidence bundle {candidate_id, backtest, monte_carlo, pbo}.",
     )
     note: Optional[str] = None
+
+
+class ParameterCandidateValidationChainRequest(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+    cadence: Optional[str] = None
+    run_date: Optional[str] = None
+    run_id: Optional[str] = None
+    source: str = "manual"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    lookback_days: int = Field(default=180, ge=30, le=730)
+    initial_capital: float = Field(default=1_000_000, gt=0)
+    mc_simulations: int = Field(default=1000, ge=100, le=10000)
+    limit: int = Field(default=20, ge=1, le=100)
+    persist: bool = True
 
 
 @router.get("/alpha_quality")
@@ -145,6 +159,9 @@ async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...))
             "reason": "sandbox_source_not_alpha_framework",
             "sandbox_source": sandbox.get("source"),
         }
+    candidate_id = _candidate_id_from_sandbox(str(sandbox.get("source") or "alpha_framework"), req.sandbox_id)
+    sandbox["id"] = candidate_id
+    sandbox["candidate_id"] = candidate_id
 
     evidence = req.evidence
     if req.generate_evidence:
@@ -203,8 +220,24 @@ async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...))
         method="POST",
         json_body={
             "sandbox_id": req.sandbox_id,
+            "candidate_id": candidate_id,
+            "promotion_packet_id": (
+                evidence.get("promotion_packet_id")
+                if isinstance(evidence, dict) and evidence.get("promotion_packet_id")
+                else None
+            ),
             "note": req.note or "alpha_framework gate PASS",
             "gate": gate,
+            "evidence_packet": (
+                evidence
+                if isinstance(evidence, dict)
+                else {
+                    "candidate_id": candidate_id,
+                    "decision": gate.get("decision"),
+                    "gate": gate,
+                    "validation_packet": gate.get("validation_packet"),
+                }
+            ),
         },
     )
     return {
@@ -238,6 +271,286 @@ def _client_hash(cfg: dict) -> str:
 def _twdate(dt: Optional[datetime] = None) -> str:
     tw = timezone(timedelta(hours=8))
     return (dt or datetime.now(tw)).strftime("%Y-%m-%d")
+
+
+def _candidate_id_from_sandbox(source: str, sandbox_id: str) -> str:
+    import re
+
+    suffix = sandbox_id.replace("trading:config:sandbox:", "")
+    safe_source = re.sub(r"[^A-Za-z0-9:._-]+", "_", str(source or "unknown").strip().lower())
+    safe_suffix = re.sub(r"[^A-Za-z0-9:._-]+", "_", suffix)
+    return f"parameter:{safe_source}:{safe_suffix}"
+
+
+def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list[dict[str, Any]]:
+    from services.d1_client import query as d1_query
+
+    try:
+        if candidate_ids:
+            placeholders = ",".join("?" for _ in candidate_ids)
+            return d1_query(
+                f"""
+                SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
+                       metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
+                FROM parameter_candidate_registry
+                WHERE candidate_id IN ({placeholders})
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                [*candidate_ids, limit],
+            )
+        return d1_query(
+            """
+            SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
+                   metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
+            FROM parameter_candidate_registry
+            WHERE status IN ('SHADOW_COLLECTING', 'VALIDATION_BLOCKED', 'APPROVAL_REQUIRED')
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[parameter_candidates/validation_chain] registry query failed: %s", exc)
+        return []
+
+
+def _safe_json(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        import json as _json
+
+        parsed = _json.loads(str(raw))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _persist_parameter_candidate_evidence(
+    candidate_id: str,
+    evidence: dict[str, Any],
+    decision: str,
+    *,
+    source: str = "unknown",
+) -> str | None:
+    import json as _json
+
+    promotion_packet_id = (
+        f"promotion_packet:{candidate_id}:{int(datetime.now(timezone.utc).timestamp())}"
+        if decision == "PASS"
+        else None
+    )
+    status = "PROMOTION_READY" if decision == "PASS" else "VALIDATION_BLOCKED"
+    persisted = {
+        **evidence,
+        "candidate_id": candidate_id,
+        "decision": decision,
+        "promotion_packet_id": promotion_packet_id,
+    }
+    await fetch_worker_admin(
+        "/api/internal/d1/batch",
+        method="POST",
+        json_body={
+            "statements": [
+                {
+                    "sql": (
+                        "INSERT INTO parameter_candidate_registry "
+                        "(candidate_id, source, status, latest_evidence_json, promotion_packet_id, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, datetime('now')) "
+                        "ON CONFLICT(candidate_id) DO NOTHING"
+                    ),
+                    "params": [
+                        candidate_id,
+                        source or "unknown",
+                        status,
+                        _json.dumps(persisted, ensure_ascii=False),
+                        promotion_packet_id,
+                    ],
+                },
+                {
+                    "sql": (
+                        "INSERT INTO parameter_candidate_evidence "
+                        "(candidate_id, evidence_type, decision, evidence_json, promotion_packet_id) "
+                        "VALUES (?, ?, ?, ?, ?)"
+                    ),
+                    "params": [
+                        candidate_id,
+                        "candidate_specific_validation",
+                        decision,
+                        _json.dumps(persisted, ensure_ascii=False),
+                        promotion_packet_id,
+                    ],
+                },
+                {
+                    "sql": (
+                        "UPDATE parameter_candidate_registry "
+                        "SET status = ?, latest_evidence_json = ?, promotion_packet_id = ?, updated_at = datetime('now') "
+                        "WHERE candidate_id = ?"
+                    ),
+                    "params": [
+                        status,
+                        _json.dumps(persisted, ensure_ascii=False),
+                        promotion_packet_id,
+                        candidate_id,
+                    ],
+                },
+                {
+                    "sql": (
+                        "INSERT INTO parameter_candidate_events "
+                        "(candidate_id, event_type, detail_json) VALUES (?, ?, ?)"
+                    ),
+                    "params": [
+                        candidate_id,
+                        "candidate_specific_validation",
+                        _json.dumps({
+                            "decision": decision,
+                            "status": status,
+                            "promotion_packet_id": promotion_packet_id,
+                        }, ensure_ascii=False),
+                    ],
+                },
+            ],
+        },
+    )
+    return promotion_packet_id
+
+
+@router.post("/parameter_candidates/validation_chain")
+async def parameter_candidates_validation_chain(
+    req: ParameterCandidateValidationChainRequest = Body(default=ParameterCandidateValidationChainRequest()),
+) -> dict:
+    """Run candidate-specific validation for parameter/config challengers.
+
+    The chain is candidate-specific: same snapshot baseline/challenger replay,
+    Mode B backtest, regime-aware Monte Carlo, CSCV rank-logit PBO,
+    paired partition walk-forward, and Hansen SPA data-snooping guard. Proxy
+    PBO remains proxy_pbo_blocked and cannot create a promotion_packet_id.
+    """
+    end_date = req.end_date or req.run_date or _twdate()
+    start_date = req.start_date or (datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)).strftime("%Y-%m-%d")
+    await fetch_worker_admin("/api/admin/config/parameter-candidates?limit=1", method="GET")
+    rows = _load_parameter_candidate_rows(req.candidate_ids, req.limit)
+    if not rows:
+        return {
+            "status": "NO_CANDIDATE",
+            "total": 0,
+            "ready": 0,
+            "blocked": 0,
+            "shadow_stability_only": False,
+            "message": "No parameter candidate rows found in D1 registry.",
+        }
+
+    baseline_config = await fetch_worker_admin("/api/admin/config", method="GET")
+    baseline_config = baseline_config if isinstance(baseline_config, dict) else {}
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        candidate_id = str(row.get("candidate_id") or "")
+        sandbox_id = row.get("sandbox_id")
+        source = str(row.get("source") or "")
+        if not sandbox_id:
+            results.append({
+                "candidate_id": candidate_id,
+                "source": source,
+                "status": "VALIDATION_BLOCKED",
+                "reason": "sandbox_missing_or_non_config_shadow_state",
+                "proxy_pbo_blocked": True,
+            })
+            continue
+
+        try:
+            sandbox = await fetch_worker_admin(f"/api/admin/config/sandbox/{sandbox_id}", method="GET")
+        except HTTPException as exc:
+            results.append({
+                "candidate_id": candidate_id,
+                "source": source,
+                "status": "VALIDATION_BLOCKED",
+                "reason": "sandbox_body_unavailable",
+                "detail": exc.detail,
+                "proxy_pbo_blocked": True,
+            })
+            continue
+
+        candidate = {
+            **sandbox,
+            "id": candidate_id,
+            "candidate_id": candidate_id,
+            "sandbox_id": sandbox_id,
+            "metadata": {
+                **_safe_json(row.get("metadata_json")),
+                "registry": {
+                    "cadence": row.get("cadence"),
+                    "run_id": row.get("run_id"),
+                    "status": row.get("status"),
+                    "source": source,
+                },
+            },
+        }
+        evidence = await anyio.to_thread.run_sync(
+            lambda: run_parameter_candidate_evidence(
+                candidate,
+                start_date=start_date,
+                end_date=end_date,
+                baseline_config=baseline_config,
+                initial_capital=req.initial_capital,
+                mc_simulations=req.mc_simulations,
+                parity_audit={"worker_parity": {"decision": "MISSING", "source": "validation_chain"}},
+            )
+        )
+        gate = evidence.get("gate") if isinstance(evidence.get("gate"), dict) else {}
+        validation_packet = gate.get("validation_packet") if isinstance(gate.get("validation_packet"), dict) else {}
+        pbo_method = (((gate.get("inputs") or {}).get("pbo") or {}).get("method") if isinstance(gate.get("inputs"), dict) else None) \
+            or (((evidence.get("pbo") or {}).get("method")) if isinstance(evidence.get("pbo"), dict) else None)
+        proxy_pbo_blocked = str(pbo_method or "").lower() != "cscv_rank_logit"
+        decision = "PASS" if gate.get("decision") == "PASS" and not proxy_pbo_blocked else "FAIL"
+        if proxy_pbo_blocked:
+            failed = list(gate.get("failed_gates") or [])
+            if "proxy_pbo_blocked" not in failed:
+                failed.append("proxy_pbo_blocked")
+            gate["failed_gates"] = failed
+            gate["decision"] = "FAIL"
+            gate["passed"] = False
+            evidence["gate"] = gate
+            decision = "FAIL"
+
+        promotion_packet_id = await _persist_parameter_candidate_evidence(candidate_id, evidence, decision, source=source) if req.persist else None
+        results.append({
+            "candidate_id": candidate_id,
+            "source": source,
+            "status": "PROMOTION_READY" if decision == "PASS" else "VALIDATION_BLOCKED",
+            "decision": decision,
+            "promotion_packet_id": promotion_packet_id,
+            "failed_gates": gate.get("failed_gates") or [],
+            "validation_packet_decision": validation_packet.get("decision"),
+            "pbo_method": pbo_method,
+            "proxy_pbo_blocked": proxy_pbo_blocked,
+        })
+
+    ready = sum(1 for item in results if item.get("status") == "PROMOTION_READY")
+    blocked = sum(1 for item in results if item.get("status") == "VALIDATION_BLOCKED")
+    return {
+        "status": "completed",
+        "mode": "candidate-specific",
+        "start_date": start_date,
+        "end_date": end_date,
+        "cadence": req.cadence,
+        "run_id": req.run_id,
+        "source": req.source,
+        "validation": {
+            "backtest": "Mode B paired replay",
+            "monte_carlo": "regime-aware block bootstrap",
+            "pbo": "cscv_rank_logit",
+            "walk_forward": "paired partition walk-forward",
+            "data_snooping": "Hansen SPA / White Reality Check",
+        },
+        "total": len(results),
+        "ready": ready,
+        "blocked": blocked,
+        "results": results,
+    }
 
 
 def _perf_summary(metrics: Any) -> dict:
@@ -392,6 +705,7 @@ async def weekly_eval(
         "consecutive_losses": consecutive_losses,
         "action": action,
         "action_reason": action_reason,
+        "shadow_stability_only": True,
         "apply": req.apply,
     }
 
@@ -425,13 +739,15 @@ async def weekly_eval(
         },
     })
 
-    # Execute action if any
+    # Execute shadow action if any. weekly_eval is shadow_stability_only:
+    # a win can start final promotion controller review, but never writes prod.
     if action == "promote":
-        promote_resp = await fetch_worker_admin("/api/admin/config/challenger/promote_to_prod",
-                                           method="POST",
-                                           headers={"X-Confirm-Prod": "true"},
-                                           json_body={"reason": action_reason})
-        eval_result["promote_result"] = promote_resp
+        eval_result["shadow_stability_only"] = True
+        eval_result["promotion_signal"] = {
+            "status": "PROMOTION_READY_SIGNAL",
+            "reason": action_reason,
+            "next_action": "run final promotion controller with candidate-specific evidence packet",
+        }
     elif action == "retire":
         retire_resp = await fetch_worker_admin(
             f"/api/admin/config/challenger?reason={action_reason.replace(' ', '+')}",

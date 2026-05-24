@@ -1,3 +1,5 @@
+import json
+
 from services.alpha_evidence_runner import run_parameter_candidate_evidence
 
 
@@ -49,3 +51,54 @@ def test_parameter_candidate_evidence_bundle_is_candidate_specific():
     assert evidence["pbo"]["method"] == "cscv_rank_logit"
     assert evidence["walk_forward"]["method"] == "paired_partition_walk_forward"
     assert evidence["gate"]["inputs"]["candidate_id"] == "parameter:sltp:test"
+
+
+def test_parameter_candidate_evidence_preserves_mode_b_replay_funnel():
+    def fake_replay(**kwargs):
+        return {
+            "end_date": "2026-05-22",
+            "mode": "B",
+            "total_trades": 0,
+            "trades": [],
+            "partition_returns": [],
+            "sharpe": 0.0,
+            "profit_factor": 0.0,
+            "max_drawdown": 0.0,
+            "absolute_confidence": "moderate",
+            "sanity_flags": ["n_trades=0 < 30"],
+            "entry_attempts": 174,
+            "entries_filled": 0,
+            "fill_rate": 0.0,
+            "skip_reasons": {"skipped_no_ml_pred": 142, "skipped_low_conf": 32},
+            "mode_b_prediction_diagnostics": {
+                "cache_size": 1035,
+                "source_counts": {"predictions.direction_accuracy_legacy": 1035},
+            },
+            "mode_b_threshold_diagnostics": {
+                "buy_conf_threshold": 0.6,
+                "source": "fallback_default",
+            },
+        }
+
+    evidence = run_parameter_candidate_evidence(
+        {
+            "id": "parameter:screener:test",
+            "config": {"screener": {"minAvgVolume": 350000}},
+        },
+        start_date="2026-02-21",
+        end_date="2026-05-22",
+        baseline_config={"screener": {"minAvgVolume": 300000}},
+        parity_audit={"worker_parity": {"decision": "MISSING", "source": "validation_chain"}},
+        dataset_loader=lambda **_: "dataset",
+        replay_fn=fake_replay,
+    )
+
+    backtest = evidence["backtest"]
+    assert backtest["entry_attempts"] == 174
+    assert backtest["entries_filled"] == 0
+    assert backtest["skip_reasons"] == {"skipped_no_ml_pred": 142, "skipped_low_conf": 32}
+    assert backtest["mode_b_prediction_diagnostics"]["cache_size"] == 1035
+    assert backtest["mode_b_threshold_diagnostics"]["source"] == "fallback_default"
+
+    raw = json.loads(backtest["raw_results"])
+    assert raw["skip_reasons"]["skipped_no_ml_pred"] == 142

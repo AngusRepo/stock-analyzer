@@ -74,9 +74,21 @@ def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[
         "profit_factor": _metric_attr(metrics, "profit_factor", 0.0),
         "max_drawdown": _metric_attr(metrics, "max_drawdown", 1.0),
     }
+    entry_attempts = _metric_attr(metrics, "entry_attempts", 0)
+    entries_filled = _metric_attr(metrics, "entries_filled", 0)
+    fill_rate = _metric_attr(metrics, "fill_rate", 0.0)
+    skip_reasons = _metric_attr(metrics, "skip_reasons", {}) or {}
+    mode_b_prediction_diagnostics = _metric_attr(metrics, "mode_b_prediction_diagnostics", {}) or {}
+    mode_b_threshold_diagnostics = _metric_attr(metrics, "mode_b_threshold_diagnostics", {}) or {}
     raw = {
         "mode": _metric_attr(metrics, "mode", "B"),
         "summary": summary,
+        "entry_attempts": entry_attempts,
+        "entries_filled": entries_filled,
+        "fill_rate": fill_rate,
+        "skip_reasons": skip_reasons,
+        "mode_b_prediction_diagnostics": mode_b_prediction_diagnostics,
+        "mode_b_threshold_diagnostics": mode_b_threshold_diagnostics,
         "absolute_confidence": _metric_attr(metrics, "absolute_confidence", "moderate"),
         "sanity_flags": _metric_attr(metrics, "sanity_flags", []) or [],
         "parity_audit": parity_audit or {},
@@ -88,6 +100,12 @@ def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[
         "sharpe": summary["sharpe"],
         "profit_factor": summary["profit_factor"],
         "max_drawdown": summary["max_drawdown"],
+        "entry_attempts": entry_attempts,
+        "entries_filled": entries_filled,
+        "fill_rate": fill_rate,
+        "skip_reasons": skip_reasons,
+        "mode_b_prediction_diagnostics": mode_b_prediction_diagnostics,
+        "mode_b_threshold_diagnostics": mode_b_threshold_diagnostics,
         "raw_results": json.dumps(raw),
     }
 

@@ -991,6 +991,46 @@ class Candidate:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _as_confidence(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return max(0.0, min(1.0, number))
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _mode_b_confidence_from_row(row: dict[str, Any]) -> tuple[float | None, str | None]:
+    recommendation_conf = _as_confidence(row.get("recommendation_conf"))
+    if recommendation_conf is not None:
+        return recommendation_conf, "daily_recommendations.confidence"
+
+    forecast = _json_object(row.get("forecast_data"))
+    ensemble_v2 = forecast.get("ensemble_v2") if isinstance(forecast.get("ensemble_v2"), dict) else {}
+    forecast_conf = _as_confidence(ensemble_v2.get("confidence"))
+    if forecast_conf is not None:
+        return forecast_conf, "forecast_data.ensemble_v2.confidence"
+
+    legacy_conf = _as_confidence(row.get("legacy_conf"))
+    if legacy_conf is not None:
+        return legacy_conf, "predictions.direction_accuracy_legacy"
+
+    return None, None
+
+
 class MLPredictionsCache:
     """Pre-loads ensemble-row predictions from D1 for the entire backtest
     date range so simulate_entries_for_date can apply realistic confidence
@@ -999,23 +1039,25 @@ class MLPredictionsCache:
     Storage: dict {(symbol, date) → confidence float in [0,1]}.
     Returns None on miss (caller decides skip vs default behavior).
 
-    Source:
-      D1 predictions WHERE
-        model_name='ensemble' AND
-        prediction_date BETWEEN start_date AND end_date
-
-    confidence is read from `direction_accuracy` column (set at INSERT time
-    by recommendation_service to ml result["confidence"], which is the
-    rank_to_signal output for the feature-model ensemble; post-Migration C this
-    is the same value, ensemble_v2.avg_rank delta is small until time-series
-    IC accumulates). Stage 4 follow-up may add ensemble_v2_confidence column.
+    Source precedence:
+      1. daily_recommendations.confidence (live pending-buy gate owner)
+      2. forecast_data.ensemble_v2.confidence
+      3. predictions.direction_accuracy legacy compatibility
     """
 
-    def __init__(self, predictions: dict[tuple[str, str], float]):
+    def __init__(
+        self,
+        predictions: dict[tuple[str, str], float],
+        *,
+        source_counts: dict[str, int] | None = None,
+        row_count: int = 0,
+    ):
         self._cache = predictions
         self._n = len(predictions)
         self._symbols = {sym for sym, _ in predictions}
         self._dates = {d for _, d in predictions}
+        self._source_counts = source_counts or {}
+        self._row_count = row_count
 
     @classmethod
     def load_from_d1(cls, start_date: str, end_date: str) -> "MLPredictionsCache":
@@ -1026,26 +1068,64 @@ class MLPredictionsCache:
         """
         from services.d1_client import query as d1_query
         sql = """
-            SELECT s.symbol, p.prediction_date AS d, p.direction_accuracy AS conf
+            SELECT s.symbol,
+                   p.prediction_date AS d,
+                   dr.confidence AS recommendation_conf,
+                   p.direction_accuracy AS legacy_conf,
+                   p.trade_signal,
+                   p.forecast_data
             FROM predictions p
             JOIN stocks s ON s.id = p.stock_id
+            LEFT JOIN daily_recommendations dr
+              ON dr.symbol = s.symbol
+             AND dr.date = p.prediction_date
             WHERE p.model_name = 'ensemble'
               AND p.prediction_date >= ?
               AND p.prediction_date <= ?
-              AND p.direction_accuracy IS NOT NULL
+
+            UNION ALL
+
+            SELECT dr.symbol,
+                   dr.date AS d,
+                   dr.confidence AS recommendation_conf,
+                   NULL AS legacy_conf,
+                   dr.signal AS trade_signal,
+                   NULL AS forecast_data
+            FROM daily_recommendations dr
+            WHERE dr.date >= ?
+              AND dr.date <= ?
+              AND dr.confidence IS NOT NULL
         """
-        rows = d1_query(sql, [start_date, end_date])
+        rows = d1_query(sql, [start_date, end_date, start_date, end_date])
         out: dict[tuple[str, str], float] = {}
+        source_by_key: dict[tuple[str, str], str] = {}
+        source_priority = {
+            "daily_recommendations.confidence": 3,
+            "forecast_data.ensemble_v2.confidence": 2,
+            "predictions.direction_accuracy_legacy": 1,
+        }
         for r in rows:
-            try:
-                out[(r["symbol"], r["d"])] = float(r["conf"])
-            except (TypeError, ValueError):
+            symbol = str(r.get("symbol") or "").strip()
+            date = str(r.get("d") or "").strip()
+            if not symbol or not date:
                 continue
+            confidence, source = _mode_b_confidence_from_row(r)
+            if confidence is None or source is None:
+                continue
+            key = (symbol, date)
+            previous_source = source_by_key.get(key)
+            if previous_source and source_priority[source] <= source_priority[previous_source]:
+                continue
+            out[key] = confidence
+            source_by_key[key] = source
+        source_counts: dict[str, int] = {}
+        for source in source_by_key.values():
+            source_counts[source] = source_counts.get(source, 0) + 1
         logger.info(
             f"[MLPredictionsCache] Loaded {len(out)} (symbol,date) "
-            f"predictions for {start_date}..{end_date}"
+            f"predictions for {start_date}..{end_date} sources={source_counts}"
         )
-        return cls(out)
+        return cls(out, source_counts=source_counts, row_count=len(rows))
 
     @classmethod
     def empty(cls) -> "MLPredictionsCache":
@@ -1069,6 +1149,16 @@ class MLPredictionsCache:
             "miss": n_total - n_hit,
             "ratio": round(n_hit / max(n_total, 1), 4),
             "cache_size": self._n,
+            "source_counts": self._source_counts,
+        }
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "cache_size": self._n,
+            "row_count": self._row_count,
+            "symbols": len(self._symbols),
+            "dates": len(self._dates),
+            "source_counts": dict(self._source_counts),
         }
 
 
@@ -3636,6 +3726,8 @@ class BacktestMetrics:
     entries_filled: int = 0                      # status='filled' count
     fill_rate: float = 0.0                       # entries_filled / entry_attempts
     skip_reasons: dict[str, int] = field(default_factory=dict)  # status → count
+    mode_b_prediction_diagnostics: dict[str, Any] = field(default_factory=dict)
+    mode_b_threshold_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     # Exit distribution
     exit_distribution: dict[str, int] = field(default_factory=dict)  # reason category → count
@@ -4276,6 +4368,7 @@ def replay_period(
     ml_cache: Optional[MLPredictionsCache] = None
     buy_conf_threshold: Optional[float] = None
     circuit_cfg_b: Optional[dict] = None   # #28 P2: shared across days
+    buy_conf_threshold_source: Optional[str] = None
     verified_preds_cache: list[dict] = []  # #28 P2: verified predictions for rolling acc
     from services.backtest_state import (
         BacktestMarketState, load_verified_predictions,
@@ -4288,6 +4381,11 @@ def replay_period(
         try:
             ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
             circuit_cfg_b = (params or {}).get("circuit", {}) or {}
+            buy_conf_threshold_source = (
+                "params.circuit.buyConfThreshold"
+                if "buyConfThreshold" in circuit_cfg_b
+                else "fallback_default"
+            )
             buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
             logger.info(
                 f"[BacktestEngine] Mode B: cache_size={ml_cache._n}, "
@@ -4497,6 +4595,14 @@ def replay_period(
         mode=mode,
         regime_by_date=regime_map,
     )
+    if mode == "B" and ml_cache is not None:
+        metrics.mode_b_prediction_diagnostics = ml_cache.diagnostics()
+        metrics.mode_b_threshold_diagnostics = {
+            "buy_conf_threshold": buy_conf_threshold,
+            "source": buy_conf_threshold_source or "unknown",
+        }
+        if buy_conf_threshold_source == "fallback_default":
+            metrics.sanity_flags.append("mode_b_buy_conf_threshold_fallback")
 
     logger.info(
         f"[BacktestEngine] Done: trades={metrics.total_trades} "

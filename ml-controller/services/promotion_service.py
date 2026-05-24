@@ -91,6 +91,21 @@ def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "max_drawdown": _as_float(row.get("max_drawdown") or summary.get("max_drawdown"), 1.0),
         "absolute_confidence": raw.get("absolute_confidence") or "low",
         "sanity_flags": raw.get("sanity_flags") or [],
+        "entry_attempts": _as_int(raw.get("entry_attempts") or row.get("entry_attempts"), 0),
+        "entries_filled": _as_int(raw.get("entries_filled") or row.get("entries_filled"), 0),
+        "fill_rate": _as_float(raw.get("fill_rate") or row.get("fill_rate"), 0.0),
+        "skip_reasons": raw.get("skip_reasons") if isinstance(raw.get("skip_reasons"), dict) else {},
+        "mode_b_prediction_diagnostics": (
+            raw.get("mode_b_prediction_diagnostics")
+            if isinstance(raw.get("mode_b_prediction_diagnostics"), dict)
+            else {}
+        ),
+        "mode_b_threshold_diagnostics": (
+            raw.get("mode_b_threshold_diagnostics")
+            if isinstance(raw.get("mode_b_threshold_diagnostics"), dict)
+            else {}
+        ),
+        "raw_results": row.get("raw_results"),
         "per_regime": raw.get("per_regime") if isinstance(raw.get("per_regime"), dict) else {},
         "parity_audit": raw.get("parity_audit") if isinstance(raw.get("parity_audit"), dict) else {},
         "walk_forward": raw.get("walk_forward") if isinstance(raw.get("walk_forward"), dict) else {},

@@ -580,11 +580,31 @@ async def parameter_candidates_validation_chain(
             validation_run_id=validation_run_id,
         )
         if not sandbox_id:
+            evidence = {
+                "candidate_id": candidate_id,
+                "source": source,
+                "reason": "sandbox_missing_or_non_config_shadow_state",
+                "proxy_pbo_blocked": True,
+                "gate": {
+                    "decision": "FAIL",
+                    "passed": False,
+                    "failed_gates": ["sandbox_missing_or_non_config_shadow_state"],
+                    "validation_packet": {"decision": "FAIL"},
+                },
+            }
+            await _persist_parameter_candidate_evidence(
+                candidate_id,
+                evidence,
+                "FAIL",
+                source=source,
+                validation_run_id=validation_run_id,
+            )
             results.append({
                 "candidate_id": candidate_id,
                 "source": source,
                 "status": "VALIDATION_BLOCKED",
                 "reason": "sandbox_missing_or_non_config_shadow_state",
+                "decision": "FAIL",
                 "proxy_pbo_blocked": True,
             })
             continue
@@ -592,12 +612,33 @@ async def parameter_candidates_validation_chain(
         try:
             sandbox = await fetch_worker_admin(f"/api/admin/config/sandbox/{sandbox_id}", method="GET")
         except HTTPException as exc:
+            evidence = {
+                "candidate_id": candidate_id,
+                "source": source,
+                "reason": "sandbox_body_unavailable",
+                "detail": exc.detail,
+                "proxy_pbo_blocked": True,
+                "gate": {
+                    "decision": "FAIL",
+                    "passed": False,
+                    "failed_gates": ["sandbox_body_unavailable"],
+                    "validation_packet": {"decision": "FAIL"},
+                },
+            }
+            await _persist_parameter_candidate_evidence(
+                candidate_id,
+                evidence,
+                "FAIL",
+                source=source,
+                validation_run_id=validation_run_id,
+            )
             results.append({
                 "candidate_id": candidate_id,
                 "source": source,
                 "status": "VALIDATION_BLOCKED",
                 "reason": "sandbox_body_unavailable",
                 "detail": exc.detail,
+                "decision": "FAIL",
                 "proxy_pbo_blocked": True,
             })
             continue

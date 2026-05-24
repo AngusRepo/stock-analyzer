@@ -89,6 +89,13 @@ assert(
 )
 
 assert(
+  configPool.includes('sandbox_missing_or_non_config_shadow_state') &&
+    configPool.includes('sandbox_body_unavailable') &&
+    configPool.match(/_persist_parameter_candidate_evidence\(\s*candidate_id,\s*evidence,\s*"FAIL"/s),
+  'validation-blocked candidates without replayable sandbox state must still persist FAIL evidence rows',
+)
+
+assert(
   kvPusher.includes('OPTUNA_RUN_ID') &&
     kvPusher.includes('OPTUNA_CADENCE') &&
     kvPusher.includes('OPTUNA_RUN_DATE'),

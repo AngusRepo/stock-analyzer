@@ -23,7 +23,11 @@ Threshold / window are resolved by services.config_pool_policy from
 trading:config configPool / alphaFramework.configPool with audited defaults.
 """
 from __future__ import annotations
+import json
 import logging
+import os
+import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
@@ -42,6 +46,7 @@ from services.worker_config_client import WorkerConfigClientError, worker_fetch
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config_pool", tags=["config_pool"])
+PARAMETER_VALIDATION_JOB_NAME = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep").strip() or "optuna-research-sweep"
 
 
 async def fetch_worker_admin(*args, **kwargs) -> dict:
@@ -335,9 +340,11 @@ async def _persist_parameter_candidate_evidence(
     decision: str,
     *,
     source: str = "unknown",
+    validation_run_id: str | None = None,
 ) -> str | None:
     import json as _json
 
+    evidence_type = "candidate_specific_validation"
     promotion_packet_id = (
         f"promotion_packet:{candidate_id}:{int(datetime.now(timezone.utc).timestamp())}"
         if decision == "PASS"
@@ -349,12 +356,25 @@ async def _persist_parameter_candidate_evidence(
         "candidate_id": candidate_id,
         "decision": decision,
         "promotion_packet_id": promotion_packet_id,
+        "validation_run_id": validation_run_id,
     }
     await fetch_worker_admin(
         "/api/internal/d1/batch",
         method="POST",
         json_body={
             "statements": [
+                {
+                    "sql": (
+                        "DELETE FROM parameter_candidate_evidence "
+                        "WHERE candidate_id = ? AND evidence_type = ? "
+                        "AND json_extract(evidence_json, '$.validation_run_id') = ?"
+                    ),
+                    "params": [
+                        candidate_id,
+                        evidence_type,
+                        validation_run_id,
+                    ],
+                },
                 {
                     "sql": (
                         "INSERT INTO parameter_candidate_registry "
@@ -378,7 +398,7 @@ async def _persist_parameter_candidate_evidence(
                     ),
                     "params": [
                         candidate_id,
-                        "candidate_specific_validation",
+                        evidence_type,
                         decision,
                         _json.dumps(persisted, ensure_ascii=False),
                         promotion_packet_id,
@@ -409,6 +429,7 @@ async def _persist_parameter_candidate_evidence(
                             "decision": decision,
                             "status": status,
                             "promotion_packet_id": promotion_packet_id,
+                            "validation_run_id": validation_run_id,
                         }, ensure_ascii=False),
                     ],
                 },
@@ -416,6 +437,107 @@ async def _persist_parameter_candidate_evidence(
         },
     )
     return promotion_packet_id
+
+
+async def _record_parameter_candidate_validation_running(
+    candidate_id: str,
+    *,
+    source: str,
+    validation_run_id: str | None,
+) -> None:
+    import json as _json
+
+    await fetch_worker_admin(
+        "/api/internal/d1/batch",
+        method="POST",
+        json_body={
+            "statements": [
+                {
+                    "sql": (
+                        "INSERT INTO parameter_candidate_events "
+                        "(candidate_id, event_type, detail_json) VALUES (?, ?, ?)"
+                    ),
+                    "params": [
+                        candidate_id,
+                        "candidate_validation_running",
+                        _json.dumps({
+                            "source": source,
+                            "validation_run_id": validation_run_id,
+                        }, ensure_ascii=False),
+                    ],
+                },
+            ],
+        },
+    )
+
+
+@router.post("/parameter_candidates/validation_chain/run")
+def trigger_parameter_candidates_validation_chain_job(
+    req: ParameterCandidateValidationChainRequest = Body(default=ParameterCandidateValidationChainRequest()),
+) -> dict:
+    """Trigger candidate-specific validation as a Cloud Run Job.
+
+    The synchronous validation route remains useful for local tests and manual
+    diagnostics, but production callback closure must not depend on a long HTTP
+    request staying open.
+    """
+    run_id = req.run_id or f"parameter-validation-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    env_overrides = {
+        "OPTUNA_JOB_KIND": "parameter_validation",
+        "PARAMETER_VALIDATION_RUN_ID": run_id,
+        "PARAMETER_VALIDATION_CADENCE": req.cadence or "",
+        "PARAMETER_VALIDATION_RUN_DATE": req.run_date or "",
+        "PARAMETER_VALIDATION_SOURCE": req.source or "validation_chain_run",
+        "PARAMETER_VALIDATION_CANDIDATE_IDS": json.dumps(req.candidate_ids, ensure_ascii=False),
+        "PARAMETER_VALIDATION_START_DATE": req.start_date or "",
+        "PARAMETER_VALIDATION_END_DATE": req.end_date or "",
+        "PARAMETER_VALIDATION_LOOKBACK_DAYS": str(req.lookback_days),
+        "PARAMETER_VALIDATION_INITIAL_CAPITAL": str(req.initial_capital),
+        "PARAMETER_VALIDATION_MC_SIMULATIONS": str(req.mc_simulations),
+        "PARAMETER_VALIDATION_LIMIT": str(req.limit),
+        "PARAMETER_VALIDATION_PERSIST": "1" if req.persist else "0",
+        "PARAMETER_VALIDATION_METADATA": json.dumps(req.metadata or {}, ensure_ascii=False),
+    }
+    try:
+        from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run parameter validation Job client unavailable: {type(e).__name__}: {e}",
+        ) from e
+
+    try:
+        execution = CloudRunJobsClient(job_name=PARAMETER_VALIDATION_JOB_NAME).run_job(
+            env_overrides=env_overrides,
+            reject_if_running=False,
+        )
+    except JobAlreadyRunningError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"{PARAMETER_VALIDATION_JOB_NAME} already has an active execution",
+                "execution_id": e.execution.execution_id,
+                "execution_name": e.execution.execution_name,
+                "run_id": run_id,
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[parameter_candidates/validation_chain/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run parameter validation Job trigger failed: {type(e).__name__}: {e}",
+        ) from e
+
+    return {
+        "status": "triggered",
+        "job": PARAMETER_VALIDATION_JOB_NAME,
+        "source": "parameter_candidate_validation",
+        "run_id": run_id,
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "candidate_ids": req.candidate_ids,
+        "message": "parameter candidate validation Job triggered; callback expected",
+    }
 
 
 @router.post("/parameter_candidates/validation_chain")
@@ -431,6 +553,7 @@ async def parameter_candidates_validation_chain(
     """
     end_date = req.end_date or req.run_date or _twdate()
     start_date = req.start_date or (datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)).strftime("%Y-%m-%d")
+    validation_run_id = req.run_id or f"parameter-validation-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     await fetch_worker_admin("/api/admin/config/parameter-candidates?limit=1", method="GET")
     rows = _load_parameter_candidate_rows(req.candidate_ids, req.limit)
     if not rows:
@@ -451,6 +574,11 @@ async def parameter_candidates_validation_chain(
         candidate_id = str(row.get("candidate_id") or "")
         sandbox_id = row.get("sandbox_id")
         source = str(row.get("source") or "")
+        await _record_parameter_candidate_validation_running(
+            candidate_id,
+            source=source,
+            validation_run_id=validation_run_id,
+        )
         if not sandbox_id:
             results.append({
                 "candidate_id": candidate_id,
@@ -516,7 +644,13 @@ async def parameter_candidates_validation_chain(
             evidence["gate"] = gate
             decision = "FAIL"
 
-        promotion_packet_id = await _persist_parameter_candidate_evidence(candidate_id, evidence, decision, source=source) if req.persist else None
+        promotion_packet_id = await _persist_parameter_candidate_evidence(
+            candidate_id,
+            evidence,
+            decision,
+            source=source,
+            validation_run_id=validation_run_id,
+        ) if req.persist else None
         results.append({
             "candidate_id": candidate_id,
             "source": source,
@@ -538,6 +672,7 @@ async def parameter_candidates_validation_chain(
         "end_date": end_date,
         "cadence": req.cadence,
         "run_id": req.run_id,
+        "validation_run_id": validation_run_id,
         "source": req.source,
         "validation": {
             "backtest": "Mode B paired replay",

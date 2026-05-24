@@ -11,6 +11,7 @@ const controllerWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows
 const schema = fs.readFileSync('schema.sql', 'utf8')
 const optunaJob = fs.readFileSync('../ml-controller/optuna_job_main.py', 'utf8')
 const configPool = fs.readFileSync('../ml-controller/routers/config_pool.py', 'utf8')
+const kvPusher = fs.readFileSync('../ml-controller/services/kv_pusher.py', 'utf8')
 
 assert(
   registry.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_registry') &&
@@ -63,12 +64,34 @@ assert(
 )
 
 assert(
+  controllerWorkflows.includes('/config_pool/parameter_candidates/validation_chain/run') &&
+    controlRoutes.includes('classifySchedulerSummary(summary)') &&
+    optunaJob.includes('job_kind == "parameter_validation"') &&
+    configPool.includes('/parameter_candidates/validation_chain/run'),
+  'weekly/monthly Optuna callback must trigger async parameter validation Job and let the Job callback own final scheduler status',
+)
+
+assert(
   configPool.includes('/parameter_candidates/validation_chain') &&
     configPool.includes('candidate-specific') &&
     configPool.includes('promotion_packet_id') &&
     configPool.includes('ON CONFLICT(candidate_id) DO NOTHING') &&
     configPool.includes('/api/admin/config/parameter-candidates?limit=1'),
   'ml-controller must expose candidate-specific validation chain and persist promotion packet ids',
+)
+
+assert(
+  configPool.includes('DELETE FROM parameter_candidate_evidence') &&
+    configPool.includes('validation_run_id') &&
+    configPool.includes('candidate_validation_running'),
+  'parameter candidate validation must be idempotent per candidate/run and expose per-candidate running events',
+)
+
+assert(
+  kvPusher.includes('OPTUNA_RUN_ID') &&
+    kvPusher.includes('OPTUNA_CADENCE') &&
+    kvPusher.includes('OPTUNA_RUN_DATE'),
+  'Optuna push metadata must carry run_id/cadence/run_date so registry rows are traceable to the scheduler execution',
 )
 
 assert(

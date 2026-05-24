@@ -113,7 +113,7 @@ async function handleSchedulerCallback(c: any) {
       error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
     }, 400)
   }
-  const { isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+  const { classifySchedulerSummary, isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
   if (!isSchedulerStatus(body.status)) {
     return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
   }
@@ -197,7 +197,7 @@ async function handleSchedulerCallback(c: any) {
           metadata: callbackMetadata,
         })
         await logSchedulerResult(c.env.KV, 'parameter-candidate-validation', {
-          status: 'success',
+          status: classifySchedulerSummary(summary),
           summary,
           duration_ms: 0,
           run_id: callbackRunId,

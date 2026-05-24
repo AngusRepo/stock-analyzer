@@ -6,6 +6,7 @@ research lifecycle and posts the final scheduler callback to Worker.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -39,6 +40,40 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_json_dict(name: str) -> dict[str, Any]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _env_json_list(name: str) -> list[str]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _build_request() -> OptunaResearchSweepReq:
     return OptunaResearchSweepReq(
         cadence=os.environ.get("OPTUNA_CADENCE", "weekly"),
@@ -66,6 +101,26 @@ def _build_per_regime_request() -> PerRegimeReq:
         research_data_source=os.environ.get("OPTUNA_RESEARCH_DATA_SOURCE", "snapshot"),
         push_kv=_env_bool("OPTUNA_PUSH_KV", True),
         dry_run=_env_bool("OPTUNA_DRY_RUN", False),
+    )
+
+
+def _build_parameter_validation_request():
+    from routers.config_pool import ParameterCandidateValidationChainRequest
+
+    return ParameterCandidateValidationChainRequest(
+        candidate_ids=_env_json_list("PARAMETER_VALIDATION_CANDIDATE_IDS"),
+        cadence=os.environ.get("PARAMETER_VALIDATION_CADENCE") or None,
+        run_date=os.environ.get("PARAMETER_VALIDATION_RUN_DATE") or None,
+        run_id=os.environ.get("PARAMETER_VALIDATION_RUN_ID") or os.environ.get("OPTUNA_RUN_ID") or None,
+        source=os.environ.get("PARAMETER_VALIDATION_SOURCE") or "parameter_validation_job",
+        metadata=_env_json_dict("PARAMETER_VALIDATION_METADATA"),
+        start_date=os.environ.get("PARAMETER_VALIDATION_START_DATE") or None,
+        end_date=os.environ.get("PARAMETER_VALIDATION_END_DATE") or None,
+        lookback_days=_env_int("PARAMETER_VALIDATION_LOOKBACK_DAYS", 180),
+        initial_capital=_env_float("PARAMETER_VALIDATION_INITIAL_CAPITAL", 1_000_000.0),
+        mc_simulations=_env_int("PARAMETER_VALIDATION_MC_SIMULATIONS", 1000),
+        limit=_env_int("PARAMETER_VALIDATION_LIMIT", 20),
+        persist=_env_bool("PARAMETER_VALIDATION_PERSIST", True),
     )
 
 
@@ -135,12 +190,50 @@ def _build_research_metadata(
     }
 
 
+def _build_parameter_validation_metadata(
+    result: dict[str, Any] | None,
+    *,
+    job_kind: str,
+    run_id: str,
+) -> dict[str, Any]:
+    results = result.get("results") if isinstance(result, dict) and isinstance(result.get("results"), list) else []
+    return {
+        "source": "parameter_candidate_validation",
+        "executor": "cloud_run_job",
+        "job_kind": job_kind,
+        "run_id": run_id,
+        "status": result.get("status") if isinstance(result, dict) else None,
+        "total": result.get("total") if isinstance(result, dict) else None,
+        "ready": result.get("ready") if isinstance(result, dict) else None,
+        "blocked": result.get("blocked") if isinstance(result, dict) else None,
+        "validation_run_id": result.get("validation_run_id") if isinstance(result, dict) else None,
+        "candidate_ids": [item.get("candidate_id") for item in results if isinstance(item, dict)],
+        "results": [
+            {
+                "candidate_id": item.get("candidate_id"),
+                "source": item.get("source"),
+                "status": item.get("status"),
+                "decision": item.get("decision"),
+                "promotion_packet_id": item.get("promotion_packet_id"),
+                "failed_gates": item.get("failed_gates"),
+                "pbo_method": item.get("pbo_method"),
+            }
+            for item in results
+            if isinstance(item, dict)
+        ],
+    }
+
+
 async def _run() -> int:
     job_kind = os.environ.get("OPTUNA_JOB_KIND", "research_sweep").strip() or "research_sweep"
     if job_kind == "per_regime":
         req = _build_per_regime_request()
         cadence = req.cadence or "queue"
         task = os.environ.get("OPTUNA_CALLBACK_TASK", "optuna-queue")
+    elif job_kind == "parameter_validation":
+        req = _build_parameter_validation_request()
+        cadence = req.cadence or "weekly"
+        task = "parameter-candidate-validation"
     else:
         req = _build_request()
         cadence = req.cadence
@@ -151,14 +244,17 @@ async def _run() -> int:
         or f"optuna-{job_kind}-{cadence}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     )
     run_date = os.environ.get("OPTUNA_RUN_DATE", "") or ""
+    if job_kind == "parameter_validation":
+        run_id = getattr(req, "run_id", None) or run_id
+        run_date = getattr(req, "run_date", None) or run_date
 
     logger.info(
         "[OptunaJob] start kind=%s task=%s run_id=%s trials=%s subset=%s parallel=%s",
         job_kind,
         task,
         run_id,
-        req.n_trials,
-        req.subset_size,
+        getattr(req, "n_trials", None),
+        getattr(req, "subset_size", None),
         getattr(req, "max_parallel_sources", 1),
     )
 
@@ -171,15 +267,28 @@ async def _run() -> int:
     try:
         if job_kind == "per_regime":
             result = await asyncio.to_thread(run_per_regime, req)
+        elif job_kind == "parameter_validation":
+            from routers.config_pool import parameter_candidates_validation_chain
+
+            result = await parameter_candidates_validation_chain(req)
         else:
             result = await asyncio.to_thread(execute_research_sweep, req)
         failures = result.get("failures") if isinstance(result, dict) else None
-        if isinstance(result, dict) and result.get("status") == "completed" and not failures:
+        if job_kind == "parameter_validation" and isinstance(result, dict) and result.get("status") in {"NO_CANDIDATE"}:
+            status = "skipped"
+        elif isinstance(result, dict) and result.get("status") in {"completed", "NO_CANDIDATE"} and not failures:
             status = "success"
         else:
             status = "error"
             error = "; ".join(str(item) for item in (failures or [])) or str(result)
-        summary = _summarize_result(result if isinstance(result, dict) else {})
+        if job_kind == "parameter_validation" and isinstance(result, dict):
+            summary = (
+                f"candidate_validation status={result.get('status', 'completed')} "
+                f"total={result.get('total', 0)} ready={result.get('ready', 0)} "
+                f"blocked={result.get('blocked', 0)} validation_run_id={result.get('validation_run_id') or run_id}"
+            )[:1200]
+        else:
+            summary = _summarize_result(result if isinstance(result, dict) else {})
     except Exception as exc:  # noqa: BLE001
         logger.exception("[OptunaJob] failed")
         error = f"{type(exc).__name__}: {exc}"
@@ -217,6 +326,12 @@ async def _run() -> int:
             run_id=run_id,
             run_date=run_date,
         )
+    elif job_kind == "parameter_validation":
+        payload["metadata"] = _build_parameter_validation_metadata(
+            result,
+            job_kind=job_kind,
+            run_id=run_id,
+        )
     if run_date:
         payload["run_date"] = run_date
     if error:
@@ -224,7 +339,7 @@ async def _run() -> int:
 
     await _callback_worker(payload)
     logger.info("[OptunaJob] finished task=%s status=%s", task, status)
-    return 0 if status == "success" else 1
+    return 0 if status in {"success", "skipped"} else 1
 
 
 def main() -> None:

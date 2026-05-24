@@ -119,7 +119,7 @@ export async function runParameterCandidateValidationChain(
   const { ensureParameterCandidateTables } = await import('./parameterCandidateRegistry')
   await ensureParameterCandidateTables(env.DB)
 
-  const resp = await controllerFetch(env, '/config_pool/parameter_candidates/validation_chain', {
+  const resp = await controllerFetch(env, '/config_pool/parameter_candidates/validation_chain/run', {
     method: 'POST',
     jsonBody: {
       cadence: options.cadence,
@@ -130,7 +130,7 @@ export async function runParameterCandidateValidationChain(
       metadata: options.metadata ?? {},
       persist: true,
     },
-    timeoutMs: 120_000,
+    timeoutMs: 60_000,
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
@@ -139,6 +139,9 @@ export async function runParameterCandidateValidationChain(
   const result = text ? JSON.parse(text) as Record<string, any> : {}
   if (result.status === 'failed' || result.status === 'error') {
     throw new Error(`parameter candidate validation failed: ${result.reason ?? result.error ?? result.status}`)
+  }
+  if (result.status === 'triggered') {
+    return `triggered candidate_validation Job run_id=${result.run_id ?? options.runId ?? 'unknown'} execution_id=${result.execution_id ?? 'unknown'} callback expected`
   }
   return `candidate_validation status=${result.status ?? 'completed'} total=${result.total ?? 0} ready=${result.ready ?? 0} blocked=${result.blocked ?? 0}`
 }

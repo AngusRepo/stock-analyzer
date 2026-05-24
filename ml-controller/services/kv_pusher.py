@@ -20,6 +20,19 @@ WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip() or "http://127
 AUTH_TOKEN = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 
+def _with_optuna_run_context(meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    merged = dict(meta or {})
+    context = {
+        "run_id": os.environ.get("OPTUNA_RUN_ID", "").strip(),
+        "cadence": os.environ.get("OPTUNA_CADENCE", "").strip(),
+        "run_date": os.environ.get("OPTUNA_RUN_DATE", "").strip(),
+    }
+    for key, value in context.items():
+        if value and not merged.get(key):
+            merged[key] = value
+    return merged or None
+
+
 def push_optuna_result(
     source: str,
     params: dict[str, Any],
@@ -36,8 +49,9 @@ def push_optuna_result(
 
     url = f"{WORKER_URL.rstrip('/')}/api/admin/optuna-push"
     body: dict = {"source": source, "params": params}
-    if meta is not None:
-        body["meta"] = meta
+    enriched_meta = _with_optuna_run_context(meta)
+    if enriched_meta is not None:
+        body["meta"] = enriched_meta
 
     headers = {
         "Authorization": f"Bearer {AUTH_TOKEN}",

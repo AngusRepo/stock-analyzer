@@ -215,3 +215,15 @@ def test_pipeline_exports_research_snapshot_after_recommendation_write():
     assert '"source": "dataset_snapshot_export"' in modal_app_source
     assert '"compute_owner": "modal"' in modal_app_source
     assert '"remote_function": "dataset_snapshot_export"' in modal_app_source
+
+
+def test_modal_snapshot_export_has_worker_d1_proxy_env():
+    modal_app_source = (ROOT.parent / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    d1_source = (ROOT / "services" / "d1_client.py").read_text(encoding="utf-8")
+
+    assert '"STOCKVISION_WORKER_URL": os.environ.get("STOCKVISION_WORKER_URL", "").strip()' in modal_app_source
+    assert '"STOCKVISION_AUTH_TOKEN": os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()' in modal_app_source
+    assert "secrets=[gcs_secret, cf_secret, runtime_env_secret]" in modal_app_source
+    assert "def _worker_query" in d1_source
+    assert "api/internal/d1/query" in d1_source
+    assert "api/internal/d1/batch" in d1_source

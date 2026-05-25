@@ -97,6 +97,9 @@ runtime_env_secret = modal.Secret.from_dict({
     key: value
     for key, value in {
         "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "stockvision-models").strip(),
+        # Keep D1 reads/writes on the Worker binding instead of stale CF REST tokens.
+        "STOCKVISION_WORKER_URL": os.environ.get("STOCKVISION_WORKER_URL", "").strip(),
+        "STOCKVISION_AUTH_TOKEN": os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip(),
     }.items()
     if value
 })

@@ -156,6 +156,12 @@ def _post_raw(body: dict, timeout: float = 60.0) -> dict:
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
     """Read query — returns list of row dicts."""
+    if WORKER_URL and WORKER_AUTH:
+        try:
+            return _worker_query(sql, params, timeout=timeout)
+        except RuntimeError as e:
+            logger.warning("[d1_client] worker query failed, falling back to D1 REST query: %s", e)
+
     body: dict = {"sql": sql}
     if params:
         body["params"] = params
@@ -178,6 +184,12 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
           'results': []  # empty for write
         }
     """
+    if WORKER_URL and WORKER_AUTH:
+        try:
+            return _worker_execute(sql, params, timeout=timeout)
+        except RuntimeError as e:
+            logger.warning("[d1_client] worker execute failed, falling back to D1 REST query: %s", e)
+
     body: dict = {"sql": sql}
     if params:
         body["params"] = params
@@ -321,6 +333,42 @@ def _raw_batch_execute(
         "rows_read_total": rows_read_total,
         "rows_written_total": rows_written_total,
         "sql_duration_ms_total": round(sql_duration_ms_total, 3),
+    }
+
+
+def _worker_query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
+    if httpx is None:
+        raise RuntimeError("Worker D1 query failed: httpx not installed")
+    if not WORKER_URL or not WORKER_AUTH:
+        raise RuntimeError("Worker D1 query failed: STOCKVISION_WORKER_URL/STOCKVISION_AUTH_TOKEN not configured")
+
+    url = f"{WORKER_URL.rstrip('/')}/api/internal/d1/query"
+    headers = {
+        "Authorization": f"Bearer {WORKER_AUTH}",
+        "Content-Type": "application/json",
+    }
+    body = {"sql": sql, "params": params or []}
+    try:
+        resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Worker D1 query failed: network error: {e}") from e
+    if resp.status_code != 200:
+        raise RuntimeError(f"Worker D1 query failed: HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Worker D1 query unsuccessful: {data}")
+    return data.get("results") or []
+
+
+def _worker_execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> dict:
+    result = _worker_batch_execute([(sql, params or [])], timeout=timeout, chunk_size=1)
+    if int(result.get("error_count") or 0) > 0:
+        raise RuntimeError(f"Worker D1 execute unsuccessful: {result.get('first_error') or result}")
+    return {
+        "success": True,
+        "meta": {"changes": int(result.get("changes_total") or 0)},
+        "results": [],
+        "mode": result.get("mode", "worker_d1_batch"),
     }
 
 

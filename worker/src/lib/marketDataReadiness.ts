@@ -18,6 +18,7 @@ export interface MarketDataReadinessOptions {
   minChipRows?: number
   minIndicatorRows?: number
   requireIndicators?: boolean
+  allowHistoricalLatestAfterTarget?: boolean
 }
 
 export interface MarketDataReadinessResult {
@@ -38,6 +39,11 @@ function normalizeRows(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function dateIsReadyForTarget(actualDate: string | null | undefined, targetDate: string, allowHistorical: boolean): boolean {
+  if (actualDate === targetDate) return true
+  return Boolean(allowHistorical && actualDate && actualDate > targetDate)
+}
+
 export function evaluateMarketDataReadiness(
   stats: MarketDataReadinessStats,
   options: MarketDataReadinessOptions = {},
@@ -48,9 +54,10 @@ export function evaluateMarketDataReadiness(
   const minChipRows = options.minChipRows ?? DEFAULT_MIN_CHIP_ROWS
   const minIndicatorRows = options.minIndicatorRows ?? DEFAULT_MIN_INDICATOR_ROWS
   const requireIndicators = options.requireIndicators ?? true
+  const allowHistorical = Boolean(options.allowHistoricalLatestAfterTarget)
   const errors: string[] = []
 
-  if (stats.priceLatestDate !== stats.targetDate) {
+  if (!dateIsReadyForTarget(stats.priceLatestDate, stats.targetDate, allowHistorical)) {
     errors.push(`price latest=${stats.priceLatestDate ?? 'none'} expected=${stats.targetDate}`)
   }
   if (normalizeRows(stats.priceRowsOnLatest) < minPriceRows) {
@@ -62,13 +69,17 @@ export function evaluateMarketDataReadiness(
   if (stats.priceOtcRowsOnLatest !== undefined && normalizeRows(stats.priceOtcRowsOnLatest) < minPriceOtcRows) {
     errors.push(`OTC price rows=${stats.priceOtcRowsOnLatest}/${minPriceOtcRows}`)
   }
-  if (stats.chipLatestDate !== stats.targetDate) {
+  if (!dateIsReadyForTarget(stats.chipLatestDate, stats.targetDate, allowHistorical)) {
     errors.push(`chip latest=${stats.chipLatestDate ?? 'none'} expected=${stats.targetDate}`)
   }
   if (normalizeRows(stats.chipRowsOnLatest) < minChipRows) {
     errors.push(`chip rows=${stats.chipRowsOnLatest}/${minChipRows}`)
   }
-  if (requireIndicators && stats.indicatorLatestDate !== undefined && stats.indicatorLatestDate !== stats.targetDate) {
+  if (
+    requireIndicators &&
+    stats.indicatorLatestDate !== undefined &&
+    !dateIsReadyForTarget(stats.indicatorLatestDate, stats.targetDate, allowHistorical)
+  ) {
     errors.push(`indicator latest=${stats.indicatorLatestDate ?? 'none'} expected=${stats.targetDate}`)
   }
   if (requireIndicators && stats.indicatorRowsOnLatest !== undefined && normalizeRows(stats.indicatorRowsOnLatest) < minIndicatorRows) {
@@ -90,20 +101,28 @@ export function evaluateMarketDataReadiness(
   }
 }
 
-async function latestTableStats(db: D1Database, table: string): Promise<{ latestDate: string | null; rowsOnLatest: number }> {
+async function latestTableStats(
+  db: D1Database,
+  table: string,
+  targetDate?: string,
+): Promise<{ latestDate: string | null; rowsOnLatest: number }> {
   const latest = await db.prepare(`SELECT MAX(date) AS latest_date FROM ${table}`).first<{ latest_date: string | null }>()
   const latestDate = latest?.latest_date ?? null
   if (!latestDate) return { latestDate: null, rowsOnLatest: 0 }
-  const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(latestDate).first<{ count: number }>()
+  const countDate = targetDate && latestDate >= targetDate ? targetDate : latestDate
+  const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(countDate).first<{ count: number }>()
   return { latestDate, rowsOnLatest: normalizeRows(row?.count) }
 }
 
-async function latestChipStats(db: D1Database): Promise<{ latestDate: string | null; rowsOnLatest: number; sourceTable: string }> {
-  const canonical = await latestTableStats(db, 'canonical_chip_daily').catch(() => null)
+async function latestChipStats(
+  db: D1Database,
+  targetDate?: string,
+): Promise<{ latestDate: string | null; rowsOnLatest: number; sourceTable: string }> {
+  const canonical = await latestTableStats(db, 'canonical_chip_daily', targetDate).catch(() => null)
   if (canonical && normalizeRows(canonical.rowsOnLatest) > 0) {
     return { ...canonical, sourceTable: 'canonical_chip_daily' }
   }
-  const legacy = await latestTableStats(db, 'chip_data')
+  const legacy = await latestTableStats(db, 'chip_data', targetDate)
   return { ...legacy, sourceTable: 'chip_data' }
 }
 
@@ -129,13 +148,18 @@ async function latestPriceSegmentStats(
 export async function loadMarketDataReadinessStats(
   db: D1Database,
   targetDate: string,
+  options: MarketDataReadinessOptions = {},
 ): Promise<MarketDataReadinessStats> {
+  const historicalTargetDate = options.allowHistoricalLatestAfterTarget ? targetDate : undefined
   const [price, chip, indicators] = await Promise.all([
-    latestTableStats(db, 'stock_prices'),
-    latestChipStats(db),
-    latestTableStats(db, 'technical_indicators'),
+    latestTableStats(db, 'stock_prices', historicalTargetDate),
+    latestChipStats(db, historicalTargetDate),
+    latestTableStats(db, 'technical_indicators', historicalTargetDate),
   ])
-  const priceSegments = await latestPriceSegmentStats(db, price.latestDate)
+  const priceSegmentDate = historicalTargetDate && price.latestDate && price.latestDate >= historicalTargetDate
+    ? historicalTargetDate
+    : price.latestDate
+  const priceSegments = await latestPriceSegmentStats(db, priceSegmentDate)
   return {
     targetDate,
     priceLatestDate: price.latestDate,
@@ -155,7 +179,7 @@ export async function assertMarketDataReady(
   targetDate: string,
   options: MarketDataReadinessOptions = {},
 ): Promise<MarketDataReadinessResult> {
-  const stats = await loadMarketDataReadinessStats(db, targetDate)
+  const stats = await loadMarketDataReadinessStats(db, targetDate, options)
   const result = evaluateMarketDataReadiness(stats, options)
   if (!result.ok) {
     throw new Error(result.summary)

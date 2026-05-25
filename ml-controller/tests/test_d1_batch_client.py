@@ -20,6 +20,89 @@ class _FakeResponse:
         return self._payload
 
 
+def test_query_prefers_worker_read_proxy(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return _FakeResponse({
+            "ok": True,
+            "results": [{"symbol": "2330", "date": "2026-05-22"}],
+            "mode": "worker_d1_query",
+        })
+
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(d1_client, "httpx", SimpleNamespace(post=fake_post, RequestError=Exception))
+
+    rows = d1_client.query("SELECT symbol, date FROM daily_recommendations WHERE date=?", ["2026-05-22"])
+
+    assert rows == [{"symbol": "2330", "date": "2026-05-22"}]
+    assert calls[0]["url"] == "https://worker.example/api/internal/d1/query"
+    assert calls[0]["headers"]["Authorization"] == "Bearer token"
+    assert calls[0]["json"] == {
+        "sql": "SELECT symbol, date FROM daily_recommendations WHERE date=?",
+        "params": ["2026-05-22"],
+    }
+
+
+def test_query_falls_back_to_direct_rest_when_worker_query_unavailable(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_worker_query(*args, **kwargs):
+        raise RuntimeError("worker route not deployed")
+
+    def fake_post(body, timeout=60.0):
+        calls.append({"body": body, "timeout": timeout})
+        return {
+            "success": True,
+            "result": [{"results": [{"ok": 1}], "meta": {}}],
+        }
+
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(d1_client, "_worker_query", fake_worker_query)
+    monkeypatch.setattr(d1_client, "_post", fake_post)
+
+    rows = d1_client.query("SELECT 1 AS ok", timeout=12.0)
+
+    assert rows == [{"ok": 1}]
+    assert calls == [{"body": {"sql": "SELECT 1 AS ok"}, "timeout": 12.0}]
+
+
+def test_execute_prefers_worker_single_statement_batch(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_worker_batch(statements, timeout=30.0, chunk_size=250):
+        calls.append({"statements": statements, "timeout": timeout, "chunk_size": chunk_size})
+        return {
+            "mode": "worker_d1_batch",
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "changes_total": 1,
+        }
+
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(d1_client, "_worker_batch_execute", fake_worker_batch)
+
+    result = d1_client.execute(
+        "INSERT OR REPLACE INTO dataset_snapshots(snapshot_id, kind) VALUES(?, ?)",
+        ["s1", "backtest_dataset"],
+        timeout=42.0,
+    )
+
+    assert result["success"] is True
+    assert result["mode"] == "worker_d1_batch"
+    assert result["meta"]["changes"] == 1
+    assert calls == [{
+        "statements": [("INSERT OR REPLACE INTO dataset_snapshots(snapshot_id, kind) VALUES(?, ?)", ["s1", "backtest_dataset"])],
+        "timeout": 42.0,
+        "chunk_size": 1,
+    }]
+
+
 def test_batch_execute_prefers_worker_true_batch(monkeypatch):
     calls: list[dict] = []
 

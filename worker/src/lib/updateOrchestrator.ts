@@ -157,7 +157,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
-    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env.DB, twDate, {
+      requireIndicators: false,
+      allowHistoricalLatestAfterTarget: true,
+    })
     return `bulk fetch skipped; ${ready.summary}`
   }
 
@@ -169,7 +172,10 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
       bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
     console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
-    const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+    const ready = await assertMarketDataReady(env.DB, twDate, {
+      requireIndicators: false,
+      allowHistoricalLatestAfterTarget: true,
+    })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
     return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`

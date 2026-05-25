@@ -146,7 +146,9 @@ export async function assertEveningPipelineReady(
   env: Bindings,
   twDate: string,
 ): Promise<MarketDataReadinessResult> {
-  const ready = await assertMarketDataReady(env.DB, twDate)
+  const ready = await assertMarketDataReady(env.DB, twDate, {
+    allowHistoricalLatestAfterTarget: true,
+  })
   const queueLog = await env.KV.get(`scheduler:run:indicator-queue:${twDate}`, 'json') as {
     status?: string
     summary?: string

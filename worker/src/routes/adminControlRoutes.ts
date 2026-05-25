@@ -32,6 +32,8 @@ function requireServiceToken(c: any) {
 }
 
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
+const D1_QUERY_ALLOWED_READ = new Set(['SELECT', 'WITH'])
+const D1_QUERY_FORBIDDEN_MUTATION = /\b(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|VACUUM|ATTACH|DETACH|TRUNCATE)\b/i
 
 function normalizeD1BatchStatement(raw: any, index: number) {
   const sql = typeof raw?.sql === 'string' ? raw.sql.trim() : ''
@@ -41,6 +43,26 @@ function normalizeD1BatchStatement(raw: any, index: number) {
   const verb = sql.split(/\s+/, 1)[0]?.toUpperCase()
   if (!D1_BATCH_ALLOWED_DML.has(verb)) {
     throw new Error(`statement ${index}: only INSERT/UPDATE/DELETE/REPLACE are allowed`)
+  }
+
+  const params = Array.isArray(raw?.params) ? raw.params : []
+  return { sql, params }
+}
+
+function normalizeD1QueryStatement(raw: any) {
+  const sql = typeof raw?.sql === 'string' ? raw.sql.trim() : ''
+  if (!sql) throw new Error('sql is required')
+  if (sql.includes(';')) throw new Error('multiple SQL statements are not allowed')
+  if (sql.includes('--') || sql.includes('/*') || sql.includes('*/')) {
+    throw new Error('SQL comments are not allowed')
+  }
+
+  const verb = sql.split(/\s+/, 1)[0]?.toUpperCase()
+  if (!D1_QUERY_ALLOWED_READ.has(verb)) {
+    throw new Error('only SELECT/WITH are allowed')
+  }
+  if (verb === 'WITH' && D1_QUERY_FORBIDDEN_MUTATION.test(sql)) {
+    throw new Error('WITH query must be read-only')
   }
 
   const params = Array.isArray(raw?.params) ? raw.params : []
@@ -82,6 +104,35 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
     changes_total: changesTotal,
     duration_ms: Date.now() - t0,
     mode: 'worker_d1_batch',
+  })
+})
+
+adminControlRoutes.post('/api/internal/d1/query', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json().catch(() => null) as any
+  let statement: { sql: string; params: any[] }
+  try {
+    statement = normalizeD1QueryStatement(body)
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? 'invalid query' }, 400)
+  }
+
+  const maxRows = Math.min(Math.max(Number(body?.max_rows ?? 100000) || 100000, 1), 100000)
+  const t0 = Date.now()
+  const result = await c.env.DB.prepare(statement.sql).bind(...statement.params).all()
+  const rows = result.results ?? []
+  if (rows.length > maxRows) {
+    return c.json({ error: `too many rows: ${rows.length} > ${maxRows}` }, 413)
+  }
+
+  return c.json({
+    ok: true,
+    results: rows,
+    meta: result.meta ?? {},
+    duration_ms: Date.now() - t0,
+    mode: 'worker_d1_query',
   })
 })
 

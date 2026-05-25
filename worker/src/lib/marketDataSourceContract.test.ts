@@ -33,8 +33,9 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes('assertMarketDataReady(env.DB, twDate, { requireIndicators: false })'),
-  'bulk fetch readiness must not require indicators before the indicator queue has run',
+  updateOrchestrator.includes('allowHistoricalLatestAfterTarget: true') &&
+    updateOrchestrator.includes('requireIndicators: false'),
+  'bulk fetch readiness must not require indicators before the indicator queue has run and must support historical rerun target dates',
 )
 
 assert(

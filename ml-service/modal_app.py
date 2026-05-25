@@ -33,8 +33,19 @@ def _controller_callback_token() -> str:
         or ""
     )
 
-# Modal image built with the v1.x API.
-image = (
+def _with_common_local_dirs(base_image):
+    return (
+        base_image
+        .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
+        .add_local_dir(str(_LOCAL_CONTROLLER_OPTUNA_DIR), remote_path="/root/optuna_scripts")
+        .add_local_dir(str(_LOCAL_CONTROLLER_ROUTERS_DIR), remote_path="/root/routers")
+        .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
+        .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
+    )
+
+
+# Modal image built with the v1.x API. Build steps must happen before local dirs.
+_base_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
@@ -44,24 +55,16 @@ image = (
         "Chronos2Pipeline.from_pretrained('amazon/chronos-2', device_map='cpu')"
         "\" || echo 'Chronos pre-download skipped (not installed)'",
     )
-    .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
-    .add_local_dir(str(_LOCAL_CONTROLLER_OPTUNA_DIR), remote_path="/root/optuna_scripts")
-    .add_local_dir(str(_LOCAL_CONTROLLER_ROUTERS_DIR), remote_path="/root/routers")
-    .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
-    .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
+image = _with_common_local_dirs(_base_image)
+
 finlab_image = (
-    image
-    .pip_install("finlab==2.0.7")
+    _with_common_local_dirs(_base_image.pip_install("finlab==2.0.7"))
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
 )
 
-optuna_controller_image = (
-    image
-    .pip_install("google-cloud-run>=0.10.0")
-    .add_local_dir(str(_LOCAL_CONTROLLER_ROUTERS_DIR), remote_path="/root/routers")
-)
+optuna_controller_image = _with_common_local_dirs(_base_image.pip_install("google-cloud-run>=0.10.0"))
 
 # Chronos baseline note:
 # Modal image preloads amazon/chronos-2. Optional LoRA fine-tuned Chronos-2 is

@@ -129,6 +129,22 @@ Dry-run：
 .\scripts\finlab_execution_secret_refs.ps1 -ProjectId $env:GCP_PROJECT_ID -Apply
 ```
 
+從 Secret Manager 執行 read-only live smoke：
+
+```powershell
+.\scripts\finlab_execution_live_smoke_from_secrets.ps1 -ProjectId $env:GCP_PROJECT_ID
+```
+
+合格條件：
+
+- `status=pass`
+- `sinopac_account_login=pass`
+- `account_position_readback=pass`
+- `noop_view_only_preview=pass`
+- `can_submit_real_order=false`
+- `preview.uses_create_orders=false`
+- `preview.cancel_orders=false`
+
 掛到 `ml-controller` shadow lane：
 
 ```powershell

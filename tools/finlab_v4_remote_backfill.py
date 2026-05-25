@@ -770,8 +770,8 @@ def canonical_apply_skipped_status(*, write_d1: bool, apply_canonical_d1: bool) 
     }
 
 
-def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[str, str]:
-    end = datetime.fromisoformat(generated_at).date()
+def default_canonical_window(*, generated_at: str, window_days: int, run_date: str | None = None) -> tuple[str, str]:
+    end = datetime.fromisoformat(str(run_date or generated_at)[:10]).date()
     start = end - timedelta(days=max(0, window_days))
     return start.isoformat(), end.isoformat()
 
@@ -846,6 +846,7 @@ def main() -> int:
     parser.add_argument("--write-d1", action="store_true")
     parser.add_argument("--gcs-bucket", default=os.environ.get("GCS_BUCKET_NAME", ""))
     parser.add_argument("--gcs-prefix", default="finlab/v4/backfill")
+    parser.add_argument("--run-date", default="", help="Business date for daily canonical materialization defaults.")
     parser.add_argument("--apply-canonical-d1", action="store_true", help="Materialize row-level canonical tables from this run and upsert them to D1.")
     parser.add_argument("--canonical-start-date", default="", help="Inclusive canonical materialization start date. Defaults to generated_at - window days.")
     parser.add_argument("--canonical-end-date", default="", help="Inclusive canonical materialization end date. Defaults to generated_at date.")
@@ -906,6 +907,7 @@ def main() -> int:
             default_start, default_end = default_canonical_window(
                 generated_at=generated_at,
                 window_days=args.canonical_window_days,
+                run_date=args.run_date or None,
             )
             manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
                 manifest,

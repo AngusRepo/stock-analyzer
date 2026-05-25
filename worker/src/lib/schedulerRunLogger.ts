@@ -65,6 +65,8 @@ const TASK_NAMES: Record<string, string> = {
   'sector-leaders': 'Sector Leaders',
   'monthly-optuna': 'Monthly Optuna',
   'optuna-queue': 'Optuna Queue Processor',
+  'model-artifact-candidate-validation': 'Model Artifact Candidate Validation',
+  'model-artifact-validation': 'Model Artifact Validation',
   'parameter-candidate-validation': 'Parameter Candidate Validation',
   'finlab-v4-backfill': 'FinLab V4 Backfill',
   'monthly-retrain': 'Monthly Universal Retrain',

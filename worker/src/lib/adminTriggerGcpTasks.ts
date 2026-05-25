@@ -27,6 +27,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-backtest': async () => runWeeklyValidationChain(c.env, requestedRunDate()),
     'monte-carlo': () => deps.runWeeklyMonteCarlo(),
     pbo: () => deps.runWeeklyPBO(),
+    'model-artifact-candidate-validation': () => deps.runWeeklyModelArtifactCandidateValidation(),
     'model-artifact-validation': () => deps.runWeeklyModelArtifactValidation(),
     'finlab-v4-backfill': async () => runFinLabV4Backfill(c.env, requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),

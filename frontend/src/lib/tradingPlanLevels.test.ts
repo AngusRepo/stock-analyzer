@@ -3,7 +3,7 @@ import {
   buildTradingPlanLevels,
   normalizeOhlcvRows,
   volumeNode,
-} from './tradingPlanLevels'
+} from './tradingPlanLevels.ts'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -43,4 +43,16 @@ const rows = normalizeOhlcvRows(Array.from({ length: 70 }, (_, index) => {
 {
   const node = volumeNode(rows.slice(-30))
   assert(node != null && node > 140 && node < 170, 'volume node should follow the high-volume price region')
+}
+
+{
+  const normalized = normalizeOhlcvRows([
+    { date: '2026-05-18', open: 170, high: 182.5, low: 170, close: 179, volume: 912149 },
+    { date: '2026-05-21', open: null, high: 175.5, low: 154.5, close: 171, volume: 756140 },
+    { date: '2026-05-25', open: null, high: 179.5, low: 170, close: 177.5, volume: 509201 },
+  ])
+  assert(normalized.length === 3, 'rows with missing open should still be chartable')
+  assert(normalized[1].open === 179, 'missing open should fall back to previous close, not zero')
+  assert(normalized[2].open === 171, 'consecutive missing opens should fall back to the latest valid close')
+  assert(normalized.every((row) => row.open > 0), 'normalized OHLC rows must not create zero-open candles')
 }

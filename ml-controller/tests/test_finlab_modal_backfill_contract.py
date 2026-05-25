@@ -48,6 +48,9 @@ def test_modal_app_exposes_finlab_backfill_function_with_same_cloud_run_spec() -
     assert "memory=16384" in source
     assert "timeout=7200" in source
     assert '"--apply-canonical-d1"' in source
+    assert '"--run-date"' in source
+    assert 'payload.get("canonical_end_date") or payload.get("run_date")' in source
+    assert 'canonical_start = _date_minus_days(canonical_end, canonical_window_days)' in source
     assert '"task": callback_task' in source
 
 

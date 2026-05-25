@@ -10,7 +10,7 @@ Common local commands:
 """
 import os
 import modal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 
@@ -2654,7 +2654,12 @@ def regime_compute(payload: dict) -> dict:
     }
 
 
+def _date_minus_days(date_text: str, days: int) -> str:
+    return (datetime.fromisoformat(str(date_text)[:10]).date() - timedelta(days=max(0, days))).isoformat()
+
+
 def _finlab_backfill_cli_args(payload: dict) -> list[str]:
+    canonical_window_days = int(payload.get("canonical_window_days") or 7)
     args = [
         "--years",
         str(int(payload.get("years") or 3)),
@@ -2663,20 +2668,26 @@ def _finlab_backfill_cli_args(payload: dict) -> list[str]:
         "--output-dir",
         str(payload.get("output_dir") or "/tmp/finlab_remote_backfill"),
         "--canonical-window-days",
-        str(int(payload.get("canonical_window_days") or 7)),
+        str(canonical_window_days),
         "--gcs-prefix",
         str(payload.get("gcs_prefix") or "finlab/v4/backfill"),
     ]
+    if payload.get("run_date"):
+        args.extend(["--run-date", str(payload["run_date"])])
     if payload.get("gcs_bucket"):
         args.extend(["--gcs-bucket", str(payload["gcs_bucket"])])
     if _truthy(payload.get("write_d1", True)):
         args.append("--write-d1")
     if _truthy(payload.get("apply_canonical_d1", True)):
         args.append("--apply-canonical-d1")
-    if payload.get("canonical_start_date"):
-        args.extend(["--canonical-start-date", str(payload["canonical_start_date"])])
-    if payload.get("canonical_end_date"):
-        args.extend(["--canonical-end-date", str(payload["canonical_end_date"])])
+    canonical_end = payload.get("canonical_end_date") or payload.get("run_date")
+    canonical_start = payload.get("canonical_start_date")
+    if canonical_end and not canonical_start:
+        canonical_start = _date_minus_days(canonical_end, canonical_window_days)
+    if canonical_start:
+        args.extend(["--canonical-start-date", str(canonical_start)])
+    if canonical_end:
+        args.extend(["--canonical-end-date", str(canonical_end)])
     if payload.get("canonical_datasets"):
         args.extend(["--canonical-datasets", str(payload["canonical_datasets"])])
     if payload.get("canonical_limit_per_dataset"):

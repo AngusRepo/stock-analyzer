@@ -76,7 +76,7 @@ assert(
 for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '方案 A | 突破追價', '方案 B | 拉回低吸', '風控規則', 'Gemini 3.1 Flash', 'Breeze2', 'Alpha 規則引擎']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
 }
-for (const text of ['買入參考區', '量能成本區']) {
+for (const text of ['前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', '量能節點']) {
   assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
 }
 assert(
@@ -87,7 +87,7 @@ assert(
   scoreBreakdown.includes('reasonVariants?.gemini'),
   'Gemini comparison should read persisted Score V2 reason variants per symbol when available',
 )
-for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Charts', 'createChart', 'CandlestickSeries', 'TradePlanRow', '樂觀區間']) {
+for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Charts', 'createChart', 'CandlestickSeries', 'TradePlanRow', 'ATR 防守']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading plan should render structured rows and chart: ${text}`)
 }
 for (const text of ['isRawDebugWatchPoint', 'market_segment:', 'chip_source=', 'broker_net_(?:amount|shares)_5d']) {

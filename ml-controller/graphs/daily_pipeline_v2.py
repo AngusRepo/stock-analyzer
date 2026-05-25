@@ -678,7 +678,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
         if top_k_enabled and top_k_count > 0:
             ranked = sorted(
-                ((sym, v) for sym, v in pred_map.items() if "ensemble_v2" in v),
+                ((sym, v) for sym, v in pred_map.items() if "ensemble_v2" in v and _prediction_eligible_for_topk(v)),
                 key=lambda kv: kv[1]["ensemble_v2"].get("avg_rank", 0.0),
                 reverse=True,
             )
@@ -781,6 +781,20 @@ def _normalize_market_segment(segment: Any) -> str | None:
 def _prediction_market_segment(pred: dict) -> str | None:
     meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
     return _normalize_market_segment(meta.get("market_segment") or meta.get("market"))
+
+
+def _prediction_eligible_for_topk(pred: dict) -> bool:
+    """Controller top-K is a production BUY override, so it must stay tradable-only."""
+    meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
+    segment = _prediction_market_segment(pred)
+    lane = str(meta.get("recommendation_lane") or "").strip() or ("tradable" if segment in {"LISTED", "OTC"} else "")
+    if segment == "EMERGING":
+        return False
+    if lane and lane != "tradable":
+        return False
+    if meta.get("eligible_for_pending_buy") is False or meta.get("eligible_for_execution") is False:
+        return False
+    return True
 
 
 def _coerce_ic_value(value: Any) -> float | None:

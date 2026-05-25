@@ -725,6 +725,19 @@ def _require_canonical_score_v2_components(row: dict) -> dict[str, float]:
     return _score_v2_components_from_row({"score_components": payload})
 
 
+def _score_v2_final_score_for_ranking(row: dict) -> float:
+    payload = _parse_score_components_payload(row.get("score_components"))
+    if not isinstance(payload, dict) or payload.get("version") != SCORE_V2_VERSION:
+        symbol = row.get("symbol") or row.get("stock_id") or "unknown"
+        raise ValueError(f"Score V2 score_components required for ranking promotion: {symbol}")
+    final = payload.get("finalScore")
+    if final is None:
+        final = payload.get("total")
+    if final is None:
+        final = sum(_score_v2_components_from_row({"score_components": payload}).values())
+    return _clamp_score(final, 100)
+
+
 def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
     maxima = {
         "trendStructure": 7.0,
@@ -1426,8 +1439,9 @@ def hybrid_ranking_promotion(
     alpha_policy: dict | None = None,
 ) -> list[dict]:
     """
-    Sprint 3 P0-4: combined_score = α*screener_norm + β*ml_conf + γ*signal_tier
-    若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
+    Sprint 3 P0-4: 若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
+    Score V2 is the ranking owner; ML confidence/signal tier are tie-breakers,
+    not a second legacy scoring formula.
 
     #B Option 1 (2026-04-21): promoted rows now also get signal="BUY" and a
     higher conf floor (ensemble_v2.topKConfidenceOverride, default 0.72). Prior
@@ -1438,9 +1452,6 @@ def hybrid_ranking_promotion(
     if not ranking_config or not ranking_config.get("enabled", True):
         return recommendations
 
-    alpha = ranking_config.get("alpha", 0.40)
-    beta = ranking_config.get("beta", 0.40)
-    gamma = ranking_config.get("gamma", 0.20)
     top_k = ranking_config.get("topK", 3)
     policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
@@ -1449,19 +1460,26 @@ def hybrid_ranking_promotion(
     # boost — pick max so neither config can silently regress the other.
     effective_boost = max(float(promote_min_conf), boost_conf)
 
-    # Compute combined_score for each
+    promotion_weights = ranking_config.get("scoreV2PromotionWeights") or {}
+    score_v2_weight = float(promotion_weights.get("scoreV2", 0.80))
+    ml_conf_weight = float(promotion_weights.get("mlConfidence", 0.15))
+    signal_tier_weight = float(promotion_weights.get("signalTier", 0.05))
+    weight_total = max(1e-9, score_v2_weight + ml_conf_weight + signal_tier_weight)
+
+    # Compute combined_score for each.
     scored = []
     for r in recommendations:
-        score_v2 = _require_canonical_score_v2_components(r)
-        screener_norm = min(
-            1.0,
-            (score_v2["chipFlow"] + score_v2["technicalStructure"])
-            / (SCORE_V2_WEIGHTS["chipFlow"] + SCORE_V2_WEIGHTS["technicalStructure"]),
-        )
+        _require_canonical_score_v2_components(r)
+        score_v2_norm = min(1.0, _score_v2_final_score_for_ranking(r) / 100.0)
         ml_conf = max(0.0, min(1.0, r.get("confidence") or 0))
         tier = _signal_tier(r.get("signal"))
-        combined = alpha * screener_norm + beta * ml_conf + gamma * tier
+        combined = (
+            (score_v2_weight * score_v2_norm)
+            + (ml_conf_weight * ml_conf)
+            + (signal_tier_weight * tier)
+        ) / weight_total
         r["_combined_score"] = combined
+        r["_combined_score_source"] = "score_v2_final_score_plus_ml_tiebreak"
         scored.append(r)
 
     current_buy = sum(1 for r in scored if r.get("has_buy_signal") == 1)
@@ -1470,12 +1488,18 @@ def hybrid_ranking_promotion(
         for r in scored
         if r.get("signal_source") == "ensemble_v2_topk_policy" or r.get("topk_forced")
     ]
-    if controller_policy_syms:
+    if controller_policy_syms and current_buy >= top_k:
         logger.info(
-            f"[Ranking] controller top-K policy already promoted {len(controller_policy_syms)} rows; "
+            f"[Ranking] controller top-K policy already supplied {current_buy}/{top_k} buy rows; "
             f"skip recommendation-layer promotion: {controller_policy_syms}"
         )
         return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
+    if controller_policy_syms and current_buy < top_k:
+        logger.warning(
+            f"[Ranking] controller top-K policy rows are not enough eligible buys "
+            f"({current_buy}/{top_k}); backfilling tradable recommendation-layer promotion. "
+            f"controller_policy_syms={controller_policy_syms}"
+        )
     if current_buy >= top_k:
         logger.info(f"[Ranking] has_buy_signal={current_buy} >= topK={top_k}, no promotion")
         return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)

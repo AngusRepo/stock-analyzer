@@ -47,3 +47,8 @@ assert(
     source.includes("'margin_data.legacy_margin_short_amount'"),
   'chip tile should use official FinLab daily amount while leverage can still use fresh legacy margin tables when canonical_chip_daily is stale',
 )
+assert(
+  source.includes('canonical_chip_daily.target_margin_missing') &&
+    source.includes('target canonical_chip_daily rows exist but margin/short are empty'),
+  'leverage tile should fallback to fresh margin_data when target-date canonical_chip_daily rows exist but margin/short fields are empty',
+)

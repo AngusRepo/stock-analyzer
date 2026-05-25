@@ -43,6 +43,12 @@ def test_normalize_symbol_handles_rotc_name_suffix() -> None:
 def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     start, end = default_canonical_window(generated_at="2026-05-20T14:00:00+00:00", window_days=7)
     assert (start, end) == ("2026-05-13", "2026-05-20")
+    start, end = default_canonical_window(
+        generated_at="2026-05-26T14:00:00+00:00",
+        window_days=1,
+        run_date="2026-05-25",
+    )
+    assert (start, end) == ("2026-05-24", "2026-05-25")
     datasets = parse_canonical_datasets("")
     assert "canonical_market_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets

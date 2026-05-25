@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -316,6 +317,78 @@ def test_model_artifact_validation_chain_persists_blocked_candidate_packet(monke
     assert params[1] == "rolling_ic_passed"
     assert params[2] == "shadowing"
     assert params[3] == "blocked_multi_evidence_gate"
+
+
+def test_model_artifact_candidate_validation_chain_persists_candidate_specific_packet(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        if "FROM model_artifact_registry" in sql:
+            return [{
+                "artifact_id": "DLinear:v20260517170259:monthly_release",
+                "model_name": "DLinear",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "shadowing",
+                "offline_gate_decision": "STRONG_PASS",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": (
+                    '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
+                    '"registration":{"model_cpcv":{"decision":"PASS","failed_gates":[]}}}'
+                ),
+                "live_gate_status": "rolling_ic_passed",
+                "live_evidence_json": "{}",
+            }]
+        if "FROM predictions active" in sql:
+            assert "forecast_data AS active_forecast_data" in sql
+            assert "forecast_data AS candidate_forecast_data" in sql
+            assert "direction_accuracy AS active_score" not in sql
+            rows = []
+            regimes = ["bull", "volatile", "sideways", "bull", "volatile", "sideways"]
+            for day in range(6):
+                for rank in range(12):
+                    actual = 0.016 - rank * 0.001 if rank < 4 else -0.004 - rank * 0.0002
+                    rows.append({
+                        "stock_id": 1000 + rank,
+                        "sample_date": f"2026-05-{10 + day:02d}",
+                        "active_forecast_data": json.dumps({"rank_score": 0.50 + rank * 0.003}),
+                        "candidate_forecast_data": json.dumps({"rank_score": 0.95 - rank * 0.03}),
+                        "actual_return_pct": actual,
+                        "regime": regimes[day],
+                    })
+            return rows
+        return []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_model_artifact_candidate_validation_chain(
+        model_name="DLinear",
+        limit=10,
+        lookback_days=90,
+        persist=True,
+        refresh_validation=False,
+    )
+
+    assert result["updated"] == 1
+    assert result["generated"] == 1
+    assert executed
+    offline = registry._json_loads(executed[0]["params"][0])
+    packet = offline["candidate_validation_packet"]
+    assert packet["source"] == "model_artifact_candidate_validation_chain"
+    assert packet["scope"] == "model_artifact_candidate_promotion_evidence"
+    assert packet["candidate_specific"] is True
+    assert packet["artifact_id"] == "DLinear:v20260517170259:monthly_release"
+    assert packet["pbo"]["method"] == "cscv_rank_logit"
+    assert packet["monte_carlo"]["simulation_method"] == "regime_block_bootstrap"
+    assert packet["deflated_sharpe"]["method"] == "deflated_sharpe_bailey_lopez_de_prado"
+    assert packet["data_snooping"]["method"] == "hansen_spa"
+    assert packet["validation_packet"]["source"] == "model_artifact_candidate_evidence_gate"
+    assert offline["candidate_specific_validation"]["artifact_id"] == packet["artifact_id"]
 
 
 def test_model_artifact_validation_chain_promotes_multi_evidence_when_packet_passes(monkeypatch):

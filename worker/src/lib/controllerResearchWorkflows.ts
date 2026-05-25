@@ -530,8 +530,34 @@ export async function runWeeklyPBO(env: Bindings) {
   return `PBO=${result.pbo}(${result.go_live_verdict}), OOS=${result.oos_mean_return}`
 }
 
+export async function runWeeklyModelArtifactCandidateValidation(env: Bindings) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/model_pool/artifact_registry/candidate_validation_chain', {
+    method: 'POST',
+    jsonBody: {
+      limit: 200,
+      lookback_days: 90,
+      mc_simulations: 1000,
+      persist: true,
+      refresh_validation: false,
+    },
+    timeoutMs: 180_000,
+  }).catch(() => null)
+  if (!resp?.ok) return 'failed'
+
+  const result = await resp.json() as Record<string, any>
+  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  const errorCount = Array.isArray(result.errors) ? result.errors.length : 0
+  if (result.status === 'partial' || errorCount > 0) return `failed: partial errors=${errorCount}`
+  return `artifacts=${result.count ?? 0}, generated=${result.generated ?? 0}, updated=${result.updated ?? 0}, errors=${errorCount}`
+}
+
 export async function runWeeklyModelArtifactValidation(env: Bindings) {
   requireController(env)
+
+  const candidateEvidence = await runWeeklyModelArtifactCandidateValidation(env)
+  if (isFailureSummary(candidateEvidence)) return `failed: candidate_evidence ${candidateEvidence}`
 
   const resp = await controllerFetch(env, '/model_pool/artifact_registry/validation_chain', {
     method: 'POST',
@@ -543,7 +569,7 @@ export async function runWeeklyModelArtifactValidation(env: Bindings) {
   const result = await resp.json() as Record<string, any>
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
   await invalidateModelPoolReadCache(env.KV)
-  return `artifacts=${result.count ?? 0}, updated=${result.updated ?? 0}, ready=${result.ready ?? 0}, blocked=${result.blocked ?? 0}`
+  return `candidate(${candidateEvidence}) | gate(artifacts=${result.count ?? 0}, updated=${result.updated ?? 0}, ready=${result.ready ?? 0}, blocked=${result.blocked ?? 0})`
 }
 
 export async function runWeeklyAlphaQuality(env: Bindings) {

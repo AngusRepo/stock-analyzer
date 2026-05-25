@@ -30,6 +30,11 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function positivePrice(value: unknown): number | null {
+  const n = finiteNumber(value)
+  return n != null && n > 0 ? n : null
+}
+
 function rowVolume(row: any): number {
   return finiteNumber(row?.volume ?? row?.Trading_Volume ?? row?.trading_volume) ?? 0
 }
@@ -39,24 +44,27 @@ function round2(value: number): number {
 }
 
 export function normalizeOhlcvRows(rows: any[]): OhlcvRow[] {
-  return rows
-    .map((row) => {
-      const open = finiteNumber(row?.open)
-      const high = finiteNumber(row?.high)
-      const low = finiteNumber(row?.low)
-      const close = finiteNumber(row?.close)
-      const date = String(row?.date ?? '').slice(0, 10)
-      if (!date || open == null || high == null || low == null || close == null) return null
-      return {
-        date,
-        open,
-        high,
-        low,
-        close,
-        volume: Math.max(0, rowVolume(row)),
-      }
+  const normalized: OhlcvRow[] = []
+  let previousClose: number | null = null
+  for (const row of rows) {
+    const close = positivePrice(row?.close ?? row?.avg_price)
+    const date = String(row?.date ?? '').slice(0, 10)
+    if (!date || close == null) continue
+    const avg = positivePrice(row?.avg_price)
+    const open = positivePrice(row?.open) ?? previousClose ?? avg ?? close
+    const high = Math.max(positivePrice(row?.high) ?? close, open, close)
+    const low = Math.min(positivePrice(row?.low) ?? close, open, close)
+    normalized.push({
+      date,
+      open,
+      high,
+      low,
+      close,
+      volume: Math.max(0, rowVolume(row)),
     })
-    .filter(Boolean) as OhlcvRow[]
+    previousClose = close
+  }
+  return normalized
 }
 
 export function simpleMovingAverage(rows: OhlcvRow[], period: number): number | null {

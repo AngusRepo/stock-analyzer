@@ -198,6 +198,7 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{
       ),
       daily AS (
         SELECT c.date,
+               COUNT(*) AS canonical_rows,
                COUNT(m.close) AS priced_rows,
                SUM(CASE WHEN m.close IS NOT NULL AND c.margin_balance IS NOT NULL THEN c.margin_balance * m.close ELSE NULL END) / 100000000.0 AS margin_billion,
                SUM(CASE WHEN m.close IS NOT NULL AND c.short_balance IS NOT NULL THEN c.short_balance * m.close ELSE NULL END) / 100000000.0 AS short_billion,
@@ -215,13 +216,28 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{
       SELECT * FROM daily
     `).bind(date).all<{
       date: string
+      canonical_rows: number | null
       priced_rows: number | null
       margin_rows: number | null
       short_rows: number | null
       margin_billion: number | null
       short_billion: number | null
     }>()
-    const list = (rows.results ?? []).filter((row) => Number(row.priced_rows ?? 0) > 0 && Number(row.margin_rows ?? 0) > 0)
+    const dailyRows = rows.results ?? []
+    const targetCanonical = dailyRows.find((row) => row.date === date)
+    if (
+      targetCanonical &&
+      Number(targetCanonical.canonical_rows ?? 0) > 0 &&
+      (Number(targetCanonical.margin_rows ?? 0) <= 0 || Number(targetCanonical.short_rows ?? 0) <= 0)
+    ) {
+      const legacy = await legacyLeverageStress(
+        db,
+        date,
+        'canonical_chip_daily.target_margin_missing: target canonical_chip_daily rows exist but margin/short are empty',
+      )
+      if (legacy.marginBillion != null) return legacy
+    }
+    const list = dailyRows.filter((row) => Number(row.priced_rows ?? 0) > 0 && Number(row.margin_rows ?? 0) > 0 && Number(row.short_rows ?? 0) > 0)
     if (!list.length) return await legacyLeverageStress(db, date, 'canonical margin_balance missing')
     const latest = list[list.length - 1]
     const prev = list.length >= 2 ? list[0] : null

@@ -34,6 +34,7 @@ from services.model_artifact_registry import (
     list_artifact_registry,
     list_champion_pointers,
     run_promotion_controller,
+    run_model_artifact_candidate_validation_chain,
     run_model_artifact_validation_chain,
 )
 from services.model_upgrade_research_track import build_research_benchmark_manifest
@@ -505,6 +506,15 @@ class ArtifactValidationChainRequest(BaseModel):
     model_name: str | None = None
     limit: int = 200
     persist: bool = True
+
+
+class ArtifactCandidateValidationChainRequest(BaseModel):
+    model_name: str | None = None
+    limit: int = 200
+    lookback_days: int = 90
+    mc_simulations: int = 1000
+    persist: bool = True
+    refresh_validation: bool = False
 
 
 @router.post("/train_patchtst")
@@ -1645,6 +1655,31 @@ async def artifact_registry_promotion_queue(model_name: str | None = None, limit
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
+
+
+@router.post("/artifact_registry/candidate_validation_chain")
+async def artifact_registry_candidate_validation_chain(req: ArtifactCandidateValidationChainRequest):
+    """Generate per-artifact candidate promotion evidence.
+
+    The aggregate validation chain only reads evidence that already exists.
+    This producer fills each shadow/live-gate candidate with paired replay,
+    CSCV rank-logit PBO, DSR, regime-aware MC, SPA/White Reality Check, and
+    walk-forward evidence before final promotion gating.
+    """
+    try:
+        result = run_model_artifact_candidate_validation_chain(
+            model_name=req.model_name,
+            limit=req.limit,
+            lookback_days=req.lookback_days,
+            mc_simulations=req.mc_simulations,
+            persist=req.persist,
+            refresh_validation=req.refresh_validation,
+        )
+        if req.persist:
+            _invalidate_model_pool_read_cache("artifact_registry_candidate_validation_chain")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry candidate validation chain failed: {e}")
 
 
 @router.post("/artifact_registry/validation_chain")

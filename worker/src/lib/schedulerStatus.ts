@@ -57,6 +57,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },
   { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00 (no retrain)', cron: '0 20 * * 6', group: 'weekly' },
   { id: 'weekly-backtest', name: 'Weekly Validation/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
+  { id: 'model-artifact-candidate-validation', name: 'Model Artifact Candidate Validation', schedule: 'Inside weekly-backtest / manual', cron: 'callback/manual', group: 'weekly' },
+  { id: 'model-artifact-validation', name: 'Model Artifact Validation', schedule: 'After candidate artifact evidence', cron: 'callback/manual', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'parameter-candidate-validation', name: 'Parameter Candidate Validation', schedule: 'After weekly/monthly Optuna callback', cron: 'callback', group: 'weekly' },

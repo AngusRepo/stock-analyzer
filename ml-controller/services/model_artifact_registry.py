@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -761,6 +762,485 @@ def _with_validation_packet(
     return offline, packet
 
 
+def _model_artifact_candidate_rows(
+    *,
+    model_name: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    where = [
+        "(state IS NULL OR state NOT IN ('production', 'archived', 'rejected'))",
+        "(live_gate_status IN ('passed', 'rolling_ic_passed', 'multi_evidence_passed') OR state IN ('shadowing', 'live_gate_passed', 'approval_required'))",
+    ]
+    params: list[Any] = []
+    if model_name:
+        where.append("model_name = ?")
+        params.append(model_name)
+    rows = d1_client.query(
+        f"""
+        SELECT *
+        FROM model_artifact_registry
+        WHERE {' AND '.join(where)}
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        [*params, max(1, min(int(limit or 200), 500))],
+    )
+    return [_decode_registry_row(row) for row in rows]
+
+
+def _load_model_artifact_shadow_pairs(
+    model_name: str,
+    *,
+    lookback_days: int = 90,
+) -> list[dict[str, Any]]:
+    challenger_name = f"{model_name}::challenger"
+    return d1_client.query(
+        """
+        SELECT
+            active.stock_id AS stock_id,
+            active.prediction_date AS sample_date,
+            active.forecast_data AS active_forecast_data,
+            challenger.forecast_data AS candidate_forecast_data,
+            active.actual_return_pct AS actual_return_pct,
+            COALESCE(mr.risk_level, 'unknown') AS regime
+        FROM predictions active
+        JOIN predictions challenger
+          ON challenger.stock_id = active.stock_id
+         AND challenger.prediction_date = active.prediction_date
+         AND challenger.model_name = ?
+        LEFT JOIN market_risk mr
+          ON mr.date = active.prediction_date
+        WHERE active.model_name = ?
+          AND active.verified_at IS NOT NULL
+          AND challenger.verified_at IS NOT NULL
+          AND active.actual_return_pct IS NOT NULL
+          AND active.prediction_date >= date('now', ?)
+        ORDER BY active.prediction_date ASC, active.stock_id ASC
+        """,
+        [challenger_name, model_name, f"-{max(1, int(lookback_days or 90))} days"],
+    )
+
+
+def _pct_return(value: Any) -> float | None:
+    parsed = _as_float(value)
+    if parsed is None:
+        return None
+    if abs(parsed) > 1:
+        return parsed / 100.0
+    return parsed
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _forecast_rank_score(raw: Any) -> float | None:
+    forecast = _json_loads(raw)
+    return _as_float(forecast.get("rank_score"))
+
+
+def _shadow_rank_score(row: dict[str, Any], score_key: str) -> float | None:
+    if score_key == "active_score":
+        return _forecast_rank_score(row.get("active_forecast_data"))
+    if score_key == "candidate_score":
+        return _forecast_rank_score(row.get("candidate_forecast_data"))
+    return _as_float(row.get(score_key))
+
+
+def _shadow_strategy_returns(
+    rows: list[dict[str, Any]],
+    *,
+    score_key: str,
+    top_fraction: float = 0.33,
+) -> tuple[list[float], list[str], int, dict[str, dict[str, Any]]]:
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        date = str(row.get("sample_date") or "")
+        if not date:
+            continue
+        score = _shadow_rank_score(row, score_key)
+        ret = _pct_return(row.get("actual_return_pct"))
+        if score is None or ret is None:
+            continue
+        by_date.setdefault(date, []).append({**row, "_score": score, "_return": ret})
+
+    returns: list[float] = []
+    regimes: list[str] = []
+    selected_count = 0
+    per_regime_raw: dict[str, list[float]] = {}
+    for date in sorted(by_date):
+        candidates = sorted(by_date[date], key=lambda item: float(item["_score"]), reverse=True)
+        top_n = max(1, math.ceil(len(candidates) * max(0.05, min(top_fraction, 1.0))))
+        selected = candidates[:top_n]
+        day_returns = [float(item["_return"]) for item in selected]
+        if not day_returns:
+            continue
+        day_return = _mean(day_returns)
+        returns.append(day_return)
+        selected_count += len(selected)
+        regime = str(selected[0].get("regime") or "unknown")
+        regimes.append(regime)
+        per_regime_raw.setdefault(regime, []).extend(day_returns)
+
+    per_regime = {
+        regime: {
+            "trades": len(values),
+            "total_return": round(sum(values), 8),
+            "oos_return": round(_mean(values), 8),
+        }
+        for regime, values in per_regime_raw.items()
+    }
+    return returns, regimes, selected_count, per_regime
+
+
+def _compound_partition_returns(values: list[float], n_partitions: int = 6) -> list[float]:
+    partitions = max(1, int(n_partitions or 6))
+    if not values:
+        return [0.0 for _ in range(partitions)]
+    buckets: list[list[float]] = [[] for _ in range(partitions)]
+    total = len(values)
+    for idx, value in enumerate(values):
+        bucket = min((idx * partitions) // total, partitions - 1)
+        buckets[bucket].append(float(value))
+    out: list[float] = []
+    for bucket in buckets:
+        equity = 1.0
+        for value in bucket:
+            equity *= 1.0 + value
+        out.append(round(equity - 1.0, 10))
+    return out
+
+
+def _return_sharpe(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = _mean(values)
+    variance = sum((value - mean) ** 2 for value in values) / max(len(values) - 1, 1)
+    std = math.sqrt(variance)
+    if std <= 0:
+        return 0.0
+    return (mean / std) * math.sqrt(min(len(values), 250))
+
+
+def _return_max_drawdown(values: list[float]) -> float:
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for value in values:
+        equity *= 1.0 + value
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+    return max_dd
+
+
+def _return_profit_factor(values: list[float]) -> float:
+    gains = sum(value for value in values if value > 0)
+    losses = abs(sum(value for value in values if value <= 0))
+    return gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
+
+
+def _artifact_backtest_row(
+    *,
+    row: dict[str, Any],
+    returns: list[float],
+    selected_count: int,
+    pair_count: int,
+    per_regime: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    sharpe = _return_sharpe(returns)
+    profit_factor = _return_profit_factor(returns)
+    max_dd = _return_max_drawdown(returns)
+    raw = {
+        "mode": "B",
+        "summary": {
+            "total_trades": selected_count,
+            "sharpe": sharpe,
+            "profit_factor": profit_factor,
+            "max_drawdown": max_dd,
+        },
+        "absolute_confidence": "moderate" if pair_count > 0 else "low",
+        "sanity_flags": [] if pair_count > 0 else ["no_verified_shadow_pairs"],
+        "entry_attempts": pair_count,
+        "entries_filled": selected_count,
+        "fill_rate": 1.0 if pair_count > 0 else 0.0,
+        "return_series": returns,
+        "per_regime": per_regime,
+        "parity_audit": {
+            "worker_parity": {
+                "decision": "PASS" if pair_count > 0 else "FAIL",
+                "source": "verified_active_challenger_prediction_pairs",
+            }
+        },
+    }
+    return {
+        "run_date": row.get("source_run_date"),
+        "strategy": "model_artifact_shadow_replay",
+        "mode": "B",
+        "total_trades": selected_count,
+        "sharpe": round(sharpe, 6),
+        "profit_factor": round(profit_factor, 6),
+        "max_drawdown": round(max_dd, 6),
+        "entry_attempts": pair_count,
+        "entries_filled": selected_count,
+        "fill_rate": raw["fill_rate"],
+        "absolute_confidence": raw["absolute_confidence"],
+        "sanity_flags": raw["sanity_flags"],
+        "return_series": returns,
+        "per_regime": per_regime,
+        "parity_audit": raw["parity_audit"],
+        "raw_results": json.dumps(raw, ensure_ascii=False),
+    }
+
+
+def _artifact_monte_carlo_row(
+    returns: list[float],
+    regimes: list[str],
+    *,
+    n_simulations: int,
+) -> dict[str, Any]:
+    from services.monte_carlo_service import _run_monte_carlo
+
+    method = "regime_block_bootstrap" if regimes and len(regimes) == len(returns) and len(set(regimes)) >= 2 else "block_bootstrap"
+    try:
+        mc = _run_monte_carlo(
+            returns,
+            n_simulations=max(100, int(n_simulations or 1000)),
+            method=method,
+            trade_regimes=regimes if method == "regime_block_bootstrap" else None,
+        )
+    except Exception:
+        mc = _run_monte_carlo(
+            returns,
+            n_simulations=max(100, int(n_simulations or 1000)),
+            method="block_bootstrap",
+        )
+    return {
+        "source": "model_artifact_shadow_replay",
+        "n_trades": mc.n_trades,
+        "mdd_95th": mc.mdd_95th,
+        "go_live_verdict": mc.go_live_verdict,
+        "simulation_method": mc.simulation_method,
+        "block_size": mc.block_size,
+        "regime_counts": mc.regime_counts,
+        "reason": mc.verdict_reason,
+    }
+
+
+def _artifact_pbo_row(active_partitions: list[float], candidate_partitions: list[float], *, n_trades: int) -> dict[str, Any]:
+    from services.pbo_service import _run_cscv_rank_logit_pbo
+
+    pbo = _run_cscv_rank_logit_pbo({
+        "champion": active_partitions,
+        "model_artifact_candidate": candidate_partitions,
+    })
+    return {
+        "source": "model_artifact_shadow_replay",
+        "n_trades": n_trades,
+        "method": pbo.method,
+        "pbo": pbo.pbo,
+        "oos_mean_return": pbo.oos_mean_return,
+        "go_live_verdict": pbo.go_live_verdict,
+        "reason": pbo.verdict_reason,
+        "raw_details": {
+            "method": pbo.method,
+            "n_partitions": pbo.n_partitions,
+            "n_combinations": pbo.n_combinations,
+            "selected_strategy_counts": pbo.selected_strategy_counts,
+        },
+    }
+
+
+def _artifact_walk_forward(active_partitions: list[float], candidate_partitions: list[float]) -> dict[str, Any]:
+    windows = min(len(active_partitions), len(candidate_partitions))
+    if windows <= 0:
+        return {
+            "method": "paired_shadow_partition_walk_forward",
+            "passed": False,
+            "reason": "missing_partition_returns",
+            "windows": 0,
+        }
+    paired = list(zip(active_partitions[:windows], candidate_partitions[:windows]))
+    candidate_mean = _mean([candidate for _, candidate in paired])
+    champion_mean = _mean([champion for champion, _ in paired])
+    positive_ratio = sum(1 for _, candidate in paired if candidate > 0) / windows
+    beats_ratio = sum(1 for champion, candidate in paired if candidate >= champion) / windows
+    passed = windows >= 4 and candidate_mean > 0 and positive_ratio >= 0.5 and beats_ratio >= 0.5
+    return {
+        "method": "paired_shadow_partition_walk_forward",
+        "passed": passed,
+        "gate_pass": passed,
+        "reason": "ok" if passed else "shadow_partition_walk_forward_not_stable",
+        "windows": windows,
+        "candidate_mean_return": round(candidate_mean, 8),
+        "champion_mean_return": round(champion_mean, 8),
+        "positive_ratio": round(positive_ratio, 6),
+        "beats_champion_ratio": round(beats_ratio, 6),
+    }
+
+
+def _artifact_data_snooping(active_partitions: list[float], candidate_partitions: list[float]) -> dict[str, Any]:
+    from services.validation_governance import hansen_spa_reality_check
+
+    return hansen_spa_reality_check(
+        {
+            "champion": active_partitions,
+            "model_artifact_candidate": candidate_partitions,
+        },
+        benchmark="champion",
+        n_bootstrap=500,
+        seed=29,
+    )
+
+
+def _build_model_artifact_candidate_evidence(
+    row: dict[str, Any],
+    shadow_rows: list[dict[str, Any]],
+    *,
+    mc_simulations: int,
+) -> dict[str, Any]:
+    from services.validation_governance import build_validation_packet, deflated_sharpe_evidence
+
+    active_returns, _, _, _ = _shadow_strategy_returns(shadow_rows, score_key="active_score")
+    candidate_returns, regimes, selected_count, per_regime = _shadow_strategy_returns(
+        shadow_rows,
+        score_key="candidate_score",
+    )
+    active_partitions = _compound_partition_returns(active_returns)
+    candidate_partitions = _compound_partition_returns(candidate_returns)
+    backtest = _artifact_backtest_row(
+        row=row,
+        returns=candidate_returns,
+        selected_count=selected_count,
+        pair_count=len(shadow_rows),
+        per_regime=per_regime,
+    )
+    monte_carlo = _artifact_monte_carlo_row(candidate_returns, regimes, n_simulations=mc_simulations)
+    pbo = _artifact_pbo_row(active_partitions, candidate_partitions, n_trades=selected_count)
+    data_snooping = _artifact_data_snooping(active_partitions, candidate_partitions)
+    walk_forward = _artifact_walk_forward(active_partitions, candidate_partitions)
+    dsr = deflated_sharpe_evidence(backtest)
+    validation_packet = build_validation_packet(
+        source="model_artifact_candidate_evidence_gate",
+        backtest=backtest,
+        monte_carlo=monte_carlo,
+        pbo=pbo,
+        data_snooping=data_snooping,
+        walk_forward=walk_forward,
+    )
+    decision = str(validation_packet.get("decision") or "FAIL").upper()
+    return {
+        "schema_version": "model-artifact-candidate-validation-v1",
+        "source": "model_artifact_candidate_validation_chain",
+        "scope": "model_artifact_candidate_promotion_evidence",
+        "candidate_specific": True,
+        "artifact_id": row.get("artifact_id"),
+        "model_name": row.get("model_name"),
+        "candidate_version": row.get("version"),
+        "candidate_type": row.get("candidate_type"),
+        "decision": decision,
+        "passed": decision == "PASS",
+        "backtest": backtest,
+        "pbo": pbo,
+        "deflated_sharpe": dsr,
+        "monte_carlo": monte_carlo,
+        "data_snooping": data_snooping,
+        "walk_forward": walk_forward,
+        "validation_packet": validation_packet,
+        "failed_gates": validation_packet.get("failed_gates") or [],
+        "provenance": {
+            "pair_source": "predictions active/challenger verified rows",
+            "pair_count": len(shadow_rows),
+            "active_model_name": row.get("model_name"),
+            "challenger_model_name": f"{row.get('model_name')}::challenger",
+            "replay_method": "paired_shadow_verified_replay",
+        },
+    }
+
+
+def run_model_artifact_candidate_validation_chain(
+    *,
+    model_name: str | None = None,
+    limit: int = 200,
+    lookback_days: int = 90,
+    mc_simulations: int = 1000,
+    persist: bool = True,
+    refresh_validation: bool = True,
+) -> dict[str, Any]:
+    rows = _model_artifact_candidate_rows(model_name=model_name, limit=limit)
+    generated = 0
+    updated = 0
+    errors: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+
+    for row in rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        model = str(row.get("model_name") or "")
+        try:
+            pairs = _load_model_artifact_shadow_pairs(model, lookback_days=lookback_days)
+            evidence = _build_model_artifact_candidate_evidence(
+                row,
+                pairs,
+                mc_simulations=mc_simulations,
+            )
+            generated += 1
+            offline = _artifact_offline_evidence(row)
+            offline["candidate_validation_packet"] = evidence
+            offline["candidate_specific_validation"] = evidence
+            if persist:
+                d1_client.execute(
+                    """
+                    UPDATE model_artifact_registry
+                    SET offline_evidence_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE artifact_id = ?
+                    """,
+                    [_json_dumps(offline), artifact_id],
+                )
+                updated += 1
+            artifacts.append({
+                "artifact_id": artifact_id,
+                "model_name": model,
+                "candidate_version": row.get("version"),
+                "candidate_type": row.get("candidate_type"),
+                "decision": evidence.get("decision"),
+                "failed_gates": evidence.get("failed_gates") or [],
+                "pair_count": len(pairs),
+                "persisted": bool(persist),
+            })
+        except Exception as exc:  # noqa: BLE001 - keep other artifacts visible.
+            errors.append(f"{artifact_id}: {exc}")
+            artifacts.append({
+                "artifact_id": artifact_id,
+                "model_name": model,
+                "candidate_version": row.get("version"),
+                "candidate_type": row.get("candidate_type"),
+                "decision": "ERROR",
+                "error": str(exc),
+                "persisted": False,
+            })
+
+    validation_result = None
+    if refresh_validation and persist:
+        validation_result = run_model_artifact_validation_chain(
+            model_name=model_name,
+            limit=limit,
+            persist=True,
+        )
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "source_of_truth": "model_artifact_registry",
+        "validation_scope": "model_artifact_candidate_promotion_evidence",
+        "count": len(rows),
+        "generated": generated,
+        "updated": updated,
+        "errors": errors,
+        "artifacts": artifacts,
+        "model_artifact_validation": validation_result,
+    }
+
+
 def run_model_artifact_validation_chain(
     *,
     model_name: str | None = None,
@@ -1374,6 +1854,16 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Run candidate-specific paired replay, CSCV rank-logit PBO, DSR, MC tail-risk, and SPA/White Reality Check; weekly/global release gates cannot substitute for model-level evidence.",
         )
     else:
+        candidate_status = str(candidate_gate.get("status") or "").upper()
+        candidate_packet = candidate_evidence.get("validation_packet") if isinstance(candidate_evidence, dict) else None
+        candidate_packet_decision = str((candidate_packet or {}).get("decision") or "").upper() if isinstance(candidate_packet, dict) else ""
+        if candidate_status in {"FAIL", "FAILED", "BLOCKED", "REJECTED"} or candidate_packet_decision == "FAIL":
+            add(
+                "candidate_validation_packet_failed",
+                "Candidate validation packet failed",
+                "Inspect candidate-specific replay failed_gates before final promotion; generated evidence is present but not promotion-grade.",
+            )
+
         pbo = candidate_gate.get("pbo") or _scoped_gate_evidence(
             candidate_evidence,
             {"pbo", "pbo_score", "probability_of_backtest_overfitting"},

@@ -96,6 +96,13 @@ def _screener_score_components(chip: float, tech: float, momentum: float = 0.0) 
     }
 
 
+def _screener_score_components_with_final(chip: float, tech: float, final_score: float, momentum: float = 0.0) -> dict:
+    payload = _screener_score_components(chip, tech, momentum)
+    payload["finalScore"] = final_score
+    payload["alphaAdjustment"] = round(final_score - float(payload["total"]), 1)
+    return payload
+
+
 def _prediction_with_ensemble_v2() -> dict:
     return {
         "signal": "HOLD",
@@ -655,13 +662,98 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
 
     promoted = hybrid_ranking_promotion(
         rows,
-        ranking_config={"enabled": True, "topK": 3, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
     )
 
     assert promoted[0]["signal_source"] == "ensemble_v2_topk_policy"
     assert promoted[1]["signal"] == "HOLD"
     assert promoted[1].get("ranking_promoted") is not True
+
+
+def test_hybrid_ranking_promotion_backfills_tradable_when_controller_topk_is_research_only():
+    rows = [{
+        "symbol": "4925",
+        "chip_score": 9.0,
+        "tech_score": 14.0,
+        "score_seed_inputs": _score_seed_inputs(9.0, 14.0),
+        "score_components": _screener_score_components(9.0, 14.0),
+        "confidence": 0.72,
+        "signal": "BUY",
+        "signal_source": "ensemble_v2_topk_policy",
+        "has_buy_signal": 0,
+        "topk_forced": True,
+        "recommendation_lane": "emerging_watchlist",
+        "eligible_for_pending_buy": False,
+    }, {
+        "symbol": "3231",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
+        "score_components": _screener_score_components(20.0, 15.0),
+        "confidence": 0.53,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.01,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+    )
+
+    tradable = next(row for row in promoted if row["symbol"] == "3231")
+    research_only = next(row for row in promoted if row["symbol"] == "4925")
+    assert research_only["has_buy_signal"] == 0
+    assert tradable["signal"] == "BUY"
+    assert tradable["signal_source"] == "ranking_promotion"
+    assert tradable["has_buy_signal"] == 1
+
+
+def test_hybrid_ranking_promotion_uses_score_v2_final_as_primary_rank_owner():
+    rows = [{
+        "symbol": "LOWV2",
+        "chip_score": 36.0,
+        "tech_score": 30.0,
+        "score_seed_inputs": _score_seed_inputs(36.0, 30.0),
+        "score_components": _screener_score_components_with_final(36.0, 30.0, 42.0),
+        "confidence": 0.55,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.01,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }, {
+        "symbol": "HIGHV2",
+        "chip_score": 16.0,
+        "tech_score": 12.0,
+        "score_seed_inputs": _score_seed_inputs(16.0, 12.0),
+        "score_components": _screener_score_components_with_final(16.0, 12.0, 76.0),
+        "confidence": 0.48,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.01,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+    )
+
+    selected = next(row for row in promoted if row.get("ranking_promoted"))
+    bypassed = next(row for row in promoted if row["symbol"] == "LOWV2")
+    assert selected["symbol"] == "HIGHV2"
+    assert selected["_combined_score_source"] == "score_v2_final_score_plus_ml_tiebreak"
+    assert bypassed.get("ranking_promoted") is not True
 
 
 def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.market_segment_policy import policy_for_segment  # noqa: E402
 from services.payload_builder import build_stock_meta_with_segment  # noqa: E402
 from services.recommendation_service import _enrich_stock_meta_with_segment_policy  # noqa: E402
+from graphs.daily_pipeline_v2 import _prediction_eligible_for_topk  # noqa: E402
 
 
 def test_payload_builder_and_prediction_writer_share_segment_calibration_metadata():
@@ -47,3 +48,33 @@ def test_segment_policy_declares_independent_calibration_scopes():
     assert emerging.calibration_scope != listed.calibration_scope
     assert emerging.model_pool_scope == "emerging_research_pool"
     assert emerging.eligible_for_execution is False
+
+
+def test_controller_topk_policy_consumes_tradable_lane_only():
+    tradable = {
+        "stock_meta": {
+            "market_segment": "LISTED",
+            "recommendation_lane": "tradable",
+            "eligible_for_pending_buy": True,
+            "eligible_for_execution": True,
+        }
+    }
+    emerging = {
+        "stock_meta": {
+            "market_segment": "EMERGING",
+            "recommendation_lane": "emerging_watchlist",
+            "eligible_for_pending_buy": False,
+            "eligible_for_execution": False,
+        }
+    }
+    research_only = {
+        "stock_meta": {
+            "market_segment": "LISTED",
+            "recommendation_lane": "research_only",
+            "eligible_for_pending_buy": False,
+        }
+    }
+
+    assert _prediction_eligible_for_topk(tradable) is True
+    assert _prediction_eligible_for_topk(emerging) is False
+    assert _prediction_eligible_for_topk(research_only) is False

@@ -18,6 +18,7 @@ export interface TriggerDeps {
   runWeeklyBacktest: () => Promise<any>
   runWeeklyMonteCarlo: () => Promise<any>
   runWeeklyPBO: () => Promise<any>
+  runWeeklyModelArtifactCandidateValidation: () => Promise<any>
   runWeeklyModelArtifactValidation: () => Promise<any>
   runWeeklyAlphaQuality: () => Promise<any>
   runWeeklyLifecycleCheck: () => Promise<any>

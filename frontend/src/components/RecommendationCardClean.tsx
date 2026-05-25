@@ -30,6 +30,7 @@ import { Badge } from '@/components/ui/badge'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
 import { stocksApi } from '@/lib/api'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import { buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -325,6 +326,19 @@ function parseObject(raw: unknown): any | null {
   } catch {
     return null
   }
+}
+
+type TradePlanContext = {
+  source: 'ohlcv' | 'alpha_fallback'
+  latest: number | null
+  resistance: number | null
+  confirmation: number | null
+  support: number | null
+  atrDefense: number | null
+  volumeNode: number | null
+  ma20: number | null
+  ma60: number | null
+  levels: TradingPlanLevels | null
 }
 
 function scoreV2PayloadFromRec(rec: any): any | null {
@@ -793,6 +807,42 @@ function planPrice(value: unknown): string | null {
   return fmtOptionalNumber(value as any, 2)
 }
 
+function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, priceRows: any[]): TradePlanContext {
+  const levels = buildTradingPlanLevels(normalizeOhlcvRows(priceRows))
+  if (levels) {
+    return {
+      source: 'ohlcv',
+      latest: levels.latestClose,
+      resistance: levels.resistance,
+      confirmation: levels.resistance,
+      support: levels.support,
+      atrDefense: levels.atrLower,
+      volumeNode: levels.volumeNode,
+      ma20: levels.ma20,
+      ma60: levels.ma60,
+      levels,
+    }
+  }
+
+  const latest = numericPrice(context?.latestClose ?? rec.current_price ?? rec.close ?? rec.latest_close)
+  const fairLow = numericPrice(context?.fairValueLow)
+  const fairHigh = numericPrice(context?.fairValueHigh)
+  const poc = numericPrice(context?.poc)
+  const optimisticHigh = numericPrice(context?.optimisticValueHigh ?? rec.target_price ?? rec.targetPrice)
+  return {
+    source: 'alpha_fallback',
+    latest,
+    resistance: optimisticHigh ?? fairHigh,
+    confirmation: fairHigh ?? optimisticHigh,
+    support: fairLow ?? poc,
+    atrDefense: fairLow ?? poc,
+    volumeNode: poc,
+    ma20: null,
+    ma60: null,
+    levels: null,
+  }
+}
+
 function compactLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
@@ -989,49 +1039,46 @@ function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
     .filter((item) => Boolean(item.time))
 }
 
-function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | null }) {
+function KLinePlanSketch({
+  rec,
+  priceRows,
+  isLoading,
+  plan,
+}: {
+  rec: any
+  priceRows: any[]
+  isLoading: boolean
+  plan: TradePlanContext
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
-  const inlineRows = Array.isArray(rec.price_candles)
-    ? rec.price_candles
-    : Array.isArray(rec.prices)
-      ? rec.prices
-      : []
-  const { data: fetchedRows = [], isLoading } = useQuery({
-    queryKey: ['recommendation-card-kline', stockId],
-    queryFn: () => stocksApi.prices(stockId, 120),
-    enabled: Number.isFinite(stockId) && stockId > 0 && inlineRows.length === 0,
-    staleTime: 5 * 60_000,
-  })
-  const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
-  const latest = numericPrice(context?.latestClose ?? rec.current_price ?? rec.close ?? rec.latest_close)
-  const entry = numericPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.reference_entry)
-  const stopLoss = numericPrice(rec.stop_loss ?? rec.stopLoss)
-  const fairLow = numericPrice(context?.fairValueLow) ?? stopLoss ?? (latest ? latest * 0.97 : null)
-  const fairHigh = numericPrice(context?.fairValueHigh) ?? entry ?? (latest ? latest * 1.02 : null)
-  const poc = numericPrice(context?.poc)
-  const target = numericPrice(context?.optimisticValueHigh ?? rec.target_price ?? rec.targetPrice) ?? (latest ? latest * 1.06 : fairHigh)
-  const support = fairLow ?? poc ?? latest
-  const prices = [latest, fairLow, fairHigh, poc, target].filter((value): value is number => value != null)
+  const latest = plan.latest
+  const support = plan.support ?? plan.volumeNode ?? latest
+  const confirmation = plan.confirmation ?? plan.resistance
+  const resistance = plan.resistance ?? confirmation
+  const atrDefense = plan.atrDefense
+  const volumeNode = plan.volumeNode
+  const prices = [latest, support, confirmation, resistance, atrDefense, volumeNode].filter((value): value is number => value != null)
   const candles = priceRowsToCandles(priceRows)
   const volume = priceRowsToVolume(priceRows, candles)
   const lastTime = candles[candles.length - 1]?.time
   const nextTime = addCalendarDays(lastTime, 1)
   const targetTime = addCalendarDays(lastTime, 3)
-  const projection = latest && target && lastTime && nextTime && targetTime
+  const projection = latest && resistance && lastTime && nextTime && targetTime
     ? [
       { time: lastTime, value: latest },
-      { time: nextTime, value: fairHigh ?? latest },
-      { time: targetTime, value: target },
+      { time: nextTime, value: confirmation ?? latest },
+      { time: targetTime, value: resistance },
     ]
     : []
   const chartKey = JSON.stringify({
-    stockId,
+    symbol: rec.symbol,
     latest,
     support,
-    fairHigh,
-    target,
+    confirmation,
+    resistance,
+    atrDefense,
+    volumeNode,
     rows: candles.map((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close]),
   })
 
@@ -1073,19 +1120,19 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
       projectionSeries.setData(projection)
     }
 
-    if (target) {
+    if (resistance) {
       candleSeries.createPriceLine({
-        price: target,
+        price: resistance,
         color: '#f87171',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: '前高/樂觀上緣',
+        title: '前高壓力',
       })
     }
-    if (fairHigh) {
+    if (confirmation) {
       candleSeries.createPriceLine({
-        price: fairHigh,
+        price: confirmation,
         color: '#38bdf8',
         lineWidth: 1,
         lineStyle: LineStyle.Solid,
@@ -1104,14 +1151,25 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
       })
     }
 
-    if (poc) {
+    if (volumeNode) {
       candleSeries.createPriceLine({
-        price: poc,
+        price: volumeNode,
         color: '#f59e0b',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
-        title: 'POC',
+        title: '量能節點',
+      })
+    }
+
+    if (atrDefense) {
+      candleSeries.createPriceLine({
+        price: atrDefense,
+        color: '#f43f5e',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'ATR 防守',
       })
     }
 
@@ -1159,10 +1217,11 @@ function KLinePlanSketch({ rec, context }: { rec: any; context: AlphaContext | n
         <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
       </div>
       <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
-      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-3">
+      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-4">
+        <span className="font-mono text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
         <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
-        <span className="font-mono text-sky-500">突破 {fairHigh ? fmtNumber(fairHigh, 2) : '-'}</span>
-        <span className="font-mono text-rose-500">樂觀 {target ? fmtNumber(target, 2) : '-'}</span>
+        <span className="font-mono text-sky-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
+        <span className="font-mono text-amber-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
       </div>
     </div>
   )
@@ -1232,19 +1291,14 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
   const chip = vm.rows.find((row) => row.key === 'chipFlow')?.value ?? 0
   const technical = vm.rows.find((row) => row.key === 'technicalStructure')?.value ?? 0
   const latest = planPrice(context?.latestClose ?? rec.current_price)
-  const fairLow = planPrice(context?.fairValueLow)
-  const fairHigh = planPrice(context?.fairValueHigh)
-  const optimisticLow = planPrice(context?.optimisticValueLow)
-  const optimisticHigh = planPrice(context?.optimisticValueHigh)
+  const support = planPrice(context?.fairValueLow ?? context?.poc)
+  const confirmation = planPrice(context?.fairValueHigh ?? context?.optimisticValueHigh)
+  const resistance = planPrice(context?.optimisticValueHigh ?? context?.fairValueHigh)
+  const volumeNode = planPrice(context?.poc)
   const regime = shortLabelFor(context?.regime, REGIME_TEXT)
   const bucket = shortLabelFor(context?.bucket)
   const location = shortLabelFor(context?.location, LOCATION_TEXT)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummaryFromRec(rec)) ?? '模型共識尚未明確'
-  const optimisticStatus = shortLabelFor(context?.optimisticValueStatus, {
-    upside_available: '仍有空間',
-    inside_optimistic_range: '已在區間內',
-    exceeded: '已高於上緣',
-  })
   return [
     {
       label: '模型共識',
@@ -1267,16 +1321,14 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
     {
       label: 'Alpha 結構',
       value: `${bucket} / ${regime}`,
-      note: `現價 ${latest ?? '-'}，fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}，價格位置 ${location}。`,
+      note: `現價 ${latest ?? '-'}，價格位置 ${location}；Alpha 只作部位與風控輔助，不直接當目標價。`,
       tone: context?.skip ? 'warn' : 'neutral',
     },
     {
-      label: '樂觀區間',
-      value: `${optimisticLow ?? '-'}~${optimisticHigh ?? '-'}`,
-      note: optimisticLow || optimisticHigh
-        ? `順風上緣假設，狀態：${optimisticStatus}；不是保證目標價，若已高於上緣要視為追價風險。`
-        : 'Alpha structure 沒有提供 optimistic range，目標價只能用近端壓力替代。',
-      tone: context?.optimisticValueStatus === 'exceeded' ? 'warn' : 'neutral',
+      label: '交易線位',
+      value: `壓力 ${resistance ?? '-'} / 支撐 ${support ?? '-'}`,
+      note: `轉強確認 ${confirmation ?? '-'}；量能節點 ${volumeNode ?? '-'}。`,
+      tone: 'neutral',
     },
   ]
 }
@@ -1305,20 +1357,22 @@ function alphaStructureValue(context: AlphaContext | null): string {
   return parts.length ? parts.join(' / ') : 'Alpha 結構資料不足'
 }
 
-function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
-  const latest = planPrice(context?.latestClose ?? rec.current_price)
-  const fairLow = planPrice(context?.fairValueLow)
-  const fairHigh = planPrice(context?.fairValueHigh)
-  const poc = planPrice(context?.poc)
-  const optimisticLow = planPrice(context?.optimisticValueLow)
-  const optimisticHigh = planPrice(context?.optimisticValueHigh)
+function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
+  const latest = planPrice(plan.latest ?? context?.latestClose ?? rec.current_price)
+  const resistance = planPrice(plan.resistance)
+  const confirmation = planPrice(plan.confirmation)
+  const support = planPrice(plan.support)
+  const atrDefense = planPrice(plan.atrDefense)
+  const volumeNode = planPrice(plan.volumeNode)
   return [
     { label: '現價', value: latest ?? '-', note: '', tone: 'neutral' },
-    { label: '買入參考區', value: `${fairLow ?? '-'} ~ ${fairHigh ?? '-'}`, note: '', tone: 'neutral' },
-    { label: '量能成本區', value: poc ?? '-', note: '', tone: 'neutral' },
+    { label: '前高壓力', value: resistance ?? '-', note: '', tone: 'warn' },
+    { label: '轉強確認', value: confirmation ?? '-', note: '', tone: 'good' },
+    { label: '關鍵支撐', value: support ?? '-', note: '', tone: 'good' },
+    { label: 'ATR 防守', value: atrDefense ?? '-', note: '', tone: 'warn' },
+    { label: '量能節點', value: volumeNode ?? '-', note: '', tone: 'neutral' },
     { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
-    { label: '樂觀價格區間', value: `${optimisticLow ?? '-'} ~ ${optimisticHigh ?? '-'}`, note: '', tone: context?.optimisticValueStatus === 'exceeded' ? 'warn' : 'neutral' },
   ]
 }
 
@@ -1334,23 +1388,39 @@ function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
 }
 
 function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: AlphaContext | null; reason: string }) {
+  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
+  const inlineRows = Array.isArray(rec.price_candles)
+    ? rec.price_candles
+    : Array.isArray(rec.prices)
+      ? rec.prices
+      : []
+  const { data: fetchedRows = [], isLoading } = useQuery({
+    queryKey: ['recommendation-card-kline', stockId],
+    queryFn: () => stocksApi.prices(stockId, 120),
+    enabled: Number.isFinite(stockId) && stockId > 0 && inlineRows.length === 0,
+    staleTime: 5 * 60_000,
+  })
+  const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
+  const plan = buildOhlcvTradePlanContext(rec, context, priceRows)
   const breeze2Reason = breeze2ReasonFromRec(rec)
-  const latestClose = planPrice(context?.latestClose ?? rec.current_price)
-  const poc = planPrice(context?.poc)
-  const fairLow = planPrice(context?.fairValueLow)
-  const fairHigh = planPrice(context?.fairValueHigh)
-  const optimisticHigh = planPrice(context?.optimisticValueHigh)
-  const stop = fairLow ?? poc ?? '近端支撐'
-  const breakoutTrigger = fairHigh ?? optimisticHigh ?? '近端壓力'
-  const pullbackZone = fairLow && fairHigh ? `${fairLow}~${fairHigh}` : poc ?? '量價支撐區'
+  const latestClose = planPrice(plan.latest ?? context?.latestClose ?? rec.current_price)
+  const resistance = planPrice(plan.resistance)
+  const confirmation = planPrice(plan.confirmation)
+  const support = planPrice(plan.support)
+  const atrDefense = planPrice(plan.atrDefense)
+  const volumeNode = planPrice(plan.volumeNode)
+  const stop = atrDefense ?? support ?? '近端支撐'
+  const breakoutTrigger = confirmation ?? resistance ?? '前高壓力'
+  const pullbackZone = support && volumeNode ? `${support}~${volumeNode}` : support ?? volumeNode ?? '量價支撐區'
   const alphaAdj = context?.scoreAdjustment == null ? 'Alpha 調整資料不足' : `Alpha 調整 ${signedText(Number(context.scoreAdjustment))}`
   const sizing = context?.sizing == null ? '部位倍率待定' : `部位倍率 x${fmtNumber(context.sizing, 2)}`
   const marketLine = [
     latestClose ? `現價 ${latestClose}` : null,
-    fairLow || fairHigh ? `fair value ${fairLow ?? '-'}~${fairHigh ?? '-'}` : null,
-    poc ? `POC ${poc}` : null,
+    resistance ? `前高壓力 ${resistance}` : null,
+    support ? `關鍵支撐 ${support}` : null,
+    atrDefense ? `ATR 防守 ${atrDefense}` : null,
   ].filter(Boolean).join('，')
-  const tradePlanRows = buildFocusedTradePlanRows(rec, context)
+  const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan)
   const geminiReason = geminiReasonForCompare(rec, reason)
   const geminiWatchPoints = reasonVariantWatchPoints(rec, 'gemini')
   const breeze2WatchPoints = reasonVariantWatchPoints(rec, 'breeze2')
@@ -1365,7 +1435,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
         兩個方案由 StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場方案。
       </p>
       <div className="grid gap-2">
-        <KLinePlanSketch rec={rec} context={context} />
+        <KLinePlanSketch rec={rec} priceRows={priceRows} isLoading={isLoading} plan={plan} />
         <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
           <div className="w-1 shrink-0 bg-sky-400" />
           <div className="min-w-0 flex-1 p-3">
@@ -1387,7 +1457,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
             lines={[
               `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
               `進場：突破後回測不破再加碼，避免一根急拉直接追滿。`,
-              `目標：先看 ${optimisticHigh ?? '近端高點'}，站穩後再看下一段趨勢延伸。`,
+              `目標：先看 ${resistance ?? '前高壓力'}，站穩後再看下一段趨勢延伸。`,
             ]}
           />
           <PlanBlock
@@ -1396,7 +1466,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
             lines={[
               `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
               `進場：先小部位，等重新轉強再補，不一次滿倉。`,
-              `目標：先回到 ${fairHigh ?? 'fair value 上緣'}，再觀察能否轉突破。`,
+              `目標：先回到 ${confirmation ?? '轉強確認價'}，再觀察能否轉突破。`,
             ]}
           />
         </div>
@@ -1426,20 +1496,17 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   const volatility = context.volatility ?? 'unknown'
   const liquidity = context.liquidity ?? 'unknown'
   const location = context.location ?? 'unknown'
-  const fairValue = context.fairValueLow || context.fairValueHigh
-    ? `${fmtNumber(context.fairValueLow, 2)} ~ ${fmtNumber(context.fairValueHigh, 2)}`
-    : '-'
-  const optimisticValue = context.optimisticValueLow || context.optimisticValueHigh
-    ? `${fmtNumber(context.optimisticValueLow, 2)} ~ ${fmtNumber(context.optimisticValueHigh, 2)}`
-    : '-'
+  const support = fmtOptionalNumber(context.fairValueLow ?? context.poc, 2) ?? '-'
+  const confirmation = fmtOptionalNumber(context.fairValueHigh ?? context.optimisticValueHigh, 2) ?? '-'
+  const resistance = fmtOptionalNumber(context.optimisticValueHigh ?? context.fairValueHigh, 2) ?? '-'
+  const volumeNode = fmtOptionalNumber(context.poc, 2) ?? '-'
   const optimisticExceeded = context.optimisticValueStatus === 'exceeded'
     || (Number(context.latestClose) > 0
       && Number(context.optimisticValueHigh) > 0
       && Number(context.latestClose) > Number(context.optimisticValueHigh))
-  const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境區間'
   const optimisticHelp = optimisticExceeded
-    ? '目前價格已高於近端量價估出的順風上緣，這不是樂觀目標價，而是偏追高提醒。'
-    : '樂觀情境是順風時的上緣假設，不是保證目標價。'
+    ? '目前價格已高於內部順風上緣估計，前台視為追高提醒，不當成目標價。'
+    : '內部量價估計只作線位輔助，前台以可交易線位做判讀。'
   const sizingText = fmtOptionalNumber(context.sizing, 2)
   const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
   return (
@@ -1455,9 +1522,10 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>Alpha 調整：{scoreAdjText == null ? '資料不足' : `${Number(context.scoreAdjustment) >= 0 ? '+' : ''}${scoreAdjText}`}</span>
         <span>波動：{shortLabelFor(volatility, VOL_TEXT)}</span>
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
-        <span>POC：{fmtNumber(context.poc, 2)}</span>
-        <span>Fair value：{fairValue}</span>
-        {optimisticValue !== '-' && <span>{optimisticLabel}：{optimisticValue}</span>}
+        <span>量能節點：{volumeNode}</span>
+        <span>關鍵支撐：{support}</span>
+        <span>轉強確認：{confirmation}</span>
+        <span>前高壓力：{resistance}</span>
         {context.window && <span>計算區間：{context.window}</span>}
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
@@ -1491,19 +1559,16 @@ function normalizeWatchPoint(point: string): string {
   }
   if (point.startsWith('Market structure:')) {
     const ctx = contextFromWatchPoints([point])
-    const fairValue = ctx?.fairValueLow || ctx?.fairValueHigh
-      ? `${fmtNumber(ctx?.fairValueLow, 2)} ~ ${fmtNumber(ctx?.fairValueHigh, 2)}`
-      : '-'
-    const optimisticValue = ctx?.optimisticValueLow || ctx?.optimisticValueHigh
-      ? `${fmtNumber(ctx?.optimisticValueLow, 2)} ~ ${fmtNumber(ctx?.optimisticValueHigh, 2)}`
-      : null
+    const support = fmtOptionalNumber(ctx?.fairValueLow ?? ctx?.poc, 2) ?? '-'
+    const confirmation = fmtOptionalNumber(ctx?.fairValueHigh ?? ctx?.optimisticValueHigh, 2) ?? '-'
+    const resistance = fmtOptionalNumber(ctx?.optimisticValueHigh ?? ctx?.fairValueHigh, 2) ?? '-'
+    const volumeNode = fmtOptionalNumber(ctx?.poc, 2) ?? '-'
     const optimisticExceeded = ctx?.optimisticValueStatus === 'exceeded'
       || (Number(ctx?.latestClose) > 0 && Number(ctx?.optimisticValueHigh) > 0 && Number(ctx?.latestClose) > Number(ctx?.optimisticValueHigh))
-    const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境'
     const optimisticHelp = optimisticExceeded
-      ? '目前價格已高於順風上緣，這是偏追高提醒，不是樂觀目標價。'
-      : '樂觀情境是順風時的上緣假設，不是保證目標價。'
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：這是量價結構位置與追高/低估提醒；${optimisticHelp}`
+      ? '內部上緣已低於現價，前台視為追高風險。'
+      : '內部量價估計已降級為輔助，判讀以支撐、壓力與突破確認為主。'
+    return `Market structure：前高壓力=${resistance}；轉強確認=${confirmation}；關鍵支撐=${support}；量能節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp}`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'

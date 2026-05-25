@@ -147,13 +147,20 @@ assert(
 
 assert(
   workflows.includes('runWeeklyModelArtifactValidation') &&
+    workflows.includes('runWeeklyModelArtifactCandidateValidation') &&
+    workflows.includes("'/model_pool/artifact_registry/candidate_validation_chain'") &&
     workflows.includes("'/model_pool/artifact_registry/validation_chain'") &&
     workflows.includes('runWeeklyValidationChain') &&
     workflows.includes('runWeeklyModelArtifactValidation(env)') &&
+    workflows.indexOf("'/model_pool/artifact_registry/candidate_validation_chain'") <
+      workflows.indexOf("'/model_pool/artifact_registry/validation_chain'") &&
+    adminGcp.includes("'model-artifact-candidate-validation'") &&
+    triggerRoutes.includes("'model-artifact-candidate-validation'") &&
+    index.includes('runWeeklyModelArtifactCandidateValidationWorkflow') &&
     adminControlRoutes.includes('runWeeklyModelArtifactValidation') &&
     adminControlRoutes.includes("String(body.task) === 'weekly-backtest'") &&
     adminControlRoutes.includes("String(callbackMetadata?.source ?? '') === 'backtest_research_bundle'"),
-  'weekly-backtest must close ModelPool candidate-specific validation after global backtest/MC/PBO or after the Modal bundle callback instead of leaving artifact evidence manual',
+  'weekly-backtest must generate ModelPool artifact candidate-specific evidence before the aggregate validation gate after global backtest/MC/PBO or after the Modal bundle callback instead of leaving artifact evidence manual',
 )
 
 assert(

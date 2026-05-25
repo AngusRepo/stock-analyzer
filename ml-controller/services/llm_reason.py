@@ -32,10 +32,13 @@ SCORE_V2_WEIGHTS = {
 SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單撰寫可驗證的推薦理由。
 
 規則：
-- 每支股票 reason 限 120 字內，必須使用 Score V2 的 finalScore 與五構面語意。
-- 五構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme。
+- 每支股票 reason 寫 180 到 280 字，必須使用 Score V2 的 finalScore 與五構面語意。
+- 五構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme；請用白話說明，不要只重複英文欄位名稱。
+- reason 必須交代三件事：為什麼入選、目前最強/最弱的分數來源、什麼情境會讓交易計劃失效。
+- 如果 News/Theme 是 0，請明確說「沒有可信且未過期的題材加分」，不要把 0 分寫成負面新聞。
+- 如果 Fundamental Quality 偏低，請用營收、獲利、估值、財務安全或同產業比較的白話方向描述，不要只輸出欄位名。
 - 不可宣稱保證獲利、絕對勝率或水晶球式預測；請用條件式、風險可控的語氣。
-- watchPoints 最多 3 點，必須是具體風險、觀察價量或資料品質提醒。
+- watchPoints 最多 3 點，每點 40 到 90 字，必須是具體風險、觀察價量、分數弱點或資料品質提醒。
 - 必須只回傳 JSON array，格式：
   [{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
 """
@@ -124,7 +127,7 @@ async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> O
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": min(4096, n_candidates * 400),
+            "maxOutputTokens": min(8192, n_candidates * 700),
             "responseMimeType": "application/json",
         },
     }
@@ -166,7 +169,7 @@ async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, m
     """Call Claude fallback. Returns raw text or None on failure."""
     if not ANTHROPIC_API_KEY:
         return None
-    max_tokens = min(8192, n_candidates * 500)
+    max_tokens = min(8192, n_candidates * 700)
     headers = {
         "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
@@ -242,7 +245,7 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
         reason = item.get("reason")
         if symbol and reason:
             result[symbol] = {
-                "reason": reason[:200],
+                "reason": reason[:420],
                 "watchPoints": (item.get("watchPoints") or item.get("watch_points") or [])[:3],
             }
     return result

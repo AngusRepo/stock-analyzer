@@ -82,15 +82,21 @@ def build_breeze2_reason_shadow(
         context = str(report.get("recommended_decision_context") or "unknown")
         label = _reason_context_label(context)
         name = str(candidate.get("name") or candidate.get("stock_name") or symbol)
+        fact = _as_float(scores.get("fact_support"))
+        hype = _as_float(scores.get("hype_risk"))
+        quality = _as_float(scores.get("source_quality"))
 
         reason = (
-            f"Breeze2 shadow：{name} {label}；"
-            f"fact={_compact_score(scores.get('fact_support'))}, "
-            f"hype={_compact_score(scores.get('hype_risk'))}, "
-            f"quality={_compact_score(scores.get('source_quality'))}"
+            f"Breeze2 shadow：{name} {label}。"
+            f"事實支撐 {_compact_score(fact)}、題材熱度 {_compact_score(hype)}、來源品質 {_compact_score(quality)}；"
+            "這段只做研究摘要旁路，不改變推薦排序。"
         )
+        if hype >= 0.70 and fact < 0.55:
+            reason += " 題材熱但佐證偏弱，應等待新聞或官方來源補強。"
+        elif fact >= 0.65 and quality >= 0.50:
+            reason += " 佐證品質尚可，可作為題材脈絡參考。"
         if flags:
-            reason += f"；flags={','.join(flags[:4])}"
+            reason += f" 風險旗標：{','.join(flags[:4])}。"
 
         watch_points = [
             (

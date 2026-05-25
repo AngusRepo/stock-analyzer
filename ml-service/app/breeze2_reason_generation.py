@@ -35,7 +35,12 @@ def _candidate_name(candidate: dict[str, Any]) -> str:
 
 
 def _score_v2_summary(candidate: dict[str, Any]) -> dict[str, Any]:
-    payload = candidate.get("score_components")
+    payload = candidate.get("score_components") or candidate.get("score_v2")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
     if not isinstance(payload, dict):
         return {}
     components = payload.get("components")
@@ -50,6 +55,14 @@ def _clean_text(value: Any, max_len: int = 260) -> str:
 
 def _candidate_prompt_row(candidate: dict[str, Any]) -> dict[str, Any]:
     points = [_clean_text(point, 140) for point in _as_list(candidate.get("watch_points")) if str(point).strip()]
+    evidence_items = [
+        {
+            "source": _clean_text(item.get("source"), 60),
+            "snippet": _clean_text(item.get("snippet") or item.get("title") or item.get("summary"), 120),
+        }
+        for item in _as_list(candidate.get("evidence_items"))
+        if isinstance(item, dict) and (item.get("snippet") or item.get("title") or item.get("summary"))
+    ][:4]
     return {
         "symbol": _candidate_symbol(candidate),
         "name": _candidate_name(candidate),
@@ -58,6 +71,9 @@ def _candidate_prompt_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "score_v2": _score_v2_summary(candidate),
         "reason_seed": _clean_text(candidate.get("reason"), 220),
         "watch_points_seed": points[:6],
+        "theme": candidate.get("theme") if isinstance(candidate.get("theme"), dict) else {},
+        "news": candidate.get("news") if isinstance(candidate.get("news"), (dict, list)) else {},
+        "evidence_items": evidence_items,
     }
 
 
@@ -70,11 +86,14 @@ def build_breeze2_reason_generation_prompt(payload: dict[str, Any]) -> str:
     run_date = str(payload.get("run_date") or payload.get("date") or "")
     return (
         "你是 StockVision 的台灣股市推薦理由 shadow writer。"
-        "請使用繁體中文，語氣像專業投資平台的研究摘要。\n"
+        "請使用繁體中文，語氣像專業投資平台的研究摘要，內容要比摘要卡更完整。\n"
         "限制：只能產生研究摘要，不得下單、不得要求真實交易、不得改寫系統狀態。\n"
+        "分析要求：每檔都要說清楚 1) 入選主因 2) Score V2 五構面的強弱 3) 題材是否有可追溯佐證 4) 需要等待的價量或風險確認。\n"
+        "如果新聞題材分數是 0，請說明是「缺少可信且未過期的題材加分」，不是直接判定利空。\n"
+        "如果基本面分數偏低，請用營收、獲利、估值、財務安全或產業相對位置解釋，不要只列英文欄位。\n"
         "輸出必須是 JSON array；每個元素格式："
-        '{"symbol":"2330","reason":"80到140字理由","watchPoints":["觀察1","觀察2","觀察3"]}。\n'
-        "watchPoints 最多 3 條，每條要具體、可觀察，優先包含價量、籌碼、技術或風險觸發條件。\n"
+        '{"symbol":"2330","reason":"180到320字理由","watchPoints":["觀察1","觀察2","觀察3"]}。\n'
+        "watchPoints 最多 3 條，每條 40 到 90 字，要具體、可觀察，優先包含價量、籌碼、技術、題材佐證或風險觸發條件。\n"
         f"run_date={run_date}\n"
         f"candidates={json.dumps(candidates, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -95,11 +114,11 @@ def parse_breeze2_reason_generation_text(text: str) -> dict[str, dict[str, Any]]
         if not isinstance(item, dict):
             continue
         symbol = str(item.get("symbol") or "").strip()
-        reason = _clean_text(item.get("reason"), 260)
+        reason = _clean_text(item.get("reason"), 420)
         if not symbol or not reason:
             continue
         points = [
-            _clean_text(point, 140)
+            _clean_text(point, 180)
             for point in _as_list(item.get("watchPoints"))
             if str(point).strip()
         ][:3]
@@ -129,13 +148,19 @@ def build_fallback_breeze2_reason_generation(
         ml_edge = components.get("mlEdge", "n/a")
         chip_flow = components.get("chipFlow", "n/a")
         tech = components.get("technicalStructure", "n/a")
+        fundamental = components.get("fundamentalQuality", "n/a")
+        news_theme = components.get("newsTheme", "n/a")
         reasons[symbol] = {
             "source": "breeze2_generation_fallback",
-            "reason": f"Breeze2 shadow fallback：{name} 以 Score V2、籌碼與技術結構作研究摘要候選；ML={ml_edge}, 籌碼={chip_flow}, 技術={tech}。",
+            "reason": (
+                f"Breeze2 shadow fallback：{name} 目前只能用結構化資料產生研究摘要。"
+                f"Score V2 顯示模型 {ml_edge}/25、籌碼 {chip_flow}/25、技術 {tech}/25、基本面 {fundamental}/20、新聞題材 {news_theme}/5。"
+                "若模型、籌碼與技術同向，候選理由較完整；若新聞題材或基本面偏低，代表缺少可追溯題材或中長期品質支撐，應等待價量確認。"
+            ),
             "watchPoints": [
-                "觀察 Score V2 的 ML、籌碼、技術三項是否同步轉強",
-                "若量能或法人籌碼沒有延續，降低追價權重",
-                "重大題材仍需可追溯新聞或官方來源佐證",
+                "觀察 Score V2 的模型、籌碼與技術是否同步轉強，若只有單一構面強，追價權重應降低。",
+                "若突破時成交量沒有放大，或法人與券商分點沒有延續，先把它視為觀察名單而不是立即進場。",
+                "新聞題材需要可追溯來源；若題材分數仍為 0，代表目前沒有足夠可信且未過期的題材加分。",
             ],
         }
     prompt = build_breeze2_reason_generation_prompt(payload)
@@ -236,7 +261,7 @@ def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: 
     model = _load_breeze2_model(model_id)
     inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
     generation_config = GenerationConfig(
-        max_new_tokens=int(payload.get("max_new_tokens") or 900),
+        max_new_tokens=int(payload.get("max_new_tokens") or 1400),
         temperature=float(payload.get("temperature") or 0.01),
         top_p=float(payload.get("top_p") or 0.01),
         repetition_penalty=float(payload.get("repetition_penalty") or 1.1),

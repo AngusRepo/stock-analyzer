@@ -73,8 +73,11 @@ assert(
     && !viewModel.includes('scoreComponentsPayload'),
   'Score V2 view model should not recover raw score_components as downstream compatibility',
 )
-for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '方案 A | 突破追價', '方案 B | 拉回低吸', '風控規則', 'Gemini 3.1 Flash', 'Breeze2']) {
+for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '方案 A | 突破追價', '方案 B | 拉回低吸', '風控規則', 'Gemini 3.1 Flash', 'Breeze2', 'Alpha 規則引擎']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
+}
+for (const text of ['買入參考區', '量能成本區']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
 }
 assert(
   scoreBreakdown.includes('reasonVariants?.breeze2'),

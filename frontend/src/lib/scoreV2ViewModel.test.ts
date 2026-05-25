@@ -25,6 +25,22 @@ function assert(condition: unknown, message: string): void {
         fundamentalQuality: 8,
         newsTheme: 2,
       },
+      fundamentalQuality: {
+        version: 'fundamental_quality_v1',
+        score: 8,
+        components: {
+          revenueMomentum: 3,
+          profitability: 2,
+          valuation: 1,
+          financialSafety: 1,
+          industryRelative: 1,
+        },
+        noLookahead: {
+          droppedFutureRevenueRows: 0,
+          droppedFutureFinancialRows: 0,
+        },
+      },
+      reasons: ['buzz_evidence:AI server'],
       technicalBreakdown: {
         trendStructure: 5,
         volatilityStructure: 3,
@@ -51,6 +67,8 @@ function assert(condition: unknown, message: string): void {
   assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.label === '技術結構'), 'technical row should use readable Score V2 label')
   assert(vm.rows.some((row) => row.key === 'fundamentalQuality' && row.label === '基本面'), 'fundamental row should use readable Score V2 label')
   assert(vm.rows.some((row) => row.key === 'newsTheme' && row.label === '新聞題材'), 'news/theme row should use readable Score V2 label')
+  assert(vm.rows.some((row) => row.key === 'fundamentalQuality' && row.explanation?.includes('營收')), 'fundamental row should explain why the score exists in plain language')
+  assert(vm.rows.some((row) => row.key === 'newsTheme' && row.explanation?.includes('市場熱點方向')), 'news/theme row should explain its limited role')
   assert(vm.technicalRows.some((row) => row.key === 'volatilityStructure' && row.max === 5), 'technical breakdown should use Score V2 volatility max')
   assert(vm.technicalRows.some((row) => row.key === 'trendStructure' && row.label === '趨勢結構'), 'technical detail should use readable trend label')
   assert(vm.technicalRows.some((row) => row.key === 'volumeConfirmation' && row.value === 4), 'technical breakdown should include volume confirmation')
@@ -90,6 +108,36 @@ function assert(condition: unknown, message: string): void {
   assert(
     vm.technicalRows.every((row) => !row.explanation?.includes('分數高代表')),
     'technical fallback should not render generic dictionary-style explanations',
+  )
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
+    score_v2: {
+      version: 'score_v2',
+      total: 45,
+      components: {
+        mlEdge: 18,
+        chipFlow: 14,
+        technicalStructure: 13,
+        fundamentalQuality: 0,
+        newsTheme: 0,
+      },
+      fundamentalQuality: {
+        version: 'fundamental_quality_v1',
+        score: 0,
+        dataIssues: ['missing_revenue_rows', 'missing_financial_rows'],
+      },
+      reasons: [],
+    },
+  })
+  assert(
+    vm.rows.some((row) => row.key === 'newsTheme' && row.explanation?.includes('這不是看空')),
+    'news/theme zero should explain that missing theme support is not bearish',
+  )
+  assert(
+    vm.rows.some((row) => row.key === 'fundamentalQuality' && row.explanation?.includes('沒有通過時點檢查')),
+    'fundamental zero should explain missing point-in-time data in plain language',
   )
 }
 

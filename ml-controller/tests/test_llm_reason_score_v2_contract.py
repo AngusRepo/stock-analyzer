@@ -65,6 +65,13 @@ def test_llm_reason_stock_line_prefers_score_v2_payload():
     assert "籌碼+技術+ML" not in line
 
 
+def test_llm_reason_system_prompt_requires_detailed_plain_language():
+    assert "180 到 280 字" in llm_reason.SYSTEM_PROMPT
+    assert "不要只重複英文欄位名稱" in llm_reason.SYSTEM_PROMPT
+    assert "沒有可信且未過期的題材加分" in llm_reason.SYSTEM_PROMPT
+    assert "營收、獲利、估值、財務安全" in llm_reason.SYSTEM_PROMPT
+
+
 def test_llm_reason_stock_line_does_not_project_legacy_scores():
     candidate = {
         **_candidate(),

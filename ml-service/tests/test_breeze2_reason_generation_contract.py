@@ -40,9 +40,13 @@ def test_prompt_contract_is_taiwan_finance_json_and_non_mutating():
     assert "繁體中文" in prompt
     assert "台灣股市" in prompt
     assert "不得下單" in prompt
+    assert "180到320字" in prompt
+    assert "缺少可信且未過期的題材加分" in prompt
+    assert "營收、獲利、估值、財務安全" in prompt
     assert '"symbol"' in prompt
     assert '"watchPoints"' in prompt
     assert "2330" in prompt
+    assert "mlEdge" in prompt
 
 
 def test_parse_breeze2_reason_generation_text_extracts_bounded_json():
@@ -62,6 +66,17 @@ def test_parse_breeze2_reason_generation_text_extracts_bounded_json():
     assert parsed["2330"]["watchPoints"] == ["觀察量能是否續增", "留意外資買賣超", "破月線降風險"]
 
 
+def test_prompt_reads_score_v2_payload_alias_from_controller():
+    payload = _payload()
+    payload["candidates"][0]["score_v2"] = payload["candidates"][0].pop("score_components")
+
+    prompt = build_breeze2_reason_generation_prompt(payload)
+
+    assert "mlEdge" in prompt
+    assert "technicalStructure" in prompt
+    assert "score_components" not in prompt
+
+
 def test_fallback_report_is_shadow_only_and_validates():
     report = build_fallback_breeze2_reason_generation(_payload(), model_id="MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1")
 
@@ -71,4 +86,6 @@ def test_fallback_report_is_shadow_only_and_validates():
     assert report["primary_candidate_source_allowed"] is False
     assert report["model_id"] == "MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1"
     assert "2330" in report["reasons"]
+    assert "基本面" in report["reasons"]["2330"]["reason"]
+    assert "新聞題材" in report["reasons"]["2330"]["reason"]
     assert validate_breeze2_reason_generation_report(report) == []

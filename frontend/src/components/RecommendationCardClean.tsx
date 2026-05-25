@@ -838,18 +838,50 @@ function TradePlanRow({ row }: { row: TradePlanReadRow }) {
   )
 }
 
-function ProviderReasonCompare({ geminiReason, breeze2Reason }: { geminiReason: string; breeze2Reason: string | null }) {
+function ProviderReasonCompare({
+  geminiReason,
+  geminiWatchPoints,
+  breeze2Reason,
+  breeze2WatchPoints,
+}: {
+  geminiReason: string
+  geminiWatchPoints: string[]
+  breeze2Reason: string | null
+  breeze2WatchPoints: string[]
+}) {
+  const geminiPoints = geminiWatchPoints.filter(Boolean).slice(0, 3)
+  const breezePoints = breeze2WatchPoints.filter(Boolean).slice(0, 3)
   return (
     <div className="mt-3 grid gap-2 sm:grid-cols-2">
       <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
         <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.1 Flash</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
+        {geminiPoints.length > 0 && (
+          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
+            {geminiPoints.map((point, index) => (
+              <li key={`gemini-${index}`} className="flex gap-1.5">
+                <span className="mt-0.5 text-blue-500">•</span>
+                <span>{normalizeWatchPoint(point)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
         <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">Breeze2</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           {breeze2Reason ?? 'Breeze2 尚未回寫逐檔中文總結；目前正式資料只有模型流程指標，還不能和 Gemini 做逐字理由比較。'}
         </p>
+        {breezePoints.length > 0 && (
+          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
+            {breezePoints.map((point, index) => (
+              <li key={`breeze2-${index}`} className="flex gap-1.5">
+                <span className="mt-0.5 text-emerald-500">•</span>
+                <span>{normalizeWatchPoint(point)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   )
@@ -1180,6 +1212,20 @@ function geminiReasonForCompare(rec: any, reason: string): string {
   return clean
 }
 
+function reasonVariantWatchPoints(rec: any, provider: 'gemini' | 'breeze2'): string[] {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  const entry = parseObject(reasonVariants?.[provider])
+    ?? parseObject(reasonVariants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+    ?? parseObject(variants?.[provider])
+    ?? parseObject(variants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+  const points = normalizeWatchPoints(entry?.watchPoints ?? entry?.watch_points)
+  if (points.length > 0) return points
+  if (provider === 'gemini') return displayWatchPoints(normalizeWatchPoints(rec.watch_points)).slice(0, 3)
+  return []
+}
+
 function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
   const vm = buildScoreBreakdownViewModel(rec)
   const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
@@ -1268,8 +1314,8 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null): Trad
   const optimisticHigh = planPrice(context?.optimisticValueHigh)
   return [
     { label: '現價', value: latest ?? '-', note: '', tone: 'neutral' },
-    { label: 'Fair value', value: `${fairLow ?? '-'} ~ ${fairHigh ?? '-'}`, note: '', tone: 'neutral' },
-    { label: 'POC', value: poc ?? '-', note: '', tone: 'neutral' },
+    { label: '買入參考區', value: `${fairLow ?? '-'} ~ ${fairHigh ?? '-'}`, note: '', tone: 'neutral' },
+    { label: '量能成本區', value: poc ?? '-', note: '', tone: 'neutral' },
     { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
     { label: '樂觀價格區間', value: `${optimisticLow ?? '-'} ~ ${optimisticHigh ?? '-'}`, note: '', tone: context?.optimisticValueStatus === 'exceeded' ? 'warn' : 'neutral' },
@@ -1306,12 +1352,17 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
   ].filter(Boolean).join('，')
   const tradePlanRows = buildFocusedTradePlanRows(rec, context)
   const geminiReason = geminiReasonForCompare(rec, reason)
+  const geminiWatchPoints = reasonVariantWatchPoints(rec, 'gemini')
+  const breeze2WatchPoints = reasonVariantWatchPoints(rec, 'breeze2')
 
   return (
     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
       <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
         <ShieldCheck className="h-3 w-3" />
         推薦理由 / Alpha 交易計劃
+      </p>
+      <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/85">
+        兩個方案由 StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場方案。
       </p>
       <div className="grid gap-2">
         <KLinePlanSketch rec={rec} context={context} />
@@ -1359,7 +1410,12 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
           ]}
         />
       </div>
-      <ProviderReasonCompare geminiReason={geminiReason} breeze2Reason={breeze2Reason} />
+      <ProviderReasonCompare
+        geminiReason={geminiReason}
+        geminiWatchPoints={geminiWatchPoints}
+        breeze2Reason={breeze2Reason}
+        breeze2WatchPoints={breeze2WatchPoints}
+      />
     </div>
   )
 }
@@ -1647,7 +1703,14 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           <div className="space-y-1.5">
             <p className="mb-2 text-xs font-medium text-muted-foreground">五構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
-              <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+              <div key={item.key} className="space-y-1">
+                <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
+                {item.explanation && (
+                  <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                    {item.explanation}
+                  </p>
+                )}
+              </div>
             ))}
           </div>
 

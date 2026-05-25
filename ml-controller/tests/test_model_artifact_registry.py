@@ -197,6 +197,44 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
     assert release_gate["root_cause"] == "artifact_registry_missing_validation_pointer"
 
 
+def test_upsert_artifact_record_preserves_validation_packet_on_refresh(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        assert "SELECT offline_evidence_json FROM model_artifact_registry" in sql
+        assert params == ["CatBoost:v20260517:monthly_release"]
+        return [{"offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE}]
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    registry.upsert_artifact_record({
+        "artifact_id": "CatBoost:v20260517:monthly_release",
+        "model_name": "CatBoost",
+        "version": "v20260517",
+        "candidate_type": "monthly_release",
+        "state": "offline_strong_pass",
+        "offline_gate_status": "strong_pass",
+        "offline_gate_decision": "STRONG_PASS",
+        "offline_gate_failed_gates": "[]",
+        "offline_evidence_json": (
+            '{"gate":{"decision":"STRONG_PASS"},'
+            '"registration":{"model_cpcv":{"decision":"PASS"}},'
+            '"ic_summary":{"CatBoost":0.17}}'
+        ),
+    })
+
+    offline = registry._json_loads(executed[0]["params"][19])
+    assert offline["gate"]["decision"] == "STRONG_PASS"
+    assert offline["registration"]["model_cpcv"]["decision"] == "PASS"
+    assert offline["candidate_validation_packet"]["decision"] == "PASS"
+    assert offline["validation_packet"]["release_gate"]["pbo"]["method"] == "cscv_rank_logit"
+
+
 def test_model_artifact_validation_chain_persists_blocked_candidate_packet(monkeypatch):
     executed: list[dict[str, object]] = []
 

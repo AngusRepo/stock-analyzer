@@ -151,6 +151,45 @@ def _attach_validation_bundle(row: dict[str, Any], bundle: dict[str, Any]) -> No
         row["offline_evidence_json"] = offline
 
 
+_PRESERVED_OFFLINE_EVIDENCE_KEYS = (
+    "validation_packet",
+    "candidate_gate",
+    "candidate_validation_packet",
+    "candidate_specific_validation",
+    "parameter_candidate_validation",
+)
+
+
+def _merge_preserved_offline_evidence(existing_raw: Any, next_raw: Any) -> str:
+    """Keep promotion/validation packets when retrain callbacks refresh IC evidence."""
+    existing = _json_loads(existing_raw)
+    next_evidence = _json_loads(next_raw)
+    if not isinstance(next_evidence, dict):
+        return _json_dumps(next_evidence)
+    if not isinstance(existing, dict):
+        return _json_dumps(next_evidence)
+
+    for key in _PRESERVED_OFFLINE_EVIDENCE_KEYS:
+        if key not in next_evidence and isinstance(existing.get(key), dict):
+            next_evidence[key] = existing[key]
+    return _json_dumps(next_evidence)
+
+
+def _existing_offline_evidence_json(artifact_id: str) -> str | None:
+    try:
+        rows = d1_client.query(
+            "SELECT offline_evidence_json FROM model_artifact_registry WHERE artifact_id = ? LIMIT 1",
+            [artifact_id],
+            timeout=30.0,
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    raw = rows[0].get("offline_evidence_json")
+    return raw if isinstance(raw, str) else None
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -376,6 +415,14 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
 
 
 def upsert_artifact_record(record: dict[str, Any]) -> dict:
+    record = dict(record)
+    existing_offline = _existing_offline_evidence_json(str(record.get("artifact_id") or ""))
+    if existing_offline:
+        record["offline_evidence_json"] = _merge_preserved_offline_evidence(
+            existing_offline,
+            record.get("offline_evidence_json", "{}"),
+        )
+
     return d1_client.execute(
         """
         INSERT INTO model_artifact_registry (

@@ -43,6 +43,7 @@ def test_query_prefers_worker_read_proxy(monkeypatch):
     assert calls[0]["json"] == {
         "sql": "SELECT symbol, date FROM daily_recommendations WHERE date=?",
         "params": ["2026-05-22"],
+        "max_rows": 250000,
     }
 
 

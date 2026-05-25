@@ -28,6 +28,7 @@ CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
+WORKER_QUERY_MAX_ROWS = max(1, min(int(os.environ.get("D1_WORKER_QUERY_MAX_ROWS", "250000") or "250000"), 250000))
 
 
 def _check_env():
@@ -347,7 +348,7 @@ def _worker_query(sql: str, params: list[Any] | None = None, timeout: float = 60
         "Authorization": f"Bearer {WORKER_AUTH}",
         "Content-Type": "application/json",
     }
-    body = {"sql": sql, "params": params or []}
+    body = {"sql": sql, "params": params or [], "max_rows": WORKER_QUERY_MAX_ROWS}
     try:
         resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
     except httpx.RequestError as e:

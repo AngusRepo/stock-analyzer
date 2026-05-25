@@ -32,6 +32,7 @@ assert(
 assert(
   adminControlRoutes.includes('c.env.DB.prepare(statement.sql).bind(...statement.params).all()') &&
     adminControlRoutes.includes("mode: 'worker_d1_query'") &&
-    adminControlRoutes.includes('max_rows'),
+    adminControlRoutes.includes('max_rows') &&
+    adminControlRoutes.includes('const D1_QUERY_MAX_ROWS_CAP = 250000'),
   'internal D1 query proxy must execute via Worker D1 binding and expose bounded read results',
 )

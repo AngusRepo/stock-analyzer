@@ -33,6 +33,7 @@ function requireServiceToken(c: any) {
 
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
 const D1_QUERY_ALLOWED_READ = new Set(['SELECT', 'WITH'])
+const D1_QUERY_MAX_ROWS_CAP = 250000
 const D1_QUERY_FORBIDDEN_MUTATION = /\b(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|VACUUM|ATTACH|DETACH|TRUNCATE)\b/i
 
 function normalizeD1BatchStatement(raw: any, index: number) {
@@ -119,7 +120,7 @@ adminControlRoutes.post('/api/internal/d1/query', async (c) => {
     return c.json({ error: e?.message ?? 'invalid query' }, 400)
   }
 
-  const maxRows = Math.min(Math.max(Number(body?.max_rows ?? 100000) || 100000, 1), 100000)
+  const maxRows = Math.min(Math.max(Number(body?.max_rows ?? D1_QUERY_MAX_ROWS_CAP) || D1_QUERY_MAX_ROWS_CAP, 1), D1_QUERY_MAX_ROWS_CAP)
   const t0 = Date.now()
   const result = await c.env.DB.prepare(statement.sql).bind(...statement.params).all()
   const rows = result.results ?? []

@@ -226,6 +226,9 @@ def test_normalizes_cloud_run_and_modal_profiles_into_one_compute_shape():
             "provider": "gcp_cloud_run",
             "job_name": "pipeline-v2",
             "wall_sec": 600,
+            "await_sec": 480,
+            "compute_owner": "gcp_cloud_run_orchestrator",
+            "remote_function": "modal.predict_batch_v2",
             "cpu": 4,
             "memory_mb": 4096,
             "rows": 850_000,
@@ -250,6 +253,9 @@ def test_normalizes_cloud_run_and_modal_profiles_into_one_compute_shape():
 
     assert cloud_run["provider"] == "gcp_cloud_run"
     assert cloud_run["compute_sec"] == 2400.0
+    assert cloud_run["await_sec"] == 480.0
+    assert cloud_run["compute_owner"] == "gcp_cloud_run_orchestrator"
+    assert cloud_run["remote_function"] == "modal.predict_batch_v2"
     assert cloud_run["memory_gib"] == 4.0
     assert modal["provider"] == "modal"
     assert modal["compute_sec"] == 6600.0
@@ -294,6 +300,9 @@ def test_aggregate_compute_profiles_summarizes_operational_telemetry():
                 "job_name": "predict_batch_v2",
                 "wall_sec": 100,
                 "compute_sec": 300,
+                "await_sec": 20,
+                "compute_owner": "modal",
+                "remote_function": "predict_batch_v2",
                 "symbols": 40,
                 "meta": {
                     "chunk_size": 20,
@@ -309,6 +318,9 @@ def test_aggregate_compute_profiles_summarizes_operational_telemetry():
                 "job_name": "predict_batch_v2",
                 "wall_sec": 80,
                 "compute_sec": 160,
+                "await_sec": 10,
+                "compute_owner": "modal",
+                "remote_function": "predict_batch_v2",
                 "symbols": 20,
                 "meta": {
                     "chunk_size": 40,
@@ -325,6 +337,11 @@ def test_aggregate_compute_profiles_summarizes_operational_telemetry():
     )
 
     assert aggregate["chunk_count"] == 3
+    assert aggregate["await_sec"] == 30.0
+    assert aggregate["compute_owner"] == "modal"
+    assert aggregate["remote_function"] == "predict_batch_v2"
+    assert aggregate["compute_owners"] == ["modal"]
+    assert aggregate["remote_functions"] == ["predict_batch_v2"]
     assert aggregate["chunk_sizes"] == [20, 40]
     assert aggregate["result_error_rate"] == 0.033333
     assert aggregate["batch_error_rate"] == 0.016667

@@ -40,6 +40,7 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
+from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,7 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
     elif fc > 0.01:
         score += 2
     score = max(0.0, min(30.0, score))
-    return round(score * 10) / 10
+    return _round1(score)
 
 
 def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) -> dict:
@@ -502,7 +503,7 @@ def _parse_score_components_payload(value: Any) -> dict[str, Any] | None:
 
 
 def _round1(value: float) -> float:
-    return round(float(value) * 10) / 10
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _clamp_score(value: Any, maximum: float) -> float:
@@ -535,13 +536,7 @@ def _score_v2_seed_inputs(row: dict) -> dict[str, float]:
             "mlEdgeSeed30": _score_number(seeds.get("mlEdgeSeed30")),
             "personaAlphaSeed": _score_number(seeds.get("personaAlphaSeed")),
         }
-    return {
-        "chipFlowSeed40": _score_number(row.get("chip_score")),
-        "technicalSeed30": _score_number(row.get("tech_score")),
-        "screenerMomentumSeed20": _score_number(row.get("momentum_score")),
-        "mlEdgeSeed30": _score_number(row.get("ml_score")),
-        "personaAlphaSeed": _score_number(row.get("persona_score")),
-    }
+    raise ValueError("Score V2 seed inputs required: missing score_seed_inputs")
 
 
 def _score_v2_seed_inputs_from_payload(payload: dict[str, Any] | None, *, ml_score: float) -> dict[str, float] | None:
@@ -585,18 +580,127 @@ def _score_v2_seed_inputs_from_payload(payload: dict[str, Any] | None, *, ml_sco
     }
 
 
+def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date: str) -> dict[str, dict[str, Any]]:
+    """Read D1 fundamental inputs and return Score V2 fundamental-quality payloads.
+
+    This is read-only and fail-soft. Missing canonical tables should not block
+    the daily pipeline; they simply leave fundamentalQuality at 0 until the
+    FinLab structured materialization is promoted.
+    """
+
+    if not screener_recs:
+        return {}
+    symbols = sorted({str(row.get("symbol") or "").strip() for row in screener_recs if row.get("symbol")})
+    stock_ids = sorted({
+        int(row.get("stock_id") or row.get("id"))
+        for row in screener_recs
+        if str(row.get("stock_id") or row.get("id") or "").isdigit()
+    })
+    revenue_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    canonical_financial_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    financial_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in stock_ids}
+
+    if symbols:
+        placeholders = ",".join("?" for _ in symbols)
+        try:
+            rows = d1_client.query(
+                f"""
+                SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy, source, as_of_date
+                FROM canonical_revenue_monthly
+                WHERE stock_id IN ({placeholders})
+                ORDER BY stock_id, revenue_month
+                """,
+                symbols,
+                timeout=60,
+            )
+            for row in rows or []:
+                symbol = str(row.get("stock_id") or "").strip()
+                if symbol in revenue_by_symbol:
+                    revenue_by_symbol[symbol].append(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[reco] canonical_revenue_monthly unavailable for fundamental quality: %s", exc)
+
+        try:
+            rows = d1_client.query(
+                f"""
+                SELECT stock_id, period, market_segment, report_date, available_date,
+                       revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
+                       pe, pb, dividend_yield, debt_ratio, current_ratio,
+                       operating_cash_flow, industry_quality_percentile,
+                       source, as_of_date
+                FROM canonical_fundamental_features
+                WHERE stock_id IN ({placeholders})
+                  AND available_date <= ?
+                ORDER BY stock_id, available_date, period
+                """,
+                [*symbols, decision_date],
+                timeout=60,
+            )
+            for row in rows or []:
+                symbol = str(row.get("stock_id") or "").strip()
+                if symbol in canonical_financial_by_symbol:
+                    canonical_financial_by_symbol[symbol].append(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[reco] canonical_fundamental_features unavailable for fundamental quality: %s", exc)
+
+    if stock_ids:
+        placeholders = ",".join("?" for _ in stock_ids)
+        try:
+            rows = d1_client.query(
+                f"""
+                SELECT stock_id, period, period_type, revenue, revenue_growth_yoy,
+                       eps, roe, pe, pb, dividend_yield
+                FROM financials
+                WHERE stock_id IN ({placeholders})
+                  AND period_type IN ('quarterly', 'annual')
+                ORDER BY stock_id, period
+                """,
+                stock_ids,
+                timeout=60,
+            )
+            for row in rows or []:
+                stock_id = int(row.get("stock_id") or 0)
+                if stock_id in financial_by_stock_id:
+                    financial_by_stock_id[stock_id].append(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[reco] financials unavailable for fundamental quality: %s", exc)
+
+    out: dict[str, dict[str, Any]] = {}
+    for rec in screener_recs:
+        symbol = str(rec.get("symbol") or "").strip()
+        stock_id_raw = rec.get("stock_id") or rec.get("id")
+        stock_id = int(stock_id_raw) if str(stock_id_raw or "").isdigit() else None
+        if not symbol:
+            continue
+        financial_rows = canonical_financial_by_symbol.get(symbol) or (
+            financial_by_stock_id.get(stock_id, []) if stock_id is not None else []
+        )
+        out[symbol] = score_fundamental_quality(
+            decision_date=decision_date,
+            revenue_rows=revenue_by_symbol.get(symbol, []),
+            financial_rows=financial_rows,
+        )
+    return out
+
+
 def _score_v2_components_from_row(row: dict) -> dict[str, float]:
     payload = _parse_score_components_payload(row.get("score_components"))
     if isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION and isinstance(payload.get("components"), dict):
         components = payload["components"]
         ml_edge = _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"])
-        if "score_seed_inputs" in row or "ml_score" in row:
+        fundamental_quality = row.get("fundamental_quality_score")
+        if fundamental_quality is None and isinstance(row.get("fundamental_quality"), dict):
+            fundamental_quality = row["fundamental_quality"].get("score")
+        if "score_seed_inputs" in row:
             ml_edge = _rescale_score(_score_v2_seed_inputs(row)["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"])
         return {
             "mlEdge": ml_edge,
             "chipFlow": _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"]),
             "technicalStructure": _clamp_score(components.get("technicalStructure"), SCORE_V2_WEIGHTS["technicalStructure"]),
-            "fundamentalQuality": _clamp_score(components.get("fundamentalQuality"), SCORE_V2_WEIGHTS["fundamentalQuality"]),
+            "fundamentalQuality": _clamp_score(
+                components.get("fundamentalQuality") if fundamental_quality is None else fundamental_quality,
+                SCORE_V2_WEIGHTS["fundamentalQuality"],
+            ),
             "newsTheme": _clamp_score(components.get("newsTheme"), SCORE_V2_WEIGHTS["newsTheme"]),
         }
     seeds = _score_v2_seed_inputs(row)
@@ -611,6 +715,14 @@ def _score_v2_components_from_row(row: dict) -> dict[str, float]:
         "fundamentalQuality": 0.0,
         "newsTheme": 0.0,
     }
+
+
+def _require_canonical_score_v2_components(row: dict) -> dict[str, float]:
+    payload = _parse_score_components_payload(row.get("score_components"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("components"), dict):
+        symbol = row.get("symbol") or row.get("stock_id") or "unknown"
+        raise ValueError(f"Score V2 score_components required for ranking promotion: {symbol}")
+    return _score_v2_components_from_row({"score_components": payload})
 
 
 def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
@@ -742,6 +854,8 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         "formula": "score_v2_total + alphaAdjustment",
         "alphaReason": alpha_reason,
     }
+    if isinstance(row.get("fundamental_quality"), dict):
+        payload["fundamentalQuality"] = row["fundamental_quality"]
     if isinstance(row.get("chip_evidence"), dict):
         payload["chipEvidence"] = row["chip_evidence"]
     return payload
@@ -909,7 +1023,7 @@ def build_reason(s: dict) -> str:
         except (json.JSONDecodeError, TypeError):
             payload = None
     if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
-        payload = build_score_components(s, raw_score=_score_number(s.get("score")))
+        return "Score V2 missing: canonical score_components unavailable"
     components = _score_v2_components_from_row({"score_components": payload})
     final_score = _clamp_score(payload.get("finalScore", payload.get("total")), 100)
     total = _clamp_score(payload.get("total"), 100)
@@ -1006,6 +1120,7 @@ def filter_and_score_recommendations(
     regime_label: str | None = None,
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
+    fundamental_quality_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict], int]:
     """
     Returns (final_recs, sell_filtered_count).
@@ -1062,13 +1177,9 @@ def filter_and_score_recommendations(
         # tracked in signal_source/reason but should not inflate ML votes.
         ml_score = calculate_ml_score(eff_ml, ml) if ml else 0.0
         existing_score_components = _parse_score_components_payload(rec.get("score_components"))
-        score_seed_inputs = _score_v2_seed_inputs_from_payload(existing_score_components, ml_score=ml_score) or {
-            "chipFlowSeed40": _score_number(rec.get("chip_score")),
-            "technicalSeed30": _score_number(rec.get("tech_score")),
-            "screenerMomentumSeed20": _score_number(rec.get("momentum_score")),
-            "mlEdgeSeed30": ml_score,
-            "personaAlphaSeed": 0.0,
-        }
+        score_seed_inputs = _score_v2_seed_inputs_from_payload(existing_score_components, ml_score=ml_score)
+        if score_seed_inputs is None:
+            raise ValueError(f"Score V2 screener score_components required for {symbol}")
 
         # Persona score (Batch B: 投信/散戶 augmentation)
         persona_score = 0.0
@@ -1255,6 +1366,9 @@ def filter_and_score_recommendations(
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
         }
+        fundamental_quality = (fundamental_quality_by_symbol or {}).get(symbol)
+        if isinstance(fundamental_quality, dict):
+            row["fundamental_quality"] = fundamental_quality
         if existing_score_components:
             row["score_components"] = existing_score_components
         if regime_label:
@@ -1338,7 +1452,7 @@ def hybrid_ranking_promotion(
     # Compute combined_score for each
     scored = []
     for r in recommendations:
-        score_v2 = _score_v2_components_from_row(r)
+        score_v2 = _require_canonical_score_v2_components(r)
         screener_norm = min(
             1.0,
             (score_v2["chipFlow"] + score_v2["technicalStructure"])
@@ -1867,7 +1981,10 @@ def re_rank_recommendations(run_date: str) -> None:
     ordering so slate diversification does not need to inflate predictive score.
     """
     rows = d1_client.query(
-        "SELECT symbol FROM daily_recommendations WHERE date = ? ORDER BY rank ASC, score DESC",
+        "SELECT symbol FROM daily_recommendations WHERE date = ? "
+        "ORDER BY rank ASC, CASE WHEN json_valid(score_components) THEN "
+        "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
+        "CAST(json_extract(score_components, '$.total') AS REAL), 0) ELSE 0 END DESC",
         [run_date],
     )
     statements = [

@@ -99,8 +99,10 @@ function assert(condition: unknown, message: string): void {
     priceOtcRowsOnLatest: 1198,
     chipLatestDate: '2026-04-30',
     chipRowsOnLatest: 5100,
+    chipSourceTable: 'canonical_chip_daily',
     indicatorLatestDate: '2026-04-30',
     indicatorRowsOnLatest: 2283,
   })
   assert(result.ok, 'fresh full-market price/chip/indicator data should pass')
+  assert(result.summary.includes('source=canonical_chip_daily'), 'readiness summary should expose canonical chip source')
 }

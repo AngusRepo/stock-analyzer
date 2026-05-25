@@ -6,11 +6,16 @@ export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Vari
 
 const REPORT_ARTIFACT_TASKS = new Set([
   'pipeline',
+  'dataset-snapshot-export',
+  'regime-compute',
   'backtest',
+  'backtest-replay',
+  'weekly-backtest',
   'weekly-optuna',
   'optuna-queue',
   'pbo',
   'monte-carlo',
+  'finlab-v4-backfill',
   'alpha-quality',
   'weekly-audit',
   'lifecycle',
@@ -126,6 +131,7 @@ async function handleSchedulerCallback(c: any) {
   const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
     ? body.metadata as Record<string, unknown>
     : undefined
+  let callbackSummary = String(body.summary ?? '')
   let optunaClosure: Record<string, unknown> | null = null
   if (String(body.task) === 'optuna-queue') {
     const { closeOptunaQueueCallbackRun } = await import('../lib/optunaRunClosure')
@@ -133,7 +139,7 @@ async function handleSchedulerCallback(c: any) {
       status: body.status,
       runId: callbackRunId,
       runDate: callbackRunDate,
-      summary: String(body.summary ?? ''),
+      summary: callbackSummary,
       durationMs: Number(body.duration_ms ?? 0),
       error: body.error != null ? String(body.error) : undefined,
       metadata: callbackMetadata,
@@ -143,14 +149,46 @@ async function handleSchedulerCallback(c: any) {
     ? optunaClosure.business_date
     : callbackRunDate
 
+  if (String(body.task) === 'regime-compute' && body.status === 'success') {
+    const newLabel = String(callbackMetadata?.regime_label_en ?? '').trim()
+    if (newLabel) {
+      try {
+        const { detectRegimeShift } = await import('../lib/riskTriggers')
+        const rawPrev = callbackMetadata?.prev_label
+        const prevLabel = typeof rawPrev === 'string' && rawPrev.trim() ? rawPrev : null
+        const shiftSummary = await detectRegimeShift(c.env, prevLabel, newLabel)
+        callbackSummary = `${callbackSummary} shift=${shiftSummary}`.slice(0, 1200)
+      } catch (e: any) {
+        callbackSummary = `${callbackSummary} shift=hook_error(${String(e?.message ?? e).slice(0, 80)})`.slice(0, 1200)
+      }
+    }
+  }
+
   await logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,
-    summary: String(body.summary ?? ''),
+    summary: callbackSummary,
     duration_ms: Number(body.duration_ms ?? 0),
     error: body.error != null ? String(body.error) : undefined,
     run_id: callbackRunId,
     run_date: schedulerRunDate,
+    metadata: callbackMetadata,
   })
+
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const { recordSchedulerCallbackComputeProfile } = await import('../lib/computeProfileEvents')
+      await recordSchedulerCallbackComputeProfile(c.env, {
+        task: String(body.task),
+        status: String(body.status),
+        durationMs: Number(body.duration_ms ?? 0),
+        runDate: schedulerRunDate,
+        runId: callbackRunId,
+        metadata: callbackMetadata,
+      })
+    } catch (e) {
+      console.warn('[scheduler-callback] compute profile event failed:', e)
+    }
+  })())
 
   if (
     String(body.task) !== 'optuna-queue' &&
@@ -167,7 +205,7 @@ async function handleSchedulerCallback(c: any) {
           status: String(body.status),
           businessDate: schedulerRunDate,
           runId: callbackRunId,
-          summary: String(body.summary ?? ''),
+          summary: callbackSummary,
           durationMs: Number(body.duration_ms ?? 0),
           error: body.error != null ? String(body.error) : undefined,
           metadata: callbackMetadata,
@@ -216,17 +254,59 @@ async function handleSchedulerCallback(c: any) {
     })())
   }
 
+  if (
+    String(body.task) === 'weekly-backtest' &&
+    body.status === 'success' &&
+    String(callbackMetadata?.source ?? '') === 'backtest_research_bundle'
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { runWeeklyModelArtifactValidation } = await import('../lib/controllerResearchWorkflows')
+        const summary = await runWeeklyModelArtifactValidation(c.env)
+        await logSchedulerResult(c.env.KV, 'model-artifact-validation', {
+          status: classifySchedulerSummary(summary),
+          summary,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: schedulerRunDate,
+        }, c.env as any)
+      } catch (e: any) {
+        await logSchedulerResult(c.env.KV, 'model-artifact-validation', {
+          status: 'error',
+          summary: e?.message ?? 'model artifact validation after weekly-backtest callback failed',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: schedulerRunDate,
+        }, c.env as any)
+      }
+    })())
+  }
+
   if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {
     try {
       if (callbackRunDate) {
         await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
       }
       if (body.status === 'success') {
-        const { runPostPipelineCallbackChain } = await import('../lib/postMarketChain')
-        await runPostPipelineCallbackChain(c.env, {
-          runDate: callbackRunDate,
-          upstreamRunId: callbackRunId,
-        })
+        c.executionCtx.waitUntil((async () => {
+          try {
+            const { runPostPipelineCallbackChain } = await import('../lib/postMarketChain')
+            await runPostPipelineCallbackChain(c.env, {
+              runDate: callbackRunDate,
+              upstreamRunId: callbackRunId,
+            })
+          } catch (e: any) {
+            await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+              status: 'error',
+              summary: e?.message ?? 'post-pipeline callback chain failed',
+              duration_ms: 0,
+              error: String(e),
+              run_id: callbackRunId,
+              run_date: callbackRunDate,
+            }, c.env as any)
+          }
+        })())
       }
     } catch (e: any) {
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {

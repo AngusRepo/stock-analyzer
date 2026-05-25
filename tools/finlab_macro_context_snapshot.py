@@ -18,16 +18,15 @@ FIELDS = {
         "同時指標綜合指數(點)": "tw_business_indicators:同時指標綜合指數(點)",
     },
     "tw_total_pmi": {
-        "製造業PMI": "tw_total_pmi:製造業PMI",
+        "台灣製造業PMI": "tw_total_pmi:台灣製造業PMI",
     },
     "tw_total_nmi": {
-        "臺灣非製造業NMI": "tw_total_nmi:臺灣非製造業NMI",
+        "台灣非製造業NMI": "tw_total_nmi:台灣非製造業NMI",
     },
     "tw_monetary_aggregates": {
         "年增率(%)": "tw_monetary_aggregates:年增率(%)",
     },
 }
-
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -50,18 +49,29 @@ def login_finlab() -> None:
     login(api_key)
 
 
-def latest_value(api_key: str) -> tuple[str | None, float | None]:
+def recent_values(api_key: str, limit: int = 2) -> list[dict[str, Any]]:
     from finlab import data
 
     df = pd.DataFrame(data.get(api_key)).copy()
     if df.empty:
-        return None, None
+        return []
     df.index = pd.to_datetime(df.index, errors="coerce")
     df = df[~df.index.isna()].sort_index()
     series = df.iloc[:, 0].dropna()
     if series.empty:
-        return None, None
-    return pd.Timestamp(series.index[-1]).strftime("%Y-%m-%d"), float(series.iloc[-1])
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, value in series.tail(limit).items():
+        out.append({"date": pd.Timestamp(idx).strftime("%Y-%m-%d"), "value": float(value)})
+    return out
+
+
+def latest_value(api_key: str) -> tuple[str | None, float | None, list[dict[str, Any]]]:
+    history = recent_values(api_key, limit=2)
+    if not history:
+        return None, None, []
+    latest = history[-1]
+    return latest["date"], latest["value"], history
 
 
 def collect_snapshot() -> list[dict[str, Any]]:
@@ -72,12 +82,12 @@ def collect_snapshot() -> list[dict[str, Any]]:
         missing = 0
         for label, api_key in fields.items():
             try:
-                date, value = latest_value(api_key)
+                date, value, history = latest_value(api_key)
             except Exception as exc:
                 missing += 1
                 metrics["fields"][label] = {"api_key": api_key, "error": str(exc)[:180]}
                 continue
-            metrics["fields"][label] = {"api_key": api_key, "date": date, "value": value}
+            metrics["fields"][label] = {"api_key": api_key, "date": date, "value": value, "history": history}
             if label == "景氣對策信號(分)":
                 metrics["latest_signal_score"] = value
                 metrics["latest_signal_date"] = date
@@ -96,7 +106,6 @@ def collect_snapshot() -> list[dict[str, Any]]:
             "metrics_json": metrics,
         })
     return out
-
 
 def write_sql_file(rows: list[dict[str, Any]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

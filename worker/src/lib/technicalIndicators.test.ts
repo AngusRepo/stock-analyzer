@@ -1,7 +1,35 @@
-import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
+import * as fs from 'fs'
+import * as path from 'path'
+
+import { computeAndStoreIndicators, computeTechnicalIndicators, type TechnicalIndicatorResult } from './technicalIndicators'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+function assertApprox(actual: number | null, expected: number | null, label: string, tolerance = 1e-6): void {
+  if (expected == null) {
+    assert(actual == null, `${label} should be null`)
+    return
+  }
+  assert(actual != null, `${label} should be computed`)
+  assert(Math.abs(actual - expected) <= tolerance, `${label} mismatch: expected ${expected}, got ${actual}`)
+}
+
+type TechnicalIndicatorFixture = {
+  caseId: string
+  input: {
+    closes: number[]
+    highs: number[]
+    lows: number[]
+    volumes: number[]
+  }
+  expectedIndicators: TechnicalIndicatorResult
+}
+
+function loadV2Fixture(): TechnicalIndicatorFixture {
+  const fixturePath = path.join(process.cwd(), 'src', 'lib', 'technicalIndicatorsV2.fixture.json')
+  return JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as TechnicalIndicatorFixture
 }
 
 function testComputeTechnicalIndicators(): void {
@@ -25,7 +53,18 @@ function testComputeTechnicalIndicators(): void {
   assert(indicators.volumeMomentumDivergence132710 != null, 'volume momentum divergence factor should be computed')
 }
 
+function testComputeTechnicalIndicatorsMatchesSharedV2Fixture(): void {
+  const fixture = loadV2Fixture()
+  const { closes, highs, lows, volumes } = fixture.input
+  const indicators = computeTechnicalIndicators(closes, highs, lows, volumes)
+
+  for (const key of Object.keys(fixture.expectedIndicators) as Array<keyof TechnicalIndicatorResult>) {
+    assertApprox(indicators[key], fixture.expectedIndicators[key], `${fixture.caseId}.${key}`)
+  }
+}
+
 testComputeTechnicalIndicators()
+testComputeTechnicalIndicatorsMatchesSharedV2Fixture()
 
 async function testComputeAndStoreIndicatorsAsOfDate(): Promise<void> {
   const executed: any[] = []

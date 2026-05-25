@@ -113,6 +113,10 @@ def test_load_state_space_series_export_from_payload_file_supports_list_payload(
 
 def test_load_daily_state_space_series_export_uses_read_only_pipeline_inputs(monkeypatch):
     from services import d1_client, payload_builder
+    source = Path(state_space_series.__file__).read_text(encoding="utf-8")
+
+    assert "DAILY_RECOMMENDATION_PIPELINE_COLUMNS" in source
+    assert "SELECT * FROM daily_recommendations" not in source
 
     monkeypatch.setattr(
         d1_client,

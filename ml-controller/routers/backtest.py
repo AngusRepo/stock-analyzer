@@ -7,6 +7,9 @@ POST /backtest/pbo         → Probability of Backtest Overfitting (CPCV)
 POST /backtest/replay      → Sprint 6 parameterized Mode A replay (Optuna objective)
 """
 import logging
+import os
+import time
+import uuid
 from fastapi import APIRouter, Body, Query
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -15,6 +18,7 @@ from services.backtest_service import run_full_backtest
 from services.monte_carlo_service import run_monte_carlo_mdd
 from services.pbo_service import run_pbo_analysis
 from services.alpha_evidence_runner import run_alpha_candidate_evidence
+from services import modal_client
 from services.promotion_service import (
     evaluate_alpha_policy_evidence_gate,
     evaluate_latest_alpha_policy_gate,
@@ -153,6 +157,164 @@ class ReplayRequest(BaseModel):
     )
 
 
+class BacktestReplayRunRequest(ReplayRequest):
+    run_id: Optional[str] = None
+    callback_task: str = "backtest-replay"
+    trigger_source: str = "controller"
+    trigger_id: Optional[str] = None
+    dry_run: bool = False
+
+
+class BacktestMonteCarloRunRequest(BaseModel):
+    run_id: Optional[str] = None
+    n: int = Field(default=1000, ge=100, le=10000)
+    source: str = Field(default="paper", pattern="^(paper|backtest|paper_curated|backtest_curated)$")
+    method: Optional[str] = Field(default=None, pattern="^(block_bootstrap|regime_block_bootstrap|iid_shuffle)$")
+    block_size: Optional[int] = Field(default=None, ge=1, le=60)
+    exclude_symbols: Optional[str] = None
+    callback_task: str = "monte-carlo"
+    trigger_source: str = "controller"
+    trigger_id: Optional[str] = None
+    dry_run: bool = False
+
+
+class BacktestPboRunRequest(BaseModel):
+    run_id: Optional[str] = None
+    partitions: int = Field(default=10, ge=4, le=20)
+    source: str = Field(default="backtest", pattern="^(paper|backtest)$")
+    callback_task: str = "pbo"
+    trigger_source: str = "controller"
+    trigger_id: Optional[str] = None
+    dry_run: bool = False
+
+
+class BacktestFullRunRequest(BaseModel):
+    run_id: Optional[str] = None
+    callback_task: str = "backtest"
+    trigger_source: str = "controller"
+    trigger_id: Optional[str] = None
+    dry_run: bool = False
+
+
+class BacktestResearchBundleRunRequest(BaseModel):
+    run_id: Optional[str] = None
+    run_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    monte_carlo_n: int = Field(default=1000, ge=100, le=10000)
+    pbo_partitions: int = Field(default=10, ge=4, le=20)
+    pbo_source: str = Field(default="backtest", pattern="^(paper|backtest)$")
+    callback_task: str = "weekly-backtest"
+    trigger_source: str = "controller"
+    trigger_id: Optional[str] = None
+    dry_run: bool = False
+
+
+def _bundle_executor() -> str:
+    raw = os.environ.get("BACKTEST_RESEARCH_BUNDLE_EXECUTOR", "controller").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "controller"
+
+
+def _replay_executor() -> str:
+    raw = os.environ.get("BACKTEST_REPLAY_EXECUTOR", "controller").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "controller"
+
+
+def _monte_carlo_executor() -> str:
+    raw = os.environ.get("BACKTEST_MONTE_CARLO_EXECUTOR", "controller").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "controller"
+
+
+def _pbo_executor() -> str:
+    raw = os.environ.get("BACKTEST_PBO_EXECUTOR", "controller").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "controller"
+
+
+def _full_backtest_executor() -> str:
+    raw = os.environ.get("BACKTEST_RUN_EXECUTOR", "controller").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "controller"
+
+
+def _model_dump(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def build_backtest_replay_modal_payload(req: BacktestReplayRunRequest) -> dict:
+    dumped = _model_dump(req)
+    request = {
+        key: value
+        for key, value in dumped.items()
+        if key not in {"run_id", "callback_task", "trigger_source", "trigger_id", "dry_run"}
+    }
+    return {
+        "run_id": req.run_id or f"backtest-replay-{int(time.time())}-{uuid.uuid4().hex[:8]}",
+        "callback_task": req.callback_task,
+        "trigger_source": req.trigger_source,
+        "trigger_id": req.trigger_id,
+        "executor": "modal",
+        "source": "backtest_replay",
+        "request": request,
+    }
+
+
+def build_backtest_monte_carlo_modal_payload(req: BacktestMonteCarloRunRequest) -> dict:
+    payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if value is not None and key != "dry_run"
+    }
+    payload["run_id"] = req.run_id or f"backtest-monte-carlo-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    payload["executor"] = "modal"
+    payload["source_kind"] = "backtest_monte_carlo"
+    return payload
+
+
+def build_backtest_pbo_modal_payload(req: BacktestPboRunRequest) -> dict:
+    payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if value is not None and key != "dry_run"
+    }
+    payload["run_id"] = req.run_id or f"backtest-pbo-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    payload["executor"] = "modal"
+    payload["source_kind"] = "backtest_pbo"
+    return payload
+
+
+def build_backtest_full_run_modal_payload(req: BacktestFullRunRequest) -> dict:
+    payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if value is not None and key != "dry_run"
+    }
+    payload["run_id"] = req.run_id or f"backtest-full-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    payload["executor"] = "modal"
+    payload["source"] = "backtest_full_run"
+    return payload
+
+
+def build_backtest_research_bundle_modal_payload(req: BacktestResearchBundleRunRequest) -> dict:
+    payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if value is not None and key != "dry_run"
+    }
+    payload["run_id"] = req.run_id or f"backtest-bundle-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    payload["executor"] = "modal"
+    payload["source"] = "backtest_research_bundle"
+    return payload
+
+
 class AlphaPromotionGateRequest(BaseModel):
     candidate: dict = Field(
         default_factory=dict,
@@ -218,6 +380,90 @@ def post_alpha_evidence(req: AlphaEvidenceRequest = Body(...)):
     except Exception as e:
         logger.exception("[AlphaEvidence] Evaluation failed")
         return {"status": "error", "error": str(e)}
+
+
+@router.post("/monte-carlo/run")
+async def trigger_monte_carlo_run(req: BacktestMonteCarloRunRequest = Body(...)):
+    """Spawn Monte Carlo analysis on Modal; keep /monte-carlo sync route as rollback."""
+    payload = build_backtest_monte_carlo_modal_payload(req)
+    executor = _monte_carlo_executor()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor,
+            "payload": payload,
+        }
+    if executor != "modal":
+        return {
+            "status": "not_triggered",
+            "executor": executor,
+            "reason": "BACKTEST_MONTE_CARLO_EXECUTOR=modal is required before spawning Modal Monte Carlo",
+            "payload": payload,
+        }
+    return await modal_client.spawn_backtest_monte_carlo(payload)
+
+
+@router.post("/run/async")
+async def trigger_full_backtest_run(req: BacktestFullRunRequest = Body(...)):
+    """Spawn the full backtest on Modal; keep /run sync route as rollback."""
+    payload = build_backtest_full_run_modal_payload(req)
+    executor = _full_backtest_executor()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor,
+            "payload": payload,
+        }
+    if executor != "modal":
+        return {
+            "status": "not_triggered",
+            "executor": executor,
+            "reason": "BACKTEST_RUN_EXECUTOR=modal is required before spawning Modal full backtest",
+            "payload": payload,
+        }
+    return await modal_client.spawn_backtest_full_run(payload)
+
+
+@router.post("/pbo/run")
+async def trigger_pbo_run(req: BacktestPboRunRequest = Body(...)):
+    """Spawn PBO analysis on Modal; keep /pbo sync route as rollback."""
+    payload = build_backtest_pbo_modal_payload(req)
+    executor = _pbo_executor()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor,
+            "payload": payload,
+        }
+    if executor != "modal":
+        return {
+            "status": "not_triggered",
+            "executor": executor,
+            "reason": "BACKTEST_PBO_EXECUTOR=modal is required before spawning Modal PBO",
+            "payload": payload,
+        }
+    return await modal_client.spawn_backtest_pbo(payload)
+
+
+@router.post("/replay/run")
+async def trigger_replay_run(req: BacktestReplayRunRequest = Body(...)):
+    """Spawn parameterized backtest replay on Modal without changing replay semantics."""
+    payload = build_backtest_replay_modal_payload(req)
+    executor = _replay_executor()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor,
+            "payload": payload,
+        }
+    if executor != "modal":
+        return {
+            "status": "not_triggered",
+            "executor": executor,
+            "reason": "BACKTEST_REPLAY_EXECUTOR=modal is required before spawning Modal backtest replay",
+            "payload": payload,
+        }
+    return await modal_client.spawn_backtest_replay(payload)
 
 
 @router.post("/replay")
@@ -482,6 +728,40 @@ async def trigger_pbo(
     except Exception as e:
         logger.exception("[PBO] Pipeline failed")
         return {"status": "error", "error": str(e)}
+
+
+@router.post("/research-bundle/run")
+async def trigger_research_bundle(req: BacktestResearchBundleRunRequest = Body(default=BacktestResearchBundleRunRequest())):
+    """Spawn full backtest/MC/PBO bundle on Modal; existing sync endpoints stay unchanged."""
+    payload = build_backtest_research_bundle_modal_payload(req)
+    executor = _bundle_executor()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor,
+            "payload": payload,
+        }
+    if executor != "modal":
+        return {
+            "status": "not_triggered",
+            "executor": executor,
+            "message": "BACKTEST_RESEARCH_BUNDLE_EXECUTOR=modal is required before spawning Modal bundle",
+            "payload": payload,
+        }
+    try:
+        from services import modal_client
+        spawn = await modal_client.spawn_backtest_research_bundle(payload)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[BacktestBundle] failed to spawn Modal")
+        return {"status": "error", "error": f"Modal backtest bundle spawn failed: {type(e).__name__}: {e}"}
+    return {
+        "status": "triggered",
+        "executor": "modal",
+        "source": "backtest_research_bundle",
+        "run_id": payload["run_id"],
+        "function_call_id": spawn.get("function_call_id"),
+        "message": "backtest research Modal bundle spawned; callback expected",
+    }
 
 
 @router.get("/promotion-gate")

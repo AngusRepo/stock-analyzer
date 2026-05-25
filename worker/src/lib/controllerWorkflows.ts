@@ -14,6 +14,8 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'backtest',
   'monte-carlo',
   'pbo',
+  'model-artifact-validation',
+  'finlab-v4-backfill',
   'retrain',
   'monthly-retrain',
 ] as const
@@ -28,17 +30,23 @@ export {
 } from './controllerDailyWorkflows'
 
 export {
+  finLabBackfillModalTriggerEnabled,
   runOptunaQueueProcessor,
+  runFinLabV4Backfill,
   runWeeklyAudit,
   runWeeklyAlphaQuality,
   runWeeklyBacktest,
+  runWeeklyBacktestResearchBundle,
   runWeeklyLifecycleCheck,
   runMonthlyOptunaResearch,
+  runWeeklyModelArtifactValidation,
   runWeeklyMonteCarlo,
   runWeeklyOptunaResearch,
   runWeeklyPBO,
+  runWeeklyValidationChain,
   runWeeklyDriftRetrain,
   runWeeklyRetrain,
   summarizeWeeklyValidationChain,
   triggerRetrain,
+  weeklyBacktestResearchBundleEnabled,
 } from './controllerResearchWorkflows'

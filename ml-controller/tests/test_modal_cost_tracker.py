@@ -57,6 +57,7 @@ def test_build_modal_compute_profile_preserves_modal_runtime_fields():
             "chunk_size": 20,
             "model_cache_hit_ratio": 0.75,
             "run_id": "universal-20260517T233956-32000efc",
+            "await_sec": 0.0,
         },
     )
 
@@ -65,6 +66,9 @@ def test_build_modal_compute_profile_preserves_modal_runtime_fields():
     assert profile["run_id"] == "universal-20260517T233956-32000efc"
     assert profile["wall_sec"] == 134.972
     assert profile["compute_sec"] == 539.888
+    assert profile["await_sec"] == 0.0
+    assert profile["compute_owner"] == "modal"
+    assert profile["remote_function"] == "predict_batch_v2"
     assert profile["cpu"] == 2.0
     assert profile["memory_mb"] == 8192
     assert profile["symbols"] == 64
@@ -150,16 +154,47 @@ def test_build_compute_profile_event_payload_targets_compute_profile_events():
     payload = build_compute_profile_event_payload(profile=profile, event_date="2026-05-18")
 
     assert "INSERT INTO compute_profile_events" in payload["sql"]
+    assert "await_sec" in payload["sql"]
+    assert "compute_owner" in payload["sql"]
+    assert "remote_function" in payload["sql"]
     assert payload["params"][0] == "2026-05-18"
     assert payload["params"][1] == "modal"
     assert payload["params"][2] == "train_ftt_model"
     assert payload["params"][5] == 3310.0
-    assert payload["params"][8] == "L4"
-    assert payload["params"][10] == 1_200_000
-    assert payload["params"][11] == 106
-    assert payload["params"][12] == 2200
-    assert '"artifact_count": 1' in payload["params"][15]
-    assert '"job_name": "train_ftt_model"' in payload["params"][15]
+    assert payload["params"][7] == "modal"
+    assert payload["params"][8] == "train_ftt_model"
+    assert payload["params"][11] == "L4"
+    assert payload["params"][13] == 1_200_000
+    assert payload["params"][14] == 106
+    assert payload["params"][15] == 2200
+    assert '"artifact_count": 1' in payload["params"][18]
+    assert '"job_name": "train_ftt_model"' in payload["params"][18]
+
+
+def test_build_compute_profile_event_payload_keeps_legacy_table_fallback():
+    profile = build_modal_compute_profile(
+        source="modal_function",
+        function_name="train_ftt_model",
+        compute_sec=3310.0,
+        est_usd=0.807574,
+        cpu=1,
+        memory_mb=4096,
+        gpu="L4",
+        meta={"wall_sec": 3310.0, "await_sec": 0.0},
+    )
+    payload = build_compute_profile_event_payload(
+        profile=profile,
+        event_date="2026-05-18",
+        include_wait_columns=False,
+    )
+
+    assert "await_sec" not in payload["sql"]
+    assert "compute_owner" not in payload["sql"]
+    assert "remote_function" not in payload["sql"]
+    assert len(payload["params"]) == 16
+    assert '"await_sec": 0.0' in payload["params"][15]
+    assert '"compute_owner": "modal"' in payload["params"][15]
+    assert '"remote_function": "train_ftt_model"' in payload["params"][15]
 
 
 def test_compute_profile_event_json_round_trips_artifact_count_to_contract():
@@ -181,7 +216,7 @@ def test_compute_profile_event_json_round_trips_artifact_count_to_contract():
     normalized = normalize_compute_profile({
         "provider": payload["params"][1],
         "job_name": payload["params"][2],
-        "profile_json": payload["params"][15],
+        "profile_json": payload["params"][18],
     })
 
     assert normalized["rows"] == 1250

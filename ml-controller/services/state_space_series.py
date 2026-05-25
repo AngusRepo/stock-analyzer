@@ -108,10 +108,16 @@ def load_daily_state_space_series_export(
 ) -> dict[str, Any]:
     """Build a read-only daily state-space series export from D1 inputs."""
     from services import d1_client
-    from services.payload_builder import build_ml_universe, build_payloads, load_market_env
+    from services.payload_builder import (
+        DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
+        build_ml_universe,
+        build_payloads,
+        load_market_env,
+    )
 
     screener_recs = d1_client.query(
-        "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
+        f"SELECT {DAILY_RECOMMENDATION_PIPELINE_COLUMNS} "
+        "FROM daily_recommendations WHERE date = ? ORDER BY rank",
         [run_date],
     )
     if not screener_recs:

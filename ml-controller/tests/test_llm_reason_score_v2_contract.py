@@ -44,7 +44,7 @@ def _candidate() -> dict:
         "tech_score": 1,
         "momentum_score": 0,
         "ml_score": 1,
-        "score_components": _score_v2_payload(),
+        "score_v2": _score_v2_payload(),
         "foreign_net_5d": 2.1,
         "trust_net_5d": 0.4,
         "rsi14": 60,
@@ -63,6 +63,30 @@ def test_llm_reason_stock_line_prefers_score_v2_payload():
     assert "Technical Structure=20.0/25" in line
     assert "score=10" not in line
     assert "籌碼+技術+ML" not in line
+
+
+def test_llm_reason_stock_line_does_not_project_legacy_scores():
+    candidate = {
+        **_candidate(),
+        "score_v2": None,
+        "score": 90,
+        "chip_score": 40,
+        "tech_score": 30,
+        "momentum_score": 20,
+        "ml_score": 30,
+    }
+    line = llm_reason._build_stock_line(0, candidate)
+
+    assert "missing_score_v2" in line
+    assert "Score V2 finalScore=90.0/100" not in line
+    assert "ML Edge=25.0/25" not in line
+    assert "llm_reason_storage_projection" not in Path(llm_reason.__file__).read_text(encoding="utf-8")
+    assert 'c.get("score_components")' not in Path(llm_reason.__file__).read_text(encoding="utf-8")
+
+
+def test_llm_reason_rounding_matches_worker_math_round_semantics():
+    assert llm_reason._round1(1.25) == pytest.approx(1.3)
+    assert llm_reason._round1(2.35) == pytest.approx(2.4)
 
 
 @pytest.mark.asyncio

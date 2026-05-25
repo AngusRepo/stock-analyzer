@@ -61,6 +61,13 @@ def _per_regime_executor() -> str:
     return "cloud_run_job"
 
 
+def _research_sweep_executor() -> str:
+    raw = os.environ.get("OPTUNA_RESEARCH_SWEEP_EXECUTOR", "cloud_run_job").strip().lower()
+    if raw in {"modal", "modal_spawn"}:
+        return "modal"
+    return "cloud_run_job"
+
+
 class OptunaReq(BaseModel):
     n_trials: int = 200
     push_kv: bool = True
@@ -1103,7 +1110,52 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
     sweep over HTTP. The Job owns the long lifecycle and callbacks Worker with
     the final weekly-optuna/monthly-optuna status.
     """
+    executor = _research_sweep_executor()
     run_id = f"optuna-{req.cadence}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    if executor == "modal":
+        payload = {
+            "cadence": req.cadence,
+            "run_id": run_id,
+            "run_date": req.run_date,
+            "n_trials": req.n_trials,
+            "subset_size": req.subset_size,
+            "max_parallel_sources": req.max_parallel_sources,
+            "ga_population_size": req.ga_population_size,
+            "ga_generations": req.ga_generations,
+            "research_data_source": str(req.research_data_source or "snapshot"),
+            "push_kv": req.push_kv,
+            "dry_run": req.dry_run,
+            "callback_task": f"{req.cadence}-optuna",
+            "trigger_source": "research_sweep_run",
+        }
+        try:
+            from services import modal_client
+            spawn = asyncio.run(modal_client.spawn_optuna_research_sweep(payload))
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[Optuna/research_sweep/run] failed to spawn Modal")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Modal Optuna research sweep spawn failed: {type(e).__name__}: {e}",
+            ) from e
+
+        return {
+            "status": "triggered",
+            "executor": "modal",
+            "source": "optuna_research_sweep",
+            "cadence": req.cadence,
+            "run_id": run_id,
+            "function_call_id": spawn.get("function_call_id"),
+            "candidate_ids": [],
+            "push_results": [],
+            "snapshot": {
+                "status": "triggered",
+                "executor": "modal",
+                "function_name": "optuna_research_sweep",
+                "function_call_id": spawn.get("function_call_id"),
+            },
+            "message": "optuna research Modal run spawned; callback expected",
+        }
+
     env_overrides = {
         "OPTUNA_CADENCE": req.cadence,
         "OPTUNA_RUN_ID": run_id,

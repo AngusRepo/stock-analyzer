@@ -332,16 +332,48 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
   const windowStart = structure.window_start_date
   const windowEnd = structure.window_end_date
   const latestClose = structure.latest_close
-  const windowText = windowStart && windowEnd ? `, window=${windowStart}~${windowEnd}` : ''
-  const latestText = latestClose != null ? `, latest_close=${latestClose}` : ''
-  const optimisticText = optimisticLow != null || optimisticHigh != null
-    ? `, optimistic_value=${optimisticLow ?? 'n/a'}~${optimisticHigh ?? 'n/a'}`
-    : ''
-  const optimisticStatusText = optimisticStatus ? `, optimistic_status=${optimisticStatus}` : ''
-  const upsideText = upsideToOptimisticHighPct != null
-    ? `, upside_to_optimistic_high_pct=${upsideToOptimisticHighPct}`
-    : ''
-  return `Market structure: POC=${poc ?? 'n/a'}, fair_value=${low ?? 'n/a'}~${high ?? 'n/a'}${optimisticText}${optimisticStatusText}${upsideText}, location=${location}${windowText}${latestText}`
+  const formatPrice = (value: unknown): string | null => {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return null
+    return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
+  }
+  const latestText = formatPrice(latestClose)
+  const supportText = formatPrice(low ?? poc)
+  const confirmText = formatPrice(high ?? poc)
+  const pressureText = formatPrice(optimisticHigh ?? high)
+  const lowerPressureText = formatPrice(optimisticLow)
+  const plan: string[] = []
+
+  if (latestText) plan.push(`現價 ${latestText}`)
+  if (location === 'above_fair_value') {
+    if (confirmText) plan.push(`回測 ${confirmText} 站穩才追`)
+    if (pressureText) plan.push(`前高壓力 ${pressureText}`)
+  } else if (location === 'below_fair_value') {
+    if (supportText) plan.push(`尚未收回關鍵支撐 ${supportText}`)
+    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
+  } else if (location === 'in_fair_value') {
+    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
+    if (supportText) plan.push(`關鍵支撐 ${supportText}`)
+  } else {
+    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
+    if (supportText) plan.push(`關鍵支撐 ${supportText}`)
+  }
+
+  if (supportText) plan.push(`破位防守 ${supportText}`)
+  if (lowerPressureText && pressureText && lowerPressureText !== pressureText) {
+    plan.push(`壓力區 ${lowerPressureText}~${pressureText}`)
+  }
+  const upside = Number(upsideToOptimisticHighPct)
+  if (Number.isFinite(upside) && pressureText) {
+    const pct = Math.abs(upside * 100).toFixed(1).replace(/\.0$/, '')
+    plan.push(upside < 0 ? `已高於前高壓力 ${pct}%` : `距前高壓力 ${pct}%`)
+  }
+  if (optimisticStatus === 'exceeded') {
+    plan.push('避免追高，等回測確認')
+  }
+  if (windowStart && windowEnd) plan.push(`觀察區間 ${windowStart}~${windowEnd}`)
+
+  return plan.length ? `交易計劃: ${plan.join('；')}` : null
 }
 
 export function appendUniqueWatchPoint(points: string[], next: string | null): string[] {

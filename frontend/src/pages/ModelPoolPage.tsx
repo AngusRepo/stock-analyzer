@@ -218,6 +218,49 @@ function evidenceNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function validationPacket(row: ModelArtifactRegistryRow): Record<string, unknown> {
+  const packet = parseArtifactEvidence(row.offline_evidence_json).validation_packet
+  return objectValue(packet) ?? {}
+}
+
+function isGlobalReleasePacket(packet: Record<string, unknown>): boolean {
+  return packet.scope === 'latest_global_weekly_validation' ||
+    packet.scope === 'release_train_gate' ||
+    packet.strategy_risk_overlay_scope === 'latest_global_weekly_validation'
+}
+
+function candidateEvidenceSource(row: ModelArtifactRegistryRow): Record<string, unknown> | null {
+  const offline = parseArtifactEvidence(row.offline_evidence_json)
+  for (const key of ['candidate_gate', 'candidate_validation_packet', 'candidate_specific_validation', 'parameter_candidate_validation']) {
+    const source = objectValue(offline[key])
+    if (source) return source
+  }
+  const packet = validationPacket(row)
+  const nested = objectValue(packet.candidate_gate)
+  if (nested && nested.status !== 'MISSING') {
+    const evidence = objectValue(nested.evidence) ?? {}
+    return { ...evidence, ...nested }
+  }
+  if (packet.candidate_specific === true && !isGlobalReleasePacket(packet)) return packet
+  return null
+}
+
+function releaseGateSource(row: ModelArtifactRegistryRow): Record<string, unknown> | null {
+  const packet = validationPacket(row)
+  const releaseGate = objectValue(packet.release_gate)
+  if (releaseGate) return releaseGate
+  if (isGlobalReleasePacket(packet)) return packet
+  return null
+}
+
+function scopedEvidenceValue(source: Record<string, unknown> | null, keys: string[]): unknown {
+  return source ? deepMetric(source, keys) : undefined
+}
+
 function cpcvEvidenceSummary(row: ModelArtifactRegistryRow): { text: string; tone: WorkstationTone; missing: boolean } {
   const raw = artifactEvidenceValue(row, ['model_cpcv'])
   const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
@@ -234,12 +277,18 @@ function cpcvEvidenceSummary(row: ModelArtifactRegistryRow): { text: string; ton
   return { text: parts.join(' · '), tone: /pass/i.test(decision) || obj?.passed === true ? 'ok' : 'warn', missing: false }
 }
 
-function optionalEvidenceSummary(
-  row: ModelArtifactRegistryRow,
+function optionalEvidenceSummaryFromSource(
+  source: Record<string, unknown> | null,
   label: string,
   keys: string[],
 ): { text: string; tone: WorkstationTone; missing: boolean } {
-  const value = artifactEvidenceValue(row, keys)
+  return summarizeEvidenceValue(label, scopedEvidenceValue(source, keys))
+}
+
+function summarizeEvidenceValue(
+  label: string,
+  value: unknown,
+): { text: string; tone: WorkstationTone; missing: boolean } {
   if (value == null || value === '') return { text: `${label} 未產生`, tone: 'warn', missing: true }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>
@@ -324,8 +373,12 @@ function applyBlocker(row: PromotionEvidenceGateRow, blocker: ReturnType<typeof 
   }
 }
 
-function pboGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
-  const raw = artifactEvidenceValue(row, ['pbo', 'pbo_result', 'probability_of_backtest_overfitting'])
+function pboGate(
+  source: Record<string, unknown> | null,
+  context?: ModelArtifactActionContext,
+  scope: 'candidate' | 'release' = 'candidate',
+): PromotionEvidenceGateRow {
+  const raw = scopedEvidenceValue(source, ['pbo', 'pbo_result', 'probability_of_backtest_overfitting'])
   const obj = evidenceRecord(raw)
   if (raw == null || raw === '') {
     return {
@@ -334,7 +387,14 @@ function pboGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCon
       value: '未產生',
       status: 'MISSING',
       tone: 'warn',
-      reason: blockerFor(context, ['pbo_threshold_missing', 'pbo_method_not_promotion_grade', 'cpcv_pbo_missing'])?.next_action ?? 'validation_packet.pbo 不存在，不能判斷是否過度最佳化。',
+      reason: blockerFor(context, [
+        scope === 'candidate' ? 'candidate_pbo_threshold_missing' : 'release_pbo_blocked',
+        scope === 'candidate' ? 'candidate_pbo_method_not_promotion_grade' : 'release_pbo_method_not_promotion_grade',
+        'candidate_specific_validation_missing',
+        'cpcv_pbo_missing',
+      ])?.next_action ?? (scope === 'candidate'
+        ? 'candidate-specific PBO 尚未產生，不能用 weekly/global PBO 代替。'
+        : '本週 release gate 尚未產生 PBO。'),
     }
   }
   const pbo = obj ? firstEvidenceValue(obj, ['pbo', 'probability_of_backtest_overfitting', 'value', 'score']) : raw
@@ -355,11 +415,18 @@ function pboGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCon
     status,
     tone: gateTone(status),
     reason: evidenceReason(obj, method && method !== 'cscv_rank_logit' ? `method=${method}，不是 promotion-grade CSCV rank-logit。` : 'PBO < 50% 且 OOS 報酬為正才算過關。'),
-  }, blockerFor(context, ['pbo_threshold_missing', 'pbo_method_not_promotion_grade']))
+  }, blockerFor(context, [
+    scope === 'candidate' ? 'candidate_pbo_threshold_missing' : 'release_pbo_blocked',
+    scope === 'candidate' ? 'candidate_pbo_method_not_promotion_grade' : 'release_pbo_method_not_promotion_grade',
+  ]))
 }
 
-function dsrGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
-  const raw = artifactEvidenceValue(row, ['deflated_sharpe', 'dsr'])
+function dsrGate(
+  source: Record<string, unknown> | null,
+  context?: ModelArtifactActionContext,
+  scope: 'candidate' | 'release' = 'candidate',
+): PromotionEvidenceGateRow {
+  const raw = scopedEvidenceValue(source, ['deflated_sharpe', 'dsr'])
   const obj = evidenceRecord(raw)
   if (raw == null || raw === '') {
     return {
@@ -368,7 +435,12 @@ function dsrGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCon
       value: '未產生',
       status: 'MISSING',
       tone: 'warn',
-      reason: blockerFor(context, ['dsr_mc_missing'])?.next_action ?? 'validation_packet.deflated_sharpe 不存在。',
+      reason: blockerFor(context, [
+        scope === 'candidate' ? 'candidate_dsr_mc_missing' : 'release_dsr_blocked',
+        'candidate_specific_validation_missing',
+      ])?.next_action ?? (scope === 'candidate'
+        ? 'candidate-specific DSR 尚未產生。'
+        : '本週 release gate 尚未產生 DSR。'),
     }
   }
   const adjusted = obj ? firstEvidenceValue(obj, ['adjusted_sharpe', 'deflated_sharpe', 'value', 'score']) : raw
@@ -393,8 +465,12 @@ function dsrGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCon
   }
 }
 
-function mcGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow {
-  const raw = artifactEvidenceValue(row, ['monte_carlo', 'mc', 'plateau', 'mc_tail_risk', 'tail_risk'])
+function mcGate(
+  source: Record<string, unknown> | null,
+  context?: ModelArtifactActionContext,
+  scope: 'candidate' | 'release' = 'candidate',
+): PromotionEvidenceGateRow {
+  const raw = scopedEvidenceValue(source, ['monte_carlo', 'mc', 'plateau', 'mc_tail_risk', 'tail_risk'])
   const obj = evidenceRecord(raw)
   if (raw == null || raw === '') {
     return {
@@ -403,7 +479,12 @@ function mcGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCont
       value: '未產生',
       status: 'MISSING',
       tone: 'warn',
-      reason: blockerFor(context, ['dsr_mc_missing'])?.next_action ?? 'validation_packet.monte_carlo 不存在。',
+      reason: blockerFor(context, [
+        scope === 'candidate' ? 'candidate_dsr_mc_missing' : 'release_monte_carlo_blocked',
+        'candidate_specific_validation_missing',
+      ])?.next_action ?? (scope === 'candidate'
+        ? 'candidate-specific MC tail-risk 尚未產生。'
+        : '本週 release gate 尚未產生 MC tail-risk。'),
     }
   }
   const mdd95 = obj ? firstEvidenceValue(obj, ['mdd_95th', 'max_drawdown_95th']) : null
@@ -425,8 +506,8 @@ function mcGate(row: ModelArtifactRegistryRow, context?: ModelArtifactActionCont
   }
 }
 
-function spaGate(row: ModelArtifactRegistryRow): PromotionEvidenceGateRow {
-  const raw = artifactEvidenceValue(row, ['data_snooping', 'hansen_spa', 'white_reality_check', 'spa', 'reality_check'])
+function spaGate(source: Record<string, unknown> | null): PromotionEvidenceGateRow {
+  const raw = scopedEvidenceValue(source, ['data_snooping', 'hansen_spa', 'white_reality_check', 'spa', 'reality_check'])
   const obj = evidenceRecord(raw)
   if (raw == null || raw === '') {
     return {
@@ -456,29 +537,62 @@ function spaGate(row: ModelArtifactRegistryRow): PromotionEvidenceGateRow {
   }
 }
 
-function promotionEvidenceGateRows(row: ModelArtifactRegistryRow, context?: ModelArtifactActionContext): PromotionEvidenceGateRow[] {
+function promotionEvidenceGateRows(
+  source: Record<string, unknown> | null,
+  context?: ModelArtifactActionContext,
+  scope: 'candidate' | 'release' = 'candidate',
+): PromotionEvidenceGateRow[] {
   return [
-    pboGate(row, context),
-    dsrGate(row, context),
-    mcGate(row, context),
-    spaGate(row),
+    pboGate(source, context, scope),
+    dsrGate(source, context, scope),
+    mcGate(source, context, scope),
+    spaGate(source),
   ]
 }
 
 function PromotionEvidenceGateList({ row, context }: { row: ModelArtifactRegistryRow; context?: ModelArtifactActionContext }) {
-  const gates = promotionEvidenceGateRows(row, context)
+  const candidateSource = candidateEvidenceSource(row)
+  const releaseSource = releaseGateSource(row)
+  const sections = [
+    {
+      key: 'candidate',
+      title: 'Candidate-specific evidence',
+      subtitle: candidateSource
+        ? '候選專屬 DSR / MC / PBO / SPA'
+        : '尚未產生候選專屬 DSR / MC / PBO / SPA；weekly/global gate 不代替 model-level evidence。',
+      gates: promotionEvidenceGateRows(candidateSource, context, 'candidate'),
+    },
+    {
+      key: 'release',
+      title: 'Shared weekly release gate',
+      subtitle: releaseSource
+        ? '全模型共享的 release-train kill switch，只判斷本週能不能開放晉級。'
+        : '本週 shared release gate 尚未產生。',
+      gates: promotionEvidenceGateRows(releaseSource, context, 'release'),
+    },
+  ]
   return (
-    <div className="space-y-1.5">
-      {gates.map((gate) => (
-        <div key={gate.key} className="rounded border border-[#263247] bg-[#05070c] px-2 py-1.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="font-mono text-[11px] font-semibold text-[#dbe7ff]">{gate.label}</div>
-              <div className="mt-0.5 break-words font-mono text-[11px] text-[#f7c86a]">{gate.value}</div>
-            </div>
-            <WorkstationPill tone={gate.tone}>{gate.status}</WorkstationPill>
+    <div className="space-y-2">
+      {sections.map((section) => (
+        <div key={section.key} className="rounded border border-[#263247] bg-[#05070c] p-2">
+          <div className="mb-1.5">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#dbe7ff]">{section.title}</div>
+            <div className="mt-0.5 text-[10px] leading-4 text-[#8a92a6]">{section.subtitle}</div>
           </div>
-          <div className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{gate.reason}</div>
+          <div className="grid gap-1.5 md:grid-cols-2">
+            {section.gates.map((gate) => (
+              <div key={`${section.key}-${gate.key}`} className="rounded border border-[#1f2a3e] bg-[#080d14] px-2 py-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-mono text-[11px] font-semibold text-[#dbe7ff]">{gate.label}</div>
+                    <div className="mt-0.5 break-words font-mono text-[11px] text-[#f7c86a]">{gate.value}</div>
+                  </div>
+                  <WorkstationPill tone={gate.tone}>{gate.status}</WorkstationPill>
+                </div>
+                <div className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{gate.reason}</div>
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </div>
@@ -487,11 +601,16 @@ function PromotionEvidenceGateList({ row, context }: { row: ModelArtifactRegistr
 
 function artifactValidationGaps(row: ModelArtifactRegistryRow): string[] {
   const gaps: string[] = []
+  const candidateSource = candidateEvidenceSource(row)
   if (cpcvEvidenceSummary(row).missing) gaps.push('CPCV')
-  if (optionalEvidenceSummary(row, 'PBO', ['pbo', 'pbo_result']).missing) gaps.push('PBO')
-  if (optionalEvidenceSummary(row, 'DSR', ['deflated_sharpe', 'dsr']).missing) gaps.push('DSR')
-  if (optionalEvidenceSummary(row, 'MC', ['monte_carlo', 'mc', 'plateau']).missing) gaps.push('MC')
-  if (spaGate(row).status === 'MISSING') gaps.push('SPA')
+  if (!candidateSource) {
+    gaps.push('candidate-specific DSR/MC/PBO/SPA')
+    return gaps
+  }
+  if (pboGate(candidateSource).status === 'MISSING') gaps.push('PBO')
+  if (dsrGate(candidateSource).status === 'MISSING') gaps.push('DSR')
+  if (mcGate(candidateSource).status === 'MISSING') gaps.push('MC')
+  if (spaGate(candidateSource).status === 'MISSING') gaps.push('SPA')
   return gaps
 }
 
@@ -506,18 +625,39 @@ function promotionBlockerCopy(blocker: PromotionBlocker): { label: string; next:
       tone: 'warn',
     }
   }
-  if (blocker.code === 'pbo_method_not_promotion_grade') {
+  if (blocker.code === 'candidate_specific_validation_missing') {
     return {
-      label: 'PBO 還是 proxy grade',
+      label: '缺候選專屬驗證',
+      next: '要跑 candidate-specific replay / PBO / DSR / MC / SPA；shared weekly release gate 不能代替單一 model 的晉級證據。',
+      tone: 'warn',
+    }
+  }
+  if (blocker.code === 'candidate_pbo_method_not_promotion_grade' || blocker.code === 'pbo_method_not_promotion_grade') {
+    return {
+      label: '候選 PBO 還是 proxy grade',
       next: '看 PBO row 的 method；必須是 candidate-specific CSCV rank-logit，proxy PBO 只能當觀察證據。',
       tone: 'warn',
     }
   }
-  if (blocker.code === 'dsr_mc_missing') {
+  if (blocker.code === 'candidate_dsr_mc_missing' || blocker.code === 'dsr_mc_missing') {
     return {
-      label: 'DSR 或 MC 未產生',
-      next: '看 DSR / MC row：若顯示 MISSING，代表 validation_packet.deflated_sharpe 或 monte_carlo 沒寫入，需重跑 candidate validation chain。',
+      label: '候選 DSR 或 MC 未產生',
+      next: '候選本身要有 DSR / MC tail-risk；不能只看本週 shared release gate。',
       tone: 'warn',
+    }
+  }
+  if (blocker.code === 'candidate_data_snooping_missing') {
+    return {
+      label: '缺候選 SPA / White Reality Check',
+      next: '補候選專屬 data-snooping guard，避免把多重測試挑出的 winner 直接升 production。',
+      tone: 'warn',
+    }
+  }
+  if (blocker.code.startsWith('release_') || blocker.code === 'release_train_gate_missing') {
+    return {
+      label: '本週 release gate 未開',
+      next: blocker.next_action || '先修 shared weekly PBO/DSR/MC release gate；這是全模型共同 kill switch。',
+      tone: blocker.severity === 'review' ? 'info' : 'warn',
     }
   }
   if (blocker.code === 'missing_current_champion') {
@@ -848,7 +988,7 @@ function UnifiedModelHealthMatrix({
                   'Offline gate / OOS IC',
                   'Live IC / Samples',
                   'Offline gate / CPCV',
-                  'DSR / MC / PBO / SPA',
+                  'Candidate gate / Release gate',
                   'Live gate / Root cause / Next action',
                 ].map((label) => (
                   <th key={label} className="border border-[#263247] px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em]">{label}</th>
@@ -1262,9 +1402,10 @@ function ArtifactDiffPanel({
               const linkStatus = pointer?.artifact_link_status ?? 'not_linked'
               const policyInfo = featurePolicyCopy(modelName, artifact.feature_policy_version)
               const cpcvSummary = cpcvEvidenceSummary(artifact)
-              const pboSummary = optionalEvidenceSummary(artifact, 'PBO', ['pbo', 'pbo_result'])
-              const dsrSummary = optionalEvidenceSummary(artifact, 'DSR', ['deflated_sharpe', 'dsr'])
-              const mcSummary = optionalEvidenceSummary(artifact, 'MC', ['monte_carlo', 'mc', 'plateau'])
+              const candidateSource = candidateEvidenceSource(artifact)
+              const pboSummary = optionalEvidenceSummaryFromSource(candidateSource, 'PBO', ['pbo', 'pbo_result'])
+              const dsrSummary = optionalEvidenceSummaryFromSource(candidateSource, 'DSR', ['deflated_sharpe', 'dsr'])
+              const mcSummary = optionalEvidenceSummaryFromSource(candidateSource, 'MC', ['monte_carlo', 'mc', 'plateau'])
               return (
                 <div key={`${modelName}-${slot}-${artifact.artifact_id}`} className="border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">

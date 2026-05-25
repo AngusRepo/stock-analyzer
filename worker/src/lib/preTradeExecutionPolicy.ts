@@ -18,12 +18,14 @@ export interface PreTradePolicyConfig {
   requoteStopFallback: number
   maxRetries?: number
   maxQuoteAgeMs?: number
+  maxEntryChasePct?: number
 }
 
 export interface PreTradeExecutionInput {
   symbol: string
   currentPrice: number
   entryPrice: number
+  bestAsk?: number | null
   stopLoss?: number | null
   originalEntry?: number | null
   retryCount?: number | null
@@ -56,6 +58,11 @@ function formatQuoteAge(quoteAgeMs: number): string {
   const minutes = Math.floor(seconds / 60)
   const remainSeconds = seconds % 60
   return remainSeconds > 0 ? `${minutes}m${remainSeconds}s` : `${minutes}m`
+}
+
+function finitePositive(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTradeExecutionDecision {
@@ -126,6 +133,23 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
   }
 
   if (currentPrice > entryPrice) {
+    const maxEntryChasePct = Number(input.policy.maxEntryChasePct ?? 0)
+    const bestAsk = finitePositive(input.bestAsk)
+    const chaseLimit = bestAsk ?? currentPrice
+    const chasePremiumPct = (chaseLimit - entryPrice) / entryPrice
+    const chaseMomentumOk =
+      (momentum?.volumeRatio == null || momentum.volumeRatio >= (momentum.minVolumeRatio ?? 0.8)) &&
+      (momentum?.slope5min == null || momentum.slope5min >= 0) &&
+      (momentum?.rangePosition == null || momentum.rangePosition >= (momentum.minRangePosition ?? 0.3))
+    if (maxEntryChasePct > 0 && chasePremiumPct >= 0 && chasePremiumPct <= maxEntryChasePct) {
+      if (chaseMomentumOk) {
+        return {
+          action: 'BUY_AT',
+          reason: `entry_chase_confirmed:${(chasePremiumPct * 100).toFixed(2)}%`,
+          limitPrice: roundPrice(chaseLimit),
+        }
+      }
+    }
     return { action: 'DEFER', reason: 'price_above_entry' }
   }
 

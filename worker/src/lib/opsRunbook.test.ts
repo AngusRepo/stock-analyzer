@@ -12,7 +12,10 @@ function assert(condition: unknown, message: string): void {
   assert(runbook.resource_cleanup.some((step) => step.id === 'cloud_run_stale_revisions'), 'Cloud Run cleanup audit should be present')
   assert(runbook.resource_cleanup.some((step) => step.id === 'stale_kv_keys'), 'KV stale-key audit should be present')
   assert(runbook.release_gate.includes('OBS drilldown check'), 'release gate should include OBS drilldown')
+  assert(runbook.release_gate.includes('FinLab canonical D1 freshness'), 'release gate should include FinLab canonical freshness')
   assert(runbook.disaster_drill.some((step) => step.id === 'callback_round_trip'), 'callback round-trip drill should be present')
+  assert(runbook.disaster_drill.some((step) => step.id === 'finlab_canonical_d1_repair'), 'FinLab canonical D1 repair plan should be in ops runbook')
+  assert(runbook.disaster_drill.some((step) => step.command_hint.includes('-VerifyD1')), 'FinLab canonical repair runbook should include strict read-only D1 verification')
 }
 
 class FakeStatement {

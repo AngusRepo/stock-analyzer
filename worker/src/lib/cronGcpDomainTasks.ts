@@ -5,13 +5,10 @@ import {
   runRegimeCompute,
   runVerifyV2,
   runWeeklyAudit,
-  runWeeklyBacktest,
   runWeeklyAlphaQuality,
-  runWeeklyMonteCarlo,
-  runWeeklyPBO,
   runWeeklyOptunaResearch,
   runOptunaQueueProcessor,
-  summarizeWeeklyValidationChain,
+  runWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 
@@ -56,12 +53,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   }
 
   if (cron === '0 22 * * 6') {
-    runWithLog('weekly-backtest', async () => {
-      const bt = await runWeeklyBacktest(env)
-      const mc = await runWeeklyMonteCarlo(env)
-      const pbo = await runWeeklyPBO(env)
-      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
-    })
+    runWithLog('weekly-backtest', async () => runWeeklyValidationChain(env))
     runWithLog('alpha-quality', async () => runWeeklyAlphaQuality(env))
     return true
   }

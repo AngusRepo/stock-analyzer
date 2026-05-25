@@ -1,46 +1,47 @@
-import {
-  buzzResultsToThemeEvidence,
-  combineMultiSourceThemeEvidence,
-} from './multiSourceThemeEvidence'
+import { loadRuntimeThemeSignals } from './multiSourceThemeEvidence'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const ptt = buzzResultsToThemeEvidence('ptt', [
-  { concept: 'AI_Server', mentionCount: 8, sentimentAvg: 0.3, topPosts: ['ptt ai'] },
-  { concept: 'PCB', mentionCount: 2, sentimentAvg: 0.1, topPosts: ['ptt pcb'] },
-])
-
-const anue = buzzResultsToThemeEvidence('anue', [
-  { concept: 'AI_Server', mentionCount: 4, sentimentAvg: 0, topPosts: ['anue ai'] },
-])
-
-const runtimeSignals = [
-  {
-    source: 'official_rss',
-    concept: 'AI_Server',
-    mentionCount: 2,
-    sentimentAvg: 0.2,
-    topPosts: ['official ai'],
-    score: 0.8,
+const calls: { sql?: string; params?: unknown[] } = {}
+const db = {
+  prepare(sql: string) {
+    calls.sql = sql
+    return {
+      bind(...params: unknown[]) {
+        calls.params = params
+        return {
+          async all<T>() {
+            return {
+              results: [{
+                concept: 'AI',
+                score: 3,
+                sentiment_avg: 0.4,
+                source: 'finlab_taxonomy',
+                evidence_count: 2,
+                top_titles: JSON.stringify(['AI supply chain']),
+                allowed_use: 'context',
+                decision_effect: 'score_context',
+              }] as T[],
+            }
+          },
+        }
+      },
+    }
   },
-  {
-    source: 'gdelt_events',
-    concept: 'SUPPLY_CHAIN_RISK',
-    mentionCount: 3,
-    sentimentAvg: -0.5,
-    topPosts: ['gdelt risk'],
-    score: 0.7,
-    decisionEffect: 'research_or_risk_context',
-  },
-]
+} as unknown as D1Database
 
-const combined = combineMultiSourceThemeEvidence([ptt, anue, runtimeSignals])
+async function main(): Promise<void> {
+  const rows = await loadRuntimeThemeSignals(db, '2026-05-24')
 
-assert(combined.combinedBuzz[0].concept === 'AI_Server', 'AI_Server should stay top after cross-source evidence merge')
-assert((combined.scoreMap.get('AI_Server') ?? 0) > (combined.scoreMap.get('PCB') ?? 0), 'multi-source score must beat single-source weak evidence')
-assert(combined.sourceBreakdown.get('AI_Server')?.ptt !== undefined, 'PTT source contribution must be traceable')
-assert(combined.sourceBreakdown.get('AI_Server')?.official_rss !== undefined, 'official source contribution must be traceable')
-assert(combined.acceptedSources.ptt === 2, 'accepted source counts must include PTT rows')
-assert(combined.acceptedSources.official_rss === 1, 'accepted source counts must include official rows')
+  assert(calls.sql?.includes("date >= date(?, '-14 days')"), 'runtime theme signals must reject stale evidence older than 14 days')
+  assert(JSON.stringify(calls.params) === JSON.stringify(['2026-05-24', '2026-05-24']), 'theme signal query should bind window anchor and decision date')
+  assert(rows.length === 1, 'fresh runtime theme signal should still be accepted')
+  assert(rows[0].concept === 'AI', 'theme signal concept should be preserved')
+}
+
+main().catch(error => {
+  console.error(error)
+  process.exit(1)
+})

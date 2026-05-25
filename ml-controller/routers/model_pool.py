@@ -11,6 +11,7 @@ Future ML_POOL Stage 1+:
   POST /model_pool/promote_check    -> apply lifecycle transitions in model_pool.json
 """
 from __future__ import annotations
+import copy
 import logging
 import os
 import time
@@ -33,12 +34,70 @@ from services.model_artifact_registry import (
     list_artifact_registry,
     list_champion_pointers,
     run_promotion_controller,
+    run_model_artifact_validation_chain,
 )
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
+
+_MODEL_POOL_READ_CACHE: dict[tuple, dict] = {}
+
+
+def _read_cache_ttl_seconds(kind: str) -> float:
+    keys = (
+        f"MODEL_POOL_{kind.upper()}_CACHE_TTL_SECONDS",
+        "MODEL_POOL_READ_CACHE_TTL_SECONDS",
+    )
+    for key in keys:
+        raw = os.environ.get(key)
+        if raw is None:
+            continue
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("[ModelPool] invalid %s=%r; disabling read cache for %s", key, raw, kind)
+            return 0.0
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return 0.0
+    return 45.0
+
+
+def _read_cached(cache_key: tuple, kind: str, loader, *, bypass_cache: bool = False) -> dict:
+    ttl = _read_cache_ttl_seconds(kind)
+    now = time.time()
+    if ttl <= 0 or bypass_cache:
+        value = loader()
+        if ttl > 0:
+            _MODEL_POOL_READ_CACHE[cache_key] = {
+                "expires_at": now + ttl,
+                "value": copy.deepcopy(value),
+            }
+        return value
+
+    cached = _MODEL_POOL_READ_CACHE.get(cache_key)
+    if cached and float(cached.get("expires_at", 0.0)) > now:
+        return copy.deepcopy(cached["value"])
+
+    value = loader()
+    _MODEL_POOL_READ_CACHE[cache_key] = {
+        "expires_at": now + ttl,
+        "value": copy.deepcopy(value),
+    }
+    return value
+
+
+def _invalidate_model_pool_read_cache(reason: str) -> None:
+    if _MODEL_POOL_READ_CACHE:
+        logger.info("[ModelPool] invalidating read cache: %s", reason)
+    _MODEL_POOL_READ_CACHE.clear()
+
+
+def _storage_client_cache_token() -> int:
+    from google.cloud import storage
+
+    return id(storage.Client)
 
 
 def _bucket_name() -> str:
@@ -442,6 +501,12 @@ class PromotionControllerRequest(BaseModel):
     reason: str = "promotion_controller"
 
 
+class ArtifactValidationChainRequest(BaseModel):
+    model_name: str | None = None
+    limit: int = 200
+    persist: bool = True
+
+
 @router.post("/train_patchtst")
 async def train_patchtst(req: TrainPatchTSTRequest):
     """One-shot universal PatchTST training. Mirrors /train_dlinear pipeline."""
@@ -609,6 +674,7 @@ async def register_challenger(req: RegisterChallengerRequest):
     }
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+    _invalidate_model_pool_read_cache("register_challenger")
 
     # Stage 5 alert (graceful no-op if DISCORD_WEBHOOK_URL absent)
     try:
@@ -648,6 +714,7 @@ async def discard_challenger(req: DiscardChallengerRequest):
     removed = entry.pop("challenger", None)
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
+    _invalidate_model_pool_read_cache("discard_challenger")
     try:
         if removed:
             discord_alert.alert_lifecycle(
@@ -740,6 +807,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     # Active rows update entry.weekly_ic; challenger rows update
     # entry.challenger.weekly_ic (separate IC history per shadow version).
     pool_changes: dict[str, dict] = {}
+    pool_updated = False
     if req.update_pool:
         try:
             bucket = storage.Client().bucket(_bucket_name())
@@ -758,6 +826,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                         _json.dumps(pool, indent=2, ensure_ascii=False),
                         content_type="application/json",
                     )
+                    pool_updated = True
         except Exception as e:
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}
@@ -775,6 +844,9 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                 "status": "error",
                 "error": f"artifact_registry_live_gate_failed: {e}",
             }
+
+    if pool_updated or (req.update_registry and registry_updates is not None):
+        _invalidate_model_pool_read_cache("compute_weekly_ic")
 
     # 4. Stage 5 alerts: weekly summary + decay-detection per-event
     # Decay rules (per ML_POOL_ARCHITECTURE.md, NOT auto-flipping status;
@@ -1405,6 +1477,7 @@ async def promote_check(req: PromoteCheckRequest):
                 _json.dumps(pool, indent=2, ensure_ascii=False),
                 content_type="application/json",
             )
+            _invalidate_model_pool_read_cache("promote_check")
 
     lifecycle_review_packet = _build_lifecycle_review_packet(
         actions=actions,
@@ -1446,9 +1519,9 @@ async def promote_check(req: PromoteCheckRequest):
 
 
 @router.get("/status")
-async def status():
+async def status(bypass_cache: bool = False):
     """Read current model_pool.json from GCS."""
-    try:
+    def _load_status() -> dict:
         import json as _json
         from google.cloud import storage
         bucket = storage.Client().bucket(_bucket_name())
@@ -1460,6 +1533,14 @@ async def status():
             datetime.now(timezone.utc).date().isoformat(),
         ))
         return pool
+
+    try:
+        return _read_cached(
+            ("status", _bucket_name(), _storage_client_cache_token()),
+            "status",
+            _load_status,
+            bypass_cache=bypass_cache,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS read failed: {e}")
 
@@ -1470,6 +1551,7 @@ async def artifact_registry(
     state: str | None = None,
     candidate_type: str | None = None,
     limit: int = 100,
+    bypass_cache: bool = False,
 ):
     """Read registered retrain artifacts and gate states.
 
@@ -1477,45 +1559,61 @@ async def artifact_registry(
     endpoint exposes the release-train registry so UI/OBS can show why a
     retrain artifact is registered, offline-passed, shadowing, or archived.
     """
-    try:
+    def _load_registry() -> dict:
         rows = list_artifact_registry(
             model_name=model_name,
             state=state,
             candidate_type=candidate_type,
             limit=limit,
         )
+        return {
+            "status": "ok",
+            "source_of_truth": "model_artifact_registry",
+            "count": len(rows),
+            "artifacts": rows,
+        }
+
+    try:
+        return _read_cached(
+            ("artifact_registry", id(list_artifact_registry), model_name, state, candidate_type, int(limit or 100)),
+            "artifact_registry",
+            _load_registry,
+            bypass_cache=bypass_cache,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry failed: {e}")
-    return {
-        "status": "ok",
-        "source_of_truth": "model_artifact_registry",
-        "count": len(rows),
-        "artifacts": rows,
-    }
 
 
 @router.get("/artifact_registry/selection")
-async def artifact_registry_selection(model_name: str | None = None, limit: int = 200):
+async def artifact_registry_selection(model_name: str | None = None, limit: int = 200, bypass_cache: bool = False):
     """Read-only release-train candidate selection.
 
     This does not promote or shadow anything. It explains which registered
     monthly/weekly artifacts are eligible for the next gate.
     """
-    try:
+    def _load_selection() -> dict:
         rows = list_artifact_registry(model_name=model_name, limit=limit)
         return build_candidate_selection(rows)
+
+    try:
+        return _read_cached(
+            ("artifact_registry_selection", id(list_artifact_registry), model_name, int(limit or 200)),
+            "artifact_registry",
+            _load_selection,
+            bypass_cache=bypass_cache,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
 
 
 @router.get("/artifact_registry/promotion_queue")
-async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200):
+async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200, bypass_cache: bool = False):
     """Read-only promotion-controller queue for registry artifacts.
 
     This does not mutate champion pointers. It explains which live-gate-passed
     artifacts need final comparison, approval, or auto-promotion review.
     """
-    try:
+    def _load_promotion_queue() -> dict:
         import json as _json
         from google.cloud import storage
 
@@ -1530,8 +1628,57 @@ async def artifact_registry_promotion_queue(model_name: str | None = None, limit
                 if version:
                     champion_versions[str(name)] = str(version)
         return build_promotion_queue(rows, champion_versions=champion_versions)
+
+    try:
+        return _read_cached(
+            (
+                "artifact_registry_promotion_queue",
+                _bucket_name(),
+                _storage_client_cache_token(),
+                id(list_artifact_registry),
+                model_name,
+                int(limit or 200),
+            ),
+            "artifact_registry",
+            _load_promotion_queue,
+            bypass_cache=bypass_cache,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
+
+
+@router.post("/artifact_registry/validation_chain")
+async def artifact_registry_validation_chain(req: ArtifactValidationChainRequest):
+    """Persist ModelPool artifact validation evidence after weekly backtest/MC/PBO.
+
+    This endpoint does not update champion pointers or serving model_pool.json.
+    It only moves a candidate to multi_evidence_passed when existing promotion
+    blockers are clear.
+    """
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        champion_versions: dict[str, str] = {}
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if pool_blob.exists():
+            pool = _json.loads(pool_blob.download_as_text())
+            for name, entry in (pool.get("models") or {}).items():
+                version = entry.get("version")
+                if version:
+                    champion_versions[str(name)] = str(version)
+        result = run_model_artifact_validation_chain(
+            model_name=req.model_name,
+            limit=req.limit,
+            champion_versions=champion_versions,
+            persist=req.persist,
+        )
+        if req.persist:
+            _invalidate_model_pool_read_cache("artifact_registry_validation_chain")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry validation chain failed: {e}")
 
 
 @router.post("/artifact_registry/promotion_controller")
@@ -1594,20 +1741,22 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
                 "serving_update": serving_update,
                 "note": "Champion pointer and model_pool.json serving owner were updated together.",
             }
+        if req.confirm:
+            _invalidate_model_pool_read_cache("artifact_registry_promotion_controller")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
 
 
 @router.get("/artifact_registry/champion_pointers")
-async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
+async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200, bypass_cache: bool = False):
     """Read-only champion pointer migration contract.
 
     Production currently reads model_pool.json. This endpoint compares that
     serving pointer with registry-owned D1 pointers so the next migration step
     cannot silently create split-brain.
     """
-    try:
+    def _load_champion_pointers() -> dict:
         import json as _json
         from google.cloud import storage
 
@@ -1626,6 +1775,22 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
             registry_rows=rows,
             d1_pointers=d1_pointers,
             model_pool_versions=champion_versions,
+        )
+
+    try:
+        return _read_cached(
+            (
+                "artifact_registry_champion_pointers",
+                _bucket_name(),
+                _storage_client_cache_token(),
+                id(list_artifact_registry),
+                id(list_champion_pointers),
+                model_name,
+                int(limit or 200),
+            ),
+            "artifact_registry",
+            _load_champion_pointers,
+            bypass_cache=bypass_cache,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
@@ -1665,6 +1830,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
             reason=req.reason,
             create_missing_artifacts=req.create_missing_artifacts,
         )
+        _invalidate_model_pool_read_cache("artifact_registry_champion_pointer_backfill")
         return {
             **result,
             "production_reader": "model_pool.json",
@@ -1677,16 +1843,30 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
 
 
 @router.get("/lineage")
-async def lineage():
+async def lineage(bypass_cache: bool = False):
     """Return model_pool lineage pointers plus recent lifecycle events."""
     try:
+        cache_key = ("lineage", _bucket_name(), _storage_client_cache_token())
+        ttl = _read_cache_ttl_seconds("lineage")
+        now = time.time()
+        if ttl > 0 and not bypass_cache:
+            cached = _MODEL_POOL_READ_CACHE.get(cache_key)
+            if cached and float(cached.get("expires_at", 0.0)) > now:
+                return copy.deepcopy(cached["value"])
+
         import json as _json
         from google.cloud import storage
 
         bucket = storage.Client().bucket(_bucket_name())
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {"status": "not_initialized", "models": {}, "events": []}
+            result = {"status": "not_initialized", "models": {}, "events": []}
+            if ttl > 0:
+                _MODEL_POOL_READ_CACHE[cache_key] = {
+                    "expires_at": time.time() + ttl,
+                    "value": copy.deepcopy(result),
+                }
+            return result
 
         pool = _json.loads(pool_blob.download_as_text())
         out: dict[str, dict] = {}
@@ -1778,7 +1958,7 @@ async def lineage():
                 "challenger": challenger_out,
             }
 
-        return {
+        result = {
             "status": "ok",
             "schema_version": pool.get("schema_version"),
             "last_updated": pool.get("last_updated"),
@@ -1790,6 +1970,12 @@ async def lineage():
             ),
             "events": (pool.get("lifecycle_events") or [])[-100:],
         }
+        if ttl > 0:
+            _MODEL_POOL_READ_CACHE[cache_key] = {
+                "expires_at": time.time() + ttl,
+                "value": copy.deepcopy(result),
+            }
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS lineage read failed: {e}")
 
@@ -1930,6 +2116,7 @@ async def init_pool(req: InitPoolRequest):
         _json.dumps(pool, indent=2, ensure_ascii=False),
         content_type="application/json",
     )
+    _invalidate_model_pool_read_cache("init_pool")
     return {
         "status": "initialized",
         "model_count": len(models),

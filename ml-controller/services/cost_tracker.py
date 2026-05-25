@@ -177,6 +177,9 @@ def build_modal_compute_profile(
         "run_id": meta.get("run_id") or meta.get("modal_run_id") or meta.get("pipeline_run_id"),
         "wall_sec": round(float(wall_sec), 3),
         "compute_sec": round(float(compute_sec), 3),
+        "await_sec": _first_float(meta, ("await_sec", "orchestration_await_sec", "remote_wait_sec")),
+        "compute_owner": meta.get("compute_owner") or "modal",
+        "remote_function": meta.get("remote_function") or function_name,
         "cpu": float(cpu),
         "memory_mb": int(memory_mb or 0),
         "gpu": gpu,
@@ -196,14 +199,23 @@ def build_compute_profile_event_payload(
     *,
     profile: dict[str, Any],
     event_date: str,
+    include_wait_columns: bool = True,
 ) -> dict[str, Any]:
     """Build a D1 insert payload for compute_profile_events."""
+    wait_columns = "await_sec, compute_owner, remote_function, " if include_wait_columns else ""
+    wait_placeholders = "?, ?, ?, " if include_wait_columns else ""
+    wait_params = [
+        _float_or_none(profile.get("await_sec")),
+        profile.get("compute_owner"),
+        profile.get("remote_function"),
+    ] if include_wait_columns else []
     return {
         "sql": (
             "INSERT INTO compute_profile_events "
-            "(event_date, provider, job_name, run_id, wall_sec, compute_sec, cpu, memory_mb, "
-            "gpu, est_usd, rows, features, symbols, trials, cache_hit_ratio, profile_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            f"(event_date, provider, job_name, run_id, wall_sec, compute_sec, {wait_columns}"
+            "cpu, memory_mb, gpu, est_usd, rows, features, "
+            "symbols, trials, cache_hit_ratio, profile_json) "
+            f"VALUES (?, ?, ?, ?, ?, ?, {wait_placeholders}?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ),
         "params": [
             event_date,
@@ -212,6 +224,7 @@ def build_compute_profile_event_payload(
             profile.get("run_id"),
             _float_or_none(profile.get("wall_sec")),
             _float_or_none(profile.get("compute_sec")),
+            *wait_params,
             _float_or_none(profile.get("cpu")),
             _int_or_none(profile.get("memory_mb")),
             profile.get("gpu"),
@@ -287,6 +300,15 @@ async def _record_compute_profile_event(profile: dict[str, Any]) -> None:
     now = _dt.datetime.now(_dt.timezone.utc)
     tw_date = (now + _dt.timedelta(hours=8)).date().isoformat()
     payload = build_compute_profile_event_payload(profile=profile, event_date=tw_date)
+
+    def _missing_wait_columns(message: str) -> bool:
+        normalized = message.lower()
+        return (
+            "await_sec" in normalized
+            or "compute_owner" in normalized
+            or "remote_function" in normalized
+        ) and ("no such column" in normalized or "has no column named" in normalized or "no column" in normalized)
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
@@ -301,6 +323,22 @@ async def _record_compute_profile_event(profile: dict[str, Any]) -> None:
                 message = r.text[:200]
                 if "no such table" in message.lower():
                     logger.debug("[cost_tracker] compute profile table missing; skip")
+                elif _missing_wait_columns(message):
+                    legacy_payload = build_compute_profile_event_payload(
+                        profile=profile,
+                        event_date=tw_date,
+                        include_wait_columns=False,
+                    )
+                    retry = await client.post(
+                        _CF_D1_URL,
+                        json=legacy_payload,
+                        headers={
+                            "Authorization": f"Bearer {_CF_API_TOKEN}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    if retry.status_code != 200:
+                        logger.warning(f"[cost_tracker] legacy compute profile insert failed {retry.status_code}: {retry.text[:200]}")
                 else:
                     logger.warning(f"[cost_tracker] compute profile insert failed {r.status_code}: {message}")
     except Exception as e:  # noqa: BLE001 - telemetry must never block callers.

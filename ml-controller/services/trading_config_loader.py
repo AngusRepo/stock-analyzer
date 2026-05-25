@@ -57,6 +57,7 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "alpha": 0.40,
         "beta": 0.40,
         "gamma": 0.20,
+        # Deprecated compatibility only; Score V2 ranking must not use this.
         "screenerDenominator": 60.0,
         "promoteMinConf": 0.60,
     },

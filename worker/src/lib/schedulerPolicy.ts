@@ -60,6 +60,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },
   'optuna-queue': { kind: 'queue', holidayGated: false, description: 'Optuna queue processor' },
+  'finlab-v4-backfill': { kind: 'maintenance', holidayGated: false, description: 'FinLab V4 archive/canonical backfill trigger' },
   retrain: { kind: 'research', holidayGated: false, description: 'model retrain lifecycle trigger' },
   'monthly-retrain': { kind: 'research', holidayGated: false, description: 'monthly universal retrain lifecycle' },
 }

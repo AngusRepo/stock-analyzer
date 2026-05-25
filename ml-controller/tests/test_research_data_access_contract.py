@@ -13,6 +13,12 @@ def test_backtest_research_lane_uses_chunked_d1_fallback():
     assert "BACKTEST_D1_READ_CHUNK_SIZE" in source
     assert "_bulk_load_prices_by_stock" in source
     assert "_bulk_load_ensemble_signals_by_stock" in source
+    assert "market_risk_level" in source
+    assert "or p.get(\"market_risk_level\")" in source
+    assert "entry_regime = str(" in source
+    assert "entry_regime=entry_regime" in source
+    assert "\"entry_regime\": lot.entry_regime" in source
+    assert "\"all_regimes\": all_regimes" in source
     assert "d1_chunked_bulk_fallback" in source
     assert "d1_read_queries" in source
     assert "_load_backtest_inputs_from_snapshot" in source
@@ -79,6 +85,8 @@ def test_weekly_monthly_optuna_sweep_has_job_trigger_and_callback_entrypoint():
     assert '@router.post("/research_sweep/run")' in router_source
     assert "OPTUNA_JOB_NAME" in router_source
     assert "CloudRunJobsClient" in router_source
+    assert "OPTUNA_RESEARCH_SWEEP_EXECUTOR" in router_source
+    assert "spawn_optuna_research_sweep" in router_source
     assert "OPTUNA_ALLOW_SYNC_SWEEP" in router_source
     assert "execute_research_sweep" in job_source
     assert 'task = f"{cadence}-optuna"' in job_source
@@ -116,6 +124,26 @@ def test_backtest_engine_replay_uses_manifest_before_d1():
     assert "required_start_date=start_date" in source
     assert "required_end_date=end_date" in source
     assert "data_access.source == \"snapshot\"" in source
+
+
+def test_backtest_snapshot_path_preserves_technical_v2_columns():
+    backtest_source = (ROOT / "services" / "backtest_engine.py").read_text(encoding="utf-8")
+    exporter_source = (ROOT / "services" / "dataset_snapshot_exporter.py").read_text(encoding="utf-8")
+    snapshot_loader_test = (ROOT / "tests" / "test_backtest_snapshot_loader.py").read_text(encoding="utf-8")
+    required_columns = [
+        "plus_di14",
+        "minus_di14",
+        "adx14",
+        "parabolic_sar",
+        "cci20",
+        "volume_weighted_rsi14",
+        "volume_momentum_divergence_13_27_10",
+    ]
+
+    for column in required_columns:
+        assert column in backtest_source, f"backtest dataset loader must preserve {column}"
+        assert column in exporter_source, f"snapshot exporter must include {column}"
+        assert column in snapshot_loader_test, f"snapshot loader fixture must assert {column}"
 
 
 def test_research_backtest_callers_share_single_loader_contract():
@@ -158,6 +186,8 @@ def test_pipeline_exports_research_snapshot_after_recommendation_write():
     graph_source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
     job_source = (ROOT / "pipeline_job_main.py").read_text(encoding="utf-8")
     snapshot_job_source = (ROOT / "dataset_snapshot_job_main.py").read_text(encoding="utf-8")
+    modal_client_source = (ROOT / "services" / "modal_client.py").read_text(encoding="utf-8")
+    modal_app_source = (ROOT.parent / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
     assert "node_export_dataset_snapshot" in graph_source
     assert "export_daily_research_snapshots" in graph_source
@@ -171,8 +201,17 @@ def test_pipeline_exports_research_snapshot_after_recommendation_write():
     assert "_run_deferred_snapshot_followup" in job_source
     assert "_trigger_deferred_snapshot_job" in job_source
     assert "DATASET_SNAPSHOT_JOB_NAME" in job_source
+    assert "DATASET_SNAPSHOT_EXECUTOR" in job_source
+    assert "_trigger_deferred_snapshot_modal" in job_source
     assert '"task": "dataset-snapshot-export"' in job_source
     assert '"status": "triggered"' in job_source
     assert "STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP" in job_source
     assert "export_daily_research_snapshots" in snapshot_job_source
     assert '"task": "dataset-snapshot-export"' in snapshot_job_source
+    assert "async def spawn_dataset_snapshot_export" in modal_client_source
+    assert '"dataset_snapshot_export": {"cpu": 4.0, "memory_mb": 4096' in modal_client_source
+    assert "def dataset_snapshot_export(payload: dict) -> dict:" in modal_app_source
+    assert "export_daily_research_snapshots(request)" in modal_app_source
+    assert '"source": "dataset_snapshot_export"' in modal_app_source
+    assert '"compute_owner": "modal"' in modal_app_source
+    assert '"remote_function": "dataset_snapshot_export"' in modal_app_source

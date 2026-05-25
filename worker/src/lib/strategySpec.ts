@@ -1,5 +1,5 @@
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
-import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
 
@@ -10,7 +10,7 @@ export interface StrategyCandidateInput {
   name?: string
   sector?: string
   industry?: string
-  score_components?: unknown
+  score_v2?: unknown
   current_price?: number | null
 }
 
@@ -177,9 +177,13 @@ function seedComponentNumber(record: Record<string, unknown> | null, key: string
     : null
 }
 
+function scoreV2StorageRow(candidate: StrategyCandidateInput): ScoreV2StorageRow {
+  return { score_components: candidate.score_v2 }
+}
+
 export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput): StrategyThresholdScores {
-  const snapshot = readScoreV2Snapshot(candidate)
-  const record = parseRecord(candidate.score_components)
+  const snapshot = readScoreV2Snapshot(scoreV2StorageRow(candidate))
+  const record = parseRecord(candidate.score_v2)
 
   if (snapshot) {
     const canonicalFinal = finiteNumber(record?.finalScore)

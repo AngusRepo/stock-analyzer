@@ -71,6 +71,17 @@ from services.research_data_access import ResearchDataMode, resolve_research_dat
 logger = logging.getLogger(__name__)
 
 BACKTEST_SNAPSHOT_COMPONENTS = ("stocks", "prices", "indicators", "chips", "market_risk")
+SCORE_V2_VERSION = "score_v2"
+SCORE_V2_WEIGHTS = {
+    "mlEdge": 25,
+    "chipFlow": 25,
+    "technicalStructure": 25,
+    "fundamentalQuality": 20,
+    "newsTheme": 5,
+}
+SCORE_V2_SCREENER_DENOMINATOR = (
+    SCORE_V2_WEIGHTS["chipFlow"] + SCORE_V2_WEIGHTS["technicalStructure"]
+)
 
 
 def _snapshot_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -173,17 +184,17 @@ class BacktestDataset:
 
     Layout (Phase 2: flat Polars DataFrames, no MultiIndex):
       - prices:      columns: symbol, date, open, high, low, close, volume, avg_price
-      - indicators:  columns: symbol, date, ma5/10/20/60 + rsi14 + macd* + atr14 + bb_*
+      - indicators:  columns: symbol, date, ma5/10/20/60 + rsi14 + macd* + atr14 + bb_* + technical V2
       - chips:       columns: symbol, date, foreign/trust/dealer net + margin + short
       - market_risk: columns: date, vix/twii_* + risk_score/level + adl + bull_alignment
       - universe:    dict[date_str, set[symbol]] — point-in-time tradable symbols
 
     Memory estimate for full D1 (2,346 stocks × 580 days):
       - prices:      ~1.67M rows × 8 cols × 8 bytes ≈ 107 MB
-      - indicators:  ~1.67M rows × 14 cols × 8 bytes ≈ 187 MB
+      - indicators:  ~1.67M rows × 21 cols × 8 bytes ≈ 281 MB
       - chips:       ~1.67M rows × 11 cols × 8 bytes ≈ 147 MB
       - market_risk: ~580 rows × 20 cols × 8 bytes ≈ 93 KB (trivial)
-      Total: ~440 MB → fits in Cloud Run mem=2GB with headroom for replay state.
+      Total: ~535 MB → fits in Cloud Run mem=2GB with headroom for replay state.
     """
     prices: pl.DataFrame
     indicators: pl.DataFrame
@@ -652,7 +663,9 @@ class BacktestDataset:
             sql = """
                 SELECT stock_id, date, ma5, ma10, ma20, ma60,
                        rsi14, macd, macd_signal, macd_hist,
-                       atr14, bb_upper, bb_mid, bb_lower
+                       atr14, bb_upper, bb_mid, bb_lower,
+                       plus_di14, minus_di14, adx14, parabolic_sar,
+                       cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10
                 FROM technical_indicators
                 WHERE date >= ? AND date <= ?
             """
@@ -948,6 +961,8 @@ class RankingParams:
     alpha: float = 0.40        # screener weight
     beta: float = 0.40         # ml_confidence weight
     gamma: float = 0.20        # signal_tier weight
+    # Deprecated compatibility only. Runtime ranking uses Score V2 screener
+    # components through _candidate_screener_norm instead of this denominator.
     screener_denominator: float = 60.0
     promote_min_conf: float = 0.60
 
@@ -978,6 +993,7 @@ class Candidate:
     momentum_score: float
     combined_score: float      # Hybrid Ranking (Architecture C)
     reasons: list[str] = field(default_factory=list)
+    score_components: dict[str, Any] = field(default_factory=dict)
     has_buy_signal: int = 0    # 1 = top-K promoted, 0 = not
     # 2026-04-20 #31 Mode B: real ML confidence loaded from D1 historical
     # predictions (None when running Mode A or no historical row available).
@@ -1198,6 +1214,7 @@ def apply_alpha_framework_to_candidates(
             "chip_score": candidate.chip_score,
             "tech_score": candidate.tech_score,
             "momentum_score": candidate.momentum_score,
+            "score_components": candidate.score_components,
             "confidence": candidate.confidence if candidate.confidence is not None else 0.5,
             "has_buy_signal": candidate.has_buy_signal,
             "watch_points": [],
@@ -1250,6 +1267,132 @@ def _normalize(value: float, lower: float, upper: float, max_score: float) -> fl
     return (value - lower) / (upper - lower) * max_score
 
 
+def _finite_number(value: Any, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if math.isfinite(number) else fallback
+
+
+def _round1(value: float) -> float:
+    return math.floor(float(value) * 10 + 0.5) / 10
+
+
+def _clamp_score(value: Any, maximum: float) -> float:
+    return _round1(_clamp(_finite_number(value), 0.0, maximum))
+
+
+def _rescale_score(value: Any, old_max: float, new_max: float) -> float:
+    if old_max <= 0:
+        return 0.0
+    return _clamp_score((_finite_number(value) / old_max) * new_max, new_max)
+
+
+def _unique_strings(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _build_partial_screener_score_v2(
+    *,
+    chip_score: float,
+    tech_score: float,
+    momentum_score: float,
+    reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    chip_flow = _rescale_score(chip_score, 40.0, SCORE_V2_WEIGHTS["chipFlow"])
+    technical_structure = _rescale_score(
+        _finite_number(tech_score) + _finite_number(momentum_score),
+        50.0,
+        SCORE_V2_WEIGHTS["technicalStructure"],
+    )
+    volume_confirmation = _rescale_score(momentum_score, 20.0, 6.0)
+    components = {
+        "mlEdge": 0.0,
+        "chipFlow": chip_flow,
+        "technicalStructure": technical_structure,
+        "fundamentalQuality": 0.0,
+        "newsTheme": 0.0,
+    }
+    total = _round1(sum(components.values()))
+    return {
+        "version": SCORE_V2_VERSION,
+        "weights": SCORE_V2_WEIGHTS,
+        "components": components,
+        "total": total,
+        "finalScore": total,
+        "technicalBreakdown": {
+            "trendStructure": 0.0,
+            "volatilityStructure": 0.0,
+            "reversalExtreme": 0.0,
+            "volumeConfirmation": volume_confirmation,
+            "executionRisk": 0.0,
+        },
+        "riskFlags": [],
+        "reasons": _unique_strings(reasons),
+        "seedComponents": {
+            "chipFlowSeed40": _clamp_score(chip_score, 40.0),
+            "technicalSeed30": _clamp_score(tech_score, 30.0),
+            "screenerMomentumSeed20": _clamp_score(momentum_score, 20.0),
+            "mlEdgeSeed30": 0.0,
+            "personaAlphaSeed": 0.0,
+        },
+        "formula": "score_v2_screener_seed",
+    }
+
+
+def _score_v2_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        payload = parsed if isinstance(parsed, dict) else None
+    else:
+        payload = None
+    if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
+        return None
+    components = payload.get("components")
+    return payload if isinstance(components, dict) else None
+
+
+def _sync_candidate_score_v2(candidate: Candidate) -> None:
+    candidate.score_components = _build_partial_screener_score_v2(
+        chip_score=candidate.chip_score,
+        tech_score=candidate.tech_score,
+        momentum_score=candidate.momentum_score,
+        reasons=candidate.reasons,
+    )
+
+
+def _candidate_screener_norm(candidate: Candidate) -> float:
+    payload = _score_v2_payload(candidate.score_components)
+    if payload is None:
+        payload = _build_partial_screener_score_v2(
+            chip_score=candidate.chip_score,
+            tech_score=candidate.tech_score,
+            momentum_score=candidate.momentum_score,
+            reasons=candidate.reasons,
+        )
+    components = payload["components"]
+    screener_score = _clamp_score(
+        _finite_number(components.get("chipFlow"))
+        + _finite_number(components.get("technicalStructure")),
+        SCORE_V2_SCREENER_DENOMINATOR,
+    )
+    return _clamp(screener_score / SCORE_V2_SCREENER_DENOMINATOR, 0.0, 1.0)
+
+
 def _percentile(values: list[float], value: float) -> float:
     if len(values) <= 1:
         return 0.5
@@ -1293,11 +1436,16 @@ def apply_screener_score_calibration(candidates: list[Candidate], sc: ScreenerPa
         chip = _calibrate_factor_score(raw_chip, chip_values, 40.0, sc)
         tech = _calibrate_factor_score(raw_tech, tech_values, 30.0, sc)
         momentum = _calibrate_factor_score(raw_momentum, momentum_values, 20.0, sc)
-        delta = (chip - raw_chip) + (tech - raw_tech) + (momentum - raw_momentum)
+        previous_base = float(c.base_score or 0.0)
         c.chip_score = chip
         c.tech_score = tech
         c.momentum_score = momentum
-        c.base_score = round(float(c.base_score) + delta, 1)
+        _sync_candidate_score_v2(c)
+        c.base_score = _finite_number(
+            c.score_components.get("finalScore", c.score_components.get("total")),
+            previous_base,
+        )
+        delta = round(c.base_score - previous_base, 1)
         if delta < -0.5:
             c.reasons = [*c.reasons[:3], f"cross-section calibration {delta:.1f}"][:4]
     return candidates
@@ -1516,7 +1664,12 @@ def score_multi_factor_np(
 
     momentum_score = _clamp(momentum_score, 0, 20)
 
-    base_score = chip_score + tech_score + momentum_score
+    base_score = _finite_number(_build_partial_screener_score_v2(
+        chip_score=chip_score,
+        tech_score=tech_score,
+        momentum_score=momentum_score,
+        reasons=reasons,
+    ).get("finalScore"))
     return base_score, chip_score, tech_score, momentum_score, reasons
 
 
@@ -1727,7 +1880,12 @@ def score_multi_factor(
 
     momentum_score = _clamp(momentum_score, 0, 20)
 
-    base_score = chip_score + tech_score + momentum_score
+    base_score = _finite_number(_build_partial_screener_score_v2(
+        chip_score=chip_score,
+        tech_score=tech_score,
+        momentum_score=momentum_score,
+        reasons=reasons,
+    ).get("finalScore"))
     return base_score, chip_score, tech_score, momentum_score, reasons
 
 
@@ -1893,6 +2051,12 @@ def replay_screener_for_date(
             momentum_score=mom_s,
             combined_score=0.0,  # filled below
             reasons=reasons[:3],
+            score_components=_build_partial_screener_score_v2(
+                chip_score=chip_s,
+                tech_score=tech_s,
+                momentum_score=mom_s,
+                reasons=reasons[:3],
+            ),
         ))
 
     if not scored:
@@ -1922,9 +2086,7 @@ def replay_screener_for_date(
     SIGNAL_TIER_PLACEHOLDER = 0.35
 
     for c in final_candidates:
-        screener_norm = min(
-            1.0, (c.chip_score + c.tech_score) / ranking.screener_denominator
-        )
+        screener_norm = _candidate_screener_norm(c)
         c.combined_score = (
             ranking.alpha * screener_norm
             + ranking.beta * ML_CONF_PLACEHOLDER
@@ -2142,6 +2304,12 @@ def diagnose_replay_for_date(
             industry=sector_map.get(symbol, "其他"),
             base_score=base, chip_score=chip_s, tech_score=tech_s,
             momentum_score=mom_s, combined_score=0.0, reasons=reasons[:3],
+            score_components=_build_partial_screener_score_v2(
+                chip_score=chip_s,
+                tech_score=tech_s,
+                momentum_score=mom_s,
+                reasons=reasons[:3],
+            ),
         ))
         if len(passed_samples) < max_dropped_samples:
             passed_samples.append({
@@ -2165,9 +2333,7 @@ def diagnose_replay_for_date(
 
     final_candidates = after_industry[: screener.max_candidates]
     for c in final_candidates:
-        screener_norm = min(
-            1.0, (c.chip_score + c.tech_score) / ranking.screener_denominator
-        )
+        screener_norm = _candidate_screener_norm(c)
         c.combined_score = (
             ranking.alpha * screener_norm
             + ranking.beta * 0.5      # ML_CONF_PLACEHOLDER

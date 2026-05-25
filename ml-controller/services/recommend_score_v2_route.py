@@ -1,15 +1,33 @@
-"""Score V2 projection for the registered /recommend route.
+"""Score V2 scorer for the registered /recommend route.
 
-The route accepts lightweight stock dictionaries and still returns legacy
-storage fields for D1 compatibility, but ranking and public score semantics are
-canonical Score V2 finalScore.
+The route accepts lightweight stock dictionaries, builds canonical Score V2
+payloads, and ranks by Score V2 finalScore.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-from services.recommendation_service import build_score_components
+from services.recommendation_service import build_score_components as build_score_v2_payload
+
+_SCORE_ROW_OPTIONAL_KEYS = (
+    "alpha_context",
+    "chip_evidence",
+    "ma20",
+    "plus_di14",
+    "plusDi14",
+    "minus_di14",
+    "minusDi14",
+    "adx14",
+    "atr14",
+    "parabolic_sar",
+    "parabolicSar",
+    "cci20",
+    "volume_weighted_rsi14",
+    "volumeWeightedRsi14",
+    "volume_momentum_divergence_13_27_10",
+    "volumeMomentumDivergence132710",
+)
 
 
 @dataclass(frozen=True)
@@ -31,15 +49,15 @@ class ScoreV2RecommendationCandidate:
     ml_signal: str | None
     ml_confidence: float | None
     ml_forecast_pct: float | None
-    chip_score: float
-    tech_score: float
-    momentum_score: float
-    ml_score: float
-    score_components: dict[str, Any]
+    chip_flow_seed40: float
+    technical_seed30: float
+    screener_momentum_seed20: float
+    ml_edge_seed30: float
+    score_v2: dict[str, Any]
 
     @property
     def final_score(self) -> float:
-        return float(self.score_components.get("finalScore", self.score_components.get("total", 0.0)) or 0.0)
+        return float(self.score_v2.get("finalScore", self.score_v2.get("total", 0.0)) or 0.0)
 
 
 def _number(value: Any, fallback: float = 0.0) -> float:
@@ -57,7 +75,7 @@ def _optional_number(value: Any) -> float | None:
     return number if number == number else None
 
 
-def _legacy_chip_storage_projection(total_chip_5d: float, foreign_consecutive: int) -> float:
+def _chip_flow_seed_score(total_chip_5d: float, foreign_consecutive: int) -> float:
     billion = total_chip_5d / 1e8
     if billion > 10:
         score = 36.0
@@ -78,7 +96,7 @@ def _legacy_chip_storage_projection(total_chip_5d: float, foreign_consecutive: i
     return score
 
 
-def _legacy_technical_storage_projection(
+def _technical_structure_seed_score(
     rsi14: float | None,
     macd_hist: float | None,
     above_ma5: bool,
@@ -109,7 +127,7 @@ def _legacy_technical_storage_projection(
     return min(30.0, score)
 
 
-def _legacy_ml_storage_projection(
+def _ml_edge_seed_score(
     ml_signal: str | None,
     ml_confidence: float | None,
     hist_accuracy: float | None,
@@ -140,6 +158,26 @@ def _legacy_ml_storage_projection(
     return min(30.0, base)
 
 
+def _score_v2_builder_row(
+    stock: dict[str, Any],
+    *,
+    score_seed_inputs: dict[str, float],
+    current_price: float | None,
+    rsi14: float | None,
+    macd_hist: float | None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "score_seed_inputs": score_seed_inputs,
+        "current_price": current_price,
+        "rsi14": rsi14,
+        "macd_hist": macd_hist,
+    }
+    for key in _SCORE_ROW_OPTIONAL_KEYS:
+        if key in stock:
+            row[key] = stock[key]
+    return row
+
+
 def build_score_v2_route_candidate(stock: dict[str, Any]) -> ScoreV2RecommendationCandidate:
     price = _optional_number(stock.get("current_price"))
     ma5 = _optional_number(stock.get("ma5"))
@@ -158,23 +196,26 @@ def build_score_v2_route_candidate(stock: dict[str, Any]) -> ScoreV2Recommendati
     above_ma5 = price is not None and ma5 is not None and price > ma5
     above_ma20 = price is not None and ma20 is not None and price > ma20
     above_ma60 = price is not None and ma60 is not None and price > ma60
-    chip_score = _legacy_chip_storage_projection(total_chip, consecutive)
-    tech_score = _legacy_technical_storage_projection(rsi14, macd_hist, above_ma5, above_ma20, above_ma60)
-    momentum_score = _number(stock.get("momentum_score"))
-    ml_score = _legacy_ml_storage_projection(ml_signal, ml_confidence, hist_accuracy, hist_count)
-    score_row = {
-        **stock,
-        "chip_score": chip_score,
-        "tech_score": tech_score,
-        "momentum_score": momentum_score,
-        "ml_score": ml_score,
-        "current_price": price,
-        "rsi14": rsi14,
-        "macd_hist": macd_hist,
+    chip_flow_seed40 = _chip_flow_seed_score(total_chip, consecutive)
+    technical_seed30 = _technical_structure_seed_score(rsi14, macd_hist, above_ma5, above_ma20, above_ma60)
+    screener_momentum_seed20 = _number(stock.get("screener_momentum_seed20"))
+    ml_edge_seed30 = _ml_edge_seed_score(ml_signal, ml_confidence, hist_accuracy, hist_count)
+    score_seed_inputs = {
+        "chipFlowSeed40": chip_flow_seed40,
+        "technicalSeed30": technical_seed30,
+        "screenerMomentumSeed20": screener_momentum_seed20,
+        "mlEdgeSeed30": ml_edge_seed30,
     }
-    score_components = build_score_components(
+    score_row = _score_v2_builder_row(
+        stock,
+        score_seed_inputs=score_seed_inputs,
+        current_price=price,
+        rsi14=rsi14,
+        macd_hist=macd_hist,
+    )
+    score_v2 = build_score_v2_payload(
         score_row,
-        raw_score=chip_score + tech_score + momentum_score + ml_score,
+        raw_score=sum(score_seed_inputs.values()),
     )
     return ScoreV2RecommendationCandidate(
         stock_id=int(stock["stock_id"]),
@@ -194,11 +235,11 @@ def build_score_v2_route_candidate(stock: dict[str, Any]) -> ScoreV2Recommendati
         ml_signal=str(ml_signal) if ml_signal is not None else None,
         ml_confidence=ml_confidence,
         ml_forecast_pct=_optional_number(stock.get("ml_forecast_pct")),
-        chip_score=chip_score,
-        tech_score=tech_score,
-        momentum_score=momentum_score,
-        ml_score=ml_score,
-        score_components=score_components,
+        chip_flow_seed40=chip_flow_seed40,
+        technical_seed30=technical_seed30,
+        screener_momentum_seed20=screener_momentum_seed20,
+        ml_edge_seed30=ml_edge_seed30,
+        score_v2=score_v2,
     )
 
 

@@ -72,6 +72,7 @@ class BuyLot:
     date: str
     price: float
     shares: int
+    entry_regime: str = "unknown"
     remaining: int = 0
 
     def __post_init__(self):
@@ -138,6 +139,7 @@ class Position:
                 "exit_price": sell_price,
                 "shares": sold,
                 "profit_ratio": profit_ratio,
+                "entry_regime": lot.entry_regime or "unknown",
                 "exit_reason": exit_reason,
                 "days_held": _date_diff(lot.date, sell_date),
             })
@@ -334,7 +336,8 @@ async def _bulk_load_ensemble_signals_by_stock(
             client,
             f"""
             SELECT stock_id, generated_at, trade_signal, direction_accuracy,
-                   entry_price, stop_loss, target1, target2, forecast_data
+                   entry_price, stop_loss, target1, target2, forecast_data,
+                   market_risk_level
             FROM predictions
             WHERE stock_id IN ({placeholders})
               AND model_name = 'ensemble'
@@ -495,11 +498,20 @@ def _run_backtest_for_stock(
             fill_price = _apply_slippage(close, "buy")  # C4: slippage on entry
             shares = int(STAKE_AMOUNT / fill_price) if fill_price > 0 else 0
             if shares > 0:
+                entry_regime = str(
+                    sig.get("entry_regime")
+                    or sig.get("market_regime")
+                    or sig.get("regime")
+                    or sig.get("regime_label")
+                    or sig.get("regime_family")
+                    or "unknown"
+                )
                 lot = BuyLot(
                     symbol=bar.get("symbol", ""),
                     date=date_str,
                     price=fill_price,  # C4: use slippage-adjusted price
                     shares=shares,
+                    entry_regime=entry_regime,
                 )
                 position = Position(
                     symbol=bar.get("symbol", ""),
@@ -671,6 +683,14 @@ async def run_full_backtest() -> dict:
                     "stop_loss": p.get("stop_loss"),
                     "target1": p.get("target1"),
                     "target2": p.get("target2"),
+                    "market_regime": (
+                        fd.get("entry_regime")
+                        or fd.get("market_regime")
+                        or fd.get("regime")
+                        or fd.get("regime_label")
+                        or fd.get("regime_family")
+                        or p.get("market_risk_level")
+                    ),
                 })
 
             # Tag price bars with symbol
@@ -718,9 +738,11 @@ async def run_full_backtest() -> dict:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
         all_returns = [t["profit_ratio"] for t in all_trades]
+        all_regimes = [str(t.get("entry_regime") or "unknown") for t in all_trades]
         raw_json = json.dumps({
             "trades": all_trades[:500],
             "all_returns": all_returns,  # full list for Monte Carlo source=backtest
+            "all_regimes": all_regimes,
             "exit_distribution": exit_dist,
             "summary": {
                 "total_trades": result.total_trades,

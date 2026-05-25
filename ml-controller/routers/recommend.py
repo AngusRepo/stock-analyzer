@@ -2,8 +2,8 @@
 
 This registered route accepts lightweight candidate dictionaries and returns
 Score V2 recommendations. The scalar ``score`` is canonical finalScore.
-``chip_score``, ``tech_score``, and ``ml_score`` are storage projections kept
-for older D1 columns only; they are not the ranking source.
+The response exposes canonical ``score_v2`` only; legacy score fields are
+intentionally not part of this route contract.
 """
 
 import json
@@ -15,7 +15,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from services.llm_service import generate_reasons
-from services.recommend_score_v2_projection import rank_score_v2_route_candidates
+from services.recommend_score_v2_route import rank_score_v2_route_candidates
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,7 +39,7 @@ def post_recommend(req: RecommendRequest):
     # 1. Build Score V2 candidates and rank by canonical finalScore.
     scored = rank_score_v2_route_candidates(req.stocks)
     top = scored[: req.top_n]
-    score_components_by_symbol = {candidate.symbol: candidate.score_components for candidate in top}
+    score_v2_by_symbol = {candidate.symbol: candidate.score_v2 for candidate in top}
 
     if not top:
         logger.info("[recommend] date=%s: no stocks passed finalScore threshold", req.date)
@@ -47,14 +47,15 @@ def post_recommend(req: RecommendRequest):
 
     # 2. Generate reasons with the same Score V2 payload.
     api_key = req.anthropic_api_key or _ANTHROPIC_KEY
-    reasons = generate_reasons(api_key, top, req.sectors, score_components_by_symbol) if api_key else []
+    reasons = generate_reasons(api_key, top, req.sectors, score_v2_by_symbol) if api_key else []
     if len(reasons) < len(top):
         reasons += [{"reason": "Score V2 context available; LLM reason not generated.", "watch_points": []}] * (len(top) - len(reasons))
 
-    # 3. Return Score V2 response plus storage projection fields.
+    # 3. Return Score V2 response. Legacy score projection fields are not part
+    # of this API contract.
     recommendations = []
     for rank, (candidate, reason_payload) in enumerate(zip(top, reasons), start=1):
-        score_components = score_components_by_symbol[candidate.symbol]
+        score_v2 = score_v2_by_symbol[candidate.symbol]
         recommendations.append({
             "rank": rank,
             "stock_id": candidate.stock_id,
@@ -62,10 +63,7 @@ def post_recommend(req: RecommendRequest):
             "name": candidate.name,
             "sector": candidate.sector,
             "score": candidate.final_score,
-            "chip_score": candidate.chip_score,
-            "tech_score": candidate.tech_score,
-            "ml_score": candidate.ml_score,
-            "score_components": score_components,
+            "score_v2": score_v2,
             "current_price": candidate.current_price,
             "foreign_net_5d": candidate.foreign_net_5d / 1e8,
             "trust_net_5d": candidate.trust_net_5d / 1e8,

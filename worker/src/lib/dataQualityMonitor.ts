@@ -29,6 +29,7 @@ interface CountRow {
   total?: number
   latest_date?: string | null
   rows_on_latest?: number
+  source_table?: string
   score_v2_count?: number
   signal_count?: number
   confidence_count?: number
@@ -165,16 +166,18 @@ export function buildFreshnessCheck(input: {
   warnLagDays: number
   failLagDays: number
   minRows?: number
+  source?: string
 }): DataQualityCheck {
   const lagDays = daysBetweenDates(input.latestDate, input.targetDate)
   const rows = Number(input.rowsOnLatest ?? 0)
+  const sourceMetric = input.source ? { source: input.source } : {}
   if (lagDays == null) {
     return {
       id: input.id,
       label: input.label,
       status: 'fail',
       summary: `${input.label} has no dated rows`,
-      metrics: { latest_date: input.latestDate ?? null, rows_on_latest: rows },
+      metrics: { latest_date: input.latestDate ?? null, rows_on_latest: rows, ...sourceMetric },
     }
   }
   const rowFloor = input.minRows ?? 1
@@ -184,7 +187,7 @@ export function buildFreshnessCheck(input: {
       label: input.label,
       status: 'fail',
       summary: `${input.label} latest date has too few rows rows=${rows}/${rowFloor}`,
-      metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor },
+      metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor, ...sourceMetric },
     }
   }
   const status: DataQualityStatus = lagDays > input.failLagDays
@@ -197,7 +200,7 @@ export function buildFreshnessCheck(input: {
     label: input.label,
     status,
     summary: `${input.label} latest=${input.latestDate} lag=${lagDays}d rows=${rows}`,
-    metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor },
+    metrics: { latest_date: input.latestDate, lag_days: lagDays, rows_on_latest: rows, min_rows: rowFloor, ...sourceMetric },
   }
 }
 
@@ -797,10 +800,6 @@ function buildSchemaCheck(columns: string[]): DataQualityCheck {
     'score',
     'signal',
     'confidence',
-    'chip_score',
-    'tech_score',
-    'momentum_score',
-    'ml_score',
     'alpha_context',
     'alpha_allocation',
     'ml_vote_summary',
@@ -918,13 +917,22 @@ async function latestTableStats(db: D1Database, table: string, dateColumn = 'dat
   return { latest_date: latest.latest_date, rows_on_latest: Number(count.count ?? 0) }
 }
 
+async function latestChipStats(db: D1Database): Promise<CountRow> {
+  const canonical = await latestTableStats(db, 'canonical_chip_daily').catch(() => null)
+  if (canonical && Number(canonical.rows_on_latest ?? 0) > 0) {
+    return { ...canonical, source_table: 'canonical_chip_daily' }
+  }
+  const legacy = await latestTableStats(db, 'chip_data')
+  return { ...legacy, source_table: 'chip_data' }
+}
+
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
   const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
-    latestTableStats(env.DB, 'chip_data'),
+    latestChipStats(env.DB),
     latestTableStats(env.DB, 'technical_indicators'),
     firstCount(
       env.DB,
@@ -937,9 +945,20 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ),
     firstCount(
       env.DB,
-      `SELECT COUNT(*) AS total,
+      `WITH scored_recommendations AS (
+         SELECT *,
+                CASE WHEN score_components IS NOT NULL AND json_valid(score_components) THEN
+                  COALESCE(
+                    CAST(json_extract(score_components, '$.finalScore') AS REAL),
+                    CAST(json_extract(score_components, '$.total') AS REAL)
+                  )
+                ELSE NULL END AS score_v2_final
+           FROM daily_recommendations
+          WHERE date = ?
+       )
+       SELECT COUNT(*) AS total,
               SUM(CASE WHEN sector IS NULL OR TRIM(sector) = '' OR sector IN (?, ?) OR industry IS NULL OR TRIM(industry) = '' OR industry IN (?, ?) THEN 1 ELSE 0 END) AS unclassified,
-              SUM(CASE WHEN score IS NULL OR score < 0 OR score > 100 THEN 1 ELSE 0 END) AS invalid_scores,
+              SUM(CASE WHEN score_v2_final IS NULL OR score_v2_final < 0 OR score_v2_final > 100 THEN 1 ELSE 0 END) AS invalid_scores,
               SUM(CASE WHEN score_components IS NULL OR score_components NOT LIKE '%score_v2%' THEN 1 ELSE 0 END) AS missing_components,
               SUM(CASE WHEN reason IS NULL OR reason = '' THEN 1 ELSE 0 END) AS missing_reasons,
               SUM(CASE WHEN current_price IS NOT NULL AND current_price > 0 THEN 1 ELSE 0 END) AS current_price_valid,
@@ -947,17 +966,17 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
               SUM(CASE WHEN recommendation_lane = 'emerging_watchlist' THEN 1 ELSE 0 END) AS emerging_watchlist_count,
               SUM(CASE WHEN COALESCE(eligible_for_ml, 0) = 1 THEN 1 ELSE 0 END) AS eligible_ml_count,
               SUM(CASE WHEN COALESCE(eligible_for_pending_buy, 0) = 1 THEN 1 ELSE 0 END) AS eligible_pending_count,
-              AVG(score) AS avg_score,
-              MIN(score) AS min_score,
-              MAX(score) AS max_score,
-              SUM(CASE WHEN score >= 90 THEN 1 ELSE 0 END) AS high_score_count,
-              SUM(CASE WHEN score >= 100 THEN 1 ELSE 0 END) AS perfect_score_count
-       FROM daily_recommendations WHERE date = ?`,
-      UNCLASSIFIED_LABEL,
-      UNCLASSIFIED_EN_LABEL,
-      UNCLASSIFIED_LABEL,
-      UNCLASSIFIED_EN_LABEL,
+              AVG(score_v2_final) AS avg_score,
+              MIN(score_v2_final) AS min_score,
+              MAX(score_v2_final) AS max_score,
+              SUM(CASE WHEN score_v2_final >= 90 THEN 1 ELSE 0 END) AS high_score_count,
+              SUM(CASE WHEN score_v2_final >= 100 THEN 1 ELSE 0 END) AS perfect_score_count
+       FROM scored_recommendations`,
       targetDate,
+      UNCLASSIFIED_LABEL,
+      UNCLASSIFIED_EN_LABEL,
+      UNCLASSIFIED_LABEL,
+      UNCLASSIFIED_EN_LABEL,
     ),
     firstCount(
       env.DB,
@@ -1200,6 +1219,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       warnLagDays: 0,
       failLagDays: 0,
       minRows: 1000,
+      source: chipStats.source_table ?? 'chip_data',
     }),
     buildFreshnessCheck({
       id: 'technical_indicator_freshness',

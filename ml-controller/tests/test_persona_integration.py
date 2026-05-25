@@ -75,8 +75,10 @@ class TestPersonaIntegration:
         row = final[0]
         assert row["persona_score"] == 0.0
         assert row["persona_applied"] is None
-        # score = chip + tech + ml_score (persona absent)
-        assert row["score"] == pytest.approx(row["chip_score"] + row["tech_score"] + row["ml_score"], abs=0.2)
+        assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
+        assert row["score_components"]["seedComponents"]["personaAlphaSeed"] == 0.0
+        assert row["score_seed_inputs"]["personaAlphaSeed"] == 0.0
+        assert "legacyComponents" not in row["score_components"]
 
     def test_strong_bullish_persona_adds_positive_score(self):
         recs = [_screener_rec("2330")]

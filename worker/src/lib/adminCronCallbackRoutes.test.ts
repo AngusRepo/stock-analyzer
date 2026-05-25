@@ -30,7 +30,16 @@ assert(
 assert(
   schedulerRunLogger.includes('run_id?: string') &&
     schedulerRunLogger.includes('run_date?: string') &&
+    schedulerRunLogger.includes('metadata?: Record<string, unknown>') &&
     schedulerRunLogger.includes('run_id: result.run_id') &&
-    schedulerRunLogger.includes('run_date: today'),
-  'canonical scheduler logger must store run_id/run_date payload fields',
+    schedulerRunLogger.includes('run_date: today') &&
+    schedulerRunLogger.includes('metadata: result.metadata'),
+  'canonical scheduler logger must store run_id/run_date/metadata payload fields',
+)
+
+assert(
+  adminControlRoutes.includes('recordSchedulerCallbackComputeProfile') &&
+    adminControlRoutes.includes('metadata: callbackMetadata') &&
+    adminControlRoutes.includes("console.warn('[scheduler-callback] compute profile event failed:', e)"),
+  'scheduler callback handler must emit non-blocking compute profile events with callback metadata',
 )

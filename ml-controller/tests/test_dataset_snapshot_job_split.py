@@ -19,6 +19,7 @@ sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
 import pipeline_job_main  # noqa: E402
+from services import modal_client  # noqa: E402
 
 
 def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
@@ -41,6 +42,10 @@ def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
 
     monkeypatch.setenv("DATASET_SNAPSHOT_JOB_NAME", "dataset-snapshot-export")
     monkeypatch.delenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", raising=False)
+    monkeypatch.delenv("DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     monkeypatch.setattr(pipeline_job_main, "CloudRunJobsClient", FakeJobsClient)
     monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
 
@@ -67,6 +72,12 @@ def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
             "duration_ms": payloads[0]["duration_ms"],
             "run_id": "pipeline-v2-test:snapshot",
             "run_date": "2026-05-18",
+            "metadata": {
+                "provider": "gcp_cloud_run",
+                "job_name": "dataset-snapshot-export",
+                "compute_owner": "gcp_cloud_run_job",
+                "remote_function": "dataset_snapshot_export",
+            },
         }
     ]
 
@@ -80,6 +91,10 @@ def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypatch):
     monkeypatch.delenv("DATASET_SNAPSHOT_JOB_NAME", raising=False)
     monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", raising=False)
     monkeypatch.delenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", raising=False)
+    monkeypatch.delenv("DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     monkeypatch.setattr(pipeline_job_main, "_run_deferred_snapshot_inline", fake_inline)
 
     asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
@@ -88,6 +103,160 @@ def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypatch):
     ))
 
     assert inline_calls == [{"run_date": "2026-05-18", "run_id": "pipeline-v2-test"}]
+
+
+def test_pipeline_prefers_auto_modal_snapshot_when_modal_credentials_present(monkeypatch):
+    payloads: list[dict] = []
+    calls: list[dict] = []
+
+    async def fake_spawn(payload):
+        calls.append(payload)
+        return {
+            "status": "spawned",
+            "function_call_id": "modal-auto-call-1",
+            "run_id": payload["run_id"],
+        }
+
+    async def fake_callback_worker(payload):
+        payloads.append(payload)
+
+    monkeypatch.delenv("DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", raising=False)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "token-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "token-secret")
+    monkeypatch.setattr(modal_client, "spawn_dataset_snapshot_export", fake_spawn)
+    monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
+
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
+        run_date="2026-05-18",
+        run_id="pipeline-v2-test",
+    ))
+
+    assert calls[0]["run_id"] == "pipeline-v2-test:snapshot"
+    assert calls[0]["callback_task"] == "dataset-snapshot-export"
+    assert payloads[0]["status"] == "triggered"
+    assert "modal=dataset_snapshot_export" in payloads[0]["summary"]
+    assert payloads[0]["metadata"] == {
+        "provider": "modal",
+        "job_name": "dataset_snapshot_export",
+        "compute_owner": "modal",
+        "remote_function": "dataset_snapshot_export",
+    }
+
+
+def test_pipeline_auto_modal_snapshot_falls_back_inline_when_spawn_fails(monkeypatch):
+    inline_calls: list[dict] = []
+
+    async def fake_spawn(_payload):
+        raise RuntimeError("modal unavailable")
+
+    async def fake_inline(**kwargs):
+        inline_calls.append(kwargs)
+
+    monkeypatch.delenv("DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", raising=False)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "token-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "token-secret")
+    monkeypatch.setattr(modal_client, "spawn_dataset_snapshot_export", fake_spawn)
+    monkeypatch.setattr(pipeline_job_main, "_run_deferred_snapshot_inline", fake_inline)
+
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
+        run_date="2026-05-18",
+        run_id="pipeline-v2-test",
+    ))
+
+    assert inline_calls == [{"run_date": "2026-05-18", "run_id": "pipeline-v2-test"}]
+
+
+def test_pipeline_detached_required_mode_does_not_inline_without_job_name(monkeypatch):
+    inline_calls: list[dict] = []
+    payloads: list[dict] = []
+
+    async def fake_inline(**kwargs):
+        inline_calls.append(kwargs)
+
+    async def fake_callback_worker(payload):
+        payloads.append(payload)
+
+    monkeypatch.delenv("DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", "detached_required")
+    monkeypatch.setattr(pipeline_job_main, "_run_deferred_snapshot_inline", fake_inline)
+    monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
+
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
+        run_date="2026-05-18",
+        run_id="pipeline-v2-test",
+    ))
+
+    assert inline_calls == []
+    assert payloads[0]["task"] == "dataset-snapshot-export"
+    assert payloads[0]["status"] == "error"
+    assert payloads[0]["run_id"] == "pipeline-v2-test:snapshot"
+    assert payloads[0]["run_date"] == "2026-05-18"
+    assert "DATASET_SNAPSHOT_JOB_NAME not configured" in payloads[0]["error"]
+    assert payloads[0]["metadata"]["compute_owner"] == "gcp_cloud_run_orchestrator"
+    assert payloads[0]["metadata"]["remote_function"] == "pipeline_job_main.cloud_run_snapshot_trigger"
+
+
+def test_pipeline_can_trigger_modal_dataset_snapshot_export(monkeypatch):
+    payloads: list[dict] = []
+    calls: list[dict] = []
+
+    async def fake_spawn(payload):
+        calls.append(payload)
+        return {
+            "status": "spawned",
+            "function_call_id": "modal-call-1",
+            "run_id": payload["run_id"],
+        }
+
+    async def fake_callback_worker(payload):
+        payloads.append(payload)
+
+    monkeypatch.delenv("DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.delenv("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", raising=False)
+    monkeypatch.setenv("DATASET_SNAPSHOT_EXECUTOR", "modal")
+    monkeypatch.setenv("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP_MODE", "detached_required")
+    monkeypatch.setenv("DATASET_SNAPSHOT_CHUNK_DAYS", "7")
+    monkeypatch.setattr(modal_client, "spawn_dataset_snapshot_export", fake_spawn)
+    monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
+
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
+        run_date="2026-05-18",
+        run_id="pipeline-v2-test",
+    ))
+
+    assert calls[0]["run_date"] == "2026-05-18"
+    assert calls[0]["business_date"] == "2026-05-18"
+    assert calls[0]["run_id"] == "pipeline-v2-test:snapshot"
+    assert calls[0]["producer_run_id"] == "pipeline-v2-test:snapshot"
+    assert calls[0]["chunk_days"] == 7
+    assert calls[0]["include_signals"] is True
+    assert calls[0]["callback_task"] == "dataset-snapshot-export"
+    assert calls[0]["trigger_source"] == "pipeline_v2"
+    assert payloads[0]["task"] == "dataset-snapshot-export"
+    assert payloads[0]["status"] == "triggered"
+    assert payloads[0]["run_id"] == "pipeline-v2-test:snapshot"
+    assert payloads[0]["run_date"] == "2026-05-18"
+    assert "modal=dataset_snapshot_export" in payloads[0]["summary"]
+    assert "callback expected" in payloads[0]["summary"]
+    assert payloads[0]["metadata"] == {
+        "provider": "modal",
+        "job_name": "dataset_snapshot_export",
+        "compute_owner": "modal",
+        "remote_function": "dataset_snapshot_export",
+    }
 
 
 def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):

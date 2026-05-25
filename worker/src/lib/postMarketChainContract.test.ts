@@ -18,8 +18,9 @@ assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback m
 assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline success callback must launch post-pipeline chain')
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify success callback must launch post-verify chain')
 assert(
-  !pipelineCallbackBlock.includes('executionCtx.waitUntil'),
-  'pipeline terminal callback must await post-pipeline chain before returning; waitUntil can silently drop verify trigger evidence',
+  pipelineCallbackBlock.includes('executionCtx.waitUntil') &&
+    pipelineCallbackBlock.includes('runPostPipelineCallbackChain'),
+  'pipeline terminal callback must detach post-pipeline chain with waitUntil so Cloud Run pipeline-v2 is not held open by downstream closure',
 )
 
 assert(
@@ -84,6 +85,12 @@ assert(
 assert(
   postMarketChain.includes("{ critical: false }"),
   'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
+)
+assert(
+  postMarketChain.includes('const [neuralUcb, neuralTs] = await Promise.all([') &&
+    postMarketChain.includes("policyId: 'NeuralUCB'") &&
+    postMarketChain.includes("policyId: 'NeuralTS'"),
+  'NeuralUCB and NeuralTS shadow closures should run concurrently without reducing either policy timeout or evidence path',
 )
 assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),

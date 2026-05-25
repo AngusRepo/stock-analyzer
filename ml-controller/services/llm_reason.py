@@ -50,14 +50,14 @@ def _number(value: Any, fallback: float = 0.0) -> float:
 
 
 def _round1(value: float) -> float:
-    return round(float(value) * 10) / 10
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _clamp(value: Any, maximum: float) -> float:
     return _round1(max(0.0, min(float(maximum), _number(value))))
 
 
-def _parse_score_components(value: Any) -> dict[str, Any] | None:
+def _parse_score_v2_payload(value: Any) -> dict[str, Any] | None:
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -68,31 +68,11 @@ def _parse_score_components(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _score_components(c: dict[str, Any]) -> dict[str, Any]:
-    payload = _parse_score_components(c.get("score_components"))
+def _score_v2_payload(c: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _parse_score_v2_payload(c.get("score_v2"))
     if payload:
         return payload
-    components = {
-        "mlEdge": _clamp((_number(c.get("ml_score")) / 30.0) * SCORE_V2_WEIGHTS["mlEdge"], SCORE_V2_WEIGHTS["mlEdge"]),
-        "chipFlow": _clamp((_number(c.get("chip_score")) / 40.0) * SCORE_V2_WEIGHTS["chipFlow"], SCORE_V2_WEIGHTS["chipFlow"]),
-        "technicalStructure": _clamp(
-            ((_number(c.get("tech_score")) + _number(c.get("momentum_score"))) / 50.0) * SCORE_V2_WEIGHTS["technicalStructure"],
-            SCORE_V2_WEIGHTS["technicalStructure"],
-        ),
-        "fundamentalQuality": 0.0,
-        "newsTheme": 0.0,
-    }
-    total = _round1(sum(components.values()))
-    final_score = _clamp(c.get("score", total), 100.0)
-    return {
-        "version": "score_v2",
-        "components": components,
-        "total": total,
-        "alphaAdjustment": _round1(final_score - total),
-        "finalScore": final_score,
-        "formula": "score_v2_total + alphaAdjustment",
-        "reasons": ["llm_reason_storage_projection"],
-    }
+    return None
 
 
 def _component(payload: dict[str, Any], key: str) -> float:
@@ -101,7 +81,9 @@ def _component(payload: dict[str, Any], key: str) -> float:
 
 
 def _score_context(c: dict[str, Any]) -> str:
-    payload = _score_components(c)
+    payload = _score_v2_payload(c)
+    if payload is None:
+        return "Score V2 finalScore=missing_score_v2; components=missing_score_v2"
     final_score = _clamp(payload.get("finalScore", payload.get("total")), 100.0)
     total = _clamp(payload.get("total"), 100.0)
     alpha = _round1(_number(payload.get("alphaAdjustment"), final_score - total))

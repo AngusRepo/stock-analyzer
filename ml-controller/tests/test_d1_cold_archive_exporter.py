@@ -9,6 +9,10 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import dataset_snapshot_exporter as exporter  # noqa: E402
+from routers.dataset_snapshots import (  # noqa: E402
+    ExportColdArchiveRunRequest,
+    build_d1_cold_archive_modal_payload,
+)
 
 
 class FakeBucket:
@@ -81,6 +85,43 @@ def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
     assert {row["table"] for row in metadata["table_coverage"]} == {"stock_prices", "margin_data"}
     assert all(row["coverage_start"] == "2024-01-01" for row in metadata["table_coverage"])
     assert all(row["coverage_end"] == "2024-12-31" for row in metadata["table_coverage"])
+
+
+def test_d1_cold_archive_modal_payload_preserves_archive_safety_contract():
+    payload = build_d1_cold_archive_modal_payload(ExportColdArchiveRunRequest(
+        business_date="2026-05-19",
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        tables=["stock_prices", "technical_indicators"],
+        producer_run_id="retention-dry-run",
+        chunk_days=10,
+        hot_window_days=504,
+    ))
+
+    assert payload["executor"] == "modal"
+    assert payload["source"] == "d1_cold_archive_export"
+    assert payload["run_id"] == "retention-dry-run"
+    assert payload["producer_run_id"] == "retention-dry-run"
+    assert payload["tables"] == ["stock_prices", "technical_indicators"]
+    assert payload["chunk_days"] == 10
+    assert payload["hot_window_days"] == 504
+    assert payload["callback_task"] == "dataset-snapshot-export"
+    assert payload["delete_requires_manual_approval"] is True
+
+
+def test_d1_cold_archive_modal_wiring_is_async_and_env_gated():
+    router_source = (Path(__file__).resolve().parent.parent / "routers" / "dataset_snapshots.py").read_text(encoding="utf-8")
+    modal_client_source = (Path(__file__).resolve().parent.parent / "services" / "modal_client.py").read_text(encoding="utf-8")
+    modal_app_source = (Path(__file__).resolve().parents[2] / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+
+    assert '@router.post("/export_cold_archive/run")' in router_source
+    assert "D1_COLD_ARCHIVE_EXECUTOR=modal" in router_source
+    assert "spawn_d1_cold_archive_export(payload)" in router_source
+    assert "async def spawn_d1_cold_archive_export" in modal_client_source
+    assert '"d1_cold_archive_export": {"cpu": 4.0, "memory_mb": 4096' in modal_client_source
+    assert "def d1_cold_archive_export(payload: dict) -> dict:" in modal_app_source
+    assert "export_d1_cold_archive_snapshot(request)" in modal_app_source
+    assert '"delete_requires_manual_approval": True' in modal_app_source
 
 
 def test_build_finlab_5y_raw_archive_metadata_uses_existing_manifest():

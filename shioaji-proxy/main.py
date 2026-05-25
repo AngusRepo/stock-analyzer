@@ -82,10 +82,14 @@ def init_shioaji():
             last_ticks[symbol] = {
                 "symbol": symbol,
                 "price": tick.close,
+                "open": getattr(tick, "open", None),
+                "high": getattr(tick, "high", None),
+                "low": getattr(tick, "low", None),
+                "avg_price": getattr(tick, "avg_price", None),
                 "volume": tick.volume,
                 "total_volume": tick.total_volume,
-                "bid": tick.bid_price,
-                "ask": tick.ask_price,
+                "bid": getattr(tick, "bid_price", None),
+                "ask": getattr(tick, "ask_price", None),
                 "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
                 "updated_at": datetime.now(TW_TZ).isoformat(),
             }
@@ -170,6 +174,65 @@ def subscribe_symbol(symbol: str):
         return False
 
 
+def _parse_iso_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=TW_TZ)
+    except Exception:
+        return None
+
+
+def _latest_time(*values: str | None) -> str | None:
+    parsed_values = [_parse_iso_time(value) for value in values if value]
+    parsed_values = [value for value in parsed_values if value is not None]
+    if not parsed_values:
+        return None
+    return max(parsed_values).isoformat()
+
+
+def get_streaming_quote(symbol: str) -> dict | None:
+    """Merge latest Tick and BidAsk cache into one executable quote payload."""
+    tick = last_ticks.get(symbol)
+    depth = last_bidasks.get(symbol)
+    if not tick and not depth:
+        return None
+
+    price = tick.get("price") if tick and tick.get("price") is not None else (depth or {}).get("price")
+    bid_prices = list((depth or {}).get("bid_prices") or [])
+    ask_prices = list((depth or {}).get("ask_prices") or [])
+    bid_volumes = list((depth or {}).get("bid_volumes") or [])
+    ask_volumes = list((depth or {}).get("ask_volumes") or [])
+    bid1 = bid_prices[0] if bid_prices else (tick or {}).get("bid")
+    ask1 = ask_prices[0] if ask_prices else (tick or {}).get("ask")
+    updated_at = _latest_time((depth or {}).get("updated_at"), (tick or {}).get("updated_at")) or datetime.now(TW_TZ).isoformat()
+
+    return {
+        "symbol": symbol,
+        "source": "streaming_cache",
+        "price": price,
+        "last": price,
+        "close": price,
+        "open": (tick or {}).get("open"),
+        "high": (tick or {}).get("high"),
+        "low": (tick or {}).get("low"),
+        "volume": (tick or {}).get("volume"),
+        "total_volume": (tick or {}).get("total_volume"),
+        "bid": bid1,
+        "ask": ask1,
+        "bid_prices": bid_prices,
+        "bid_volumes": bid_volumes,
+        "ask_prices": ask_prices,
+        "ask_volumes": ask_volumes,
+        "tick_timestamp": (tick or {}).get("timestamp"),
+        "bidask_timestamp": (depth or {}).get("timestamp"),
+        "tick_updated_at": (tick or {}).get("updated_at"),
+        "bidask_updated_at": (depth or {}).get("updated_at"),
+        "updated_at": updated_at,
+    }
+
+
 def get_snapshot(symbol: str) -> dict | None:
     """用 snapshots API 取得最新報價（不需要預先訂閱）"""
     if not api or not connected:
@@ -183,6 +246,7 @@ def get_snapshot(symbol: str) -> dict | None:
             s = snapshots[0]
             return {
                 "symbol": symbol,
+                "source": "snapshot",
                 "price": s.close,
                 "last": s.close,
                 "close": s.close,
@@ -246,11 +310,16 @@ def quote(symbol: str, authorization: str | None = None):
     symbol = symbol.upper().strip()
 
     # 先查已訂閱的 tick cache
-    if symbol in last_ticks:
-        return {"status": "ok", "source": "tick", "data": last_ticks[symbol]}
+    if symbol in last_ticks or symbol in last_bidasks:
+        stream = get_streaming_quote(symbol)
+        if stream:
+            return {"status": "ok", "source": stream["source"], "data": stream}
 
     # 自動訂閱（下次 tick 進來就有 cache）
     subscribe_symbol(symbol)
+    stream = get_streaming_quote(symbol)
+    if stream:
+        return {"status": "ok", "source": stream["source"], "data": stream}
 
     # 用 snapshot 取即時值（不需要等 tick）
     snap = get_snapshot(symbol)
@@ -273,11 +342,20 @@ def batch_quotes(req: BatchRequest, authorization: str | None = None):
     for symbol in req.symbols:
         symbol = symbol.upper().strip()
         # 先查 tick cache
+        if symbol in last_ticks or symbol in last_bidasks:
+            stream = get_streaming_quote(symbol)
+            if stream:
+                results[symbol] = stream
+                continue
         if symbol in last_ticks:
             results[symbol] = last_ticks[symbol]
             continue
         # 訂閱 + snapshot
         subscribe_symbol(symbol)
+        stream = get_streaming_quote(symbol)
+        if stream:
+            results[symbol] = stream
+            continue
         snap = get_snapshot(symbol)
         if snap:
             results[symbol] = snap
@@ -293,6 +371,11 @@ def batch_snapshots(req: BatchRequest, authorization: str | None = None):
 
     for symbol in req.symbols:
         symbol = symbol.upper().strip()
+        subscribe_symbol(symbol)
+        stream = get_streaming_quote(symbol)
+        if stream:
+            results[symbol] = stream
+            continue
         snap = get_snapshot(symbol)
         if snap:
             results[symbol] = snap
@@ -305,6 +388,10 @@ def snapshot_endpoint(symbol: str, authorization: str | None = None):
     """強制用 snapshot API 取最新值（繞過 tick cache）"""
     verify_token(authorization)
     symbol = symbol.upper().strip()
+    subscribe_symbol(symbol)
+    stream = get_streaming_quote(symbol)
+    if stream:
+        return {"status": "ok", "data": stream}
     snap = get_snapshot(symbol)
     if snap:
         return {"status": "ok", "data": snap}

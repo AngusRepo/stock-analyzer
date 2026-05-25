@@ -18,6 +18,7 @@ import logging
 import os
 import time
 import uuid
+import asyncio
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -119,21 +120,26 @@ async def _emit_subtask_callbacks(
         ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
     ]
 
+    async def _emit_one(client: httpx.AsyncClient, task: str, ok: bool, summary: str) -> None:
+        status = "success" if (overall_status == "success" and ok) else "error"
+        payload: dict = {
+            "task": task,
+            "status": status,
+            "summary": summary,
+            "duration_ms": elapsed_ms,
+            "run_id": run_id,
+        }
+        if run_date:
+            payload["run_date"] = run_date
+        if status == "error":
+            payload["error"] = overall_error or f"{task}: no output"
+        await _callback_worker(payload, client=client)
+
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _callback_worker(payload, client=client)
+        await asyncio.gather(*(
+            _emit_one(client, task, ok, summary)
+            for task, ok, summary in subtasks
+        ))
 
 
 # ─── V2 trigger endpoint ─────────────────────────────────────────────────────

@@ -187,7 +187,12 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
            score_components
       FROM daily_recommendations
      WHERE date=? AND has_buy_signal=1
-     ORDER BY score DESC
+     ORDER BY CASE WHEN json_valid(score_components) THEN
+       COALESCE(
+         CAST(json_extract(score_components, '$.finalScore') AS REAL),
+         CAST(json_extract(score_components, '$.total') AS REAL),
+         0
+       ) ELSE 0 END DESC
   `).bind(reportDate).all<any>()
 
   if (recs?.length) {

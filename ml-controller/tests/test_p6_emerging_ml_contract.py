@@ -18,6 +18,35 @@ from services.recommendation_service import (  # noqa: E402
 )
 
 
+def _score_components(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    chip_flow = round((chip / 40.0) * 25.0, 1)
+    technical = round(((tech + momentum) / 50.0) * 25.0, 1)
+    total = round(chip_flow + technical, 1)
+    return {
+        "version": "score_v2",
+        "weights": {"mlEdge": 25, "chipFlow": 25, "technicalStructure": 25, "fundamentalQuality": 20, "newsTheme": 5},
+        "components": {
+            "mlEdge": 0,
+            "chipFlow": chip_flow,
+            "technicalStructure": technical,
+            "fundamentalQuality": 0,
+            "newsTheme": 0,
+        },
+        "total": total,
+        "finalScore": total,
+        "alphaAdjustment": 0,
+        "riskFlags": [],
+        "reasons": ["screener_base"],
+        "seedComponents": {
+            "chipFlowSeed40": chip,
+            "technicalSeed30": tech,
+            "screenerMomentumSeed20": momentum,
+            "mlEdgeSeed30": 0,
+            "personaAlphaSeed": 0,
+        },
+    }
+
+
 def test_emerging_daily_recommendation_enters_ml_universe_but_not_execution():
     active = [{"id": 1, "symbol": "2330", "name": "TSMC", "market": "TWSE", "sector": "semi"}]
     screener_recs = [
@@ -73,6 +102,7 @@ def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
             "industry": "other",
             "chip_score": 35,
             "tech_score": 25,
+            "score_components": _score_components(35, 25),
             "score": 60,
             "watch_points": ["research_only:emerging_not_for_auto_trade"],
         }
@@ -209,6 +239,13 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
                 "chip_score": 30,
                 "tech_score": 24,
                 "ml_score": 26,
+                "score_seed_inputs": {
+                    "chipFlowSeed40": 30,
+                    "technicalSeed30": 24,
+                    "screenerMomentumSeed20": 0,
+                    "mlEdgeSeed30": 26,
+                    "personaAlphaSeed": 0,
+                },
                 "industry": "other",
                 "market_segment": "EMERGING",
                 "recommendation_lane": "emerging_watchlist",

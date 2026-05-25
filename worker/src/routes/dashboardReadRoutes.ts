@@ -7,6 +7,13 @@ import { buildDashboardV4ChartPacket } from '../lib/dashboardV4Contract'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
+import {
+  buildModelPoolControllerPath,
+  invalidateModelPoolReadCache,
+  readThroughModelPoolCache,
+  resolveModelPoolReadCacheTtl,
+  shouldBypassModelPoolReadCache,
+} from '../lib/modelPoolReadCache'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -93,6 +100,41 @@ function isStateSpaceOverlay(name: string, model: Record<string, any>): boolean 
     name === 'MarkovSwitching' ||
     model.model_type === 'state_space_overlay' ||
     model.balance_family === 'state_space'
+  )
+}
+
+function pickModelPoolQueryParams(c: any, keys: string[]): URLSearchParams {
+  const params = new URLSearchParams()
+  for (const key of keys) {
+    const value = c.req.query(key)
+    if (value) params.set(key, value)
+  }
+  return params
+}
+
+function modelPoolCacheBypass(c: any): boolean {
+  return shouldBypassModelPoolReadCache(c.req.query('bypass_cache'), c.req.header('cache-control'))
+}
+
+async function cachedModelPoolControllerJson<T>(
+  c: any,
+  basePath: string,
+  keys: string[] = [],
+): Promise<T> {
+  const bypassCache = modelPoolCacheBypass(c)
+  const controllerPath = buildModelPoolControllerPath(
+    basePath,
+    pickModelPoolQueryParams(c, keys),
+    { bypassCache },
+  )
+  return readThroughModelPoolCache(
+    c.env.KV,
+    controllerPath,
+    () => controllerJson<T>(c.env, controllerPath, { timeoutMs: 30_000 }),
+    {
+      ttlSeconds: resolveModelPoolReadCacheTtl(c.env),
+      bypassCache,
+    },
   )
 }
 
@@ -229,7 +271,7 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
 
   const date = c.req.query('date') ?? twToday()
   try {
-    const lineage = await controllerJson<any>(c.env, '/model_pool/lineage', { timeoutMs: 30_000 })
+    const lineage = await cachedModelPoolControllerJson<any>(c, '/model_pool/lineage')
     const models = Object.entries(lineage?.models ?? {})
       .filter(([modelName, raw]) => !isStateSpaceOverlay(modelName, raw as Record<string, any>))
       .sort(([a], [b]) => a.localeCompare(b))
@@ -273,7 +315,7 @@ dashboardReadRoutes.get('/api/model-pool/status', async (c) => {
   if (authError) return authError
 
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/status', { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(c, '/model_pool/status'))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }
@@ -284,7 +326,7 @@ dashboardReadRoutes.get('/api/model-pool/lineage', async (c) => {
   if (authError) return authError
 
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/lineage', { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(c, '/model_pool/lineage'))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {}, events: [] }, 502)
   }
@@ -294,15 +336,12 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const params = new URLSearchParams()
-  for (const key of ['model_name', 'state', 'candidate_type', 'limit']) {
-    const value = c.req.query(key)
-    if (value) params.set(key, value)
-  }
-  const qs = params.toString()
-
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(
+      c,
+      '/model_pool/artifact_registry',
+      ['model_name', 'state', 'candidate_type', 'limit'],
+    ))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), artifacts: [] }, 502)
   }
@@ -312,15 +351,12 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/selection', async (c)
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const params = new URLSearchParams()
-  for (const key of ['model_name', 'limit']) {
-    const value = c.req.query(key)
-    if (value) params.set(key, value)
-  }
-  const qs = params.toString()
-
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/selection${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(
+      c,
+      '/model_pool/artifact_registry/selection',
+      ['model_name', 'limit'],
+    ))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
   }
@@ -330,15 +366,12 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/promotion_queue', asy
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const params = new URLSearchParams()
-  for (const key of ['model_name', 'limit']) {
-    const value = c.req.query(key)
-    if (value) params.set(key, value)
-  }
-  const qs = params.toString()
-
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/promotion_queue${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(
+      c,
+      '/model_pool/artifact_registry/promotion_queue',
+      ['model_name', 'limit'],
+    ))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), queue: [] }, 502)
   }
@@ -350,11 +383,13 @@ dashboardReadRoutes.post('/api/model-pool/artifact_registry/promotion_controller
 
   try {
     const body = await c.req.json().catch(() => ({}))
-    return c.json(await controllerJson<any>(c.env, '/model_pool/artifact_registry/promotion_controller', {
+    const result = await controllerJson<any>(c.env, '/model_pool/artifact_registry/promotion_controller', {
       method: 'POST',
       jsonBody: body,
       timeoutMs: 30_000,
-    }))
+    })
+    if (body?.confirm) await invalidateModelPoolReadCache(c.env.KV)
+    return c.json(result)
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }
@@ -364,15 +399,12 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', a
   const authError = await requireValidToken(c)
   if (authError) return authError
 
-  const params = new URLSearchParams()
-  for (const key of ['model_name', 'limit']) {
-    const value = c.req.query(key)
-    if (value) params.set(key, value)
-  }
-  const qs = params.toString()
-
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/champion_pointers${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await cachedModelPoolControllerJson<any>(
+      c,
+      '/model_pool/artifact_registry/champion_pointers',
+      ['model_name', 'limit'],
+    ))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
   }
@@ -384,11 +416,13 @@ dashboardReadRoutes.post('/api/model-pool/artifact_registry/champion_pointers/ba
 
   try {
     const body = await c.req.json().catch(() => ({}))
-    return c.json(await controllerJson<any>(c.env, '/model_pool/artifact_registry/champion_pointers/backfill', {
+    const result = await controllerJson<any>(c.env, '/model_pool/artifact_registry/champion_pointers/backfill', {
       method: 'POST',
       jsonBody: body,
       timeoutMs: 30_000,
-    }))
+    })
+    if (body?.confirm) await invalidateModelPoolReadCache(c.env.KV)
+    return c.json(result)
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }

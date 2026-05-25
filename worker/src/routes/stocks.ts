@@ -22,8 +22,48 @@ import {
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { computeAndStoreIndicators } from '../lib/technicalIndicators'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 
 const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+type StockAiRecommendationRow = ScoreV2StorageRow & {
+  date: string
+  symbol: string
+  name: string
+  sector: string | null
+  rank: number | null
+  signal: string | null
+  confidence: number | null
+  reason: string | null
+  watch_points: string | null
+  current_price: number | null
+  alpha_context: string | null
+  alpha_allocation: string | null
+  ml_vote_summary: string | null
+}
+
+function shapeStockAiRecommendation(row: StockAiRecommendationRow, extra: Record<string, unknown> = {}) {
+  const snapshot = readScoreV2Snapshot(row)
+  const scoreV2 = snapshot ? serializeScoreV2Snapshot(snapshot) : null
+  return {
+    date: row.date,
+    symbol: row.symbol,
+    name: row.name,
+    sector: row.sector,
+    rank: row.rank,
+    signal: row.signal,
+    confidence: row.confidence,
+    reason: row.reason,
+    watch_points: row.watch_points,
+    current_price: row.current_price,
+    score: scoreV2?.finalScore ?? null,
+    score_v2: scoreV2,
+    alpha_context: row.alpha_context,
+    alpha_allocation: row.alpha_allocation,
+    ml_vote_summary: row.ml_vote_summary,
+    ...extra,
+  }
+}
 
 // ─── GET /api/stocks  →  list all active stocks ───────────────────────────────
 stocks.get('/', async (c) => {
@@ -181,6 +221,30 @@ stocks.get('/:id/chips', async (c) => {
     'SELECT * FROM chip_data WHERE symbol=? AND date>=? ORDER BY date'
   ).bind(stock.symbol, since).all()
   return c.json(results)
+})
+
+// ─── GET /api/stocks/:id/broker-flow?days=60 ─────────────────────────────────
+stocks.get('/:id/broker-flow', async (c) => {
+  const id = parseId(c.req.param('id'))
+  if (!id) return c.json({ error: '無效 ID' }, 400)
+  const stock = await c.env.DB.prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  if (!stock) return c.json({ error: '股票不存在' }, 404)
+  const days = parsePosInt(c.req.query('days'), 60)
+  const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
+
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT date, market_segment, net_shares, estimated_amount,
+              broker_count, concentration, source, as_of_date
+         FROM canonical_broker_flow_daily
+        WHERE stock_id=? AND date>=?
+        ORDER BY date`,
+    ).bind(stock.symbol, since).all()
+    return c.json(results ?? [])
+  } catch (error) {
+    console.warn(`[BrokerFlow] optional canonical_broker_flow_daily unavailable for stock_id=${id}:`, error)
+    return c.json([])
+  }
 })
 
 // ─── GET /api/stocks/:id/news?days=30 ────────────────────────────────────────
@@ -341,8 +405,14 @@ stocks.get('/:id/ai-summary', async (c) => {
   const [recRow, tagsRows, chipRows, profileRow, finRow] = await Promise.all([
     // 最新推薦
     c.env.DB.prepare(
-      'SELECT * FROM daily_recommendations WHERE symbol=? ORDER BY date DESC LIMIT 1'
-    ).bind(stock.symbol).first<any>().catch(() => null),
+      `SELECT date, symbol, name, sector, rank, signal, confidence, reason,
+              watch_points, current_price, alpha_context, alpha_allocation,
+              ml_vote_summary, score_components
+         FROM daily_recommendations
+        WHERE symbol=?
+        ORDER BY date DESC
+        LIMIT 1`
+    ).bind(stock.symbol).first<StockAiRecommendationRow>().catch(() => null),
     // 概念標籤
     c.env.DB.prepare(
       'SELECT tag, weight FROM stock_tags WHERE symbol=? ORDER BY weight DESC'
@@ -369,7 +439,7 @@ stocks.get('/:id/ai-summary', async (c) => {
     ).bind(id).first<any>().catch(() => null),
   ])
 
-  let recommendation = recRow
+  let recommendation = recRow ? shapeStockAiRecommendation(recRow) : null
   if (recRow) {
     const [ensembleRow, perModelRows] = await Promise.all([
       c.env.DB.prepare(`
@@ -406,14 +476,13 @@ stocks.get('/:id/ai-summary', async (c) => {
       appendUniqueWatchPoint(Array.isArray(watchPoints) ? watchPoints : [], marketWatchPoint),
       mlWatchPoint,
     )
-    recommendation = {
-      ...recRow,
+    recommendation = shapeStockAiRecommendation(recRow, {
       prediction_forecast_data: ensembleRow?.forecast_data ?? null,
       alpha_context: forecastData.alpha_context ?? null,
       alpha_allocation: forecastData.alpha_allocation ?? null,
       ml_vote_summary: mlVoteSummary,
       watch_points: enrichedWatchPoints,
-    }
+    })
   }
 
   return c.json({

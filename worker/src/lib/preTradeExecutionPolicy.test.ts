@@ -78,3 +78,36 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
   assert(decision.action === 'BUY_AT', 'clean pre-trade context should allow buy')
   assert(decision.limitPrice === 100, 'buy limit should remain at entry price')
 }
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 100.4,
+    bestAsk: 100.5,
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+    },
+  }))
+  assert(decision.action === 'BUY_AT', 'confirmed strong momentum should allow a bounded entry chase')
+  assert(decision.limitPrice === 100.5, 'entry chase should use the executable best ask as the limit')
+  assert(decision.reason === 'entry_chase_confirmed:0.50%', 'entry chase reason should expose the premium')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 100.8,
+    bestAsk: 100.9,
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'entry chase must stay bounded instead of chasing extended prices')
+  assert(decision.reason === 'price_above_entry', 'extended prices should keep the existing wait-for-pullback behavior')
+}

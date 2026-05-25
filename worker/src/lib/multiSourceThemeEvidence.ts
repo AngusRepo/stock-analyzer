@@ -120,11 +120,12 @@ export async function loadRuntimeThemeSignals(db: D1Database, date: string): Pro
     const { results } = await db.prepare(`
       SELECT concept, score, sentiment_avg, source, evidence_count, top_titles, allowed_use, decision_effect
       FROM theme_signals
-      WHERE date <= ?
+      WHERE date >= date(?, '-14 days')
+        AND date <= ?
         AND source NOT IN ('finnhub_news', 'company_ir_rss', 'gdelt_events')
       ORDER BY date DESC, score DESC
       LIMIT 500
-    `).bind(date).all<{
+    `).bind(date, date).all<{
       concept: string
       score: number | null
       sentiment_avg: number | null

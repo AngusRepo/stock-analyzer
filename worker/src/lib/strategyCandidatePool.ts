@@ -52,6 +52,7 @@ export interface StrategyCapacityDecision {
 }
 
 export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
+  score_components?: unknown
   industryTheme?: string | null
   subindustry?: string | null
   market_segment?: string | null
@@ -202,12 +203,20 @@ function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate)
   technicalStructure: number
   momentumProxy: number
 } {
-  const canonical = deriveStrategyThresholdScores(candidate)
+  const canonical = deriveStrategyThresholdScores(strategyInputFromPoolCandidate(candidate))
   return {
     seedScore: canonical.seedScore,
     chipFlow: canonical.chipFlow,
     technicalStructure: canonical.technicalStructure,
     momentumProxy: canonical.momentumProxy,
+  }
+}
+
+function strategyInputFromPoolCandidate(candidate: StrategyCandidatePoolCandidate): StrategyCandidateInput {
+  const { score_components, ...rest } = candidate
+  return {
+    ...rest,
+    score_v2: candidate.score_v2 ?? score_components,
   }
 }
 
@@ -377,9 +386,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       let usedAdaptiveNearMatch = false
       let entries = candidates
         .map((candidate) => {
-          const assessment = assessCandidateAgainstStrategySpecs(candidate, [spec])
+          const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec])
           if (!assessment.matches.length) return null
-          const thresholdScores = deriveStrategyThresholdScores(candidate)
+          const thresholdScores = candidatePoolThresholdScores(candidate)
           const scored = strategyScore(candidate, spec, rWeight)
           return {
             strategy_id: spec.id,

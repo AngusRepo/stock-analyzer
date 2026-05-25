@@ -3,12 +3,15 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 import polars as pl
+
+from services.training_calendar import monthly_revenue_available_date
 
 
 SCHEMA_VERSION = "finlab-canonical-materializer-v1"
@@ -23,6 +26,7 @@ class FinLabCanonicalOutputs:
     canonical_chip_daily: list[dict[str, Any]]
     canonical_institutional_amount_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
+    canonical_fundamental_features: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
     finlab_taxonomy_tags: list[dict[str, Any]]
     data_source_inventory: list[dict[str, Any]]
@@ -108,6 +112,26 @@ def _join_wide_fields(
     return joined if joined is not None else pl.DataFrame()
 
 
+def _join_wide_field_aliases(
+    lane_dir: Path,
+    field_aliases: dict[str, list[str]],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[pl.DataFrame, list[str]]:
+    joined: pl.DataFrame | None = None
+    used_fields: list[str] = []
+    for canonical_field, aliases in field_aliases.items():
+        for alias in aliases:
+            frame = _wide_field_to_long(lane_dir / f"{alias}.parquet", canonical_field, start_date=start_date, end_date=end_date)
+            if frame.is_empty():
+                continue
+            used_fields.append(alias)
+            joined = frame if joined is None else joined.join(frame, on=["date", "stock_id"], how="full", coalesce=True)
+            break
+    return joined if joined is not None else pl.DataFrame(), used_fields
+
+
 def _rows(df: pl.DataFrame, limit: int | None = None) -> list[dict[str, Any]]:
     if df.is_empty():
         return []
@@ -125,6 +149,160 @@ def _lineage(run_id: str, lane: str, fields: list[str], artifact_root: Path) -> 
         "artifact_root": str(artifact_root),
         "source": "finlab",
     })
+
+
+FUNDAMENTAL_FIELD_ALIASES: dict[str, list[str]] = {
+    "revenue_growth_yoy": ["revenue_growth_yoy", "revenue_yoy", "yoy"],
+    "gross_margin": ["gross_margin", "gross_margin_pct"],
+    "operating_margin": ["operating_margin", "operating_margin_pct"],
+    "roe": ["roe", "return_on_equity"],
+    "eps": ["eps"],
+    "pe": ["pe", "per"],
+    "pb": ["pb", "pbr"],
+    "dividend_yield": ["dividend_yield"],
+    "debt_ratio": ["debt_ratio", "liabilities_to_assets"],
+    "current_ratio": ["current_ratio"],
+    "operating_cash_flow": ["operating_cash_flow", "cash_flow_from_operations"],
+    "industry_quality_percentile": ["industry_quality_percentile", "sector_quality_percentile", "industry_percentile"],
+}
+
+
+FINANCIAL_STATEMENT_FIELDS = {
+    "gross_margin",
+    "operating_margin",
+    "roe",
+    "eps",
+    "debt_ratio",
+    "current_ratio",
+    "operating_cash_flow",
+    "industry_quality_percentile",
+}
+
+
+def _iso(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _quarter_end_from_period(value: Any) -> str | None:
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{4})[-/]?Q([1-4])$", text, flags=re.IGNORECASE)
+    if match:
+        year = int(match.group(1))
+        quarter = int(match.group(2))
+        end_month = quarter * 3
+        next_month = end_month + 1
+        next_year = year
+        if next_month == 13:
+            next_month = 1
+            next_year += 1
+        return (date(next_year, next_month, 1) - timedelta(days=1)).isoformat()
+    parsed = _iso(text)
+    if not parsed:
+        return None
+    parsed_date = date.fromisoformat(parsed)
+    end_month = ((parsed_date.month - 1) // 3 + 1) * 3
+    next_month = end_month + 1
+    next_year = parsed_date.year
+    if next_month == 13:
+        next_month = 1
+        next_year += 1
+    return (date(next_year, next_month, 1) - timedelta(days=1)).isoformat()
+
+
+def _fundamental_available_date(row: dict[str, Any]) -> str | None:
+    explicit = _iso(row.get("available_date") or row.get("published_at"))
+    if explicit:
+        return explicit
+    period = row.get("period") or row.get("date")
+    has_statement_field = any(row.get(field) is not None for field in FINANCIAL_STATEMENT_FIELDS)
+    if has_statement_field:
+        quarter_end = _quarter_end_from_period(period)
+        if quarter_end:
+            return (date.fromisoformat(quarter_end) + timedelta(days=60)).isoformat()
+    if row.get("revenue_growth_yoy") is not None:
+        try:
+            return monthly_revenue_available_date(str(period))
+        except ValueError:
+            pass
+    return _iso(period)
+
+
+def _table_value(row: dict[str, Any], aliases: list[str]) -> Any:
+    for alias in aliases:
+        if alias in row and row.get(alias) is not None:
+            return row.get(alias)
+    return None
+
+
+def build_fundamental_feature_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    lane = "fundamental_factor_diversity"
+    lane_dir = artifact_root / "raw" / lane
+    df, used_fields = _join_wide_field_aliases(
+        lane_dir,
+        FUNDAMENTAL_FIELD_ALIASES,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    rows: list[dict[str, Any]] = []
+    source = "finlab.fundamental_factor_diversity"
+
+    if not df.is_empty():
+        lineage = _lineage(run_id, lane, used_fields, artifact_root)
+        for raw in _rows(df, limit):
+            period = raw.get("date")
+            row = {
+                "stock_id": normalize_symbol(raw.get("stock_id")),
+                "period": period,
+                "market_segment": "LISTED_OTC",
+                "report_date": period,
+                "source": source,
+                "lineage_json": lineage,
+                "as_of_date": generated_at[:10],
+            }
+            for field in FUNDAMENTAL_FIELD_ALIASES:
+                row[field] = raw.get(field)
+            row["available_date"] = _fundamental_available_date(row)
+            if row["stock_id"] and row["period"] and row["available_date"]:
+                rows.append(row)
+
+    table = _read_parquet(lane_dir / "table.parquet")
+    if rows or table.is_empty():
+        return rows[:limit] if limit and limit > 0 else rows
+
+    table = _filter_dates(table, start_date=start_date, end_date=end_date, date_col="date")
+    lineage = _lineage(run_id, lane, ["table"], artifact_root)
+    for raw in _rows(table, limit):
+        period = raw.get("period") or raw.get("date") or raw.get("report_date")
+        row = {
+            "stock_id": normalize_symbol(raw.get("stock_id") or raw.get("symbol")),
+            "period": str(period)[:10] if period else None,
+            "market_segment": raw.get("market_segment") or raw.get("market") or "LISTED_OTC",
+            "report_date": _iso(raw.get("report_date")) or (str(period)[:10] if period else None),
+            "available_date": _iso(raw.get("available_date") or raw.get("published_at")),
+            "source": source,
+            "lineage_json": lineage,
+            "as_of_date": generated_at[:10],
+        }
+        for field, aliases in FUNDAMENTAL_FIELD_ALIASES.items():
+            row[field] = _table_value(raw, aliases)
+        row["available_date"] = row["available_date"] or _fundamental_available_date(row)
+        if row["stock_id"] and row["period"] and row["available_date"]:
+            rows.append(row)
+    return rows[:limit] if limit and limit > 0 else rows
 
 
 def build_market_rows(
@@ -625,6 +803,14 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_revenue_monthly") else []
+    fundamental_features = build_fundamental_feature_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_fundamental_features") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
@@ -636,6 +822,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_institutional_amount_daily"] = institutional_amounts
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
+    if wants("canonical_fundamental_features"):
+        output_rows["canonical_fundamental_features"] = fundamental_features
     if wants("canonical_broker_flow_daily"):
         output_rows["canonical_broker_flow_daily"] = broker_flow
     if wants("finlab_taxonomy_tags"):
@@ -665,6 +853,7 @@ def materialize_finlab_canonical_outputs(
         canonical_chip_daily=output_rows.get("canonical_chip_daily", []),
         canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
+        canonical_fundamental_features=output_rows.get("canonical_fundamental_features", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
         finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
         data_source_inventory=inventory,
@@ -735,6 +924,52 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "revenue_month", "market_segment", "revenue", "mom", "yoy", "source", "lineage_json", "as_of_date"],
         ["stock_id", "revenue_month", "source"],
         ["market_segment", "revenue", "mom", "yoy", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_fundamental_features",
+        outputs.canonical_fundamental_features,
+        [
+            "stock_id",
+            "period",
+            "market_segment",
+            "report_date",
+            "available_date",
+            "revenue_growth_yoy",
+            "gross_margin",
+            "operating_margin",
+            "roe",
+            "eps",
+            "pe",
+            "pb",
+            "dividend_yield",
+            "debt_ratio",
+            "current_ratio",
+            "operating_cash_flow",
+            "industry_quality_percentile",
+            "source",
+            "lineage_json",
+            "as_of_date",
+        ],
+        ["stock_id", "period", "source"],
+        [
+            "market_segment",
+            "report_date",
+            "available_date",
+            "revenue_growth_yoy",
+            "gross_margin",
+            "operating_margin",
+            "roe",
+            "eps",
+            "pe",
+            "pb",
+            "dividend_yield",
+            "debt_ratio",
+            "current_ratio",
+            "operating_cash_flow",
+            "industry_quality_percentile",
+            "lineage_json",
+            "as_of_date",
+        ],
     ))
     statements.extend(_row_statements(
         "canonical_broker_flow_daily",

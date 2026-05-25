@@ -485,16 +485,24 @@ export async function listStrategyLearningCandidates(
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const { results } = await db.prepare(`
-    SELECT symbol, name, sector, industry, score, chip_score, tech_score,
-           ml_score, score_components,
-           COALESCE(momentum_score, 0) AS momentum_score,
+    SELECT symbol, name, sector, industry, score_components,
            current_price
       FROM daily_recommendations
      WHERE date = ?
-     ORDER BY rank ASC, score DESC
-     LIMIT ?
-  `).bind(date, safeLimit).all<StrategyCandidateInput>()
-  return results ?? []
+     ORDER BY rank ASC,
+       CASE WHEN json_valid(score_components) THEN
+         COALESCE(
+           CAST(json_extract(score_components, '$.finalScore') AS REAL),
+           CAST(json_extract(score_components, '$.total') AS REAL),
+           0
+         ) ELSE 0 END DESC,
+       symbol ASC
+      LIMIT ?
+  `).bind(date, safeLimit).all<StrategyCandidateInput & { score_components?: unknown }>()
+  return (results ?? []).map(({ score_components, ...row }) => ({
+    ...row,
+    score_v2: row.score_v2 ?? score_components,
+  }))
 }
 
 export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {

@@ -137,6 +137,7 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_chip_daily",
     "canonical_institutional_amount_daily",
     "canonical_revenue_monthly",
+    "canonical_fundamental_features",
     "canonical_broker_flow_daily",
     "finlab_taxonomy_tags",
 ]
@@ -148,6 +149,33 @@ OPTIONAL_NEWS_SPECS = [
         keys={"tw_news_cnyes": "tw_news_cnyes"},
     ),
 ]
+
+
+def optional_fundamental_specs_from_env() -> list[DatasetSpec]:
+    """Return FinLab fundamental factor specs from explicit operator config.
+
+    FinLab paid-plan field names can differ by package/catalog. Keep the backfill
+    runner generic here and require an explicit mapping such as:
+    {"roe":"fundamental_features:roe","pe":"fundamental_features:pe"}
+    """
+
+    raw = os.environ.get("FINLAB_FUNDAMENTAL_FACTOR_KEYS_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("FINLAB_FUNDAMENTAL_FACTOR_KEYS_JSON must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("FINLAB_FUNDAMENTAL_FACTOR_KEYS_JSON must be a JSON object")
+    keys = {
+        str(field).strip(): str(api_key).strip()
+        for field, api_key in parsed.items()
+        if str(field).strip() and str(api_key).strip()
+    }
+    if not keys:
+        return []
+    return [DatasetSpec(lane="fundamental_factor_diversity", kind="wide_fields", keys=keys)]
 
 
 def utc_now() -> str:
@@ -258,6 +286,7 @@ def d1_counts(start: str) -> dict[str, int]:
         "canonical_market_daily": "SELECT COUNT(*) AS n FROM canonical_market_daily WHERE date >= ?",
         "canonical_chip_daily": "SELECT COUNT(*) AS n FROM canonical_chip_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
+        "canonical_fundamental_features": "SELECT COUNT(*) AS n FROM canonical_fundamental_features WHERE available_date >= ?",
     }
     counts: dict[str, int] = {}
     for key, sql in queries.items():
@@ -347,6 +376,7 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
     specs = list(CORE_SPECS)
     if os.environ.get("INCLUDE_FINLAB_CNYES_NEWS", "0").lower() in {"1", "true", "yes"}:
         specs.extend(OPTIONAL_NEWS_SPECS)
+    specs.extend(optional_fundamental_specs_from_env())
 
     for spec in specs:
         t0 = time.time()
@@ -796,6 +826,8 @@ def canonical_table_for_lane(lane: str) -> str:
         return "canonical_chip_daily"
     if "revenue" in lane:
         return "canonical_revenue_monthly"
+    if "fundamental" in lane or "financial" in lane:
+        return "canonical_fundamental_features"
     return "data_source_inventory"
 
 

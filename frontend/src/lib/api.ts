@@ -69,6 +69,7 @@ export const stocksApi = {
   indicators:  (id: number, days = 365) => get<any[]>(`/stocks/${id}/indicators?days=${days}`),
   financials:  (id: number, limit = 12) => get<any[]>(`/stocks/${id}/financials?limit=${limit}`),
   chips:       (id: number, days = 60) => get<any[]>(`/stocks/${id}/chips?days=${days}`),
+  brokerFlow:  (id: number, days = 60) => get<any[]>(`/stocks/${id}/broker-flow?days=${days}`),
   news:        (id: number, days = 30) => get<any[]>(`/stocks/${id}/news?days=${days}`),
   predictions: (id: number) => get<any[]>(`/stocks/${id}/predictions`),
   factors:     (id: number) => get<any>(`/stocks/${id}/factors`),

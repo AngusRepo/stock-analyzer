@@ -10,7 +10,17 @@ from services import model_artifact_registry as registry  # noqa: E402
 
 PROMOTION_GRADE_OFFLINE_EVIDENCE = (
     '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
-    '"validation_packet":{"pbo":0.12,"deflated_sharpe":1.21,"monte_carlo":{"decision":"PASS"}}}'
+    '"candidate_validation_packet":{'
+    '"candidate_specific":true,"decision":"PASS",'
+    '"pbo":{"pbo":0.12,"method":"cscv_rank_logit","go_live_verdict":"PASS","oos_mean_return":0.02},'
+    '"deflated_sharpe":{"decision":"PASS","adjusted_sharpe":1.21,"probability":0.92},'
+    '"monte_carlo":{"decision":"PASS","mdd_95th":0.12,"simulation_method":"regime_block_bootstrap"},'
+    '"data_snooping":{"go_live_verdict":"PASS","method":"hansen_spa","p_value":0.04}},'
+    '"validation_packet":{"release_gate":{'
+    '"scope":"latest_global_weekly_validation","shared_across_models":true,'
+    '"pbo":{"pbo":0.12,"method":"cscv_rank_logit","go_live_verdict":"PASS","oos_mean_return":0.02},'
+    '"deflated_sharpe":{"decision":"PASS","adjusted_sharpe":1.10,"probability":0.90},'
+    '"monte_carlo":{"go_live_verdict":"PASS","mdd_95th":0.12,"simulation_method":"regime_block_bootstrap"}}}}'
 )
 
 
@@ -154,6 +164,7 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
                 "mdd_95th": 0.18,
                 "go_live_verdict": "PASS",
                 "simulation_method": "block_bootstrap",
+                "raw_distribution": '{"tail_risk_diagnostics":{"loss_gt_10pct_count":2,"regime_closed_loop":false}}',
             }]
         if "FROM backtest_results" in sql:
             return [{
@@ -175,11 +186,178 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
     rows = registry.list_artifact_registry(model_name="CatBoost", limit=1)
     offline = rows[0]["offline_evidence_json"]
 
-    assert offline["pbo"]["pbo"] == 0.12
-    assert offline["pbo"]["method"] == "cscv_rank_logit"
-    assert offline["monte_carlo"]["mdd_95th"] == 0.18
-    assert offline["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
-    assert offline["validation_packet"]["root_cause"] == "artifact_registry_missing_validation_pointer"
+    release_gate = offline["validation_packet"]["release_gate"]
+    assert "pbo" not in offline
+    assert release_gate["shared_across_models"] is True
+    assert release_gate["pbo"]["pbo"] == 0.12
+    assert release_gate["pbo"]["method"] == "cscv_rank_logit"
+    assert release_gate["monte_carlo"]["mdd_95th"] == 0.18
+    assert release_gate["monte_carlo"]["tail_risk_diagnostics"]["loss_gt_10pct_count"] == 2
+    assert release_gate["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
+    assert release_gate["root_cause"] == "artifact_registry_missing_validation_pointer"
+
+
+def test_model_artifact_validation_chain_persists_blocked_candidate_packet(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        if "FROM pbo_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "source": "backtest",
+                "pbo": 0.12,
+                "go_live_verdict": "PASS",
+                "raw_details": '{"method":"cpcv_single_strategy_proxy"}',
+            }]
+        if "FROM monte_carlo_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "source": "backtest",
+                "mdd_95th": 0.46,
+                "go_live_verdict": "FAIL",
+                "raw_distribution": '{"tail_risk_diagnostics":{"regime_closed_loop":true}}',
+            }]
+        if "FROM backtest_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "strategy": "StockVisionStrategy",
+                "sharpe": 3.8,
+                "total_trades": 60,
+                "max_drawdown": 0.68,
+            }]
+        if "FROM model_champion_pointers" in sql:
+            return [{"model_name": "CatBoost", "champion_version": "v1"}]
+        if "FROM model_artifact_registry" in sql:
+            return [{
+                "artifact_id": "CatBoost:v20260517170259:monthly_release",
+                "model_name": "CatBoost",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "shadowing",
+                "offline_gate_decision": "STRONG_PASS",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": (
+                    '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
+                    '"registration":{"model_cpcv":{"decision":"PASS","failed_gates":[]}}}'
+                ),
+                "live_gate_status": "rolling_ic_passed",
+                "live_evidence_json": (
+                    '{"decision":{"metrics":{"shadow_samples":193,"production_samples":193,"min_samples":50}}}'
+                ),
+                "promotion_decision": "needs_multi_evidence_gate",
+                "approval_state": "not_required",
+            }]
+        return []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_model_artifact_validation_chain(limit=10)
+
+    assert result["updated"] == 1
+    assert result["ready"] == 0
+    assert result["blocked"] == 1
+    assert result["artifacts"][0]["artifact_id"] == "CatBoost:v20260517170259:monthly_release"
+    assert "candidate_specific_validation_missing" in result["artifacts"][0]["blocker_codes"]
+    assert "release_pbo_method_not_promotion_grade" in result["artifacts"][0]["blocker_codes"]
+    assert "release_monte_carlo_blocked" in result["artifacts"][0]["blocker_codes"]
+    assert executed
+    params = executed[0]["params"]
+    offline = registry._json_loads(params[0])
+    packet = offline["validation_packet"]
+    assert packet["schema_version"] == "model-artifact-validation-packet-v1"
+    assert packet["artifact_id"] == "CatBoost:v20260517170259:monthly_release"
+    assert packet["candidate_specific"] is False
+    assert packet["candidate_gate"]["status"] == "MISSING"
+    assert packet["release_gate"]["scope"] == "latest_global_weekly_validation"
+    assert packet["release_gate"]["pbo"]["method"] == "cpcv_single_strategy_proxy"
+    assert params[1] == "rolling_ic_passed"
+    assert params[2] == "shadowing"
+    assert params[3] == "blocked_multi_evidence_gate"
+
+
+def test_model_artifact_validation_chain_promotes_multi_evidence_when_packet_passes(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        if "FROM pbo_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "source": "backtest",
+                "pbo": 0.12,
+                "go_live_verdict": "PASS",
+                "raw_details": '{"method":"cscv_rank_logit"}',
+            }]
+        if "FROM monte_carlo_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "source": "backtest",
+                "mdd_95th": 0.18,
+                "go_live_verdict": "PASS",
+                "raw_distribution": '{"tail_risk_diagnostics":{"regime_closed_loop":true}}',
+            }]
+        if "FROM backtest_results" in sql:
+            return [{
+                "run_date": "2026-05-23",
+                "strategy": "StockVisionStrategy",
+                "sharpe": 2.1,
+                "total_trades": 120,
+                "max_drawdown": 0.14,
+                "return_series": "[0.01,0.02,0.015,0.03,0.01,0.025]",
+            }]
+        if "FROM model_champion_pointers" in sql:
+            return [{"model_name": "DLinear", "champion_version": "v1"}]
+        if "FROM model_artifact_registry" in sql:
+            return [{
+                "artifact_id": "DLinear:v20260517170259:monthly_release",
+                "model_name": "DLinear",
+                "version": "v20260517170259",
+                "candidate_type": "monthly_release",
+                "state": "shadowing",
+                "offline_gate_decision": "PASS",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": (
+                    '{"gate":{"decision":"PASS","metrics":{"model_cpcv_decision":"PASS"}},'
+                    '"registration":{"model_cpcv":{"decision":"PASS","failed_gates":[]}},'
+                    '"candidate_validation_packet":{'
+                    '"candidate_specific":true,"decision":"PASS",'
+                    '"pbo":{"pbo":0.12,"method":"cscv_rank_logit","go_live_verdict":"PASS","oos_mean_return":0.02},'
+                    '"deflated_sharpe":{"decision":"PASS","adjusted_sharpe":0.80,"probability":0.91},'
+                    '"monte_carlo":{"decision":"PASS","mdd_95th":0.12,"simulation_method":"regime_block_bootstrap"},'
+                    '"data_snooping":{"go_live_verdict":"PASS","method":"hansen_spa","p_value":0.04}}}'
+                ),
+                "live_gate_status": "rolling_ic_passed",
+                "live_evidence_json": (
+                    '{"decision":{"metrics":{"shadow_samples":193,"production_samples":193,"min_samples":50}}}'
+                ),
+                "promotion_decision": "needs_multi_evidence_gate",
+                "approval_state": "not_required",
+            }]
+        return []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_model_artifact_validation_chain(limit=10)
+
+    assert result["updated"] == 1
+    assert result["ready"] == 1
+    assert result["blocked"] == 0
+    params = executed[0]["params"]
+    packet = registry._json_loads(params[0])["validation_packet"]
+    assert packet["candidate_gate"]["status"] == "PASS"
+    assert packet["release_gate"]["shared_across_models"] is True
+    assert params[1] == "multi_evidence_passed"
+    assert params[2] == "live_gate_passed"
+    assert params[3] == "pending_promotion_controller"
 
 
 def test_candidate_selection_keeps_weekly_out_unless_strong_pass():

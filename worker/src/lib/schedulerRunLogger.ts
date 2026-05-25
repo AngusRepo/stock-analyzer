@@ -14,6 +14,7 @@ export interface SchedulerRunLogEntry {
   run_id?: string
   run_date?: string
   error?: string
+  metadata?: Record<string, unknown>
 }
 
 type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
@@ -35,6 +36,7 @@ const TASK_NAMES: Record<string, string> = {
   'meta-learning-shadow': 'Meta Learning Shadow',
   'strategy-learning': 'Strategy Learning',
   pipeline: 'Pipeline',
+  'backtest-replay': 'Backtest Replay',
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',
   screener: 'Screener',
@@ -64,6 +66,7 @@ const TASK_NAMES: Record<string, string> = {
   'monthly-optuna': 'Monthly Optuna',
   'optuna-queue': 'Optuna Queue Processor',
   'parameter-candidate-validation': 'Parameter Candidate Validation',
+  'finlab-v4-backfill': 'FinLab V4 Backfill',
   'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
 }
@@ -139,6 +142,7 @@ export async function logSchedulerRunResult(
     run_id: result.run_id,
     run_date: today,
     error: result.error,
+    metadata: result.metadata,
     timestamp: new Date().toISOString(),
   }
 

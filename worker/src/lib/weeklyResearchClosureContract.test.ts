@@ -15,6 +15,7 @@ const dailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'u
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
 const dashboardReadRoutes = fs.readFileSync('src/routes/dashboardReadRoutes.ts', 'utf8')
+const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 
 assert(
   workflows.includes("'ga_optimizer'"),
@@ -142,6 +143,44 @@ assert(
   !adminGcp.includes("deps.runWeeklyMonteCarlo().catch") &&
     !adminGcp.includes("deps.runWeeklyPBO().catch"),
   'manual weekly-backtest trigger must not swallow MC/PBO failures into a successful scheduler run',
+)
+
+assert(
+  workflows.includes('runWeeklyModelArtifactValidation') &&
+    workflows.includes("'/model_pool/artifact_registry/validation_chain'") &&
+    workflows.includes('runWeeklyValidationChain') &&
+    workflows.includes('runWeeklyModelArtifactValidation(env)') &&
+    adminControlRoutes.includes('runWeeklyModelArtifactValidation') &&
+    adminControlRoutes.includes("String(body.task) === 'weekly-backtest'") &&
+    adminControlRoutes.includes("String(callbackMetadata?.source ?? '') === 'backtest_research_bundle'"),
+  'weekly-backtest must close ModelPool candidate-specific validation after global backtest/MC/PBO or after the Modal bundle callback instead of leaving artifact evidence manual',
+)
+
+assert(
+  workflows.includes('weeklyBacktestResearchBundleEnabled') &&
+    workflows.includes("'/backtest/research-bundle/run'") &&
+    workflows.includes('monte_carlo_n: 1000') &&
+    workflows.includes('pbo_partitions: 10') &&
+    workflows.includes("callback_task: 'weekly-backtest'") &&
+    workflows.includes("trigger_source: 'worker_weekly_backtest'") &&
+    gcpCron.includes('runWeeklyValidationChain(env)') &&
+    adminGcp.includes('runWeeklyValidationChain(c.env, requestedRunDate())'),
+  'weekly-backtest must support an optional Modal research bundle trigger while preserving full MC/PBO settings and callback ownership',
+)
+
+assert(
+  workflows.includes('if (weeklyBacktestResearchBundleEnabled(env))') &&
+    workflows.includes('const bt = await runWeeklyBacktest(env)') &&
+    workflows.includes('const mc = await runWeeklyMonteCarlo(env)') &&
+    workflows.includes('const pbo = await runWeeklyPBO(env)') &&
+    workflows.includes('const artifactValidation = await runWeeklyModelArtifactValidation(env)'),
+  'weekly-backtest Modal bundle must be feature-flagged; the default legacy chain must remain available until production is explicitly flipped',
+)
+
+assert(
+  adminControlRoutes.includes("'weekly-backtest'") &&
+    adminControlRoutes.includes('REPORT_ARTIFACT_TASKS'),
+  'weekly-backtest callbacks must persist scheduler report artifacts for readback after async bundle completion',
 )
 
 assert(

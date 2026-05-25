@@ -39,7 +39,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import polars as pl  # noqa: E402
 
-from services.backtest_engine import ScreenerParams, score_multi_factor  # noqa: E402
+from services.backtest_engine import (  # noqa: E402
+    ScreenerParams,
+    _build_partial_screener_score_v2,
+    score_multi_factor,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -376,7 +380,13 @@ def run_local(sc: ScreenerParams) -> tuple[int, int, list[str]]:
             assert 0 <= chip <= 40, f"chip {chip} out of bounds"
             assert 0 <= tech <= 30, f"tech {tech} out of bounds"
             assert 0 <= mom <= 20, f"mom {mom} out of bounds"
-            assert abs(base - (chip + tech + mom)) < 1e-6, f"base {base} != sum"
+            score_v2 = _build_partial_screener_score_v2(
+                chip_score=chip,
+                tech_score=tech,
+                momentum_score=mom,
+                reasons=reasons,
+            )
+            assert abs(base - score_v2["finalScore"]) < 1e-6, f"base {base} != score_v2"
             passed += 1
         except Exception as e:
             failed += 1

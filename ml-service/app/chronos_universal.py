@@ -51,11 +51,28 @@ def _get_pipeline(model_id: str = _DEFAULT_MODEL_ID):
     from chronos import Chronos2Pipeline
 
     logger.info("[ChronosUniversal] Loading Chronos-2 pipeline: %s", model_id)
-    pipeline = Chronos2Pipeline.from_pretrained(
-        model_id,
-        device_map="cpu",
-        dtype=torch.float32,
-    )
+    try:
+        pipeline = Chronos2Pipeline.from_pretrained(
+            model_id,
+            device_map="cpu",
+            dtype=torch.float32,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument 'dtype'" not in str(exc):
+            raise
+        try:
+            pipeline = Chronos2Pipeline.from_pretrained(
+                model_id,
+                device_map="cpu",
+                torch_dtype=torch.float32,
+            )
+        except TypeError as fallback_exc:
+            if "unexpected keyword argument 'torch_dtype'" not in str(fallback_exc):
+                raise
+            pipeline = Chronos2Pipeline.from_pretrained(
+                model_id,
+                device_map="cpu",
+            )
     logger.info("[ChronosUniversal] Pipeline ready: %s", model_id)
     return pipeline
 

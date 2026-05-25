@@ -34,6 +34,7 @@ def _screener_rec(symbol: str) -> dict:
         "eligible_for_pending_buy": 1,
         "chip_score": 18.0,
         "tech_score": 12.0,
+        "score_components": _screener_score_components(18.0, 12.0),
     }
 
 
@@ -44,6 +45,54 @@ def _payload(symbol: str) -> dict:
         "indicators": [{"date": "2026-04-21", "rsi14": 58.0, "macdHist": 0.4, "ma20": 96.0}],
         "chips": [{"date": "2026-04-21", "foreign_net": 1200, "trust_net": 300}],
         "market_env": {},
+    }
+
+
+def _score_seed_inputs(
+    chip: float,
+    tech: float,
+    momentum: float = 0.0,
+    ml: float = 0.0,
+    persona: float = 0.0,
+) -> dict:
+    return {
+        "chipFlowSeed40": chip,
+        "technicalSeed30": tech,
+        "screenerMomentumSeed20": momentum,
+        "mlEdgeSeed30": ml,
+        "personaAlphaSeed": persona,
+    }
+
+
+def _screener_score_components(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    chip_flow = round((chip / 40.0) * 25.0, 1)
+    technical = round(((tech + momentum) / 50.0) * 25.0, 1)
+    total = round(chip_flow + technical, 1)
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 0,
+            "chipFlow": chip_flow,
+            "technicalStructure": technical,
+            "fundamentalQuality": 0,
+            "newsTheme": 0,
+        },
+        "total": total,
+        "finalScore": total,
+        "alphaAdjustment": 0,
+        "technicalBreakdown": {
+            "volumeConfirmation": round((momentum / 20.0) * 6.0, 1),
+        },
+        "riskFlags": [],
+        "reasons": ["screener_base"],
+        "seedComponents": _score_seed_inputs(chip, tech, momentum),
     }
 
 
@@ -68,6 +117,31 @@ def _prediction_with_ensemble_v2() -> dict:
     }
 
 
+def _score_v2_payload(final_score: float = 50.0) -> dict:
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 10,
+            "chipFlow": 12,
+            "technicalStructure": 18,
+            "fundamentalQuality": 8,
+            "newsTheme": 2,
+        },
+        "total": 50,
+        "finalScore": final_score,
+        "alphaAdjustment": final_score - 50,
+        "riskFlags": [],
+        "reasons": [],
+    }
+
+
 def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
@@ -88,6 +162,72 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
     assert row["has_buy_signal"] == 1
     assert row["ml_score"] == 0
     assert row["stock_id"] == 1
+
+
+def test_filter_and_score_requires_canonical_screener_score_components(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    rec = _screener_rec("2330")
+    rec.pop("score_components", None)
+
+    with pytest.raises(ValueError, match="score_components required"):
+        filter_and_score_recommendations(
+            [rec],
+            {"2330": _prediction_with_ensemble_v2()},
+            [_payload("2330")],
+        )
+
+
+def test_filter_and_score_preserves_canonical_screener_base_without_legacy_scalars(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    screener_base = {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 0,
+            "chipFlow": 12.5,
+            "technicalStructure": 15.0,
+            "fundamentalQuality": 0,
+            "newsTheme": 0,
+        },
+        "total": 27.5,
+        "technicalBreakdown": {"volumeConfirmation": 3.0},
+        "riskFlags": [],
+        "reasons": ["screener_base"],
+    }
+    rec = {
+        key: value
+        for key, value in _screener_rec("2603").items()
+        if key not in {"chip_score", "tech_score", "momentum_score"}
+    }
+    rec["score_components"] = screener_base
+
+    final, sell_count = filter_and_score_recommendations(
+        [rec],
+        {"2603": {
+            **_prediction_with_ensemble_v2(),
+            "ensemble_v2": {
+                **_prediction_with_ensemble_v2()["ensemble_v2"],
+                "signal_source": "ensemble_v2",
+                "weight_total": 1.0,
+                "contributing_models": ["Chronos"],
+            },
+        }},
+        [_payload("2603")],
+    )
+
+    assert sell_count == 0
+    row = final[0]
+    assert row["score_components"]["components"]["chipFlow"] == pytest.approx(12.5)
+    assert row["score_components"]["components"]["technicalStructure"] == pytest.approx(15.0)
+    assert row["score_components"]["components"]["mlEdge"] > 0
+    assert row["score_components"]["seedComponents"]["chipFlowSeed40"] == pytest.approx(20.0)
+    assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
 
 
 def test_filter_and_score_derives_technical_snapshot_when_indicator_rows_missing(monkeypatch):
@@ -222,6 +362,7 @@ def test_ensemble_v2_zero_forecast_does_not_fall_back_to_legacy_negative(monkeyp
 
 def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
     reason = build_reason({
+        "score_components": _score_v2_payload(),
         "foreign_net_5d": 6.0,
         "trust_net_5d": 0,
         "rsi14": 63,
@@ -234,6 +375,23 @@ def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
     assert "600000000" not in reason
     assert "6.0" in reason
     assert "億" in reason
+
+
+def test_build_reason_does_not_synthesize_score_v2_from_legacy_scalars():
+    reason = build_reason({
+        "score": 99,
+        "chip_score": 40,
+        "tech_score": 30,
+        "momentum_score": 20,
+        "ml_score": 30,
+    })
+
+    assert reason == "Score V2 missing: canonical score_components unavailable"
+
+
+def test_score_v2_rounding_matches_worker_math_round_semantics():
+    assert recommendation_service._round1(1.25) == pytest.approx(1.3)
+    assert recommendation_service._round1(2.35) == pytest.approx(2.4)
 
 
 def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
@@ -268,6 +426,7 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
             "recommendation_lane": "emerging_watchlist",
             "eligible_for_pending_buy": 0,
             "chip_score": 16.0,
+            "score_components": _screener_score_components(16.0, 12.0),
         }],
         {"7737": _prediction_with_ensemble_v2()},
         [payload],
@@ -282,7 +441,8 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
     assert row["score_components"]["weights"]["mlEdge"] == 25
     assert row["score_components"]["components"]["chipFlow"] == pytest.approx(10.0)
     assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
-    assert row["score_components"]["legacyComponents"]["chip"] == pytest.approx(16.0)
+    assert "legacyComponents" not in row["score_components"]
+    assert row["score_components"]["seedComponents"]["chipFlowSeed40"] == pytest.approx(16.0)
     assert row["score_components"]["chipEvidence"]["source"] == "finlab.rotc_broker_transactions"
     assert row["score_components"]["chipEvidence"]["broker_net_amount_5d_billion"] == pytest.approx(0.013395)
 
@@ -319,6 +479,7 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         "tech_score": 20.0,
         "ml_score": 25.0,
         "score": 57.0,
+        "score_seed_inputs": _score_seed_inputs(12.0, 20.0, ml=25.0),
         "signal": "BUY",
         "confidence": 0.78,
         "has_buy_signal": 1,
@@ -369,6 +530,7 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
             "tech_score": 20.0,
             "ml_score": 25.0,
             "score": 57.0,
+            "score_seed_inputs": _score_seed_inputs(12.0, 20.0, ml=25.0),
             "signal": "BUY",
             "confidence": 0.78,
             "has_buy_signal": 1,
@@ -422,6 +584,8 @@ def test_hybrid_ranking_promotion_marks_signal_source():
         "symbol": "2330",
         "chip_score": 20.0,
         "tech_score": 15.0,
+        "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
+        "score_components": _screener_score_components(20.0, 15.0),
         "confidence": 0.38,
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
@@ -445,6 +609,8 @@ def test_hybrid_ranking_promotion_blocks_negative_forecast():
         "symbol": "5292",
         "chip_score": 36.0,
         "tech_score": 30.0,
+        "score_seed_inputs": _score_seed_inputs(36.0, 30.0),
+        "score_components": _screener_score_components(36.0, 30.0),
         "confidence": 0.5,
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
@@ -468,6 +634,8 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "symbol": "2330",
         "chip_score": 20.0,
         "tech_score": 15.0,
+        "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
+        "score_components": _screener_score_components(20.0, 15.0),
         "confidence": 0.72,
         "signal": "BUY",
         "signal_source": "ensemble_v2_topk_policy",
@@ -477,6 +645,8 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "symbol": "2317",
         "chip_score": 19.0,
         "tech_score": 14.0,
+        "score_seed_inputs": _score_seed_inputs(19.0, 14.0),
+        "score_components": _screener_score_components(19.0, 14.0),
         "confidence": 0.41,
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
@@ -500,6 +670,8 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "symbol": "2330",
             "chip_score": 20.0,
             "tech_score": 15.0,
+            "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
+            "score_components": _screener_score_components(20.0, 15.0),
             "confidence": 0.76,
             "signal": "BUY",
             "has_buy_signal": 1,
@@ -510,6 +682,8 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "symbol": "2317",
             "chip_score": 19.0,
             "tech_score": 14.0,
+            "score_seed_inputs": _score_seed_inputs(19.0, 14.0),
+            "score_components": _screener_score_components(19.0, 14.0),
             "confidence": 0.72,
             "signal": "BUY",
             "has_buy_signal": 1,
@@ -520,6 +694,8 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "symbol": "2454",
             "chip_score": 18.0,
             "tech_score": 13.0,
+            "score_seed_inputs": _score_seed_inputs(18.0, 13.0),
+            "score_components": _screener_score_components(18.0, 13.0),
             "confidence": 0.70,
             "signal": "BUY",
             "has_buy_signal": 1,
@@ -537,6 +713,25 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
 
     selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
     assert len(selected) == 2
+
+
+def test_hybrid_ranking_promotion_requires_canonical_score_v2_components():
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 40.0,
+        "tech_score": 30.0,
+        "score_seed_inputs": _score_seed_inputs(40.0, 30.0, ml=30.0),
+        "confidence": 0.9,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+    }]
+
+    with pytest.raises(ValueError, match="score_components required"):
+        hybrid_ranking_promotion(
+            rows,
+            ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        )
 
 
 @pytest.mark.asyncio

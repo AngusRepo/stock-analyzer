@@ -3,6 +3,7 @@ import {
   recordPendingBuyPaperAttribution,
 } from './paperActiveAttributionWiring'
 import type { PendingBuy } from './pendingBuyStore'
+import { SCORE_V2_VERSION, SCORE_V2_WEIGHTS } from './scoreV2Taxonomy'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -55,7 +56,24 @@ const pendingBuy: PendingBuy = {
   chip_score: 0.68,
   tech_score: 0.64,
   ml_score: 0.71,
-  score: 0.76,
+  score: 0.12,
+  score_v2: {
+    version: SCORE_V2_VERSION,
+    source: 'score_v2',
+    weights: SCORE_V2_WEIGHTS,
+    components: {
+      mlEdge: 20,
+      chipFlow: 19,
+      technicalStructure: 21,
+      fundamentalQuality: 13,
+      newsTheme: 3,
+    },
+    total: 73,
+    finalScore: 76,
+    alphaAdjustment: 3,
+    riskFlags: [],
+    reasons: ['canonical_score_v2'],
+  },
   source: 'morning_setup',
   original_entry: 940,
 }
@@ -74,7 +92,7 @@ const pendingBuy: PendingBuy = {
   assert(events[0].decision === 'pending_buy:APPROVE', 'decision should preserve debate verdict')
   assert(events[0].paperLane === 'paper_active_baseline', 'baseline pending buys should not masquerade as challenger')
   assert(events[0].candidateSource === 'morning_setup_pending_buy', 'candidate source should be explicit')
-  assert(events[0].baselineScore === 0.76, 'baseline score should use composite score first')
+  assert(events[0].baselineScore === 76, 'baseline score should use canonical Score V2 finalScore first')
   assert(events[0].challengerScore === null, 'baseline attribution must not fabricate challenger score')
   assertDeepEqual(events[0].evidenceSources, [
     'daily_recommendations',
@@ -83,6 +101,15 @@ const pendingBuy: PendingBuy = {
     'source_reco_date:2026-05-16',
     'pending_source:morning_setup',
   ], 'evidence sources should explain lineage')
+}
+
+{
+  const events = buildPendingBuyPaperAttributionEvents([{ ...pendingBuy, score_v2: null, score: 99 }], {
+    tradeDate: '2026-05-17',
+    sourceRecoDate: '2026-05-16',
+  })
+
+  assert(events[0].baselineScore === 0.73, 'missing Score V2 should fall back to confidence, not stale legacy score')
 }
 
 async function runPersistenceCheck() {

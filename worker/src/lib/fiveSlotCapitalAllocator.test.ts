@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import {
+  buildFiveSlotExecutionDecision,
   buildFiveSlotCapitalPlan,
   fiveSlotHoldingWeaknessScore,
   formatFiveSlotDecisionWatchPoint,
@@ -26,6 +27,10 @@ assert(
   'paper entry capital allocator call sites should pass canonical pending score_v2',
 )
 assert(
+  paperEntryTasksSource.includes('buildFiveSlotExecutionDecision'),
+  'paper entry execution must re-evaluate allocator per candidate so unfilled earlier candidates do not reserve a slot',
+)
+assert(
   !paperEntryTasksSource.includes('score: pending.score'),
   'paper entry capital allocator call sites must not pass scalar pending score',
 )
@@ -41,6 +46,40 @@ const baseConfig = {
   dailyBuyLimit: 500_000,
   minPositionValue: 30_000,
   swapThreshold: 1.15,
+}
+
+{
+  const holdings = [
+    { symbol: '1609', shares: 1600, avgCost: 35, lastPrice: 35 },
+    { symbol: '6215', shares: 265, avgCost: 130, lastPrice: 130 },
+    { symbol: '8069', shares: 353, avgCost: 218, lastPrice: 218 },
+    { symbol: '9914', shares: 772, avgCost: 70, lastPrice: 70, daysHeld: 7, tp1Hit: false },
+  ]
+  const firstCandidate = { symbol: '6126', confidence: 0.72, score_v2: scoreV2(60), riskPct: 0.010 }
+  const secondCandidate = { symbol: '6271', confidence: 0.72, score_v2: scoreV2(59), riskPct: 0.010 }
+  const batchPlan = buildFiveSlotCapitalPlan({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings,
+    candidates: [firstCandidate, secondCandidate],
+  })
+  assert(batchPlan.decisions.get('6126')?.action === 'buy', 'first candidate can consume the open slot in a batch plan')
+  assert(
+    batchPlan.decisions.get('6271')?.action !== 'buy',
+    'batch planner documents the reservation behavior that execution must not use for unfilled candidates',
+  )
+  const justInTimeDecision = buildFiveSlotExecutionDecision({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings,
+    candidate: secondCandidate,
+  })
+  assert(
+    justInTimeDecision?.action === 'buy',
+    'single-candidate execution decision should see the actual open slot when earlier candidates have not filled',
+  )
 }
 
 {

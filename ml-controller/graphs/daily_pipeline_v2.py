@@ -41,6 +41,7 @@ from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
+    load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
@@ -100,6 +101,10 @@ async def _load_market_env_with_backoff(run_date: str):
             await asyncio.sleep(delay)
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
 def _state_space_overlay_mode() -> str:
     raw = (
         os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_MODE")
@@ -107,7 +112,16 @@ def _state_space_overlay_mode() -> str:
         or "blocking"
     )
     mode = str(raw).strip().lower()
-    return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
+    if mode not in {"blocking", "shadow", "disabled"}:
+        return "blocking"
+    if mode in {"shadow", "disabled"} and not _truthy_env("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE"):
+        logger.warning(
+            "[Pipeline V2] Refusing state-space overlay mode=%s without "
+            "PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE=1; using blocking mode",
+            mode,
+        )
+        return "blocking"
+    return mode
 
 
 def _breeze2_reason_shadow_enabled() -> bool:
@@ -1471,6 +1485,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             "seeds before ML/recommendation; refusing watchlist fallback"
         )
 
+    fundamental_quality_by_symbol = load_fundamental_quality_by_symbol(screener_recs, state["run_date"])
+
     final, sell_count = filter_and_score_recommendations(
         screener_recs,
         state["predictions"],
@@ -1480,6 +1496,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_label=regime_label,
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
+        fundamental_quality_by_symbol=fundamental_quality_by_symbol,
     )
 
     # Hybrid ranking from KV trading:config.ranking

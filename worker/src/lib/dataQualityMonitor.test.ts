@@ -180,8 +180,10 @@ void (async () => {
     rowsOnLatest: 5100,
     warnLagDays: 0,
     failLagDays: 0,
+    source: 'canonical_chip_daily',
   })
   assert(check.status === 'fail', 'EOD chip data must match the target date')
+  assert(check.metrics?.source === 'canonical_chip_daily', 'chip freshness should expose the active source table')
 }
 
 {

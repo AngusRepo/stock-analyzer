@@ -17,6 +17,10 @@ from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
 _LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
+_LOCAL_CONTROLLER_OPTUNA_DIR = Path(__file__).parent.parent / "ml-controller" / "optuna_scripts"
+_LOCAL_CONTROLLER_ROUTERS_DIR = Path(__file__).parent.parent / "ml-controller" / "routers"
+_LOCAL_CONTROLLER_SERVICES_DIR = Path(__file__).parent.parent / "ml-controller" / "services"
+_LOCAL_TOOLS_DIR = Path(__file__).parent.parent / "tools"
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 
 
@@ -41,7 +45,22 @@ image = (
         "\" || echo 'Chronos pre-download skipped (not installed)'",
     )
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
+    .add_local_dir(str(_LOCAL_CONTROLLER_OPTUNA_DIR), remote_path="/root/optuna_scripts")
+    .add_local_dir(str(_LOCAL_CONTROLLER_ROUTERS_DIR), remote_path="/root/routers")
+    .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
+)
+
+finlab_image = (
+    image
+    .pip_install("finlab==2.0.7")
+    .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
+)
+
+optuna_controller_image = (
+    image
+    .pip_install("google-cloud-run>=0.10.0")
+    .add_local_dir(str(_LOCAL_CONTROLLER_ROUTERS_DIR), remote_path="/root/routers")
 )
 
 # Chronos baseline note:
@@ -64,6 +83,12 @@ try:
 except Exception:
     print("[modal_app] stockvision-cf secret not found, Optuna routes will fail")
     cf_secret = modal.Secret.from_dict({})
+
+try:
+    finlab_secret = modal.Secret.from_name("stockvision-finlab")
+except Exception:
+    print("[modal_app] stockvision-finlab secret not found, FinLab backfill will fail until FINLAB_API_KEY is configured")
+    finlab_secret = modal.Secret.from_dict({})
 
 runtime_env_secret = modal.Secret.from_dict({
     key: value
@@ -175,6 +200,31 @@ def _truthy(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _post_worker_scheduler_callback(payload: dict) -> dict:
+    """Best-effort Worker scheduler callback for detached Modal jobs."""
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+    if not worker_url:
+        return {"posted": False, "reason": "missing_STOCKVISION_WORKER_URL"}
+
+    import httpx
+
+    headers = {"Content-Type": "application/json"}
+    token = _controller_callback_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{worker_url.rstrip('/')}/api/admin/scheduler-callback"
+    try:
+        resp = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+        return {
+            "posted": resp.status_code == 200,
+            "status_code": resp.status_code,
+            "body": resp.text[:300],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"posted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 def _tree_model_split_enabled(payload: dict) -> bool:
@@ -756,6 +806,415 @@ def retrain_orchestrator(payload: dict) -> dict:
 
 
 @app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=16384,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def universal_retrain_pipeline(payload: dict) -> dict:
+    """Run universal retrain prep on Modal, then spawn retrain_orchestrator.
+
+    This mirrors the controller /retrain/universal prep owner without changing
+    model scope. The controller acquires the lock and only spawns this function.
+    """
+    _setup_env()
+    import sys
+    import time
+    import traceback
+    from dataclasses import asdict
+    from datetime import timedelta
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services import d1_client, retrain_lock  # type: ignore
+    from services.payload_builder import (  # type: ignore
+        _bulk_load_chips,
+        _bulk_load_indicators,
+        _bulk_load_prices,
+        _bulk_load_sentiment,
+        load_market_env,
+    )
+    from services.training_calendar import monthly_revenue_available_date  # type: ignore
+    from services.training_policy import TrainingPolicy  # type: ignore
+    from routers.retrain_trigger import (  # type: ignore
+        UniversalRetrainTriggerRequest,
+        _build_sector_encoding,
+        _estimate_cap_bucket,
+        _load_training_maps_from_snapshot,
+        _universal_prep_concurrency,
+        _upsert_retrain_status,
+        _volume_bucket,
+    )
+
+    def _call_id(call) -> str | None:
+        return (
+            getattr(call, "object_id", None)
+            or getattr(call, "function_call_id", None)
+            or getattr(call, "call_id", None)
+        )
+
+    def _callback_failure(*, task: str, run_id: str, run_date: str, summary: str, duration_ms: int, error: str) -> dict:
+        return _post_worker_scheduler_callback({
+            "task": task,
+            "status": "error",
+            "summary": summary[:1200],
+            "duration_ms": duration_ms,
+            "run_id": run_id,
+            "run_date": run_date,
+            "error": error[:1200],
+            "metadata": {
+                "source": "universal_retrain_pipeline",
+                "executor": "modal",
+                "trigger_source": payload.get("trigger_source"),
+                "trigger_id": payload.get("trigger_id"),
+                "quality_contract": payload.get("quality_contract"),
+            },
+        })
+
+    t0 = time.time()
+    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    request_payload = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    req = UniversalRetrainTriggerRequest(**request_payload)
+    run_date = str(payload.get("run_date") or req.run_date or tw_now.date().isoformat())
+    run_id = str(payload.get("run_id") or f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}")
+    lock_key = str(payload.get("lock_key") or f"retrain:{run_date}")
+    followup_webhook_url = str(payload.get("followup_webhook_url") or "")
+    dataset_snapshot_info: dict | None = None
+    is_monthly = False
+    scheduler_task = "retrain"
+
+    try:
+        stock_rows = d1_client.query(
+            "SELECT id, symbol, market FROM stocks "
+            "WHERE market IN ('TW','TWO','TWSE','OTC') "
+            "ORDER BY id LIMIT ?",
+            [req.limit],
+        )
+        if not stock_rows:
+            raise ValueError("No stocks found")
+
+        stock_ids = [r["id"] for r in stock_rows]
+        symbols = [r["symbol"] for r in stock_rows]
+        id_to_sym = {r["id"]: r["symbol"] for r in stock_rows}
+
+        market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
+        training_policy = TrainingPolicy.from_env()
+        vix = getattr(market_env, "us_vix", 18) or 18
+        twii_bias = getattr(market_env, "twii_bias", 0) or 0
+        _regime, prices_lookback = training_policy.resolve_regime(vix=float(vix), twii_bias=float(twii_bias))
+        is_monthly = training_policy.is_monthly(force_monthly=req.force_monthly, tw_day=tw_now.day)
+        scheduler_task = "monthly-retrain" if is_monthly else "retrain"
+
+        d1_chunk = 80
+        prices_map: dict = {}
+        indicators_map: dict = {}
+        chips_map: dict = {}
+        sentiment_map: dict = {}
+        per_stock_ts_map: dict[int, dict[str, dict]] = {}
+        try:
+            snapshot_maps = _load_training_maps_from_snapshot(
+                stock_ids=stock_ids,
+                symbols=symbols,
+                prices_lookback=prices_lookback,
+                as_of_business_date=run_date,
+            )
+        except Exception as snapshot_err:  # noqa: BLE001
+            print(f"[UniversalRetrainPipeline] GCS snapshot load failed; falling back to D1: {snapshot_err}")
+            snapshot_maps = None
+
+        if snapshot_maps:
+            prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, dataset_snapshot_info = snapshot_maps
+
+        snapshot_components = set((dataset_snapshot_info or {}).get("components") or [])
+        for ci in range(0, len(stock_ids), d1_chunk):
+            chunk_ids = stock_ids[ci:ci + d1_chunk]
+            chunk_syms = [id_to_sym[sid] for sid in chunk_ids]
+            if not dataset_snapshot_info:
+                prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback))
+                indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback))
+                chips_map.update(_bulk_load_chips(chunk_syms, limit=252))
+            if "sentiment" not in snapshot_components:
+                sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45))
+
+        rev_rows = []
+        if "monthly_revenue" not in snapshot_components:
+            rev_rows = d1_client.query(
+                "SELECT stock_id, date, revenue_yoy FROM monthly_revenue "
+                "WHERE revenue_yoy IS NOT NULL ORDER BY stock_id, date ASC",
+                timeout=120.0,
+            )
+            for row in (rev_rows or []):
+                sid = row["stock_id"]
+                date_key = monthly_revenue_available_date(row["date"])
+                per_stock_ts_map.setdefault(sid, {}).setdefault(date_key, {})["revenue_yoy"] = row.get("revenue_yoy", 0)
+
+        for ci in range(0, len(stock_ids), d1_chunk):
+            chunk_ids = stock_ids[ci:ci + d1_chunk]
+            placeholders = ",".join("?" * len(chunk_ids))
+            if "margin_data" not in snapshot_components:
+                margin_rows = d1_client.query(
+                    f"SELECT stock_id, date, margin_balance, short_ratio "
+                    f"FROM margin_data WHERE stock_id IN ({placeholders}) "
+                    f"ORDER BY stock_id, date ASC",
+                    list(chunk_ids),
+                    timeout=120.0,
+                )
+                for row in (margin_rows or []):
+                    sid = row["stock_id"]
+                    date_key = row["date"]
+                    bucket = per_stock_ts_map.setdefault(sid, {}).setdefault(date_key, {})
+                    if row.get("margin_balance") is not None:
+                        bucket["margin_balance"] = row["margin_balance"]
+                    if row.get("short_ratio") is not None:
+                        bucket["short_ratio"] = row["short_ratio"]
+            if "shareholding" not in snapshot_components:
+                shareholding_rows = d1_client.query(
+                    f"SELECT stock_id, date, retail_pct "
+                    f"FROM shareholding WHERE stock_id IN ({placeholders}) "
+                    f"ORDER BY stock_id, date ASC",
+                    list(chunk_ids),
+                    timeout=120.0,
+                )
+                for row in (shareholding_rows or []):
+                    if row.get("retail_pct") is None:
+                        continue
+                    per_stock_ts_map.setdefault(row["stock_id"], {}).setdefault(row["date"], {})["retail_pct"] = row["retail_pct"]
+
+        sector_enc = _build_sector_encoding()
+        tag_rows = d1_client.query("SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'")
+        sym_to_sector = {row["symbol"]: row["tag"] for row in tag_rows}
+
+        per_stock_payloads = []
+        skipped = []
+        for row in stock_rows:
+            sid, sym = row["id"], row["symbol"]
+            px = prices_map.get(sid, [])
+            if len(px) < 60:
+                skipped.append(f"{sym}(prices={len(px)}<60)")
+                continue
+            sector_tag = sym_to_sector.get(sym, "")
+            per_stock_payloads.append({
+                "stock_id": sid,
+                "symbol": sym,
+                "market": row.get("market", "TW"),
+                "prices": px,
+                "indicators": indicators_map.get(sid, []),
+                "chips": chips_map.get(sym, []),
+                "sentiment_scores": sentiment_map.get(sid, []),
+                "market_env": {
+                    "risk_score": market_env.risk_score,
+                    "risk_level": market_env.risk_level,
+                    "us_sox_return": market_env.us_sox_return,
+                    "us_vix": market_env.us_vix,
+                },
+                "stock_meta": {
+                    "sector_encoded": sector_enc.get(sector_tag, 0),
+                    "market_cap_bucket": _estimate_cap_bucket(px),
+                    "avg_volume_bucket": _volume_bucket(px),
+                },
+            })
+
+        if len(per_stock_payloads) < 10:
+            raise ValueError(f"Usable stocks < 10 ({len(per_stock_payloads)})")
+
+        sector_returns: dict[str, list[tuple[float, float]]] = {}
+        for item in per_stock_payloads:
+            px = item["prices"]
+            if len(px) < 6:
+                continue
+            close_last = float(px[-1].get("close", 0))
+            close_1d = float(px[-2].get("close", 0)) if len(px) >= 2 else close_last
+            close_5d = float(px[-6].get("close", 0)) if len(px) >= 6 else close_last
+            ret_1d = (close_last - close_1d) / close_1d if close_1d > 0 else 0.0
+            ret_5d = (close_last - close_5d) / close_5d if close_5d > 0 else 0.0
+            tag = sym_to_sector.get(item["symbol"], "")
+            if tag:
+                sector_returns.setdefault(tag, []).append((ret_1d, ret_5d))
+            item["_r5d"] = ret_5d
+
+        sector_avg = {
+            tag: (
+                sum(value[0] for value in values) / len(values),
+                sum(value[1] for value in values) / len(values),
+            )
+            for tag, values in sector_returns.items()
+            if values
+        }
+        for item in per_stock_payloads:
+            avg = sector_avg.get(sym_to_sector.get(item["symbol"], ""), (0.0, 0.0))
+            item["stock_meta"]["sector_peer_return_1d"] = round(avg[0], 6)
+            item["stock_meta"]["sector_peer_return_5d"] = round(avg[1], 6)
+            item["stock_meta"]["stock_vs_sector"] = round(item.pop("_r5d", 0) - avg[1], 6)
+
+        batch_size = 500
+        batches = [per_stock_payloads[i:i + batch_size] for i in range(0, len(per_stock_payloads), batch_size)]
+        batch_count = len(batches)
+        shared_history = asdict(market_env).get("history", {})
+        per_stock_ts_str = {str(k): v for k, v in per_stock_ts_map.items()} if per_stock_ts_map else {}
+        prep_concurrency = min(_universal_prep_concurrency(), max(1, batch_count))
+        prep_results: list[dict] = []
+
+        for start in range(0, batch_count, prep_concurrency):
+            handles = []
+            for idx in range(start, min(start + prep_concurrency, batch_count)):
+                batch_payloads = batches[idx]
+                batch_stock_ids = {str(item["stock_id"]) for item in batch_payloads}
+                prep_payload = {
+                    "payloads": batch_payloads,
+                    "barrier_params": barrier_params,
+                    "batch_index": idx,
+                    "shared_market_history": shared_history,
+                    "per_stock_ts_map": {
+                        key: value
+                        for key, value in per_stock_ts_str.items()
+                        if key in batch_stock_ids
+                    },
+                    "gcs_prefix": "universal",
+                }
+                handles.append((idx, prep_universal_batch.spawn(prep_payload)))
+            for idx, call in handles:
+                try:
+                    result = call.get()
+                    if not isinstance(result, dict):
+                        result = {"batch_index": idx, "error": f"invalid prep result type: {type(result).__name__}"}
+                except Exception as exc:  # noqa: BLE001
+                    result = {"batch_index": idx, "error": str(exc)}
+                result.setdefault("batch_index", idx)
+                prep_results.append(result)
+
+        total_rows = sum(int(row.get("rows", 0) or 0) for row in prep_results)
+        _upsert_retrain_status(
+            run_id,
+            status="prep_complete",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "is_monthly": is_monthly,
+                "batch_count": batch_count,
+                "prep_concurrency": prep_concurrency,
+                "dataset_snapshot": dataset_snapshot_info,
+                "total_prep_rows": total_rows,
+                "stocks_sent": len(per_stock_payloads),
+                "stocks_skipped": len(skipped),
+                "executor": "modal",
+            },
+            downstream_notes="await_orchestrator_dispatch",
+        )
+        if total_rows < 10000:
+            raise ValueError(f"Total prep rows {total_rows} < 10000, aborting train")
+
+        orchestrator_payload = {
+            "batch_count": batch_count,
+            "is_monthly": is_monthly,
+            "candidate_type": req.candidate_type,
+            "drift_target_models": req.drift_target_models,
+            "drift_target_families": req.drift_target_families,
+            "train_model_groups": req.train_model_groups,
+            "selection_params": training_policy.feature_selection_params(),
+            "training_policy": training_policy.to_dict(),
+            "dataset_snapshot": dataset_snapshot_info,
+            "ftt_d_model": req.ftt_d_model,
+            "ftt_n_heads": req.ftt_n_heads,
+            "ftt_n_layers": req.ftt_n_layers,
+            "ftt_dropout": req.ftt_dropout,
+            "ftt_max_epochs": req.ftt_max_epochs,
+            "ftt_lr": req.ftt_lr,
+            "ftt_patience": req.ftt_patience,
+            "ftt_batch_size": req.ftt_batch_size,
+            "ftt_margin": req.ftt_margin,
+            "followup_webhook_url": followup_webhook_url,
+            "gcs_prefix": "universal",
+            "run_id": run_id,
+            "lock_key": lock_key,
+            "run_date": run_date,
+        }
+        orchestrator_call = retrain_orchestrator.spawn(orchestrator_payload)
+        orchestrator_call_id = _call_id(orchestrator_call)
+        _upsert_retrain_status(
+            run_id,
+            status="orchestrator_dispatched",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "is_monthly": is_monthly,
+                "batch_count": batch_count,
+                "prep_concurrency": prep_concurrency,
+                "dataset_snapshot": dataset_snapshot_info,
+                "total_prep_rows": total_rows,
+                "stocks_sent": len(per_stock_payloads),
+                "stocks_skipped": len(skipped),
+                "orchestrator_function_call_id": orchestrator_call_id,
+                "executor": "modal",
+            },
+            downstream_notes="await_modal_followup",
+        )
+        return {
+            "status": "orchestrator_dispatched",
+            "source": "universal_retrain_pipeline",
+            "executor": "modal",
+            "run_id": run_id,
+            "run_date": run_date,
+            "lock_key": lock_key,
+            "is_monthly": is_monthly,
+            "batch_count": batch_count,
+            "prep_concurrency": prep_concurrency,
+            "total_prep_rows": total_rows,
+            "stocks_sent": len(per_stock_payloads),
+            "stocks_skipped": len(skipped),
+            "orchestrator_function_call_id": orchestrator_call_id,
+            "duration_ms": int((time.time() - t0) * 1000),
+        }
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        duration_ms = int((time.time() - t0) * 1000)
+        try:
+            retrain_lock.release(lock_key)
+        except Exception as release_exc:  # noqa: BLE001
+            print(f"[UniversalRetrainPipeline] lock release failed: {release_exc}")
+        try:
+            _upsert_retrain_status(
+                run_id,
+                status="prep_failed",
+                summary={
+                    "lock_key": lock_key,
+                    "run_date": run_date,
+                    "is_monthly": is_monthly,
+                    "dataset_snapshot": dataset_snapshot_info,
+                    "error": error,
+                    "trace": traceback.format_exc()[:2000],
+                    "executor": "modal",
+                },
+                downstream_notes="modal_retrain_pipeline_failed",
+            )
+        except Exception as status_exc:  # noqa: BLE001
+            print(f"[UniversalRetrainPipeline] status upsert failed: {status_exc}")
+        callback = _callback_failure(
+            task=scheduler_task,
+            run_id=run_id,
+            run_date=run_date,
+            summary=f"universal retrain prep failed run_id={run_id} error={error}",
+            duration_ms=duration_ms,
+            error=error,
+        )
+        return {
+            "status": "error",
+            "source": "universal_retrain_pipeline",
+            "executor": "modal",
+            "run_id": run_id,
+            "run_date": run_date,
+            "lock_key": lock_key,
+            "duration_ms": duration_ms,
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+            "callback": callback,
+        }
+
+
+@app.function(
     cpu=2,
     memory=8192,
     gpu="L4",
@@ -1096,6 +1555,1242 @@ def ft_transformer_arch_search(payload: dict) -> dict:
         return result
     except Exception as e:
         return {"error": str(e), "type": "ft_arch_search"}
+
+
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=21600,
+    scaledown_window=60,
+    max_containers=1,
+)
+def optuna_per_regime_robust(payload: dict) -> dict:
+    """Run per-regime robust Optuna on Modal and callback Worker when done.
+
+    Result push remains sandbox/challenger only; production config promotion is
+    still handled by the existing Worker promotion gates.
+    """
+    _setup_env()
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+    if "/root/optuna_scripts" not in sys.path:
+        sys.path.insert(0, "/root/optuna_scripts")
+
+    from optuna_per_regime_robust import run_search  # type: ignore
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"modal-per-regime-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "optuna-queue")
+    run_date = payload.get("run_date")
+    trigger_source = payload.get("trigger_source") or "queue"
+    trigger_id = payload.get("trigger_id")
+
+    result: dict
+    status = "error"
+    error = None
+    summary = ""
+
+    try:
+        result = run_search(
+            target=str(payload.get("target") or "sltp"),
+            n_trials=int(payload.get("n_trials") or 50),
+            subset_size=int(payload.get("subset_size") or 400),
+            window_days=int(payload.get("window_days") or 365),
+            data_mode=payload.get("research_data_source") or "snapshot",
+            push_kv=_truthy(payload.get("push_kv")) and not _truthy(payload.get("dry_run")),
+        )
+        status = "success"
+        summary = (
+            f"per_regime modal completed robust_sharpe={result.get('robust_sharpe', 'n/a')} "
+            f"trigger_source={trigger_source} trigger_id={trigger_id or '-'}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+            "type": "optuna_per_regime_robust",
+        }
+        summary = error[:1200]
+
+    duration_ms = int((time.time() - t0) * 1000)
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "per_regime_robust",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "robust_sharpe": result.get("robust_sharpe"),
+            "weighted_sharpe": result.get("weighted_sharpe"),
+            "weighted_max_dd": result.get("weighted_max_dd"),
+            "best_trial": result.get("best_trial"),
+            "kv_push_ok": result.get("kv_push_ok"),
+            "n_trials_completed": result.get("n_trials_completed"),
+            "n_pareto": result.get("n_pareto"),
+            "regimes_with_data": result.get("regimes_with_data"),
+            "warnings": result.get("warnings"),
+            "window": result.get("window"),
+        },
+    }
+    if run_date:
+        callback_payload["run_date"] = run_date
+    if error:
+        callback_payload["error"] = error[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "per_regime_robust",
+        "executor": "modal",
+        "run_id": run_id,
+        "trigger_source": trigger_source,
+        "trigger_id": trigger_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **result,
+    }
+
+
+@app.function(
+    image=optuna_controller_image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=21600,
+    scaledown_window=60,
+    max_containers=1,
+)
+def optuna_research_sweep(payload: dict) -> dict:
+    """Run weekly/monthly Optuna research sweep on Modal and callback Worker."""
+    _setup_env()
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from routers.optuna import OptunaResearchSweepReq, execute_research_sweep  # type: ignore
+
+    t0 = time.time()
+    cadence = str(payload.get("cadence") or "weekly")
+    run_id = str(payload.get("run_id") or f"optuna-{cadence}-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or f"{cadence}-optuna")
+    run_date = payload.get("run_date")
+    trigger_source = payload.get("trigger_source") or "research_sweep"
+    trigger_id = payload.get("trigger_id")
+    status = "error"
+    error = None
+    result: dict
+
+    try:
+        req = OptunaResearchSweepReq(
+            cadence=cadence,
+            n_trials=int(payload.get("n_trials") or 200),
+            subset_size=int(payload.get("subset_size") or 1000),
+            max_parallel_sources=int(payload.get("max_parallel_sources") or 3),
+            ga_population_size=int(payload.get("ga_population_size") or 24),
+            ga_generations=int(payload.get("ga_generations") or 8),
+            research_data_source=payload.get("research_data_source") or "snapshot",
+            run_date=run_date,
+            push_kv=_truthy(payload.get("push_kv", True)),
+            dry_run=_truthy(payload.get("dry_run", False)),
+        )
+        result = execute_research_sweep(req)
+        status = "success" if result.get("status") == "completed" else "error"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+            "type": "optuna_research_sweep",
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    failures = result.get("failures") or []
+    summary = (
+        f"run_id={run_id} cadence={cadence} status={result.get('status')} "
+        f"failures={len(failures)} trigger_source={trigger_source} trigger_id={trigger_id or '-'}"
+    )
+    if error:
+        summary = error[:1200]
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "optuna_research_sweep",
+            "executor": "modal",
+            "cadence": cadence,
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "n_trials": payload.get("n_trials") or 200,
+            "subset_size": payload.get("subset_size") or 1000,
+            "max_parallel_sources": payload.get("max_parallel_sources") or 3,
+            "ga_population_size": payload.get("ga_population_size") or 24,
+            "ga_generations": payload.get("ga_generations") or 8,
+            "result_status": result.get("status"),
+            "failures": failures,
+            "ga": result.get("ga"),
+        },
+    }
+    if run_date:
+        callback_payload["run_date"] = run_date
+    if error:
+        callback_payload["error"] = error[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "optuna_research_sweep",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **result,
+    }
+
+
+@app.function(
+    image=optuna_controller_image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def backtest_research_bundle(payload: dict) -> dict:
+    """Run backtest, Monte Carlo, and PBO as one Modal-owned research bundle."""
+    _setup_env()
+    import asyncio
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.backtest_research_bundle import (  # type: ignore
+        build_backtest_research_bundle,
+        validate_backtest_research_bundle,
+    )
+    from services.backtest_service import run_full_backtest  # type: ignore
+    from services.monte_carlo_service import run_monte_carlo_mdd  # type: ignore
+    from services.pbo_service import run_pbo_analysis  # type: ignore
+
+    async def _run_bundle_steps() -> dict:
+        monte_carlo_n = int(payload.get("monte_carlo_n") or 1000)
+        pbo_partitions = int(payload.get("pbo_partitions") or 10)
+        pbo_source = str(payload.get("pbo_source") or "backtest")
+        return {
+            "backtest": await run_full_backtest(),
+            "monte_carlo_paper": await run_monte_carlo_mdd(
+                n_simulations=monte_carlo_n,
+                source="paper",
+            ),
+            "monte_carlo_backtest": await run_monte_carlo_mdd(
+                n_simulations=monte_carlo_n,
+                source="backtest",
+            ),
+            "pbo_backtest": await run_pbo_analysis(
+                n_partitions=pbo_partitions,
+                source=pbo_source,
+            ),
+        }
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"backtest-bundle-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "weekly-backtest")
+    run_date = payload.get("run_date")
+    trigger_source = payload.get("trigger_source") or "research_bundle"
+    trigger_id = payload.get("trigger_id")
+    bundle: dict
+    error = None
+
+    try:
+        steps = asyncio.run(_run_bundle_steps())
+        bundle = build_backtest_research_bundle(
+            run_id=run_id,
+            steps=steps,
+            params={
+                "monte_carlo_n": int(payload.get("monte_carlo_n") or 1000),
+                "pbo_partitions": int(payload.get("pbo_partitions") or 10),
+                "pbo_source": str(payload.get("pbo_source") or "backtest"),
+                "trigger_source": trigger_source,
+                "trigger_id": trigger_id,
+            },
+        )
+        validation_errors = validate_backtest_research_bundle(bundle)
+        if validation_errors:
+            error = "bundle_validation_failed:" + ",".join(validation_errors)
+            bundle["status"] = "error"
+            bundle["validation_errors"] = validation_errors
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        bundle = {
+            "schema_version": "backtest-research-bundle-v1",
+            "run_id": run_id,
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    status = "success" if bundle.get("status") == "success" else "error"
+    failed_steps = bundle.get("failed_steps") or []
+    summary = (
+        f"run_id={run_id} status={bundle.get('status')} "
+        f"failed_steps={len(failed_steps)} mc_n={payload.get('monte_carlo_n') or 1000} "
+        f"pbo_partitions={payload.get('pbo_partitions') or 10}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:240]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "backtest_research_bundle",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "bundle": bundle,
+        },
+    }
+    if run_date:
+        callback_payload["run_date"] = run_date
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "backtest_research_bundle",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        "bundle": bundle,
+    }
+
+
+@app.function(
+    image=optuna_controller_image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def backtest_replay(payload: dict) -> dict:
+    """Run the existing /backtest/replay implementation on Modal and callback Worker."""
+    _setup_env()
+    import asyncio
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from routers.backtest import ReplayRequest, trigger_replay  # type: ignore
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"backtest-replay-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "backtest-replay")
+    trigger_source = payload.get("trigger_source") or "controller"
+    trigger_id = payload.get("trigger_id")
+    request_payload = payload.get("request") if isinstance(payload.get("request"), dict) else payload
+    result: dict = {}
+    error = None
+
+    try:
+        req = ReplayRequest(**request_payload)
+        result = asyncio.run(trigger_replay(req))
+        if result.get("status") == "error":
+            error = str(result.get("error") or "backtest replay failed")
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    status = "success" if result.get("status") == "ok" else "error"
+    summary = (
+        f"run_id={run_id} status={result.get('status')} "
+        f"timerange={result.get('timerange') or request_payload.get('start_date')}~{request_payload.get('end_date')} "
+        f"mode={result.get('mode') or request_payload.get('mode', 'A')} "
+        f"trades={result.get('total_trades')} sharpe={result.get('sharpe')}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:240]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "backtest_replay",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "request": request_payload,
+            "result": result,
+        },
+    }
+    if request_payload.get("end_date"):
+        callback_payload["run_date"] = request_payload.get("end_date")
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "backtest_replay",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        "result": result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def backtest_full_run(payload: dict) -> dict:
+    """Run the existing full backtest on Modal and callback Worker."""
+    _setup_env()
+    import asyncio
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.backtest_service import run_full_backtest  # type: ignore
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"backtest-full-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "backtest")
+    trigger_source = payload.get("trigger_source") or "controller"
+    trigger_id = payload.get("trigger_id")
+    result: dict = {}
+    error = None
+
+    try:
+        result = asyncio.run(run_full_backtest())
+        if result.get("status") in {"error", "failed"}:
+            error = str(result.get("error") or result.get("status"))
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    status = "error" if error else "success"
+    summary = (
+        f"run_id={run_id} status={result.get('status')} "
+        f"trades={result.get('total_trades')} win={result.get('win_rate')} "
+        f"sharpe={result.get('sharpe')}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:240]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "backtest_full_run",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "result": result,
+        },
+    }
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "backtest_full_run",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        "result": result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def backtest_monte_carlo(payload: dict) -> dict:
+    """Run Monte Carlo tail-risk analysis on Modal and callback Worker."""
+    _setup_env()
+    import asyncio
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.monte_carlo_service import run_monte_carlo_mdd  # type: ignore
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"backtest-monte-carlo-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "monte-carlo")
+    trigger_source = payload.get("trigger_source") or "controller"
+    trigger_id = payload.get("trigger_id")
+    result: dict = {}
+    error = None
+
+    try:
+        result = asyncio.run(run_monte_carlo_mdd(
+            n_simulations=int(payload.get("n") or 1000),
+            source=str(payload.get("source") or "paper"),
+            method=payload.get("method"),
+            block_size=payload.get("block_size"),
+            exclude_symbols=payload.get("exclude_symbols"),
+        ))
+        if result.get("status") in {"error", "failed"}:
+            error = str(result.get("error") or result.get("status"))
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    status = "error" if error else "success"
+    summary = (
+        f"run_id={run_id} source={payload.get('source') or 'paper'} "
+        f"n={payload.get('n') or 1000} verdict={result.get('go_live_verdict')} "
+        f"mdd95={result.get('mdd_95th')}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:240]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "backtest_monte_carlo",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "request": payload,
+            "result": result,
+        },
+    }
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "backtest_monte_carlo",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        "result": result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def backtest_pbo(payload: dict) -> dict:
+    """Run PBO analysis on Modal and callback Worker."""
+    _setup_env()
+    import asyncio
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.pbo_service import run_pbo_analysis  # type: ignore
+
+    t0 = time.time()
+    run_id = str(payload.get("run_id") or f"backtest-pbo-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "pbo")
+    trigger_source = payload.get("trigger_source") or "controller"
+    trigger_id = payload.get("trigger_id")
+    result: dict = {}
+    error = None
+
+    try:
+        result = asyncio.run(run_pbo_analysis(
+            n_partitions=int(payload.get("partitions") or 10),
+            source=str(payload.get("source") or "backtest"),
+        ))
+        if result.get("status") in {"error", "failed"}:
+            error = str(result.get("error") or result.get("status"))
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    status = "error" if error else "success"
+    summary = (
+        f"run_id={run_id} source={payload.get('source') or 'backtest'} "
+        f"partitions={payload.get('partitions') or 10} pbo={result.get('pbo')} "
+        f"verdict={result.get('go_live_verdict')}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:240]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "backtest_pbo",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "request": payload,
+            "result": result,
+        },
+    }
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "backtest_pbo",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        "result": result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def dataset_snapshot_export(payload: dict) -> dict:
+    """Export daily research snapshots on Modal and callback Worker."""
+    _setup_env()
+    import sys
+    import time
+    import traceback
+    from datetime import timedelta
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.dataset_snapshot_exporter import (  # type: ignore
+        DatasetSnapshotExportRequest,
+        export_daily_research_snapshots,
+    )
+
+    def _default_start_date(end_date: str) -> str:
+        lookback_days = int(payload.get("lookback_days") or 504)
+        lookback_days = max(30, min(lookback_days, 1600))
+        return (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+    t0 = time.time()
+    run_date = str(payload.get("run_date") or payload.get("business_date") or "")
+    run_id = str(payload.get("run_id") or payload.get("producer_run_id") or f"dataset-snapshot-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "dataset-snapshot-export")
+    trigger_source = payload.get("trigger_source") or "modal_dataset_snapshot"
+    trigger_id = payload.get("trigger_id")
+    status = "error"
+    result: dict = {}
+    error = None
+
+    try:
+        if not run_date:
+            raise ValueError("run_date is required")
+        request = DatasetSnapshotExportRequest(
+            business_date=run_date,
+            start_date=str(payload.get("start_date") or _default_start_date(run_date)),
+            end_date=str(payload.get("end_date") or run_date),
+            producer_run_id=run_id,
+            gcs_prefix=payload.get("gcs_prefix"),
+            chunk_days=int(payload.get("chunk_days") or 10),
+            include_signals=_truthy(payload.get("include_signals", True)),
+        )
+        result = export_daily_research_snapshots(request)
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    snapshots = result.get("snapshots") if isinstance(result, dict) else {}
+    backtest = (((snapshots or {}).get("backtest_dataset") or {}).get("snapshot") or {})
+    price = (((snapshots or {}).get("price_history") or {}).get("snapshot") or {})
+    summary = (
+        f"run_id={run_id} "
+        f"backtest={backtest.get('snapshot_id')} rows={backtest.get('row_count')} "
+        f"price={price.get('snapshot_id')} rows={price.get('row_count')} "
+        f"trigger_source={trigger_source} trigger_id={trigger_id or '-'}"
+    )
+    if error:
+        summary = error[:1200]
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "run_date": run_date,
+        "metadata": {
+            "source": "dataset_snapshot_export",
+            "provider": "modal",
+            "executor": "modal",
+            "job_name": "dataset_snapshot_export",
+            "compute_owner": "modal",
+            "remote_function": "dataset_snapshot_export",
+            "cpu": 4,
+            "memory_mb": 4096,
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "snapshots": snapshots,
+        },
+    }
+    if error:
+        callback_payload["error"] = error[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "dataset_snapshot_export",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def d1_cold_archive_export(payload: dict) -> dict:
+    """Export exact D1 cold rows to GCS archive on Modal and callback Worker."""
+    _setup_env()
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from services.dataset_snapshot_exporter import (  # type: ignore
+        D1ColdArchiveExportRequest,
+        export_d1_cold_archive_snapshot,
+    )
+
+    t0 = time.time()
+    business_date = str(payload.get("business_date") or payload.get("run_date") or "")
+    run_id = str(payload.get("run_id") or payload.get("producer_run_id") or f"d1-cold-archive-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "dataset-snapshot-export")
+    trigger_source = payload.get("trigger_source") or "modal_d1_cold_archive"
+    trigger_id = payload.get("trigger_id")
+    status = "error"
+    result: dict = {}
+    error = None
+
+    try:
+        if not business_date:
+            raise ValueError("business_date is required")
+        request = D1ColdArchiveExportRequest(
+            business_date=business_date,
+            start_date=str(payload["start_date"]),
+            end_date=str(payload["end_date"]),
+            tables=tuple(payload.get("tables") or [
+                "stock_prices",
+                "technical_indicators",
+                "chip_data",
+                "margin_data",
+                "predictions",
+            ]),
+            gcs_prefix=payload.get("gcs_prefix"),
+            producer_run_id=run_id,
+            chunk_days=int(payload.get("chunk_days") or 10),
+            hot_window_days=int(payload.get("hot_window_days") or 504),
+        )
+        result = export_d1_cold_archive_snapshot(request)
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    snapshot = result.get("snapshot") if isinstance(result, dict) else {}
+    table_coverage = result.get("table_coverage") if isinstance(result, dict) else []
+    row_count = snapshot.get("row_count") if isinstance(snapshot, dict) else None
+    summary = (
+        f"run_id={run_id} kind=d1_cold_archive rows={row_count} "
+        f"tables={len(table_coverage or [])} trigger_source={trigger_source} "
+        f"trigger_id={trigger_id or '-'}"
+    )
+    if error:
+        summary = error[:1200]
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "run_date": business_date,
+        "metadata": {
+            "source": "d1_cold_archive_export",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "snapshot": snapshot,
+            "table_coverage": table_coverage,
+            "delete_requires_manual_approval": True,
+        },
+    }
+    if error:
+        callback_payload["error"] = error[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "d1_cold_archive_export",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **result,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    cpu=4,
+    memory=16384,
+    timeout=1800,
+    scaledown_window=60,
+    max_containers=1,
+)
+def regime_compute(payload: dict) -> dict:
+    """Compute HMM regime on Modal, push Worker state, and callback scheduler."""
+    _setup_env()
+    import sys
+    import time
+    import traceback
+    from dataclasses import asdict
+    from datetime import timedelta
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from app.regime import (  # type: ignore
+        RegimeDetector,
+        build_market_feature_matrix,
+        get_current_market_features,
+    )
+    from services.kv_pusher import push_optuna_result  # type: ignore
+    from services.market_regime_evidence import build_regime_evidence_pack  # type: ignore
+    from services.payload_builder import load_market_env  # type: ignore
+
+    index_to_label = {
+        0: "bull_market",
+        1: "volatile",
+        2: "sideways",
+        3: "bear_market",
+    }
+
+    def _extract_regime_surface(info: dict) -> dict:
+        raw = (
+            info.get("regime_surface")
+            or info.get("regime_probabilities")
+            or info.get("probabilities")
+            or info.get("state_probabilities")
+            or {}
+        )
+        if isinstance(raw, list):
+            labels = ["bull_market", "volatile", "sideways", "bear_market"]
+            raw = {label: raw[idx] for idx, label in enumerate(labels) if idx < len(raw)}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, float] = {}
+        for key, value in raw.items():
+            try:
+                prob = float(value)
+            except (TypeError, ValueError):
+                continue
+            if prob >= 0:
+                out[str(key)] = prob
+        return out
+
+    t0 = time.time()
+    tw_tz = timezone(timedelta(hours=8))
+    run_date = str(payload.get("run_date") or datetime.now(tw_tz).strftime("%Y-%m-%d"))
+    run_id = str(payload.get("run_id") or f"regime-compute-{run_date}-{int(t0)}")
+    callback_task = str(payload.get("callback_task") or "regime-compute")
+    trigger_source = payload.get("trigger_source") or "modal_regime_compute"
+    trigger_id = payload.get("trigger_id")
+    prev_label = payload.get("prev_label")
+    status = "error"
+    error = None
+    response: dict = {}
+    kv_push_ok = False
+
+    try:
+        market_env_obj, _, _, _, _ = load_market_env(run_date)
+        market_env = asdict(market_env_obj)
+        market_env["requested_run_date"] = run_date
+        if not market_env.get("history"):
+            raise ValueError("market_env has empty history")
+
+        force_retrain = _truthy(payload.get("force_retrain"))
+        detector = None if force_retrain else RegimeDetector.load_from_gcs()
+        if detector is None:
+            feat_mat = build_market_feature_matrix(market_env)
+            if feat_mat is None or len(feat_mat) < 20:
+                raise ValueError("insufficient market_env.history to train HMM (need >=20 days)")
+            detector = RegimeDetector().fit(feat_mat)
+            if detector._trained:
+                detector.save_to_gcs()
+
+        cur_feat = get_current_market_features(market_env)
+        if cur_feat is None:
+            raise ValueError("market_env missing current features")
+
+        info = detector.predict_regime(cur_feat)
+        reg_idx = int(info.get("regime_index", 1))
+        label_en = index_to_label.get(reg_idx, "sideways")
+        hmm_state = info.get("hmm_state", -1)
+        label_zh = info.get("label", "sideways")
+        regime_surface = _extract_regime_surface(info)
+        evidence_pack = build_regime_evidence_pack(market_env, raw_label=label_en)
+        effective_label = evidence_pack["effective_label"]
+
+        push_result = push_optuna_result(
+            source="regime",
+            params={
+                "label": effective_label,
+                "raw_label": label_en,
+                "regime_index": reg_idx,
+                "hmm_state": hmm_state,
+                "label_zh": label_zh,
+                "regime_surface": regime_surface,
+                "consensus_threshold": info.get("consensus_threshold", 0.60),
+                "weight_multipliers": info.get("weight_multipliers", {}),
+                "regime_evidence": evidence_pack,
+                "transition_guard": evidence_pack["transition_guard"],
+                "monitors": evidence_pack["monitors"],
+            },
+            meta={
+                "computed_at": datetime.now(tw_tz).isoformat(),
+                "run_date": run_date,
+                "run_id": run_id,
+                "executor": "modal",
+            },
+        )
+        kv_push_ok = bool(push_result.get("success", False))
+        response = {
+            "regime_label_en": effective_label,
+            "raw_regime_label_en": label_en,
+            "regime_index": reg_idx,
+            "hmm_state": hmm_state,
+            "label_zh": label_zh,
+            "regime_surface": regime_surface,
+            "regime_evidence": evidence_pack,
+            "transition_guard": evidence_pack["transition_guard"],
+            "monitors": evidence_pack["monitors"],
+            "kv_push_ok": kv_push_ok,
+            "computed_at": datetime.now(tw_tz).isoformat(),
+            "run_date": run_date,
+        }
+        if kv_push_ok:
+            status = "success"
+        else:
+            error = "regime KV push did not report success"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        response = {
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+            "type": "regime_compute",
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    summary = (
+        f"run_id={run_id} regime={response.get('regime_label_en', 'unknown')} "
+        f"raw={response.get('raw_regime_label_en', 'unknown')} "
+        f"idx={response.get('regime_index', 'n/a')} kv={'ok' if kv_push_ok else 'fail'} "
+        f"trigger_source={trigger_source} trigger_id={trigger_id or '-'}"
+    )
+    if error:
+        summary = f"{summary} error={str(error)[:300]}"
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "run_date": run_date,
+        "metadata": {
+            "source": "regime_compute",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "prev_label": prev_label,
+            "regime_label_en": response.get("regime_label_en"),
+            "raw_regime_label_en": response.get("raw_regime_label_en"),
+            "regime_index": response.get("regime_index"),
+            "hmm_state": response.get("hmm_state"),
+            "kv_push_ok": kv_push_ok,
+            "quality_contract": payload.get("quality_contract"),
+        },
+    }
+    if error:
+        callback_payload["error"] = str(error)[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "source": "regime_compute",
+        "executor": "modal",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **response,
+    }
+
+
+def _finlab_backfill_cli_args(payload: dict) -> list[str]:
+    args = [
+        "--years",
+        str(int(payload.get("years") or 3)),
+        "--run-id",
+        str(payload.get("run_id") or "auto"),
+        "--output-dir",
+        str(payload.get("output_dir") or "/tmp/finlab_remote_backfill"),
+        "--canonical-window-days",
+        str(int(payload.get("canonical_window_days") or 7)),
+        "--gcs-prefix",
+        str(payload.get("gcs_prefix") or "finlab/v4/backfill"),
+    ]
+    if payload.get("gcs_bucket"):
+        args.extend(["--gcs-bucket", str(payload["gcs_bucket"])])
+    if _truthy(payload.get("write_d1", True)):
+        args.append("--write-d1")
+    if _truthy(payload.get("apply_canonical_d1", True)):
+        args.append("--apply-canonical-d1")
+    if payload.get("canonical_start_date"):
+        args.extend(["--canonical-start-date", str(payload["canonical_start_date"])])
+    if payload.get("canonical_end_date"):
+        args.extend(["--canonical-end-date", str(payload["canonical_end_date"])])
+    if payload.get("canonical_datasets"):
+        args.extend(["--canonical-datasets", str(payload["canonical_datasets"])])
+    if payload.get("canonical_limit_per_dataset"):
+        args.extend(["--canonical-limit-per-dataset", str(int(payload["canonical_limit_per_dataset"]))])
+    if payload.get("canonical_d1_chunk_size"):
+        args.extend(["--canonical-d1-chunk-size", str(int(payload["canonical_d1_chunk_size"]))])
+    if _truthy(payload.get("canonical_dry_run")):
+        args.append("--canonical-dry-run")
+    return args
+
+
+@app.function(
+    image=finlab_image,
+    secrets=[gcs_secret, cf_secret, finlab_secret, runtime_env_secret],
+    cpu=4,
+    memory=16384,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def finlab_v4_backfill(payload: dict) -> dict:
+    """Run the existing FinLab V4 backfill on Modal and callback Worker."""
+    _setup_env()
+    import contextlib
+    import io
+    import json
+    import sys
+    import time
+    import traceback
+
+    if "/root" not in sys.path:
+        sys.path.insert(0, "/root")
+
+    from tools import finlab_v4_remote_backfill  # type: ignore
+
+    t0 = time.time()
+    callback_task = str(payload.get("callback_task") or "finlab-v4-backfill")
+    run_date = payload.get("run_date")
+    trigger_source = payload.get("trigger_source") or "modal_backfill"
+    trigger_id = payload.get("trigger_id")
+    cli_args = _finlab_backfill_cli_args(payload)
+    result: dict = {}
+    status = "error"
+    error = None
+    stdout = ""
+
+    try:
+        old_argv = sys.argv[:]
+        sys.argv = ["finlab_v4_remote_backfill.py", *cli_args]
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                exit_code = finlab_v4_remote_backfill.main()
+        finally:
+            sys.argv = old_argv
+        stdout = buf.getvalue()
+        if exit_code != 0:
+            raise RuntimeError(f"finlab_v4_remote_backfill exited with code {exit_code}")
+        for line in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                result = parsed
+                break
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "error": error,
+            "trace": traceback.format_exc()[:3000],
+            "stdout_tail": stdout[-3000:],
+            "type": "finlab_v4_backfill",
+        }
+
+    duration_ms = int((time.time() - t0) * 1000)
+    run_id = str(result.get("run_id") or payload.get("run_id") or "auto")
+    summary = (
+        f"run_id={run_id} years={payload.get('years') or 3} "
+        f"rows={((result.get('summary') or {}).get('finlab_rows') if isinstance(result.get('summary'), dict) else 'n/a')} "
+        f"canonical={((result.get('canonical_d1_apply') or {}).get('status') if isinstance(result.get('canonical_d1_apply'), dict) else 'n/a')} "
+        f"trigger_source={trigger_source} trigger_id={trigger_id or '-'}"
+    )
+    if error:
+        summary = error[:1200]
+
+    callback_payload = {
+        "task": callback_task,
+        "status": status,
+        "summary": summary[:1200],
+        "duration_ms": duration_ms,
+        "run_id": run_id,
+        "metadata": {
+            "source": "finlab_v4_backfill",
+            "executor": "modal",
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
+            "years": payload.get("years") or 3,
+            "gcs_upload": result.get("gcs_upload"),
+            "canonical_d1_apply": result.get("canonical_d1_apply"),
+            "runtime_table_writeback": result.get("runtime_table_writeback"),
+            "summary": result.get("summary"),
+        },
+    }
+    if run_date:
+        callback_payload["run_date"] = run_date
+    if error:
+        callback_payload["error"] = error[:1200]
+
+    callback = _post_worker_scheduler_callback(callback_payload)
+    return {
+        "status": status,
+        "executor": "modal",
+        "source": "finlab_v4_backfill",
+        "run_id": run_id,
+        "duration_ms": duration_ms,
+        "callback": callback,
+        **result,
+    }
 
 
 # Walk-forward Modal functions.

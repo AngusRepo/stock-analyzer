@@ -6,6 +6,7 @@ export interface MarketDataReadinessStats {
   priceOtcRowsOnLatest?: number
   chipLatestDate: string | null
   chipRowsOnLatest: number
+  chipSourceTable?: string
   indicatorLatestDate?: string | null
   indicatorRowsOnLatest?: number
 }
@@ -82,6 +83,7 @@ export function evaluateMarketDataReadiness(
         (stats.priceTwseRowsOnLatest !== undefined ? ` TWSE=${stats.priceTwseRowsOnLatest}` : '') +
         (stats.priceOtcRowsOnLatest !== undefined ? ` OTC=${stats.priceOtcRowsOnLatest}` : '') +
         `, chip=${stats.chipRowsOnLatest}` +
+        (stats.chipSourceTable ? ` source=${stats.chipSourceTable}` : '') +
         (stats.indicatorRowsOnLatest !== undefined ? `, indicators=${stats.indicatorRowsOnLatest}` : ''),
     errors,
     stats,
@@ -94,6 +96,15 @@ async function latestTableStats(db: D1Database, table: string): Promise<{ latest
   if (!latestDate) return { latestDate: null, rowsOnLatest: 0 }
   const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(latestDate).first<{ count: number }>()
   return { latestDate, rowsOnLatest: normalizeRows(row?.count) }
+}
+
+async function latestChipStats(db: D1Database): Promise<{ latestDate: string | null; rowsOnLatest: number; sourceTable: string }> {
+  const canonical = await latestTableStats(db, 'canonical_chip_daily').catch(() => null)
+  if (canonical && normalizeRows(canonical.rowsOnLatest) > 0) {
+    return { ...canonical, sourceTable: 'canonical_chip_daily' }
+  }
+  const legacy = await latestTableStats(db, 'chip_data')
+  return { ...legacy, sourceTable: 'chip_data' }
 }
 
 async function latestPriceSegmentStats(
@@ -121,7 +132,7 @@ export async function loadMarketDataReadinessStats(
 ): Promise<MarketDataReadinessStats> {
   const [price, chip, indicators] = await Promise.all([
     latestTableStats(db, 'stock_prices'),
-    latestTableStats(db, 'chip_data'),
+    latestChipStats(db),
     latestTableStats(db, 'technical_indicators'),
   ])
   const priceSegments = await latestPriceSegmentStats(db, price.latestDate)
@@ -133,6 +144,7 @@ export async function loadMarketDataReadinessStats(
     priceOtcRowsOnLatest: priceSegments.otcRows,
     chipLatestDate: chip.latestDate,
     chipRowsOnLatest: chip.rowsOnLatest,
+    chipSourceTable: chip.sourceTable,
     indicatorLatestDate: indicators.latestDate,
     indicatorRowsOnLatest: indicators.rowsOnLatest,
   }

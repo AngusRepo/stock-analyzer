@@ -13,13 +13,23 @@ export interface StrategyAnnotatedCandidate extends StrategyCandidateInput {
   strategy_watch_points?: string[]
 }
 
+type StrategyAnnotationSource = StrategyCandidateInput & { score_components?: unknown }
+
+function normalizeStrategyCandidate<T extends StrategyAnnotationSource>(candidate: T): StrategyCandidateInput {
+  const { score_components, ...rest } = candidate
+  return {
+    ...rest,
+    score_v2: candidate.score_v2 ?? score_components,
+  }
+}
+
 export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateInput>(
   candidate: T,
   specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS,
 ): T & StrategyAnnotatedCandidate {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, specs)
+  const assessment = assessCandidateAgainstStrategySpecs(normalizeStrategyCandidate(candidate), specs)
   return {
     ...candidate,
     strategy_matches: [

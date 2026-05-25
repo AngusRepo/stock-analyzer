@@ -39,6 +39,7 @@ import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from '.
 import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
   buildFiveSlotCapitalPlan,
+  buildFiveSlotExecutionDecision,
   fiveSlotHoldingWeaknessScore,
   formatFiveSlotDecisionWatchPoint,
   type FiveSlotDecision,
@@ -433,6 +434,37 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const weakPos = (fullPositions ?? []).find((p: any) => p.symbol === weakest.symbol)
       if (!weakPos) continue
 
+      const replacementQuote = ohlcMap.get(pending.symbol)
+      const replacementPrice = priceMap.get(pending.symbol)
+      const replacementFill = resolveLimitBuyFill({
+        currentPrice: Number(replacementPrice ?? 0),
+        limitPrice: Number(pending.ml_entry_price ?? 0),
+        bestAsk: replacementQuote?.ask,
+        bestBid: replacementQuote?.bid,
+        intradayLow: replacementQuote?.low,
+        intradayHigh: replacementQuote?.high,
+        slippageTicks: cfg.position.fillSlippageTicks ?? 1,
+        requireBestAsk: true,
+      })
+      if (replacementQuote?.source !== 'shioaji' || !replacementFill.fillable || replacementFill.fillPrice == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pending.symbol,
+          eventType: 'pending_buy',
+          status: 'allocator_skip',
+          reason: 'auto_swap_replacement_not_executable',
+          detail: {
+            sell_symbol: weakest.symbol,
+            replacement_source: replacementQuote?.source ?? 'missing',
+            replacement_price: replacementPrice ?? null,
+            replacement_entry: pending.ml_entry_price ?? null,
+            fill_reason: replacementFill.reason,
+          },
+          source: 'auto_swap',
+        })
+        continue
+      }
+
       const daysHeld = weakPos.entry_date
         ? Math.floor((Date.now() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
         : 0
@@ -612,23 +644,54 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
-  const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map((pos: any) => ({
-    symbol: String(pos.symbol),
-    shares: Number(pos.shares ?? 0),
-    avgCost: Number(pos.avg_cost ?? 0),
-    lastPrice: posValueMap.get(String(pos.symbol)) ?? Number(pos.avg_cost ?? 0),
-    daysHeld: pos.entry_date
-      ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
-      : 0,
-    tp1Hit: Boolean(pos.tp1_hit),
-  }))
-  const capitalCandidates: FiveSlotCandidate[] = pendingBuys.map((pending) => ({
-    symbol: pending.symbol,
-    confidence: pending.confidence,
-    score_v2: pending.score_v2 ?? null,
-    riskPct: pending.risk_pct,
-  }))
-  const capitalPlan = buildFiveSlotCapitalPlan({
+  const toCapitalHolding = (pos: any): FiveSlotHolding => {
+    const symbol = String(pos.symbol)
+    return {
+      symbol,
+      shares: Number(pos.shares ?? 0),
+      avgCost: Number(pos.avg_cost ?? 0),
+      lastPrice: priceMap.get(symbol) ?? posValueMap.get(symbol) ?? Number(pos.avg_cost ?? 0),
+      daysHeld: pos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+        : 0,
+      tp1Hit: Boolean(pos.tp1_hit),
+    }
+  }
+  const loadCurrentCapitalHoldings = async (): Promise<FiveSlotHolding[]> => {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit
+      FROM paper_positions WHERE account_id=? AND shares>0
+    `).bind(ACCOUNT_ID).all<any>()
+    return (results ?? []).map(toCapitalHolding)
+  }
+  const buildExecutionAllocatorDecision = async (pending: PendingBuy): Promise<FiveSlotDecision | null> => {
+    const candidate: FiveSlotCandidate = {
+      symbol: pending.symbol,
+      confidence: pending.confidence,
+      score_v2: pending.score_v2 ?? null,
+      riskPct: pending.risk_pct,
+    }
+    return buildFiveSlotExecutionDecision({
+      account: {
+        cash: Number((acc as any).cash ?? 0),
+        totalPortfolio,
+        dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
+      },
+      marketRiskLevel: marketRisk.risk_level,
+      config: {
+        maxPositions: maxPos,
+        maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+        maxPctOfCash: cfg.position.maxPctOfCash,
+        dailyBuyLimit: DAILY_BUY_LIMIT,
+        minPositionValue: cfg.position.minPositionValue ?? 30_000,
+        swapThreshold: cfg.position.swapThreshold,
+      },
+      holdings: await loadCurrentCapitalHoldings(),
+      candidate,
+    })
+  }
+  const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map(toCapitalHolding)
+  const capitalPlanPreview = buildFiveSlotCapitalPlan({
     account: {
       cash: Number((acc as any).cash ?? 0),
       totalPortfolio,
@@ -644,11 +707,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       swapThreshold: cfg.position.swapThreshold,
     },
     holdings: capitalHoldings,
-    candidates: capitalCandidates,
+    candidates: [],
   })
   console.log(
-    `[Allocator] 5-slot exposure=${(capitalPlan.targetExposure * 100).toFixed(0)}% ` +
-    `slot=${Math.round(capitalPlan.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
+    `[Allocator] 5-slot exposure=${(capitalPlanPreview.targetExposure * 100).toFixed(0)}% ` +
+    `slot=${Math.round(capitalPlanPreview.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
   )
 
   let stateChanged = false
@@ -682,7 +745,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const idx = pendingBuys.findIndex((item) => item.symbol === symbol)
     if (idx >= 0) {
       const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-      const nextPoints = [...points.filter((point) => !String(point).startsWith('allocator:')), watchPoint]
+      const nextPoints = [
+        ...points.filter((point) => {
+          const text = String(point)
+          return !text.startsWith('allocator:') && !text.startsWith('execution:pending:allocator_')
+        }),
+        watchPoint,
+      ]
       const changed = nextPoints.length !== points.length || nextPoints.some((point, i) => point !== points[i])
       if (changed || !pendingBuys[idx].execution_status) {
         pendingBuys[idx] = {
@@ -740,7 +809,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
 
-    const allocatorDecision = capitalPlan.decisions.get(pending.symbol)
+    const allocatorDecision = await buildExecutionAllocatorDecision(pending)
     if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision)
     if (!allocatorDecision || allocatorDecision.action === 'skip' || allocatorDecision.action === 'hold') {
       const reason = allocatorDecision?.reason ?? 'allocator_no_plan'
@@ -767,6 +836,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       symbol: pending.symbol,
       currentPrice: price,
       entryPrice: pending.ml_entry_price,
+      bestAsk: currentOhlc?.ask,
       stopLoss: pending.ml_stop_loss,
       originalEntry: (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
@@ -780,7 +850,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         requoteDeviationMax: cfg.position.requoteDeviationMax,
         requoteDiscount: cfg.position.requoteDiscount,
         requoteStopFallback: cfg.position.requoteStopFallback,
-        maxQuoteAgeMs: (cfg.position as any).maxQuoteAgeMs ?? 15_000,
+        maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
+        maxEntryChasePct: cfg.position.maxEntryChasePct,
       },
     })
 

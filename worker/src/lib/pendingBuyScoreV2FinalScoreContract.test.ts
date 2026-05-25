@@ -25,6 +25,14 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     morningSetupQuery.includes('dr.score_components'),
     'morning setup pending buys should read canonical Score V2 payload from daily_recommendations',
   )
+  assert(
+    morningSetupQuery.includes("json_extract(dr.score_components, '$.finalScore')"),
+    'morning setup pending buys should rank by canonical Score V2 finalScore',
+  )
+  assert(
+    !morningSetupQuery.includes('ORDER BY dr.score DESC'),
+    'morning setup pending buys must not rank by legacy daily_recommendations.score',
+  )
   for (const legacyField of ['dr.score,', 'dr.chip_score', 'dr.tech_score', 'dr.ml_score', 'dr.momentum_score']) {
     assert(
       !morningSetupQuery.includes(legacyField),
@@ -83,6 +91,14 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     postExitRecommendationQuery.includes('dr.score_components'),
     'post-exit rerank should read canonical Score V2 payload from daily_recommendations',
   )
+  assert(
+    postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.finalScore')"),
+    'post-exit rerank should rank by canonical Score V2 finalScore',
+  )
+  assert(
+    !postExitRecommendationQuery.includes('ORDER BY dr.score DESC'),
+    'post-exit rerank must not rank by legacy daily_recommendations.score',
+  )
   for (const legacyField of ['dr.score,', 'dr.chip_score', 'dr.tech_score', 'dr.ml_score', 'dr.momentum_score']) {
     assert(
       !postExitRecommendationQuery.includes(legacyField),
@@ -111,6 +127,21 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
       pendingBuyStore.includes('scoreV2?.finalScore'),
     'pending-buy store should derive legacy D1 columns from canonical score_v2',
   )
+  const projectionStart = pendingBuyStore.indexOf('export function normalizePendingBuyScoreProjection')
+  const projectionEnd = pendingBuyStore.indexOf('function normalizePendingBuyScoreProjections', projectionStart)
+  assert(projectionStart >= 0 && projectionEnd > projectionStart, 'pending-buy storage projection block should be locatable')
+  const projectionBlock = pendingBuyStore.slice(projectionStart, projectionEnd)
+  for (const staleFirstProjection of [
+    'item.chip_score ?? scoreV2?.components.chipFlow',
+    'item.tech_score ?? scoreV2?.components.technicalStructure',
+    'item.ml_score ?? scoreV2?.components.mlEdge',
+    'item.score ?? scoreV2?.finalScore',
+  ]) {
+    assert(
+      !projectionBlock.includes(staleFirstProjection),
+      `pending-buy storage projection must prefer canonical score_v2 over stale legacy field ${staleFirstProjection}`,
+    )
+  }
 }
 
 {

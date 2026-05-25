@@ -81,6 +81,7 @@ const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', '
 assert(
   adminControlRoutes.includes('recordSchedulerRunReportArtifact') &&
     adminControlRoutes.includes('REPORT_ARTIFACT_TASKS') &&
+    adminControlRoutes.includes("'dataset-snapshot-export'") &&
     adminControlRoutes.includes("body.status === 'success'"),
   'scheduler completion callback must persist R2 report artifacts tied to the same run_id/run_date',
 )

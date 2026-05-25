@@ -1,14 +1,34 @@
-/**
- * CandlestickChart — K 線圖（OHLC + Volume）
- * 使用 Recharts ComposedChart + custom shape
- */
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { stocksApi } from '@/lib/api'
-import { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Cell, Legend } from 'recharts'
-import { Skeleton } from '@/components/ui/skeleton'
+import {
+  CandlestickSeries,
+  ColorType,
+  CrosshairMode,
+  HistogramSeries,
+  LineSeries,
+  LineStyle,
+  createChart,
+  type ChartOptions,
+  type DeepPartial,
+  type IChartApi,
+  type Time,
+} from 'lightweight-charts'
 import { Button } from '@/components/ui/button'
-import { useState } from 'react'
-import { format } from 'date-fns'
+import { Skeleton } from '@/components/ui/skeleton'
+import { stocksApi } from '@/lib/api'
+import {
+  brokerFlowWindowSummary,
+  buildBrokerFlowLine,
+  buildChipFlowHistogram,
+  latestChipFlowSummary,
+  normalizeBrokerFlowRows,
+  normalizeChipFlowRows,
+} from '@/lib/chipFlowSeries'
+import {
+  buildAtrBandSeries,
+  buildTradingPlanLevels,
+  normalizeOhlcvRows,
+} from '@/lib/tradingPlanLevels'
 
 const RANGES = [
   { label: '1M', days: 30 },
@@ -17,201 +37,338 @@ const RANGES = [
   { label: '1Y', days: 365 },
 ]
 
-// MA 計算（從 close 陣列算）
 const MA_CONFIGS = [
-  { period: 5,   color: '#f59e0b', label: 'MA5' },   // 週線 — 黃
-  { period: 10,  color: '#ec4899', label: 'MA10' },   // 雙週 — 粉
-  { period: 20,  color: '#3b82f6', label: 'MA20' },   // 月線 — 藍
-  { period: 60,  color: '#8b5cf6', label: 'MA60' },   // 季線 — 紫
-  { period: 120, color: '#14b8a6', label: 'MA120' },  // 半年 — 青
-  { period: 240, color: '#f97316', label: 'MA240' },  // 年線 — 橙
+  { period: 5, color: '#f59e0b', label: 'MA5' },
+  { period: 10, color: '#ec4899', label: 'MA10' },
+  { period: 20, color: '#3b82f6', label: 'MA20' },
+  { period: 60, color: '#8b5cf6', label: 'MA60' },
+  { period: 120, color: '#14b8a6', label: 'MA120' },
+  { period: 240, color: '#f97316', label: 'MA240' },
 ]
 
-function calcMA(closes: number[], period: number): (number | null)[] {
-  return closes.map((_, i) => {
-    if (i < period - 1) return null
-    const slice = closes.slice(i - period + 1, i + 1)
-    return Math.round(slice.reduce((a, b) => a + b, 0) / period * 100) / 100
-  })
+function chartOptions(width: number): DeepPartial<ChartOptions> {
+  return {
+    width,
+    height: 360,
+    autoSize: true,
+    layout: {
+      background: { type: ColorType.Solid, color: 'transparent' },
+      textColor: '#94a3b8',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    },
+    grid: {
+      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      horzLines: { color: 'rgba(148, 163, 184, 0.10)' },
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      scaleMargins: { top: 0.08, bottom: 0.18 },
+    },
+    timeScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      timeVisible: false,
+      secondsVisible: false,
+    },
+    crosshair: {
+      mode: CrosshairMode.MagnetOHLC,
+      horzLine: { color: 'rgba(56, 189, 248, 0.28)' },
+      vertLine: { color: 'rgba(56, 189, 248, 0.28)' },
+    },
+  }
 }
 
-// Candlestick custom shape
-function Candlestick(props: any) {
-  const { x, y, width, height, payload } = props
-  if (!payload || payload.open == null || payload.close == null) return null
+function rowTime(row: any): Time {
+  return String(row?.date ?? '').slice(0, 10) as Time
+}
 
-  const { open, close, high, low } = payload
-  const isUp = close >= open
-  const color = isUp ? '#ef4444' : '#22c55e' // 台股：紅漲綠跌
-  const bodyTop = Math.min(open, close)
-  const bodyBottom = Math.max(open, close)
+function fmtPrice(value: number | null | undefined): string {
+  if (!Number.isFinite(Number(value))) return '-'
+  return Number(value).toFixed(2).replace(/\.?0+$/, '')
+}
 
-  // Scale: we need to convert price values to y-coordinates
-  // The Bar component gives us y and height for the [open, close] range
-  const yScale = props.yAxis
-  if (!yScale) return null
+function fmtLots(value: number | null | undefined): string {
+  if (!Number.isFinite(Number(value))) return '-'
+  return `${Number(value) > 0 ? '+' : ''}${Math.round(Number(value)).toLocaleString()}張`
+}
 
-  const yHigh = yScale.scale(high)
-  const yLow = yScale.scale(low)
-  const yOpen = yScale.scale(open)
-  const yClose = yScale.scale(close)
-  const yBodyTop = Math.min(yOpen, yClose)
-  const yBodyHeight = Math.max(Math.abs(yOpen - yClose), 1)
-  const cx = x + width / 2
-
-  return (
-    <g>
-      {/* Wick (影線) */}
-      <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth={1} />
-      {/* Body (實體) */}
-      <rect
-        x={x + width * 0.15}
-        y={yBodyTop}
-        width={width * 0.7}
-        height={yBodyHeight}
-        fill={isUp ? color : color}
-        fillOpacity={isUp ? 1 : 0.6}
-        stroke={color}
-        strokeWidth={0.5}
-      />
-    </g>
-  )
+function movingAverage(rows: any[], period: number) {
+  return rows
+    .map((row, index) => {
+      if (index < period - 1) return null
+      const window = rows.slice(index - period + 1, index + 1)
+      const closes = window.map((item) => Number(item.close)).filter(Number.isFinite)
+      if (closes.length !== period) return null
+      return {
+        time: rowTime(row),
+        value: Math.round((closes.reduce((sum, value) => sum + value, 0) / period) * 100) / 100,
+      }
+    })
+    .filter(Boolean) as Array<{ time: Time; value: number }>
 }
 
 export default function CandlestickChart({ stockId }: { stockId: number }) {
   const [days, setDays] = useState(90)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
 
   const { data: prices = [], isLoading } = useQuery({
     queryKey: ['stocks', stockId, 'prices', days],
-    queryFn: () => stocksApi.prices(stockId, days + 240),  // +240 for MA240 計算
+    queryFn: () => stocksApi.prices(stockId, days + 240),
     enabled: !!stockId,
   })
 
-  if (isLoading) return <Skeleton className="h-72 w-full" />
-  if (!(prices as any[]).length) return <p className="text-muted-foreground text-sm p-4">暫無資料</p>
-
-  // 計算所有 MA（用完整 prices 陣列計算，但只顯示最後 days 筆）
-  const allPricesArr = prices as any[]
-  const allCloses = allPricesArr.map((p: any) => p.close as number)
-  const maData: Record<string, (number | null)[]> = {}
-  for (const ma of MA_CONFIGS) {
-    maData[ma.label] = calcMA(allCloses, ma.period)
-  }
-
-  // 只顯示最後 days 筆（前面的只是為了算 MA）
-  const displayStart = Math.max(0, allPricesArr.length - days)
-  const displayPrices = allPricesArr.slice(displayStart)
-
-  const chartData = displayPrices.map((p: any, displayIdx: number) => {
-    const i = displayStart + displayIdx
-    const row: any = {
-      date: format(new Date(p.date), 'MM/dd'),
-      open: p.open,
-      high: p.high,
-      low: p.low,
-      close: p.close,
-      volume: p.volume,
-      range: [Math.min(p.open, p.close), Math.max(p.open, p.close)],
-    }
-    for (const ma of MA_CONFIGS) {
-      row[ma.label] = maData[ma.label][i]
-    }
-    return row
+  const { data: indicators = [] } = useQuery({
+    queryKey: ['stocks', stockId, 'indicators', days],
+    queryFn: () => stocksApi.indicators(stockId, days + 240),
+    enabled: !!stockId,
   })
 
-  const allPrices = chartData.flatMap((d: any) => [d.high, d.low, ...MA_CONFIGS.map(ma => d[ma.label])].filter(Boolean))
-  const minPrice = Math.min(...allPrices) * 0.98
-  const maxPrice = Math.max(...allPrices) * 1.02
-  const maxVol = Math.max(...chartData.map((d: any) => d.volume ?? 0))
+  const { data: chips = [] } = useQuery({
+    queryKey: ['stocks', stockId, 'chips', days],
+    queryFn: () => stocksApi.chips(stockId, days + 20),
+    enabled: !!stockId,
+  })
+
+  const { data: brokerFlowRows = [] } = useQuery({
+    queryKey: ['stocks', stockId, 'broker-flow', days],
+    queryFn: () => stocksApi.brokerFlow(stockId, days + 20),
+    enabled: !!stockId,
+  })
+
+  const {
+    candles,
+    volume,
+    maSeries,
+    atrBand,
+    sarData,
+    chipFlow,
+    brokerFlow,
+    chipSummary,
+    brokerSummary,
+    planLevels,
+  } = useMemo(() => {
+    const allRows = normalizeOhlcvRows(prices as any[])
+    const displayRows = allRows.slice(-days)
+    const displayDates = new Set(displayRows.map((row) => row.date))
+    const indicatorByDate = new Map(
+      (indicators as any[]).map((row) => [String(row?.date ?? '').slice(0, 10), row]),
+    )
+    const chipRows = normalizeChipFlowRows(chips as any[])
+    const brokerRows = normalizeBrokerFlowRows(brokerFlowRows as any[])
+    return {
+      candles: displayRows.map((row) => ({
+        time: rowTime(row),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+      })),
+      volume: displayRows.map((row) => {
+        const open = Number(row.open)
+        const close = Number(row.close)
+        const value = Number(row.volume)
+        return {
+          time: rowTime(row),
+          value: Number.isFinite(value) ? value : 0,
+          color: close >= open ? 'rgba(239, 68, 68, 0.30)' : 'rgba(16, 185, 129, 0.30)',
+        }
+      }),
+      maSeries: MA_CONFIGS
+        .filter((ma) => ma.period <= days)
+        .map((ma) => ({ ...ma, data: movingAverage(allRows, ma.period).slice(-days) })),
+      atrBand: buildAtrBandSeries(allRows).filter((point) => displayDates.has(point.time)),
+      sarData: displayRows
+        .map((row) => {
+          const indicator = indicatorByDate.get(row.date)
+          const value = Number(indicator?.parabolicSar ?? indicator?.parabolic_sar)
+          return Number.isFinite(value) ? { time: rowTime(row), value } : null
+        })
+        .filter(Boolean) as Array<{ time: Time; value: number }>,
+      chipFlow: buildChipFlowHistogram(chipRows).filter((point) => displayDates.has(String(point.time))),
+      brokerFlow: buildBrokerFlowLine(brokerRows).filter((point) => displayDates.has(String(point.time))),
+      chipSummary: latestChipFlowSummary(chipRows),
+      brokerSummary: brokerFlowWindowSummary(brokerRows, 5),
+      planLevels: buildTradingPlanLevels(allRows.slice(-Math.max(days, 60))),
+    }
+  }, [prices, indicators, chips, brokerFlowRows, days])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || candles.length === 0) return
+
+    const chart = createChart(container, chartOptions(container.clientWidth || 720))
+    chartRef.current = chart
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#ef4444',
+      downColor: '#10b981',
+      borderUpColor: '#ef4444',
+      borderDownColor: '#10b981',
+      wickUpColor: '#f87171',
+      wickDownColor: '#34d399',
+    })
+    candleSeries.setData(candles)
+
+    if (volume.length) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 1)
+      volumeSeries.setData(volume)
+    }
+
+    if (chipFlow.length) {
+      const chipFlowSeries = chart.addSeries(HistogramSeries, {
+        priceScaleId: '',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 2)
+      chipFlowSeries.setData(chipFlow)
+    }
+
+    if (brokerFlow.length) {
+      const brokerFlowSeries = chart.addSeries(LineSeries, {
+        color: '#a78bfa',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 2)
+      brokerFlowSeries.setData(brokerFlow)
+    }
+
+    for (const ma of maSeries) {
+      const series = chart.addSeries(LineSeries, {
+        color: ma.color,
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      series.setData(ma.data)
+    }
+
+    if (atrBand.length) {
+      const atrUpperSeries = chart.addSeries(LineSeries, {
+        color: 'rgba(244, 63, 94, 0.55)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      atrUpperSeries.setData(atrBand.map((point) => ({ time: point.time as Time, value: point.upper })))
+
+      const atrLowerSeries = chart.addSeries(LineSeries, {
+        color: 'rgba(16, 185, 129, 0.55)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      atrLowerSeries.setData(atrBand.map((point) => ({ time: point.time as Time, value: point.lower })))
+    }
+
+    if (sarData.length) {
+      const sarSeries = chart.addSeries(LineSeries, {
+        color: '#facc15',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      sarSeries.setData(sarData)
+    }
+
+    const priceLines = [
+      { price: planLevels?.resistance, title: '前高壓力', color: '#f59e0b' },
+      { price: planLevels?.support, title: '關鍵支撐', color: '#10b981' },
+      { price: planLevels?.volumeNode, title: '量能節點', color: '#38bdf8' },
+      { price: planLevels?.atrLower, title: 'ATR 防守', color: '#f43f5e' },
+    ]
+    for (const line of priceLines) {
+      if (!Number.isFinite(Number(line.price))) continue
+      candleSeries.createPriceLine({
+        price: Number(line.price),
+        color: line.color,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: line.title,
+      })
+    }
+
+    chart.panes()[1]?.setHeight(72)
+    chart.panes()[2]?.setHeight(72)
+    chart.timeScale().fitContent()
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)) })
+    })
+    resizeObserver.observe(container)
+
+    return () => {
+      resizeObserver.disconnect()
+      chart.remove()
+      chartRef.current = null
+    }
+  }, [candles, volume, maSeries, atrBand, sarData, chipFlow, brokerFlow, planLevels])
+
+  if (isLoading) return <Skeleton className="h-96 w-full" />
+  if (!candles.length) return <p className="p-4 text-sm text-muted-foreground">暫無 K 線資料</p>
 
   return (
-    <div className="space-y-1">
-      <div className="flex gap-1">
-        {RANGES.map(r => (
-          <Button key={r.label} size="sm" variant={days === r.days ? 'default' : 'ghost'}
-            className="h-7 px-2.5 text-xs" onClick={() => setDays(r.days)}>
-            {r.label}
-          </Button>
-        ))}
-      </div>
-
-      {/* K 線主圖 + 均線 */}
-      <ResponsiveContainer width="100%" height={300}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#333" opacity={0.3} />
-          <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#888' }} tickLine={false}
-            interval={Math.max(Math.floor(chartData.length / 8), 1)} />
-          <YAxis domain={[minPrice, maxPrice]} tick={{ fontSize: 9, fill: '#888' }}
-            tickLine={false} tickFormatter={(v: number) => v.toFixed(0)} />
-          <Tooltip
-            contentStyle={{ background: '#1a1a2e', border: '1px solid #333', borderRadius: '8px', fontSize: 11, color: '#eee' }}
-            formatter={(v: any, name: string) => {
-              if (name === 'range') return [null, null]
-              if (typeof v === 'number') return [v.toLocaleString(), name]
-              return [v, name]
-            }}
-            labelFormatter={(label: string, items: any[]) => {
-              const d = items?.[0]?.payload
-              if (!d) return label
-              return `${label}  O:${d.open} H:${d.high} L:${d.low} C:${d.close}`
-            }}
-          />
-          <Legend
-            verticalAlign="top" height={24}
-            formatter={(value: string) => <span style={{ fontSize: 10, color: '#aaa' }}>{value}</span>}
-          />
-          {/* Candlestick body + wick */}
-          <Bar dataKey="range" barSize={Math.min(8, Math.max(2, 500 / chartData.length))}
-            legendType="none"
-            shape={(props: any) => {
-              const { x, width, payload } = props
-              if (!payload?.open || !payload?.close) return null
-              const { open, close, high, low } = payload
-              const isUp = close >= open
-              const color = isUp ? '#ef4444' : '#22c55e'
-
-              const yAxisHeight = 290
-              const priceRange = maxPrice - minPrice
-              const toY = (price: number) => 5 + (1 - (price - minPrice) / priceRange) * yAxisHeight
-
-              const yHigh = toY(high)
-              const yLow = toY(low)
-              const yOpen = toY(open)
-              const yClose = toY(close)
-              const yBodyTop = Math.min(yOpen, yClose)
-              const yBodyHeight = Math.max(Math.abs(yOpen - yClose), 1)
-              const cx = x + width / 2
-
-              return (
-                <g>
-                  <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth={1} />
-                  <rect x={x} y={yBodyTop} width={width} height={yBodyHeight}
-                    fill={color} fillOpacity={isUp ? 1 : 0.5} stroke={color} strokeWidth={0.5} />
-                </g>
-              )
-            }}
-          />
-          {/* 均線 — 只顯示期間內有足夠資料的 MA */}
-          {MA_CONFIGS.filter(ma => ma.period <= days).map(ma => (
-            <Line key={ma.label} type="monotone" dataKey={ma.label} name={ma.label}
-              stroke={ma.color} strokeWidth={1.2} dot={false}
-              connectNulls={false} strokeOpacity={0.85} />
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-1">
+          {RANGES.map((range) => (
+            <Button
+              key={range.label}
+              size="sm"
+              variant={days === range.days ? 'default' : 'ghost'}
+              className="h-7 px-2.5 text-xs"
+              onClick={() => setDays(range.days)}
+            >
+              {range.label}
+            </Button>
           ))}
-        </ComposedChart>
-      </ResponsiveContainer>
-
-      {/* 成交量 */}
-      <ResponsiveContainer width="100%" height={60}>
-        <ComposedChart data={chartData} margin={{ top: 0, right: 5, bottom: 0, left: 0 }}>
-          <XAxis dataKey="date" hide />
-          <YAxis domain={[0, maxVol * 1.2]} hide />
-          <Bar dataKey="volume" barSize={Math.min(6, Math.max(1, 400 / chartData.length))}>
-            {chartData.map((entry, i) => (
-              <Cell key={i} fill={entry.close >= entry.open ? '#ef444480' : '#22c55e80'} />
-            ))}
-          </Bar>
-        </ComposedChart>
-      </ResponsiveContainer>
+        </div>
+        <div className="flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+          {MA_CONFIGS.filter((ma) => ma.period <= days).map((ma) => (
+            <span key={ma.label} className="font-mono" style={{ color: ma.color }}>{ma.label}</span>
+          ))}
+        </div>
+      </div>
+      <div ref={containerRef} className="h-[360px] w-full rounded-md border border-border/50 bg-background/50" />
+      {planLevels && (
+        <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+          <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-amber-300">壓力 {fmtPrice(planLevels.resistance)}</span>
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 font-mono text-emerald-300">支撐 {fmtPrice(planLevels.support)}</span>
+          <span className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-sky-300">量能 {fmtPrice(planLevels.volumeNode)}</span>
+          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-rose-300">ATR防守 {fmtPrice(planLevels.atrLower)}</span>
+        </div>
+      )}
+      {chipSummary && (
+        <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+          <span className={`rounded border px-2 py-1 font-mono ${chipSummary.totalLots >= 0 ? 'border-red-500/30 bg-red-500/10 text-red-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'}`}>
+            法人 {fmtLots(chipSummary.totalLots)}
+          </span>
+          <span className="rounded border border-border/50 px-2 py-1 font-mono">外資 {fmtLots(chipSummary.foreignLots)}</span>
+          <span className="rounded border border-border/50 px-2 py-1 font-mono">投信 {fmtLots(chipSummary.trustLots)}</span>
+          <span className="rounded border border-border/50 px-2 py-1 font-mono">自營 {fmtLots(chipSummary.dealerLots)}</span>
+        </div>
+      )}
+      {brokerSummary && (
+        <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+          <span className={`rounded border px-2 py-1 font-mono ${brokerSummary.netLots >= 0 ? 'border-violet-500/30 bg-violet-500/10 text-violet-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'}`}>
+            券商{brokerSummary.windowDays}日 {fmtLots(brokerSummary.netLots)}
+          </span>
+          <span className="rounded border border-border/50 px-2 py-1 font-mono">券商數 {brokerSummary.brokerCount ?? '-'}</span>
+          <span className="rounded border border-border/50 px-2 py-1 font-mono">集中度 {brokerSummary.concentration == null ? '-' : brokerSummary.concentration.toFixed(2)}</span>
+          <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-1 font-mono text-violet-300">分點線</span>
+        </div>
+      )}
     </div>
   )
 }

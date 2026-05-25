@@ -20,7 +20,19 @@ class FakeStatement {
   async first<T = unknown>(): Promise<T | null> {
     const sql = this.sql
     if (sql.includes('MAX(date) AS latest_date')) return { latest_date: '2026-04-30' } as T
+    if (sql.includes('canonical_chip_date')) {
+      return {
+        canonical_chip_date: '2026-04-30',
+        canonical_chip_rows: 2300,
+        legacy_chip_date: '2026-04-30',
+        legacy_chip_rows: 2300,
+        margin_date: '2026-04-30',
+        margin_rows: 2300,
+        manifest_generated_at: '2026-04-30T18:00:00Z',
+      } as T
+    }
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
+    if (sql.includes('COUNT(*) AS count FROM canonical_chip_daily')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM technical_indicators')) return { count: 2300 } as T
     if (sql.includes('score_v2_count')) {
@@ -122,10 +134,6 @@ class FakeStatement {
         'score',
         'signal',
         'confidence',
-        'chip_score',
-        'tech_score',
-        'momentum_score',
-        'ml_score',
         'alpha_context',
         'alpha_allocation',
         'ml_vote_summary',
@@ -133,11 +141,48 @@ class FakeStatement {
       ]
       return { results: names.map((name) => ({ name })) as T[] }
     }
+    if (sql.includes('PRAGMA table_info(compute_profile_events)')) {
+      const names = [
+        'id',
+        'event_date',
+        'provider',
+        'job_name',
+        'run_id',
+        'wall_sec',
+        'compute_sec',
+        'await_sec',
+        'compute_owner',
+        'remote_function',
+        'profile_json',
+      ]
+      return { results: names.map((name) => ({ name })) as T[] }
+    }
     if (sql.includes('FROM daily_recommendations') && sql.includes('ORDER BY rank ASC')) {
       return {
         results: [
-          { symbol: '2330', name: '台積電', sector: '半導體', industry: '半導體業', score: 70, chip_score: 25, tech_score: 22, momentum_score: 10, current_price: 900 },
-          { symbol: '9999', name: '弱勢股', sector: '其他', industry: '其他', score: 30, chip_score: 2, tech_score: 2, momentum_score: 1, current_price: 20 },
+          {
+            symbol: '2330',
+            name: '台積電',
+            sector: '半導體',
+            industry: '半導體業',
+            score: 70,
+            score_components: JSON.stringify({
+              version: 'score_v2',
+              finalScore: 70,
+              components: {
+                mlEdge: 12,
+                chipFlow: 25,
+                technicalStructure: 22,
+                fundamentalQuality: 8,
+                newsTheme: 3,
+              },
+              seedComponents: {
+                screenerMomentumSeed20: 10,
+              },
+            }),
+            current_price: 900,
+          },
+          { symbol: '9999', name: '弱勢股', sector: '其他', industry: '其他', score: 30, current_price: 20 },
         ] as T[],
       }
     }
@@ -199,6 +244,7 @@ void (async () => {
     assert(res.status === 200, 'predeploy route should allow service token')
     const body = await res.json() as any
     assert(body.decision === 'PASS', 'predeploy route should pass for clean fake dataset')
+    assert(body.checks.some((check: any) => check.id === 'finlab_canonical_d1_freshness'), 'predeploy route should include FinLab canonical D1 freshness gate')
     assert(body.checks.some((check: any) => check.id === 'data_quality.prediction_coverage'), 'predeploy route should include data-quality checks')
   }
 

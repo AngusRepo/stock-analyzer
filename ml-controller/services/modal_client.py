@@ -31,10 +31,15 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
+    "universal_retrain_pipeline": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
     "train_universal_from_gcs": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_tree_models": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "train_ftt_model": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "ft_transformer_arch_search": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
+    "finlab_v4_backfill": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
+    "regime_compute": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
+    "optuna_research_sweep": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "optuna_per_regime_robust": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "train_wf_tree_window": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "train_wf_ftt_window": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_wf_hmm_window": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
@@ -46,6 +51,13 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
+    "backtest_full_run": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "backtest_replay": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "backtest_monte_carlo": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "backtest_pbo": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "backtest_research_bundle": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "dataset_snapshot_export": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
+    "d1_cold_archive_export": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
     "breeze2_research_context": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
     "breeze2_reason_generation": {"cpu": 2.0, "memory_mb": 16384, "gpu": "L4"},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
@@ -134,6 +146,16 @@ def _int(value, default: int = 0) -> int:
     except (TypeError, ValueError):
         pass
     return int(default)
+
+
+def _modal_predict_batch_v2_chunk_timeout_sec() -> float:
+    raw = (
+        os.environ.get("MODAL_PREDICT_BATCH_V2_CHUNK_TIMEOUT_SEC")
+        or os.environ.get("MODAL_PREDICT_BATCH_CHUNK_TIMEOUT_SEC")
+        or os.environ.get("MODAL_MAP_TIMEOUT_SEC")
+    )
+    timeout_sec = _num(raw, 420.0)
+    return timeout_sec if timeout_sec > 0 else 420.0
 
 
 def _select_chunk_size_from_observations(
@@ -260,6 +282,7 @@ def batch_predict_contract(*, ab_key: str | None = None) -> dict:
     return {
         "modal_predict_batch_v2": _modal_predict_batch_v2_enabled(),
         "chunk_size": chunk_size,
+        "chunk_timeout_sec": _modal_predict_batch_v2_chunk_timeout_sec(),
         "chunk_size_source": chunk_size_source,
         "chunk_candidates": candidates,
         "ab_key": ab_key,
@@ -405,20 +428,24 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
     ab_key = _batch_ab_key(payloads)
     contract = batch_predict_contract(ab_key=ab_key)
     chunk_size = contract["chunk_size"]
+    chunk_timeout_sec = float(contract["chunk_timeout_sec"])
     chunks = _chunk_payloads(payloads, chunk_size)
     batch_responses: list[dict] = []
     results: list[dict] = []
     t0 = time.time()
     try:
         fn = _lookup(function_name)
-        idx = 0
-        async for r in fn.map.aio(
-            [{"payloads": chunk} for chunk in chunks],
-            order_outputs=True,
-            return_exceptions=True,
-        ):
+        tasks = [
+            _modal_predict_batch_v2_chunk(
+                fn,
+                chunk,
+                chunk_index=idx,
+                timeout_sec=chunk_timeout_sec,
+            )
+            for idx, chunk in enumerate(chunks)
+        ]
+        for idx, r in sorted(await asyncio.gather(*tasks), key=lambda item: item[0]):
             chunk = chunks[idx] if idx < len(chunks) else []
-            idx += 1
             if isinstance(r, BaseException):
                 results.extend({
                     "stock_id": p.get("stock_id", 0),
@@ -460,6 +487,7 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
                 "input_count": len(payloads),
                 "chunk_count": len(chunks),
                 "chunk_size": chunk_size,
+                "chunk_timeout_sec": chunk_timeout_sec,
                 "chunk_sizes": [len(chunk) for chunk in chunks],
                 "batch_contract": contract,
                 "result_count": result_count,
@@ -470,6 +498,21 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
                 "batch_metrics": batch_metrics,
             },
         )
+
+
+async def _modal_predict_batch_v2_chunk(fn, chunk: list[dict], *, chunk_index: int, timeout_sec: float):
+    try:
+        response = await asyncio.wait_for(
+            fn.remote.aio({"payloads": chunk}),
+            timeout=float(timeout_sec),
+        )
+        return chunk_index, response
+    except asyncio.TimeoutError:
+        return chunk_index, TimeoutError(
+            f"predict_batch_v2 chunk timeout after {float(timeout_sec):.1f}s"
+        )
+    except Exception as exc:  # noqa: BLE001 - per-chunk errors must not hang the whole pipeline.
+        return chunk_index, exc
 
 
 async def _modal_batch_retrain(payloads: list[dict]) -> list[dict]:
@@ -501,6 +544,400 @@ async def _modal_train_universal(payload: dict) -> dict:
 
 async def _modal_retrain_orchestrator(payload: dict) -> dict:
     return await _modal_remote_call("retrain_orchestrator", payload)
+
+
+async def spawn_optuna_per_regime(payload: dict) -> dict:
+    """Spawn per-regime robust Optuna on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_optuna_per_regime requires Modal credentials")
+    fn = _lookup("optuna_per_regime_robust")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "optuna_per_regime_robust",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "optuna_per_regime_robust",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_finlab_v4_backfill(payload: dict) -> dict:
+    """Spawn FinLab V4 backfill on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_finlab_v4_backfill requires Modal credentials")
+    fn = _lookup("finlab_v4_backfill")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "finlab_v4_backfill",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "years": payload.get("years"),
+            "compute_owner": "modal",
+            "remote_function": "finlab_v4_backfill",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "finlab_v4_backfill",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_regime_compute(payload: dict) -> dict:
+    """Spawn HMM regime compute on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_regime_compute requires Modal credentials")
+    fn = _lookup("regime_compute")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "regime_compute",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "run_date": payload.get("run_date"),
+            "force_retrain": payload.get("force_retrain"),
+            "compute_owner": "modal",
+            "remote_function": "regime_compute",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "regime_compute",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_dataset_snapshot_export(payload: dict) -> dict:
+    """Spawn dataset snapshot export on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_dataset_snapshot_export requires Modal credentials")
+    fn = _lookup("dataset_snapshot_export")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "dataset_snapshot_export",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "business_date": payload.get("business_date") or payload.get("run_date"),
+            "compute_owner": "modal",
+            "remote_function": "dataset_snapshot_export",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "dataset_snapshot_export",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_d1_cold_archive_export(payload: dict) -> dict:
+    """Spawn D1 cold archive export on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_d1_cold_archive_export requires Modal credentials")
+    fn = _lookup("d1_cold_archive_export")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "d1_cold_archive_export",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "business_date": payload.get("business_date"),
+            "start_date": payload.get("start_date"),
+            "end_date": payload.get("end_date"),
+            "compute_owner": "modal",
+            "remote_function": "d1_cold_archive_export",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "d1_cold_archive_export",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_backtest_replay(payload: dict) -> dict:
+    """Spawn backtest replay on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_backtest_replay requires Modal credentials")
+    fn = _lookup("backtest_replay")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    await _record_modal_observation(
+        "backtest_replay",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "start_date": request.get("start_date"),
+            "end_date": request.get("end_date"),
+            "mode": request.get("mode"),
+            "symbols": len(request.get("symbols") or []) if isinstance(request.get("symbols"), list) else None,
+            "compute_owner": "modal",
+            "remote_function": "backtest_replay",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "backtest_replay",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_backtest_full_run(payload: dict) -> dict:
+    """Spawn full backtest on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_backtest_full_run requires Modal credentials")
+    fn = _lookup("backtest_full_run")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "backtest_full_run",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "compute_owner": "modal",
+            "remote_function": "backtest_full_run",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "backtest_full_run",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_backtest_monte_carlo(payload: dict) -> dict:
+    """Spawn backtest Monte Carlo analysis on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_backtest_monte_carlo requires Modal credentials")
+    fn = _lookup("backtest_monte_carlo")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "backtest_monte_carlo",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "n_simulations": payload.get("n"),
+            "source": payload.get("source"),
+            "method": payload.get("method"),
+            "compute_owner": "modal",
+            "remote_function": "backtest_monte_carlo",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "backtest_monte_carlo",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_backtest_pbo(payload: dict) -> dict:
+    """Spawn backtest PBO analysis on Modal without waiting for completion."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_backtest_pbo requires Modal credentials")
+    fn = _lookup("backtest_pbo")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "backtest_pbo",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "partitions": payload.get("partitions"),
+            "source": payload.get("source"),
+            "compute_owner": "modal",
+            "remote_function": "backtest_pbo",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "backtest_pbo",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_optuna_research_sweep(payload: dict) -> dict:
+    """Spawn weekly/monthly Optuna research sweep on Modal without waiting."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_optuna_research_sweep requires Modal credentials")
+    fn = _lookup("optuna_research_sweep")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "optuna_research_sweep",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "cadence": payload.get("cadence"),
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "n_trials": payload.get("n_trials"),
+            "subset_size": payload.get("subset_size"),
+            "compute_owner": "modal",
+            "remote_function": "optuna_research_sweep",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "optuna_research_sweep",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
+
+
+async def spawn_backtest_research_bundle(payload: dict) -> dict:
+    """Spawn backtest + MC + PBO research bundle on Modal without waiting."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_backtest_research_bundle requires Modal credentials")
+    fn = _lookup("backtest_research_bundle")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "backtest_research_bundle",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "trigger_source": payload.get("trigger_source"),
+            "trigger_id": payload.get("trigger_id"),
+            "monte_carlo_n": payload.get("monte_carlo_n"),
+            "pbo_partitions": payload.get("pbo_partitions"),
+            "compute_owner": "modal",
+            "remote_function": "backtest_research_bundle",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "backtest_research_bundle",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
 
 
 async def _modal_shap_audit(payload: dict) -> dict:
@@ -939,6 +1376,41 @@ async def retrain_orchestrator(payload: dict, fire_and_forget: bool = True) -> d
             logger.info(f"[ml_client] Modal.remote retrain_orchestrator (await, monthly={payload.get('is_monthly')})")
             return await _modal_remote_call("retrain_orchestrator", payload)
     raise RuntimeError("retrain_orchestrator requires Modal (no HTTP fallback)")
+
+
+async def spawn_universal_retrain_pipeline(payload: dict) -> dict:
+    """Spawn full universal retrain prep/orchestration on Modal without waiting."""
+    if not _USE_MODAL:
+        raise RuntimeError("spawn_universal_retrain_pipeline requires Modal credentials")
+    fn = _lookup("universal_retrain_pipeline")
+    t0 = time.time()
+    call = await fn.spawn.aio(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    await _record_modal_observation(
+        "universal_retrain_pipeline",
+        wall_sec=time.time() - t0,
+        compute_sec=0.0,
+        source="modal_spawn",
+        meta={
+            "call_type": "spawn",
+            "run_date": payload.get("run_date"),
+            "force_monthly": (payload.get("request") or {}).get("force_monthly"),
+            "candidate_type": (payload.get("request") or {}).get("candidate_type"),
+            "compute_owner": "modal",
+            "remote_function": "universal_retrain_pipeline",
+        },
+    )
+    return {
+        "status": "spawned",
+        "executor": "modal",
+        "function_name": "universal_retrain_pipeline",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+    }
 
 
 async def feature_selection(payload: dict | None = None, fire_and_forget: bool = False) -> dict:

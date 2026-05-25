@@ -13,6 +13,7 @@ import os
 import json
 import base64
 import logging
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -91,17 +92,11 @@ def _score_float(value: Any, fallback: float = 0.0) -> float:
 
 
 def _round_score(value: float) -> float:
-    return round(float(value) * 10) / 10
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _clamp_score(value: Any, maximum: float) -> float:
     return _round_score(max(0.0, min(float(maximum), _score_float(value))))
-
-
-def _rescale_score(value: Any, old_max: float, new_max: float) -> float:
-    if old_max <= 0:
-        return 0.0
-    return _clamp_score((_score_float(value) / old_max) * new_max, new_max)
 
 
 def score_v2_payload(row: Any) -> dict | None:
@@ -120,14 +115,6 @@ def score_v2_component(row: Any, key: str) -> float:
     payload = score_v2_payload(row)
     if payload:
         return _clamp_score((payload.get("components") or {}).get(key), SCORE_V2_WEIGHTS.get(key, 100.0))
-    if key == "mlEdge":
-        return _rescale_score(_row_value(row, "ml_score"), 30.0, SCORE_V2_WEIGHTS[key])
-    if key == "chipFlow":
-        return _rescale_score(_row_value(row, "chip_score"), 40.0, SCORE_V2_WEIGHTS[key])
-    if key == "technicalStructure":
-        legacy_tech = _score_float(_row_value(row, "tech_score"))
-        legacy_momentum = _score_float(_row_value(row, "momentum_score"))
-        return _rescale_score(legacy_tech + legacy_momentum, 50.0, SCORE_V2_WEIGHTS[key])
     return 0.0
 
 
@@ -142,10 +129,7 @@ def score_v2_final_score(row: Any) -> float:
     payload = score_v2_payload(row)
     if payload:
         return _clamp_score(payload.get("finalScore", payload.get("total")), 100.0)
-    fallback = _row_value(row, "score", _row_value(row, "total_score", None))
-    if fallback is not None:
-        return _clamp_score(fallback, 100.0)
-    return score_v2_total(row)
+    return 0.0
 
 
 def score_v2_alpha_adjustment(row: Any) -> float:
@@ -163,7 +147,7 @@ def score_v2_component_pct(row: Any, key: str) -> float:
 
 
 def score_v2_source(row: Any) -> str:
-    return "score_v2" if score_v2_payload(row) else "storage_projection"
+    return "score_v2" if score_v2_payload(row) else "missing_score_v2"
 
 
 _jinja_env.globals.update(
@@ -302,7 +286,11 @@ class ObsidianWriter:
             risk = risk[0] if risk else {}
 
             recommendations = await _d1_query(client,
-                "SELECT * FROM daily_recommendations WHERE date=? ORDER BY score DESC", [date])
+                "SELECT date, symbol, name, sector, signal, confidence, reason, score_components "
+                "FROM daily_recommendations WHERE date=? "
+                "ORDER BY CASE WHEN json_valid(score_components) THEN "
+                "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
+                "CAST(json_extract(score_components, '$.total') AS REAL), 0) ELSE 0 END DESC", [date])
 
             snapshot = (await _d1_query(client,
                 "SELECT * FROM paper_daily_snapshots WHERE account_id=1 AND date=? LIMIT 1", [date])) or [{}]
@@ -316,7 +304,12 @@ class ObsidianWriter:
                 "unrealized_pnl, unrealized_pnl_pct FROM paper_positions WHERE account_id=1")
 
             decisions = await _d1_query(client,
-                "SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date])
+                "SELECT date, symbol, action, score_components, debate_verdict, "
+                "ml_confidence AS conviction, market_risk, sector, entry_price "
+                "FROM decision_logs WHERE date=? "
+                "ORDER BY CASE WHEN json_valid(score_components) THEN "
+                "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
+                "CAST(json_extract(score_components, '$.total') AS REAL), 0) ELSE 0 END DESC", [date])
 
             # T2 pending buys (may not exist yet if morning hasn't run)
             t2_buys = await _d1_query(client,

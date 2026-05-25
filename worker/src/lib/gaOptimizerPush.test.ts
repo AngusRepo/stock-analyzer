@@ -19,8 +19,29 @@ class FakeKV {
   }
 }
 
+class FakeD1Statement {
+  bind(..._values: unknown[]) {
+    return this
+  }
+
+  async run() {
+    return { success: true }
+  }
+}
+
+class FakeD1 {
+  prepare(_sql: string) {
+    return new FakeD1Statement()
+  }
+
+  async batch(statements: FakeD1Statement[]) {
+    return Promise.all(statements.map((statement) => statement.run()))
+  }
+}
+
 const env = {
   KV: new FakeKV(),
+  DB: new FakeD1(),
   STOCKVISION_AUTH_TOKEN: 'service-token',
 } as unknown as Bindings
 

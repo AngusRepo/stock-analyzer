@@ -84,7 +84,8 @@ function fmtMoney(value: number | null | undefined): string {
 
 export function describeAllocatorDecision(watchPoints: unknown): AllocatorDecisionSummary | null {
   const points = Array.isArray(watchPoints) ? watchPoints : []
-  const parsed = points
+  const parsed = [...points]
+    .reverse()
     .map(parseAllocatorDecisionWatchPoint)
     .find((item): item is ParsedAllocatorDecision => Boolean(item))
   if (!parsed) return null
@@ -92,7 +93,7 @@ export function describeAllocatorDecision(watchPoints: unknown): AllocatorDecisi
   const action = twAction(parsed.action)
   const parts = [
     `目標部位 ${fmtMoney(parsed.targetPosition)}`,
-    `目前 ${fmtMoney(parsed.currentPosition)}`,
+    `目前持有市值 ${fmtMoney(parsed.currentPosition)}`,
     `本次上限 ${fmtMoney(parsed.budgetCap)}`,
   ]
   if (parsed.targetExposure != null) parts.push(`總曝險 ${(parsed.targetExposure * 100).toFixed(0)}%`)

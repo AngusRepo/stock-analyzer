@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pandas as pd
 
 from app import chronos_universal
@@ -58,6 +61,32 @@ def test_chronos_batch_preserves_original_order_with_invalid_series(monkeypatch)
     assert [r["symbol"] for r in results] == ["TOO_SHORT", "2330", "2317"]
     assert "insufficient data" in results[0]["error"]
     assert results[1]["batch_mode"] == "multi_series_predict_df"
+
+
+def test_get_pipeline_falls_back_when_chronos_api_rejects_dtype(monkeypatch):
+    calls = []
+
+    class _FakeChronos2Pipeline:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            calls.append({"model_id": model_id, **kwargs})
+            if "dtype" in kwargs:
+                raise TypeError("Chronos2Model.__init__() got an unexpected keyword argument 'dtype'")
+            return {"model_id": model_id, "kwargs": kwargs}
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(float32="float32"))
+    monkeypatch.setitem(sys.modules, "chronos", SimpleNamespace(Chronos2Pipeline=_FakeChronos2Pipeline))
+    chronos_universal._get_pipeline.cache_clear()
+    try:
+        pipeline = chronos_universal._get_pipeline("amazon/chronos-2")
+    finally:
+        chronos_universal._get_pipeline.cache_clear()
+
+    assert pipeline["kwargs"] == {"device_map": "cpu", "torch_dtype": "float32"}
+    assert calls == [
+        {"model_id": "amazon/chronos-2", "device_map": "cpu", "dtype": "float32"},
+        {"model_id": "amazon/chronos-2", "device_map": "cpu", "torch_dtype": "float32"},
+    ]
 
 
 def test_chronos_forecast_validation_passes_with_realized_outcomes():

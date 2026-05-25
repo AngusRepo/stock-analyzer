@@ -8,6 +8,31 @@ const llm = readFileSync('src/lib/llm.ts', 'utf8')
 const pipelinePage = readFileSync('../frontend/src/pages/PipelinePage.tsx', 'utf8')
 
 {
+  const candidateStart = llm.indexOf('export interface RecommendationCandidate')
+  const candidateEnd = llm.indexOf('export async function generateRecommendationReasons', candidateStart)
+  assert(candidateStart >= 0 && candidateEnd > candidateStart, 'LLM recommendation candidate interface should be locatable')
+  const candidateBlock = llm.slice(candidateStart, candidateEnd)
+  assert(
+    candidateBlock.includes('score_v2: string | null'),
+    'LLM recommendation candidate should require normalized Score V2 payload input',
+  )
+  assert(
+    !candidateBlock.includes('score_components: string | null'),
+    'LLM recommendation candidate must not expose raw score_components',
+  )
+  for (const legacyField of [
+    'score: number',
+    'chip_score: number',
+    'tech_score: number',
+    'momentum_score?: number | null',
+    'ml_score: number',
+  ]) {
+    assert(!candidateBlock.includes(legacyField), `LLM recommendation candidate must not expose legacy ${legacyField}`)
+  }
+  assert(
+    llm.includes("readScoreV2Snapshot({ score_components: c.score_v2 } as ScoreV2StorageRow)"),
+    'LLM recommendation prompt should adapt normalized score_v2 through the shared Score V2 taxonomy reader',
+  )
   assert(
     llm.includes('score=${scoreV2.finalScore}'),
     'LLM recommendation prompt should expose Score V2 finalScore as the candidate score',

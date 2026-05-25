@@ -8,12 +8,7 @@ export interface Breeze2CandidateLike {
   symbol?: unknown
   name?: unknown
   stock_name?: unknown
-  score?: unknown
-  score_components?: unknown
-  ml_score?: unknown
-  chip_score?: unknown
-  tech_score?: unknown
-  momentum_score?: unknown
+  score_v2?: unknown
   rank?: unknown
   reason?: unknown
   watch_points?: unknown
@@ -52,11 +47,11 @@ function normalizeScore(score: unknown): number {
 }
 
 function scoreSnapshot(candidate: Breeze2CandidateLike) {
-  return readScoreV2Snapshot(candidate as ScoreV2StorageRow)
+  return readScoreV2Snapshot({ score_components: candidate.score_v2 } as ScoreV2StorageRow)
 }
 
 function candidateScore(candidate: Breeze2CandidateLike): number {
-  return scoreSnapshot(candidate).finalScore
+  return scoreSnapshot(candidate)?.finalScore ?? 0
 }
 
 function normalizeCandidateScore(candidate: Breeze2CandidateLike): number {
@@ -140,8 +135,8 @@ export function buildBreeze2FactCheckRequest(
     metadata: {
       run_date: options.runDate,
       rank: options.rank ?? candidate.rank,
-      screener_score: score.finalScore,
-      score_source: score.source,
+      screener_score: score?.finalScore ?? 0,
+      score_source: score?.source ?? 'missing_score_v2',
       recommendation_lane: candidate.recommendation_lane,
       source: 'stockvision_worker',
     },

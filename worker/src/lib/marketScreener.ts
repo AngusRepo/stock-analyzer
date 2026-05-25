@@ -17,9 +17,16 @@ import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screener
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
-import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
+import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateLike } from './breeze2Runtime'
 import { loadTradingRestrictionSet } from './tradingRestrictions'
-import { buildPartialScreenerScoreV2, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
+import {
+  buildFinLabTaxonomyThemeSignals,
+  refreshStockThemeFeaturesFromSignals,
+  upsertThemeSignals,
+  type FinLabTaxonomyTagRow,
+} from './v41DataRuntime'
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
@@ -45,6 +52,7 @@ export interface ScreenerCandidate {
   sector: string
   score: number
   reason: string
+  score_components?: string | null
   strategy_matches?: Array<{ specId: string; alphaBucket: string; status: string; label: string; reason: string }>
   strategy_tags?: string[]
   strategy_watch_points?: string[]
@@ -221,12 +229,34 @@ export async function queryTopConceptTagsForSymbols(
   return rows
 }
 
+async function materializeScreenerThemeRuntime(
+  db: D1Database,
+  date: string,
+  symbols: string[],
+): Promise<{ signals: number; tags: number; features: number }> {
+  const tags = await queryTopConceptTagsForSymbols(db, symbols) as FinLabTaxonomyTagRow[]
+  const generatedAt = new Date().toISOString()
+  const signals = buildFinLabTaxonomyThemeSignals(tags, date, generatedAt)
+  await upsertThemeSignals(db, signals)
+  const featureReport = await refreshStockThemeFeaturesFromSignals(db, date)
+  return {
+    signals: signals.length,
+    tags: tags.length,
+    features: featureReport.features,
+  }
+}
+
 interface SymbolTaxonomyProfile {
   industry?: string
   industryTheme?: string
   subindustry?: string
   concepts: string[]
   tags: string[]
+}
+
+function rrgClassificationForTagType(tagType: string | null | undefined): string {
+  const normalized = String(tagType || '').trim()
+  return normalized === 'concept' ? 'theme' : normalized
 }
 
 async function loadSymbolTaxonomyProfiles(
@@ -269,6 +299,46 @@ function taxonomyWatchPoint(profile: SymbolTaxonomyProfile | undefined): string 
 function taxonomyLayerValue(candidate: { taxonomy?: SymbolTaxonomyProfile; industry?: string }, layer: 'industryTheme' | 'subindustry' | 'industry' | 'concept'): string | null {
   if (layer === 'concept') return candidate.taxonomy?.concepts?.[0] ?? null
   return candidate.taxonomy?.[layer] ?? (layer === 'industry' ? candidate.industry ?? null : null)
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10
+}
+
+function clampScore(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
+}
+
+function applyScoreV2NewsThemeAdjustment(
+  candidate: { score: number; score_components?: string | null },
+  requestedDelta: number,
+  reason: string,
+  riskFlags: string[] = [],
+): number {
+  const snapshot = readScoreV2Snapshot({ score_components: candidate.score_components } as ScoreV2StorageRow)
+  if (!snapshot) return 0
+  const positiveDelta = Math.max(0, requestedDelta)
+  const appliedNewsDelta = positiveDelta > 0
+    ? round1(Math.min(positiveDelta, Math.max(0, 5 - snapshot.components.newsTheme)))
+    : 0
+  const riskAdjustment = requestedDelta < 0 ? requestedDelta : 0
+  const alphaAdjustment = round1((snapshot.alphaAdjustment ?? 0) + riskAdjustment)
+  const payload = buildScoreV2Components({
+    ...snapshot.components,
+    newsTheme: round1(snapshot.components.newsTheme + appliedNewsDelta),
+    technicalBreakdown: snapshot.technicalBreakdown,
+    riskFlags: [...snapshot.riskFlags, ...riskFlags],
+    reasons: [...snapshot.reasons, reason],
+  })
+  const finalScore = clampScore(round1(payload.total + alphaAdjustment), 0, 100)
+  candidate.score_components = JSON.stringify({
+    ...payload,
+    alphaAdjustment,
+    finalScore,
+  })
+  const appliedRankingDelta = round1(appliedNewsDelta + riskAdjustment)
+  candidate.score = round1(candidate.score + appliedRankingDelta)
+  return appliedRankingDelta
 }
 
 function applyTaxonomyDiversityCap<T extends { taxonomy?: SymbolTaxonomyProfile; industry?: string }>(
@@ -933,7 +1003,7 @@ export function scoreMultiFactor(
     momentumScore20: momentum_score,
     reasons,
   })
-  const base_score = Math.round((chip_score + tech_score + momentum_score) * 10) / 10
+  const base_score = scoreV2.finalScore ?? scoreV2.total
   return {
     base_score,
     chip_score,
@@ -1401,7 +1471,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 但沒 consumer。這裡接上：讀 ml-controller 寫的 sector_flow (classification='theme'
   // + 最新 date + 非空 quadrant)，把每檔候選股的 top concept tag 對應到 quadrant，
   // 然後用 cfg.rrg.{leadingBonus, improvingBonus, weakeningBonus, laggingPenalty}
-  // 調整 score。保留原本 base_score 語意不變（調整後存回 c.score）。
+  // 調整 score。以 Score V2 partial total 作 seed score，後續 overlay 調整後存回 c.score。
   // RRG quadrant axes (RS=100, Mom=0) are canonical de Kempenaer coordinates,
   // so they stay fixed rather than becoming Optuna-tunable policy knobs.
   const sectorHeatScores: SectorHeatScore[] = []
@@ -1411,35 +1481,41 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     try {
       // (a) 每檔候選股的 top (highest weight) concept tag
       const topTagRows = await queryTopConceptTagsForSymbols(env.DB, scored.map(c => c.symbol))
-      const symbolTags = new Map<string, string[]>()
+      const symbolTags = new Map<string, Array<{ tag: string; classification: string }>>()
       for (const r of topTagRows ?? []) {
         const tags = symbolTags.get(r.symbol) ?? []
-        tags.push(r.tag)
+        tags.push({ tag: r.tag, classification: rrgClassificationForTagType(r.tag_type) })
         symbolTags.set(r.symbol, tags)
       }
       // (b) 最新 sector_flow 的四層 taxonomy quadrant
       const { results: qRows } = await env.DB.prepare(
-        `SELECT sector, quadrant, rs_ratio, rs_momentum FROM sector_flow
+        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum FROM sector_flow
          WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
            AND quadrant IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
                          AND quadrant IS NOT NULL)`
-      ).all<{ sector: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
+      ).all<{ sector: string; classification: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
       const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number }>()
-      for (const r of qRows ?? []) themeQuadrant.set(r.sector, {
-        quadrant: r.quadrant,
-        rsRatio: Number(r.rs_ratio ?? 100),
-        rsMomentum: Number(r.rs_momentum ?? 0),
-      })
+      for (const r of qRows ?? []) {
+        const classification = String(r.classification || '').trim()
+        const sector = String(r.sector || '').trim()
+        if (!classification || !sector) continue
+        themeQuadrant.set(`${classification}:${sector}`, {
+          quadrant: r.quadrant,
+          rsRatio: Number(r.rs_ratio ?? 100),
+          rsMomentum: Number(r.rs_momentum ?? 0),
+        })
+      }
       const latestThemeUniverse = new Set(themeQuadrant.keys())
 
       // Apply bonus to each scored candidate
       for (const c of scored) {
         const tags = symbolTags.get(c.symbol) ?? []
-        const tag = tags.find((candidateTag) => latestThemeUniverse.has(candidateTag)) ?? tags[0]
-        if (!tag) continue
-        const overlay = themeQuadrant.get(tag)
+        const matched = tags.find((candidateTag) => latestThemeUniverse.has(`${candidateTag.classification}:${candidateTag.tag}`)) ?? tags[0]
+        if (!matched) continue
+        const taxonomyKey = `${matched.classification}:${matched.tag}`
+        const overlay = themeQuadrant.get(taxonomyKey)
         if (!overlay) {
           pushFunnelItem(funnelItems, {
             symbol: c.symbol,
@@ -1449,7 +1525,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
             reasonCode: 'rrg_overlay_unmapped_neutral',
             scoreBefore: c.score,
             scoreAfter: c.score,
-            evidence: { tag, latestThemeUniverseSize: latestThemeUniverse.size },
+            evidence: { tag: matched.tag, classification: matched.classification, taxonomyKey, latestThemeUniverseSize: latestThemeUniverse.size },
           })
           continue
         }
@@ -1483,7 +1559,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
             reasonCode,
             scoreBefore: before,
             scoreAfter: c.score,
-            evidence: { tag, quadrant: q, rsRatio, rsMomentum, adjustment },
+            evidence: { tag: matched.tag, classification: matched.classification, taxonomyKey, quadrant: q, rsRatio, rsMomentum, adjustment },
           })
         }
       }
@@ -1534,9 +1610,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         if (!s || s.total === 0) continue
         const posRatio = s.pos / s.total
         const negRatio = s.neg / s.total
-        if (posRatio > 0.6) c.score += 5
-        else if (posRatio > 0.4) c.score += 3
-        else if (negRatio > 0.4) c.score -= 3
+        if (posRatio > 0.6) applyScoreV2NewsThemeAdjustment(c, 5, 'positive_news_sentiment')
+        else if (posRatio > 0.4) applyScoreV2NewsThemeAdjustment(c, 3, 'positive_news_sentiment')
+        else if (negRatio > 0.4) applyScoreV2NewsThemeAdjustment(c, -3, 'negative_news_sentiment', ['negative_news_sentiment'])
       }
     }
   } catch (e) {
@@ -1556,8 +1632,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       const crowdingPenalty = Math.min(2, Math.log10(Math.max(1, bestTag?.crowding ?? 1)))
       const buzzBonus = Math.max(0, Math.min(4, sourceStrength * 1.5 + matchedHot.length - crowdingPenalty))
       const before = c.score
-      c.score += buzzBonus
-      c.reason += ` | buzz_evidence:${bestTag.tag}+${buzzBonus.toFixed(1)}`
+      const appliedBuzzBonus = applyScoreV2NewsThemeAdjustment(c, buzzBonus, `buzz_evidence:${bestTag.tag}`)
+      if (appliedBuzzBonus <= 0) continue
+      c.reason += ` | buzz_evidence:${bestTag.tag}+${appliedBuzzBonus.toFixed(1)}`
       pushFunnelItem(funnelItems, {
         symbol: c.symbol,
         name: c.name,
@@ -1574,12 +1651,58 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           crowding: bestTag.crowding,
           crowdingPenalty,
           buzzBonus,
+          appliedBuzzBonus,
         },
       })
     }
   }
 
   // ── Step 5: 排序 + 去重 + 截斷 ──
+  try {
+    const evidenceRisk = await loadExternalEvidenceRiskOverlays(env.DB, endDate, scored.map(c => c.symbol))
+    let vetoed = 0
+    let penalized = 0
+    for (let i = scored.length - 1; i >= 0; i--) {
+      const c = scored[i]
+      const overlay = evidenceRisk.get(c.symbol)
+      if (!overlay) continue
+      if (overlay.action === 'veto') {
+        vetoed++
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'external_evidence_risk',
+          decision: 'drop',
+          reasonCode: overlay.flags[0] ?? 'major_negative_event',
+          scoreBefore: c.score,
+          scoreAfter: null,
+          evidence: { ...overlay },
+        })
+        scored.splice(i, 1)
+        continue
+      }
+      const before = c.score
+      const appliedPenalty = applyScoreV2NewsThemeAdjustment(c, overlay.penalty, overlay.flags[0] ?? 'external_evidence_risk', overlay.flags)
+      if (appliedPenalty < 0) {
+        penalized++
+        c.reason += ` | risk_overlay:${overlay.flags[0] ?? 'external_evidence'}`
+        pushFunnelItem(funnelItems, {
+          symbol: c.symbol,
+          name: c.name,
+          stage: 'external_evidence_risk',
+          decision: 'observe',
+          reasonCode: overlay.flags[0] ?? 'external_evidence_risk',
+          scoreBefore: before,
+          scoreAfter: c.score,
+          evidence: { ...overlay },
+        })
+      }
+    }
+    if (vetoed || penalized) debugLog.push(`[Step 4c] external evidence risk overlay veto=${vetoed} penalized=${penalized}`)
+  } catch (e) {
+    console.warn('[Screener v2] external evidence risk overlay failed:', e)
+  }
+
   // Step 4 debug
   debugLog.push(`[Step 4] 情緒面加分完成 | PTT hot concepts: ${[...hotConcepts].join(', ')}`)
   debugLog.push(`[Step 4] Theme evidence now includes PTT/news/Anue plus runtime theme_signals when available`)
@@ -2039,12 +2162,23 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   const breeze2ScreenerContext = await enrichScreenerCandidatesWithBreeze2(
     env,
-    finalCandidates.map((candidate, index) => ({
-      ...candidate,
-      rank: index + 1,
-      watch_points: (candidate as any).strategy_watch_points ?? [],
-      recommendation_lane: 'tradable',
-    })),
+    finalCandidates.map((candidate, index) => {
+      const rawCandidate = candidate as ScoredCandidate & Breeze2CandidateLike
+      return {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        stock_name: candidate.name,
+        score_v2: rawCandidate.score_v2 ?? rawCandidate.score_components ?? null,
+        reason: candidate.reason,
+        strategy_watch_points: candidate.strategy_watch_points ?? [],
+        recommendation_lane: 'tradable',
+        major_event: rawCandidate.major_event,
+        theme: rawCandidate.theme,
+        news: rawCandidate.news,
+        evidence_items: rawCandidate.evidence_items,
+        rank: index + 1,
+      } satisfies Breeze2CandidateLike
+    }),
     { runDate: endDate, maxCandidates: 5, executeModal: true },
   ).catch((error) => {
     console.warn('[Screener v2] Breeze2 enrichment skipped:', error)
@@ -2250,11 +2384,24 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `emerging_research=${emergingResearchCandidates.length}; ML owner fields preserved`,
     )
 
+    try {
+      const themeRuntime = await materializeScreenerThemeRuntime(env.DB, endDate, seedSymbols)
+      debugLog.push(
+        `[DB] theme runtime materialized signals=${themeRuntime.signals} ` +
+        `tags=${themeRuntime.tags} features=${themeRuntime.features}`,
+      )
+    } catch (e) {
+      console.warn('[Screener v2] theme runtime materialization failed:', e)
+    }
+
     // #15 同步寫 screener_selection_history 供下次 run 計算 freq flag
     try {
       const histBatch = finalCandidates.map(c => {
         const sc = c as any
-        const combined = Math.round(((sc.chip_score ?? 0) + (sc.tech_score ?? 0) + (sc.momentum_score ?? 0)) * 10) / 10
+        const scoreV2 = readScoreV2Snapshot({ score_components: sc.score_components } as ScoreV2StorageRow)
+        const combined = Number.isFinite(Number(sc.score))
+          ? Number(sc.score)
+          : scoreV2?.finalScore ?? 0
         return env.DB.prepare(
           `INSERT OR IGNORE INTO screener_selection_history (date, stock_id, symbol, score, industry)
            VALUES (?, (SELECT id FROM stocks WHERE symbol=?), ?, ?, ?)`
@@ -2415,10 +2562,9 @@ function zScore(values: number[]): number[] {
 export async function calcFactorIC(env: Bindings): Promise<{
   factors: { name: string; ic_5d: number; ic_10d: number; ic_20d: number; sample: number }[]
 }> {
-  // Score V2 payload is canonical; storage columns are projection fallback only.
+  // Score V2 payload is canonical; factor IC must not read legacy projection columns.
   const { results: recRows } = await env.DB.prepare(`
-    SELECT r.symbol, r.date, r.score, r.score_components,
-           r.chip_score, r.tech_score, r.momentum_score, r.ml_score
+    SELECT r.symbol, r.date, r.score_components
     FROM daily_recommendations r
     WHERE r.date >= date('now', '-30 days')
     ORDER BY r.date, r.symbol
@@ -2467,27 +2613,27 @@ export async function calcFactorIC(env: Bindings): Promise<{
   const factors = [
     {
       name: 'mlEdge',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.mlEdge,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.mlEdge ?? null,
     },
     {
       name: 'chipFlow',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.chipFlow,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.chipFlow ?? null,
     },
     {
       name: 'technicalStructure',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.technicalStructure,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.technicalStructure ?? null,
     },
     {
       name: 'fundamentalQuality',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.fundamentalQuality,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.fundamentalQuality ?? null,
     },
     {
       name: 'newsTheme',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).components.newsTheme,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.newsTheme ?? null,
     },
     {
       name: 'finalScore',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row).finalScore,
+      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.finalScore ?? null,
     },
   ] as const
   const results = []
@@ -2518,7 +2664,9 @@ export async function calcFactorIC(env: Bindings): Promise<{
           const closeFuture = prices.get(dates[dateIdx + days])!
           if (closeNow <= 0) continue
 
-          factorValues.push(factor.value(rec))
+          const factorValue = factor.value(rec)
+          if (factorValue == null) continue
+          factorValues.push(factorValue)
           futureReturns.push((closeFuture - closeNow) / closeNow)
         }
 

@@ -172,7 +172,7 @@ def _generation_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "name": candidate.get("name") or candidate.get("stock_name"),
         "signal": candidate.get("signal"),
         "score": candidate.get("score"),
-        "score_components": candidate.get("score_components"),
+        "score_v2": candidate.get("score_v2") or candidate.get("score_components"),
         "reason": candidate.get("reason"),
         "watch_points": candidate.get("watch_points") if isinstance(candidate.get("watch_points"), list) else [],
         "theme": candidate.get("theme") if isinstance(candidate.get("theme"), dict) else {},

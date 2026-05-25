@@ -33,3 +33,12 @@ function assert(condition: unknown, message: string): void {
   assert(summary?.title.includes('不新增'), 'skip allocator decisions should say no new slot')
   assert(summary?.tone === 'warn', 'skip allocator decisions should use warn tone')
 }
+
+{
+  const summary = describeAllocatorDecision([
+    'allocator:skip:allocator_full_requires_replacement:target=172000;current=0;budget=0;rank=74;exposure=0.90',
+    'allocator:buy:allocator_open_slot:target=172000;current=0;budget=172000;rank=74;exposure=0.90',
+  ])
+  assert(summary?.action === 'buy', 'allocator UI should prefer the latest allocator watch point over stale earlier state')
+  assert(summary?.title.includes('開新倉'), 'latest open-slot decision should be visible to desktop and mobile consistently')
+}

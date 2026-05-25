@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 from dataclasses import asdict
 
@@ -35,7 +35,13 @@ from services.payload_builder import (
 )
 from services.training_calendar import monthly_revenue_available_date
 from services.training_policy import TrainingPolicy
-from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
+from services.modal_client import (
+    batch_retrain,
+    prep_universal_batch,
+    shap_audit,
+    spawn_universal_retrain_pipeline,
+    train_universal,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
@@ -73,6 +79,71 @@ class UniversalRetrainTriggerRequest(BaseModel):
     ftt_patience: int = 16
     ftt_batch_size: int = 1024
     ftt_margin: float = 0.0
+
+
+class UniversalRetrainRunRequest(UniversalRetrainTriggerRequest):
+    run_id: str | None = None
+    trigger_source: str = "manual"
+    trigger_id: str | None = None
+
+
+def _model_dump(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def _truthy(value: str | None, *, default: bool = False) -> bool:
+    if value is None or not str(value).strip():
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "modal"}
+
+
+def _universal_retrain_executor() -> str:
+    raw = (
+        os.environ.get("UNIVERSAL_RETRAIN_EXECUTOR")
+        or os.environ.get("RETRAIN_UNIVERSAL_EXECUTOR")
+        or ""
+    ).strip().lower()
+    if raw:
+        return raw
+    return "modal" if _truthy(os.environ.get("UNIVERSAL_RETRAIN_MODAL_ENABLED")) else "cloud_run"
+
+
+def build_universal_retrain_modal_payload(
+    req: UniversalRetrainRunRequest,
+    *,
+    run_id: str,
+    run_date: str,
+    lock_key: str,
+    followup_webhook_url: str,
+) -> dict:
+    request_payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if key not in {"run_id", "trigger_source", "trigger_id"} and value is not None
+    }
+    request_payload["run_date"] = run_date
+    return {
+        "executor": "modal",
+        "source": "universal_retrain_pipeline",
+        "run_id": run_id,
+        "run_date": run_date,
+        "lock_key": lock_key,
+        "request": request_payload,
+        "followup_webhook_url": followup_webhook_url,
+        "trigger_source": req.trigger_source or "manual",
+        "trigger_id": req.trigger_id or run_id,
+        "quality_contract": {
+            "stock_universe_reduced": False,
+            "training_groups_reduced": False,
+            "feature_count_reduced": False,
+            "prep_window_reduced": False,
+            "model_hyperparams_reduced": False,
+            "promotion_gate_weakened": False,
+            "production_config_mutated": False,
+        },
+    }
 
 
 def _force_https(url: str) -> str:
@@ -504,6 +575,123 @@ def _volume_bucket(prices: list[dict]) -> int:
     if avg_vol > 500_000:
         return 1
     return 0
+
+
+@router.post("/universal/run")
+async def trigger_universal_retrain_run(
+    req: UniversalRetrainRunRequest = Body(default=UniversalRetrainRunRequest()),
+    request: Request = None,
+):
+    """Spawn the full universal retrain prep/orchestration flow on Modal.
+
+    The synchronous /retrain/universal route remains the rollback owner. This
+    route only acquires the duplicate-run lock and dispatches Modal so Cloud Run
+    does not own the long prep wait.
+    """
+    executor = _universal_retrain_executor()
+    if executor != "modal":
+        raise HTTPException(
+            status_code=409,
+            detail="UNIVERSAL_RETRAIN_EXECUTOR=modal or UNIVERSAL_RETRAIN_MODAL_ENABLED=1 required",
+        )
+
+    t0 = time.time()
+    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    run_date = req.run_date or tw_now.date().isoformat()
+    run_id = req.run_id or f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    lock_key = f"retrain:{run_date}"
+    lock_result = retrain_lock.acquire(
+        lock_key,
+        ttl_seconds=_UNIVERSAL_LOCK_TTL_SECONDS,
+        metadata={
+            "run_id": run_id,
+            "run_date": run_date,
+            "limit": req.limit,
+            "force_monthly": req.force_monthly,
+            "tw_now": tw_now.isoformat(),
+            "executor": "modal",
+            "trigger_source": req.trigger_source,
+        },
+    )
+    if not lock_result.acquired:
+        logger.info(
+            f"[retrain/universal/run] {lock_result.reason} - skip duplicate trigger "
+            f"(backend={lock_result.backend})"
+        )
+        return {
+            "status": "skipped",
+            "reason": lock_result.reason,
+            "lock_key": lock_key,
+            "backend": lock_result.backend,
+            "existing_instance": lock_result.existing_instance,
+            "elapsed_since": lock_result.elapsed_since_acquire,
+        }
+
+    followup_webhook_url = _build_followup_webhook_url(request)
+    _upsert_retrain_status(
+        run_id,
+        status="modal_dispatch_started",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "limit": req.limit,
+            "force_monthly": req.force_monthly,
+            "candidate_type": req.candidate_type,
+            "trigger_source": req.trigger_source,
+            "lock_backend": lock_result.backend,
+            "lock_ttl_seconds": _UNIVERSAL_LOCK_TTL_SECONDS,
+            "followup_webhook_url": followup_webhook_url,
+        },
+        downstream_notes="await_modal_retrain_pipeline",
+    )
+
+    payload = build_universal_retrain_modal_payload(
+        req,
+        run_id=run_id,
+        run_date=run_date,
+        lock_key=lock_key,
+        followup_webhook_url=followup_webhook_url,
+    )
+    try:
+        result = await spawn_universal_retrain_pipeline(payload)
+    except Exception as exc:
+        logger.exception("[retrain/universal/run] Modal dispatch failed")
+        retrain_lock.release(lock_key)
+        _upsert_retrain_status(
+            run_id,
+            status="dispatch_failed",
+            summary={
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "error": str(exc),
+            },
+            downstream_notes="modal_retrain_pipeline_dispatch_error",
+        )
+        raise HTTPException(status_code=502, detail=f"Modal universal retrain dispatch failed: {exc}") from exc
+
+    elapsed = round(time.time() - t0, 2)
+    _upsert_retrain_status(
+        run_id,
+        status="modal_dispatched",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "elapsed_s": elapsed,
+            "dispatch_result": result,
+        },
+        downstream_notes="await_modal_retrain_followup",
+    )
+    return {
+        **result,
+        "status": "triggered",
+        "run_id": run_id,
+        "run_date": run_date,
+        "lock_key": lock_key,
+        "followup_webhook_url": followup_webhook_url,
+        "trigger_source": req.trigger_source,
+        "trigger_id": req.trigger_id or run_id,
+        "elapsed_s": elapsed,
+    }
 
 
 @router.post("/universal")

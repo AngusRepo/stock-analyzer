@@ -1,13 +1,14 @@
 import { twToday } from './dateUtils'
 import {
+  runFinLabV4Backfill,
   runModelIcTrackerChain,
   runObsidianDaily,
   runPaperActivePostmarketPromotion,
   runRegimeCompute,
   runVerifyV2,
   runWeeklyDriftRetrain,
-  summarizeWeeklyValidationChain,
   triggerRetrain,
+  runWeeklyValidationChain,
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
@@ -23,14 +24,11 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),
     backtest: () => deps.runWeeklyBacktest(),
-    'weekly-backtest': async () => {
-      const bt = await deps.runWeeklyBacktest()
-      const mc = await deps.runWeeklyMonteCarlo()
-      const pbo = await deps.runWeeklyPBO()
-      return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
-    },
+    'weekly-backtest': async () => runWeeklyValidationChain(c.env, requestedRunDate()),
     'monte-carlo': () => deps.runWeeklyMonteCarlo(),
     pbo: () => deps.runWeeklyPBO(),
+    'model-artifact-validation': () => deps.runWeeklyModelArtifactValidation(),
+    'finlab-v4-backfill': async () => runFinLabV4Backfill(c.env, requestedRunDate()),
     'alpha-quality': () => deps.runWeeklyAlphaQuality(),
     lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),

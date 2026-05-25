@@ -20,6 +20,11 @@ assert(p9Gate.includes('worker contract tests'), 'P9 gate should run worker cont
 assert(p9Gate.includes('frontend build'), 'P9 gate should run frontend build unless explicitly skipped')
 assert(smoke.includes('/api/health'), 'post-deploy smoke should verify Worker health')
 assert(smoke.includes('/health'), 'post-deploy smoke should verify ml-controller health')
+assert(smoke.includes('[switch]$SkipDeployGate'), 'post-deploy smoke should allow explicitly skipping deploy gate for health-only checks')
+assert(smoke.includes('/api/admin/gate/predeploy?live=1&date=$Date'), 'post-deploy smoke should call Worker predeploy gate with live controller checks')
+assert(smoke.includes("$deployGate.decision -eq 'BLOCK'"), 'post-deploy smoke should fail closed when deploy gate blocks')
+assert(smoke.includes('/api/admin/compute-profiles?date=$Date&limit=5'), 'post-deploy smoke should verify compute profile readback endpoint')
+assert(smoke.includes('legacy_columns'), 'post-deploy smoke should surface compute profile legacy-column fallback state')
 
 const workflowPath = '../.github/workflows/p9-gate.yml'
 assert(fs.existsSync(workflowPath), 'P9 GitHub Actions workflow should exist')

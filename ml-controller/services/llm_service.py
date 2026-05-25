@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from services.recommend_score_v2_projection import ScoreV2RecommendationCandidate
+from services.recommend_score_v2_route import ScoreV2RecommendationCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -36,46 +36,28 @@ def _score_number(value: Any, fallback: float = 0.0) -> float:
 
 
 def _round1(value: float) -> float:
-    return round(float(value) * 10) / 10
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _clamp(value: Any, maximum: float) -> float:
     return _round1(max(0.0, min(float(maximum), _score_number(value))))
 
 
-def _rescale(value: Any, old_max: float, new_max: float) -> float:
-    if old_max <= 0:
-        return 0.0
-    return _clamp((_score_number(value) / old_max) * new_max, new_max)
+def _is_score_v2_payload(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("version") == "score_v2"
+        and isinstance(payload.get("components"), dict)
+    )
 
 
-def _project_score_v2(candidate: ScoreV2RecommendationCandidate) -> dict[str, Any]:
-    """Fallback projection for direct callers that do not pass score_components."""
-    components = {
-        "mlEdge": _rescale(candidate.ml_score, 30.0, SCORE_V2_WEIGHTS["mlEdge"]),
-        "chipFlow": _rescale(candidate.chip_score, 40.0, SCORE_V2_WEIGHTS["chipFlow"]),
-        "technicalStructure": _rescale(candidate.tech_score, 30.0, SCORE_V2_WEIGHTS["technicalStructure"]),
-        "fundamentalQuality": 0.0,
-        "newsTheme": 0.0,
-    }
-    total = _round1(sum(components.values()))
-    return {
-        "version": "score_v2",
-        "weights": SCORE_V2_WEIGHTS,
-        "components": components,
-        "total": total,
-        "alphaAdjustment": 0.0,
-        "finalScore": total,
-        "formula": "score_v2_total + alphaAdjustment",
-        "reasons": ["llm_service_storage_projection"],
-    }
-
-
-def _payload_for(candidate: ScoreV2RecommendationCandidate, payloads_by_symbol: dict[str, dict] | None) -> dict[str, Any]:
-    payload = (payloads_by_symbol or {}).get(candidate.symbol)
-    if isinstance(payload, dict) and payload.get("version") == "score_v2" and isinstance(payload.get("components"), dict):
+def _payload_for(candidate: ScoreV2RecommendationCandidate, score_v2_by_symbol: dict[str, dict] | None) -> dict[str, Any] | None:
+    payload = (score_v2_by_symbol or {}).get(candidate.symbol)
+    if _is_score_v2_payload(payload):
         return payload
-    return _project_score_v2(candidate)
+    if _is_score_v2_payload(candidate.score_v2):
+        return candidate.score_v2
+    return None
 
 
 def _component(payload: dict[str, Any], key: str) -> float:
@@ -91,14 +73,24 @@ def _confidence(value: float | None) -> str:
     return f"{value * 100:.0f}%" if value is not None else "N/A"
 
 
-def _candidate_prompt_line(candidate: ScoreV2RecommendationCandidate, payload: dict[str, Any], index: int) -> str:
-    components = (
-        f"ML Edge {_component(payload, 'mlEdge'):.1f}/25, "
-        f"Chip Flow {_component(payload, 'chipFlow'):.1f}/25, "
-        f"Technical {_component(payload, 'technicalStructure'):.1f}/25, "
-        f"Fundamental {_component(payload, 'fundamentalQuality'):.1f}/20, "
-        f"News/Theme {_component(payload, 'newsTheme'):.1f}/5"
-    )
+def _candidate_prompt_line(candidate: ScoreV2RecommendationCandidate, payload: dict[str, Any] | None, index: int) -> str:
+    if payload is None:
+        score_lines = [
+            "  Score V2 finalScore: missing_score_v2",
+            "  Score V2 components: missing_score_v2",
+        ]
+    else:
+        components = (
+            f"ML Edge {_component(payload, 'mlEdge'):.1f}/25, "
+            f"Chip Flow {_component(payload, 'chipFlow'):.1f}/25, "
+            f"Technical {_component(payload, 'technicalStructure'):.1f}/25, "
+            f"Fundamental {_component(payload, 'fundamentalQuality'):.1f}/20, "
+            f"News/Theme {_component(payload, 'newsTheme'):.1f}/5"
+        )
+        score_lines = [
+            f"  Score V2 finalScore: {_final_score(payload):.1f}/100 (base {_score_number(payload.get('total')):.1f}, alpha {_score_number(payload.get('alphaAdjustment')):.1f})",
+            f"  Score V2 components: {components}",
+        ]
     trend = ", ".join(
         [
             "MA5+" if candidate.above_ma5 else "MA5-",
@@ -109,8 +101,7 @@ def _candidate_prompt_line(candidate: ScoreV2RecommendationCandidate, payload: d
     return "\n".join(
         [
             f"[{index}] {candidate.symbol} {candidate.name} sector={candidate.sector or 'N/A'}",
-            f"  Score V2 finalScore: {_final_score(payload):.1f}/100 (base {_score_number(payload.get('total')):.1f}, alpha {_score_number(payload.get('alphaAdjustment')):.1f})",
-            f"  Score V2 components: {components}",
+            *score_lines,
             f"  Chip flow evidence: foreign+trust 5d {candidate.total_chip_5d / 1e8:.2f}B TWD, foreign consecutive {candidate.foreign_consecutive}d",
             f"  Technical evidence: RSI14 {candidate.rsi14 if candidate.rsi14 is not None else 'N/A'}, MACD hist {candidate.macd_hist if candidate.macd_hist is not None else 'N/A'}, trend {trend}",
             f"  ML signal: {candidate.ml_signal or 'N/A'}, confidence {_confidence(candidate.ml_confidence)}",
@@ -122,7 +113,7 @@ def generate_reasons(
     api_key: str,
     candidates: list[ScoreV2RecommendationCandidate],
     sectors: list[dict],
-    score_payloads_by_symbol: dict[str, dict] | None = None,
+    score_v2_by_symbol: dict[str, dict] | None = None,
 ) -> list[dict]:
     """Generate recommendation reasons with canonical Score V2 context."""
     top_sectors = "\n".join(
@@ -132,7 +123,7 @@ def generate_reasons(
     ) or "N/A"
 
     stock_list = "\n\n".join(
-        _candidate_prompt_line(candidate, _payload_for(candidate, score_payloads_by_symbol), index)
+        _candidate_prompt_line(candidate, _payload_for(candidate, score_v2_by_symbol), index)
         for index, candidate in enumerate(candidates, start=1)
     )
 

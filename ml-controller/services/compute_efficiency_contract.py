@@ -192,11 +192,37 @@ def normalize_compute_profile(raw: dict[str, Any]) -> dict[str, Any]:
         _ratio(model_cache.get("hits"), _num(model_cache.get("hits")) + _num(model_cache.get("misses"))),
     )
     cache_hit_ratio = _first_float(source.get("cache_hit_ratio"), meta.get("cache_hit_ratio"), model_cache_hit_ratio)
+    await_sec = _first_float(
+        source.get("await_sec"),
+        source.get("orchestration_await_sec"),
+        source.get("remote_wait_sec"),
+        meta.get("await_sec"),
+        meta.get("orchestration_await_sec"),
+        meta.get("remote_wait_sec"),
+    )
+    compute_owner = _str_or_none(
+        _first_value(
+            source.get("compute_owner"),
+            meta.get("compute_owner"),
+            source.get("provider"),
+        )
+    )
+    remote_function = _str_or_none(
+        _first_value(
+            source.get("remote_function"),
+            source.get("function_name"),
+            meta.get("remote_function"),
+            meta.get("function_name"),
+        )
+    )
     return {
         "provider": str(source.get("provider") or "unknown"),
         "job_name": str(source.get("job_name") or source.get("function_name") or source.get("name") or "unknown"),
         "wall_sec": _round(wall_sec, 3),
         "compute_sec": _round(compute_sec, 3),
+        "await_sec": _round(await_sec, 3) if await_sec is not None else None,
+        "compute_owner": compute_owner,
+        "remote_function": remote_function,
         "cpu": _round(cpu, 3),
         "memory_mb": memory_mb,
         "memory_gib": _round(memory_gib, 3),
@@ -283,6 +309,12 @@ def aggregate_compute_profiles(
     event_count = len(normalized)
     wall_sec = sum(_num(p.get("wall_sec")) for p in normalized)
     compute_sec = sum(_num(p.get("compute_sec")) for p in normalized)
+    await_values = [
+        _num(p.get("await_sec"))
+        for p in normalized
+        if p.get("await_sec") is not None
+    ]
+    await_sec = sum(await_values) if await_values else None
     est_usd = sum(_num(p.get("est_usd")) for p in normalized)
     rows = sum(int(_num(p.get("rows"))) for p in normalized)
     features = max([int(_num(p.get("features"))) for p in normalized] or [0])
@@ -313,6 +345,8 @@ def aggregate_compute_profiles(
     cpu_values = [_num(p.get("cpu")) for p in normalized if p.get("cpu") is not None]
     memory_values = [int(_num(p.get("memory_mb"))) for p in normalized if p.get("memory_mb")]
     gpus = sorted({str(p.get("gpu")) for p in normalized if p.get("gpu")})
+    compute_owners = sorted({str(p.get("compute_owner")) for p in normalized if p.get("compute_owner")})
+    remote_functions = sorted({str(p.get("remote_function")) for p in normalized if p.get("remote_function")})
     return {
         "provider": selected_provider,
         "job_name": str(job_name),
@@ -320,7 +354,12 @@ def aggregate_compute_profiles(
         "event_count": event_count,
         "wall_sec": _round(wall_sec, 3),
         "compute_sec": _round(compute_sec, 3),
+        "await_sec": _round(await_sec, 3) if await_sec is not None else None,
         "cpu_sec": _round(compute_sec, 3),
+        "compute_owner": compute_owners[0] if len(compute_owners) == 1 else ("mixed" if compute_owners else None),
+        "remote_function": remote_functions[0] if len(remote_functions) == 1 else None,
+        "compute_owners": compute_owners,
+        "remote_functions": remote_functions,
         "cpu": _round(max(cpu_values), 3) if cpu_values else 0.0,
         "memory_mb": max(memory_values) if memory_values else 0,
         "gpu": ",".join(gpus) if gpus else None,

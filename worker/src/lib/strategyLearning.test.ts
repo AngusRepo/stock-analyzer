@@ -30,11 +30,24 @@ function assert(condition: unknown, message: string): void {
       {
         symbol: '2330',
         name: 'TSMC',
-        score: 70,
-        chip_score: 25,
-        tech_score: 24,
-        momentum_score: 12,
         current_price: 900,
+        score_v2: JSON.stringify({
+          version: 'score_v2',
+          finalScore: 70,
+          components: {
+            mlEdge: 12,
+            chipFlow: 25,
+            technicalStructure: 24,
+            fundamentalQuality: 8,
+            newsTheme: 1,
+          },
+          technicalBreakdown: {
+            volumeConfirmation: 4,
+          },
+          seedComponents: {
+            screenerMomentumSeed20: 12,
+          },
+        }),
       },
     ],
     DEFAULT_STRATEGY_SPECS,
@@ -52,12 +65,8 @@ function assert(condition: unknown, message: string): void {
       {
         symbol: '2330',
         name: 'TSMC',
-        score: 10,
-        chip_score: 1,
-        tech_score: 1,
-        momentum_score: 1,
         current_price: 900,
-        score_components: JSON.stringify({
+        score_v2: JSON.stringify({
           version: 'score_v2',
           finalScore: 70,
           components: {
@@ -74,8 +83,8 @@ function assert(condition: unknown, message: string): void {
             volumeConfirmation: 3,
             executionRisk: 1,
           },
-          legacyComponents: {
-            screenerMomentum: 10,
+          seedComponents: {
+            screenerMomentumSeed20: 10,
           },
         }),
       },

@@ -188,6 +188,13 @@ export function buildOpsRunbook(): OpsRunbookReport {
         command_hint: 'run paper/live parity contract tests',
         mutation_requires_approval: false,
       },
+      {
+        id: 'finlab_canonical_d1_repair',
+        title: 'Plan and verify FinLab canonical D1 repair after deploy gate blocks stale canonical rows',
+        owner: 'FinLab canonical D1',
+        command_hint: 'powershell -File scripts/finlab_canonical_d1_repair_plan.ps1 -VerifyD1',
+        mutation_requires_approval: false,
+      },
     ],
     release_gate: [
       'type-check',
@@ -196,6 +203,7 @@ export function buildOpsRunbook(): OpsRunbookReport {
       'Worker health',
       'ml-controller health',
       'deploy gate',
+      'FinLab canonical D1 freshness',
       'OBS drilldown check',
       'callback round-trip',
     ],

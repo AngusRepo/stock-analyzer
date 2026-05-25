@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services import modal_client
 from services.kv_pusher import push_optuna_result
 from services.market_regime_evidence import build_regime_evidence_pack
 from services.payload_builder import load_market_env
@@ -37,6 +39,32 @@ ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 class RegimeComputeRequest(BaseModel):
     force_retrain: bool = False       # retrain HMM from history before predict
     run_date: str | None = None       # business date from Worker chain; do not infer during backfills
+    history_days: int | None = None   # accepted for Worker contract compatibility; load_market_env owns the canonical window
+
+
+class RegimeComputeRunRequest(RegimeComputeRequest):
+    run_id: str | None = None
+    callback_task: str = "regime-compute"
+    trigger_source: str = "manual"
+    trigger_id: str | None = None
+    prev_label: str | None = None
+
+
+def _truthy(value: str | None, *, default: bool = False) -> bool:
+    if value is None or not str(value).strip():
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "modal"}
+
+
+def _regime_compute_executor() -> str:
+    raw = (
+        os.environ.get("REGIME_COMPUTE_EXECUTOR")
+        or os.environ.get("HMM_REGIME_COMPUTE_EXECUTOR")
+        or ""
+    ).strip().lower()
+    if raw:
+        return raw
+    return "modal" if _truthy(os.environ.get("REGIME_COMPUTE_MODAL_ENABLED")) else "cloud_run"
 
 
 def _extract_regime_surface(info: dict) -> dict:
@@ -73,6 +101,59 @@ def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
     env_dict = asdict(market_env)
     env_dict["requested_run_date"] = effective_date
     return env_dict
+
+
+def build_regime_compute_modal_payload(req: RegimeComputeRunRequest) -> dict:
+    run_date = req.run_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    run_id = req.run_id or f"regime-compute-{run_date}-{int(time.time())}"
+    return {
+        "executor": "modal",
+        "source": "regime_compute",
+        "run_id": run_id,
+        "run_date": run_date,
+        "force_retrain": bool(req.force_retrain),
+        "history_days": req.history_days,
+        "callback_task": req.callback_task or "regime-compute",
+        "trigger_source": req.trigger_source or "manual",
+        "trigger_id": req.trigger_id or run_id,
+        "prev_label": req.prev_label,
+        "quality_contract": {
+            "market_env_history_reduced": False,
+            "hmm_regime_logic_reduced": False,
+            "kv_push_preserved": True,
+            "regime_shift_detection_preserved": True,
+            "production_config_mutated": False,
+        },
+    }
+
+
+@router.post("/regime/compute/run")
+async def regime_compute_run(req: RegimeComputeRunRequest = RegimeComputeRunRequest()):
+    """Spawn detached HMM regime compute and close via Worker scheduler callback.
+
+    This route exists to move request waiting out of Cloud Run. It is env-gated;
+    the synchronous /regime/compute route remains the rollback owner.
+    """
+    executor = _regime_compute_executor()
+    if executor != "modal":
+        raise HTTPException(
+            status_code=409,
+            detail="REGIME_COMPUTE_EXECUTOR=modal or REGIME_COMPUTE_MODAL_ENABLED=1 required",
+        )
+
+    payload = build_regime_compute_modal_payload(req)
+    try:
+        result = await modal_client.spawn_regime_compute(payload)
+    except Exception as exc:
+        logger.exception("[Regime] Modal regime_compute spawn failed")
+        raise HTTPException(status_code=502, detail=f"Modal regime_compute spawn failed: {exc}") from exc
+    return {
+        **result,
+        "run_id": payload["run_id"],
+        "run_date": payload["run_date"],
+        "trigger_source": payload["trigger_source"],
+        "callback_task": payload["callback_task"],
+    }
 
 
 @router.post("/regime/compute")

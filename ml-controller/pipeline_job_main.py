@@ -44,11 +44,52 @@ def _falsey_env(name: str, default: str = "") -> bool:
     return os.environ.get(name, default).strip().lower() in {"0", "false", "no", "off"}
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(float(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        return default
+
+
+def _cloud_run_resource_metadata() -> dict[str, float | int]:
+    return {
+        "cpu": _float_env("PIPELINE_CLOUD_RUN_CPU", 4.0),
+        "memory_mb": _int_env("PIPELINE_CLOUD_RUN_MEMORY_MB", 4096),
+    }
+
+
 def _dataset_snapshot_job_name() -> str:
     return (
         os.environ.get("DATASET_SNAPSHOT_JOB_NAME", "")
         or os.environ.get("PIPELINE_DATASET_SNAPSHOT_JOB_NAME", "")
     ).strip()
+
+
+def _dataset_snapshot_executor() -> str:
+    configured = (
+        os.environ.get("DATASET_SNAPSHOT_EXECUTOR", "")
+        or os.environ.get("PIPELINE_DATASET_SNAPSHOT_EXECUTOR", "")
+    ).strip().lower()
+    if configured:
+        return configured
+    if os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET"):
+        return "modal_auto"
+    return "cloud_run_job"
+
+
+def _dataset_snapshot_chunk_days() -> int:
+    try:
+        raw = int(os.environ.get("DATASET_SNAPSHOT_CHUNK_DAYS", "10") or "10")
+    except ValueError:
+        raw = 10
+    return max(1, min(raw, 30))
 
 
 def _snapshot_followup_mode() -> str:
@@ -58,9 +99,29 @@ def _snapshot_followup_mode() -> str:
 def _should_trigger_snapshot_job(mode: str, job_name: str) -> bool:
     if mode in {"inline", "blocking", "sync", "synchronous"}:
         return False
-    if mode in {"cloud_run_job", "job", "detached", "async_job"}:
+    if mode in {
+        "cloud_run_job",
+        "job",
+        "detached",
+        "async_job",
+        "required",
+        "detached_required",
+        "job_required",
+        "async_required",
+        "cloud_run_job_required",
+    }:
         return True
     return bool(job_name)
+
+
+def _snapshot_mode_requires_detached(mode: str) -> bool:
+    return mode in {
+        "required",
+        "detached_required",
+        "job_required",
+        "async_required",
+        "cloud_run_job_required",
+    }
 
 
 def _snapshot_job_env(*, run_date: str, run_id: str) -> dict[str, str]:
@@ -80,6 +141,25 @@ def _trigger_deferred_snapshot_job(*, run_date: str, run_id: str) -> JobExecutio
         env_overrides=_snapshot_job_env(run_date=run_date, run_id=run_id),
         reject_if_running=not _falsey_env("DATASET_SNAPSHOT_JOB_REJECT_IF_RUNNING", "0"),
     )
+
+
+async def _trigger_deferred_snapshot_modal(*, run_date: str, run_id: str) -> dict:
+    from services import modal_client
+
+    export_run_id = f"{run_id}:snapshot"
+    return await modal_client.spawn_dataset_snapshot_export({
+        "run_date": run_date,
+        "business_date": run_date,
+        "start_date": _snapshot_export_start_date(run_date),
+        "end_date": run_date,
+        "run_id": export_run_id,
+        "producer_run_id": export_run_id,
+        "chunk_days": _dataset_snapshot_chunk_days(),
+        "include_signals": True,
+        "callback_task": "dataset-snapshot-export",
+        "trigger_source": "pipeline_v2",
+        "trigger_id": run_id,
+    })
 
 
 async def _run_deferred_snapshot_inline(*, run_date: str, run_id: str) -> None:
@@ -129,6 +209,13 @@ async def _run_deferred_snapshot_inline(*, run_date: str, run_id: str) -> None:
         "duration_ms": int((time.time() - started) * 1000),
         "run_id": f"{run_id}:snapshot",
         "run_date": run_date,
+        "metadata": {
+            "provider": "gcp_cloud_run",
+            "job_name": "pipeline-v2",
+            "compute_owner": "gcp_cloud_run_orchestrator",
+            "remote_function": "pipeline_job_main.dataset_snapshot_inline",
+            **_cloud_run_resource_metadata(),
+        },
         **({"error": error} if error else {}),
     })
 
@@ -146,6 +233,54 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
         return
 
     mode = _snapshot_followup_mode()
+    executor = _dataset_snapshot_executor()
+    if executor in {"modal", "modal_spawn", "modal_auto"}:
+        started = time.time()
+        export_run_id = f"{run_id}:snapshot"
+        try:
+            result = await _trigger_deferred_snapshot_modal(run_date=run_date, run_id=run_id)
+            await _callback_worker({
+                "task": "dataset-snapshot-export",
+                "status": "triggered",
+                "summary": (
+                    f"run_id={export_run_id} modal=dataset_snapshot_export "
+                    f"function_call_id={result.get('function_call_id')} callback expected"
+                ),
+                "duration_ms": int((time.time() - started) * 1000),
+                "run_id": export_run_id,
+                "run_date": run_date,
+                "metadata": {
+                    "provider": "modal",
+                    "job_name": "dataset_snapshot_export",
+                    "compute_owner": "modal",
+                    "remote_function": "dataset_snapshot_export",
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            if executor == "modal_auto" and not _snapshot_mode_requires_detached(mode):
+                logger.warning("[JobEntry] Auto Modal dataset snapshot trigger failed; falling back inline")
+                await _run_deferred_snapshot_inline(run_date=run_date, run_id=run_id)
+                return
+            logger.exception("[JobEntry] Failed to trigger Modal dataset snapshot export")
+            error = f"{type(e).__name__}: {e}"
+            await _callback_worker({
+                "task": "dataset-snapshot-export",
+                "status": "error",
+                "summary": f"run_id={export_run_id} Modal trigger failed: {error[:180]}",
+                "duration_ms": int((time.time() - started) * 1000),
+                "run_id": export_run_id,
+                "run_date": run_date,
+                "error": error,
+                "metadata": {
+                    "provider": "gcp_cloud_run",
+                    "job_name": "pipeline-v2",
+                    "compute_owner": "gcp_cloud_run_orchestrator",
+                    "remote_function": "pipeline_job_main.modal_snapshot_trigger",
+                    **_cloud_run_resource_metadata(),
+                },
+            })
+        return
+
     job_name = _dataset_snapshot_job_name()
     if not _should_trigger_snapshot_job(mode, job_name):
         await _run_deferred_snapshot_inline(run_date=run_date, run_id=run_id)
@@ -169,6 +304,12 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
             "duration_ms": int((time.time() - started) * 1000),
             "run_id": export_run_id,
             "run_date": run_date,
+            "metadata": {
+                "provider": "gcp_cloud_run",
+                "job_name": job_name,
+                "compute_owner": "gcp_cloud_run_job",
+                "remote_function": "dataset_snapshot_export",
+            },
         })
     except Exception as e:  # noqa: BLE001
         logger.exception("[JobEntry] Failed to trigger detached dataset snapshot job")
@@ -181,6 +322,13 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
             "run_id": export_run_id,
             "run_date": run_date,
             "error": error,
+            "metadata": {
+                "provider": "gcp_cloud_run",
+                "job_name": "pipeline-v2",
+                "compute_owner": "gcp_cloud_run_orchestrator",
+                "remote_function": "pipeline_job_main.cloud_run_snapshot_trigger",
+                **_cloud_run_resource_metadata(),
+            },
         })
 
 
@@ -233,21 +381,43 @@ async def _run() -> int:
         "summary": summary,
         "duration_ms": elapsed_ms,
         "run_id": run_id,
+        "metadata": {
+            "provider": "gcp_cloud_run",
+            "job_name": "pipeline-v2",
+            "compute_owner": "gcp_cloud_run_orchestrator",
+            "remote_function": "pipeline_job_main",
+            **_cloud_run_resource_metadata(),
+            "duration_ms_semantics": "pipeline_graph_runtime_excludes_callback_tail",
+            "callback_tail_strategy": "terminal_and_tile_asyncio_gather",
+            "snapshot_followup": "post_callback_batch_if_deferred",
+        },
     }
     if run_date:
         overall_payload["run_date"] = run_date
     if error:
         overall_payload["error"] = error
 
-    await _callback_worker(overall_payload)
-    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+    callback_started = time.time()
+    await asyncio.gather(
+        _callback_worker(overall_payload),
+        _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None),
+    )
+    callback_fanout_ms = int((time.time() - callback_started) * 1000)
 
+    snapshot_followup_ms = 0
     snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
     if status == "success" and snapshot_state.get("status") == "deferred":
+        snapshot_started = time.time()
         await _run_deferred_snapshot_followup(run_date=run_date, run_id=run_id)
+        snapshot_followup_ms = int((time.time() - snapshot_started) * 1000)
 
     logger.info(
-        "[JobEntry] Pipeline finished: status=%s elapsed=%dms", status, elapsed_ms
+        "[JobEntry] Pipeline finished: status=%s graph_elapsed=%dms callback_fanout=%dms snapshot_followup=%dms total=%dms",
+        status,
+        elapsed_ms,
+        callback_fanout_ms,
+        snapshot_followup_ms,
+        int((time.time() - t0) * 1000),
     )
     return 0 if status == "success" else 1
 

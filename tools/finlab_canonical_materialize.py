@@ -53,6 +53,7 @@ def main() -> int:
         "canonical_chip_daily": outputs.canonical_chip_daily,
         "canonical_institutional_amount_daily": outputs.canonical_institutional_amount_daily,
         "canonical_revenue_monthly": outputs.canonical_revenue_monthly,
+        "canonical_fundamental_features": outputs.canonical_fundamental_features,
         "canonical_broker_flow_daily": outputs.canonical_broker_flow_daily,
         "finlab_taxonomy_tags": outputs.finlab_taxonomy_tags,
         "data_source_inventory": outputs.data_source_inventory,

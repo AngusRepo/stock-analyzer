@@ -255,20 +255,33 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   const date = body.date ?? c.req.query('date') ?? twToday()
   const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 200))
   let candidates = body.candidates ?? []
+  const normalizeStrategyCandidate = (candidate: Record<string, unknown>) => {
+    const { score_components: scoreComponents, ...rest } = candidate
+    return {
+      ...rest,
+      score_v2: candidate.score_v2 ?? scoreComponents,
+    }
+  }
 
   if (!candidates.length) {
     const { results } = await c.env.DB.prepare(`
-      SELECT symbol, name, sector, industry, score, chip_score, tech_score,
-             ml_score, score_components,
-             COALESCE(momentum_score, 0) AS momentum_score,
+      SELECT symbol, name, sector, industry, score_components,
              current_price
       FROM daily_recommendations
       WHERE date = ?
-      ORDER BY rank ASC, score DESC
+      ORDER BY rank ASC,
+        CASE WHEN json_valid(score_components) THEN
+          COALESCE(
+            CAST(json_extract(score_components, '$.finalScore') AS REAL),
+            CAST(json_extract(score_components, '$.total') AS REAL),
+            0
+          ) ELSE 0 END DESC,
+        symbol ASC
       LIMIT ?
     `).bind(date, limit).all<Record<string, unknown>>()
-    candidates = results ?? []
+    candidates = (results ?? []).map(normalizeStrategyCandidate)
   }
+  const strategyCandidates = candidates.map(normalizeStrategyCandidate)
 
   const { listStrategySpecs, dryRunStrategySpec } = await import('../lib/strategyLab')
   const specs = listStrategySpecs()
@@ -277,8 +290,8 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
     mode: 'dry_run',
     date,
     source: body.candidates?.length ? 'request_body' : 'daily_recommendations',
-    candidate_count: candidates.length,
-    results: specs.map((spec) => dryRunStrategySpec(spec, candidates as any)),
+    candidate_count: strategyCandidates.length,
+    results: specs.map((spec) => dryRunStrategySpec(spec, strategyCandidates as any)),
   })
 })
 
@@ -435,6 +448,119 @@ adminReadRoutes.get('/api/admin/costs/month', async (c) => {
     total_usd: Math.round(total * 10000) / 10000,
     by_source: results ?? [],
     by_day: daily ?? [],
+  })
+})
+
+function computeProfileMissingWaitColumns(error: unknown): boolean {
+  const message = String(error)
+  return /no such column/i.test(message) || /has no column named/i.test(message)
+}
+
+function parseProfileJson(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
+  if (typeof raw !== 'string' || !raw.trim()) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return null
+}
+
+function normalizeComputeProfileReadRow(row: any): Record<string, unknown> {
+  const profile = parseProfileJson(row.profile_json)
+  const metadata = parseProfileJson(profile.metadata)
+  return {
+    ...row,
+    await_sec: firstNumber(row.await_sec, profile.await_sec, profile.orchestration_await_sec, profile.remote_wait_sec, metadata.await_sec),
+    compute_owner: firstString(row.compute_owner, profile.compute_owner, metadata.compute_owner, row.provider),
+    remote_function: firstString(row.remote_function, profile.remote_function, profile.function_name, metadata.remote_function, row.job_name),
+    profile,
+  }
+}
+
+adminReadRoutes.get('/api/admin/compute-profiles', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const job = c.req.query('job')?.trim()
+  const provider = c.req.query('provider')?.trim()
+  const limit = Math.max(1, Math.min(Number(c.req.query('limit') ?? 100) || 100, 500))
+  const where = ['event_date = ?']
+  const params: any[] = [date]
+  if (job) {
+    where.push('job_name = ?')
+    params.push(job)
+  }
+  if (provider) {
+    where.push('provider = ?')
+    params.push(provider)
+  }
+  params.push(limit)
+
+  const baseColumns = [
+    'id',
+    'event_date',
+    'provider',
+    'job_name',
+    'run_id',
+    'wall_sec',
+    'compute_sec',
+    'cpu',
+    'memory_mb',
+    'gpu',
+    'est_usd',
+    'rows',
+    'features',
+    'symbols',
+    'trials',
+    'cache_hit_ratio',
+    'profile_json',
+    'created_at',
+  ].join(', ')
+  const waitColumns = `${baseColumns}, await_sec, compute_owner, remote_function`
+  const sql = (columns: string) => `
+    SELECT ${columns}
+    FROM compute_profile_events
+    WHERE ${where.join(' AND ')}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `
+
+  let legacyColumns = false
+  let results: any[] = []
+  try {
+    const query = await c.env.DB.prepare(sql(waitColumns)).bind(...params).all<any>()
+    results = query.results ?? []
+  } catch (error) {
+    if (!computeProfileMissingWaitColumns(error)) throw error
+    legacyColumns = true
+    const query = await c.env.DB.prepare(sql(baseColumns)).bind(...params).all<any>()
+    results = query.results ?? []
+  }
+
+  return c.json({
+    date,
+    job: job ?? null,
+    provider: provider ?? null,
+    limit,
+    legacy_columns: legacyColumns,
+    profiles: results.map(normalizeComputeProfileReadRow),
   })
 })
 

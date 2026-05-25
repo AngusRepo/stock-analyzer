@@ -74,34 +74,26 @@ def _score_v2_payload(value: Any) -> dict[str, Any] | None:
 
 def _component_contributions(row: dict[str, Any]) -> tuple[dict[str, float], bool]:
     payload = _score_v2_payload(row.get("score_components"))
-    if payload:
-        components = payload.get("components") or {}
-        total = _float_or_none(payload.get("total"))
-        if not total or total <= 0:
-            total = sum(_float_or_none(components.get(key)) or 0.0 for key, _ in SCORE_V2_COMPONENTS)
-        return {
-            key: _clamp_pct(((_float_or_none(components.get(key)) or 0.0) / total) if total and total > 0 else 0.0)
-            for key, _ in SCORE_V2_COMPONENTS
-        }, True
-
-    total_score = _float_or_none(row.get("total_score"))
-
-    def legacy_pct(pct_key: str, score_key: str) -> float:
-        pct_value = _float_or_none(row.get(pct_key))
-        if pct_value is not None:
-            return _clamp_pct(pct_value)
-        score = _float_or_none(row.get(score_key))
-        if score is None or not total_score or total_score <= 0:
-            return 0.0
-        return _clamp_pct(score / total_score)
-
+    if not payload:
+        return {key: 0.0 for key, _ in SCORE_V2_COMPONENTS}, False
+    components = payload.get("components") or {}
+    total = _float_or_none(payload.get("total"))
+    if not total or total <= 0:
+        total = sum(_float_or_none(components.get(key)) or 0.0 for key, _ in SCORE_V2_COMPONENTS)
     return {
-        "mlEdge": legacy_pct("ml_pct", "ml_score"),
-        "chipFlow": legacy_pct("chip_pct", "chip_score"),
-        "technicalStructure": legacy_pct("tech_pct", "tech_score"),
-        "fundamentalQuality": 0.0,
-        "newsTheme": 0.0,
-    }, False
+        key: _clamp_pct(((_float_or_none(components.get(key)) or 0.0) / total) if total and total > 0 else 0.0)
+        for key, _ in SCORE_V2_COMPONENTS
+    }, True
+
+
+def _score_v2_regime(row: dict[str, Any]) -> str:
+    payload = _score_v2_payload(row.get("score_components"))
+    alpha_reason = payload.get("alphaReason") if payload else None
+    if isinstance(alpha_reason, dict):
+        regime = str(alpha_reason.get("regime") or "").strip()
+        if regime:
+            return regime
+    return "unknown"
 
 
 async def _d1_query(client: httpx.AsyncClient, sql: str, params: list = None) -> list[dict]:
@@ -193,14 +185,12 @@ async def generate_weekly_audit() -> dict:
 
         # ── L2: Decision Attribution (7-day) ──
         decisions = await _d1_query(client, """
-            SELECT symbol, action, score_components, chip_score, tech_score, ml_score, total_score,
-                   chip_pct, tech_pct, ml_pct, debate_verdict, ml_signal, ml_confidence
+            SELECT symbol, action, score_components, debate_verdict, ml_signal, ml_confidence
             FROM decision_logs
             WHERE date >= ? ORDER BY date
         """, [week_ago])
 
-        # Aggregate Score V2 factor contributions. Historical rows without
-        # score_components are read as a storage projection only.
+        # Aggregate Score V2 factor contributions from canonical payloads only.
         contribution_rows = [_component_contributions(d) for d in decisions]
         score_v2_payload_count = sum(1 for _, is_score_v2 in contribution_rows if is_score_v2)
         avg_contribution = {key: 0.0 for key, _ in SCORE_V2_COMPONENTS}
@@ -216,6 +206,35 @@ async def generate_weekly_audit() -> dict:
             }
             for key, label in SCORE_V2_COMPONENTS
         ]
+        regime_groups: dict[str, list[dict[str, float]]] = {}
+        for decision, (contribution, is_score_v2) in zip(decisions, contribution_rows):
+            if not is_score_v2:
+                continue
+            regime_groups.setdefault(_score_v2_regime(decision), []).append(contribution)
+        regime_factor_attribution = []
+        for regime, rows in sorted(regime_groups.items()):
+            regime_avg = {
+                key: statistics.mean(row[key] for row in rows)
+                for key, _ in SCORE_V2_COMPONENTS
+            }
+            dominant_label, dominant_pct = max(
+                [(label, regime_avg[key]) for key, label in SCORE_V2_COMPONENTS],
+                key=lambda x: x[1],
+            )
+            regime_factor_attribution.append({
+                "regime": regime,
+                "sample": len(rows),
+                "dominant_factor": dominant_label,
+                "dominant_pct": round(dominant_pct * 100, 1),
+                "factors": [
+                    {"name": label, "avg_pct": round(regime_avg[key] * 100, 1)}
+                    for key, label in SCORE_V2_COMPONENTS
+                ],
+            })
+        regime_factor_attribution_summary = "; ".join(
+            f"{row['regime']} n={row['sample']} top={row['dominant_factor']} {row['dominant_pct']}%"
+            for row in regime_factor_attribution[:6]
+        ) or "N/A"
 
         debate_counts = {"APPROVE": 0, "DOWNGRADE": 0, "REJECT": 0}
         for d in decisions:
@@ -236,6 +255,8 @@ async def generate_weekly_audit() -> dict:
                 key=lambda x: x[1]
             )[0] if decisions else "N/A",
             "factor_attribution": factor_attribution,
+            "regime_factor_attribution": regime_factor_attribution,
+            "regime_factor_attribution_summary": regime_factor_attribution_summary,
             "debate_verdicts": debate_counts,
         }
 
@@ -310,6 +331,7 @@ async def generate_weekly_audit() -> dict:
             f"Technical Structure {l2['avg_technical_structure_contribution']} | "
             f"Fundamental Quality {l2['avg_fundamental_quality_contribution']} | "
             f"News/Theme {l2['avg_news_theme_contribution']}\n"
+            f"- Regime factor attribution: {l2['regime_factor_attribution_summary']}\n"
             f"- Debate: {debate_counts['APPROVE']} approve, "
             f"{debate_counts['DOWNGRADE']} downgrade, {debate_counts['REJECT']} reject"
         )

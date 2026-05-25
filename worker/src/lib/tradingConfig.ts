@@ -187,6 +187,8 @@ export interface TradingConfig {
     requoteDeviationMax: number  // 重掛 entry 偏離容忍（預設 0.05）
     requoteDiscount: number      // 重掛新 entry 折扣（預設 0.985）
     requoteStopFallback: number  // ml_stop_loss fallback 係數（預設 0.92）
+    maxQuoteAgeMs: number        // broker quote 最大可接受延遲（預設 60000ms）
+    maxEntryChasePct: number     // 強勢股盤中追價上限（預設 0.006 = 0.6%）
     // ── 2026-04-18 #36: calcRiskPct tiers 從 paper.ts hardcode 搬過來 ──────
     riskPctBaseline: number                // 預設一般信號 risk（預設 0.01 = 1%）
     riskPctBuy: number                     // BUY 且 conf≥buyConf 時（預設 0.015 = 1.5%）
@@ -263,7 +265,9 @@ export interface TradingConfig {
     alpha: number                // screener weight 預設 0.40
     beta: number                 // ml_confidence weight 預設 0.40
     gamma: number                // signal_tier weight 預設 0.20
-    screenerDenominator: number  // (chip+tech) 正規化分母（預設 60）
+    // Deprecated compatibility only. Score V2 screener ranking uses
+    // canonical chipFlow + technicalStructure, not this legacy denominator.
+    screenerDenominator: number
     promoteMinConf: number       // promoted row 的 confidence 保底（預設 0.60，對齊 buyConfThreshold）
   }
   // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
@@ -495,6 +499,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     requoteDeviationMax: 0.05,  // 重掛 entry 偏離容忍（預設 0.05 = 5%，超過棄單）
     requoteDiscount: 0.985,     // 重掛新 entry 折扣（預設 0.985 = 下修 1.5%）
     requoteStopFallback: 0.92,  // ml_stop_loss 缺失時回退係數（預設 0.92 = entry × 0.92）
+    maxQuoteAgeMs: 60_000,
+    maxEntryChasePct: 0.006,
     // 2026-04-18 #36
     riskPctBaseline: 0.01,
     riskPctBuy: 0.015,
@@ -568,6 +574,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     alpha: 0.40,
     beta: 0.40,
     gamma: 0.20,
+    // Deprecated compatibility only; kept for older KV/config shapes.
     screenerDenominator: 60,
     promoteMinConf: 0.60,
   },
@@ -1389,6 +1396,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('maxPositionPct must be 0.01-0.50')
   if (config.position.dailyBuyLimit < 0)
     errors.push('dailyBuyLimit must be >= 0')
+  if (!isFiniteNumber(config.position.maxQuoteAgeMs) || config.position.maxQuoteAgeMs < 10_000 || config.position.maxQuoteAgeMs > 180_000)
+    errors.push('position.maxQuoteAgeMs must be 10000-180000')
+  if (!isFiniteNumber(config.position.maxEntryChasePct) || config.position.maxEntryChasePct < 0 || config.position.maxEntryChasePct > 0.03)
+    errors.push('position.maxEntryChasePct must be 0-0.03')
   if (config.barrier.upperMult < 0.5 || config.barrier.upperMult > 10)
     errors.push('barrier.upperMult must be 0.5-10')
   if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)

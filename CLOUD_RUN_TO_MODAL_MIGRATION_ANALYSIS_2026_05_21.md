@@ -22,6 +22,15 @@ Status: read-only analysis
 
 No deploy, retrain, scheduler mutation, commit, push, or production write was performed.
 
+## 2026-05-24 No-Downgrade Amendment
+
+Wei's production boundary is now explicit: cost optimization must not reduce
+CPU/memory specs, model families, timeouts, horizons, samples, trials, lookback
+windows, overlays, or data coverage. Any earlier "downsize" recommendation in
+this read-only audit is superseded. The accepted optimization path is to move
+wait ownership, batch I/O, detached artifact jobs, and callback closure while
+preserving the same outputs.
+
 ## Current Boundary
 
 Modal already owns most heavy ML math:
@@ -42,10 +51,10 @@ Cloud Run still carries meaningful cost or latency in two forms:
 
 | Surface | Spec | Recent exported executions | Failures | Max daily executions | Duration / cost proxy | Initial decision |
 |---|---:|---:|---:|---:|---:|---|
-| `pipeline-v2` | 4 CPU / 4Gi | 74 | 4 | 11 | 30,965s total, 123,862 vCPU-sec | Do not move first; split/downsize after blockers |
+| `pipeline-v2` | 4 CPU / 4Gi | 74 | 4 | 11 | 30,965s total, 123,862 vCPU-sec | Split wait boundaries; no downsize |
 | `finlab-v4-backfill` | 4 CPU / 16Gi | 9 | 3 | 3 | 4,955s total, 19,820 vCPU-sec, 79,282 GiB-sec | Move to Modal P0 |
 | `optuna-research-sweep` | 4 CPU / 4Gi | 7 | 1 | 3 | 9,693s total, 38,773 vCPU-sec | Move to Modal P1/P0 |
-| `verify-v2` | 4 CPU / 4Gi | 51 | 7 | 4 | 8,079s total, but latest success 18s | Downsize, not Modal-first |
+| `verify-v2` | 4 CPU / 4Gi | 51 | 7 | 4 | 8,079s total, but latest success 18s | Keep spec; optimize wait/I/O only if needed |
 
 `pipeline-v2` has the highest exported Cloud Run proxy, but repo evidence shows the heavy model inference is already delegated to Modal. The Cloud Run job is mostly orchestration, D1/GCS writes, recommendation merge, callbacks, and waiting. Moving the whole job to Modal is possible, but it is higher operational risk than moving isolated workloads first.
 
@@ -62,7 +71,8 @@ Cloud Run still carries meaningful cost or latency in two forms:
 | `/backtest/replay` | 4 | 66.9s | 196.6s | 786 vCPU-sec | Move replay compute to Modal P1 |
 | `/datasets/export_cold_archive` | 2 | 174.5s | 174.5s | 698 vCPU-sec | Move to Modal P1 |
 
-The service sizing gate remains `do_not_downsize_globally_yet` because there are still long request paths, high-frequency read paths, `cpu-throttling=false`, and high service spec.
+The service sizing gate is superseded by the no-downgrade boundary. Keep specs;
+remove long request waits, high-frequency polling, and duplicated I/O first.
 
 ## Migration Candidates
 
@@ -82,6 +92,18 @@ Target shape:
 - Worker or Scheduler triggers a short controller endpoint that spawns Modal and returns a `run_id`.
 - Modal writes GCS artifacts and D1 summaries using the same idempotent `run_id`.
 - Keep current Cloud Run Job as rollback until at least 5 successful weekday runs.
+
+Current implementation state:
+
+- 2026-05-24: Added Modal `finlab_v4_backfill`, controller
+  `/finlab/backfill/run`, and Worker `finlab-v4-backfill` trigger wiring.
+- Worker trigger is explicitly gated by
+  `FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED=1` or
+  `FINLAB_V4_BACKFILL_MODAL_TRIGGER_ENABLED=1`; without the flag it returns
+  skipped and leaves the Cloud Run Job as owner.
+- Payload keeps `write_d1=true`, `apply_canonical_d1=true`, archive lookback
+  limited to production-supported `3` or `5` years, and a bounded canonical
+  repair window.
 
 Acceptance:
 
@@ -148,13 +170,36 @@ Why:
 Target shape:
 
 - Add Modal functions:
-  - `backtest_run`
-  - `backtest_replay`
-  - `monte_carlo_mdd`
-  - `pbo_analysis`
+  - `backtest_research_bundle` for weekly backtest + MC + PBO callback closure.
+  - Later split `backtest_replay`, `monte_carlo_mdd`, and `pbo_analysis` only
+    when route-specific artifact/readback schemas are needed.
 - Prefer GCS dataset snapshots as input to avoid repeated D1 fanout.
 - Controller endpoints spawn Modal and persist result/callback.
 - Keep exact validation packet and promotion gate semantics in `validation_governance.py`.
+
+Current implementation state:
+
+- 2026-05-24: Added `backtest-research-bundle-v1` contract and env-gated
+  `/backtest/research-bundle/run` -> Modal spawn path. Existing synchronous
+  `/backtest/run`, `/backtest/monte-carlo`, and `/backtest/pbo` routes are not
+  changed yet.
+- 2026-05-24: Worker `weekly-backtest` can now optionally trigger the Modal
+  bundle when `BACKTEST_RESEARCH_BUNDLE_ENABLED=1` or
+  `WEEKLY_BACKTEST_RESEARCH_BUNDLE_ENABLED=1`. The default chain remains
+  synchronous until production is explicitly flipped. Bundle success callbacks
+  trigger `model-artifact-validation`, preserving the existing ModelPool
+  evidence closure.
+- 2026-05-25: Added env-gated `/backtest/replay/run` -> Modal
+  `backtest_replay` spawn path. The Modal function calls the existing
+  `trigger_replay(ReplayRequest)` implementation so replay validation,
+  persistence guard, and Strategy Lab records are not forked.
+- 2026-05-25: Added env-gated async route equivalents for the manual/API
+  backtest family:
+  - `/backtest/run/async` -> Modal `backtest_full_run`
+  - `/backtest/monte-carlo/run` -> Modal `backtest_monte_carlo`
+  - `/backtest/pbo/run` -> Modal `backtest_pbo`
+  These call the same full backtest, MC, and PBO service owners and preserve
+  caller-provided simulation/partition settings.
 
 Acceptance:
 
@@ -177,6 +222,22 @@ Target shape:
 - Trigger it from `pipeline-v2` callback or Worker post-pipeline chain.
 - Write terminal `dataset-snapshot-export` scheduler log.
 
+Current implementation state:
+
+- 2026-05-24: Added Modal `dataset_snapshot_export` and
+  `modal_client.spawn_dataset_snapshot_export()`.
+- `pipeline-v2` deferred snapshot follow-up can now use
+  `DATASET_SNAPSHOT_EXECUTOR=modal` or
+  `PIPELINE_DATASET_SNAPSHOT_EXECUTOR=modal`.
+- The Modal path calls the same `export_daily_research_snapshots()` owner,
+  keeps the same callback task, and returns a short `triggered` callback from
+  `pipeline-v2` while Modal writes the terminal success/error callback.
+- 2026-05-25: Added Modal `d1_cold_archive_export`, controller
+  `/datasets/export_cold_archive/run`, and callback/report artifact wiring for
+  `dataset-snapshot-export`. The route is gated by
+  `D1_COLD_ARCHIVE_EXECUTOR=modal`; the existing synchronous
+  `/datasets/export_cold_archive` route is unchanged as rollback.
+
 Acceptance:
 
 - Prediction/recommendation success is not coupled to snapshot success.
@@ -196,12 +257,36 @@ Target shape:
 - Cloud Run only acquires lock and spawns Modal with high-level request metadata.
 - Modal loads GCS/D1, builds payload batches, runs feature selection/train/followup, and releases lock via callback.
 
+Current implementation state:
+
+- 2026-05-25: Added env-gated `/retrain/universal/run` -> Modal
+  `universal_retrain_pipeline` spawn path. The original
+  `/retrain/universal` route remains as rollback.
+- Controller acquires the existing `retrain:{run_date}` lock and writes
+  `webhook_log` status, then returns after Modal spawn. If dispatch fails, the
+  controller releases the lock.
+- Modal `universal_retrain_pipeline` owns the existing prep sequence:
+  `load_market_env`, GCS training snapshot load with D1 fallback, sector
+  encoding, full payload assembly, full-feature prep batches, and
+  `retrain_orchestrator` spawn.
+- Worker can use the short trigger only when
+  `UNIVERSAL_RETRAIN_MODAL_TRIGGER_ENABLED=1`,
+  `RETRAIN_UNIVERSAL_MODAL_TRIGGER_ENABLED=1`,
+  `UNIVERSAL_RETRAIN_EXECUTOR=modal`, or
+  `RETRAIN_UNIVERSAL_EXECUTOR=modal` is set. Without the flag it keeps the
+  existing fire-and-forget `/retrain/universal` path.
+- Weekly drift preserves `candidate_type=weekly_drift`, target models, target
+  families, and selected training groups. Monthly/manual retrain keeps the
+  same scheduler task ids and retrain followup callback.
+
 Acceptance:
 
 - Same lock lifecycle.
 - Same followup payload.
 - Same artifact registry writes.
 - Same monthly quality gates.
+- Same stock universe, train groups, feature count, prep window, FTT
+  hyperparameters, and promotion gates.
 
 ### P2 - Async or Cache `/regime/compute`
 
@@ -216,11 +301,28 @@ Target shape:
 - First cache market-env evidence and shorten `load_market_env`.
 - If still costly, move whole regime evidence pack + HMM call + KV push into a Modal function.
 
+Current implementation state:
+
+- 2026-05-25: Added env-gated `/regime/compute/run` -> Modal
+  `regime_compute` spawn path. The original `/regime/compute` route remains
+  as rollback.
+- Modal `regime_compute` uses the same `load_market_env()` owner, same HMM
+  detector path, same evidence pack builder, and same `push_optuna_result`
+  `source=regime` writeback.
+- Worker `runRegimeCompute()` can use the short trigger path only when
+  `REGIME_COMPUTE_MODAL_TRIGGER_ENABLED=1`,
+  `HMM_REGIME_COMPUTE_MODAL_TRIGGER_ENABLED=1`, or
+  `REGIME_COMPUTE_EXECUTOR=modal` is set.
+- Worker passes `prev_label` into the async request; scheduler callback then
+  runs `detectRegimeShift()` with the callback regime label, preserving the
+  existing regime-shift -> per-regime Optuna queue behavior.
+
 Acceptance:
 
 - Same `market_regime_state` payload.
 - Same legacy mirror behavior during migration.
 - Same run-date semantics for backfills.
+- Same regime-shift detection and queue semantics after async callback.
 
 ## Do Not Move First
 
@@ -232,6 +334,24 @@ Do not move this to Modal first. Latest runs are around 15-18s. The exported tot
 
 Do not move these to Modal. They are read-pressure and polling/caching problems, not compute problems. Fix with Cloudflare KV/cache, dashboard polling reduction, or precomputed summary snapshots.
 
+Implementation update:
+
+- `worker/src/lib/modelPoolReadCache.ts` now caches dashboard proxy
+  `/api/model-pool/*` and `/api/observability/model-health` controller reads
+  in KV, with `bypass_cache=true` support and prefix invalidation after
+  confirmed dashboard proxy mutations. Weekly IC and artifact validation-chain
+  scheduler mutations also clear the Worker cache after success.
+- `ml-controller/routers/model_pool.py` now caches `/model_pool/status`,
+  `/model_pool/lineage`, and read-only `/model_pool/artifact_registry*` GET
+  payloads behind a short in-process TTL.
+- `bypass_cache=true` forces a fresh GCS/D1 read for operator debugging.
+- Successful mutation owners invalidate the cache so register/discard,
+  weekly-IC, validation-chain, promotion-controller, champion-pointer backfill,
+  and init changes are visible without waiting for TTL.
+- This keeps model_pool as a controller read surface; Worker cache reduces
+  Cloud Run request count, controller cache reduces remaining request latency,
+  and neither layer reduces polling quality, model specs, or promotion gates.
+
 ### `pipeline-v2` Whole Job
 
 Do not move the whole pipeline first. It is the largest Cloud Run proxy, but most model math inside it already runs on Modal. The safer order is:
@@ -242,6 +362,59 @@ Do not move the whole pipeline first. It is the largest Cloud Run proxy, but mos
 4. Then run a sizing experiment for `ml-controller` and possibly `pipeline-v2`.
 
 Moving `pipeline-v2` wholesale to Modal is a later architecture option only if orchestration waiting remains expensive after the above.
+
+Implementation update:
+
+- Worker `task=pipeline` scheduler callback now detaches
+  `runPostPipelineCallbackChain()` with `executionCtx.waitUntil()`.
+- The callback still releases `lock:ml-predict:<date>` immediately and still
+  logs post-pipeline errors, but it no longer makes Cloud Run `pipeline-v2`
+  wait while Worker triggers downstream verify-v2 closure.
+- `ml-controller` now posts `ml-predict` and `recommendation` dashboard tile
+  callbacks concurrently instead of serially after the terminal pipeline
+  callback.
+- `pipeline_job_main.py` now fans out the terminal `pipeline` callback and both
+  dashboard tile callbacks in the same async batch; dataset snapshot follow-up
+  still runs after the callback batch.
+- Scheduler callback metadata is now persisted, and the Job log splits
+  `graph_elapsed`, `callback_fanout`, `snapshot_followup`, and total runtime so
+  orchestration wait can be attributed without changing compute specs.
+- Compute profile events now persist `await_sec`, `compute_owner`, and
+  `remote_function` as columns, so cost reports can query wait ownership
+  directly while still falling back to profile JSON on an unmigrated D1 table
+  from both Worker and controller telemetry writers.
+- Compute efficiency aggregation now carries these wait-owner fields into the
+  report payload, preserving the distinction between Cloud Run orchestration
+  wait and Modal-owned compute.
+- Post-verify meta-learning shadow now runs NeuralUCB and NeuralTS concurrently
+  inside Worker waitUntil, preserving both shadow policies while shortening
+  callback-chain wall time.
+- Live `pipeline-v2` env inspected on 2026-05-25 had Modal credentials but no
+  explicit dataset snapshot executor/job setting. The code now treats that env
+  shape as `modal_auto` for deferred snapshot export, with inline fallback only
+  when detached mode is not explicitly required.
+- Scheduler callback handling now records terminal callback metadata into
+  `compute_profile_events` while skipping spawn-only `triggered` callbacks, so
+  cost analysis can join scheduler status, R2 reports, and compute profiles.
+- Admin readback exposes `/api/admin/compute-profiles`, including legacy-table
+  fallback from `profile_json`, so wait ownership can be inspected without
+  manually parsing KV/R2 artifacts.
+- Worker task telemetry now marks trigger-only dispatch rows as await time
+  instead of compute time, preventing post-pipeline trigger calls from
+  overstating actual compute.
+- Deploy gate now blocks if production D1 is still missing the additive
+  compute-profile wait columns, making the migration an explicit rollout
+  prerequisite.
+- Modal dataset snapshot callback metadata now includes provider/job/owner/
+  remote-function hints for direct compute-profile attribution.
+- `pipeline-v2` terminal callback metadata now includes Cloud Run resource
+  hints (`PIPELINE_CLOUD_RUN_CPU`, default 4; `PIPELINE_CLOUD_RUN_MEMORY_MB`,
+  default 4096) for vCPU-sec/GiB-sec attribution only; no live spec is reduced.
+- Post-deploy smoke now verifies `/api/admin/compute-profiles` read-only
+  readback before optional trigger smoke, so the attribution endpoint and
+  fallback state are covered in rollout checks.
+- This removes an orchestration wait boundary without reducing daily
+  recommendation output, validation gates, or scheduler cadence.
 
 ## Recommended Roadmap
 
@@ -271,11 +444,11 @@ Moving `pipeline-v2` wholesale to Modal is a later architecture option only if o
 7. **P2 Regime Compute Cache/Async**
    - Cache first; move only if latency remains material.
 
-8. **Sizing Experiment**
+8. **No-Downgrade Efficiency Experiment**
    - After P0/P1 long paths are gone and `/model_pool/*` is cached, evaluate:
-     - `ml-controller`: lower CPU/memory and/or enable CPU throttling.
-     - `verify-v2`: downsize to a small job.
-     - `pipeline-v2`: lower spec or split orchestration.
+     - `ml-controller`: keep spec; move long waits behind async callbacks.
+     - `verify-v2`: keep spec; optimize only duplicated I/O or callback tail.
+     - `pipeline-v2`: keep spec; split orchestration waits and detached artifact tails.
 
 ## Decision
 

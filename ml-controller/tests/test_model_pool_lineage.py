@@ -11,9 +11,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers import model_pool  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _clear_model_pool_read_cache():
+    model_pool._invalidate_model_pool_read_cache("test_setup")
+    yield
+    model_pool._invalidate_model_pool_read_cache("test_teardown")
+
+
 class _FakeBlob:
-    def __init__(self, text: str | None = None):
+    def __init__(self, text: str | None = None, downloads: dict[str, int] | None = None, path: str | None = None):
         self._text = text
+        self._downloads = downloads
+        self._path = path
 
     def exists(self) -> bool:
         return self._text is not None
@@ -21,15 +30,18 @@ class _FakeBlob:
     def download_as_text(self) -> str:
         if self._text is None:
             raise RuntimeError("missing blob")
+        if self._downloads is not None and self._path is not None:
+            self._downloads[self._path] = self._downloads.get(self._path, 0) + 1
         return self._text
 
 
 class _FakeBucket:
     def __init__(self, blobs: dict[str, str]):
         self._blobs = blobs
+        self.downloads: dict[str, int] = {}
 
     def blob(self, path: str) -> _FakeBlob:
-        return _FakeBlob(self._blobs.get(path))
+        return _FakeBlob(self._blobs.get(path), self.downloads, path)
 
 
 class _FakeStorageClient:
@@ -242,3 +254,69 @@ async def test_lineage_preserves_artifact_diff_metadata(monkeypatch):
     assert model["challenger"]["metadata"]["daily_ic_count"] == 14
     assert model["challenger"]["artifact_evidence"]["daily_ic_count"] == 14
     assert model["challenger"]["metadata"]["sequence_report"]["oos_windows"] == 130
+
+
+@pytest.mark.asyncio
+async def test_lineage_reuses_short_ttl_read_cache(monkeypatch):
+    pool = {
+        "schema_version": "1.0",
+        "last_updated": "2026-05-24T00:00:00+00:00",
+        "models": {
+            "XGBoost": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/xgboost/v1.joblib",
+                "model_type": "feature",
+                "balance_family": "feature",
+            }
+        },
+    }
+    blobs = {
+        "universal/model_pool.json": json.dumps(pool),
+        "universal/xgboost/metadata_v1.json": json.dumps({"version": "v1", "feature_count": 106}),
+    }
+    bucket = _FakeBucket(blobs)
+    from google.cloud import storage
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setenv("MODEL_POOL_READ_CACHE_TTL_SECONDS", "60")
+    monkeypatch.setattr(storage, "Client", lambda: _FakeStorageClient(bucket))
+
+    first = await model_pool.lineage()
+    second = await model_pool.lineage()
+
+    assert second == first
+    assert bucket.downloads["universal/model_pool.json"] == 1
+    assert bucket.downloads["universal/xgboost/metadata_v1.json"] == 1
+
+    await model_pool.lineage(bypass_cache=True)
+
+    assert bucket.downloads["universal/model_pool.json"] == 2
+    assert bucket.downloads["universal/xgboost/metadata_v1.json"] == 2
+
+
+@pytest.mark.asyncio
+async def test_artifact_registry_read_cache_reuses_query_and_invalidates(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_list_artifact_registry(**kwargs):
+        calls["count"] += 1
+        return [{
+            "artifact_id": f"XGBoost:v{calls['count']}:monthly_release",
+            "model_name": kwargs.get("model_name"),
+        }]
+
+    monkeypatch.setenv("MODEL_POOL_READ_CACHE_TTL_SECONDS", "60")
+    monkeypatch.setattr(model_pool, "list_artifact_registry", fake_list_artifact_registry)
+
+    first = await model_pool.artifact_registry(model_name="XGBoost", limit=10)
+    second = await model_pool.artifact_registry(model_name="XGBoost", limit=10)
+
+    assert first == second
+    assert calls["count"] == 1
+
+    model_pool._invalidate_model_pool_read_cache("test_mutation")
+    third = await model_pool.artifact_registry(model_name="XGBoost", limit=10)
+
+    assert third["artifacts"][0]["artifact_id"] == "XGBoost:v2:monthly_release"
+    assert calls["count"] == 2

@@ -103,18 +103,20 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
 
 async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
-  const neuralUcb = await runNeuralMetaShadow(env, {
-    policyId: 'NeuralUCB',
-    endDate: ctx.runDate,
-    dryRun: false,
-    timeoutMs: 45_000,
-  })
-  const neuralTs = await runNeuralMetaShadow(env, {
-    policyId: 'NeuralTS',
-    endDate: ctx.runDate,
-    dryRun: false,
-    timeoutMs: 45_000,
-  })
+  const [neuralUcb, neuralTs] = await Promise.all([
+    runNeuralMetaShadow(env, {
+      policyId: 'NeuralUCB',
+      endDate: ctx.runDate,
+      dryRun: false,
+      timeoutMs: 45_000,
+    }),
+    runNeuralMetaShadow(env, {
+      policyId: 'NeuralTS',
+      endDate: ctx.runDate,
+      dryRun: false,
+      timeoutMs: 45_000,
+    }),
+  ])
   return [
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,

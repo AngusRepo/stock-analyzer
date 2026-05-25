@@ -1,3 +1,5 @@
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+
 export interface ScreenerSeedCandidateInput {
   symbol: unknown
   name?: unknown
@@ -105,9 +107,11 @@ export function normalizeScreenerSeedCandidate(candidate: ScreenerSeedCandidateI
   const chipScore = scoreComponent(candidate.chip_score, 0, 40, 'chip_score_non_finite', issues)
   const techScore = scoreComponent(candidate.tech_score, 0, 30, 'tech_score_non_finite', issues)
   const momentumScore = scoreComponent(candidate.momentum_score, 0, 20, 'momentum_score_non_finite', issues)
-  const seedScore = Math.round(clamp(chipScore + techScore + momentumScore, 0, 100) * 10) / 10
   const reason = cleanText(candidate.reason) || DEFAULT_REASON
   const scoreComponents = normalizeScoreComponents(candidate.score_components, issues)
+  const scoreV2 = readScoreV2Snapshot({ score_components: scoreComponents })
+  const scoreFallback = finiteNumber(candidate.score) ?? chipScore + techScore + momentumScore
+  const seedScore = Math.round(clamp(scoreV2?.finalScore ?? scoreFallback, 0, 100) * 10) / 10
 
   return {
     row: {
@@ -157,6 +161,12 @@ export function buildScreenerSeedRow(input: {
   }
 }
 
+const SCREENER_SEED_OWNER_GUARD_SQL = `daily_recommendations.signal IS NULL
+         AND daily_recommendations.confidence IS NULL
+         AND daily_recommendations.score_components IS NOT NULL
+         AND json_valid(daily_recommendations.score_components)
+         AND COALESCE(CAST(json_extract(daily_recommendations.score_components, '$.components.mlEdge') AS REAL), 0) = 0`
+
 export function buildScreenerSeedUpsertSql(): string {
   return `
     INSERT INTO daily_recommendations
@@ -176,34 +186,20 @@ export function buildScreenerSeedUpsertSql(): string {
       current_price = excluded.current_price,
       industry = excluded.industry,
       rank = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        WHEN ${SCREENER_SEED_OWNER_GUARD_SQL}
         THEN excluded.rank ELSE daily_recommendations.rank END,
       score = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        WHEN ${SCREENER_SEED_OWNER_GUARD_SQL}
         THEN excluded.score ELSE daily_recommendations.score END,
       reason = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        WHEN ${SCREENER_SEED_OWNER_GUARD_SQL}
         THEN excluded.reason ELSE daily_recommendations.reason END,
       watch_points = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        WHEN ${SCREENER_SEED_OWNER_GUARD_SQL}
         THEN excluded.watch_points ELSE daily_recommendations.watch_points END,
-      score_components = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
-        THEN excluded.score_components ELSE daily_recommendations.score_components END,
+      score_components = COALESCE(excluded.score_components, daily_recommendations.score_components),
       has_buy_signal = CASE
-        WHEN daily_recommendations.signal IS NULL
-         AND daily_recommendations.confidence IS NULL
-         AND COALESCE(daily_recommendations.ml_score, 0) = 0
+        WHEN ${SCREENER_SEED_OWNER_GUARD_SQL}
         THEN excluded.has_buy_signal ELSE daily_recommendations.has_buy_signal END,
       market_segment = excluded.market_segment,
       recommendation_lane = excluded.recommendation_lane,

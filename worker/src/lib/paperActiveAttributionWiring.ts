@@ -55,7 +55,7 @@ export function buildPendingBuyPaperAttributionEvents(
         decision: `pending_buy:${verdict}`,
         paperLane: context.paperLane ?? 'paper_active_baseline',
         candidateSource: context.candidateSource ?? 'morning_setup_pending_buy',
-        baselineScore: firstFinite(item.score, item.confidence),
+        baselineScore: firstFinite(item.score_v2?.finalScore, item.confidence),
         challengerScore: null,
         featureSetVersion: context.featureSetVersion ?? null,
         regimeVersion: context.regimeVersion ?? null,

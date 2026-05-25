@@ -477,7 +477,9 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     indicators, indicator_queries = _query_date_range(
         """
         SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal,
-               macd_hist, atr14, bb_upper, bb_mid, bb_lower
+               macd_hist, atr14, bb_upper, bb_mid, bb_lower,
+               plus_di14, minus_di14, adx14, parabolic_sar, cci20,
+               volume_weighted_rsi14, volume_momentum_divergence_13_27_10
         FROM technical_indicators
         WHERE date >= ? AND date <= ?
         ORDER BY stock_id, date

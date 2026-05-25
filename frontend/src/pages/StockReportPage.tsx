@@ -200,7 +200,7 @@ export default function StockReportPage() {
                       {rec && (
                         <>
                           <span className="text-muted-foreground">
-                            評分 <span className="text-foreground font-bold">{Math.round(scoreViewModel?.finalScore ?? rec.score ?? 0)}</span>
+                            評分 <span className="text-foreground font-bold">{Math.round(scoreViewModel?.finalScore ?? 0)}</span>
                           </span>
                           <span className="text-muted-foreground">
                             信心 <span className="text-foreground font-bold">{((rec.confidence ?? 0) * 100).toFixed(0)}%</span>

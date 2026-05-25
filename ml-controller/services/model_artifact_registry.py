@@ -106,9 +106,11 @@ def _latest_validation_bundle() -> dict[str, Any]:
 
     monte_carlo = dict(mc_rows[0]) if mc_rows else None
     if monte_carlo:
-        raw_details = _json_loads(monte_carlo.get("raw_details"))
+        raw_details = _json_loads(monte_carlo.get("raw_details")) or _json_loads(monte_carlo.get("raw_distribution"))
         if raw_details:
             monte_carlo["raw_details"] = raw_details
+            if isinstance(raw_details.get("tail_risk_diagnostics"), dict):
+                monte_carlo["tail_risk_diagnostics"] = raw_details["tail_risk_diagnostics"]
 
     backtest = dict(backtest_rows[0]) if backtest_rows else None
     dsr = None
@@ -138,26 +140,13 @@ def _latest_validation_bundle() -> dict[str, Any]:
 def _attach_validation_bundle(row: dict[str, Any], bundle: dict[str, Any]) -> None:
     offline = _json_loads(row.get("offline_evidence_json"))
     packet = offline.get("validation_packet") if isinstance(offline.get("validation_packet"), dict) else {}
-    changed = False
-    for key in ("pbo", "monte_carlo", "deflated_sharpe"):
-        value = bundle.get(key)
-        if value and key not in offline:
-            offline[key] = value
-            changed = True
-        if value and key not in packet:
-            packet[key] = value
-            changed = True
-    if changed:
-        packet["scope"] = bundle.get("scope")
-        packet["root_cause"] = bundle.get("root_cause")
-        if bundle.get("backtest"):
-            packet["backtest"] = {
-                "run_date": bundle["backtest"].get("run_date"),
-                "strategy": bundle["backtest"].get("strategy"),
-                "sharpe": bundle["backtest"].get("sharpe"),
-                "max_drawdown": bundle["backtest"].get("max_drawdown"),
-                "total_trades": bundle["backtest"].get("total_trades"),
-            }
+    release_gate = _release_gate_packet(bundle)
+    if release_gate != packet.get("release_gate"):
+        packet["schema_version"] = packet.get("schema_version") or "model-artifact-validation-packet-v1"
+        packet["scope"] = packet.get("scope") or "model_artifact_promotion_readiness"
+        packet["candidate_specific"] = bool(packet.get("candidate_specific") is True and not _is_global_release_packet(packet))
+        packet["release_gate"] = release_gate
+        packet.setdefault("candidate_gate", _candidate_gate_packet(offline))
         offline["validation_packet"] = packet
         row["offline_evidence_json"] = offline
 
@@ -500,6 +489,339 @@ def list_artifact_registry(
     for row in rows:
         _attach_validation_bundle(row, validation_bundle)
     return rows
+
+
+def _decode_registry_row(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    for key in ("offline_gate_failed_gates", "offline_evidence_json", "live_evidence_json"):
+        raw = decoded.get(key)
+        if not isinstance(raw, str):
+            continue
+        try:
+            decoded[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            decoded[key] = raw
+    return decoded
+
+
+def _artifact_validation_candidate_rows(
+    *,
+    model_name: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    where = [
+        "(state IS NULL OR state NOT IN ('production', 'archived', 'rejected'))",
+        "live_gate_status IN ('passed', 'rolling_ic_passed', 'multi_evidence_passed')",
+    ]
+    params: list[Any] = []
+    if model_name:
+        where.append("model_name = ?")
+        params.append(model_name)
+    rows = d1_client.query(
+        f"""
+        SELECT *
+        FROM model_artifact_registry
+        WHERE {' AND '.join(where)}
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        [*params, max(1, min(int(limit or 200), 500))],
+    )
+    return [_decode_registry_row(row) for row in rows]
+
+
+def _compact_backtest_evidence(backtest: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(backtest, dict):
+        return None
+    return {
+        "run_date": backtest.get("run_date"),
+        "strategy": backtest.get("strategy"),
+        "sharpe": backtest.get("sharpe"),
+        "max_drawdown": backtest.get("max_drawdown"),
+        "total_trades": backtest.get("total_trades"),
+    }
+
+
+def _validation_packet_from_offline(offline: dict[str, Any]) -> dict[str, Any]:
+    packet = offline.get("validation_packet")
+    return packet if isinstance(packet, dict) else {}
+
+
+def _validation_gate(source: dict[str, Any] | None, names: set[str]) -> dict[str, Any] | None:
+    if not isinstance(source, dict):
+        return None
+    gates = source.get("gates")
+    if not isinstance(gates, list):
+        return None
+    for gate in gates:
+        if isinstance(gate, dict) and str(gate.get("name") or "") in names:
+            return gate
+    return None
+
+
+def _scoped_gate_evidence(
+    source: dict[str, Any] | None,
+    keys: set[str],
+    gate_names: set[str],
+) -> Any:
+    gate = _validation_gate(source, gate_names)
+    if gate:
+        return gate
+    return _deep_get(source, keys)
+
+
+def _is_global_release_packet(packet: dict[str, Any]) -> bool:
+    scope = str(packet.get("scope") or "")
+    overlay_scope = str(packet.get("strategy_risk_overlay_scope") or "")
+    return scope in {"latest_global_weekly_validation", "release_train_gate"} or overlay_scope == "latest_global_weekly_validation"
+
+
+def _candidate_validation_evidence(offline: dict[str, Any]) -> dict[str, Any] | None:
+    for key in (
+        "candidate_gate",
+        "candidate_validation_packet",
+        "candidate_specific_validation",
+        "parameter_candidate_validation",
+    ):
+        value = offline.get(key)
+        if isinstance(value, dict):
+            return value
+
+    packet = _validation_packet_from_offline(offline)
+    nested = packet.get("candidate_gate")
+    if isinstance(nested, dict) and nested.get("status") != "MISSING":
+        evidence = nested.get("evidence")
+        return evidence if isinstance(evidence, dict) else nested
+    if packet.get("candidate_specific") is True and not _is_global_release_packet(packet):
+        return packet
+    return None
+
+
+def _release_gate_packet(validation_bundle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scope": validation_bundle.get("scope") or "latest_global_weekly_validation",
+        "source": "global_weekly_validation",
+        "shared_across_models": True,
+        "candidate_specific": False,
+        "root_cause": validation_bundle.get("root_cause"),
+        "backtest": _compact_backtest_evidence(validation_bundle.get("backtest")),
+        "pbo": validation_bundle.get("pbo"),
+        "monte_carlo": validation_bundle.get("monte_carlo"),
+        "deflated_sharpe": validation_bundle.get("deflated_sharpe"),
+    }
+
+
+def _candidate_gate_packet(offline: dict[str, Any]) -> dict[str, Any]:
+    evidence = _candidate_validation_evidence(offline)
+    if not evidence:
+        return {
+            "status": "MISSING",
+            "candidate_specific": True,
+            "reason": "candidate_specific_validation_not_generated",
+            "required": [
+                "candidate_paired_replay",
+                "candidate_cscv_rank_logit_pbo",
+                "candidate_deflated_sharpe",
+                "candidate_monte_carlo_tail_risk",
+                "candidate_white_reality_check_or_hansen_spa",
+            ],
+        }
+
+    status = str(
+        evidence.get("decision")
+        or evidence.get("status")
+        or evidence.get("verdict")
+        or evidence.get("go_live_verdict")
+        or ""
+    ).upper()
+    if not status:
+        if evidence.get("passed") is True:
+            status = "PASS"
+        elif evidence.get("passed") is False:
+            status = "FAIL"
+        else:
+            failed_gates = evidence.get("failed_gates")
+            status = "PASS" if isinstance(failed_gates, list) and not failed_gates else "WARN"
+
+    return {
+        "status": status or "WARN",
+        "candidate_specific": True,
+        "source": evidence.get("source"),
+        "scope": evidence.get("scope") or evidence.get("validation_scope"),
+        "evidence": evidence,
+        "pbo": _scoped_gate_evidence(
+            evidence,
+            {"pbo", "pbo_score", "probability_of_backtest_overfitting"},
+            {"pbo_overfit_risk"},
+        ),
+        "monte_carlo": _scoped_gate_evidence(
+            evidence,
+            {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"},
+            {"monte_carlo_tail_risk"},
+        ),
+        "deflated_sharpe": _scoped_gate_evidence(
+            evidence,
+            {"deflated_sharpe", "dsr"},
+            {"deflated_sharpe"},
+        ),
+        "data_snooping": _scoped_gate_evidence(
+            evidence,
+            {"data_snooping", "hansen_spa", "white_reality_check", "spa", "reality_check"},
+            {"data_snooping_overfit_guard"},
+        ),
+    }
+
+
+def _model_artifact_validation_packet(
+    row: dict[str, Any],
+    validation_bundle: dict[str, Any],
+    *,
+    evaluated_at: str,
+) -> dict[str, Any]:
+    offline = _artifact_offline_evidence(row)
+    candidate_gate = _candidate_gate_packet(offline)
+    release_gate = _release_gate_packet(validation_bundle)
+    return {
+        "schema_version": "model-artifact-validation-packet-v1",
+        "source": "model_artifact_validation_chain",
+        "scope": "model_artifact_promotion_readiness",
+        "candidate_specific": candidate_gate.get("status") != "MISSING",
+        "candidate_gate": candidate_gate,
+        "release_gate": release_gate,
+        "artifact_id": row.get("artifact_id"),
+        "model_name": row.get("model_name"),
+        "candidate_version": row.get("version"),
+        "candidate_type": row.get("candidate_type"),
+        "evaluated_at": evaluated_at,
+        "model_cpcv": _deep_get(offline, {"model_cpcv"}) or _deep_get(offline, {"model_cpcv_decision", "cpcv"}),
+        "offline_gate_decision": row.get("offline_gate_decision"),
+        "live_gate_status": row.get("live_gate_status"),
+        "decision": "PENDING",
+        "failed_gates": [],
+        "blockers": [],
+    }
+
+
+def _with_validation_packet(
+    row: dict[str, Any],
+    validation_bundle: dict[str, Any],
+    *,
+    evaluated_at: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    offline = _artifact_offline_evidence(row)
+    packet = _model_artifact_validation_packet(row, validation_bundle, evaluated_at=evaluated_at)
+    offline["validation_packet"] = packet
+    return offline, packet
+
+
+def run_model_artifact_validation_chain(
+    *,
+    model_name: str | None = None,
+    limit: int = 200,
+    champion_versions: dict[str, str] | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Persist artifact-scoped validation evidence after weekly backtest/MC/PBO.
+
+    This is not a promotion mutator: it only writes validation evidence and moves
+    a candidate to ``multi_evidence_passed`` when the existing promotion blockers
+    are clear. Champion pointer updates remain owned by promotion_controller.
+    """
+    validation_bundle = _latest_validation_bundle()
+    rows = _artifact_validation_candidate_rows(model_name=model_name, limit=limit)
+    pointer_versions = {
+        str(row.get("model_name")): str(row.get("champion_version"))
+        for row in list_champion_pointers(model_name=model_name)
+        if row.get("model_name") and row.get("champion_version")
+    }
+    champion_versions = {**pointer_versions, **(champion_versions or {})}
+    evaluated_at = _now_iso()
+
+    artifacts: list[dict[str, Any]] = []
+    updated = 0
+    ready = 0
+    blocked = 0
+    errors: list[str] = []
+
+    for row in rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        model = str(row.get("model_name") or "")
+        offline, packet = _with_validation_packet(row, validation_bundle, evaluated_at=evaluated_at)
+        candidate_for_gate = {
+            **row,
+            "offline_evidence_json": _json_dumps(offline),
+            # Treat rolling IC as already reviewed for this check; blockers below
+            # decide whether evidence can be upgraded to multi_evidence_passed.
+            "live_gate_status": "passed",
+        }
+        champion_version = champion_versions.get(model) or row.get("final_compared_to")
+        blockers = artifact_promotion_blockers(candidate_for_gate, champion_version=champion_version)
+        blocker_codes = _blocker_codes(blockers)
+        is_ready = len(blockers) == 0
+
+        packet["decision"] = "PASS" if is_ready else "FAIL"
+        packet["failed_gates"] = blocker_codes
+        packet["blockers"] = blockers
+        offline["validation_packet"] = packet
+
+        next_live_status = "multi_evidence_passed" if is_ready else str(row.get("live_gate_status") or "rolling_ic_passed")
+        next_state = "live_gate_passed" if is_ready else str(row.get("state") or "shadowing")
+        next_decision = "pending_promotion_controller" if is_ready else "blocked_multi_evidence_gate"
+
+        if persist:
+            try:
+                d1_client.execute(
+                    """
+                    UPDATE model_artifact_registry
+                    SET offline_evidence_json = ?,
+                        live_gate_status = ?,
+                        state = ?,
+                        promotion_decision = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE artifact_id = ?
+                    """,
+                    [
+                        _json_dumps(offline),
+                        next_live_status,
+                        next_state,
+                        next_decision,
+                        artifact_id,
+                    ],
+                )
+                updated += 1
+            except Exception as exc:  # noqa: BLE001 - report partial validation closure.
+                errors.append(f"{artifact_id}: {exc}")
+
+        if is_ready:
+            ready += 1
+        else:
+            blocked += 1
+        artifacts.append({
+            "artifact_id": artifact_id,
+            "model_name": model,
+            "candidate_version": row.get("version"),
+            "candidate_type": row.get("candidate_type"),
+            "validation_decision": packet["decision"],
+            "live_gate_status": next_live_status,
+            "state": next_state,
+            "promotion_decision": next_decision,
+            "blocker_codes": blocker_codes,
+            "blockers": blockers,
+            "persisted": bool(persist),
+        })
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "source_of_truth": "model_artifact_registry",
+        "validation_scope": "model_artifact_promotion_readiness",
+        "release_gate_scope": validation_bundle.get("scope"),
+        "count": len(rows),
+        "updated": updated,
+        "ready": ready,
+        "blocked": blocked,
+        "errors": errors,
+        "artifacts": artifacts,
+    }
 
 
 def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]]:
@@ -892,6 +1214,26 @@ def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bo
     return number > 0
 
 
+def _metric_float(value: Any, keys: set[str]) -> float | None:
+    raw = _deep_get(value, keys) if isinstance(value, dict) else value
+    return _as_float(raw)
+
+
+def _metric_text(value: Any, keys: set[str]) -> str:
+    raw = _deep_get(value, keys) if isinstance(value, dict) else value
+    return str(raw or "")
+
+
+def _release_gate_from_offline(offline: dict[str, Any]) -> dict[str, Any] | None:
+    packet = _validation_packet_from_offline(offline)
+    release_gate = packet.get("release_gate")
+    if isinstance(release_gate, dict):
+        return release_gate
+    if packet and _is_global_release_packet(packet):
+        return packet
+    return None
+
+
 def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | None = None) -> list[dict[str, Any]]:
     """Return promotion blockers with machine codes and human-action text.
 
@@ -906,6 +1248,17 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     live_decision = _artifact_live_decision(row)
     metrics = live_decision.get("metrics") if isinstance(live_decision.get("metrics"), dict) else {}
     offline = _artifact_offline_evidence(row)
+    candidate_gate = _candidate_gate_packet(offline)
+    candidate_evidence = candidate_gate.get("evidence") if isinstance(candidate_gate.get("evidence"), dict) else candidate_gate
+    release_gate = _release_gate_from_offline(offline)
+    try:
+        from services.promotion_policy import PromotionPolicy
+
+        policy = PromotionPolicy.from_env()
+    except Exception:  # noqa: BLE001 - promotion UI must stay fail-visible even if policy import drifts.
+        policy = None
+    max_pbo = float(getattr(policy, "max_pbo", 0.50))
+    max_mc_mdd = float(getattr(policy, "max_mc_mdd_95th", 0.20))
 
     def add(code: str, label: str, next_action: str, severity: str = "blocker") -> None:
         blockers.append({
@@ -967,33 +1320,116 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Attach CPCV/PBO validation evidence so rolling live IC is not treated as a one-window artifact.",
         )
 
-    pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
-    pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
-    pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
-    if not _truthy_gate_value(pbo, max_fail_value=0.2) or (pbo_value is not None and pbo_value > 0.2):
+    if candidate_gate.get("status") == "MISSING":
         add(
-            "pbo_threshold_missing",
-            "PBO threshold is missing or too high",
-            "Provide a PBO value at or below 0.20 before final promotion.",
+            "candidate_specific_validation_missing",
+            "Missing candidate-specific promotion evidence",
+            "Run candidate-specific paired replay, CSCV rank-logit PBO, DSR, MC tail-risk, and SPA/White Reality Check; weekly/global release gates cannot substitute for model-level evidence.",
         )
-    if isinstance(pbo, dict) and pbo_method and pbo_method != "cscv_rank_logit":
-        add(
-            "pbo_method_not_promotion_grade",
-            "PBO method is proxy-grade",
-            "Run promotion-grade CSCV rank-logit PBO; proxy PBO is visible but cannot approve production.",
+    else:
+        pbo = candidate_gate.get("pbo") or _scoped_gate_evidence(
+            candidate_evidence,
+            {"pbo", "pbo_score", "probability_of_backtest_overfitting"},
+            {"pbo_overfit_risk"},
         )
+        pbo_value = _metric_float(pbo, {"pbo", "pbo_score", "probability_of_backtest_overfitting", "value", "score"})
+        pbo_method = _metric_text(pbo, {"method"}).lower()
+        if not _truthy_gate_value(pbo, max_fail_value=max_pbo) or (pbo_value is not None and pbo_value >= max_pbo):
+            add(
+                "candidate_pbo_threshold_missing",
+                "Candidate PBO threshold is missing or too high",
+                f"Provide candidate-specific PBO below {max_pbo:.2f} before final promotion.",
+            )
+        if isinstance(pbo, dict) and pbo_method and pbo_method != "cscv_rank_logit":
+            add(
+                "candidate_pbo_method_not_promotion_grade",
+                "Candidate PBO method is not promotion-grade",
+                "Run candidate-specific CSCV rank-logit PBO; proxy PBO is visible but cannot approve production.",
+            )
 
-    dsr = _deep_get(offline, {"deflated_sharpe", "dsr"})
-    mc = _deep_get(offline, {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"})
-    if not _truthy_gate_value(dsr) or not _truthy_gate_value(mc):
-        add(
-            "dsr_mc_missing",
-            "Missing DSR or Monte Carlo tail-risk evidence",
-            "Attach deflated Sharpe and Monte Carlo tail-risk evidence before promotion.",
+        dsr = candidate_gate.get("deflated_sharpe") or _scoped_gate_evidence(
+            candidate_evidence,
+            {"deflated_sharpe", "dsr"},
+            {"deflated_sharpe"},
         )
+        mc = candidate_gate.get("monte_carlo") or _scoped_gate_evidence(
+            candidate_evidence,
+            {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"},
+            {"monte_carlo_tail_risk"},
+        )
+        if not _truthy_gate_value(dsr) or not _truthy_gate_value(mc):
+            add(
+                "candidate_dsr_mc_missing",
+                "Missing candidate DSR or Monte Carlo tail-risk evidence",
+                "Attach candidate-specific deflated Sharpe and Monte Carlo tail-risk evidence before promotion.",
+            )
 
-    if live_status == "multi_evidence_passed":
-        return [b for b in blockers if b["code"] == "missing_current_champion"]
+        data_snooping = candidate_gate.get("data_snooping") or _scoped_gate_evidence(
+            candidate_evidence,
+            {"data_snooping", "hansen_spa", "white_reality_check", "spa", "reality_check"},
+            {"data_snooping_overfit_guard"},
+        )
+        if not _truthy_gate_value(data_snooping):
+            add(
+                "candidate_data_snooping_missing",
+                "Missing candidate SPA / White Reality Check evidence",
+                "Run Hansen SPA or White Reality Check so selected parameters are not promoted from data-snooped winners.",
+            )
+
+    if not release_gate:
+        add(
+            "release_train_gate_missing",
+            "Missing shared release-train risk gate",
+            "Run weekly/global backtest, CSCV PBO, DSR, and Monte Carlo release gate before allowing any candidate to promote.",
+        )
+    else:
+        release_pbo = release_gate.get("pbo") or _scoped_gate_evidence(
+            release_gate,
+            {"pbo", "pbo_score", "probability_of_backtest_overfitting"},
+            {"pbo_overfit_risk"},
+        )
+        release_pbo_value = _metric_float(release_pbo, {"pbo", "pbo_score", "probability_of_backtest_overfitting", "value", "score"})
+        release_pbo_method = _metric_text(release_pbo, {"method"}).lower()
+        if not _truthy_gate_value(release_pbo, max_fail_value=max_pbo) or (
+            release_pbo_value is not None and release_pbo_value >= max_pbo
+        ):
+            add(
+                "release_pbo_blocked",
+                "Shared release PBO gate failed",
+                f"Release train is frozen until global PBO is below {max_pbo:.2f} with promotion-grade evidence.",
+            )
+        if isinstance(release_pbo, dict) and release_pbo_method and release_pbo_method != "cscv_rank_logit":
+            add(
+                "release_pbo_method_not_promotion_grade",
+                "Shared release PBO method is proxy-grade",
+                "Run global CSCV rank-logit PBO before opening this release train.",
+                severity="review",
+            )
+
+        release_dsr = release_gate.get("deflated_sharpe") or _scoped_gate_evidence(
+            release_gate,
+            {"deflated_sharpe", "dsr"},
+            {"deflated_sharpe"},
+        )
+        if not _truthy_gate_value(release_dsr):
+            add(
+                "release_dsr_blocked",
+                "Shared release DSR gate failed",
+                "Release train is frozen until global deflated Sharpe evidence passes.",
+            )
+
+        release_mc = release_gate.get("monte_carlo") or _scoped_gate_evidence(
+            release_gate,
+            {"monte_carlo", "mc", "mc_tail_risk", "tail_risk"},
+            {"monte_carlo_tail_risk"},
+        )
+        release_mc_mdd = _metric_float(release_mc, {"mdd_95th", "max_drawdown_95th"})
+        if not _truthy_gate_value(release_mc) or (release_mc_mdd is not None and release_mc_mdd > max_mc_mdd):
+            add(
+                "release_monte_carlo_blocked",
+                "Shared release MC tail-risk gate failed",
+                f"Release train is frozen until global Monte Carlo 95% MDD is <= {max_mc_mdd:.2f}.",
+            )
     return blockers
 
 

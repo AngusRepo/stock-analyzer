@@ -190,7 +190,13 @@ export async function onPostExit(
         FROM daily_recommendations dr
        WHERE dr.date = ?
          AND dr.has_buy_signal = 1
-       ORDER BY dr.score DESC, dr.confidence DESC
+       ORDER BY CASE WHEN json_valid(dr.score_components) THEN
+          COALESCE(
+            CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
+            CAST(json_extract(dr.score_components, '$.total') AS REAL),
+            0
+          ) ELSE 0 END DESC,
+          dr.confidence DESC
        LIMIT 20
     `).bind(ctx.today).all<any>()
     if (!recs || recs.length === 0) {

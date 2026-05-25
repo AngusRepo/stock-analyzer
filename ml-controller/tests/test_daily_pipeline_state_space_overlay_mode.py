@@ -80,9 +80,23 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None):
     )
 
 
+def test_state_space_shadow_or_disabled_requires_explicit_quality_escape_hatch(monkeypatch):
+    monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "shadow")
+    monkeypatch.delenv("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE", raising=False)
+    assert daily_pipeline_v2._state_space_overlay_mode() == "blocking"
+
+    monkeypatch.setenv("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE", "1")
+    assert daily_pipeline_v2._state_space_overlay_mode() == "shadow"
+
+    monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "disabled")
+    monkeypatch.delenv("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE", raising=False)
+    assert daily_pipeline_v2._state_space_overlay_mode() == "blocking"
+
+
 @pytest.mark.asyncio
 async def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch):
     monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "shadow")
+    monkeypatch.setenv("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE", "1")
     spawn_calls = []
 
     def fake_spawn(series_list, *, horizon=5, version_by_model=None):
@@ -130,3 +144,39 @@ async def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatc
     pred = result["predictions"]["2330"]
     assert pred["kalman_filter"]["forecast_pct"] == 0.01
     assert pred["markov_switching"]["forecast_pct"] == -0.01
+
+
+@pytest.mark.asyncio
+async def test_active_chronos_incomplete_output_fails_closed(monkeypatch):
+    _patch_common(monkeypatch)
+
+    async def broken_chronos(*_args, **_kwargs):
+        return {
+            "results": [
+                {
+                    "symbol": "2330",
+                    "error": "PipelineLoadError: Chronos2Model.__init__() got an unexpected keyword argument 'dtype'",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(modal_client, "chronos_batch_predict", broken_chronos)
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_model_pool_versions",
+        lambda: (
+            {
+                "Chronos": "active",
+                "DLinear": "retired",
+                "PatchTST": "retired",
+                "KalmanFilter": "retired",
+                "MarkovSwitching": "retired",
+            },
+            {"Chronos": "v2"},
+            {},
+            True,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Chronos active slot incomplete"):
+        await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})

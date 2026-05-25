@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers import recommend as recommend_router  # noqa: E402
 from services import llm_service  # noqa: E402
 from services.obsidian_writer import _render  # noqa: E402
-from services.recommend_score_v2_projection import build_score_v2_route_candidate, rank_score_v2_route_candidates  # noqa: E402
+from services.recommend_score_v2_route import build_score_v2_route_candidate, rank_score_v2_route_candidates  # noqa: E402
 
 
 def _score_v2_payload(final_score: float = 88.0) -> str:
@@ -39,7 +39,7 @@ def _score_v2_payload(final_score: float = 88.0) -> str:
     )
 
 
-def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.MonkeyPatch):
+def test_recommend_route_returns_score_v2_payload_without_legacy_score_fields(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(recommend_router, "_ANTHROPIC_KEY", "")
 
     req = recommend_router.RecommendRequest(
@@ -72,18 +72,22 @@ def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.Mon
     result = recommend_router.post_recommend(req)
 
     rec = result["recommendations"][0]
-    assert rec["score_components"]["version"] == "score_v2"
-    assert rec["score_components"]["weights"]["mlEdge"] == 25
-    assert rec["score"] == pytest.approx(rec["score_components"]["finalScore"])
-    assert rec["score"] < rec["score_components"]["rawScore"]
+    assert rec["score_v2"]["version"] == "score_v2"
+    assert rec["score_v2"]["weights"]["mlEdge"] == 25
+    assert rec["score"] == pytest.approx(rec["score_v2"]["finalScore"])
+    assert rec["score"] < rec["score_v2"]["rawScore"]
+    assert "score_components" not in rec
+    assert "chip_score" not in rec
+    assert "tech_score" not in rec
+    assert "ml_score" not in rec
 
 
-def test_legacy_recommend_passes_score_v2_payload_to_llm(monkeypatch: pytest.MonkeyPatch):
+def test_recommend_passes_score_v2_payload_to_llm(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, str] = {}
 
-    def fake_generate_reasons(api_key, candidates, sectors, score_payloads_by_symbol=None):
+    def fake_generate_reasons(api_key, candidates, sectors, score_v2_by_symbol=None):
         captured["api_key"] = api_key
-        captured["final_score"] = score_payloads_by_symbol["2330"]["finalScore"]
+        captured["final_score"] = score_v2_by_symbol["2330"]["finalScore"]
         return [{"reason": "ok", "watch_points": ["risk"]}]
 
     monkeypatch.setattr(recommend_router, "_ANTHROPIC_KEY", "test-key")
@@ -176,7 +180,99 @@ def test_llm_reason_prompt_uses_score_v2_vocabulary(monkeypatch: pytest.MonkeyPa
     assert "chip+tech+ml" not in captured["prompt"]
 
 
-def test_recommend_route_projection_ranks_by_score_v2_final_score():
+def test_llm_reason_direct_call_uses_candidate_score_v2(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"text": '[{"reason":"ok","watch_points":["risk"]}]'}]}
+
+    def fake_post(url, headers, json, timeout):
+        captured["prompt"] = json["messages"][0]["content"]
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_service.httpx, "post", fake_post)
+
+    candidate = build_score_v2_route_candidate(
+        {
+            "stock_id": 1,
+            "symbol": "2330",
+            "name": "TSMC",
+            "sector": "Semiconductor",
+            "current_price": 900,
+            "foreign_net_5d": 2_000_000_000,
+            "trust_net_5d": 200_000_000,
+            "foreign_consecutive": 5,
+            "rsi14": 60,
+            "macd_hist": 2.5,
+            "ma5": 880,
+            "ma20": 850,
+            "ma60": 800,
+            "momentum_score": 20,
+            "ml_signal": "STRONG_BUY",
+            "ml_confidence": 0.9,
+            "ml_forecast_pct": 0.03,
+            "hist_accuracy": 0.62,
+            "hist_count": 30,
+        }
+    )
+
+    llm_service.generate_reasons("test-key", [candidate], [])
+
+    assert f"Score V2 finalScore: {candidate.final_score:.1f}/100" in captured["prompt"]
+    assert "missing_score_v2" not in captured["prompt"]
+    assert "llm_service_storage_projection" not in Path(llm_service.__file__).read_text(encoding="utf-8")
+    assert "candidate.score_components" not in Path(llm_service.__file__).read_text(encoding="utf-8")
+
+
+def test_llm_service_rounding_matches_worker_math_round_semantics():
+    assert llm_service._round1(1.25) == pytest.approx(1.3)
+    assert llm_service._round1(2.35) == pytest.approx(2.4)
+
+
+def test_recommend_route_scorer_uses_normalized_seed_inputs():
+    candidate = build_score_v2_route_candidate(
+        {
+            "stock_id": 1,
+            "symbol": "2330",
+            "name": "TSMC",
+            "sector": "Semiconductor",
+            "current_price": 900,
+            "foreign_net_5d": 2_000_000_000,
+            "trust_net_5d": 200_000_000,
+            "foreign_consecutive": 5,
+            "rsi14": 60,
+            "macd_hist": 2.5,
+            "ma5": 880,
+            "ma20": 850,
+            "ma60": 800,
+            "screener_momentum_seed20": 16,
+            "ml_signal": "STRONG_BUY",
+            "ml_confidence": 0.9,
+            "hist_accuracy": 0.62,
+            "hist_count": 30,
+        }
+    )
+
+    assert candidate.chip_flow_seed40 == pytest.approx(40.0)
+    assert candidate.technical_seed30 == pytest.approx(30.0)
+    assert candidate.screener_momentum_seed20 == pytest.approx(16.0)
+    assert candidate.ml_edge_seed30 > 0
+    assert not hasattr(candidate, "chip_score")
+    assert not hasattr(candidate, "tech_score")
+    assert not hasattr(candidate, "momentum_score")
+    assert not hasattr(candidate, "ml_score")
+    assert not hasattr(candidate, "score_components")
+    assert candidate.score_v2["seedComponents"]["chipFlowSeed40"] == pytest.approx(candidate.chip_flow_seed40)
+    assert candidate.score_v2["seedComponents"]["technicalSeed30"] == pytest.approx(candidate.technical_seed30)
+    assert candidate.score_v2["seedComponents"]["screenerMomentumSeed20"] == pytest.approx(candidate.screener_momentum_seed20)
+    assert candidate.score_v2["seedComponents"]["mlEdgeSeed30"] == pytest.approx(candidate.ml_edge_seed30)
+
+
+def test_recommend_route_scorer_ranks_by_score_v2_final_score():
     ranked = rank_score_v2_route_candidates(
         [
             {
@@ -221,8 +317,8 @@ def test_recommend_route_projection_ranks_by_score_v2_final_score():
     )
 
     assert ranked[0].symbol == "HIGH"
-    assert ranked[0].final_score == pytest.approx(ranked[0].score_components["finalScore"])
-    assert ranked[0].score_components["version"] == "score_v2"
+    assert ranked[0].final_score == pytest.approx(ranked[0].score_v2["finalScore"])
+    assert ranked[0].score_v2["version"] == "score_v2"
 
 
 def test_obsidian_pipeline_template_renders_score_v2_final_score():

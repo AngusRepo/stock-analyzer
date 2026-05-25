@@ -300,3 +300,20 @@ export function buildFiveSlotCapitalPlan(input: {
 
   return { targetExposure, targetSlotValue, decisions }
 }
+
+export function buildFiveSlotExecutionDecision(input: {
+  account: FiveSlotAllocatorAccount
+  marketRiskLevel: string | null | undefined
+  config: FiveSlotAllocatorConfig
+  holdings: FiveSlotHolding[]
+  candidate: FiveSlotCandidate
+}): FiveSlotDecision | null {
+  const plan = buildFiveSlotCapitalPlan({
+    account: input.account,
+    marketRiskLevel: input.marketRiskLevel,
+    config: input.config,
+    holdings: input.holdings,
+    candidates: [input.candidate],
+  })
+  return plan.decisions.get(input.candidate.symbol) ?? null
+}

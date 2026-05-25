@@ -12,12 +12,18 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
     build_emerging_broker_rows,
+    build_fundamental_feature_rows,
     build_taxonomy_rows,
     materialize_finlab_canonical_outputs,
     normalize_symbol,
 )
 from tools import finlab_v4_remote_backfill as remote_backfill
-from tools.finlab_v4_remote_backfill import canonical_apply_skipped_status, default_canonical_window, parse_canonical_datasets
+from tools.finlab_v4_remote_backfill import (
+    canonical_apply_skipped_status,
+    default_canonical_window,
+    optional_fundamental_specs_from_env,
+    parse_canonical_datasets,
+)
 
 
 def _write(path: Path, df: pl.DataFrame) -> None:
@@ -41,6 +47,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     assert "canonical_market_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
     assert "canonical_institutional_amount_daily" in datasets
+    assert "canonical_fundamental_features" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
         "canonical_chip_daily",
         "finlab_taxonomy_tags",
@@ -69,6 +76,23 @@ def test_remote_backfill_marks_canonical_apply_skipped_when_write_d1_summary_onl
     assert "canonical row-level D1 tables stay stale" in skipped["impact"]
     assert canonical_apply_skipped_status(write_d1=True, apply_canonical_d1=True) is None
     assert canonical_apply_skipped_status(write_d1=False, apply_canonical_d1=False) is None
+
+
+def test_remote_backfill_fundamental_factor_spec_is_explicit_env_mapping(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "FINLAB_FUNDAMENTAL_FACTOR_KEYS_JSON",
+        '{"roe":"fundamental_features:roe","pe":"fundamental_features:pe"}',
+    )
+
+    specs = optional_fundamental_specs_from_env()
+
+    assert len(specs) == 1
+    assert specs[0].lane == "fundamental_factor_diversity"
+    assert specs[0].kind == "wide_fields"
+    assert specs[0].keys == {
+        "roe": "fundamental_features:roe",
+        "pe": "fundamental_features:pe",
+    }
 
 
 def test_remote_backfill_cleanup_tolerates_d1_exec_without_meta(monkeypatch) -> None:
@@ -161,6 +185,41 @@ def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:
     assert ("industry_theme", "CoWoS") in tags
 
 
+def test_fundamental_feature_rows_materialize_no_lookahead_contract() -> None:
+    root = _root("fundamental_features")
+    for field, value in {
+        "roe": 18.0,
+        "eps": 2.1,
+        "pe": 12.0,
+        "pb": 1.4,
+        "dividend_yield": 3.0,
+        "debt_ratio": 35.0,
+        "current_ratio": 180.0,
+        "operating_cash_flow": 100.0,
+        "industry_quality_percentile": 0.9,
+    }.items():
+        _write(
+            root / "raw" / "fundamental_factor_diversity" / f"{field}.parquet",
+            pl.DataFrame({"date": ["2026-03-31"], "2330": [value]}),
+        )
+
+    rows = build_fundamental_feature_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-05-18T00:00:00+00:00",
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["stock_id"] == "2330"
+    assert row["period"] == "2026-03-31"
+    assert row["available_date"] == "2026-05-30"
+    assert row["roe"] == 18.0
+    assert row["source"] == "finlab.fundamental_factor_diversity"
+
+
 def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     root = _root("materialize_outputs")
     _write(root / "raw" / "daily_price" / "close.parquet", pl.DataFrame({"date": ["2026-05-15"], "2330": [100.0]}))
@@ -183,11 +242,40 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert outputs.manifest["row_counts"]["canonical_market_daily"] == 1
     assert outputs.manifest["row_counts"]["canonical_chip_daily"] == 1
     assert outputs.manifest["row_counts"]["canonical_revenue_monthly"] == 1
+    assert "canonical_fundamental_features" in outputs.manifest["row_counts"]
     assert outputs.source_quality_metrics
     statements = build_d1_upsert_statements(outputs)
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_materialize_outputs_can_apply_fundamental_features_dataset_only() -> None:
+    root = _root("materialize_fundamental_only")
+    for field, value in {
+        "roe": 20.0,
+        "eps": 3.0,
+        "pe": 15.0,
+        "pb": 2.0,
+    }.items():
+        _write(
+            root / "raw" / "fundamental_factor_diversity" / f"{field}.parquet",
+            pl.DataFrame({"date": ["2026-03-31"], "2330": [value]}),
+        )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-18T00:00:00+00:00",
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
+    assert outputs.canonical_market_daily == []
+    assert outputs.canonical_fundamental_features[0]["available_date"] == "2026-05-30"
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)
 
 
 def test_materialize_institutional_amount_summary_uses_official_daily_amounts() -> None:

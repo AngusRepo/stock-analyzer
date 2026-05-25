@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -125,3 +126,77 @@ def test_modal_predict_batch_metrics_aggregate_chunk_cache_stats():
     assert metrics["batch_error_rate"] == 0.05
     assert metrics["model_cache"] == {"hits": 12, "misses": 3, "gcs_downloads": 3}
     assert metrics["model_cache_hit_ratio"] == 0.8
+
+
+class _FakeRemote:
+    async def aio(self, payload):
+        rows = payload["payloads"]
+        return {
+            "results": [
+                {"symbol": row["symbol"], "stock_id": row.get("stock_id", 0), "confidence": 0.7}
+                for row in rows
+            ],
+            "metrics": {
+                "batch": {"n_input": len(rows), "n_error": 0},
+                "model_cache": {"hits": len(rows), "misses": 0, "gcs_downloads": 0},
+            },
+        }
+
+
+class _SlowRemote:
+    async def aio(self, payload):
+        await asyncio.sleep(0.05)
+        return {"results": payload["payloads"]}
+
+
+class _FakeFunction:
+    def __init__(self, remote):
+        self.remote = remote
+
+
+def test_modal_predict_batch_v2_runs_independent_remote_chunks(monkeypatch):
+    observations = []
+
+    async def fake_record(function_name, **kwargs):
+        observations.append((function_name, kwargs))
+
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE", "2")
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_V2_CHUNK_TIMEOUT_SEC", "1")
+    monkeypatch.setattr(modal_client, "_lookup", lambda name: _FakeFunction(_FakeRemote()))
+    monkeypatch.setattr(modal_client, "_record_modal_observation", fake_record)
+
+    payloads = [
+        {"symbol": "2330", "stock_id": 1},
+        {"symbol": "2317", "stock_id": 2},
+        {"symbol": "2454", "stock_id": 3},
+    ]
+    results = asyncio.run(modal_client._modal_batch_predict_v2(payloads))
+
+    assert [row["symbol"] for row in results] == ["2330", "2317", "2454"]
+    assert observations[0][0] == "predict_batch_v2"
+    assert observations[0][1]["meta"]["chunk_count"] == 2
+    assert observations[0][1]["meta"]["chunk_timeout_sec"] == 1.0
+    assert observations[0][1]["meta"]["result_error_count"] == 0
+
+
+def test_modal_predict_batch_v2_chunk_timeout_returns_symbol_errors(monkeypatch):
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_SIZE", "2")
+    monkeypatch.setenv("MODAL_PREDICT_BATCH_V2_CHUNK_TIMEOUT_SEC", "0.001")
+    monkeypatch.setattr(modal_client, "_lookup", lambda name: _FakeFunction(_SlowRemote()))
+
+    async def fake_record(function_name, **kwargs):
+        return None
+
+    monkeypatch.setattr(modal_client, "_record_modal_observation", fake_record)
+
+    payloads = [
+        {"symbol": "2330", "stock_id": 1},
+        {"symbol": "2317", "stock_id": 2},
+        {"symbol": "2454", "stock_id": 3},
+    ]
+    results = asyncio.run(modal_client._modal_batch_predict_v2(payloads))
+
+    assert len(results) == 3
+    assert {row["symbol"] for row in results} == {"2330", "2317", "2454"}
+    assert all("predict_batch_v2 chunk error: TimeoutError" in row["error"] for row in results)
+    assert all(row["signal"] == "NO_SIGNAL" for row in results)

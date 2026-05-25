@@ -8,6 +8,7 @@ param(
   [string]$WorkerToken = $env:STOCKVISION_AUTH_TOKEN,
   [string]$ControllerToken = $env:ML_CONTROLLER_TOKEN,
   [string]$Date = (Get-Date -Format 'yyyy-MM-dd'),
+  [switch]$SkipDeployGate,
   [switch]$RunTriggers,
   [switch]$WaitCallback,
   [int]$CallbackTimeoutSec = 900
@@ -65,6 +66,22 @@ Assert-True ([bool]$controllerHealth.callbackConfigured) 'Controller callbackCon
 Assert-True ([bool]$controllerHealth.pipelineJobConfigured) 'Controller pipelineJobConfigured=false'
 Assert-True ([bool]$controllerHealth.verifyJobConfigured) 'Controller verifyJobConfigured=false'
 Write-Host "[OK] Controller /health + callback/job config"
+
+if (-not $SkipDeployGate) {
+  $deployGate = Invoke-Json -Method GET -Url "$workerBase/api/admin/gate/predeploy?live=1&date=$Date" -Headers $workerHeaders -TimeoutSec 120
+  Assert-True ($null -ne $deployGate) 'Worker predeploy gate returned empty payload'
+  if ($deployGate.decision -eq 'BLOCK') {
+    throw "Worker predeploy gate blocked post-deploy smoke: $($deployGate | ConvertTo-Json -Compress -Depth 8)"
+  }
+  Write-Host "[OK] Worker predeploy gate decision=$($deployGate.decision) status=$($deployGate.status)"
+} else {
+  Write-Host "[SKIP] Worker predeploy gate disabled by -SkipDeployGate"
+}
+
+$computeProfiles = Invoke-Json -Method GET -Url "$workerBase/api/admin/compute-profiles?date=$Date&limit=5" -Headers $workerHeaders -TimeoutSec 60
+Assert-True ($null -ne $computeProfiles) 'Worker compute profiles endpoint returned empty payload'
+Assert-True ($null -ne $computeProfiles.profiles) 'Worker compute profiles endpoint missing profiles array'
+Write-Host "[OK] Worker compute profiles readback legacy_columns=$($computeProfiles.legacy_columns) count=$(@($computeProfiles.profiles).Count)"
 
 if (-not $RunTriggers) {
   Write-Host "[SKIP] Trigger smoke disabled. Add -RunTriggers to trigger pipeline/verify jobs."

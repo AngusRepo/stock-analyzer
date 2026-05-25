@@ -2,11 +2,27 @@ import type { Bindings } from '../types'
 import { controllerFetch, controllerJson } from './controllerClient'
 import { readCurrentLegacyRegimeLabel } from './marketRegimeState'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
+import { invalidateModelPoolReadCache } from './modelPoolReadCache'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
     throw new Error('ML_CONTROLLER_URL not set')
   }
+}
+
+function truthy(value: unknown): boolean {
+  return ['1', 'true', 'yes', 'on', 'enabled', 'modal'].includes(String(value ?? '').trim().toLowerCase())
+}
+
+function regimeComputeModalTriggerEnabled(env: Bindings): boolean {
+  return truthy((env as any).REGIME_COMPUTE_MODAL_TRIGGER_ENABLED) ||
+    truthy((env as any).HMM_REGIME_COMPUTE_MODAL_TRIGGER_ENABLED) ||
+    String((env as any).REGIME_COMPUTE_EXECUTOR ?? '').trim().toLowerCase() === 'modal'
+}
+
+function buildRegimeComputeRunId(runDate?: string): string {
+  const datePart = runDate || 'latest'
+  return `regime-compute-${datePart}-${Date.now()}`
 }
 
 export async function runObsidianDaily(env: Bindings, date: string) {
@@ -24,6 +40,31 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   requireController(env)
 
   const prevLabel = await readCurrentLegacyRegimeLabel(env.KV)
+  if (regimeComputeModalTriggerEnabled(env)) {
+    const runId = buildRegimeComputeRunId(runDate)
+    const res = await controllerFetch(env, '/regime/compute/run', {
+      method: 'POST',
+      jsonBody: {
+        force_retrain: false,
+        history_days: 180,
+        run_date: runDate,
+        run_id: runId,
+        callback_task: 'regime-compute',
+        trigger_source: 'worker_scheduler',
+        trigger_id: runId,
+        prev_label: prevLabel,
+      },
+      timeoutMs: 60_000,
+    })
+    const text = await res.text().catch(() => '')
+    if (!res.ok) {
+      throw new Error(`Controller /regime/compute/run HTTP ${res.status}: ${text.slice(0, 200)}`)
+    }
+    const data = text ? JSON.parse(text) as Record<string, any> : {}
+    const functionCallId = String(data.function_call_id ?? data.execution_id ?? 'unknown')
+    return `triggered regime-compute run_id=${String(data.run_id ?? runId)} function_call_id=${functionCallId} callback expected`
+  }
+
   const res = await controllerFetch(env, '/regime/compute', {
     method: 'POST',
     jsonBody: { force_retrain: false, history_days: 180, run_date: runDate },
@@ -54,6 +95,7 @@ export async function runModelIcTrackerChain(env: Bindings) {
     jsonBody: { lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true, append_history: true },
     timeoutMs: 120_000,
   })
+  await invalidateModelPoolReadCache(env.KV)
 
   const computed = Object.entries(icData.per_model_ic || {})
     .filter(([_, v]: any) => v.status === 'computed')
@@ -121,6 +163,7 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) 
     },
     timeoutMs: 120_000,
   })
+  await invalidateModelPoolReadCache(env.KV)
 
   const computed = Object.entries(icData.per_model_ic || {})
     .filter(([_, v]: any) => v.status === 'computed')

@@ -11,6 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.backtest_engine import BacktestDataset  # noqa: E402
 
 TEST_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "backtest_snapshot_loader"
+TECHNICAL_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "worker" / "src" / "lib" / "technicalIndicatorsV2.fixture.json"
+
+
+def _technical_fixture_expected() -> dict:
+    return json.loads(TECHNICAL_FIXTURE_PATH.read_text(encoding="utf-8"))["expectedIndicators"]
 
 
 def _write_component(name: str, rows: list[dict]) -> str:
@@ -21,6 +26,7 @@ def _write_component(name: str, rows: list[dict]) -> str:
 
 
 def test_backtest_dataset_loads_from_snapshot_manifest():
+    technical_expected = _technical_fixture_expected()
     components = {
         "stocks": _write_component("stocks", [
             {
@@ -50,7 +56,22 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
             {"stock_id": 2, "date": "2026-05-05", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 1, "avg_price": 10.2},
         ]),
         "indicators": _write_component("indicators", [
-            {"stock_id": 1, "date": "2026-05-05", "ma5": 900.0, "ma20": 880.0, "rsi14": 60.0, "macd_hist": 1.2, "atr14": 10.0},
+            {
+                "stock_id": 1,
+                "date": "2026-05-05",
+                "ma5": technical_expected["ma5"],
+                "ma20": technical_expected["ma20"],
+                "rsi14": technical_expected["rsi14"],
+                "macd_hist": technical_expected["macdHist"],
+                "atr14": technical_expected["atr14"],
+                "plus_di14": technical_expected["plusDi14"],
+                "minus_di14": technical_expected["minusDi14"],
+                "adx14": technical_expected["adx14"],
+                "parabolic_sar": technical_expected["parabolicSar"],
+                "cci20": technical_expected["cci20"],
+                "volume_weighted_rsi14": technical_expected["volumeWeightedRsi14"],
+                "volume_momentum_divergence_13_27_10": technical_expected["volumeMomentumDivergence132710"],
+            },
         ]),
         "chips": _write_component("chips", [
             {"symbol": "2330", "date": "2026-05-05", "foreign_net": 100.0, "trust_net": 10.0, "dealer_net": 5.0},
@@ -76,6 +97,12 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
     assert set(dataset.get_universe_at("2026-05-05")) == {"2330"}
     assert dataset.get_price_history_np("2330", "2026-05-05", 5)["n"] == 2
     assert dataset.get_chip_history_np("2330", "2026-05-05", 5)["n"] == 1
+    indicator = dataset.get_indicator("2330", "2026-05-05")
+    assert indicator["adx14"] == technical_expected["adx14"]
+    assert indicator["parabolic_sar"] == technical_expected["parabolicSar"]
+    assert indicator["cci20"] == technical_expected["cci20"]
+    assert indicator["volume_weighted_rsi14"] == technical_expected["volumeWeightedRsi14"]
+    assert indicator["volume_momentum_divergence_13_27_10"] == technical_expected["volumeMomentumDivergence132710"]
 
 
 def test_snapshot_loader_requires_all_components():

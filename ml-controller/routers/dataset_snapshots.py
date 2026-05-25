@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import time
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from services import modal_client
 from services.dataset_snapshot_exporter import (
     D1ColdArchiveExportRequest,
     DatasetSnapshotExportRequest,
@@ -40,6 +44,35 @@ class ExportColdArchiveRequest(BaseModel):
     producer_run_id: str | None = None
     chunk_days: int = Field(default=10, ge=1, le=30)
     hot_window_days: int = Field(default=504, ge=30, le=1600)
+
+
+class ExportColdArchiveRunRequest(ExportColdArchiveRequest):
+    run_id: str | None = None
+    callback_task: str = "dataset-snapshot-export"
+    trigger_source: str = "controller"
+    trigger_id: str | None = None
+    dry_run: bool = False
+
+
+def _model_dump(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def build_d1_cold_archive_modal_payload(req: ExportColdArchiveRunRequest) -> dict:
+    run_id = req.run_id or req.producer_run_id or f"d1-cold-archive-{req.business_date}-{int(time.time())}"
+    payload = {
+        key: value
+        for key, value in _model_dump(req).items()
+        if value is not None and key != "dry_run"
+    }
+    payload["run_id"] = run_id
+    payload["producer_run_id"] = run_id
+    payload["executor"] = "modal"
+    payload["source"] = "d1_cold_archive_export"
+    payload["delete_requires_manual_approval"] = True
+    return payload
 
 
 @router.post("/export_snapshot")
@@ -82,3 +115,24 @@ def export_cold_archive(req: ExportColdArchiveRequest):
         hot_window_days=req.hot_window_days,
     )
     return export_d1_cold_archive_snapshot(export_req)
+
+
+@router.post("/export_cold_archive/run")
+async def export_cold_archive_run(req: ExportColdArchiveRunRequest) -> dict:
+    """Spawn D1 cold archive export on Modal; preserve the sync route as rollback."""
+    payload = build_d1_cold_archive_modal_payload(req)
+    executor = os.environ.get("D1_COLD_ARCHIVE_EXECUTOR", "").strip().lower()
+    if req.dry_run:
+        return {
+            "status": "dry_run",
+            "executor": executor or "not_configured",
+            "payload": payload,
+        }
+    if executor not in {"modal", "modal_spawn"}:
+        return {
+            "status": "not_triggered",
+            "executor": executor or "not_configured",
+            "reason": "D1_COLD_ARCHIVE_EXECUTOR=modal is required before spawning Modal cold archive export",
+            "payload": payload,
+        }
+    return await modal_client.spawn_d1_cold_archive_export(payload)

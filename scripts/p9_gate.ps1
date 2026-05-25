@@ -1,14 +1,25 @@
 param(
   [switch]$SkipFrontendBuild,
   [switch]$SkipBugHunter,
+  [switch]$SkipFinLabBackfillJobGuard,
   [int]$BugHunterMaxAgeHours = 48,
   [switch]$LiveSmoke,
   [string]$ApiBase = $env:STOCKVISION_API_BASE,
-  [string]$AuthToken = $env:STOCKVISION_AUTH_TOKEN
+  [string]$AuthToken = $env:STOCKVISION_AUTH_TOKEN,
+  [string]$GcpRegion = $(if ($env:GCP_REGION) { $env:GCP_REGION } else { 'asia-east1' }),
+  [string]$FinLabBackfillJobName = 'finlab-v4-backfill'
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+
+function Resolve-GCloudCommand {
+  $Cmd = Get-Command gcloud.cmd -ErrorAction SilentlyContinue
+  if (-not $Cmd) {
+    $Cmd = Get-Command gcloud -ErrorAction SilentlyContinue
+  }
+  return $Cmd
+}
 
 Write-Host '[P9 gate] worker type-check'
 Push-Location (Join-Path $Root 'worker')
@@ -30,9 +41,12 @@ $WorkerTestSources = Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -F
   ForEach-Object { "src/lib/$($_.Name)" }
 
 $TscArgs = @(
-  '--target', 'ES2020',
+  '--target', 'ES2022',
   '--module', 'commonjs',
   '--moduleResolution', 'node',
+  '--lib', 'ES2022,WebWorker',
+  '--esModuleInterop',
+  '--allowSyntheticDefaultImports',
   '--strict', 'false',
   '--skipLibCheck',
   '--rootDir', 'src',
@@ -101,6 +115,26 @@ if ($LiveSmoke) {
   $Gate = Invoke-RestMethod -Method GET -Uri "$Base/api/admin/gate/predeploy?live=1" -Headers $Headers
   if ($Gate.decision -eq 'BLOCK') {
     throw "live predeploy gate blocked: $($Gate | ConvertTo-Json -Compress -Depth 6)"
+  }
+
+  if (-not $SkipFinLabBackfillJobGuard) {
+    Write-Host '[P9 gate] FinLab backfill job guard'
+    $GCloudCommand = Resolve-GCloudCommand
+    if (-not $GCloudCommand) {
+      throw 'FinLab backfill job guard requires gcloud. Use -SkipFinLabBackfillJobGuard only for non-GCP local smoke.'
+    }
+    $GuardScript = Join-Path $Root 'tools\finlab_backfill_job_guard.py'
+    if (-not (Test-Path $GuardScript -PathType Leaf)) {
+      throw "FinLab backfill job guard not found: $GuardScript"
+    }
+    $JobJson = & $GCloudCommand.Source run jobs describe $FinLabBackfillJobName --region=$GcpRegion --format=json
+    if ($LASTEXITCODE -ne 0) {
+      throw "gcloud run jobs describe failed for $FinLabBackfillJobName in $GcpRegion"
+    }
+    $JobJson | & $ControllerPython $GuardScript -
+    if ($LASTEXITCODE -ne 0) {
+      throw "FinLab backfill job guard failed for $FinLabBackfillJobName. Expected --write-d1 jobs to include --apply-canonical-d1."
+    }
   }
   Write-Host "[P9 gate] live smoke passed decision=$($Gate.decision) status=$($Gate.status)"
 }

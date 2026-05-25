@@ -105,6 +105,28 @@ assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item s
 }
 
 {
+  const dirty = {
+    ...item('6271'),
+    watch_points: [
+      'execution:pending:allocator_full_requires_replacement:target=172264;current=0',
+      'execution:pending:price_above_entry',
+    ],
+  }
+  const noted = appendPendingBuyExecutionNote(
+    dirty,
+    'execution:pending:allocator_open_slot:target=172264;current=0',
+  )
+  assert(
+    !noted.watch_points?.some((point) => point.includes('allocator_full_requires_replacement')),
+    'allocator execution notes should replace stale allocator state instead of accumulating old full-slot reasons',
+  )
+  assert(
+    noted.watch_points?.includes('execution:pending:price_above_entry'),
+    'allocator note cleanup must preserve unrelated execution readiness notes',
+  )
+}
+
+{
   const updated = applyPendingBuyExecutionStatusUpdates([item('2330'), item('2454')], [
     { symbol: '2330', status: 'requoted', reason: 'market_risk_high', detail: '100->98.5' },
     { symbol: '2454', status: 'quote_unavailable', reason: 'broker_quote_required:missing' },

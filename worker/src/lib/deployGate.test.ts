@@ -1,4 +1,4 @@
-import { summarizeGateChecks } from './deployGate'
+import { buildComputeProfileWaitColumnsCheck, buildFinLabCanonicalD1FreshnessCheck, summarizeGateChecks } from './deployGate'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -18,4 +18,57 @@ function assert(condition: unknown, message: string): void {
     { id: 'scheduler', status: 'fail', summary: 'failed24h=1' },
   ])
   assert(status === 'fail', 'deploy gate should block on any failed check')
+}
+
+{
+  const check = buildFinLabCanonicalD1FreshnessCheck({
+    canonical_chip_date: '2026-05-15',
+    canonical_chip_rows: 2629,
+    legacy_chip_date: '2026-05-21',
+    legacy_chip_rows: 15256,
+    margin_date: '2026-05-21',
+    margin_rows: 1839,
+    manifest_generated_at: '2026-05-18T02:53:36Z',
+  })
+
+  assert(check.status === 'fail', 'deploy gate should block when FinLab canonical D1 lags fresh daily source tables')
+  assert(check.id === 'finlab_canonical_d1_freshness', 'FinLab canonical D1 check should have a stable gate id')
+  assert(String(check.metrics?.required_job_arg) === '--apply-canonical-d1', 'FinLab freshness gate should point to the canonical apply job arg')
+}
+
+{
+  const check = buildFinLabCanonicalD1FreshnessCheck({
+    canonical_chip_date: '2026-05-21',
+    canonical_chip_rows: 2629,
+    legacy_chip_date: '2026-05-21',
+    legacy_chip_rows: 15256,
+    margin_date: '2026-05-21',
+    margin_rows: 1839,
+  })
+
+  assert(check.status === 'ok', 'deploy gate should pass when FinLab canonical D1 is aligned with daily source tables')
+}
+
+{
+  const check = buildComputeProfileWaitColumnsCheck([
+    { name: 'id' },
+    { name: 'event_date' },
+    { name: 'provider' },
+    { name: 'profile_json' },
+  ])
+
+  assert(check.status === 'fail', 'deploy gate should block when compute profile wait columns are missing')
+  assert(check.id === 'compute_profile_wait_columns', 'compute profile wait-column check should have a stable gate id')
+  assert(String(check.metrics?.migration) === 'worker/migration_compute_profile_events_wait_columns.sql', 'gate should point to the additive migration file')
+}
+
+{
+  const check = buildComputeProfileWaitColumnsCheck([
+    { name: 'id' },
+    { name: 'await_sec' },
+    { name: 'compute_owner' },
+    { name: 'remote_function' },
+  ])
+
+  assert(check.status === 'ok', 'deploy gate should pass when compute profile wait attribution columns exist')
 }

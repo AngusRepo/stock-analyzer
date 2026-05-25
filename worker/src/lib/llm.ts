@@ -1,4 +1,4 @@
-import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 /**
  * llm.ts — Anthropic Claude API client
@@ -253,12 +253,7 @@ export interface RecommendationCandidate {
   symbol: string
   name: string
   signal: string
-  score: number
-  score_components?: string | null
-  chip_score: number
-  tech_score: number
-  momentum_score?: number | null
-  ml_score: number
+  score_v2: string | null
   ml_confidence: number
   ml_models_up: number
   ml_models_down: number
@@ -293,7 +288,10 @@ export async function generateRecommendationReasons(
 
   const stockList = candidates.map((c, i) => {
     const chipAmt = ((c.foreign_net_5d ?? 0) + (c.trust_net_5d ?? 0)).toFixed(1)
-    const scoreV2 = readScoreV2Snapshot(c)
+    const scoreV2 = readScoreV2Snapshot({ score_components: c.score_v2 } as ScoreV2StorageRow)
+    if (!scoreV2) {
+      return `${i + 1}. ${c.symbol} ${c.name} | signal=${c.signal} score=missing_score_v2`
+    }
     return `${i + 1}. ${c.symbol} ${c.name} | signal=${c.signal} score=${scoreV2.finalScore}(base=${scoreV2.total}; ML Edge=${scoreV2.components.mlEdge}/25, Chip Flow=${scoreV2.components.chipFlow}/25, Technical Structure=${scoreV2.components.technicalStructure}/25, Fundamental Quality=${scoreV2.components.fundamentalQuality}/20, News/Theme=${scoreV2.components.newsTheme}/5) | ML投票${c.ml_models_up}↑/${c.ml_models_down}↓(共${c.ml_models_total}) conf=${(c.ml_confidence * 100).toFixed(0)}% | RSI=${c.rsi14?.toFixed(0) ?? 'N/A'} MACD${(c.macd_hist ?? 0) > 0 ? '多' : '空'} | 5日法人淨額${chipAmt}億 | 價${c.current_price ?? 'N/A'}`
   }).join('\n')
 

@@ -62,6 +62,7 @@ interface BuyRecommendationRow {
 
 interface QuadrantInfo {
   theme: string
+  classification: string
   quadrant: string
   rs_ratio: number
   rs_momentum: number
@@ -71,6 +72,7 @@ interface QuadrantFilterLogEntry {
   symbol: string
   name: string
   theme: string
+  classification?: string
   quadrant: string
   action: string
   momentum_dir?: string
@@ -348,40 +350,79 @@ async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: str
   return restricted
 }
 
+const RRG_TAXONOMY_CHUNK_SIZE = 40
+
+function rrgClassificationForTagType(tagType: string | null | undefined): string {
+  const normalized = String(tagType || '').trim()
+  return normalized === 'concept' ? 'theme' : normalized
+}
+
+async function loadRrgTaxonomyTags(
+  db: D1Database,
+  symbols: string[],
+): Promise<Array<{ symbol: string; tag: string; tag_type: string; classification: string }>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  const rows: Array<{ symbol: string; tag: string; tag_type: string; classification: string }> = []
+  for (let i = 0; i < uniqueSymbols.length; i += RRG_TAXONOMY_CHUNK_SIZE) {
+    const chunk = uniqueSymbols.slice(i, i + RRG_TAXONOMY_CHUNK_SIZE)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT symbol, tag, tag_type
+         FROM (
+           SELECT symbol, tag, tag_type, weight, 1 AS priority
+             FROM finlab_taxonomy_tags
+            WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
+              AND symbol IN (${placeholders})
+           UNION ALL
+           SELECT symbol, tag, tag_type, weight, 2 AS priority
+             FROM stock_tags
+            WHERE tag_type='concept'
+              AND symbol IN (${placeholders})
+         )
+        ORDER BY symbol, priority ASC, weight DESC`,
+    ).bind(...chunk, ...chunk).all<{ symbol: string; tag: string; tag_type?: string | null }>()
+    for (const row of results ?? []) {
+      const symbol = String(row.symbol || '').trim()
+      const tag = String(row.tag || '').trim()
+      const tagType = String(row.tag_type || 'concept').trim()
+      const classification = rrgClassificationForTagType(tagType)
+      if (!symbol || !tag || !classification) continue
+      rows.push({ symbol, tag, tag_type: tagType, classification })
+    }
+  }
+  return rows
+}
+
 async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<string, QuadrantInfo>> {
   const symbolQuadrantMap = new Map<string, QuadrantInfo>()
   if (!symbols.length) return symbolQuadrantMap
   try {
-    const placeholders = symbols.map(() => '?').join(',')
-    const { results: tagRows } = await db.prepare(
-      `SELECT symbol, tag
-         FROM stock_tags
-        WHERE tag_type = 'concept'
-          AND symbol IN (${placeholders})
-        ORDER BY symbol, weight DESC`,
-    ).bind(...symbols).all<any>()
-    const tagsBySymbol = new Map<string, string[]>()
+    const tagRows = await loadRrgTaxonomyTags(db, symbols)
+    const tagsBySymbol = new Map<string, Array<{ tag: string; classification: string }>>()
     for (const row of tagRows ?? []) {
       const tags = tagsBySymbol.get(row.symbol) ?? []
-      tags.push(row.tag)
+      tags.push({ tag: row.tag, classification: row.classification })
       tagsBySymbol.set(row.symbol, tags)
     }
 
     const { results: quadrantRows } = await db.prepare(
-      `SELECT sector, rs_ratio, rs_momentum, quadrant
+      `SELECT sector, classification, rs_ratio, rs_momentum, quadrant
          FROM sector_flow
-        WHERE classification = 'theme'
+        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
           AND quadrant IS NOT NULL
           AND date = (
             SELECT MAX(date)
               FROM sector_flow
-             WHERE classification = 'theme'
+             WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
                AND quadrant IS NOT NULL
           )`,
     ).all<any>()
     const themeQuadrants = new Map<string, { quadrant: string; rs_ratio: number; rs_momentum: number }>()
     for (const row of quadrantRows ?? []) {
-      themeQuadrants.set(row.sector, {
+      const classification = String(row.classification || '').trim()
+      const sector = String(row.sector || '').trim()
+      if (!classification || !sector) continue
+      themeQuadrants.set(`${classification}:${sector}`, {
         quadrant: row.quadrant,
         rs_ratio: Number(row.rs_ratio),
         rs_momentum: Number(row.rs_momentum),
@@ -391,20 +432,22 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
 
     for (const symbol of symbols) {
       const tags = tagsBySymbol.get(symbol) ?? []
-      const theme = tags.find((tag) => themeUniverse.has(tag)) ?? tags[0]
-      if (!theme) continue
-      if (!themeUniverse.has(theme)) {
+      const matched = tags.find((candidate) => themeUniverse.has(`${candidate.classification}:${candidate.tag}`)) ?? tags[0]
+      if (!matched) continue
+      const key = `${matched.classification}:${matched.tag}`
+      if (!themeUniverse.has(key)) {
         symbolQuadrantMap.set(symbol, {
-          theme,
+          theme: matched.tag,
+          classification: matched.classification,
           quadrant: 'Unmapped',
           rs_ratio: 100,
           rs_momentum: 0,
         })
         continue
       }
-      const info = themeQuadrants.get(theme)
+      const info = themeQuadrants.get(key)
       if (!info) continue
-      symbolQuadrantMap.set(symbol, { theme, ...info })
+      symbolQuadrantMap.set(symbol, { theme: matched.tag, classification: matched.classification, ...info })
     }
   } catch (error) {
     console.warn('[PendingBuyOrchestrator] quadrant query failed:', error)
@@ -666,7 +709,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             ORDER BY sp_exec.date DESC
             LIMIT 1
          ) IS NOT NULL
-        ORDER BY dr.score DESC, dr.confidence DESC
+        ORDER BY CASE WHEN json_valid(dr.score_components) THEN
+           COALESCE(
+             CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
+             CAST(json_extract(dr.score_components, '$.total') AS REAL),
+             0
+           ) ELSE 0 END DESC,
+           dr.confidence DESC
         LIMIT ?
     `).bind(sourceRecoDate, sourceRecoDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
 
@@ -783,6 +832,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'REJECT',
         })
@@ -792,6 +842,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'RRG_UNMAPPED_NEUTRAL',
         })
@@ -808,6 +859,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'DOWNGRADE',
         })
@@ -816,6 +868,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'PASS',
           momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
@@ -979,7 +1032,7 @@ export async function reconcilePendingBuyDebates(
     pendingItems.map((item, index) => ({
       symbol: item.symbol,
       name: item.name ?? item.symbol,
-      score_components: item.score_v2 ?? null,
+      score_v2: item.score_v2 ?? null,
       reason: item.reason ?? 'ML ensemble signal',
       watch_points: item.watch_points,
       rank: index + 1,

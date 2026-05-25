@@ -96,6 +96,23 @@ def test_breeze2_reason_generation_payload_is_shadow_only():
     assert payload["candidates"][0]["symbol"] == "2330"
 
 
+def test_breeze2_reason_generation_payload_maps_storage_score_components_to_score_v2():
+    payload = build_breeze2_reason_generation_payload(
+        [
+            {
+                "symbol": "2330",
+                "name": "TSMC",
+                "score_components": {"version": "score_v2", "finalScore": 88, "components": {}},
+            }
+        ],
+        run_date="2026-05-21",
+    )
+
+    candidate = payload["candidates"][0]
+    assert candidate["score_v2"]["version"] == "score_v2"
+    assert "score_components" not in candidate
+
+
 def test_coerce_breeze2_generation_report_requires_shadow_contract():
     shadow = coerce_breeze2_reason_generation_report({
         "schema_version": "breeze2-reason-generation-v1",

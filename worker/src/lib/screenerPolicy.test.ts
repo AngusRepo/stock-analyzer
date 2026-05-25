@@ -3,6 +3,7 @@ import {
   resolveScreenerPolicy,
   type ScreenerScoreCandidate,
 } from './screenerPolicy'
+import { buildPartialScreenerScoreV2 } from './scoreV2Taxonomy'
 import { DEFAULT_TRADING_CONFIG } from './tradingConfig'
 
 function assert(condition: unknown, message: string): void {
@@ -41,6 +42,11 @@ function assert(condition: unknown, message: string): void {
     chip_score: 36,
     tech_score: i < 20 ? 30 : 26,
     momentum_score: i < 20 ? 18 : 14,
+    score_components: JSON.stringify(buildPartialScreenerScoreV2({
+      chipScore40: 36,
+      techScore30: i < 20 ? 30 : 26,
+      momentumScore20: i < 20 ? 18 : 14,
+    })),
     reason: 'test',
   }))
 
@@ -56,6 +62,20 @@ function assert(condition: unknown, message: string): void {
   assert(candidates.some(c => c.tech_score < 30), 'calibration should reduce crowded technical scores')
   assert(candidates.some(c => (c.momentum_score ?? 0) < 18), 'calibration should reduce crowded momentum scores')
   assert(candidates.every(c => c.chip_score <= 36 && c.tech_score <= 30 && (c.momentum_score ?? 0) <= 18), 'calibration must not inflate raw factor scores')
+  for (const candidate of candidates) {
+    const synced = JSON.parse(candidate.score_components ?? '{}')
+    const expected = buildPartialScreenerScoreV2({
+      chipScore40: candidate.chip_score,
+      techScore30: candidate.tech_score,
+      momentumScore20: candidate.momentum_score ?? 0,
+      reasons: candidate.reason ? [candidate.reason] : [],
+    })
+    assert(synced.version === 'score_v2', 'calibration should preserve canonical Score V2 payload')
+    assert(synced.total === expected.total, 'calibration must keep score_components synced with calibrated screener seeds')
+    assert(synced.components.chipFlow === expected.components.chipFlow, 'calibration must sync chipFlow into Score V2 payload')
+    assert(synced.components.technicalStructure === expected.components.technicalStructure, 'calibration must sync technicalStructure into Score V2 payload')
+    assert(candidate.score === expected.total, 'calibration must keep candidate.score on Score V2 total')
+  }
 }
 
 {

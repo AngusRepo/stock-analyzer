@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
+import { invalidateModelPoolReadCache } from './modelPoolReadCache'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -206,6 +207,156 @@ export function summarizeWeeklyValidationChain(results: {
   return summary
 }
 
+function truthyFlag(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'modal'
+}
+
+export function weeklyBacktestResearchBundleEnabled(env: Bindings): boolean {
+  return truthyFlag((env as any).BACKTEST_RESEARCH_BUNDLE_ENABLED) ||
+    truthyFlag((env as any).WEEKLY_BACKTEST_RESEARCH_BUNDLE_ENABLED)
+}
+
+function buildBacktestResearchBundleRequestBody(runDate?: string): Record<string, unknown> {
+  return {
+    run_date: runDate,
+    monte_carlo_n: 1000,
+    pbo_partitions: 10,
+    pbo_source: 'backtest',
+    callback_task: 'weekly-backtest',
+    trigger_source: 'worker_weekly_backtest',
+    dry_run: false,
+  }
+}
+
+export async function runWeeklyBacktestResearchBundle(env: Bindings, runDate?: string) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/backtest/research-bundle/run', {
+    method: 'POST',
+    jsonBody: buildBacktestResearchBundleRequestBody(runDate),
+    timeoutMs: 60_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    return `failed (${resp.status}): ${text.slice(0, 200)}`
+  }
+
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  if (result.status === 'not_triggered') return `failed: ${result.reason ?? 'backtest research bundle not triggered'}`
+
+  const runId = String(result.run_id ?? '')
+  const functionCallId = String(result.function_call_id ?? '')
+  const executionId = String(result.execution_id ?? '')
+  const remoteRun = functionCallId || executionId || runId || 'unknown'
+  return `triggered backtest research bundle run_id=${runId || 'unknown'} remote=${remoteRun} callback expected`
+}
+
+export async function runWeeklyValidationChain(env: Bindings, runDate?: string) {
+  if (weeklyBacktestResearchBundleEnabled(env)) {
+    return runWeeklyBacktestResearchBundle(env, runDate)
+  }
+
+  const bt = await runWeeklyBacktest(env)
+  const mc = await runWeeklyMonteCarlo(env)
+  const pbo = await runWeeklyPBO(env)
+  const artifactValidation = await runWeeklyModelArtifactValidation(env)
+  return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo, artifactValidation })
+}
+
+function parsePositiveInt(value: unknown): number | undefined {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+export function finLabBackfillModalTriggerEnabled(env: Bindings): boolean {
+  return truthyFlag((env as any).FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED) ||
+    truthyFlag((env as any).FINLAB_V4_BACKFILL_MODAL_TRIGGER_ENABLED)
+}
+
+export function universalRetrainModalTriggerEnabled(env: Bindings): boolean {
+  return truthyFlag((env as any).UNIVERSAL_RETRAIN_MODAL_TRIGGER_ENABLED) ||
+    truthyFlag((env as any).RETRAIN_UNIVERSAL_MODAL_TRIGGER_ENABLED) ||
+    String((env as any).UNIVERSAL_RETRAIN_EXECUTOR ?? '').trim().toLowerCase() === 'modal' ||
+    String((env as any).RETRAIN_UNIVERSAL_EXECUTOR ?? '').trim().toLowerCase() === 'modal'
+}
+
+function finLabBackfillYears(env: Bindings): number {
+  const years = parsePositiveInt((env as any).FINLAB_BACKFILL_YEARS) ?? 3
+  if (years !== 3 && years !== 5) {
+    throw new Error('FINLAB_BACKFILL_YEARS must be 3 or 5')
+  }
+  return years
+}
+
+function finLabCanonicalWindowDays(env: Bindings): number {
+  const windowDays = parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_WINDOW_DAYS) ?? 7
+  if (windowDays < 1 || windowDays > 30) {
+    throw new Error('FINLAB_BACKFILL_CANONICAL_WINDOW_DAYS must be between 1 and 30')
+  }
+  return windowDays
+}
+
+function buildFinLabBackfillRunId(years: number, runDate?: string): string {
+  const day = (runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate))
+    ? runDate
+    : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  return `finlab-v4-${years}y-${day.replace(/-/g, '')}-${Date.now()}`
+}
+
+function optionalString(value: unknown): string | undefined {
+  const text = String(value ?? '').trim()
+  return text || undefined
+}
+
+function buildFinLabBackfillRequestBody(env: Bindings, runDate?: string): Record<string, unknown> {
+  const years = finLabBackfillYears(env)
+  const runId = buildFinLabBackfillRunId(years, runDate)
+  return {
+    years,
+    run_id: runId,
+    run_date: runDate,
+    write_d1: true,
+    apply_canonical_d1: true,
+    canonical_window_days: finLabCanonicalWindowDays(env),
+    canonical_start_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE),
+    canonical_end_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE),
+    canonical_datasets: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
+    canonical_limit_per_dataset: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_LIMIT_PER_DATASET),
+    canonical_d1_chunk_size: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_D1_CHUNK_SIZE),
+    gcs_bucket: optionalString((env as any).FINLAB_BACKFILL_GCS_BUCKET),
+    gcs_prefix: optionalString((env as any).FINLAB_BACKFILL_GCS_PREFIX) ?? 'finlab/v4/backfill',
+    callback_task: 'finlab-v4-backfill',
+    trigger_source: 'worker_scheduler',
+    trigger_id: runId,
+    dry_run: false,
+  }
+}
+
+export async function runFinLabV4Backfill(env: Bindings, runDate?: string) {
+  if (!finLabBackfillModalTriggerEnabled(env)) {
+    return 'skipped: FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED not enabled; Cloud Run Job remains owner'
+  }
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/finlab/backfill/run', {
+    method: 'POST',
+    jsonBody: buildFinLabBackfillRequestBody(env, runDate),
+    timeoutMs: 60_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    return `failed (${resp.status}): ${text.slice(0, 200)}`
+  }
+
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  const runId = String(result.run_id ?? 'unknown')
+  const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
+  return `triggered finlab-v4-backfill run_id=${runId} function_call_id=${functionCallId} callback expected`
+}
+
 export async function runOptunaQueueProcessor(env: Bindings) {
   requireController(env)
 
@@ -391,6 +542,7 @@ export async function runWeeklyModelArtifactValidation(env: Bindings) {
 
   const result = await resp.json() as Record<string, any>
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
+  await invalidateModelPoolReadCache(env.KV)
   return `artifacts=${result.count ?? 0}, updated=${result.updated ?? 0}, ready=${result.ready ?? 0}, blocked=${result.blocked ?? 0}`
 }
 
@@ -443,6 +595,34 @@ export async function runWeeklyRetrain(env: Bindings) {
   )
 }
 
+async function triggerUniversalRetrainModal(
+  env: Bindings,
+  body: Record<string, unknown>,
+  taskId: string,
+): Promise<string> {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/retrain/universal/run', {
+    method: 'POST',
+    jsonBody: body,
+    timeoutMs: 60_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`Controller /retrain/universal/run HTTP ${resp.status}: ${text.slice(0, 200)}`)
+  }
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status === 'skipped') {
+    return `${taskId} skipped: ${result.reason ?? 'locked'}`
+  }
+  if (result.status === 'failed' || result.status === 'error') {
+    return `${taskId} failed: ${result.error ?? result.status}`
+  }
+  const runId = String(result.run_id ?? 'unknown')
+  const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
+  return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
+}
+
 const MODEL_GROUP_BY_NAME: Record<string, string> = {
   XGBoost: 'tree',
   CatBoost: 'tree',
@@ -491,17 +671,23 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
   }
 
   const trainModelGroups = [...new Set(targets.map((target) => target.group))]
+  const body = {
+    limit: 2500,
+    force_monthly: false,
+    candidate_type: 'weekly_drift',
+    run_date: runDate,
+    train_model_groups: trainModelGroups,
+    drift_target_models: targets.map((target) => target.name),
+    drift_target_families: [...new Set(targets.map((target) => target.family))],
+    trigger_source: 'worker_weekly_drift',
+  }
+  if (universalRetrainModalTriggerEnabled(env)) {
+    return triggerUniversalRetrainModal(env, body, 'weekly_drift retrain')
+  }
+
   controllerFetch(env, '/retrain/universal', {
     method: 'POST',
-    jsonBody: {
-      limit: 2500,
-      force_monthly: false,
-      candidate_type: 'weekly_drift',
-      run_date: runDate,
-      train_model_groups: trainModelGroups,
-      drift_target_models: targets.map((target) => target.name),
-      drift_target_families: [...new Set(targets.map((target) => target.family))],
-    },
+    jsonBody: body,
     timeoutMs: 0,
   }).catch((e) => console.error('[weekly-drift-retrain] fire-and-forget error:', e))
 
@@ -511,9 +697,18 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
 export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskId = forceMonthly ? 'monthly-retrain' : 'retrain') {
   requireController(env)
 
+  const body = {
+    limit: 2500,
+    force_monthly: forceMonthly,
+    trigger_source: forceMonthly ? 'worker_monthly_retrain' : 'worker_retrain',
+  }
+  if (universalRetrainModalTriggerEnabled(env)) {
+    return triggerUniversalRetrainModal(env, body, taskId)
+  }
+
   controllerFetch(env, '/retrain/universal', {
     method: 'POST',
-    jsonBody: { limit: 2500, force_monthly: forceMonthly },
+    jsonBody: body,
     timeoutMs: 0,
   }).catch((e) => console.error('[retrain] fire-and-forget error:', e))
 

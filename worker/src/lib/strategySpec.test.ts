@@ -52,7 +52,7 @@ function assert(condition: unknown, message: string): void {
   const candidate = {
     symbol: '2330',
     current_price: 900,
-    score_components: JSON.stringify({
+    score_v2: JSON.stringify({
       version: 'score_v2',
       finalScore: 66,
       components: {
@@ -76,7 +76,7 @@ function assert(condition: unknown, message: string): void {
   const candidate = {
     symbol: '2330',
     current_price: 900,
-    score_components: JSON.stringify({
+    score_v2: JSON.stringify({
       version: 'score_v2',
       finalScore: 70,
       components: {
@@ -141,7 +141,7 @@ function assert(condition: unknown, message: string): void {
     {
       symbol: '2330',
       current_price: 900,
-      score_components: JSON.stringify({
+      score_v2: JSON.stringify({
         version: 'score_v2',
         finalScore: 70,
         components: {

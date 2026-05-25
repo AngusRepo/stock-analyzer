@@ -22,6 +22,14 @@ REQUIRED_ENV = [
     "SHIOAJI_ACCOUNT_ID",
     "SHIOAJI_CERT_PATH",
 ]
+SENSITIVE_ENV_KEYS = [
+    "SHIOAJI_API_KEY",
+    "SHIOAJI_SECRET_KEY",
+    "SHIOAJI_API_SECRET",
+    "SHIOAJI_CERT_PERSON_ID",
+    "SHIOAJI_CERT_PASSWORD",
+    "SHIOAJI_ACCOUNT_ID",
+]
 
 
 def _has_secret_key(env: dict[str, str]) -> bool:
@@ -78,6 +86,16 @@ def _read_optional_number(account: Any, method_name: str) -> tuple[bool, str | N
         return False, exc.__class__.__name__
 
 
+def sanitize_finlab_execution_error(text: str, env: dict[str, str] | None = None) -> str:
+    values = env or os.environ
+    sanitized = text
+    for key in SENSITIVE_ENV_KEYS:
+        value = values.get(key)
+        if value and len(value) >= 3:
+            sanitized = sanitized.replace(value, "***")
+    return sanitized
+
+
 def _logout_account(account: Any) -> None:
     for candidate in (
         getattr(account, "logout", None),
@@ -91,7 +109,12 @@ def _logout_account(account: Any) -> None:
             return
 
 
-def _error_payload(exc: BaseException, env_status: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
+def _error_payload(
+    exc: BaseException,
+    env_status: dict[str, Any],
+    steps: list[dict[str, Any]],
+    values: dict[str, str],
+) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "allowed_use": "read_only_smoke",
@@ -100,8 +123,8 @@ def _error_payload(exc: BaseException, env_status: dict[str, Any], steps: list[d
         "env_status": env_status,
         "steps": steps,
         "error_type": exc.__class__.__name__,
-        "error": str(exc),
-        "trace_tail": traceback.format_exc(limit=2),
+        "error": sanitize_finlab_execution_error(str(exc), values),
+        "trace_tail": sanitize_finlab_execution_error(traceback.format_exc(limit=2), values),
     }
 
 
@@ -207,7 +230,7 @@ def run_finlab_execution_smoke(
         }
     except Exception as exc:
         steps.append({"name": "smoke_exception", "status": "error", "error_type": exc.__class__.__name__})
-        return _error_payload(exc, env_status, steps)
+        return _error_payload(exc, env_status, steps, values)
     finally:
         if account is not None:
             _logout_account(account)

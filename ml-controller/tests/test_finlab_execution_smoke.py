@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.finlab_execution_smoke import (  # noqa: E402
     finlab_execution_env_status,
     run_finlab_execution_smoke,
+    sanitize_finlab_execution_error,
 )
 
 
@@ -151,3 +152,23 @@ def test_ml_controller_requirements_include_shioaji_for_sinopac_broker():
     requirements = (ROOT / "ml-controller" / "requirements.txt").read_text(encoding="utf-8")
 
     assert "shioaji" in requirements
+
+
+def test_error_sanitizer_masks_configured_secret_values():
+    env = {
+        "SHIOAJI_API_KEY": "abc123secret",
+        "SHIOAJI_SECRET_KEY": "def456secret",
+        "SHIOAJI_CERT_PASSWORD": "password-value",
+        "SHIOAJI_CERT_PERSON_ID": "person-id",
+    }
+
+    text = sanitize_finlab_execution_error(
+        "key abc123secret not match def456secret password-value person-id",
+        env,
+    )
+
+    assert "abc123secret" not in text
+    assert "def456secret" not in text
+    assert "password-value" not in text
+    assert "person-id" not in text
+    assert "***" in text

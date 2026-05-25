@@ -37,8 +37,7 @@ COPY ml-controller/ /app/
 COPY ml-service/ /app/ml-service/
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json
-RUN mkdir -p /app/tools
-COPY tools/finlab_v4_remote_backfill.py /app/tools/finlab_v4_remote_backfill.py
+COPY tools/ /app/tools/
 
 ENV PORT=8080
 EXPOSE 8080

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import modal_client
+from services.finlab_execution_smoke import run_finlab_execution_smoke
 
 router = APIRouter(prefix="/finlab", tags=["finlab"])
 
@@ -30,6 +31,11 @@ class FinLabBackfillRunRequest(BaseModel):
     trigger_source: str = "controller"
     trigger_id: str | None = None
     dry_run: bool = False
+
+
+class FinLabExecutionSmokeRequest(BaseModel):
+    allow_broker_login: bool = False
+    preview_noop: bool = True
 
 
 def _model_dump(model: BaseModel) -> dict[str, Any]:
@@ -72,3 +78,16 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
             detail="FINLAB_BACKFILL_EXECUTOR=modal is required before spawning Modal FinLab backfill",
         )
     return await modal_client.spawn_finlab_v4_backfill(payload)
+
+
+@router.post("/execution/smoke")
+async def run_finlab_execution_smoke_route(req: FinLabExecutionSmokeRequest) -> dict:
+    """Read-only FinLab/Sinopac execution lane smoke check.
+
+    This route never submits live orders. Broker login is blocked unless the
+    caller explicitly sets allow_broker_login=true.
+    """
+    return run_finlab_execution_smoke(
+        allow_broker_login=req.allow_broker_login,
+        preview_noop=req.preview_noop,
+    )

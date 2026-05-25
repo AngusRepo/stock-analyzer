@@ -83,9 +83,10 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
 
     controller_dst = stable_root / "ml-controller"
     for rel_dir in ("optuna_scripts", "routers", "services"):
-        src_rel = repo_root / "ml-controller" / rel_dir
-        if src_rel.exists():
-            shutil.copytree(src_rel, controller_dst / rel_dir, dirs_exist_ok=True)
+        for src_rel in (repo_root / "ml-controller" / rel_dir, repo_root / rel_dir):
+            if src_rel.exists():
+                shutil.copytree(src_rel, controller_dst / rel_dir, dirs_exist_ok=True)
+                break
 
     tools_src = repo_root / "tools"
     if tools_src.exists():

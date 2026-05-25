@@ -54,9 +54,19 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
     """Copy deploy inputs to /tmp with normalized mtimes for Modal CLI."""
     src_file = Path(app_path).resolve()
     src_dir = src_file.parent
-    stable_dir = Path("/tmp/modal_deploy") / src_file.stem
-    if stable_dir.exists():
-        shutil.rmtree(stable_dir)
+    repo_root = src_dir.parent
+    stable_root = Path(os.environ.get("MODAL_DEPLOY_STAGING_ROOT", "/tmp/modal_deploy"))
+    stable_dir = stable_root / src_file.stem
+    for stale_path in (
+        stable_dir,
+        stable_root / "ml-controller",
+        stable_root / "tools",
+    ):
+        if stale_path.exists():
+            if stale_path.is_dir():
+                shutil.rmtree(stale_path)
+            else:
+                stale_path.unlink()
     stable_dir.mkdir(parents=True, exist_ok=True)
 
     stable_file = stable_dir / src_file.name
@@ -71,8 +81,18 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
     if req_file.exists():
         shutil.copy2(req_file, stable_dir / "requirements.txt")
 
-    targets = [stable_dir, stable_file]
-    targets.extend(stable_dir.rglob("*"))
+    controller_dst = stable_root / "ml-controller"
+    for rel_dir in ("optuna_scripts", "routers", "services"):
+        src_rel = repo_root / "ml-controller" / rel_dir
+        if src_rel.exists():
+            shutil.copytree(src_rel, controller_dst / rel_dir, dirs_exist_ok=True)
+
+    tools_src = repo_root / "tools"
+    if tools_src.exists():
+        shutil.copytree(tools_src, stable_root / "tools", dirs_exist_ok=True)
+
+    targets = [stable_root]
+    targets.extend(stable_root.rglob("*"))
     for target in targets:
         os.utime(target, (_MODAL_STABLE_MTIME, _MODAL_STABLE_MTIME))
 

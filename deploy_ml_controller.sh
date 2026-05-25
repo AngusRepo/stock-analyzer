@@ -59,6 +59,7 @@ GCP_REGION="${GCP_REGION:-asia-east1}"
 PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
+FINLAB_JOB_NAME="${FINLAB_JOB_NAME:-finlab-v4-backfill}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
@@ -81,6 +82,7 @@ REQUIRED_ENV_VARS=(
   PIPELINE_JOB_NAME
   VERIFY_JOB_NAME
   OPTUNA_JOB_NAME
+  FINLAB_JOB_NAME
   STOCKVISION_WORKER_URL
 )
 
@@ -248,6 +250,9 @@ load_live_image_state() {
   LIVE_OPTUNA_JOB_ENTRYPOINT=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+  LIVE_FINLAB_JOB_IMG=$(gcloud run jobs describe "$FINLAB_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
 }
 
 build_verify_job_env_file() {
@@ -423,6 +428,25 @@ sync_optuna_job() {
   echo ""
 }
 
+sync_finlab_job() {
+  if gcloud run jobs describe "$FINLAB_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3d/4: Update Job $FINLAB_JOB_NAME image ==="
+    if ! gcloud run jobs update "$FINLAB_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE"; then
+      echo "??FinLab job update failed" >&2
+      exit 4
+    fi
+    echo "??FinLab job update succeeded"
+  else
+    echo "??FinLab job $FINLAB_JOB_NAME not found; create it separately with canonical backfill args" >&2
+    exit 4
+  fi
+  echo ""
+}
+
 run_preflight() {
   echo "=== Preflight: local deploy inputs ==="
   require_nonempty "GCS_BUCKET_NAME" "Example: export GCS_BUCKET_NAME=stockvision-models"
@@ -432,6 +456,7 @@ run_preflight() {
   require_nonempty "PIPELINE_JOB_NAME" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
+  require_nonempty "FINLAB_JOB_NAME" "Required so finlab-v4-backfill runs the same deployed source as tools/finlab_v4_remote_backfill.py"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
   require_nonempty "STOCKVISION_AUTH_TOKEN_SECRET" "Secret Manager reference for Worker service token, e.g. stockvision-stockvision-auth-token:latest"
   require_nonempty "MODAL_TOKEN_ID_SECRET" "Secret Manager reference for Modal token id, e.g. stockvision-modal-token-id:latest"
@@ -485,14 +510,17 @@ run_preflight() {
     echo "  Live optuna image     : ${LIVE_OPTUNA_JOB_IMG}"
     echo "  Live optuna entrypoint: ${LIVE_OPTUNA_JOB_ENTRYPOINT:-unknown}"
   fi
+  if [ -n "${LIVE_FINLAB_JOB_IMG:-}" ]; then
+    echo "  Live FinLab image     : ${LIVE_FINLAB_JOB_IMG}"
+  fi
 
-  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ] || [ -z "${LIVE_FINLAB_JOB_IMG:-}" ]; then
     echo "  Unable to fully verify Service / Job image drift from current environment."
-  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ]; then
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_FINLAB_JOB_IMG" ]; then
     echo "  Service / Job image sync: OK"
   else
     echo "  Service / Job image sync: DRIFT DETECTED"
-    echo "  Deploy should re-sync the Job image after Service deploy."
+    echo "  Deploy should re-sync the Job images after Service deploy."
   fi
   echo ""
 }
@@ -575,6 +603,7 @@ echo ""
 # ── Step 4/4: Verify ─────────────────────────────────────────────────────────
 sync_verify_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
+sync_finlab_job
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
 SERVICE_IMG=$(gcloud run services describe "$SERVICE" --region="$REGION" \
@@ -585,6 +614,8 @@ VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" 
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
+FINLAB_JOB_IMG=$(gcloud run jobs describe "$FINLAB_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 VERIFY_JOB_ARGS=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
@@ -594,12 +625,13 @@ OPTUNA_JOB_COMMAND=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGI
 OPTUNA_JOB_ARGS=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
 
-if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ]; then
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$FINLAB_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
   echo "  Service: $SERVICE_IMG" >&2
   echo "  Job    : $JOB_IMG" >&2
   echo "  Verify : $VERIFY_JOB_IMG" >&2
   echo "  Optuna : $OPTUNA_JOB_IMG" >&2
+  echo "  FinLab : $FINLAB_JOB_IMG" >&2
   exit 5
 fi
 
@@ -681,6 +713,7 @@ echo "  Image            : $SERVICE_IMG"
 echo "  Pipeline job     : synced"
 echo "  Verify job       : synced"
 echo "  Optuna job       : synced"
+echo "  FinLab job       : synced"
 [ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
 echo ""
 echo "Next step: trigger pipeline-v2 to verify new code path executes. Example:"

@@ -48,6 +48,24 @@ function formatMsAsSeconds(msText: string | null): string {
   return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} 秒`
 }
 
+function parseDetailMap(detail: string | null | undefined): Record<string, string> {
+  if (!detail) return {}
+  return detail.split(';').reduce<Record<string, string>>((acc, part) => {
+    const [rawKey, ...rawValue] = part.split('=')
+    const key = rawKey?.trim()
+    const value = rawValue.join('=').trim()
+    if (key) acc[key] = value
+    return acc
+  }, {})
+}
+
+function formatPct(value: unknown, decimals = 0, trim = true): string | null {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  const text = (n * 100).toFixed(decimals)
+  return `${trim ? text.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') : text}%`
+}
+
 export function explainExecutionEvent(raw: string): string | null {
   const event = parseExecutionEvent(raw)
   if (!event) return null
@@ -55,6 +73,7 @@ export function explainExecutionEvent(raw: string): string | null {
   const reason = normalizeReason(event.reason)
   const detail = event.detail ? normalizeReason(event.detail) : null
   const combined = `${reason} ${detail ?? ''}`.trim()
+  const detailMap = parseDetailMap(event.detail)
 
   if (event.kind === 'debate') {
     if (event.status === 'failed') {
@@ -73,13 +92,79 @@ export function explainExecutionEvent(raw: string): string | null {
     return `報價過期：即時報價${age ? `已超過 ${age}` : '已超過允許時間'}，系統 fail-closed，不用過期價格假裝成交。`
   }
 
-  if (event.status === 'deferred') {
-    if (/volume ratio low/i.test(combined)) {
-      const ratio = extractNumber(combined, /volume ratio low[: ]+([0-9.]+)/i)
-      return `盤中暫緩進場：量能比${ratio ? ` ${ratio}` : ''}低於門檻，代表目前成交活躍度不足，先不追單。`
+  const isWaitingStatus = event.status === 'deferred' || event.status === 'pending'
+  if (isWaitingStatus) {
+    if (event.reason.startsWith('range_position_low') || /range position low/i.test(combined)) {
+      const legacyPct = extractNumber(combined, /range position low[: ]+([0-9.]+)%/i)
+      const observed = detailMap.range_position != null ? formatPct(detailMap.range_position) : legacyPct ? `${legacyPct}%` : null
+      const threshold = formatPct(detailMap.min)
+      return [
+        '盤中暫緩進場：range_position_low（盤中區間位置過低）。',
+        observed ? `目前位置 ${observed}` : null,
+        threshold ? `門檻 ${threshold}` : null,
+        '代表價格仍在當日區間偏低處，先避免接刀。',
+      ].filter(Boolean).join(' ')
     }
-    if (/price above entry/i.test(combined)) {
-      return '盤中暫緩進場：現價高於允許買入價，避免追高，等待回到合理掛單區間。'
+    if (event.reason.startsWith('volume_ratio_low') || /volume ratio low/i.test(combined)) {
+      const ratio = detailMap.volume_ratio ?? extractNumber(combined, /volume ratio low[: ]+([0-9.]+)/i)
+      const min = detailMap.min_volume_ratio
+      return [
+        '盤中暫緩進場：volume_ratio_low（量能比過低）。',
+        ratio ? `目前量能比 ${ratio}` : null,
+        min ? `門檻 ${min}` : null,
+        '成交活躍度不足，先不追單。',
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('price_above_entry') || /price above entry/i.test(combined)) {
+      const premium = formatPct(detailMap.premium, 2, false)
+      const max = formatPct(detailMap.max, 2, false)
+      const priceText = detailMap.current && detailMap.entry
+        ? `現價 ${detailMap.current} 高於進場價 ${detailMap.entry}。`
+        : null
+      return [
+        '盤中暫緩進場：price_above_entry（現價高於允許進場價）。',
+        priceText,
+        premium ? `追價溢價 ${premium}` : null,
+        max ? `上限 ${max}` : null,
+        '等待回到合理掛單區間，避免無上限追高。',
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('waiting_for_ohlcv_confirmation')) {
+      return [
+        '盤中暫緩進場：waiting_for_ohlcv_confirmation（尚未站上 OHLCV 轉強確認）。',
+        detailMap.current ? `現價 ${detailMap.current}` : null,
+        detailMap.confirmation ? `轉強確認 ${detailMap.confirmation}` : null,
+        '突破型單不在確認價下方偷買。',
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('price_above_ohlcv_optimistic_range')) {
+      return [
+        '盤中暫緩進場：price_above_ohlcv_optimistic_range（現價高於 OHLCV 樂觀價格區間）。',
+        detailMap.current ? `現價 ${detailMap.current}` : null,
+        detailMap.optimistic_high ? `區間上緣 ${detailMap.optimistic_high}` : null,
+        '強勢股可以追，但不追到前高壓力上方失去風險報酬。',
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('ohlcv_support_lost')) {
+      return [
+        '盤中暫緩進場：ohlcv_support_lost（OHLCV 關鍵支撐失守）。',
+        detailMap.current ? `現價 ${detailMap.current}` : null,
+        detailMap.support ? `關鍵支撐 ${detailMap.support}` : null,
+        detailMap.atr_defense ? `ATR 防守 ${detailMap.atr_defense}` : null,
+        '先避免下跌接刀。',
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('between_buy_reference_and_confirmation')) {
+      return [
+        '盤中暫緩進場：between_buy_reference_and_confirmation（高於買入參考區但尚未轉強）。',
+        detailMap.current ? `現價 ${detailMap.current}` : null,
+        detailMap.buy_reference_high ? `買入參考區上緣 ${detailMap.buy_reference_high}` : null,
+        detailMap.confirmation ? `轉強確認 ${detailMap.confirmation}` : null,
+        '不在中段尷尬位置追。'
+      ].filter(Boolean).join(' ')
+    }
+    if (event.reason.startsWith('falling_5min') || /falling 5min/i.test(combined)) {
+      return '盤中暫緩進場：falling_5min（5 分鐘動能轉弱）。短線價格斜率為負，先避免接刀。'
     }
     if (/momentum unavailable|trend http 404|snapshot http|http 404/i.test(combined)) {
       return '盤中資料錯誤：趨勢或動能資料服務沒有回傳有效資料；這是資料品質問題，不是股票本身的看空訊號，所以系統 fail-closed 不進場。'

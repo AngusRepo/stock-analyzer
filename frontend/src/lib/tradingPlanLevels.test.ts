@@ -27,6 +27,7 @@ const rows = normalizeOhlcvRows(Array.from({ length: 70 }, (_, index) => {
   assert(levels!.latestClose === 169, 'latest close should be deterministic')
   assert(levels!.support === 107, 'support should be the swing low in the lookback window')
   assert(levels!.resistance === 171, 'resistance should be the swing high in the lookback window')
+  assert(levels!.confirmation === 170, 'confirmation should be the previous swing high before the latest candle')
   assert(levels!.atrLower != null && levels!.atrLower < levels!.latestClose, 'ATR lower band should sit below latest close')
   assert(levels!.atrUpper != null && levels!.atrUpper > levels!.latestClose, 'ATR upper band should sit above latest close')
   assert(levels!.ma20 === 159.5, 'MA20 should be derived from the same close series')

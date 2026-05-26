@@ -189,6 +189,7 @@ export interface TradingConfig {
     requoteStopFallback: number  // ml_stop_loss fallback 係數（預設 0.92）
     maxQuoteAgeMs: number        // broker quote 最大可接受延遲（預設 60000ms）
     maxEntryChasePct: number     // 強勢股盤中追價上限（預設 0.006 = 0.6%）
+    strongBreakoutMaxEntryChasePct: number // 量價確認突破追價上限（預設 0.018 = 1.8%）
     // ── 2026-04-18 #36: calcRiskPct tiers 從 paper.ts hardcode 搬過來 ──────
     riskPctBaseline: number                // 預設一般信號 risk（預設 0.01 = 1%）
     riskPctBuy: number                     // BUY 且 conf≥buyConf 時（預設 0.015 = 1.5%）
@@ -405,6 +406,8 @@ export interface TradingConfig {
   momentum: {
     minVolumeRatio: number               // 最低 volume ratio vs 20d avg（預設 0.8）
     minRangePosition: number             // 最低 day range position（預設 0.3 = 30%）
+    strongBreakoutVolumeRatio: number    // 強勢突破最低 volume ratio（預設 1.5）
+    strongBreakoutRangePosition: number  // 強勢突破最低 day range position（預設 0.7）
     // 2026-04-18 #36 Round 2
     tradingDayMinutes: number            // 台股交易時段分鐘數（預設 270 = 9:00-13:30）
     minutesFractionFloor: number         // minutesSinceOpen/total 下限（預設 0.1 防早盤分母太小）
@@ -501,6 +504,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     requoteStopFallback: 0.92,  // ml_stop_loss 缺失時回退係數（預設 0.92 = entry × 0.92）
     maxQuoteAgeMs: 60_000,
     maxEntryChasePct: 0.006,
+    strongBreakoutMaxEntryChasePct: 0.018,
     // 2026-04-18 #36
     riskPctBaseline: 0.01,
     riskPctBuy: 0.015,
@@ -675,6 +679,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   momentum: {
     minVolumeRatio: 0.8,
     minRangePosition: 0.3,
+    strongBreakoutVolumeRatio: 1.5,
+    strongBreakoutRangePosition: 0.7,
     // Round 2
     tradingDayMinutes: 270,
     minutesFractionFloor: 0.1,
@@ -1400,6 +1406,8 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('position.maxQuoteAgeMs must be 10000-180000')
   if (!isFiniteNumber(config.position.maxEntryChasePct) || config.position.maxEntryChasePct < 0 || config.position.maxEntryChasePct > 0.03)
     errors.push('position.maxEntryChasePct must be 0-0.03')
+  if (!isFiniteNumber(config.position.strongBreakoutMaxEntryChasePct) || config.position.strongBreakoutMaxEntryChasePct < 0 || config.position.strongBreakoutMaxEntryChasePct > 0.03)
+    errors.push('position.strongBreakoutMaxEntryChasePct must be 0-0.03')
   if (config.barrier.upperMult < 0.5 || config.barrier.upperMult > 10)
     errors.push('barrier.upperMult must be 0.5-10')
   if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)
@@ -1408,6 +1416,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('momentum.minVolumeRatio must be 0-5')
   if (!isFiniteNumber(config.momentum.minRangePosition) || config.momentum.minRangePosition < 0 || config.momentum.minRangePosition > 1)
     errors.push('momentum.minRangePosition must be 0-1')
+  if (!isFiniteNumber(config.momentum.strongBreakoutVolumeRatio) || config.momentum.strongBreakoutVolumeRatio < 0 || config.momentum.strongBreakoutVolumeRatio > 5)
+    errors.push('momentum.strongBreakoutVolumeRatio must be 0-5')
+  if (!isFiniteNumber(config.momentum.strongBreakoutRangePosition) || config.momentum.strongBreakoutRangePosition < 0 || config.momentum.strongBreakoutRangePosition > 1)
+    errors.push('momentum.strongBreakoutRangePosition must be 0-1')
   if (!Number.isInteger(config.momentum.avgVolumeLookbackDays) || config.momentum.avgVolumeLookbackDays < 1 || config.momentum.avgVolumeLookbackDays > 120)
     errors.push('momentum.avgVolumeLookbackDays must be an integer between 1 and 120')
   if (!isFiniteNumber(config.momentum.intradayVolumeLotSize) || config.momentum.intradayVolumeLotSize <= 0 || config.momentum.intradayVolumeLotSize > 10_000)

@@ -338,42 +338,39 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
     return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
   }
   const latestText = formatPrice(latestClose)
-  const supportText = formatPrice(low ?? poc)
-  const confirmText = formatPrice(high ?? poc)
-  const pressureText = formatPrice(optimisticHigh ?? high)
-  const lowerPressureText = formatPrice(optimisticLow)
+  const fairLowText = formatPrice(low ?? poc)
+  const fairHighText = formatPrice(high ?? poc)
+  const optimisticHighText = formatPrice(optimisticHigh ?? high)
+  const optimisticLowText = formatPrice(optimisticLow ?? high)
   const plan: string[] = []
 
   if (latestText) plan.push(`現價 ${latestText}`)
-  if (location === 'above_fair_value') {
-    if (confirmText) plan.push(`回測 ${confirmText} 站穩才追`)
-    if (pressureText) plan.push(`前高壓力 ${pressureText}`)
-  } else if (location === 'below_fair_value') {
-    if (supportText) plan.push(`尚未收回關鍵支撐 ${supportText}`)
-    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
-  } else if (location === 'in_fair_value') {
-    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
-    if (supportText) plan.push(`關鍵支撐 ${supportText}`)
-  } else {
-    if (confirmText) plan.push(`轉強確認 ${confirmText}`)
-    if (supportText) plan.push(`關鍵支撐 ${supportText}`)
+  if (fairLowText && fairHighText) {
+    plan.push(`內部合理區 ${fairLowText}~${fairHighText}`)
   }
-
-  if (supportText) plan.push(`破位防守 ${supportText}`)
-  if (lowerPressureText && pressureText && lowerPressureText !== pressureText) {
-    plan.push(`壓力區 ${lowerPressureText}~${pressureText}`)
+  if (optimisticLowText && optimisticHighText && optimisticLowText !== optimisticHighText) {
+    plan.push(`內部順風區 ${optimisticLowText}~${optimisticHighText}`)
+  } else if (optimisticHighText) {
+    plan.push(`內部順風上緣 ${optimisticHighText}`)
+  }
+  if (location === 'above_fair_value') {
+    plan.push('價格高於內部合理區')
+  } else if (location === 'below_fair_value') {
+    plan.push('價格低於內部合理區')
+  } else if (location === 'in_fair_value') {
+    plan.push('價格位於內部合理區')
   }
   const upside = Number(upsideToOptimisticHighPct)
-  if (Number.isFinite(upside) && pressureText) {
+  if (Number.isFinite(upside) && optimisticHighText) {
     const pct = Math.abs(upside * 100).toFixed(1).replace(/\.0$/, '')
-    plan.push(upside < 0 ? `已高於前高壓力 ${pct}%` : `距前高壓力 ${pct}%`)
+    plan.push(upside < 0 ? `已高於內部順風上緣 ${pct}%` : `距內部順風上緣 ${pct}%`)
   }
   if (optimisticStatus === 'exceeded') {
-    plan.push('避免追高，等回測確認')
+    plan.push('內部估值提醒偏追高')
   }
   if (windowStart && windowEnd) plan.push(`觀察區間 ${windowStart}~${windowEnd}`)
 
-  return plan.length ? `交易計劃: ${plan.join('；')}` : null
+  return plan.length ? `Alpha 結構: ${plan.join('；')}` : null
 }
 
 export function appendUniqueWatchPoint(points: string[], next: string | null): string[] {

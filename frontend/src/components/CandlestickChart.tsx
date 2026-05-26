@@ -281,8 +281,9 @@ export default function CandlestickChart({ stockId }: { stockId: number }) {
 
     const priceLines = [
       { price: planLevels?.resistance, title: '前高壓力', color: '#f59e0b' },
+      { price: planLevels?.confirmation, title: '轉強確認', color: '#38bdf8' },
       { price: planLevels?.support, title: '關鍵支撐', color: '#10b981' },
-      { price: planLevels?.volumeNode, title: '量能節點', color: '#38bdf8' },
+      { price: planLevels?.volumeNode, title: '量能節點', color: '#a78bfa' },
       { price: planLevels?.atrLower, title: 'ATR 防守', color: '#f43f5e' },
     ]
     for (const line of priceLines) {
@@ -342,10 +343,11 @@ export default function CandlestickChart({ stockId }: { stockId: number }) {
       </div>
       <div ref={containerRef} className="h-[360px] w-full rounded-md border border-border/50 bg-background/50" />
       {planLevels && (
-        <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-5">
           <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-amber-300">壓力 {fmtPrice(planLevels.resistance)}</span>
+          <span className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-sky-300">轉強 {fmtPrice(planLevels.confirmation)}</span>
           <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 font-mono text-emerald-300">支撐 {fmtPrice(planLevels.support)}</span>
-          <span className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-sky-300">量能 {fmtPrice(planLevels.volumeNode)}</span>
+          <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-1 font-mono text-violet-300">量能 {fmtPrice(planLevels.volumeNode)}</span>
           <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-rose-300">ATR防守 {fmtPrice(planLevels.atrLower)}</span>
         </div>
       )}

@@ -18,6 +18,7 @@ export interface TradingPlanLevels {
   latestClose: number
   support: number
   resistance: number
+  confirmation: number
   volumeNode: number | null
   atrUpper: number | null
   atrLower: number | null
@@ -131,10 +132,14 @@ export function buildTradingPlanLevels(rows: OhlcvRow[], lookback = 60): Trading
   const atr = latestAtr(rows)
   const support = Math.min(...window.map((row) => row.low))
   const resistance = Math.max(...window.map((row) => row.high))
+  const previousWindow = window.slice(0, -1)
+  const confirmationWindow = previousWindow.length > 0 ? previousWindow : window
+  const confirmation = Math.max(...confirmationWindow.map((row) => row.high))
   return {
     latestClose: round2(latest.close),
     support: round2(support),
     resistance: round2(resistance),
+    confirmation: round2(confirmation),
     volumeNode: volumeNode(window),
     atrUpper: atr == null ? null : round2(latest.close + atr),
     atrLower: atr == null ? null : round2(latest.close - atr),

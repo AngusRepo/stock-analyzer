@@ -98,6 +98,22 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
 
 {
   const decision = evaluatePreTradeExecution(baseInput({
+    momentum: {
+      volumeRatio: 1.2,
+      minVolumeRatio: 0.8,
+      slope5min: 0.01,
+      rangePosition: 0.2,
+      minRangePosition: 0.3,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'low intraday range position must defer entry')
+  assert(decision.reason === 'range_position_low', 'range-position gate should use a stable reason key')
+  assert(decision.detail?.includes('range_position=0.2'), 'range-position gate should expose the observed value')
+  assert(decision.detail?.includes('min=0.3'), 'range-position gate should expose the threshold')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
     currentPrice: 100.8,
     bestAsk: 100.9,
     policy: {
@@ -110,4 +126,146 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
   }))
   assert(decision.action === 'DEFER', 'entry chase must stay bounded instead of chasing extended prices')
   assert(decision.reason === 'price_above_entry', 'extended prices should keep the existing wait-for-pullback behavior')
+  assert(decision.detail?.includes('premium=0.009'), 'price-above-entry gate should expose the chase premium')
+  assert(decision.detail?.includes('max=0.006'), 'price-above-entry gate should expose the chase limit')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 101.1,
+    bestAsk: 101.2,
+    momentum: {
+      volumeRatio: 1.8,
+      minVolumeRatio: 0.8,
+      strongBreakoutVolumeRatio: 1.5,
+      slope5min: 0.02,
+      rangePosition: 0.86,
+      minRangePosition: 0.3,
+      strongBreakoutRangePosition: 0.7,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+      strongBreakoutMaxEntryChasePct: 0.018,
+    },
+  }))
+  assert(decision.action === 'BUY_AT', 'confirmed strong breakout should allow a wider bounded chase')
+  assert(decision.limitPrice === 101.2, 'strong breakout chase should still use executable best ask')
+  assert(decision.reason === 'strong_breakout_chase_confirmed:1.20%', 'strong breakout chase reason should expose the premium')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 101.1,
+    bestAsk: 101.2,
+    momentum: {
+      volumeRatio: 1.1,
+      minVolumeRatio: 0.8,
+      strongBreakoutVolumeRatio: 1.5,
+      slope5min: 0.02,
+      rangePosition: 0.86,
+      minRangePosition: 0.3,
+      strongBreakoutRangePosition: 0.7,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+      strongBreakoutMaxEntryChasePct: 0.018,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'wide chase must not be allowed without strong volume confirmation')
+  assert(decision.reason === 'price_above_entry', 'missing strong volume should keep wait-for-pullback behavior')
+  assert(decision.detail?.includes('max=0.006'), 'non-breakout chase should keep the normal chase cap')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 99.2,
+    entryPrice: 100,
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'breakout',
+      confirmation: 100,
+      resistance: 103,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 97.5,
+      buyReferenceLow: 96,
+      buyReferenceHigh: 97.5,
+      optimisticLow: 100,
+      optimisticHigh: 103,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'breakout mode must wait for OHLCV confirmation before buying below trigger')
+  assert(decision.reason === 'waiting_for_ohlcv_confirmation', 'breakout trigger gate should use a stable reason key')
+  assert(decision.detail?.includes('confirmation=100'), 'confirmation gate should expose the OHLCV trigger')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 104.2,
+    bestAsk: 104.2,
+    entryPrice: 100,
+    momentum: {
+      volumeRatio: 2,
+      minVolumeRatio: 0.8,
+      strongBreakoutVolumeRatio: 1.5,
+      slope5min: 0.03,
+      rangePosition: 0.92,
+      minRangePosition: 0.3,
+      strongBreakoutRangePosition: 0.7,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+      strongBreakoutMaxEntryChasePct: 0.018,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'breakout',
+      confirmation: 100,
+      resistance: 103,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 97.5,
+      buyReferenceLow: 96,
+      buyReferenceHigh: 97.5,
+      optimisticLow: 100,
+      optimisticHigh: 103,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'backend must not chase above the OHLCV optimistic range')
+  assert(decision.reason === 'price_above_ohlcv_optimistic_range', 'optimistic range gate should use OHLCV resistance')
+  assert(decision.detail?.includes('optimistic_high=103'), 'optimistic range gate should expose the OHLCV ceiling')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 95.7,
+    entryPrice: 97.5,
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 100,
+      resistance: 103,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 97.5,
+      buyReferenceLow: 96,
+      buyReferenceHigh: 97.5,
+      optimisticLow: 100,
+      optimisticHigh: 103,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'backend must avoid buying after OHLCV support is lost')
+  assert(decision.reason === 'ohlcv_support_lost', 'support-loss gate should use a stable reason key')
 }

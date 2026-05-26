@@ -37,6 +37,11 @@ import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
+import {
+  batchLoadOhlcvTradePlanLevels,
+  formatOhlcvTradePlanWatchPoint,
+  resolveOhlcvEntryPlan,
+} from './ohlcvTradePlanLevels'
 
 type CircuitBreakerState = _CBState
 
@@ -731,6 +736,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
 
     const stockIds = [...new Set(buyRecs.map((rec) => Number(rec.stock_id)).filter((id) => Number.isFinite(id)))]
+    const ohlcvLevelsByStock = await batchLoadOhlcvTradePlanLevels(env.DB, stockIds, sourceRecoDate).catch((error) => {
+      console.warn('[MorningSetup] OHLCV trade plan levels unavailable:', error)
+      return new Map()
+    })
     const perModelByStock = new Map<number, PerModelPredictionRow[]>()
     if (stockIds.length > 0) {
       const placeholders = stockIds.map(() => '?').join(',')
@@ -880,52 +889,68 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       let adjustedTarget1 = rec.ml_target1
       let adjustedTarget2 = rec.ml_target2
       const entryWatchPoints: string[] = []
-      const originalEntry = rec.ml_entry_price
+      let originalEntry = rec.ml_entry_price
+      const ohlcvEntryPlan = resolveOhlcvEntryPlan(
+        ohlcvLevelsByStock.get(Number(rec.stock_id)),
+        { latestPrice: rec.latest_close },
+      )
+      if (ohlcvEntryPlan) {
+        adjustedEntry = ohlcvEntryPlan.entryPrice
+        adjustedStop = ohlcvEntryPlan.stopLoss
+        adjustedTarget1 = ohlcvEntryPlan.target1
+        adjustedTarget2 = ohlcvEntryPlan.target2
+        originalEntry = ohlcvEntryPlan.entryPrice
+        entryWatchPoints.push(formatOhlcvTradePlanWatchPoint(ohlcvEntryPlan))
+      }
       const nightDropPct = taifex?.changePct ?? 0
       const l2 = cfg.L2_formula
-      if (nightDropPct < l2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
-        adjustedEntry = Math.round(rec.ml_entry_price * l2.night_drop_severe_adjust * 100) / 100
-        adjustedStop = adjustedStop != null
-          ? Math.round(adjustedStop * l2.night_drop_severe_adjust * 100) / 100
-          : adjustedStop
-      } else if (nightDropPct < l2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
-        adjustedEntry = Math.round(rec.ml_entry_price * l2.night_drop_mild_adjust * 100) / 100
-        adjustedStop = adjustedStop != null
-          ? Math.round(adjustedStop * l2.night_drop_mild_adjust * 100) / 100
-          : adjustedStop
-      }
+      if (!ohlcvEntryPlan) {
+        if (nightDropPct < l2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
+          adjustedEntry = Math.round(adjustedEntry * l2.night_drop_severe_adjust * 100) / 100
+          adjustedStop = adjustedStop != null
+            ? Math.round(adjustedStop * l2.night_drop_severe_adjust * 100) / 100
+            : adjustedStop
+        } else if (nightDropPct < l2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
+          adjustedEntry = Math.round(adjustedEntry * l2.night_drop_mild_adjust * 100) / 100
+          adjustedStop = adjustedStop != null
+            ? Math.round(adjustedStop * l2.night_drop_mild_adjust * 100) / 100
+            : adjustedStop
+        }
 
-      const prevDayTs = new Date(`${prevDay}T00:00:00Z`).getTime()
-      const todayTs = new Date(`${pendingDate}T00:00:00Z`).getTime()
-      const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
-      if (holidayGapDays >= 3 && nightDropPct > 1.0) {
-        const impliedGap = nightDropPct / 100
-        const gapThreshold = cfg.circuit.preMarketGapThreshold ?? 0.05
-        if (impliedGap > gapThreshold) continue
-        const chasePct = Math.min(impliedGap, gapThreshold)
-        const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
-        const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * gapBuffer * 100) / 100
-        if (newEntry > adjustedEntry) {
-          adjustedEntry = newEntry
-          if (adjustedStop != null) adjustedStop = Math.round(adjustedStop * (1 + chasePct) * 100) / 100
+        const prevDayTs = new Date(`${prevDay}T00:00:00Z`).getTime()
+        const todayTs = new Date(`${pendingDate}T00:00:00Z`).getTime()
+        const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
+        if (holidayGapDays >= 3 && nightDropPct > 1.0) {
+          const impliedGap = nightDropPct / 100
+          const gapThreshold = cfg.circuit.preMarketGapThreshold ?? 0.05
+          if (impliedGap > gapThreshold) continue
+          const chasePct = Math.min(impliedGap, gapThreshold)
+          const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
+          const newEntry = Math.round(adjustedEntry * (1 + chasePct) * gapBuffer * 100) / 100
+          if (newEntry > adjustedEntry) {
+            adjustedEntry = newEntry
+            if (adjustedStop != null) adjustedStop = Math.round(adjustedStop * (1 + chasePct) * 100) / 100
+          }
         }
       }
 
       const maxPremium = cfg.position.maxEntryPremiumPct ?? 0.01
-      const cappedEntry = capEntryToLatestClose({
-        entryPrice: adjustedEntry,
-        stopLoss: adjustedStop,
-        target1: adjustedTarget1,
-        target2: adjustedTarget2,
-        latestClose: rec.latest_close,
-        maxPremiumPct: maxPremium,
-      })
-      adjustedEntry = cappedEntry.entryPrice
-      adjustedStop = cappedEntry.stopLoss
-      adjustedTarget1 = cappedEntry.target1
-      adjustedTarget2 = cappedEntry.target2
-      if (cappedEntry.watchPoint) {
-        entryWatchPoints.push(cappedEntry.watchPoint)
+      if (!ohlcvEntryPlan) {
+        const cappedEntry = capEntryToLatestClose({
+          entryPrice: adjustedEntry,
+          stopLoss: adjustedStop,
+          target1: adjustedTarget1,
+          target2: adjustedTarget2,
+          latestClose: rec.latest_close,
+          maxPremiumPct: maxPremium,
+        })
+        adjustedEntry = cappedEntry.entryPrice
+        adjustedStop = cappedEntry.stopLoss
+        adjustedTarget1 = cappedEntry.target1
+        adjustedTarget2 = cappedEntry.target2
+        if (cappedEntry.watchPoint) {
+          entryWatchPoints.push(cappedEntry.watchPoint)
+        }
       }
 
       const kellyResult = calcKellyPct(

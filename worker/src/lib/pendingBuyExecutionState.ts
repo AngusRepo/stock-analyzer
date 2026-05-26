@@ -28,6 +28,7 @@ export interface PendingBuyExecutionEvent {
   symbol: string
   status: PendingBuyTerminalExecutionStatus
   reason: string
+  detail?: string | null
 }
 
 export interface PendingBuyExecutionStatusUpdate {
@@ -150,7 +151,7 @@ export function applyPendingBuyExecutionEvents(
     return {
       ...item,
       execution_status: event.status,
-      watch_points: appendPendingBuyExecutionNote(item, formatExecutionStatusEvent(event.status, event.reason)).watch_points,
+      watch_points: appendPendingBuyExecutionNote(item, formatExecutionStatusEvent(event.status, event.reason, event.detail)).watch_points,
     }
   })
 

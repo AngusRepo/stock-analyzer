@@ -23,12 +23,13 @@ function assert(condition: unknown, message: string): void {
     },
   })
 
-  assert(watchPoint?.startsWith('交易計劃:'), 'market structure watch point should use product trading-plan language')
-  assert(watchPoint?.includes('回測 855.88 站穩才追'), 'trading plan should name the confirmation price')
-  assert(watchPoint?.includes('前高壓力 879.03'), 'trading plan should name resistance in user-facing language')
-  assert(watchPoint?.includes('破位防守 786.43'), 'trading plan should name defensive support')
-  assert(watchPoint?.includes('已高於前高壓力 3.5%'), 'trading plan should translate upside gap into plain language')
-  assert(watchPoint?.includes('避免追高，等回測確認'), 'trading plan should translate exceeded extension into action language')
+  assert(watchPoint?.startsWith('Alpha 結構:'), 'market structure watch point should not pretend alpha proxy is an OHLCV trade plan')
+  assert(watchPoint?.includes('內部合理區 786.43~855.88'), 'alpha proxy should name the internal reasonable zone')
+  assert(watchPoint?.includes('內部順風區 855.88~879.03'), 'alpha proxy should name the internal optimistic zone without calling it resistance')
+  assert(watchPoint?.includes('已高於內部順風上緣 3.5%'), 'alpha proxy should translate extension into plain language')
+  assert(watchPoint?.includes('內部估值提醒偏追高'), 'alpha proxy should translate exceeded extension into action language')
+  assert(!watchPoint?.includes('前高壓力'), 'alpha proxy must not be mislabeled as OHLCV resistance')
+  assert(!watchPoint?.includes('轉強確認'), 'alpha proxy must not be mislabeled as OHLCV confirmation')
   for (const internalTerm of ['POC', 'fair_value', 'optimistic_value', 'optimistic_status', 'above_fair_value']) {
     assert(!watchPoint?.includes(internalTerm), `trading plan should not expose internal quant label ${internalTerm}`)
   }

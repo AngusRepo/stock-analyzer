@@ -29,8 +29,10 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
 import { stocksApi } from '@/lib/api'
+import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import { buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
+import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -257,6 +259,11 @@ function extractValue(text: string, key: string): string | null {
   return match?.[1]?.trim() ?? null
 }
 
+function extractTokenValue(text: string, key: string): string | null {
+  const match = text.match(new RegExp(`${key}=([^\\s;]+)`))
+  return match?.[1]?.trim() ?? null
+}
+
 function extractSizing(text: string): number | null {
   const match = text.match(/sizing\s*x\s*([0-9.]+)/i)
   const value = Number(match?.[1] ?? NaN)
@@ -340,6 +347,8 @@ type TradePlanContext = {
   ma60: number | null
   levels: TradingPlanLevels | null
 }
+
+const STRONG_BREAKOUT_CHASE_PCT = 0.018
 
 function scoreV2PayloadFromRec(rec: any): any | null {
   const raw = parseObject(rec?.score_v2)
@@ -814,7 +823,7 @@ function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, pric
       source: 'ohlcv',
       latest: levels.latestClose,
       resistance: levels.resistance,
-      confirmation: levels.resistance,
+      confirmation: levels.confirmation,
       support: levels.support,
       atrDefense: levels.atrLower,
       volumeNode: levels.volumeNode,
@@ -1137,7 +1146,7 @@ function KLinePlanSketch({
         lineWidth: 1,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: true,
-        title: '突破確認',
+        title: '轉強確認',
       })
     }
     if (support) {
@@ -1154,7 +1163,7 @@ function KLinePlanSketch({
     if (volumeNode) {
       candleSeries.createPriceLine({
         price: volumeNode,
-        color: '#f59e0b',
+        color: '#a78bfa',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
@@ -1217,11 +1226,12 @@ function KLinePlanSketch({
         <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
       </div>
       <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
-      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-4">
+      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-5">
         <span className="font-mono text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
+        <span className="font-mono text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
         <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
-        <span className="font-mono text-sky-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
-        <span className="font-mono text-amber-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
+        <span className="font-mono text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
+        <span className="font-mono text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
       </div>
     </div>
   )
@@ -1358,19 +1368,21 @@ function alphaStructureValue(context: AlphaContext | null): string {
 }
 
 function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
-  const latest = planPrice(plan.latest ?? context?.latestClose ?? rec.current_price)
-  const resistance = planPrice(plan.resistance)
-  const confirmation = planPrice(plan.confirmation)
-  const support = planPrice(plan.support)
-  const atrDefense = planPrice(plan.atrDefense)
-  const volumeNode = planPrice(plan.volumeNode)
+  const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
+  const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
+  const sourceText = zones.source === 'ohlcv' ? 'OHLCV 動態線位' : 'Alpha fallback'
   return [
-    { label: '現價', value: latest ?? '-', note: '', tone: 'neutral' },
-    { label: '前高壓力', value: resistance ?? '-', note: '', tone: 'warn' },
-    { label: '轉強確認', value: confirmation ?? '-', note: '', tone: 'good' },
-    { label: '關鍵支撐', value: support ?? '-', note: '', tone: 'good' },
-    { label: 'ATR 防守', value: atrDefense ?? '-', note: '', tone: 'warn' },
-    { label: '量能節點', value: volumeNode ?? '-', note: '', tone: 'neutral' },
+    { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
+    { label: '模型限價', value: modelEntry ?? '-', note: '', tone: 'neutral' },
+    { label: '買入參考區', value: zones.buyReferenceZone, note: '', tone: 'good' },
+    { label: '樂觀價格區間', value: zones.optimisticPriceRange, note: '', tone: 'warn' },
+    { label: '突破追價區', value: zones.breakoutChaseZone, note: '', tone: 'good' },
+    { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
+    { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
+    { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },
+    { label: 'ATR 防守', value: zones.atrDefense ?? '-', note: '', tone: 'warn' },
+    { label: '量能節點', value: zones.volumeNode ?? '-', note: '', tone: 'neutral' },
+    { label: '線位來源', value: sourceText, note: '', tone: zones.source === 'ohlcv' ? 'good' : 'warn' },
     { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
   ]
@@ -1402,16 +1414,16 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
   })
   const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
   const plan = buildOhlcvTradePlanContext(rec, context, priceRows)
+  const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
   const breeze2Reason = breeze2ReasonFromRec(rec)
-  const latestClose = planPrice(plan.latest ?? context?.latestClose ?? rec.current_price)
-  const resistance = planPrice(plan.resistance)
-  const confirmation = planPrice(plan.confirmation)
-  const support = planPrice(plan.support)
-  const atrDefense = planPrice(plan.atrDefense)
-  const volumeNode = planPrice(plan.volumeNode)
+  const latestClose = zones.latest
+  const resistance = zones.resistance
+  const support = zones.support
+  const atrDefense = zones.atrDefense
   const stop = atrDefense ?? support ?? '近端支撐'
-  const breakoutTrigger = confirmation ?? resistance ?? '前高壓力'
-  const pullbackZone = support && volumeNode ? `${support}~${volumeNode}` : support ?? volumeNode ?? '量價支撐區'
+  const breakoutTrigger = zones.confirmation ?? resistance ?? '前高壓力'
+  const breakoutEntryZone = zones.breakoutChaseZone !== '-' ? zones.breakoutChaseZone : breakoutTrigger
+  const pullbackZone = zones.buyReferenceZone !== '-' ? zones.buyReferenceZone : '量價支撐區'
   const alphaAdj = context?.scoreAdjustment == null ? 'Alpha 調整資料不足' : `Alpha 調整 ${signedText(Number(context.scoreAdjustment))}`
   const sizing = context?.sizing == null ? '部位倍率待定' : `部位倍率 x${fmtNumber(context.sizing, 2)}`
   const marketLine = [
@@ -1456,8 +1468,8 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
             accent="bg-cyan-400"
             lines={[
               `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
-              `進場：突破後回測不破再加碼，避免一根急拉直接追滿。`,
-              `目標：先看 ${resistance ?? '前高壓力'}，站穩後再看下一段趨勢延伸。`,
+              `預計入場：${breakoutEntryZone}；突破後回測不破再加碼，避免一根急拉直接追滿。`,
+              `目標：樂觀價格區間 ${zones.optimisticPriceRange}，站穩後再看下一段趨勢延伸。`,
             ]}
           />
           <PlanBlock
@@ -1465,8 +1477,8 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
             accent="bg-emerald-400"
             lines={[
               `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
-              `進場：先小部位，等重新轉強再補，不一次滿倉。`,
-              `目標：先回到 ${confirmation ?? '轉強確認價'}，再觀察能否轉突破。`,
+              `預計入場：${pullbackZone}；先小部位，等重新轉強再補，不一次滿倉。`,
+              `目標：先回到 ${zones.confirmation ?? '轉強確認價'}，再觀察能否轉突破。`,
             ]}
           />
         </div>
@@ -1522,10 +1534,10 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>Alpha 調整：{scoreAdjText == null ? '資料不足' : `${Number(context.scoreAdjustment) >= 0 ? '+' : ''}${scoreAdjText}`}</span>
         <span>波動：{shortLabelFor(volatility, VOL_TEXT)}</span>
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
-        <span>量能節點：{volumeNode}</span>
-        <span>關鍵支撐：{support}</span>
-        <span>轉強確認：{confirmation}</span>
-        <span>前高壓力：{resistance}</span>
+        <span>內部量能 proxy：{volumeNode}</span>
+        <span>內部合理區下緣：{support}</span>
+        <span>內部合理區上緣：{confirmation}</span>
+        <span>內部順風區上緣：{resistance}</span>
         {context.window && <span>計算區間：{context.window}</span>}
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
@@ -1535,7 +1547,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
-          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
+          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp} 實際交易線位以 OHLCV 動態線位為準。
         </p>
       </div>
       {context.skip && (
@@ -1548,6 +1560,12 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
 }
 
 function normalizeWatchPoint(point: string): string {
+  if (point.startsWith('allocator:')) {
+    const summary = describeAllocatorDecision([point])
+    if (summary) {
+      return `5-slot 資金配置：${summary.title}。${summary.detail}。這只代表槽位與資金允許，仍需通過盤中報價、price_above_entry、range_position_low、量能與限價成交檢核。`
+    }
+  }
   if (point.startsWith('Alpha bucket:') || point.startsWith('Alpha overlay:')) {
     const ctx = contextFromWatchPoints([point])
     const bucket = ctx?.bucket ?? 'unknown'
@@ -1567,8 +1585,20 @@ function normalizeWatchPoint(point: string): string {
       || (Number(ctx?.latestClose) > 0 && Number(ctx?.optimisticValueHigh) > 0 && Number(ctx?.latestClose) > Number(ctx?.optimisticValueHigh))
     const optimisticHelp = optimisticExceeded
       ? '內部上緣已低於現價，前台視為追高風險。'
-      : '內部量價估計已降級為輔助，判讀以支撐、壓力與突破確認為主。'
-    return `Market structure：前高壓力=${resistance}；轉強確認=${confirmation}；關鍵支撐=${support}；量能節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp}`
+      : '內部量價估計只作 Alpha 輔助，不當成交易線位。'
+    return `Market structure：Alpha 內部估值 proxy=${support}~${confirmation}；內部順風區=${confirmation}~${resistance}；內部量能節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp} 實際買入參考區與樂觀價格區間以 OHLCV 動態線位為準。`
+  }
+  if (point.startsWith('ohlcv_trade_plan:')) {
+    const mode = extractTokenValue(point, 'mode') ?? '-'
+    const entry = extractTokenValue(point, 'entry') ?? '-'
+    const buyReference = extractTokenValue(point, 'buy_reference') ?? '-'
+    const optimisticRange = extractTokenValue(point, 'optimistic_range') ?? '-'
+    const confirmation = extractTokenValue(point, 'confirmation') ?? '-'
+    const resistance = extractTokenValue(point, 'resistance') ?? '-'
+    const support = extractTokenValue(point, 'support') ?? '-'
+    const atrDefense = extractTokenValue(point, 'atr_defense') ?? '-'
+    const volumeNode = extractTokenValue(point, 'volume_node') ?? '-'
+    return `OHLCV 交易線位：模式=${mode}；預計入場=${entry}；買入參考區=${buyReference}；樂觀價格區間=${optimisticRange}；轉強確認=${confirmation}；前高壓力=${resistance}；關鍵支撐=${support}；ATR 防守=${atrDefense}；量能節點=${volumeNode}。`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
@@ -1588,11 +1618,15 @@ function isContextWatchPoint(point: string): boolean {
   return normalized.startsWith('Alpha bucket:')
     || normalized.startsWith('Alpha overlay:')
     || normalized.startsWith('Market structure:')
+    || normalized.startsWith('ohlcv_trade_plan:')
+    || normalized.startsWith('Alpha 結構:')
     || normalized.startsWith('ML ensemble:')
     || normalized.startsWith('screener_funnel:')
     || normalized.startsWith('Alpha bucket：')
     || normalized.startsWith('Alpha overlay：')
     || normalized.startsWith('Market structure：')
+    || normalized.startsWith('OHLCV 交易線位：')
+    || normalized.startsWith('Alpha 結構：')
     || normalized.startsWith('ML ensemble：')
 }
 
@@ -1611,10 +1645,16 @@ function executionWatchPointKey(point: string): string {
   const event = parseExecutionEvent(point)
   if (!event) return point.trim()
   if (event.kind === 'execution' && event.status === 'stale_quote') return 'execution:stale_quote'
-  if (event.kind === 'execution' && event.status === 'deferred') {
-    if (event.reason.startsWith('volume_ratio_low')) return 'execution:deferred:volume_ratio_low'
-    if (event.reason.startsWith('momentum_unavailable')) return 'execution:deferred:momentum_unavailable'
-    if (event.reason.startsWith('price_above_entry')) return 'execution:deferred:price_above_entry'
+  if (event.kind === 'execution' && (event.status === 'deferred' || event.status === 'pending')) {
+    if (event.reason.startsWith('range_position_low')) return 'execution:waiting:range_position_low'
+    if (event.reason.startsWith('volume_ratio_low')) return 'execution:waiting:volume_ratio_low'
+    if (event.reason.startsWith('momentum_unavailable')) return 'execution:waiting:momentum_unavailable'
+    if (event.reason.startsWith('price_above_entry')) return 'execution:waiting:price_above_entry'
+    if (event.reason.startsWith('waiting_for_ohlcv_confirmation')) return 'execution:waiting:ohlcv_confirmation'
+    if (event.reason.startsWith('price_above_ohlcv_optimistic_range')) return 'execution:waiting:ohlcv_optimistic_range'
+    if (event.reason.startsWith('ohlcv_support_lost')) return 'execution:waiting:ohlcv_support_lost'
+    if (event.reason.startsWith('between_buy_reference_and_confirmation')) return 'execution:waiting:ohlcv_mid_range'
+    if (event.reason.startsWith('falling_5min')) return 'execution:waiting:falling_5min'
   }
   return `${event.kind}:${event.status}:${event.reason}`
 }

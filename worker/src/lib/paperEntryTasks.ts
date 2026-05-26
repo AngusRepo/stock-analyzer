@@ -46,6 +46,11 @@ import {
   type FiveSlotCandidate,
   type FiveSlotHolding,
 } from './fiveSlotCapitalAllocator'
+import {
+  batchLoadOhlcvTradePlanLevelsBySymbol,
+  formatOhlcvTradePlanWatchPoint,
+  resolveOhlcvEntryPlan,
+} from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -189,9 +194,11 @@ async function loadPreTradeMomentum(
     return {
       volumeRatio,
       minVolumeRatio: cfg.momentum?.minVolumeRatio ?? 0.8,
+      strongBreakoutVolumeRatio: cfg.momentum?.strongBreakoutVolumeRatio ?? 1.5,
       slope5min: trendData?.slope_5min ?? null,
       rangePosition,
       minRangePosition: cfg.momentum?.minRangePosition ?? 0.3,
+      strongBreakoutRangePosition: cfg.momentum?.strongBreakoutRangePosition ?? 0.7,
       error: trendData ? null : `trend_http_${trendRes.status}`,
     }
   } catch (error) {
@@ -596,6 +603,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   }
 
   const atrMap = await batchGetATR(env.DB, pendingSymbols)
+  const ohlcvLevelsBySymbol = await batchLoadOhlcvTradePlanLevelsBySymbol(env.DB, pendingSymbols, today).catch((error) => {
+    console.warn('[Intraday] OHLCV trade plan levels unavailable:', error)
+    return new Map()
+  })
 
   const recentSells = await env.DB.prepare(
     "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')",
@@ -723,7 +734,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     reason: string,
     detail?: string | null,
   ) => {
-    executionEvents.push({ symbol, status, reason })
+    executionEvents.push({ symbol, status, reason, detail: detail ?? null })
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
   }
   const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
@@ -832,19 +843,65 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       console.log(`[Intraday] ${pending.symbol}: ${reason}`)
       continue
     }
+    const ohlcvTradePlan = resolveOhlcvEntryPlan(ohlcvLevelsBySymbol.get(pending.symbol), { latestPrice: price })
+    let executionEntryPrice = pending.ml_entry_price
+    let executionStopLoss = pending.ml_stop_loss
+    if (ohlcvTradePlan) {
+      executionEntryPrice = ohlcvTradePlan.entryPrice
+      executionStopLoss = ohlcvTradePlan.stopLoss
+      const idx = pendingBuys.findIndex((item) => item.symbol === pending.symbol)
+      if (idx >= 0) {
+        const watchPoint = formatOhlcvTradePlanWatchPoint(ohlcvTradePlan)
+        const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
+        const nextPoints = points.some((point) => String(point).startsWith('ohlcv_trade_plan:'))
+          ? points.map((point) => String(point).startsWith('ohlcv_trade_plan:') ? watchPoint : point)
+          : [...points, watchPoint]
+        if (
+          pendingBuys[idx].ml_entry_price !== executionEntryPrice
+          || pendingBuys[idx].ml_stop_loss !== executionStopLoss
+          || nextPoints.some((point, pointIdx) => point !== points[pointIdx])
+        ) {
+          pendingBuys[idx] = {
+            ...pendingBuys[idx],
+            ml_entry_price: executionEntryPrice,
+            ml_stop_loss: executionStopLoss,
+            ml_target1: ohlcvTradePlan.target1,
+            ml_target2: ohlcvTradePlan.target2,
+            original_entry: ohlcvTradePlan.entryPrice,
+            watch_points: nextPoints,
+          }
+          stateChanged = true
+        }
+      }
+    }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
-      entryPrice: pending.ml_entry_price,
+      entryPrice: executionEntryPrice,
       bestAsk: currentOhlc?.ask,
-      stopLoss: pending.ml_stop_loss,
-      originalEntry: (pending as any).original_entry ?? pending.ml_entry_price,
+      stopLoss: executionStopLoss,
+      originalEntry: ohlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
       previousClose: prevCloseMap.get(pending.symbol) ?? null,
       quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
       momentum: await loadPreTradeMomentum(env, cfg, pending.symbol, price),
+      tradePlan: ohlcvTradePlan
+        ? {
+          source: ohlcvTradePlan.source,
+          mode: ohlcvTradePlan.mode,
+          confirmation: ohlcvTradePlan.confirmation,
+          resistance: ohlcvTradePlan.resistance,
+          support: ohlcvTradePlan.support,
+          atrDefense: ohlcvTradePlan.atrDefense,
+          volumeNode: ohlcvTradePlan.volumeNode,
+          buyReferenceLow: ohlcvTradePlan.buyReferenceLow,
+          buyReferenceHigh: ohlcvTradePlan.buyReferenceHigh,
+          optimisticLow: ohlcvTradePlan.optimisticLow,
+          optimisticHigh: ohlcvTradePlan.optimisticHigh,
+        }
+        : null,
       policy: {
         limitUpPct: cfg.circuit.limitUpPct ?? 0.095,
         requoteDeviationMax: cfg.position.requoteDeviationMax,
@@ -852,6 +909,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         requoteStopFallback: cfg.position.requoteStopFallback,
         maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
         maxEntryChasePct: cfg.position.maxEntryChasePct,
+        strongBreakoutMaxEntryChasePct: cfg.position.strongBreakoutMaxEntryChasePct,
       },
     })
 
@@ -861,14 +919,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         ;(pendingBuys[idx] as any).original_entry = (pending as any).original_entry ?? pending.ml_entry_price
         ;(pendingBuys[idx] as any).retry_count = preTrade.retryCount ?? ((pending as any).retry_count ?? 0) + 1
         pendingBuys[idx].ml_entry_price = preTrade.nextEntryPrice
-        pendingBuys[idx].ml_stop_loss = preTrade.nextStopLoss ?? pending.ml_stop_loss
+        pendingBuys[idx].ml_stop_loss = preTrade.nextStopLoss ?? executionStopLoss
         pendingBuys[idx] = appendPendingBuyExecutionNote(
           pendingBuys[idx],
-          formatExecutionStatusEvent('requoted', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`),
+          formatExecutionStatusEvent('requoted', preTrade.reason, `${executionEntryPrice}->${preTrade.nextEntryPrice}`),
         ) as PendingBuy
-        recordActiveExecutionStatus(pending.symbol, 'requoted', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`)
+        recordActiveExecutionStatus(pending.symbol, 'requoted', preTrade.reason, `${executionEntryPrice}->${preTrade.nextEntryPrice}`)
       }
-      console.log(`[PreTrade] requote ${pending.symbol}: ${pending.ml_entry_price} -> ${preTrade.nextEntryPrice} (${preTrade.reason})`)
+      console.log(`[PreTrade] requote ${pending.symbol}: ${executionEntryPrice} -> ${preTrade.nextEntryPrice} (${preTrade.reason})`)
       stateChanged = true
       continue
     }
@@ -878,18 +936,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         : preTrade.reason.startsWith('untrusted_quote_source:')
           ? 'quote_unavailable'
           : 'pending'
-      recordActiveExecutionStatus(pending.symbol, activeStatus, preTrade.reason)
+      recordActiveExecutionStatus(pending.symbol, activeStatus, preTrade.reason, preTrade.detail ?? null)
       console.log(`[PreTrade] defer ${pending.symbol}: ${preTrade.reason}`)
       continue
     }
     if (preTrade.action === 'SKIP') {
       console.log(`[PreTrade] skip ${pending.symbol}: ${preTrade.reason}`)
-      recordExecutionEvent(pending.symbol, 'skipped', preTrade.reason)
+      recordExecutionEvent(pending.symbol, 'skipped', preTrade.reason, preTrade.detail ?? null)
       stateChanged = true
       continue
     }
 
-    const limitPrice = preTrade.limitPrice ?? pending.ml_entry_price
+    const limitPrice = preTrade.limitPrice ?? executionEntryPrice
     const fill = resolveLimitBuyFill({
       currentPrice: price,
       limitPrice,

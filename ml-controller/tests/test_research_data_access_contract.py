@@ -138,6 +138,15 @@ def test_backtest_snapshot_path_preserves_technical_v2_columns():
         "cci20",
         "volume_weighted_rsi14",
         "volume_momentum_divergence_13_27_10",
+        "squeeze_on",
+        "squeeze_release",
+        "squeeze_momentum",
+        "obv_temperature_60",
+        "adaptive_rsi_midline_50",
+        "adaptive_rsi_upper_50",
+        "adaptive_rsi_lower_50",
+        "adaptive_rsi_overbought",
+        "adaptive_rsi_oversold",
     ]
 
     for column in required_columns:

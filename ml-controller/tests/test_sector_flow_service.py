@@ -76,7 +76,85 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
 
     assert written == 1
     params = captured["statements"][0][1]
-    assert params[-3:] == [-0.0142, -0.3681, -0.4322]
+    assert params[-6:-3] == [-0.0142, -0.3681, -0.4322]
+
+
+def test_symbol_turnover_snapshots_use_latest_two_trading_dates(monkeypatch):
+    def fake_query(sql, params=None):
+        if "SELECT DISTINCT date" in sql and "FROM stock_prices" in sql:
+            return [{"date": "2026-05-26"}, {"date": "2026-05-25"}]
+        if "FROM stock_prices sp" in sql:
+            return [
+                {"symbol": "2330", "date": "2026-05-26", "close": 100.0, "volume": 3000},
+                {"symbol": "2317", "date": "2026-05-26", "close": 50.0, "volume": 2000},
+                {"symbol": "2330", "date": "2026-05-25", "close": 80.0, "volume": 2500},
+                {"symbol": "2317", "date": "2026-05-25", "close": 50.0, "volume": 4000},
+            ]
+        return []
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+
+    snapshots = sector_flow_service._load_symbol_turnover_snapshots("2026-05-26")
+
+    assert snapshots["current_date"] == "2026-05-26"
+    assert snapshots["previous_date"] == "2026-05-25"
+    assert snapshots["current"]["2330"] == pytest.approx(300000.0)
+    assert snapshots["previous"]["2317"] == pytest.approx(200000.0)
+    assert snapshots["current_total"] == pytest.approx(400000.0)
+    assert snapshots["previous_total"] == pytest.approx(400000.0)
+
+
+def test_tag_turnover_shares_compute_current_share_and_delta():
+    snapshots = {
+        "current_date": "2026-05-26",
+        "previous_date": "2026-05-25",
+        "current": {"2330": 300.0, "2317": 100.0},
+        "previous": {"2330": 200.0, "2317": 200.0},
+        "current_total": 400.0,
+        "previous_total": 400.0,
+    }
+
+    shares = sector_flow_service._compute_tag_turnover_shares(
+        {"AI": ["2330"], "EMS": ["2317"]},
+        snapshots,
+    )
+
+    assert shares["AI"]["turnover_value"] == pytest.approx(300.0)
+    assert shares["AI"]["turnover_share"] == pytest.approx(0.75)
+    assert shares["AI"]["turnover_share_delta"] == pytest.approx(0.25)
+    assert shares["EMS"]["turnover_share_delta"] == pytest.approx(-0.25)
+
+
+def test_write_sector_flow_persists_turnover_share_fields(monkeypatch):
+    captured = {}
+
+    def fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"total": len(statements)}
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch_execute)
+
+    sector_flow_service.write_sector_flow(
+        [
+            RrgPoint(
+                sector="AI",
+                rs_ratio=102.0,
+                rs_momentum=1.2,
+                quadrant="Leading",
+                member_count=12,
+                theme_return_5d=0.03,
+            )
+        ],
+        "theme",
+        "2026-05-26",
+        {"AI": {"foreign_net": 0.5, "trust_net": 0.1, "dealer_net": 0.0, "total_net": 0.6}},
+        {"AI": {"turnover_value": 123456789.0, "turnover_share": 0.0812, "turnover_share_delta": 0.0061}},
+    )
+
+    sql, params = captured["statements"][0]
+    assert "turnover_value" in sql
+    assert "turnover_share_delta" in sql
+    assert params[-3:] == [123456789.0, 0.0812, 0.0061]
 
 
 def test_write_sector_flow_stock_details_refreshes_current_date(monkeypatch):
@@ -119,15 +197,24 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     captured_classifications = []
 
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service, "_load_symbol_turnover_snapshots", lambda as_of_date: {
+        "current_date": as_of_date,
+        "previous_date": None,
+        "current": {},
+        "previous": {},
+        "current_total": 0.0,
+        "previous_total": 0.0,
+    })
     monkeypatch.setattr(sector_flow_service, "_load_stock_tags", lambda tag_type: {})
     monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda tag_members, symbol_flows: {})
+    monkeypatch.setattr(sector_flow_service, "_compute_tag_turnover_shares", lambda tag_members, snapshots: {})
     monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 0)
 
     def fake_compute(tag_type, as_of_date):
         captured_tag_types.append(tag_type)
         return []
 
-    def fake_write(points, classification, as_of_date, cash_flows=None):
+    def fake_write(points, classification, as_of_date, cash_flows=None, turnover_shares=None):
         captured_classifications.append(classification)
         return 0
 

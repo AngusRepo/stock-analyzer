@@ -71,6 +71,15 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
                 "cci20": technical_expected["cci20"],
                 "volume_weighted_rsi14": technical_expected["volumeWeightedRsi14"],
                 "volume_momentum_divergence_13_27_10": technical_expected["volumeMomentumDivergence132710"],
+                "squeeze_on": technical_expected["squeezeOn"],
+                "squeeze_release": technical_expected["squeezeRelease"],
+                "squeeze_momentum": technical_expected["squeezeMomentum"],
+                "obv_temperature_60": technical_expected["obvTemperature60"],
+                "adaptive_rsi_midline_50": technical_expected["adaptiveRsiMidline50"],
+                "adaptive_rsi_upper_50": technical_expected["adaptiveRsiUpper50"],
+                "adaptive_rsi_lower_50": technical_expected["adaptiveRsiLower50"],
+                "adaptive_rsi_overbought": technical_expected["adaptiveRsiOverbought"],
+                "adaptive_rsi_oversold": technical_expected["adaptiveRsiOversold"],
             },
         ]),
         "chips": _write_component("chips", [
@@ -103,6 +112,12 @@ def test_backtest_dataset_loads_from_snapshot_manifest():
     assert indicator["cci20"] == technical_expected["cci20"]
     assert indicator["volume_weighted_rsi14"] == technical_expected["volumeWeightedRsi14"]
     assert indicator["volume_momentum_divergence_13_27_10"] == technical_expected["volumeMomentumDivergence132710"]
+    assert indicator["squeeze_on"] == technical_expected["squeezeOn"]
+    assert indicator["squeeze_release"] == technical_expected["squeezeRelease"]
+    assert indicator["squeeze_momentum"] == technical_expected["squeezeMomentum"]
+    assert indicator["obv_temperature_60"] == technical_expected["obvTemperature60"]
+    assert indicator["adaptive_rsi_upper_50"] == technical_expected["adaptiveRsiUpper50"]
+    assert indicator["adaptive_rsi_overbought"] == technical_expected["adaptiveRsiOverbought"]
 
 
 def test_snapshot_loader_requires_all_components():

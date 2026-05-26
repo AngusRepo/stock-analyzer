@@ -15,6 +15,7 @@ from typing import Any
 
 
 VALIDATION_PACKET_SCHEMA_VERSION = "validation-governance-packet-v1"
+VALIDATION_LADDER_PACKET_SCHEMA_VERSION = "validation-ladder-packet-v1"
 STRATEGY_REPLAY_CONTRACT_VERSION = "strategy-replay-contract-v1"
 STRATEGY_LAB_RECORD_VERSION = "strategy-lab-record-v1"
 
@@ -43,6 +44,21 @@ DSR_PROXY_MISSING_INPUTS = [
     "return_series",
     "effective_trials",
     "benchmark_sharpe_distribution",
+]
+
+
+VALIDATION_LADDER_LEVELS = [
+    "L0_backtest",
+    "L1_walk_forward",
+    "L2_mcpt",
+    "L3_block_bootstrap",
+    "L4_bonferroni_selection_bias",
+    "L5_oos",
+    "L6_regime_split",
+    "L7_combinatorial_purged_cv",
+    "L8_probabilistic_sharpe",
+    "L9_reality_check",
+    "L10_paper_trading",
 ]
 
 
@@ -666,6 +682,236 @@ def _walk_forward_gate(walk_forward: dict[str, Any] | None, *, required: bool) -
         reason="walk-forward must confirm OOS behavior across windows",
         evidence=walk_forward,
     )
+
+
+def _ladder_result(
+    *,
+    level: str,
+    index: int,
+    passed: bool,
+    missing_evidence: list[str] | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "level": level,
+        "index": index,
+        "passed": passed,
+        "missing_evidence": missing_evidence or [],
+        "evidence": evidence or {},
+    }
+
+
+def _ladder_backtest(backtest: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    total_trades = _as_int(backtest.get("total_trades"), 0)
+    sharpe = _as_float(backtest.get("sharpe"), 0.0)
+    passed = bool(backtest) and total_trades > 0
+    missing = [] if passed else ["backtest_result_missing_or_empty"]
+    return passed, missing, {"total_trades": total_trades, "sharpe": sharpe, "mode": backtest.get("mode")}
+
+
+def _ladder_walk_forward(walk_forward: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    windows = _as_int(walk_forward.get("windows"), 0)
+    passed = bool(walk_forward.get("passed") or walk_forward.get("gate_pass")) and windows >= 4
+    missing = [] if passed else ["walk_forward_4_windows_required"]
+    return passed, missing, {"windows": windows, "passed": bool(walk_forward.get("passed") or walk_forward.get("gate_pass"))}
+
+
+def _ladder_monte_carlo(monte_carlo: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    verdict = str(monte_carlo.get("go_live_verdict") or monte_carlo.get("verdict") or "").upper()
+    passed = bool(monte_carlo.get("passed")) or verdict == "PASS"
+    missing = [] if passed else ["monte_carlo_mcpt_missing_or_failed"]
+    return passed, missing, {"verdict": verdict or None, "method": monte_carlo.get("simulation_method")}
+
+
+def _ladder_block_bootstrap(monte_carlo: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    method = str(monte_carlo.get("simulation_method") or "").lower()
+    verdict = str(monte_carlo.get("go_live_verdict") or monte_carlo.get("verdict") or "").upper()
+    passed = (bool(monte_carlo.get("passed")) or verdict == "PASS") and method in {
+        "block_bootstrap",
+        "regime_block_bootstrap",
+    }
+    missing = [] if passed else ["block_or_regime_bootstrap_required"]
+    return passed, missing, {"method": method or None, "mdd_95th": _as_float(monte_carlo.get("mdd_95th"), 1.0)}
+
+
+def _ladder_selection_bias(selection_bias: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    method = str(selection_bias.get("method") or "").lower()
+    adjusted_p = _as_float(selection_bias.get("adjusted_p_value"), 1.0)
+    passed = bool(selection_bias.get("passed")) and method == "bonferroni" and adjusted_p <= 0.05
+    missing = [] if passed else ["bonferroni_selection_bias_missing_or_failed"]
+    return passed, missing, {
+        "method": method or None,
+        "candidate_count": _as_int(selection_bias.get("candidate_count"), 0),
+        "adjusted_p_value": adjusted_p,
+    }
+
+
+def _ladder_oos(oos: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    samples = _as_int(oos.get("samples") or oos.get("test_rows"), 0)
+    oos_return = _as_float(oos.get("oos_mean_return") or oos.get("mean_return"), 0.0)
+    passed = bool(oos.get("passed")) or (samples > 0 and oos_return >= 0.0)
+    missing = [] if passed else ["oos_sample_missing_or_negative"]
+    return passed, missing, {"samples": samples, "oos_mean_return": oos_return, "oos_sharpe": oos.get("oos_sharpe")}
+
+
+def _ladder_regime_split(backtest: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    gate = _regime_split_gate(backtest, policy={}, required=True)
+    passed = gate["status"] == "PASS"
+    missing = [] if passed else ["regime_split_missing_or_weak"]
+    return passed, missing, gate.get("evidence", {})
+
+
+def _ladder_cpcv(cpcv: dict[str, Any], pbo: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    cpcv_method = str(cpcv.get("method") or "").lower()
+    pbo_method = str(pbo.get("method") or "").lower()
+    cpcv_pass = bool(cpcv.get("passed")) and cpcv_method in {
+        "combinatorial_purged_cv",
+        "purged_cpcv",
+        "cpcv",
+    }
+    pbo_pass = (
+        bool(pbo.get("passed"))
+        or str(pbo.get("go_live_verdict") or "").upper() == "PASS"
+    ) and pbo_method == "cscv_rank_logit"
+    passed = cpcv_pass and pbo_pass and _as_int(cpcv.get("folds"), 0) >= 5 and _as_int(cpcv.get("embargo_days"), 0) > 0
+    missing = [] if passed else ["cpcv_purged_cv_and_cscv_pbo_required"]
+    return passed, missing, {
+        "cpcv_method": cpcv_method or None,
+        "folds": _as_int(cpcv.get("folds"), 0),
+        "embargo_days": _as_int(cpcv.get("embargo_days"), 0),
+        "pbo_method": pbo_method or None,
+        "pbo": _as_float(pbo.get("pbo"), 1.0),
+    }
+
+
+def _ladder_probabilistic_sharpe(probabilistic_sharpe: dict[str, Any], backtest: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    if probabilistic_sharpe:
+        probability = _as_float(probabilistic_sharpe.get("probability"), 0.0)
+        passed = bool(probabilistic_sharpe.get("passed")) and probability >= 0.70
+        missing = [] if passed else ["probabilistic_sharpe_probability_below_threshold"]
+        return passed, missing, {"method": probabilistic_sharpe.get("method"), "probability": probability}
+    dsr = deflated_sharpe_evidence(backtest)
+    passed = bool(dsr.get("passed"))
+    missing = [] if passed else ["probabilistic_or_deflated_sharpe_required"]
+    return passed, missing, dsr
+
+
+def _ladder_reality_check(data_snooping: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    method = str(data_snooping.get("method") or "").lower()
+    verdict = str(data_snooping.get("go_live_verdict") or data_snooping.get("verdict") or "").upper()
+    p_value = _as_float(data_snooping.get("p_value"), 1.0)
+    passed = verdict == "PASS" and method in {"white_reality_check", "hansen_spa"} and p_value <= 0.20
+    missing = [] if passed else ["white_reality_check_or_hansen_spa_required"]
+    return passed, missing, {"method": method or None, "p_value": p_value, "verdict": verdict or None}
+
+
+def _ladder_paper_trading(paper_trading: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    paper_days = _as_int(paper_trading.get("paper_days") or paper_trading.get("days"), 0)
+    execution_parity = str(paper_trading.get("execution_parity") or "").upper()
+    slippage_ok = bool(paper_trading.get("slippage_within_policy", False))
+    missing: list[str] = []
+    if paper_days < 180:
+        missing.append("paper_trading_180_days_required")
+    if execution_parity != "PASS":
+        missing.append("paper_execution_parity_required")
+    if not slippage_ok:
+        missing.append("paper_slippage_within_policy_required")
+    if not bool(paper_trading.get("passed")):
+        missing.append("paper_trading_gate_not_passed")
+    return not missing, missing, {
+        "paper_days": paper_days,
+        "execution_parity": execution_parity or None,
+        "slippage_within_policy": slippage_ok,
+    }
+
+
+def build_validation_ladder_packet(
+    *,
+    candidate_id: str,
+    candidate_type: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Map research evidence onto the L0-L10 adoption ladder.
+
+    This is read-only. Passing L10 means the candidate is ready for Wei review,
+    not that production allocation can be mutated automatically.
+    """
+
+    evidence = evidence if isinstance(evidence, dict) else {}
+    backtest = evidence.get("backtest") if isinstance(evidence.get("backtest"), dict) else {}
+    walk_forward = evidence.get("walk_forward") if isinstance(evidence.get("walk_forward"), dict) else {}
+    monte_carlo = evidence.get("monte_carlo") if isinstance(evidence.get("monte_carlo"), dict) else {}
+    selection_bias = evidence.get("selection_bias") if isinstance(evidence.get("selection_bias"), dict) else {}
+    oos = evidence.get("oos") if isinstance(evidence.get("oos"), dict) else {}
+    cpcv = evidence.get("cpcv") if isinstance(evidence.get("cpcv"), dict) else {}
+    pbo = evidence.get("pbo") if isinstance(evidence.get("pbo"), dict) else {}
+    probabilistic_sharpe = (
+        evidence.get("probabilistic_sharpe") if isinstance(evidence.get("probabilistic_sharpe"), dict) else {}
+    )
+    data_snooping = evidence.get("data_snooping") if isinstance(evidence.get("data_snooping"), dict) else {}
+    paper_trading = evidence.get("paper_trading") if isinstance(evidence.get("paper_trading"), dict) else {}
+
+    checks = [
+        _ladder_backtest(backtest),
+        _ladder_walk_forward(walk_forward),
+        _ladder_monte_carlo(monte_carlo),
+        _ladder_block_bootstrap(monte_carlo),
+        _ladder_selection_bias(selection_bias),
+        _ladder_oos(oos),
+        _ladder_regime_split(backtest),
+        _ladder_cpcv(cpcv, pbo),
+        _ladder_probabilistic_sharpe(probabilistic_sharpe, backtest),
+        _ladder_reality_check(data_snooping),
+        _ladder_paper_trading(paper_trading),
+    ]
+    level_results = [
+        _ladder_result(
+            level=VALIDATION_LADDER_LEVELS[idx],
+            index=idx,
+            passed=passed,
+            missing_evidence=missing,
+            evidence=summary,
+        )
+        for idx, (passed, missing, summary) in enumerate(checks)
+    ]
+
+    current_idx = -1
+    next_required = None
+    for result in level_results:
+        if result["passed"]:
+            current_idx = result["index"]
+            continue
+        next_required = {
+            "level": result["level"],
+            "index": result["index"],
+            "missing_evidence": result["missing_evidence"],
+        }
+        break
+    current_level = VALIDATION_LADDER_LEVELS[current_idx] if current_idx >= 0 else "NONE"
+    reached_l9 = current_idx >= 9
+    reached_l10 = current_idx >= 10
+    return {
+        "schema_version": VALIDATION_LADDER_PACKET_SCHEMA_VERSION,
+        "decision_effect": "validation_ladder_only",
+        "owner": "ml-controller.validation_governance",
+        "candidate_id": str(candidate_id or "").strip(),
+        "candidate_type": str(candidate_type or "unknown").strip() or "unknown",
+        "current_level": current_level,
+        "current_level_index": current_idx,
+        "next_required": next_required,
+        "level_results": level_results,
+        "decision": {
+            "ready_for_wei_review": reached_l10,
+            "eligible_for_research_promotion_review": reached_l9,
+            "eligible_for_production_allocation_review": reached_l10,
+            "production_mutation_allowed": False,
+            "reason": (
+                "l10_ready_for_manual_review"
+                if reached_l10
+                else f"blocked_at_{next_required['level']}" if next_required else "no_ladder_evidence"
+            ),
+        },
+    }
 
 
 def _regime_split_gate(

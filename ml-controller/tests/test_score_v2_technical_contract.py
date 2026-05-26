@@ -41,6 +41,15 @@ def test_score_v2_technical_signals_are_canonical_payload_fields():
             "rsi14": 58.0,
             "volume_weighted_rsi14": 64.0,
             "volume_momentum_divergence_13_27_10": 125000.0,
+            "squeeze_on": 0,
+            "squeeze_release": 1,
+            "squeeze_momentum": 1.8,
+            "obv_temperature_60": 82.0,
+            "adaptive_rsi_midline_50": 61.0,
+            "adaptive_rsi_upper_50": 84.0,
+            "adaptive_rsi_lower_50": 38.0,
+            "adaptive_rsi_overbought": 0,
+            "adaptive_rsi_oversold": 0,
         },
         raw_score=69.0,
     )
@@ -56,6 +65,11 @@ def test_score_v2_technical_signals_are_canonical_payload_fields():
     assert payload["technicalSignals"]["adx14"] == pytest.approx(29.0)
     assert payload["technicalSignals"]["parabolicSar"] == pytest.approx(95.0)
     assert payload["technicalSignals"]["volumeMomentumDivergence132710"] == pytest.approx(125000.0)
+    assert payload["technicalSignals"]["squeezeRelease"] == pytest.approx(1.0)
+    assert payload["technicalSignals"]["squeezeMomentum"] == pytest.approx(1.8)
+    assert payload["technicalSignals"]["obvTemperature60"] == pytest.approx(82.0)
+    assert payload["technicalSignals"]["adaptiveRsiUpper50"] == pytest.approx(84.0)
+    assert payload["technicalSignals"]["adaptiveRsiOverbought"] == pytest.approx(0.0)
     assert payload["technicalBreakdown"]["trendStructure"] > 0
     assert payload["technicalBreakdown"]["volatilityStructure"] > 0
     assert payload["technicalBreakdown"]["reversalExtreme"] > 0
@@ -88,6 +102,15 @@ def test_score_v2_technical_signals_match_shared_worker_fixture():
         "rsi14": expected["rsi14"],
         "volume_weighted_rsi14": expected["volumeWeightedRsi14"],
         "volume_momentum_divergence_13_27_10": expected["volumeMomentumDivergence132710"],
+        "squeeze_on": expected["squeezeOn"],
+        "squeeze_release": expected["squeezeRelease"],
+        "squeeze_momentum": expected["squeezeMomentum"],
+        "obv_temperature_60": expected["obvTemperature60"],
+        "adaptive_rsi_midline_50": expected["adaptiveRsiMidline50"],
+        "adaptive_rsi_upper_50": expected["adaptiveRsiUpper50"],
+        "adaptive_rsi_lower_50": expected["adaptiveRsiLower50"],
+        "adaptive_rsi_overbought": expected["adaptiveRsiOverbought"],
+        "adaptive_rsi_oversold": expected["adaptiveRsiOversold"],
     }
 
     payload = build_score_components(row, raw_score=69.0)
@@ -101,6 +124,12 @@ def test_score_v2_technical_signals_match_shared_worker_fixture():
     assert payload["technicalSignals"]["volumeMomentumDivergence132710"] == pytest.approx(
         expected["volumeMomentumDivergence132710"]
     )
+    assert payload["technicalSignals"]["squeezeOn"] == pytest.approx(expected["squeezeOn"])
+    assert payload["technicalSignals"]["squeezeRelease"] == pytest.approx(expected["squeezeRelease"])
+    assert payload["technicalSignals"]["squeezeMomentum"] == pytest.approx(expected["squeezeMomentum"])
+    assert payload["technicalSignals"]["obvTemperature60"] == pytest.approx(expected["obvTemperature60"])
+    assert payload["technicalSignals"]["adaptiveRsiUpper50"] == pytest.approx(expected["adaptiveRsiUpper50"])
+    assert payload["technicalSignals"]["adaptiveRsiOverbought"] == pytest.approx(expected["adaptiveRsiOverbought"])
     assert payload["technicalBreakdown"]["trendStructure"] > 0
     assert payload["technicalBreakdown"]["volatilityStructure"] > 0
     assert payload["technicalBreakdown"]["reversalExtreme"] > 0
@@ -134,6 +163,15 @@ def test_score_v2_builder_preserves_score_v2_seed_projection_fields():
             "rsi14": 58.0,
             "volume_weighted_rsi14": 64.0,
             "volume_momentum_divergence_13_27_10": 125000.0,
+            "squeeze_on": 0,
+            "squeeze_release": 1,
+            "squeeze_momentum": 1.8,
+            "obv_temperature_60": 82.0,
+            "adaptive_rsi_midline_50": 61.0,
+            "adaptive_rsi_upper_50": 84.0,
+            "adaptive_rsi_lower_50": 38.0,
+            "adaptive_rsi_overbought": 0,
+            "adaptive_rsi_oversold": 0,
         },
         raw_score=69.0,
     )
@@ -142,6 +180,56 @@ def test_score_v2_builder_preserves_score_v2_seed_projection_fields():
     assert payload["seedComponents"]["technicalSeed30"] == pytest.approx(18.0)
     assert payload["seedComponents"]["screenerMomentumSeed20"] == pytest.approx(12.0)
     assert payload["seedComponents"]["mlEdgeSeed30"] == pytest.approx(21.0)
+
+
+def test_score_v2_technical_breakdown_uses_squeeze_and_obv_temperature_without_legacy_volume_proxy():
+    payload = build_score_components(
+        {
+            "score_seed_inputs": {
+                "chipFlowSeed40": 10.0,
+                "technicalSeed30": 20.0,
+                "screenerMomentumSeed20": 0.0,
+                "mlEdgeSeed30": 12.0,
+                "personaAlphaSeed": 0.0,
+            },
+            "current_price": 100.0,
+            "ma20": 100.0,
+            "squeeze_on": 0,
+            "squeeze_release": 1,
+            "squeeze_momentum": 1.5,
+            "obv_temperature_60": 82.0,
+        },
+        raw_score=42.0,
+    )
+
+    assert payload["technicalSignals"]["squeezeRelease"] == pytest.approx(1.0)
+    assert payload["technicalSignals"]["obvTemperature60"] == pytest.approx(82.0)
+    assert payload["technicalBreakdown"]["volatilityStructure"] > 0
+    assert payload["technicalBreakdown"]["volumeConfirmation"] > 0
+
+
+def test_score_v2_technical_breakdown_uses_adaptive_rsi_instead_of_static_overbought_line():
+    payload = build_score_components(
+        {
+            "score_seed_inputs": {
+                "chipFlowSeed40": 10.0,
+                "technicalSeed30": 18.0,
+                "screenerMomentumSeed20": 0.0,
+                "mlEdgeSeed30": 12.0,
+                "personaAlphaSeed": 0.0,
+            },
+            "rsi14": 78.0,
+            "adaptive_rsi_midline_50": 63.0,
+            "adaptive_rsi_upper_50": 86.0,
+            "adaptive_rsi_lower_50": 40.0,
+            "adaptive_rsi_overbought": 0,
+            "adaptive_rsi_oversold": 0,
+        },
+        raw_score=42.0,
+    )
+
+    assert payload["technicalSignals"]["adaptiveRsiUpper50"] == pytest.approx(86.0)
+    assert payload["technicalBreakdown"]["reversalExtreme"] > 0
 
 
 def test_score_v2_builder_rejects_legacy_storage_scalars_as_seed_source():

@@ -494,7 +494,10 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
         f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
         f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
         f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
-        f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
+        f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10, "
+        f"       squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60, "
+        f"       adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50, "
+        f"       adaptive_rsi_overbought, adaptive_rsi_oversold "
         f"FROM technical_indicators "
         f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
         f"ORDER BY stock_id ASC, date ASC",
@@ -519,6 +522,15 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
                 "cci20": r.get("cci20"),
                 "volumeWeightedRsi14": r.get("volume_weighted_rsi14"),
                 "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
+                "squeezeOn": r.get("squeeze_on"),
+                "squeezeRelease": r.get("squeeze_release"),
+                "squeezeMomentum": r.get("squeeze_momentum"),
+                "obvTemperature60": r.get("obv_temperature_60"),
+                "adaptiveRsiMidline50": r.get("adaptive_rsi_midline_50"),
+                "adaptiveRsiUpper50": r.get("adaptive_rsi_upper_50"),
+                "adaptiveRsiLower50": r.get("adaptive_rsi_lower_50"),
+                "adaptiveRsiOverbought": r.get("adaptive_rsi_overbought"),
+                "adaptiveRsiOversold": r.get("adaptive_rsi_oversold"),
             })
     for sid in grouped:
         if len(grouped[sid]) > limit:

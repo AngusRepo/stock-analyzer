@@ -665,7 +665,10 @@ class BacktestDataset:
                        rsi14, macd, macd_signal, macd_hist,
                        atr14, bb_upper, bb_mid, bb_lower,
                        plus_di14, minus_di14, adx14, parabolic_sar,
-                       cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10
+                       cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10,
+                       squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60,
+                       adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50,
+                       adaptive_rsi_overbought, adaptive_rsi_oversold
                 FROM technical_indicators
                 WHERE date >= ? AND date <= ?
             """

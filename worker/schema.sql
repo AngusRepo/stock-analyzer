@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
   cci20        REAL,
   volume_weighted_rsi14 REAL,
   volume_momentum_divergence_13_27_10 REAL,
+  squeeze_on REAL,
+  squeeze_release REAL,
+  squeeze_momentum REAL,
+  obv_temperature_60 REAL,
+  adaptive_rsi_midline_50 REAL,
+  adaptive_rsi_upper_50 REAL,
+  adaptive_rsi_lower_50 REAL,
+  adaptive_rsi_overbought REAL,
+  adaptive_rsi_oversold REAL,
   bb_upper     REAL, bb_mid REAL, bb_lower REAL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(stock_id, date)
@@ -425,6 +434,9 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   foreign_net     REAL,     -- 外資淨買賣（億）
   trust_net       REAL,     -- 投信淨買賣（億）
   total_net       REAL,     -- 合計法人買賣（億）
+  turnover_value  REAL,
+  turnover_share  REAL,
+  turnover_share_delta REAL,
   avg_rsi         REAL,     -- 族群平均 RSI
   avg_momentum_5d REAL,     -- 族群平均5日動能
   stock_count     INTEGER,  -- 族群股票數

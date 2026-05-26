@@ -309,6 +309,15 @@
     "parabolicSar": 113.7913,
     "cci20": 182.7657,
     "volumeWeightedRsi14": 81.6829,
-    "volumeMomentumDivergence132710": 34416.1259
+    "volumeMomentumDivergence132710": 34416.1259,
+    "squeezeOn": 0,
+    "squeezeRelease": 1,
+    "squeezeMomentum": 1.0071,
+    "obvTemperature60": 100,
+    "adaptiveRsiMidline50": 64.4692,
+    "adaptiveRsiUpper50": 110.8096,
+    "adaptiveRsiLower50": 18.1288,
+    "adaptiveRsiOverbought": 0,
+    "adaptiveRsiOversold": 0
   }
 }

@@ -420,7 +420,7 @@ ml.post('/predict/:stockId', async (c) => {
 
   const [prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
     c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+    c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710, squeeze_on as squeezeOn, squeeze_release as squeezeRelease, squeeze_momentum as squeezeMomentum, obv_temperature_60 as obvTemperature60, adaptive_rsi_midline_50 as adaptiveRsiMidline50, adaptive_rsi_upper_50 as adaptiveRsiUpper50, adaptive_rsi_lower_50 as adaptiveRsiLower50, adaptive_rsi_overbought as adaptiveRsiOverbought, adaptive_rsi_oversold as adaptiveRsiOversold FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
     c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
     c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
@@ -444,7 +444,7 @@ ml.post('/predict/:stockId', async (c) => {
       // 重新查詢
       const [p2, i2] = await Promise.all([
         c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
+        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710, squeeze_on as squeezeOn, squeeze_release as squeezeRelease, squeeze_momentum as squeezeMomentum, obv_temperature_60 as obvTemperature60, adaptive_rsi_midline_50 as adaptiveRsiMidline50, adaptive_rsi_upper_50 as adaptiveRsiUpper50, adaptive_rsi_lower_50 as adaptiveRsiLower50, adaptive_rsi_overbought as adaptiveRsiOverbought, adaptive_rsi_oversold as adaptiveRsiOversold FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
       ])
       priceRows = p2.results ?? []
       indRows   = i2.results ?? []
@@ -1500,7 +1500,7 @@ recommendations.get('/sector-flow', async (c) => {
     SELECT *
     FROM sector_flow
     WHERE date = ? ${typeFilter}
-    ORDER BY total_net DESC
+    ORDER BY COALESCE(turnover_share_delta, -999) DESC, total_net DESC
   `).bind(...binds).all<any>()
 
   // 若今天沒資料，取最近一筆
@@ -1510,7 +1510,7 @@ recommendations.get('/sector-flow', async (c) => {
       FROM sector_flow
       WHERE date = (SELECT MAX(date) FROM sector_flow WHERE 1=1 ${typeFilter})
       ${typeFilter}
-      ORDER BY total_net DESC
+      ORDER BY COALESCE(turnover_share_delta, -999) DESC, total_net DESC
     `).bind(...(type ? [type, type] : [])).all<any>()
     const staleDate = latest?.[0]?.date ?? null
     return c.json({
@@ -1537,7 +1537,7 @@ recommendations.get('/sector-trend', async (c) => {
   const binds = type ? [sector, days, type] : [sector, days]
 
   const { results } = await c.env.DB.prepare(`
-    SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count, classification
+    SELECT date, foreign_net, trust_net, total_net, turnover_value, turnover_share, turnover_share_delta, avg_rsi, avg_momentum_5d, up_count, stock_count, classification
     FROM sector_flow
     WHERE sector = ? AND date >= date('now', '-' || ? || ' days') ${typeFilter}
     ORDER BY date ASC

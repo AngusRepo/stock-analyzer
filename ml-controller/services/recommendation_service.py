@@ -761,8 +761,35 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
     rsi = _first_float(row.get("rsi14"))
     vw_rsi = _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14"))
     vmd = _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710"))
+    squeeze_on = _first_float(row.get("squeeze_on"), row.get("squeezeOn"))
+    squeeze_release = _first_float(row.get("squeeze_release"), row.get("squeezeRelease"))
+    squeeze_momentum = _first_float(row.get("squeeze_momentum"), row.get("squeezeMomentum"))
+    obv_temperature = _first_float(row.get("obv_temperature_60"), row.get("obvTemperature60"))
+    adaptive_rsi_midline = _first_float(row.get("adaptive_rsi_midline_50"), row.get("adaptiveRsiMidline50"))
+    adaptive_rsi_upper = _first_float(row.get("adaptive_rsi_upper_50"), row.get("adaptiveRsiUpper50"))
+    adaptive_rsi_lower = _first_float(row.get("adaptive_rsi_lower_50"), row.get("adaptiveRsiLower50"))
+    adaptive_rsi_overbought = _first_float(row.get("adaptive_rsi_overbought"), row.get("adaptiveRsiOverbought"))
+    adaptive_rsi_oversold = _first_float(row.get("adaptive_rsi_oversold"), row.get("adaptiveRsiOversold"))
 
-    detailed_values = [plus_di, minus_di, adx, atr, sar, cci, vw_rsi, vmd]
+    detailed_values = [
+        plus_di,
+        minus_di,
+        adx,
+        atr,
+        sar,
+        cci,
+        vw_rsi,
+        vmd,
+        squeeze_on,
+        squeeze_release,
+        squeeze_momentum,
+        obv_temperature,
+        adaptive_rsi_midline,
+        adaptive_rsi_upper,
+        adaptive_rsi_lower,
+        adaptive_rsi_overbought,
+        adaptive_rsi_oversold,
+    ]
     if not any(value is not None for value in detailed_values):
         return {
             "trendStructure": _rescale_score(seeds["technicalSeed30"], 30, maxima["trendStructure"]),
@@ -788,6 +815,8 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
         raw["trendStructure"] += 1.5
     if adx is not None:
         raw["trendStructure"] += 2.0 if adx >= 25 else 1.0 if adx >= 18 else 0.0
+    if squeeze_momentum is not None:
+        raw["trendStructure"] += 1.0 if squeeze_momentum > 0 else 0.0
 
     if natr is not None:
         if 1.0 <= natr <= 4.0:
@@ -796,22 +825,46 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
             raw["volatilityStructure"] += 3.0
         elif natr > 0:
             raw["volatilityStructure"] += 1.0
+    if squeeze_release is not None and squeeze_release > 0:
+        raw["volatilityStructure"] += 3.0
+    elif squeeze_on is not None and squeeze_on > 0:
+        raw["volatilityStructure"] += 1.5
 
     if sar is not None and current_price is not None and current_price > sar:
         raw["reversalExtreme"] += 2.0
     if cci is not None:
         raw["reversalExtreme"] += 2.0 if -100 <= cci <= 150 else 1.0
-    if rsi is not None and 35 <= rsi <= 75:
-        raw["reversalExtreme"] += 1.0
+    if rsi is not None:
+        has_adaptive_rsi = adaptive_rsi_upper is not None and adaptive_rsi_lower is not None
+        if has_adaptive_rsi:
+            if adaptive_rsi_oversold is not None and adaptive_rsi_oversold > 0:
+                raw["reversalExtreme"] += 1.5
+            elif adaptive_rsi_overbought is not None and adaptive_rsi_overbought > 0:
+                raw["reversalExtreme"] += 0.0
+            elif adaptive_rsi_lower <= rsi <= adaptive_rsi_upper:
+                raw["reversalExtreme"] += 1.2
+        elif 35 <= rsi <= 75:
+            raw["reversalExtreme"] += 1.0
 
+    if obv_temperature is not None:
+        if 60 <= obv_temperature <= 85:
+            raw["volumeConfirmation"] += 3.0
+        elif 45 <= obv_temperature < 60 or 85 < obv_temperature <= 95:
+            raw["volumeConfirmation"] += 1.5
     if vmd is not None and vmd > 0:
-        raw["volumeConfirmation"] += 3.0
+        raw["volumeConfirmation"] += 1.0 if obv_temperature is not None else 2.0
     if vw_rsi is not None:
         raw["volumeConfirmation"] += 2.0 if 55 <= vw_rsi <= 80 else 1.0 if vw_rsi > 80 else 0.0
     raw["volumeConfirmation"] += _rescale_score(seeds["screenerMomentumSeed20"], 20, 1.0)
 
-    if rsi is not None and 35 <= rsi <= 75:
-        raw["executionRisk"] += 1.0
+    if rsi is not None:
+        if adaptive_rsi_upper is not None and adaptive_rsi_lower is not None:
+            if adaptive_rsi_lower <= rsi <= adaptive_rsi_upper:
+                raw["executionRisk"] += 1.0
+        elif 35 <= rsi <= 75:
+            raw["executionRisk"] += 1.0
+    if obv_temperature is not None and 20 <= obv_temperature <= 90:
+        raw["executionRisk"] += 0.5
     if natr is None or natr <= 6.0:
         raw["executionRisk"] += 1.0
 
@@ -855,6 +908,15 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
             "cci20": _first_float(row.get("cci20")),
             "volumeWeightedRsi14": _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14")),
             "volumeMomentumDivergence132710": _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710")),
+            "squeezeOn": _first_float(row.get("squeeze_on"), row.get("squeezeOn")),
+            "squeezeRelease": _first_float(row.get("squeeze_release"), row.get("squeezeRelease")),
+            "squeezeMomentum": _first_float(row.get("squeeze_momentum"), row.get("squeezeMomentum")),
+            "obvTemperature60": _first_float(row.get("obv_temperature_60"), row.get("obvTemperature60")),
+            "adaptiveRsiMidline50": _first_float(row.get("adaptive_rsi_midline_50"), row.get("adaptiveRsiMidline50")),
+            "adaptiveRsiUpper50": _first_float(row.get("adaptive_rsi_upper_50"), row.get("adaptiveRsiUpper50")),
+            "adaptiveRsiLower50": _first_float(row.get("adaptive_rsi_lower_50"), row.get("adaptiveRsiLower50")),
+            "adaptiveRsiOverbought": _first_float(row.get("adaptive_rsi_overbought"), row.get("adaptiveRsiOverbought")),
+            "adaptiveRsiOversold": _first_float(row.get("adaptive_rsi_oversold"), row.get("adaptiveRsiOversold")),
         },
         "riskFlags": list(dict.fromkeys(str(flag) for flag in risk_flags if flag)),
         "reasons": [],
@@ -987,6 +1049,15 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         latest_ind.get("volumeMomentumDivergence132710"),
         latest_ind.get("volume_momentum_divergence_13_27_10"),
     )
+    squeeze_on = _first_float(latest_ind.get("squeezeOn"), latest_ind.get("squeeze_on"))
+    squeeze_release = _first_float(latest_ind.get("squeezeRelease"), latest_ind.get("squeeze_release"))
+    squeeze_momentum = _first_float(latest_ind.get("squeezeMomentum"), latest_ind.get("squeeze_momentum"))
+    obv_temperature_60 = _first_float(latest_ind.get("obvTemperature60"), latest_ind.get("obv_temperature_60"))
+    adaptive_rsi_midline_50 = _first_float(latest_ind.get("adaptiveRsiMidline50"), latest_ind.get("adaptive_rsi_midline_50"))
+    adaptive_rsi_upper_50 = _first_float(latest_ind.get("adaptiveRsiUpper50"), latest_ind.get("adaptive_rsi_upper_50"))
+    adaptive_rsi_lower_50 = _first_float(latest_ind.get("adaptiveRsiLower50"), latest_ind.get("adaptive_rsi_lower_50"))
+    adaptive_rsi_overbought = _first_float(latest_ind.get("adaptiveRsiOverbought"), latest_ind.get("adaptive_rsi_overbought"))
+    adaptive_rsi_oversold = _first_float(latest_ind.get("adaptiveRsiOversold"), latest_ind.get("adaptive_rsi_oversold"))
 
     if ma20 is None and len(closes) >= 20:
         ma20 = sum(closes[-20:]) / 20.0
@@ -1024,6 +1095,15 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         "cci20": cci20,
         "volume_weighted_rsi14": volume_weighted_rsi14,
         "volume_momentum_divergence_13_27_10": volume_momentum_divergence,
+        "squeeze_on": squeeze_on,
+        "squeeze_release": squeeze_release,
+        "squeeze_momentum": squeeze_momentum,
+        "obv_temperature_60": obv_temperature_60,
+        "adaptive_rsi_midline_50": adaptive_rsi_midline_50,
+        "adaptive_rsi_upper_50": adaptive_rsi_upper_50,
+        "adaptive_rsi_lower_50": adaptive_rsi_lower_50,
+        "adaptive_rsi_overbought": adaptive_rsi_overbought,
+        "adaptive_rsi_oversold": adaptive_rsi_oversold,
     }
 
 
@@ -1313,6 +1393,15 @@ def filter_and_score_recommendations(
             "cci20": technical.get("cci20"),
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
+            "squeeze_on": technical.get("squeeze_on"),
+            "squeeze_release": technical.get("squeeze_release"),
+            "squeeze_momentum": technical.get("squeeze_momentum"),
+            "obv_temperature_60": technical.get("obv_temperature_60"),
+            "adaptive_rsi_midline_50": technical.get("adaptive_rsi_midline_50"),
+            "adaptive_rsi_upper_50": technical.get("adaptive_rsi_upper_50"),
+            "adaptive_rsi_lower_50": technical.get("adaptive_rsi_lower_50"),
+            "adaptive_rsi_overbought": technical.get("adaptive_rsi_overbought"),
+            "adaptive_rsi_oversold": technical.get("adaptive_rsi_oversold"),
             "current_price": current_price,
             "ma20": technical.get("ma20"),
             "_signal": eff_ml.get("signal"),
@@ -1378,6 +1467,15 @@ def filter_and_score_recommendations(
             "cci20": technical.get("cci20"),
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
+            "squeeze_on": technical.get("squeeze_on"),
+            "squeeze_release": technical.get("squeeze_release"),
+            "squeeze_momentum": technical.get("squeeze_momentum"),
+            "obv_temperature_60": technical.get("obv_temperature_60"),
+            "adaptive_rsi_midline_50": technical.get("adaptive_rsi_midline_50"),
+            "adaptive_rsi_upper_50": technical.get("adaptive_rsi_upper_50"),
+            "adaptive_rsi_lower_50": technical.get("adaptive_rsi_lower_50"),
+            "adaptive_rsi_overbought": technical.get("adaptive_rsi_overbought"),
+            "adaptive_rsi_oversold": technical.get("adaptive_rsi_oversold"),
         }
         fundamental_quality = (fundamental_quality_by_symbol or {}).get(symbol)
         if isinstance(fundamental_quality, dict):

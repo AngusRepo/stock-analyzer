@@ -10,6 +10,7 @@ from services.validation_governance import (  # noqa: E402
     build_strategy_lab_record,
     build_strategy_replay_contract,
     build_validation_packet,
+    build_validation_ladder_packet,
     data_snooping_reality_check,
     deflated_sharpe_proxy,
     explain_backtest_metrics,
@@ -89,6 +90,47 @@ def _data_snooping_pass() -> dict:
     }
 
 
+def _validation_ladder_evidence(paper_days: int = 180) -> dict:
+    return {
+        "backtest": _promotion_grade_backtest(),
+        "walk_forward": {"passed": True, "windows": 8, "oos_sharpe": 1.12},
+        "monte_carlo": {
+            "source": "backtest",
+            "simulation_method": "block_bootstrap",
+            "mdd_95th": 0.14,
+            "go_live_verdict": "PASS",
+        },
+        "selection_bias": {
+            "method": "bonferroni",
+            "candidate_count": 20,
+            "raw_p_value": 0.001,
+            "adjusted_p_value": 0.02,
+            "passed": True,
+        },
+        "oos": {"passed": True, "samples": 120, "oos_sharpe": 1.02},
+        "cpcv": {
+            "passed": True,
+            "method": "combinatorial_purged_cv",
+            "folds": 10,
+            "embargo_days": 5,
+            "pbo": 0.18,
+        },
+        "pbo": _pbo(),
+        "probabilistic_sharpe": {
+            "method": "probabilistic_sharpe",
+            "probability": 0.82,
+            "passed": True,
+        },
+        "data_snooping": _data_snooping_pass(),
+        "paper_trading": {
+            "passed": True,
+            "paper_days": paper_days,
+            "execution_parity": "PASS",
+            "slippage_within_policy": True,
+        },
+    }
+
+
 def test_metric_explanations_are_human_readable_chinese():
     explanations = explain_backtest_metrics(_mode_b_backtest())
     by_metric = {item["metric"]: item for item in explanations}
@@ -127,6 +169,53 @@ def test_validation_packet_declares_cpcv_cscv_governance_scope():
     assert packet["validation_scope"]["data_snooping"] == "white_reality_check_or_hansen_spa"
     assert "model_family_validation_owners_are_declared_in_training_metadata" in packet["validation_scope"]
     assert "non_tree_model_cpcv_requires_family_specific_fit_predict_adapters" not in packet["validation_scope"]["known_gaps"]
+
+
+def test_validation_ladder_maps_full_evidence_to_l10_review_not_mutation():
+    packet = build_validation_ladder_packet(
+        candidate_id="alpha-v1",
+        candidate_type="alpha",
+        evidence=_validation_ladder_evidence(),
+    )
+
+    assert packet["schema_version"] == "validation-ladder-packet-v1"
+    assert packet["current_level"] == "L10_paper_trading"
+    assert packet["current_level_index"] == 10
+    assert packet["decision"]["ready_for_wei_review"] is True
+    assert packet["decision"]["eligible_for_production_allocation_review"] is True
+    assert packet["decision"]["production_mutation_allowed"] is False
+    assert packet["next_required"] is None
+
+
+def test_validation_ladder_stops_at_l3_when_bonferroni_selection_bias_missing():
+    evidence = _validation_ladder_evidence()
+    evidence["selection_bias"] = {}
+
+    packet = build_validation_ladder_packet(
+        candidate_id="alpha-v1",
+        candidate_type="alpha",
+        evidence=evidence,
+    )
+
+    assert packet["current_level"] == "L3_block_bootstrap"
+    assert packet["current_level_index"] == 3
+    assert packet["next_required"]["level"] == "L4_bonferroni_selection_bias"
+    assert "bonferroni_selection_bias_missing_or_failed" in packet["next_required"]["missing_evidence"]
+    assert packet["decision"]["eligible_for_production_allocation_review"] is False
+
+
+def test_validation_ladder_requires_six_month_paper_trading_before_l10():
+    packet = build_validation_ladder_packet(
+        candidate_id="alpha-v1",
+        candidate_type="alpha",
+        evidence=_validation_ladder_evidence(paper_days=45),
+    )
+
+    assert packet["current_level"] == "L9_reality_check"
+    assert packet["current_level_index"] == 9
+    assert packet["next_required"]["level"] == "L10_paper_trading"
+    assert "paper_trading_180_days_required" in packet["next_required"]["missing_evidence"]
+    assert packet["decision"]["ready_for_wei_review"] is False
 
 
 def test_data_snooping_reality_check_passes_clear_robust_edge():

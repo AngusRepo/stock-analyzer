@@ -51,6 +51,31 @@ function testComputeTechnicalIndicators(): void {
   assert(indicators.cci20 != null && indicators.cci20 > 0, 'steady uptrend should produce positive CCI')
   assert(indicators.volumeWeightedRsi14 === 100, 'volume-weighted RSI should preserve steady uptrend direction')
   assert(indicators.volumeMomentumDivergence132710 != null, 'volume momentum divergence factor should be computed')
+  assert(indicators.squeezeOn === 0 || indicators.squeezeOn === 1, 'TTM squeeze state should be encoded as 0/1')
+  assert(indicators.squeezeRelease === 0 || indicators.squeezeRelease === 1, 'TTM squeeze release should be encoded as 0/1')
+  assert(indicators.squeezeMomentum != null && indicators.squeezeMomentum > 0, 'steady uptrend should produce positive squeeze momentum')
+  assert(indicators.obvTemperature60 === 100, 'steady uptrend OBV temperature should reach the top of its 60-bar range')
+}
+
+function testAdaptiveRsiUsesInstrumentSpecificBand(): void {
+  const closes: number[] = [100]
+  for (let i = 1; i < 73; i++) {
+    closes.push(closes[i - 1] + (i % 2 === 0 ? 0.12 : -0.12))
+  }
+  closes.push(closes[closes.length - 1] + 20)
+  const highs = closes.map((close) => close + 0.8)
+  const lows = closes.map((close) => close - 0.8)
+  const volumes = closes.map((_, i) => 1000 + i * 10)
+
+  const indicators = computeTechnicalIndicators(closes, highs, lows, volumes)
+
+  assert(indicators.adaptiveRsiMidline50 != null, 'adaptive RSI midline should be computed with enough RSI history')
+  assert(indicators.adaptiveRsiUpper50 != null, 'adaptive RSI upper band should be computed with enough RSI history')
+  assert(indicators.adaptiveRsiLower50 != null, 'adaptive RSI lower band should be computed with enough RSI history')
+  assert(indicators.adaptiveRsiUpper50 > indicators.adaptiveRsiMidline50, 'adaptive RSI upper band should float above its own midline')
+  assert(indicators.adaptiveRsiLower50 < indicators.adaptiveRsiMidline50, 'adaptive RSI lower band should float below its own midline')
+  assert(indicators.adaptiveRsiOverbought === 1, 'large stock-specific RSI jump should trigger adaptive overbought')
+  assert(indicators.adaptiveRsiOversold === 0, 'large upside jump should not trigger adaptive oversold')
 }
 
 function testComputeTechnicalIndicatorsMatchesSharedV2Fixture(): void {
@@ -64,6 +89,7 @@ function testComputeTechnicalIndicatorsMatchesSharedV2Fixture(): void {
 }
 
 testComputeTechnicalIndicators()
+testAdaptiveRsiUsesInstrumentSpecificBand()
 testComputeTechnicalIndicatorsMatchesSharedV2Fixture()
 
 async function testComputeAndStoreIndicatorsAsOfDate(): Promise<void> {
@@ -109,9 +135,18 @@ async function testComputeAndStoreIndicatorsAsOfDate(): Promise<void> {
   assert(executed[0].sql.includes('cci20'), 'indicator write should persist CCI')
   assert(executed[0].sql.includes('volume_weighted_rsi14'), 'indicator write should persist volume-weighted RSI')
   assert(executed[0].sql.includes('volume_momentum_divergence_13_27_10'), 'indicator write should persist volume momentum divergence')
+  assert(executed[0].sql.includes('squeeze_on'), 'indicator write should persist TTM squeeze state')
+  assert(executed[0].sql.includes('squeeze_release'), 'indicator write should persist TTM squeeze release')
+  assert(executed[0].sql.includes('squeeze_momentum'), 'indicator write should persist TTM squeeze momentum')
+  assert(executed[0].sql.includes('obv_temperature_60'), 'indicator write should persist OBV temperature')
+  assert(executed[0].sql.includes('adaptive_rsi_midline_50'), 'indicator write should persist adaptive RSI midline')
+  assert(executed[0].sql.includes('adaptive_rsi_upper_50'), 'indicator write should persist adaptive RSI upper band')
+  assert(executed[0].sql.includes('adaptive_rsi_lower_50'), 'indicator write should persist adaptive RSI lower band')
+  assert(executed[0].sql.includes('adaptive_rsi_overbought'), 'indicator write should persist adaptive RSI overbought flag')
+  assert(executed[0].sql.includes('adaptive_rsi_oversold'), 'indicator write should persist adaptive RSI oversold flag')
   assert(executed[0].args[1] === '2026-04-25', 'indicator date must use latest price <= asOfDate')
   assert(executed[0].args[4] === 114.5, 'ma20 must not use future 2026-05-04 price')
-  assert(executed[0].args.length === 21, 'indicator write should bind every technical factor column')
+  assert(executed[0].args.length === 30, 'indicator write should bind every technical factor column')
 }
 
 void testComputeAndStoreIndicatorsAsOfDate()

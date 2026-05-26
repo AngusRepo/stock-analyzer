@@ -1489,14 +1489,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
       // (b) 最新 sector_flow 的四層 taxonomy quadrant
       const { results: qRows } = await env.DB.prepare(
-        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum FROM sector_flow
+        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum, turnover_share_delta FROM sector_flow
          WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
            AND quadrant IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
                          AND quadrant IS NOT NULL)`
-      ).all<{ sector: string; classification: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null }>()
-      const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number }>()
+      ).all<{ sector: string; classification: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null; turnover_share_delta: number | null }>()
+      const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number; turnoverShareDelta: number }>()
       for (const r of qRows ?? []) {
         const classification = String(r.classification || '').trim()
         const sector = String(r.sector || '').trim()
@@ -1505,6 +1505,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           quadrant: r.quadrant,
           rsRatio: Number(r.rs_ratio ?? 100),
           rsMomentum: Number(r.rs_momentum ?? 0),
+          turnoverShareDelta: Number(r.turnover_share_delta ?? 0),
         })
       }
       const latestThemeUniverse = new Set(themeQuadrant.keys())
@@ -1529,7 +1530,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           })
           continue
         }
-        const { quadrant: q, rsRatio, rsMomentum } = overlay
+        const { quadrant: q, rsRatio, rsMomentum, turnoverShareDelta } = overlay
         let adjustment = 0
         let reasonCode = 'rrg_overlay_neutral'
         if (q === 'Leading' && rsRatio >= 100 && rsMomentum >= 0) {
@@ -1545,6 +1546,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           adjustment = Math.max(-6, Math.min(-2, Number(rrgCfg.laggingPenalty ?? -4)))
           reasonCode = 'rrg_overlay_lagging_risk'
         }
+        let turnoverShareAdjustment = 0
+        if ((q === 'Leading' || q === 'Improving') && turnoverShareDelta >= 0.002) {
+          turnoverShareAdjustment = 1
+          reasonCode = 'rrg_overlay_turnover_share_tailwind'
+        } else if ((q === 'Weakening' || q === 'Lagging') && turnoverShareDelta <= -0.003) {
+          turnoverShareAdjustment = -1
+          reasonCode = 'rrg_overlay_turnover_share_outflow_risk'
+        }
+        adjustment += turnoverShareAdjustment
         if (adjustment !== 0) {
           const before = c.score
           c.score += adjustment
@@ -1559,7 +1569,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
             reasonCode,
             scoreBefore: before,
             scoreAfter: c.score,
-            evidence: { tag: matched.tag, classification: matched.classification, taxonomyKey, quadrant: q, rsRatio, rsMomentum, adjustment },
+            evidence: {
+              tag: matched.tag,
+              classification: matched.classification,
+              taxonomyKey,
+              quadrant: q,
+              rsRatio,
+              rsMomentum,
+              turnoverShareDelta,
+              turnoverShareAdjustment,
+              adjustment,
+            },
           })
         }
       }

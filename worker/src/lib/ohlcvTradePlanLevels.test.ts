@@ -1,5 +1,7 @@
 import {
+  buildIntradayFibonacciLevels,
   buildOhlcvTradePlanLevels,
+  formatIntradayFibonacciWatchPoint,
   formatOhlcvTradePlanWatchPoint,
   normalizeOhlcvRows,
   resolveOhlcvEntryPlan,
@@ -49,6 +51,37 @@ assert(watchPoint.startsWith('ohlcv_trade_plan:'), 'OHLCV backend plan should be
 assert(watchPoint.includes('buy_reference='), 'watch point should expose buy reference zone')
 assert(watchPoint.includes(`optimistic_range=${breakoutPlan!.optimisticLow}~${breakoutPlan!.optimisticHigh}`), 'watch point should expose OHLCV optimistic range')
 assert(!watchPoint.includes('fair_value'), 'watch point must not expose fair value as a trading line')
+
+const futuresNightRows = normalizeOhlcvRows([
+  { date: '2026-05-25', time: 145900, open: 100, high: 101, low: 99, close: 100, volume: 1000 },
+  { date: '2026-05-25', time: 150000, open: 100, high: 104, low: 98, close: 102, volume: 1000 },
+  { date: '2026-05-25', time: 233000, open: 102, high: 110, low: 97, close: 108, volume: 1000 },
+  { date: '2026-05-26', time: '003000', open: 108, high: 109, low: 90, close: 95, volume: 1000 },
+  { date: '2026-05-26', time: '091500', open: 95, high: 106, low: 94, close: 105, volume: 1000 },
+  { date: '2026-05-26', time: 134500, open: 105, high: 107, low: 95, close: 106, volume: 1000 },
+])
+
+const futuresFib = buildIntradayFibonacciLevels(futuresNightRows, {
+  sessionMode: 'tw_futures_night_session',
+  nightStartTime: 150000,
+})
+
+assert(futuresFib?.sessionKey === '2026-05-26', 'futures session should group T-1 15:00 through T day session')
+assert(futuresFib?.sessionHigh === 110, 'futures fib high should include prior-night high')
+assert(futuresFib?.sessionLow === 90, 'futures fib low should include after-midnight low in the same trading session')
+assert(futuresFib?.fib50 === 100, 'futures fib 50% should come from complete trading-session range')
+assert(futuresFib?.fib618 === 102.36, 'futures fib 61.8% should come from complete trading-session range')
+
+const calendarFib = buildIntradayFibonacciLevels(futuresNightRows, { sessionMode: 'calendar_day' })
+
+assert(calendarFib?.sessionHigh === 109, 'calendar mode should not include prior natural-day night high')
+assert(calendarFib?.sessionLow === 90, 'calendar mode should use only the latest natural day')
+
+const fibWatchPoint = formatIntradayFibonacciWatchPoint(futuresFib!)
+
+assert(fibWatchPoint.startsWith('intraday_fibonacci:'), 'fibonacci levels should be a distinct execution watch point')
+assert(fibWatchPoint.includes('fib50=100'), 'fibonacci watch point should expose 50% level')
+assert(fibWatchPoint.includes('fib618=102.36'), 'fibonacci watch point should expose 61.8% level')
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100

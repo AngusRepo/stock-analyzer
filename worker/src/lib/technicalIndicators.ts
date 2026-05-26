@@ -18,6 +18,15 @@ export interface TechnicalIndicatorResult {
   cci20: number | null
   volumeWeightedRsi14: number | null
   volumeMomentumDivergence132710: number | null
+  squeezeOn: number | null
+  squeezeRelease: number | null
+  squeezeMomentum: number | null
+  obvTemperature60: number | null
+  adaptiveRsiMidline50: number | null
+  adaptiveRsiUpper50: number | null
+  adaptiveRsiLower50: number | null
+  adaptiveRsiOverbought: number | null
+  adaptiveRsiOversold: number | null
 }
 
 function sma(arr: number[], n: number): number | null {
@@ -34,6 +43,21 @@ function ema(arr: number[], n: number): number[] {
 
 function round4(value: number | null): number | null {
   return value == null || !Number.isFinite(value) ? null : Math.round(value * 10000) / 10000
+}
+
+function stddev(values: number[]): number {
+  if (values.length === 0) return 0
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
+  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length)
+}
+
+function trueRangeAt(highs: number[], lows: number[], closes: number[], index: number): number {
+  if (index <= 0) return highs[index] - lows[index]
+  return Math.max(
+    highs[index] - lows[index],
+    Math.abs(highs[index] - closes[index - 1]),
+    Math.abs(lows[index] - closes[index - 1]),
+  )
 }
 
 function computeDmiAdx(
@@ -160,6 +184,56 @@ function computeVolumeWeightedRsi(closes: number[], volumes: number[], period = 
   return 100 - 100 / (1 + avgGain / avgLoss)
 }
 
+function computeRsiAt(closes: number[], endIndex: number, period = 14): number | null {
+  if (endIndex < period || endIndex >= closes.length) return null
+  let gains = 0
+  let losses = 0
+  for (let i = endIndex - period + 1; i <= endIndex; i++) {
+    const delta = closes[i] - closes[i - 1]
+    if (delta > 0) gains += delta
+    else losses -= delta
+  }
+  const avgGain = gains / period
+  const avgLoss = losses / period
+  if (avgLoss === 0) return 100
+  return 100 - 100 / (1 + avgGain / avgLoss)
+}
+
+function computeAdaptiveRsiBands(
+  closes: number[],
+  rsiPeriod = 14,
+  bandLength = 50,
+  mult = 2,
+): {
+  midline: number | null
+  upper: number | null
+  lower: number | null
+  overbought: number | null
+  oversold: number | null
+} {
+  if (closes.length < rsiPeriod + bandLength) {
+    return { midline: null, upper: null, lower: null, overbought: null, oversold: null }
+  }
+  const values: number[] = []
+  for (let endIndex = closes.length - bandLength; endIndex < closes.length; endIndex++) {
+    const value = computeRsiAt(closes, endIndex, rsiPeriod)
+    if (value == null) return { midline: null, upper: null, lower: null, overbought: null, oversold: null }
+    values.push(value)
+  }
+  const midline = values.reduce((sum, value) => sum + value, 0) / values.length
+  const deviation = stddev(values)
+  const upper = midline + mult * deviation
+  const lower = midline - mult * deviation
+  const latest = values[values.length - 1]
+  return {
+    midline,
+    upper,
+    lower,
+    overbought: latest > upper ? 1 : 0,
+    oversold: latest < lower ? 1 : 0,
+  }
+}
+
 function computeVolumeMomentumDivergence(volumes: number[]): number | null {
   const shortPeriod = 13
   const longPeriod = 27
@@ -176,6 +250,99 @@ function computeVolumeMomentumDivergence(volumes: number[]): number | null {
   const latest = diffs[diffs.length - 1]
   const signal = diffs.slice(-signalPeriod).reduce((sum, value) => sum + value, 0) / signalPeriod
   return latest - signal
+}
+
+function linearRegressionForecast(values: number[]): number | null {
+  const n = values.length
+  if (n === 0) return null
+  const meanX = (n - 1) / 2
+  const meanY = values.reduce((sum, value) => sum + value, 0) / n
+  let numerator = 0
+  let denominator = 0
+  for (let i = 0; i < n; i++) {
+    const dx = i - meanX
+    numerator += dx * (values[i] - meanY)
+    denominator += dx * dx
+  }
+  const slope = denominator > 0 ? numerator / denominator : 0
+  const intercept = meanY - slope * meanX
+  return intercept + slope * (n - 1)
+}
+
+function computeSqueezeMomentum(
+  closes: number[],
+  highs: number[],
+  lows: number[],
+  endExclusive: number,
+  period = 20,
+): number | null {
+  if (endExclusive < period * 2 - 1) return null
+  const values: number[] = []
+  for (let index = endExclusive - period; index < endExclusive; index++) {
+    const start = index - period + 1
+    const closeSlice = closes.slice(start, index + 1)
+    const highSlice = highs.slice(start, index + 1)
+    const lowSlice = lows.slice(start, index + 1)
+    const highest = Math.max(...highSlice)
+    const lowest = Math.min(...lowSlice)
+    const meanClose = closeSlice.reduce((sum, value) => sum + value, 0) / period
+    const anchor = ((highest + lowest) / 2 + meanClose) / 2
+    values.push(closes[index] - anchor)
+  }
+  return linearRegressionForecast(values)
+}
+
+function computeTtmSqueeze(
+  closes: number[],
+  highs: number[],
+  lows: number[],
+  period = 20,
+  multBB = 2,
+  multKC = 1.5,
+): { squeezeOn: number | null; squeezeRelease: number | null; squeezeMomentum: number | null } {
+  function snapshot(endExclusive: number): { on: boolean; off: boolean } | null {
+    if (endExclusive < period || highs.length < endExclusive || lows.length < endExclusive) return null
+    const closeSlice = closes.slice(endExclusive - period, endExclusive)
+    const mid = closeSlice.reduce((sum, value) => sum + value, 0) / period
+    const deviation = stddev(closeSlice)
+    const bbUpper = mid + multBB * deviation
+    const bbLower = mid - multBB * deviation
+    const trueRanges: number[] = []
+    for (let i = endExclusive - period; i < endExclusive; i++) {
+      trueRanges.push(trueRangeAt(highs, lows, closes, i))
+    }
+    const range = trueRanges.reduce((sum, value) => sum + value, 0) / period
+    const kcUpper = mid + multKC * range
+    const kcLower = mid - multKC * range
+    return {
+      on: bbUpper < kcUpper && bbLower > kcLower,
+      off: bbUpper > kcUpper && bbLower < kcLower,
+    }
+  }
+
+  const current = snapshot(closes.length)
+  if (!current) return { squeezeOn: null, squeezeRelease: null, squeezeMomentum: null }
+  const previous = snapshot(closes.length - 1)
+  return {
+    squeezeOn: current.on ? 1 : 0,
+    squeezeRelease: previous?.on && current.off ? 1 : 0,
+    squeezeMomentum: computeSqueezeMomentum(closes, highs, lows, closes.length, period),
+  }
+}
+
+function computeObvTemperature(closes: number[], volumes: number[], period = 60): number | null {
+  if (closes.length < period || volumes.length < closes.length) return null
+  const obv: number[] = [0]
+  for (let i = 1; i < closes.length; i++) {
+    const volume = Math.max(0, Number(volumes[i] ?? 0))
+    const direction = closes[i] > closes[i - 1] ? 1 : closes[i] < closes[i - 1] ? -1 : 0
+    obv.push(obv[i - 1] + direction * volume)
+  }
+  const window = obv.slice(-period)
+  const high = Math.max(...window)
+  const low = Math.min(...window)
+  if (high <= low) return null
+  return ((obv[obv.length - 1] - low) / (high - low)) * 100
 }
 
 export function computeTechnicalIndicators(
@@ -247,6 +414,9 @@ export function computeTechnicalIndicators(
   const cci20 = computeCci(highs, lows, closes, 20)
   const volumeWeightedRsi14 = computeVolumeWeightedRsi(closes, volumes, 14)
   const volumeMomentumDivergence132710 = computeVolumeMomentumDivergence(volumes)
+  const squeeze = computeTtmSqueeze(closes, highs, lows)
+  const obvTemperature60 = computeObvTemperature(closes, volumes, 60)
+  const adaptiveRsi = computeAdaptiveRsiBands(closes, 14, 50, 2)
 
   return {
     ma5,
@@ -268,6 +438,15 @@ export function computeTechnicalIndicators(
     cci20: round4(cci20),
     volumeWeightedRsi14: round4(volumeWeightedRsi14),
     volumeMomentumDivergence132710: round4(volumeMomentumDivergence132710),
+    squeezeOn: squeeze.squeezeOn,
+    squeezeRelease: squeeze.squeezeRelease,
+    squeezeMomentum: round4(squeeze.squeezeMomentum),
+    obvTemperature60: round4(obvTemperature60),
+    adaptiveRsiMidline50: round4(adaptiveRsi.midline),
+    adaptiveRsiUpper50: round4(adaptiveRsi.upper),
+    adaptiveRsiLower50: round4(adaptiveRsi.lower),
+    adaptiveRsiOverbought: adaptiveRsi.overbought,
+    adaptiveRsiOversold: adaptiveRsi.oversold,
   }
 }
 
@@ -297,8 +476,11 @@ export async function computeAndStoreIndicators(db: D1Database, stockId: number,
       `INSERT OR REPLACE INTO technical_indicators
          (stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal, macd_hist,
           bb_upper, bb_mid, bb_lower, atr14, plus_di14, minus_di14, adx14, parabolic_sar,
-          cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10,
+          squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60,
+          adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50,
+          adaptive_rsi_overbought, adaptive_rsi_oversold)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).bind(
       stockId,
       latestDate,
@@ -321,6 +503,15 @@ export async function computeAndStoreIndicators(db: D1Database, stockId: number,
       indicators.cci20,
       indicators.volumeWeightedRsi14,
       indicators.volumeMomentumDivergence132710,
+      indicators.squeezeOn,
+      indicators.squeezeRelease,
+      indicators.squeezeMomentum,
+      indicators.obvTemperature60,
+      indicators.adaptiveRsiMidline50,
+      indicators.adaptiveRsiUpper50,
+      indicators.adaptiveRsiLower50,
+      indicators.adaptiveRsiOverbought,
+      indicators.adaptiveRsiOversold,
     ).run()
   } catch (error) {
     console.error(`[Indicators] Failed for stock_id=${stockId}:`, error)

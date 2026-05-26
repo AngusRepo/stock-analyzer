@@ -34,6 +34,22 @@ class CashFlow(TypedDict):
     total_net: float
 
 
+class TurnoverSnapshots(TypedDict):
+    current_date: Optional[str]
+    previous_date: Optional[str]
+    current: dict[str, float]
+    previous: dict[str, float]
+    current_total: float
+    previous_total: float
+
+
+class TurnoverShare(TypedDict):
+    turnover_value: float
+    turnover_share: Optional[float]
+    previous_turnover_share: Optional[float]
+    turnover_share_delta: Optional[float]
+
+
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
     if tag_type == "concept":
         return "theme"
@@ -42,6 +58,12 @@ def _tag_type_to_classification(tag_type: TagType) -> Classification:
     if tag_type == "subindustry":
         return "subindustry"
     return "industry"
+
+
+def _round_optional(value: object, digits: int) -> Optional[float]:
+    if value is None:
+        return None
+    return round(float(value), digits)
 
 
 def _load_member_returns_5d(as_of_date: str) -> dict[str, float]:
@@ -290,6 +312,99 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
     return flows
 
 
+def _load_symbol_turnover_snapshots(as_of_date: str) -> TurnoverSnapshots:
+    """Load current and previous trading-day turnover by symbol.
+
+    D1 stores volume but not traded value, so turnover is approximated as
+    close * volume. Shares are computed against all symbols with a price row
+    for that trading date.
+    """
+    date_rows = d1_client.query(
+        """
+        SELECT DISTINCT date
+        FROM stock_prices
+        WHERE date <= ?
+        ORDER BY date DESC
+        LIMIT 2
+        """,
+        [as_of_date],
+    )
+    dates = [str(r.get("date")) for r in date_rows if r.get("date")]
+    current_date = dates[0] if dates else None
+    previous_date = dates[1] if len(dates) > 1 else None
+    snapshots: TurnoverSnapshots = {
+        "current_date": current_date,
+        "previous_date": previous_date,
+        "current": {},
+        "previous": {},
+        "current_total": 0.0,
+        "previous_total": 0.0,
+    }
+    if not current_date:
+        return snapshots
+
+    placeholders = ",".join("?" * len(dates))
+    rows = d1_client.query(
+        f"""
+        SELECT
+          s.symbol,
+          sp.date,
+          COALESCE(sp.close, 0) AS close,
+          COALESCE(sp.volume, 0) AS volume
+        FROM stock_prices sp
+        JOIN stocks s ON s.id = sp.stock_id
+        WHERE sp.date IN ({placeholders})
+        """,
+        dates,
+    )
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        date = str(row.get("date") or "").strip()
+        if not symbol or not date:
+            continue
+        turnover = max(0.0, float(row.get("close") or 0.0) * float(row.get("volume") or 0.0))
+        if turnover <= 0:
+            continue
+        if date == current_date:
+            snapshots["current"][symbol] = snapshots["current"].get(symbol, 0.0) + turnover
+            snapshots["current_total"] += turnover
+        elif previous_date and date == previous_date:
+            snapshots["previous"][symbol] = snapshots["previous"].get(symbol, 0.0) + turnover
+            snapshots["previous_total"] += turnover
+    return snapshots
+
+
+def _compute_tag_turnover_shares(
+    tag_members: dict[str, list[str]],
+    snapshots: TurnoverSnapshots,
+) -> dict[str, TurnoverShare]:
+    current = snapshots.get("current") or {}
+    previous = snapshots.get("previous") or {}
+    current_total = float(snapshots.get("current_total") or 0.0)
+    previous_total = float(snapshots.get("previous_total") or 0.0)
+    if current_total <= 0:
+        return {}
+
+    shares: dict[str, TurnoverShare] = {}
+    for tag, members in tag_members.items():
+        turnover_value = sum(float(current.get(symbol) or 0.0) for symbol in members)
+        previous_value = sum(float(previous.get(symbol) or 0.0) for symbol in members)
+        turnover_share = turnover_value / current_total if current_total > 0 else None
+        previous_share = previous_value / previous_total if previous_total > 0 else None
+        share_delta = (
+            turnover_share - previous_share
+            if turnover_share is not None and previous_share is not None
+            else None
+        )
+        shares[tag] = {
+            "turnover_value": turnover_value,
+            "turnover_share": turnover_share,
+            "previous_turnover_share": previous_share,
+            "turnover_share_delta": share_delta,
+        }
+    return shares
+
+
 def _aggregate_tag_cash_flows(
     tag_members: dict[str, list[str]],
     symbol_flows: dict[str, CashFlow],
@@ -442,6 +557,7 @@ def write_sector_flow(
     classification: Classification,
     as_of_date: str,
     cash_flows: Optional[dict[str, CashFlow]] = None,
+    turnover_shares: Optional[dict[str, TurnoverShare]] = None,
 ) -> int:
     """
     Upsert sector_flow rows.
@@ -466,10 +582,19 @@ def write_sector_flow(
             "trust_net": 0.0,
             "total_net": 0.0,
         }
+        turnover = (turnover_shares or {}).get(pt.sector) or {
+            "turnover_value": None,
+            "turnover_share": None,
+            "turnover_share_delta": None,
+        }
         statements.append((
             """
-            INSERT INTO sector_flow (date, sector, classification, rs_ratio, rs_momentum, quadrant, stock_count, foreign_net, trust_net, total_net)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sector_flow (
+              date, sector, classification, rs_ratio, rs_momentum, quadrant,
+              stock_count, foreign_net, trust_net, total_net,
+              turnover_value, turnover_share, turnover_share_delta
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
@@ -477,7 +602,10 @@ def write_sector_flow(
               stock_count = excluded.stock_count,
               foreign_net = excluded.foreign_net,
               trust_net = excluded.trust_net,
-              total_net = excluded.total_net
+              total_net = excluded.total_net,
+              turnover_value = excluded.turnover_value,
+              turnover_share = excluded.turnover_share,
+              turnover_share_delta = excluded.turnover_share_delta
             """.strip(),
             [
                 as_of_date,
@@ -490,6 +618,9 @@ def write_sector_flow(
                 round(float(flow.get("foreign_net") or 0.0), 4),
                 round(float(flow.get("trust_net") or 0.0), 4),
                 round(float(flow.get("total_net") or 0.0), 4),
+                _round_optional(turnover.get("turnover_value"), 4),
+                _round_optional(turnover.get("turnover_share"), 6),
+                _round_optional(turnover.get("turnover_share_delta"), 6),
             ],
         ))
 
@@ -524,12 +655,14 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
     ]
 
     symbol_flows = _load_symbol_cash_flows_5d(as_of_date)
+    turnover_snapshots = _load_symbol_turnover_snapshots(as_of_date)
     for tag_type, classification in paths:
         try:
             tag_members = _load_stock_tags(tag_type)
             pts = compute_sector_flow_for_tag_type(tag_type, as_of_date)
             tag_flows = _aggregate_tag_cash_flows(tag_members, symbol_flows)
-            written = write_sector_flow(pts, classification, as_of_date, tag_flows)
+            tag_turnover_shares = _compute_tag_turnover_shares(tag_members, turnover_snapshots)
+            written = write_sector_flow(pts, classification, as_of_date, tag_flows, tag_turnover_shares)
             counts = {"Leading": 0, "Weakening": 0, "Lagging": 0, "Improving": 0}
             for p in pts:
                 if p.quadrant:

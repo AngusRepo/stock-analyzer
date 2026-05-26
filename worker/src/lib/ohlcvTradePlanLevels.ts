@@ -1,5 +1,6 @@
 export interface OhlcvRow {
   date: string
+  time?: string | null
   open: number
   high: number
   low: number
@@ -16,6 +17,23 @@ export interface OhlcvTradePlanLevels {
   atr: number | null
   atrUpper: number | null
   atrLower: number | null
+}
+
+export type IntradayFibonacciSessionMode = 'calendar_day' | 'tw_futures_night_session'
+
+export interface IntradayFibonacciLevels {
+  sessionMode: IntradayFibonacciSessionMode
+  sessionKey: string
+  sessionHigh: number
+  sessionLow: number
+  range: number
+  fib0: number
+  fib236: number
+  fib382: number
+  fib50: number
+  fib618: number
+  fib786: number
+  fib100: number
 }
 
 export type OhlcvEntryMode = 'breakout' | 'pullback'
@@ -57,6 +75,27 @@ function rowVolume(row: any): number {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+function normalizeTime(value: unknown): string | null {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return null
+  return digits.padStart(6, '0').slice(-6)
+}
+
+function timeNumber(value: unknown): number {
+  const normalized = normalizeTime(value)
+  return normalized == null ? 0 : Number(normalized)
+}
+
+function addOneCalendarDay(date: string): string {
+  const [year, month, day] = date.split('-').map((part) => Number(part))
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return date
+  const dt = new Date(Date.UTC(year, month - 1, day))
+  dt.setUTCDate(dt.getUTCDate() + 1)
+  return dt.toISOString().slice(0, 10)
 }
 
 function priceText(value: number | null | undefined): string {
@@ -121,6 +160,7 @@ export function normalizeOhlcvRows(rows: any[]): OhlcvRow[] {
     const low = Math.min(positivePrice(row?.low) ?? close, open, close)
     normalized.push({
       date,
+      time: normalizeTime(row?.time ?? row?.Time ?? row?.hhmmss),
       open,
       high,
       low,
@@ -130,6 +170,62 @@ export function normalizeOhlcvRows(rows: any[]): OhlcvRow[] {
     previousClose = close
   }
   return normalized
+}
+
+export function resolveIntradayFibonacciSessionKey(
+  row: Pick<OhlcvRow, 'date' | 'time'>,
+  options: { sessionMode?: IntradayFibonacciSessionMode; nightStartTime?: number } = {},
+): string {
+  const sessionMode = options.sessionMode ?? 'calendar_day'
+  if (sessionMode === 'calendar_day') return row.date
+  const nightStart = options.nightStartTime ?? 150000
+  return timeNumber(row.time) >= nightStart ? addOneCalendarDay(row.date) : row.date
+}
+
+export function buildIntradayFibonacciLevels(
+  rows: OhlcvRow[],
+  options: { sessionMode?: IntradayFibonacciSessionMode; nightStartTime?: number } = {},
+): IntradayFibonacciLevels | null {
+  const latest = rows[rows.length - 1]
+  if (!latest) return null
+  const sessionMode = options.sessionMode ?? 'calendar_day'
+  const sessionKey = resolveIntradayFibonacciSessionKey(latest, options)
+  const sessionRows = rows.filter((row) => resolveIntradayFibonacciSessionKey(row, options) === sessionKey)
+  if (!sessionRows.length) return null
+  const sessionHigh = Math.max(...sessionRows.map((row) => row.high))
+  const sessionLow = Math.min(...sessionRows.map((row) => row.low))
+  if (!Number.isFinite(sessionHigh) || !Number.isFinite(sessionLow) || sessionHigh < sessionLow) return null
+  const range = sessionHigh - sessionLow
+  const level = (ratio: number) => round2(sessionLow + range * ratio)
+  return {
+    sessionMode,
+    sessionKey,
+    sessionHigh: round2(sessionHigh),
+    sessionLow: round2(sessionLow),
+    range: round2(range),
+    fib0: round2(sessionLow),
+    fib236: level(0.236),
+    fib382: level(0.382),
+    fib50: level(0.5),
+    fib618: level(0.618),
+    fib786: level(0.786),
+    fib100: round2(sessionHigh),
+  }
+}
+
+export function formatIntradayFibonacciWatchPoint(levels: IntradayFibonacciLevels): string {
+  return [
+    'intraday_fibonacci:',
+    `mode=${levels.sessionMode}`,
+    `session=${levels.sessionKey}`,
+    `low=${priceText(levels.sessionLow)}`,
+    `high=${priceText(levels.sessionHigh)}`,
+    `fib236=${priceText(levels.fib236)}`,
+    `fib382=${priceText(levels.fib382)}`,
+    `fib50=${priceText(levels.fib50)}`,
+    `fib618=${priceText(levels.fib618)}`,
+    `fib786=${priceText(levels.fib786)}`,
+  ].join(' ')
 }
 
 function trueRange(row: OhlcvRow, previousClose: number): number {

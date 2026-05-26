@@ -37,11 +37,18 @@ def classify_verify_callback_status(result: dict) -> tuple[str, str | None]:
 
     pending = int(result.get("pending") or 0)
     verified = int(result.get("verified") or 0)
-    written = int((result.get("metrics") or {}).get("verified_rows_written") or 0)
+    metrics = result.get("metrics") or {}
+    written = int(metrics.get("verified_rows_written") or 0)
+    skipped_no_bars = int(metrics.get("skipped_no_bars") or 0)
 
     if pending <= 0:
         return "skipped", "no pending predictions in verifiable window"
     if verified <= 0 or written <= 0:
+        if skipped_no_bars >= pending:
+            return "skipped", (
+                "pending predictions are not verifiable yet because follow-up "
+                f"OHLC bars are missing: pending={pending} skipped_no_bars={skipped_no_bars}"
+            )
         return "error", (
             f"verify produced no durable outcome writes: "
             f"pending={pending} verified={verified} verified_rows_written={written}"

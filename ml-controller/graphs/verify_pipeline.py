@@ -77,6 +77,7 @@ async def node_simulate_predictions(state: VerifyStateV2) -> dict:
         "verify_updates": prepared.get("verify_updates") or [],
         "arf_feedback_items": prepared.get("arf_feedback_items") or [],
         "errors": prepared.get("errors") or [],
+        "metrics": {**(state.get("metrics") or {}), **(prepared.get("metrics") or {})},
         **summary,
     }
 

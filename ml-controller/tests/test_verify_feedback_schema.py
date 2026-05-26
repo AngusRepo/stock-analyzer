@@ -204,3 +204,27 @@ def test_prepare_verification_updates_batches_bars(monkeypatch):
 
     assert calls == {"bulk": 1, "single": 0}
     assert len(result["verify_updates"]) == 1
+    assert result["metrics"]["skipped_no_bars"] == 0
+
+
+def test_prepare_verification_updates_counts_missing_bars(monkeypatch):
+    monkeypatch.setattr(verify_service, "load_bars_for_predictions", lambda pending: {})
+
+    result = verify_service.prepare_verification_updates(
+        [
+            {
+                "id": 7,
+                "stock_id": 1,
+                "symbol": "5267",
+                "model_name": "XGBoost",
+                "generated_at": "2026-05-25T10:00:00Z",
+                "prediction_date": "2026-05-25",
+                "entry_price": 100.0,
+                "forecast_data": json.dumps({"signal": "HOLD", "rank_score": 0.5}),
+            }
+        ],
+        market_risk={"risk_level": "low", "risk_score": 10},
+    )
+
+    assert result["verify_updates"] == []
+    assert result["metrics"]["skipped_no_bars"] == 1

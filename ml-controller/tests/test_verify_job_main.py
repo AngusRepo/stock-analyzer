@@ -16,6 +16,21 @@ def test_verify_job_zero_written_rows_is_not_success_when_pending_exists():
     assert "verified_rows_written=0" in error
 
 
+def test_verify_job_all_pending_without_bars_is_skipped_not_error():
+    result = {
+        "status": "ok",
+        "pending": 336,
+        "verified": 0,
+        "metrics": {"verified_rows_written": 0, "skipped_no_bars": 336},
+        "errors": [],
+    }
+
+    status, error = classify_verify_callback_status(result)
+
+    assert status == "skipped"
+    assert "OHLC bars are missing" in error
+
+
 def test_verify_job_zero_pending_is_skipped_not_success():
     result = {
         "status": "ok",
